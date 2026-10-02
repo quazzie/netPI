@@ -483,32 +483,36 @@ Per-tab narrow layouts:
 Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle
 sizes (minified; Svelte runtime and kit included): Work 88KB, Ideas 90KB, Diagnostics 99KB, Files 67KB.
 
-**Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and three collapsible sections (Processes,
-Finished, Usage today), each with a count. The open or closed state of each section is remembered (`storageKey`,
+**Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,
+Finished), each with a count. The open or closed state of each section is remembered (`storageKey`,
 versioned `work.v2.*` so the defaults of this layout apply).
 
 - A summary line shows what is **working**, **waiting** and **free** across the agents that can take work (and `+N other`
-  for model calls without an agent, which opens a menu of them).
-- **Agents** (`AgentPool`, the block under the summary, no section title): every agent the user set up, always. One list
+  for model calls without an agent, which opens a menu of them). Under it, only when a budget is set (or something was
+  spent): **This month** against the budget (`usage.summary.budget`: a bar, today's spend, "spent" when it is).
+- **Agents** (`AgentPool`, the block under that, no section title): every agent the user set up, always. One list
   answers "who is working and what is free" — there is no separate Runs list. Each agent shows its name (a button that
   opens Settings → Agents on its dialog, `ctx.app.openSettings('agents', <id>)`), busy/free pips (a bar over 8), an
   on/off switch (`agents.setEnabled`), the model and a state chip. **Every instance is a row of the same height, busy or
   free**, and a running job keeps the row it first got (`placeSlots`): a job that ends leaves its own row as "free" in
   place and a new one takes the first free row, so nothing in the tab moves when work starts or ends. Above 4 instances the
   rows are one line each. A busy row is the run holding the instance (the `owners` of `agents.list` joined to the runs by
-  run id): chat title, activity, elapsed time; subagents hold their own instance, so they are rows too, marked `sub` with the
-  chat they work for; clicking opens the session, the hover button stops it (`agent.abort { sessionId }`). Under the rows
-  one line, always there, says `no one waiting` or `N waiting, longest 14m`; clicking it opens the waiting runs in a menu
-  (it floats, so the list never pushes the tab down). An agent that cannot take work (off, or its model is not loaded) has
-  a header and its reason only. Model calls without an agent show only in the summary chip.
-- **Finished** (collapsed by default; `<n> · <m> failed`): the runs that ended, newest first: result or error, time ago, **Show all**
-  past 6. Clicking a row opens the session.
-- **Processes:** running processes first, then **Recent**. Expanding a row fetches `processes.output` (tail
-  300 lines) and appends live `process.output` chunks. It falls back to polling every 2s when no chunk has
-  arrived for 3s, and fetches once more on `process.exited`. The kill button is a two-step `ConfirmButton`
-  that calls `processes.kill`.
-- **Usage today:** this month's spend on paid models against the budget (`usage.summary.budget`: a bar, today's spend,
-  "spent" when it is), then per provider input ↑, output ↓, cache read, plus a token budget bar when `budgetTokens` is set.
+  run id): chat title, then the activity — or, while the chat runs a foreground shell command, the command (`$ dotnet
+  build …`), so a command starting or ending never changes the tab's size — and the elapsed time; subagents hold their
+  own instance, so they are rows too, marked `sub` with the chat they work for; clicking opens the session, the hover
+  button stops it (`agent.abort { sessionId }`). Under the rows one line, always there, says `no one waiting` or `N
+  waiting, longest 14m`; clicking it opens who waits in a floating list (`WaitList`, `position: fixed`, so it never
+  pushes the tab down): each row opens its chat and has an **x** that cancels that run (`agent.abort`: a run still
+  waiting for an instance is cancelled before it starts). The last line of the agent is what it has done this period
+  (`usage.summary.models`: `412 calls · 1.2M↑ 86k↓`, a cost when it has one; the tooltip adds cache reads), with a bar
+  under it when its provider has a token budget today. An agent that cannot take work (off, or its model is not loaded)
+  has a header and its reason only. Model calls without an agent show only in the summary chip.
+- **Background** (collapsed by default; `<n> running`): the commands that outlive a tool call (dev servers, watchers) and any
+  foreground command with no row to show on. Expanding a row fetches `processes.output` (tail 300 lines) and appends live
+  `process.output` chunks. It falls back to polling every 2s when no chunk has arrived for 3s, and fetches once more on
+  `process.exited`. The kill button is a two-step `ConfirmButton` that calls `processes.kill`.
+- **Finished** (collapsed by default; `<n> runs · <m> failed · <k> commands`): the runs that ended (result or error, time ago)
+  and the commands that ended (the same rows as Background, output on demand), newest first, **Show all** past 6 each.
 - Updates: `agent.status`, `agents.changed` and `process.started/exited` are applied in place, and a debounced
   `work.snapshot` (250ms; 400ms after `usage.recorded` and `usage.changed`) reconciles them. A 30s timer refreshes the snapshot
   while the tab is visible; while it is hidden, events only mark it dirty and it refreshes on show.

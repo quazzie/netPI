@@ -6,10 +6,13 @@
    * says who waits (the names open in a menu, which floats instead of pushing the rest down). Model calls without an
    * agent (a summarizer on another model) show the same way but without the switch.
    */
-  import { Elapsed, Icon, IconButton, Menu, Pips } from '@netpi/kit';
-  import { shortModel, placeSlots } from './util.js';
+  import { Elapsed, IconButton, Pips, tokens, usd } from '@netpi/kit';
+  import { shortModel, shortCommand, placeSlots } from './util.js';
+  import WaitList from './WaitList.svelte';
 
-  let { pool, agentById, titles, ctx } = $props();
+  // cmds: the foreground commands running now, by chat (a busy row shows its chat's command); use: what this agent has done
+  // this period (usage.summary); budget: the provider's token budget today, when it has one
+  let { pool, agentById, titles, ctx, cmds = new Map(), use = null, budget = null, period = '' } = $props();
 
   const agent = $derived(!!pool.configured);
   const usable = $derived(pool.available !== false && !pool.disabled);
@@ -54,27 +57,30 @@
     return titles?.get(agentById.get(run.parentAgentId)?.sessionId) ?? '';
   };
   const doing = (o) => runOf(o)?.activity || runOf(o)?.status || o.label || 'running';
+  // a running shell command says more than "tool: bash": the row shows it where the agent is
+  const cmdsOf = (o) => cmds.get(o.sessionId ?? runOf(o)?.sessionId) ?? [];
+
+  const budgetFrac = $derived.by(() => {
+    if (!use || !budget?.budgetTokens) return null; // the provider's budget is shared: only an agent that used it shows it
+    const used = budget.budgetUsed ?? (budget.inputTokens ?? 0) + (budget.outputTokens ?? 0) + (budget.cacheWriteTokens ?? 0);
+    return Math.min(1, used / budget.budgetTokens);
+  });
+  const useText = $derived(
+    use ? `${use.calls.toLocaleString()} calls · ${tokens(use.input) || 0}↑ ${tokens(use.output) || 0}↓${use.cost > 0 ? ` · ${usd(use.cost)}` : ''}` : 'no calls yet',
+  );
+  const useTip = $derived(
+    use
+      ? `${period ? `Since ${period}` : 'This period'}: ${use.calls.toLocaleString()} calls, ${use.input.toLocaleString()} input, ${use.output.toLocaleString()} output and ${use.cacheRead.toLocaleString()} cache read tokens${use.cost > 0 ? `, ${usd(use.cost)}` : ''}${budget?.budgetTokens ? `\nToday on ${pool.provider}: ${tokens(budget.budgetUsed ?? 0)} of the ${tokens(budget.budgetTokens)} token budget` : ''}`
+      : 'No calls on this agent in the current period',
+  );
   const tip = (o) => {
     const run = runOf(o);
     const bits = [who(o), forWhom(o) && `for ${forWhom(o)}`, run?.task, run && `${shortModel(run.model)} · ${run.turns ?? 0} turns · ${run.toolCalls ?? 0} tools`];
     return bits.filter(Boolean).join('\n') + '\n(open session)';
   };
 
-  const oldestWait = $derived(waiters.reduce((min, w) => (!min || Date.parse(w.since) < Date.parse(min) ? w.since : min), null));
-  const waitItems = $derived(
-    waiters
-      .slice()
-      .sort((a, b) => (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0))
-      .map((w) => ({
-        label: titles?.get(w.sessionId ?? agentById.get(w.agentId)?.sessionId) ?? agentById.get(w.agentId)?.name ?? w.label ?? w.agentId,
-        hint: w.since ? waited(w.since) : '',
-        onclick: () => w.sessionId && ctx.app.openSession(w.sessionId),
-      })),
-  );
-  function waited(since) {
-    const s = Math.max(0, Math.floor((Date.now() - Date.parse(since)) / 1000));
-    return s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`;
-  }
+  // a waiting run goes by its chat title, like a busy one
+  const waiterLabel = (w) => titles?.get(w.sessionId ?? agentById.get(w.agentId)?.sessionId) ?? agentById.get(w.agentId)?.name ?? w.label ?? w.agentId;
 
   let toggling = $state(false);
   async function toggle(e) {
@@ -156,7 +162,11 @@
           </span>
           {#if !compact}
             <span class="l2 np-line np-baseline">
-              <span class="act np-grow">{doing(o)}</span>
+              {#if cmdsOf(o).length}
+                <span class="act cmd np-mono np-grow" title={cmdsOf(o)[0].command}>$ {shortCommand(cmdsOf(o)[0].command)}{#if cmdsOf(o).length > 1}<span class="np-dim"> +{cmdsOf(o).length - 1}</span>{/if}</span>
+              {:else}
+                <span class="act np-grow">{doing(o)}</span>
+              {/if}
               <Elapsed since={o.since} class="np-mono el" />
             </span>
           {/if}
@@ -179,18 +189,20 @@
   {#if usable}
     <div class="wait">
       {#if waiters.length}
-        <Menu items={waitItems} minWidth={240} placement="bottom-start">
-          {#snippet trigger({ toggle, open })}
-            <button class="waiting np-line" aria-expanded={open} title="Who is waiting for a free instance" onclick={toggle}>
-              <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
-              <span class="np-grow np-ellipsis">{waiters.length} waiting<span class="np-dim">, longest </span><Elapsed since={oldestWait} class="np-mono" /></span>
-            </button>
-          {/snippet}
-        </Menu>
+        <WaitList {waiters} label={waiterLabel} {ctx} />
       {:else}
         <span class="nobody np-line">no one waiting</span>
       {/if}
     </div>
+  {/if}
+
+  {#if agent}
+    <div class="use np-line np-mono" title={useTip}>
+      <span class="np-grow np-ellipsis">{useText}</span>
+    </div>
+    {#if budgetFrac != null}
+      <div class="np-progress usebar" style="--value: {budgetFrac}" data-tone={budgetFrac >= 1 ? 'err' : budgetFrac >= 0.8 ? 'warn' : undefined}></div>
+    {/if}
   {/if}
 </div>
 
@@ -381,29 +393,24 @@
     display: flex;
     width: 100%;
   }
-  .waiting {
-    gap: 4px;
-    width: 100%;
-    min-height: 22px;
-    padding: 0 4px;
-    border: 0;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--warn);
-    font: inherit;
-    font-size: var(--fs-xs);
-    text-align: left;
-    cursor: pointer;
-  }
-  .waiting:hover {
-    background: var(--bg-2);
-  }
-  .waiting :global(.np-mono) {
-    font-size: 11px;
-  }
   .nobody {
     padding: 0 4px;
     font-size: var(--fs-xs);
     color: var(--fg-dim);
+  }
+  .cmd {
+    font-size: 11px;
+    color: var(--fg-dim);
+  }
+  /* what the agent has done, one line, always there (the figures change, the height does not) */
+  .use {
+    margin: 4px 0 0 6px;
+    padding: 0 4px;
+    min-height: 16px;
+    font-size: 11px;
+    color: var(--fg-dim);
+  }
+  .usebar {
+    margin: 2px 4px 0 10px;
   }
 </style>

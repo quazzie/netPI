@@ -150,7 +150,11 @@ function getSession(id) {
 const AGENT_RESERVED = new Set(['maxDepth']);
 /** Mock prices ($ per Mtok) for the cloud models; local models are free. */
 const MOCK_PRICES = { 'anthropic/claude-sonnet-4-6': [3, 15] };
-const MOCK_SPEND = [{ lane: 'anthropic', provider: 'anthropic', model: 'claude-sonnet-4-6', calls: 12, inputTokens: 180000, outputTokens: 9000, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.675, unknownCost: false }];
+// per agent, as usage.summary.models: what each agent has done this period
+const MOCK_SPEND = [
+  { agent: 'anthropic', provider: 'anthropic', model: 'claude-sonnet-4-6', calls: 12, inputTokens: 180000, outputTokens: 9000, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.675, unknownCost: false },
+  { agent: 'qwen', provider: 'aiproxy', model: 'qwen3.8-27b', calls: 412, inputTokens: 1184000, outputTokens: 86400, cacheReadTokens: 912000, cacheWriteTokens: 0, costUsd: 0, unknownCost: false },
+];
 /** The agents in the settings (agents.<id>), each with its state; like the host: always listed, active while its model is loaded. */
 function agentsInSettings() {
   return Object.entries(store.settings.agents ?? {}).filter(([id, v]) => !AGENT_RESERVED.has(id) && v && typeof v === 'object' && typeof v.model === 'string');

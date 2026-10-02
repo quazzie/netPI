@@ -52,3 +52,12 @@ export function placeSlots(prev, owners, capacity) {
   while (out.length > capacity && out[out.length - 1] == null) out.pop();
   return out;
 }
+
+/** A shell command as one short line: the first line, without the `cd <dir> &&` an agent puts in front of it. */
+export function shortCommand(cmd) {
+  const first = String(cmd ?? '').split('\n').find((l) => l.trim()) ?? '';
+  return first
+    .replace(/^\s*(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*)+/, '')
+    .trim()
+    .replace(/\s+/g, ' ');
+}

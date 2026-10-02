@@ -93,7 +93,7 @@ try {
   await page.waitForTimeout(500);
   check('the Work tab has no Idea checks section', (await page.locator('.panel.right .np-section-label[title="Idea checks"]').count()) === 0);
   const labelTitles = await page.locator('.panel.right .np-section-label').evaluateAll((els) => els.map((e) => e.getAttribute('title')));
-  check('the Work tab has Processes, Finished and Usage today, and no Agents or Runs section', ['Processes', 'Finished', 'Usage today'].every((t) => labelTitles.includes(t)) && !labelTitles.includes('Agents') && !labelTitles.includes('Runs'), `labels: ${labelTitles.join(', ')}`);
+  check('the Work tab has Background and Finished, and no Agents, Runs, Processes or Usage today section (usage is on each agent)', ['Background', 'Finished'].every((t) => labelTitles.includes(t)) && ['Agents', 'Runs', 'Processes', 'Usage today'].every((t) => !labelTitles.includes(t)), `labels: ${labelTitles.join(', ')}`);
 
   // the agent the C# side seeded, listed by name in the Agents section
   const nameBtn = page.locator('.panel.right button.key', { hasText: AGENT });

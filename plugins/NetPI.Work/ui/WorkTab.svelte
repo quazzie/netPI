@@ -133,12 +133,46 @@
   );
   const failedCount = $derived(recent.filter((a) => a.status === 'failed').length);
 
-  const running = $derived((processes ?? []).filter((p) => p.status === 'running'));
-  const finished = $derived(
+  // Commands: a foreground one shows on the row of the chat that runs it (that is where the agent is, and a row does not
+  // change size when a command starts or ends); the Background section lists the ones that outlive a tool call, and any
+  // foreground one that has no row to show on. Finished ones go in the Finished section.
+  const fgRunning = $derived((processes ?? []).filter((p) => p.status === 'running' && !p.background));
+  const bgRunning = $derived((processes ?? []).filter((p) => p.status === 'running' && p.background));
+  const finishedProcs = $derived(
     (processes ?? [])
       .filter((p) => p.status !== 'running')
       .sort((a, b) => (Date.parse(b.endedAt ?? b.startedAt) || 0) - (Date.parse(a.endedAt ?? a.startedAt) || 0)),
   );
+  const cmdsBySession = $derived.by(() => {
+    const m = new Map();
+    for (const p of fgRunning) {
+      const list = m.get(p.sessionId);
+      if (list) list.push(p);
+      else m.set(p.sessionId, [p]);
+    }
+    for (const list of m.values()) list.sort((a, b) => (Date.parse(b.startedAt) || 0) - (Date.parse(a.startedAt) || 0));
+    return m;
+  });
+  const rowSessions = $derived(new Set((slots ?? []).flatMap((p) => (p.owners ?? []).map((o) => o.sessionId ?? agentById.get(o.agentId)?.sessionId))));
+  const listedProcs = $derived([...bgRunning, ...fgRunning.filter((p) => !rowSessions.has(p.sessionId))]);
+
+  // what each agent has done this period (usage.summary.models), and the token budget its provider has today
+  const usageByAgent = $derived.by(() => {
+    const m = new Map();
+    for (const u of usage?.models ?? []) {
+      if (!u.agent) continue;
+      const t = m.get(u.agent) ?? { calls: 0, input: 0, output: 0, cacheRead: 0, cost: 0 };
+      t.calls += u.calls ?? 0;
+      t.input += u.inputTokens ?? 0;
+      t.output += u.outputTokens ?? 0;
+      t.cacheRead += u.cacheReadTokens ?? 0;
+      t.cost += u.costUsd ?? 0;
+      m.set(u.agent, t);
+    }
+    return m;
+  });
+  const tokenBudgets = $derived(new Map((usage?.providers ?? []).filter((u) => u.budgetTokens).map((u) => [u.provider, u])));
+  const budget = $derived(usage?.budget && (usage.budget.monthlyUsd || usage.budget.dailyUsd || usage.budget.spentUsd > 0) ? usage.budget : null);
 
   // the agents the user set up (always listed) and model calls without an agent (a chip in the summary while they run)
   const setUp = $derived((slots ?? []).filter((p) => p.configured));
@@ -180,13 +214,34 @@
   {:else if loading && !agents && !slots}
     <Empty><span class="np-spinner"></span></Empty>
   {:else}
-    <!-- ---------------------------------------------------------------- agents: who works on what, and what is free -->
+    <!-- ---------------------------------------------------------------- the budget, when one is set -->
+    {#if budget}
+      {@const b = budget}
+      {@const frac = b.monthlyUsd ? Math.min(1, b.spentUsd / b.monthlyUsd) : null}
+      <div class="usage budget" title="Paid models since {b.periodStart}; the budget is set in Settings → Agents & budget">
+        <div class="uline np-line np-baseline">
+          <span class="uprov np-grow">This month</span>
+          <span class="np-mono" class:warn={b.warning && !b.exhausted} class:err={b.exhausted}
+            >{usd(b.spentUsd)}{#if b.monthlyUsd}<span class="np-dim">&nbsp;/ {usd(b.monthlyUsd)}</span>{/if}</span
+          >
+        </div>
+        <div class="umeta np-line">
+          <span class="np-grow">today {usd(b.todayUsd)}{#if b.dailyUsd}<span class="np-dim">&nbsp;/ {usd(b.dailyUsd)}</span>{/if}</span>
+          {#if b.exhausted}<span class="err">{b.onLimit === 'ask' ? 'spent · chats ask' : 'spent · paid calls stop'}</span>{/if}
+        </div>
+        {#if frac != null}
+          <div class="np-progress" style="--value: {frac}" data-tone={b.exhausted ? 'err' : b.warning ? 'warn' : undefined}></div>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- ---------------------------------------------------------------- agents: who works on what, what is free, what each has done -->
     <div class="agents">
       {#if !slots}
         <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
       {:else}
         {#each setUp as pool (pool.key)}
-          <AgentPool {pool} {agentById} {titles} {ctx} />
+          <AgentPool {pool} {agentById} {titles} {ctx} cmds={cmdsBySession} use={usageByAgent.get(pool.key) ?? null} budget={tokenBudgets.get(pool.provider) ?? null} period={usage?.budget?.periodStart ?? ''} />
         {:else}
           <div class="na">
             No agents set up: chats run on their model.
@@ -195,99 +250,51 @@
         {/each}
       {/if}
       {#if errors.runs}<div class="na">Runs not available — {errors.runs}</div>{/if}
+      {#if errors.usage}<div class="na">Usage not available — {errors.usage}</div>{/if}
     </div>
 
-    <!-- ---------------------------------------------------------------- processes (below the agents: it is what changes size) -->
-    <Section title="Processes" count={processes ? (running.length ? `${running.length} running` : processes.length || null) : null} collapsible storageKey="work.v2.processes">
+    <!-- ---------------------------------------------------------------- background commands (the ones that outlive a tool call) -->
+    <Section title="Background" count={processes ? (listedProcs.length ? `${listedProcs.length} running` : null) : null} collapsible open={false} storageKey="work.v2.background">
       {#if !processes}
         <div class="na">Processes not available{errors.processes ? ` — ${errors.processes}` : ''}</div>
-      {:else if !processes.length}
-        <div class="na">No shell processes yet</div>
+      {:else if !listedProcs.length}
+        <div class="na">Nothing runs in the background</div>
       {:else}
-        {#each running as p (p.id)}
+        {#each listedProcs as p (p.id)}
           <ProcessRow proc={p} {ctx} />
         {/each}
-        {#if finished.length}
-          {#if running.length}<div class="sub">Recent</div>{/if}
-          {#each showAllProcs ? finished : finished.slice(0, 6) as p (p.id)}
-            <ProcessRow proc={p} {ctx} />
+      {/if}
+    </Section>
+
+    <!-- ---------------------------------------------------------------- finished work: runs and commands -->
+    <Section title="Finished" count={recent.length || finishedProcs.length ? `${recent.length} runs${failedCount ? ` · ${failedCount} failed` : ''} · ${finishedProcs.length} commands` : null} collapsible open={false} storageKey="work.v2.finished">
+      {#if !agents && !processes}
+        <div class="na">Nothing available{errors.runs ? ` — ${errors.runs}` : ''}</div>
+      {:else if !recent.length && !finishedProcs.length}
+        <div class="na">Nothing has finished yet</div>
+      {:else}
+        {#if recent.length}
+          <div class="sub first">Runs</div>
+          {#each showAllRecent ? recent : recent.slice(0, 6) as a (a.id)}
+            <RecentAgent agent={a} {titles} {ctx} />
           {/each}
-          {#if finished.length > 6}
-            <button class="more" onclick={() => (showAllProcs = !showAllProcs)}>
-              {showAllProcs ? 'Show less' : `Show all ${finished.length}`}
+          {#if recent.length > 6}
+            <button class="more" onclick={() => (showAllRecent = !showAllRecent)}>
+              {showAllRecent ? 'Show less' : `Show all ${recent.length}`}
             </button>
           {/if}
         {/if}
-      {/if}
-    </Section>
-
-    <!-- ---------------------------------------------------------------- finished work -->
-    <Section title="Finished" count={recent.length ? `${recent.length}${failedCount ? ` · ${failedCount} failed` : ''}` : null} collapsible open={false} storageKey="work.v2.finished">
-      {#if !agents}
-        <div class="na">Runs not available{errors.runs ? ` — ${errors.runs}` : ''}</div>
-      {:else if !recent.length}
-        <div class="na">Nothing has finished yet</div>
-      {:else}
-        {#each showAllRecent ? recent : recent.slice(0, 6) as a (a.id)}
-          <RecentAgent agent={a} {titles} {ctx} />
-        {/each}
-        {#if recent.length > 6}
-          <button class="more" onclick={() => (showAllRecent = !showAllRecent)}>
-            {showAllRecent ? 'Show less' : `Show all ${recent.length}`}
-          </button>
-        {/if}
-      {/if}
-    </Section>
-
-    <!-- ---------------------------------------------------------------- usage -->
-    <Section title="Usage today" count={usage?.providers?.length || null} collapsible open={false} storageKey="work.v2.usage">
-      {#if usage?.budget && (usage.budget.monthlyUsd || usage.budget.dailyUsd || usage.budget.spentUsd > 0)}
-        {@const b = usage.budget}
-        {@const frac = b.monthlyUsd ? Math.min(1, b.spentUsd / b.monthlyUsd) : null}
-        <div class="usage budget" title="Paid models since {b.periodStart}; the budget is set in Settings → Agents & budget">
-          <div class="uline np-line np-baseline">
-            <span class="uprov np-grow">This month</span>
-            <span class="np-mono" class:warn={b.warning && !b.exhausted} class:err={b.exhausted}
-              >{usd(b.spentUsd)}{#if b.monthlyUsd}<span class="np-dim">&nbsp;/ {usd(b.monthlyUsd)}</span>{/if}</span
-            >
-          </div>
-          <div class="umeta np-line">
-            <span class="np-grow">today {usd(b.todayUsd)}{#if b.dailyUsd}<span class="np-dim">&nbsp;/ {usd(b.dailyUsd)}</span>{/if}</span>
-            {#if b.exhausted}<span class="err">{b.onLimit === 'ask' ? 'spent · chats ask' : 'spent · paid calls stop'}</span>{/if}
-          </div>
-          {#if frac != null}
-            <div class="np-progress" style="--value: {frac}" data-tone={b.exhausted ? 'err' : b.warning ? 'warn' : undefined}></div>
+        {#if finishedProcs.length}
+          <div class="sub" class:first={!recent.length}>Commands</div>
+          {#each showAllProcs ? finishedProcs : finishedProcs.slice(0, 6) as p (p.id)}
+            <ProcessRow proc={p} {ctx} />
+          {/each}
+          {#if finishedProcs.length > 6}
+            <button class="more" onclick={() => (showAllProcs = !showAllProcs)}>
+              {showAllProcs ? 'Show less' : `Show all ${finishedProcs.length}`}
+            </button>
           {/if}
-        </div>
-      {/if}
-      {#if !usage}
-        <div class="na">Usage not available{errors.usage ? ` — ${errors.usage}` : ''}</div>
-      {:else if !usage.providers?.length}
-        <div class="na">No model calls today</div>
-      {:else}
-        {#each usage.providers as u (u.provider)}
-          {@const used = u.budgetUsed ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheWriteTokens ?? 0)}
-          {@const frac = u.budgetTokens ? Math.min(1, used / u.budgetTokens) : null}
-          <div class="usage">
-            <div class="uline np-line np-baseline">
-              <span class="uprov np-grow">{u.provider}</span>
-              <span class="np-mono unums" title="{(u.inputTokens ?? 0).toLocaleString()} input · {(u.outputTokens ?? 0).toLocaleString()} output · {(u.cacheReadTokens ?? 0).toLocaleString()} cache read tokens">
-                {tokens(u.inputTokens) || 0}<span class="np-dim">↑</span>
-                {tokens(u.outputTokens) || 0}<span class="np-dim">↓</span>
-                {#if u.cacheReadTokens}<span class="np-dim cached">{tokens(u.cacheReadTokens)} cached</span>{/if}
-              </span>
-            </div>
-            <div class="umeta np-line">
-              <span class="np-grow">{u.calls ?? 0} calls</span>
-              {#if u.budgetTokens}
-                <span class:warn={frac >= 0.8 && frac < 1} class:err={frac >= 1} title="Daily budget (input + output + cache write)">{tokens(used)} / {tokens(u.budgetTokens)}</span>
-              {/if}
-            </div>
-            {#if u.budgetTokens}
-              <div class="np-progress" style="--value: {frac}" data-tone={frac >= 1 ? 'err' : frac >= 0.8 ? 'warn' : undefined}></div>
-            {/if}
-          </div>
-        {/each}
+        {/if}
       {/if}
     </Section>
   {/if}
@@ -343,6 +350,10 @@
     padding: 4px 12px 6px;
     border-bottom: 1px solid var(--border);
   }
+  .usage.budget {
+    padding: 6px 12px 8px;
+    border-bottom: 1px solid var(--border);
+  }
   .err {
     color: var(--err);
   }
@@ -361,6 +372,9 @@
   }
   .link:hover {
     text-decoration: underline;
+  }
+  .sub.first {
+    margin-top: 2px;
   }
   .sub {
     margin: 10px 0 2px;

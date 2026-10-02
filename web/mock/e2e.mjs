@@ -671,8 +671,14 @@ log('plugin tab: Work');
   check('work: one row per instance, busy or free', (await qwen.locator('.slot').count()) === 2 && (await qwen.locator('.slot.busy').count()) === 2);
   check('work: the summary counts working, waiting and free', /2 working/.test(await summary()) && /1 waiting/.test(await summary()) && /0 free/.test(await summary()), await summary());
   check('work: the waiting runs are one line under the agent', (await qwen.locator('.waiting').count()) === 1 && /1 waiting/.test(await qwen.locator('.waiting').innerText()));
+  const heightBefore = Math.round((await page.locator('.work').boundingBox()).height);
   await qwen.locator('.waiting').click();
-  check('work: the waiting line opens the names in a menu that floats', (await page.locator('.np-menu .np-menu-item', { hasText: 'reviewer: check backoff math' }).count()) === 1);
+  const waitRow = page.locator('.work .pop .row', { hasText: 'reviewer: check backoff math' });
+  check('work: the waiting line opens who waits in a floating list, and the tab does not grow', (await waitRow.count()) === 1 && Math.round((await page.locator('.work').boundingBox()).height) === heightBefore);
+  check('work: the gap before the longest wait is there', (await qwen.locator('.waiting .longest').evaluate((e) => parseFloat(getComputedStyle(e).marginLeft))) >= 4);
+  await waitRow.locator('button[aria-label^="Cancel this run"]').click(); // agent.abort: the mock has no run to stop, so it says so
+  await page.waitForTimeout(500);
+  check('work: an x on a waiting run asks the runtime to cancel it (agent.abort)', (await page.locator('.np-toast, .toast', { hasText: 'was not waiting any more' }).count()) >= 1, (await page.locator('.np-toasts, .toasts').allInnerTexts().catch(() => [])).join(' | '));
   await page.keyboard.press('Escape');
   check('work: the old Runs, Model capacity, Physical owners and Idea checks sections are gone', (await page.locator('.work .node').count()) === 0 && (await page.locator('.work .np-section-label[title="Runs"]').count()) === 0 && (await page.locator('.work [data-resource]').count()) === 0 && (await page.locator('.work [data-lease]').count()) === 0 && (await page.locator('.work .np-section-label[title="Model capacity"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Physical owners"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Idea checks"]').count()) === 0);
   const ownerNames = await qwen.locator('.slot.busy .name').allInnerTexts();
@@ -716,20 +722,31 @@ log('plugin tab: Work');
   await rpcCall('mock.workTake', { pool: surveyor.pool, owner: surveyor.promotedOwner, waiting: true });
   await page.waitForTimeout(500);
   check('work: the pools are back as they were', (await rowNames()).join() === 'surveyor,Index docs for semantic search' && /1 waiting/.test(await summary()), (await rowNames()).join() + ' | ' + (await summary()));
+  check('work: a foreground command shows on the row of the chat that runs it, not in a list that changes size', /\$ python scripts\/embed\.py docs\//.test(await qwen.locator('.slot.busy', { hasText: 'Index docs for semantic search' }).innerText()) && (await page.locator('.work .proc', { hasText: 'embed.py' }).count()) === 0);
+  check('work: what the agent has done is on the agent', /412 calls/.test(await qwen.locator('.use').innerText()) && /1\.2M/.test(await qwen.locator('.use').innerText()), await qwen.locator('.use').innerText());
+  check('work: there is no Usage today section any more', (await page.locator('.work .np-section-label[title="Usage today"]').count()) === 0);
+  const openSection = async (title) => {
+    const sec = page.locator('.work .np-section', { has: page.locator('.np-section-title', { hasText: title }) });
+    await sec.waitFor({ timeout: 5000 });
+    const toggle = sec.locator('.np-section-toggle');
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click(); // the sections are collapsed until opened
+    return sec;
+  };
+  await openSection('Background');
   await shot(page, '25-work-tab');
-  // expand the foreground process and watch its output grow (processes.output + live process.output)
-  const proc = page.locator('.work .proc', { hasText: 'embed.py' }).first();
+  // expand the background process and watch its output grow (processes.output + live process.output)
+  const proc = page.locator('.work .proc', { hasText: 'npm run dev' }).first();
   await proc.locator('.row').click();
   await page.waitForSelector('.work .proc .out', { timeout: 5000 }).catch(() => {});
   const len0 = (await proc.locator('.out').innerText().catch(() => '')).length;
-  await page.waitForTimeout(2200);
+  await page.waitForFunction((n) => (document.querySelector('.work .proc .out')?.innerText ?? '').length > n, len0, { timeout: 8000 }).catch(() => {});
   const len1 = (await proc.locator('.out').innerText().catch(() => '')).length;
   check('work: process output tail + live chunks', len0 > 0 && len1 > len0, `${len0} → ${len1} chars`);
   await right.screenshot({ path: path.join(OUT, '26-work-process.png') });
   await proc.locator('.row').click();
   // collapse a row while its first processes.output tail is still in flight: the abandoned open must
   // not leave a live subscription + 2 s poll timer behind (a closed row kept asking for tails)
-  const emb = ((await rpcCall('processes.list')) ?? []).find((p) => p.command?.includes('embed.py'));
+  const emb = ((await rpcCall('processes.list')) ?? []).find((p) => p.command?.includes('npm run dev'));
   const tailCalls = async () => ((await rpcCall('mock.procStats')) ?? {})[emb?.id]?.tailCalls ?? 0;
   await rpcCall('mock.procTailDelay', { ms: 1000 });
   try {
@@ -741,7 +758,7 @@ log('plugin tab: Work');
     const calls0 = await tailCalls();
     await page.waitForTimeout(3000); // a leaked 2 s poll would add another tail request in here
     const calls1 = await tailCalls();
-    check('work: a collapse mid-fetch leaves no tail polling behind', !!emb && calls0 - base >= 1 && calls1 === calls0, `${base} → ${calls0} → ${calls1} processes.output calls${emb ? '' : ' (embed.py not found)'}`);
+    check('work: a collapse mid-fetch leaves no tail polling behind', !!emb && calls0 - base >= 1 && calls1 === calls0, `${base} → ${calls0} → ${calls1} processes.output calls${emb ? '' : ' (npm run dev not found)'}`);
   } finally {
     await rpcCall('mock.procTailDelay', { ms: 0 });
   }
@@ -1650,9 +1667,6 @@ log('budget: chat cost, Work tab, a chat stopped by the budget');
 
   // the Work tab: this month against the budget set above ($50)
   await openStripTab('right', 'Work');
-  const usageSection = page.locator('.work .np-section', { has: page.locator('.np-section-title', { hasText: 'Usage today' }) });
-  await usageSection.waitFor({ timeout: 5000 });
-  if ((await usageSection.locator('.np-section-toggle').getAttribute('aria-expanded')) !== 'true') await usageSection.locator('.np-section-toggle').click(); // collapsed until opened
   await page.waitForSelector('.work .usage.budget', { timeout: 5000 }).catch(() => {});
   await page.waitForFunction(() => (document.querySelector('.work .usage.budget')?.innerText ?? '').replace(/ /g, ' ').includes('$0.68 / $50'), null, { timeout: 5000 }).catch(() => {});
   const wb = page.locator('.work .usage.budget');
