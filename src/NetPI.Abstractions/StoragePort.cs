@@ -240,7 +240,7 @@ public interface IDataCollection
     /// <summary>Insert only: false, and nothing written, when the key exists.</summary>
     bool Insert(string key, JsonObject doc);
     bool Delete(string key);
-    /// <summary>The matching documents in the query's order. Filters and order may name index fields only (anything else throws <see cref="ArgumentException"/>).</summary>
+    /// <summary>The matching documents in the query's order (key ascending, ordinal, when it names none). Filters and order may name index fields only (anything else throws <see cref="ArgumentException"/>).</summary>
     IReadOnlyList<DataDoc> Find(DataQuery? query = null);
     long Count(DataQuery? query = null);
     /// <summary>The sum of an Integer or Real index field over the matching documents (0 when none; documents with no value add nothing).</summary>

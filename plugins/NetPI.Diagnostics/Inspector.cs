@@ -34,6 +34,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             ["time"] = now.ToString("O"),
             ["app"] = await RpcAsync("app.info", null, ct).ConfigureAwait(false),
             ["process"] = ProcessFacts(),
+            ["storage"] = NetPiJson.ToNode(ctx.Services.Get<IStorageAccess>()?.Info),
             ["plugins"] = PluginFacts(),
             ["models"] = ModelFacts(),
             ["agents"] = AgentFacts(),
