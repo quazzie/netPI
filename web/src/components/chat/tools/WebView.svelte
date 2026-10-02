@@ -9,6 +9,10 @@
     return i >= 0 ? c.slice(i + 2) : c;
   });
   let all = $state(false);
+
+  // A search result or a fetched page is remote text: only an http(s) address goes in an href, so what a result says
+  // cannot turn a link into a file:// or javascript: one.
+  const webHref = (url) => (/^https?:\/\//i.test(String(url ?? '').trim()) ? url : undefined);
 </script>
 
 {#if !result}
@@ -17,7 +21,7 @@
   <div class="hits">
     {#each d.results ?? [] as r, i (i)}
       <div class="hit">
-        <a class="t" href={r.url} target="_blank" rel="noopener noreferrer">{r.title || r.url}</a>
+        <a class="t" href={webHref(r.url)} target="_blank" rel="noopener noreferrer">{r.title || r.url}</a>
         <div class="u np-mono">{r.url}{#if r.age}<span class="age">&nbsp;· {r.age}</span>{/if}</div>
         {#if r.snippet}<div class="s">{r.snippet}</div>{/if}
       </div>
@@ -39,7 +43,7 @@
 {:else}
   <div class="page">
     {#if d.title}<div class="title">{d.title}</div>{/if}
-    {#if d.finalUrl}<a class="u np-mono" href={d.finalUrl} target="_blank" rel="noopener noreferrer">{d.finalUrl}</a>{/if}
+    {#if d.finalUrl}<a class="u np-mono" href={webHref(d.finalUrl)} target="_blank" rel="noopener noreferrer">{d.finalUrl}</a>{/if}
     {#if result.images?.length}
       {#each result.images as img, i (i)}<img class="shot" src="data:{img.mediaType};base64,{img.data}" alt="" />{/each}
     {:else}

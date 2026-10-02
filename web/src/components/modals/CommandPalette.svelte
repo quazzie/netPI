@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
+  import { escLayer, inertBackground, trapTab } from './Modal.svelte';
   import { app, openSession, newSession, projectOf } from '../../lib/state/app.svelte.js';
   import { modals, prefs, savePrefs, togglePanel, composer, openProjects } from '../../lib/state/ui.svelte.js';
   import { tabs, openPanelTab } from '../../lib/state/tabs.svelte.js';
@@ -10,6 +11,7 @@
   let q = $state('');
   let index = $state(0);
   let inputEl = $state();
+  let el = $state();
 
   function entries() {
     const out = [];
@@ -100,15 +102,26 @@
 
   onMount(() => {
     inputEl.focus();
+    // the palette is a dialog of its own (its own overlay, not the Modal component): Esc and Tab belong to it, and
+    // what is behind it goes inert, so a shortcut pressed here cannot act on the app under the overlay.
+    const layer = escLayer();
+    const uninert = inertBackground(el);
     const k = (e) => {
+      if (!layer.isTop()) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
         onclose();
+      } else if (e.key === 'Tab') {
+        trapTab(e, el);
       }
     };
     window.addEventListener('keydown', k, true);
-    return () => window.removeEventListener('keydown', k, true);
+    return () => {
+      layer.remove();
+      uninert();
+      window.removeEventListener('keydown', k, true);
+    };
   });
 
   function scrollIntoView(node, active) {
@@ -117,8 +130,8 @@
   }
 </script>
 
-<div class="overlay" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="palette" role="dialog" aria-label="Command palette">
+<div class="overlay" bind:this={el} role="presentation" onpointerdown={(e) => e.target === e.currentTarget && onclose()}>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
     <div class="search">
       <Icon name="command" size={15} />
       <input bind:this={inputEl} bind:value={q} placeholder="Type a command, session or project…" onkeydown={onKey} spellcheck="false" />

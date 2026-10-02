@@ -184,7 +184,11 @@ three views: `list` (filter, new session, edit, remove), `new` (folder with Brow
 its skills and their problems from `skills.list { projectId }`, remove). The pickers' footer opens it (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
 row click, the edit button) and the command palette. A project created from a picker is attached to that session, or
 in select mode becomes the project new sessions start in. Dialogs can stack (a confirm or the folder picker over the
-projects dialog): `Modal` keeps a stack, and Esc closes only the top one.
+projects dialog): `Modal` keeps a stack, and Esc closes only the top one. While a dialog is open it owns the keyboard:
+Tab cycles inside it (`trapTab`) and the rest of the app is `inert` (`inertBackground`), so nothing behind the overlay
+can take a click or a key — the app's own Ctrl shortcuts (`App.svelte` `anyModalOpen()`) return early for as long as
+one is open. The command palette and the lightbox are layers of their own, outside `Modal`, and join the same Esc
+stack with `escLayer()`.
 Components that close themselves (`onclose()`) or `await` a dialog read their props
 into locals first, because after the parent clears the modal state or the row re-renders, the props are gone.
 
@@ -212,8 +216,9 @@ into locals first, because after the parent clears the modal state or the row re
    these views: `ssh` `run` the shell view (prompt `host$`), `read` the read view, `write`/`edit` the diff view. A call with an `action` is shown as `<tool>_<action>` when the UI has a view for that name (`viewName` in `web/src/lib/tools.js`, one rule and no list of tools: `ssh` + `run` as `ssh_run`, `process` + `output` as `process_output`), so a tool with actions reuses the views of the tools it merged and older chats with the old names look the same.
    - **File links.** `renderMarkdown` marks links whose target is a local path (relative, `C:\…`, `file://`) as
      `a.file-link[data-path]` with `href="#"`; one delegated click handler opens them with the operating system
-     through `files.open`, so a link never navigates the app. Web links keep `target="_blank"` (the desktop shell
-     opens them in the default browser).
+     through `files.open`, so a link never navigates the app. A path outside the session's workspace comes back
+     as `action: 'confirm'` and the user is asked before it opens. Web links keep `target="_blank"` (the desktop
+     shell opens them in the default browser).
    - **Plan strip.** `TodoStrip` (in the composer dock) shows the session's `meta.todo` while any item is open:
      `done/total` and the current item, expanding to the checklist.
    - **Idea chip.** `IdeaChip` (in the composer dock, after the plan strip) looks for the open idea the first message
@@ -297,7 +302,12 @@ into locals first, because after the parent clears the modal state or the row re
    `message.added` replaces the stream items with the message's own, which are laid out the same. `tool.output` chunks go to `LiveTool` buffers, which keep the last 200KB, flushed the
    same way.
 5. **Markdown** (`lib/markdown.js`). Parsing is marked (GFM) followed by DOMPurify, memoized by source text
-   with an LRU of 600 entries. Code blocks get a header with the language and a copy button; one delegated
+   with an LRU of 600 entries. A message is model-written text that may have been copied off a page, so raw HTML
+   is shown rather than rendered, an image becomes the link it points at (an `<img src>` would load — and
+   exfiltrate whatever the model read — on every re-render), and `style` is forbidden as an attribute as well as
+   a tag. The host's Content-Security-Policy (`default-src 'self'`, no remote images or frames) is the backstop;
+   the theme bootstrap that has to run before the first paint is a file (`public/theme.js`), not an inline
+   script. Code blocks get a header with the language and a copy button; one delegated
    click handler serves every copy button. The `use:highlight` action highlights a block when it comes within
    400px of the viewport (IntersectionObserver).
 6. **Scrolling.** While the list is pinned to the bottom, a `ResizeObserver` on both the content and the

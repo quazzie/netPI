@@ -43,7 +43,15 @@
 
   function anyModalOpen() {
     return (
-      modals.settings || modals.palette || modals.help || modals.folder || modals.confirm || modals.prompt || modals.lightbox
+      modals.settings ||
+      modals.palette ||
+      modals.help ||
+      modals.folder ||
+      modals.confirm ||
+      modals.prompt ||
+      modals.lightbox ||
+      modals.projectPicker ||
+      modals.projects
     );
   }
 
@@ -60,6 +68,9 @@
       }
       return;
     }
+    // A dialog owns the keyboard: Ctrl+T / W / 1-9 / K behind "Delete session?" would replace or close the very chat the
+    // dialog is about, and its keys must not reach the app until it is gone.
+    if (anyModalOpen()) return;
     if (!mod) return;
     const k = e.key.toLowerCase();
     if (k === 't' && !e.shiftKey && !e.altKey) {

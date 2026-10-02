@@ -1,16 +1,23 @@
 <script>
   import { onMount } from 'svelte';
+  import { escLayer } from './Modal.svelte';
   let { data, onclose } = $props();
   onMount(() => {
+    // Esc belongs to the top layer only: a lightbox opened over a dialog, or over the chat with a dialog behind it,
+    // must not close whatever is underneath.
+    const layer = escLayer();
     const k = (e) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && layer.isTop()) {
         e.preventDefault();
         e.stopPropagation();
         onclose();
       }
     };
     window.addEventListener('keydown', k, true);
-    return () => window.removeEventListener('keydown', k, true);
+    return () => {
+      layer.remove();
+      window.removeEventListener('keydown', k, true);
+    };
   });
 </script>
 
