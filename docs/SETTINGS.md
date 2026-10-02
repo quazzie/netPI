@@ -40,8 +40,8 @@ so the default applies again). The agents and the budget have their own page; th
 | `tools.disabled` | `[]` | tool names hidden from every chat (e.g. `["pwsh"]`); only in this file: the dialog switches whole plugins, and each chat switches its own tools (the composer's tools button, `meta.toolsOff`) |
 | `logging.level` | `Information` | host log level (`~/.netpi/logs/netpi-YYYYMMDD.log`) |
 
-Two of the keys above are read at **startup only**, so a change to them takes effect on the next start (the dialog
-says so): `storage.provider` and `database.sqlitePath`.
+Two of the keys above are read at **startup only**, so a change to them takes effect on the next start:
+`storage.provider` and `database.sqlitePath`.
 
 ## Storage
 
