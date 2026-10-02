@@ -332,6 +332,13 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         return recorder.Call(id)?.ToJson(detail: true) ?? throw new RpcException("not_found", $"Call {id} is no longer in the call log (it keeps the last {Recorder.CallCapacity}).");
     }
 
+    /// <summary>How many messages one page of the tool-parts scan reads. The tool log holds the newest calls, so their
+    /// results are in the newest messages; a page this size finds them without deserialising a whole history.</summary>
+    public const int ToolPartPage = 100;
+
+    /// <summary>How far back the tool-parts scan pages (10 pages of <see cref="ToolPartPage"/>).</summary>
+    public const int ToolPartMessages = 1_000;
+
     public JsonArray Tools(RpcRequest r)
     {
         var limit = Math.Clamp(r.Int("limit") ?? 50, 1, Recorder.ToolCapacity);
@@ -343,7 +350,13 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             .Where(t => (sid is null || t.SessionId == sid) && (name is null || string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))
                         && (!errors || (t.EndedAt is not null && t.IsError)) && (!running || t.EndedAt is null))
             .Take(limit).ToList();
-        var results = ToolParts(rows.Select(t => t.SessionId));
+        // Only the ids of the rows on screen, per session, and a session stops being read once its own are found: a
+        // fixed 300 messages per session deserialised every tool result and image in it to render 300-character
+        // previews, and a session's page was kept going while another session's ids were still wanted (idea-5oitnm).
+        var wanted = rows.GroupBy(t => t.SessionId, StringComparer.Ordinal)
+            .Select(g => (g.Key, (HashSet<string>)g.Select(t => t.CallId).ToHashSet(StringComparer.Ordinal)))
+            .ToList();
+        var results = ToolParts(wanted, maxMessages: 3 * ToolPartPage);
         return new JsonArray([.. rows.Select(t =>
         {
             var j = t.ToJson();
@@ -362,9 +375,11 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         var record = recorder.Tools().FirstOrDefault(t => t.CallId == callId);
         var sessionId = r.Str("sessionId") ?? record?.SessionId
                         ?? throw new RpcException("not_found", $"Tool call {callId} is no longer in the tool log (it keeps the last {Recorder.ToolCapacity}): pass its sessionId.");
-        var parts = ToolParts([sessionId], 2000);
+        // Paged backwards in small pages until the id turns up, rather than reading 2000 messages (every tool result and
+        // image in them deserialised) to find one call — and the scan for the list of calls has the same shape (idea-5oitnm).
+        var parts = ToolParts([(sessionId, new HashSet<string>([callId], StringComparer.Ordinal))], maxMessages: ToolPartMessages);
         if (!parts.TryGetValue(callId, out var found) && record is null)
-            throw new RpcException("not_found", $"No tool call {callId} in the last 2000 messages of {sessionId}.");
+            throw new RpcException("not_found", $"No tool call {callId} in the newest {ToolPartMessages} messages of {sessionId}.");
         var o = record?.ToJson() ?? new JsonObject { ["callId"] = callId, ["sessionId"] = sessionId };
         if (found.Call is { } call)
         {
@@ -383,16 +398,35 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         return o;
     }
 
-    /// <summary>The tool calls and results in the recent messages of these sessions, by call id.</summary>
-    private Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)> ToolParts(IEnumerable<string?> sessionIds, int messages = 300)
+    /// <summary>
+    /// The tool calls and results in the recent messages of these sessions, by call id. Only the ids in a session's
+    /// <c>Wanted</c> are collected, and a session stops being read as soon as they are all found or
+    /// <paramref name="maxMessages"/> rows have been read for it. The store deserialises every row it returns — full
+    /// tool-result text and images — so the scan is paged and bounded rather than "the last N messages of every
+    /// session" to render a 300-character preview (idea-5oitnm).
+    /// </summary>
+    private Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)> ToolParts(
+        IEnumerable<(string? SessionId, HashSet<string> Wanted)> sessions, int maxMessages = ToolPartMessages)
     {
         var map = new Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)>();
-        foreach (var sid in sessionIds.Where(x => x is not null).Distinct())
+        foreach (var session in sessions.Where(s => s.SessionId is not null).GroupBy(s => s.SessionId))
         {
-            foreach (var m in ctx.Sessions.GetMessages(sid!, null, messages))
+            var wanted = session.SelectMany(s => s.Wanted).ToHashSet(StringComparer.Ordinal);
+            var found = new HashSet<string>(StringComparer.Ordinal);
+            long? before = null;
+            for (var read = 0; read < maxMessages; read += ToolPartPage)
             {
-                foreach (var c in m.ToolCalls) map[c.Id] = (c, map.GetValueOrDefault(c.Id).Result);
-                foreach (var t in m.ToolResults) map[t.CallId] = (map.GetValueOrDefault(t.CallId).Call, t);
+                var page = ctx.Sessions.GetMessages(session.Key!, before, ToolPartPage);
+                if (page.Count == 0) break;
+                foreach (var m in page)
+                {
+                    // a call and its result are two rows: both are collected, so the pair must not be "taken" by the first
+                    foreach (var c in m.ToolCalls) if (wanted.Contains(c.Id)) { map[c.Id] = (c, map.GetValueOrDefault(c.Id).Result); found.Add(c.Id); }
+                    foreach (var t in m.ToolResults) if (wanted.Contains(t.CallId)) { map[t.CallId] = (map.GetValueOrDefault(t.CallId).Call, t); found.Add(t.CallId); }
+                }
+                if (found.Count == wanted.Count) break; // everything this session was asked for is in hand
+                if (page.Count < ToolPartPage) break;   // the session has no older messages
+                before = page[0].Seq;                   // page further back
             }
         }
         return map;
@@ -482,35 +516,66 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     [GeneratedRegex("(api[-_]?key|token|secret|password|passwd|authorization|bearer|cookie)", RegexOptions.IgnoreCase)]
     private static partial Regex SecretName();
 
-    internal static void Redact(JsonObject node, string path, HashSet<string> secretKeys)
+    /// <summary>A map whose members are credentials whatever they are called: a request header is named <c>X-Auth</c> or
+    /// <c>X-Gateway-Key</c>, and no name pattern can know that (idea-csuckr).</summary>
+    [GeneratedRegex("(headers?|credentials|secrets?|auth)$", RegexOptions.IgnoreCase)]
+    private static partial Regex SecretMap();
+
+    /// <summary>A setting whose value is a URL. A credential in its query string or its userinfo part is invisible to the
+    /// setting path and to the schema's secret keys, which is how a baseUrl with <c>?api_key=…</c> came through in full.</summary>
+    [GeneratedRegex("(url|uri|endpoint)$", RegexOptions.IgnoreCase)]
+    private static partial Regex UrlName();
+
+    internal static void Redact(JsonObject node, string path, HashSet<string> secretKeys) => Redact(node, path, secretKeys, false);
+
+    /// <summary><paramref name="inSecretMap"/>: everything below here is a credential, whatever it is named.</summary>
+    private static void Redact(JsonObject node, string path, HashSet<string> secretKeys, bool inSecretMap)
     {
         foreach (var (key, value) in node.ToList())
         {
             var p = path.Length == 0 ? key : path + "." + key;
+            var named = inSecretMap || secretKeys.Contains(p) || SecretName().IsMatch(key);
             switch (value)
             {
                 case JsonObject child:
-                    Redact(child, p, secretKeys);
+                    Redact(child, p, secretKeys, inSecretMap || SecretMap().IsMatch(key));
                     break;
                 case JsonArray array:
                     // An array of objects (providers.openaiCompatible[]): recurse into each element with an indexed path,
                     // or the objects inside it were never visited and their apiKey/headers leaked. A bare string element is
-                    // masked when the array's own name or path says it is a secret.
+                    // masked when the array's own name or path says it is a secret, or when the value carries one.
+                    var inElement = inSecretMap || SecretMap().IsMatch(key);
                     for (var i = 0; i < array.Count; i++)
                     {
                         var ep = $"{p}.{i}";
                         if (array[i] is JsonObject o)
-                            Redact(o, ep, secretKeys);
-                        else if (array[i] is JsonValue ev && ev.TryGetValue<string>(out var txt) && (secretKeys.Contains(ep) || SecretName().IsMatch(key)))
+                            Redact(o, ep, secretKeys, inElement);
+                        else if (array[i] is JsonValue ev && ev.TryGetValue<string>(out var txt) &&
+                                 (named || secretKeys.Contains(ep) || SecretValue(key, txt)))
                             array[i] = Mask(txt);
                     }
                     break;
                 default:
-                    if (value is JsonValue v && v.TryGetValue<string>(out var s) && (secretKeys.Contains(p) || SecretName().IsMatch(key)))
+                    if (value is JsonValue v && v.TryGetValue<string>(out var s) && (named || SecretValue(key, s)))
                         node[key] = Mask(s);
                     break;
             }
         }
+    }
+
+    /// <summary>A credential embedded in a value rather than named by it: the userinfo part of a URL, or a query string.
+    /// A url-ish setting is masked for any query at all (?limit=200 is not worth the risk of printing a key beside it);
+    /// anywhere else only a secret-shaped parameter name does. Any scheme counts — <c>socks5://host?token=…</c> carries a
+    /// credential like any other — but a value that is not a URI at all never does.</summary>
+    private static bool SecretValue(string key, string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
+        if (uri.UserInfo.Length > 0) return true;
+        if (uri.Query.Length == 0) return false;
+        if (UrlName().IsMatch(key)) return true;
+        return uri.Query.TrimStart('?').Split('&')
+            .Select(q => Uri.UnescapeDataString(q.Split('=', 2)[0]))
+            .Any(name => SecretName().IsMatch(name));
     }
 
     /// <summary>A secret value becomes a length marker; <c>env:</c> and <c>$</c> values are references, not secrets.</summary>

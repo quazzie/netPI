@@ -223,7 +223,8 @@ details: { pattern, path, count: number, truncated: boolean }
 
 - Directories come first, with a trailing `/`, then files with their size.
 - Ignored entries (gitignored files and built-in skipped directories) are hidden and counted, unless `all=true`.
-- At most 1000 entries are listed.
+- At most 1000 entries are listed — the directory is only materialised that far, and the rest is counted in a streamed pass
+  (the note and `entries` say the total, e.g. "Showing 1000 of 412,388 entries").
 
 ```ts
 details: { path, entries: number, dirs: number, files: number, hidden: number, truncated: boolean }
@@ -235,8 +236,8 @@ details: { path, entries: number, dirs: number, files: number, hidden: number, t
 |---|---|---|
 | `files.search` | `{ sessionId?, cwd?, query, limit? (50, max 500) }` | `{ path /* absolute */, rel, isDir }[]`: fuzzy file-name ranking for `@` mentions. Substring in the file name beats substring in the path, which beats a subsequence; shorter paths rank first. An empty query returns shallow entries. The file list per root is cached for 10s (up to 50k entries) |
 | `files.open` | `{ path, sessionId?, cwd? }` | `{ path /* absolute */, action: 'open'\|'edit'\|'reveal'\|'folder' }`: opens a path with the operating system, like a double click in the file manager: files in their default app, folders in the file manager, scripts (`.bat`, `.ps1`, `.js`, `.py`, `.sh`…) with the "edit" verb instead of running them, executables and installers only revealed. Accepts what chat links contain: relative paths (resolved like the tools' paths), Git Bash paths, `file://` URLs, a trailing `:line[:col]` or `#L12-L20`, URL escapes. Unknown paths give `not_found`. The chat's file links, the "Open file" button of `read`/`write`/`edit` rows and the file tree's "Open" call it |
-| `files.list` | `{ sessionId?, cwd?, dir? /* relative to root */ }` | `{ root, dir /* '' for root */, entries: { name, rel, isDir, size?, mtime? /* ISO */, ignored?: true }[] }`: one directory, directories first. `.git` is omitted, and ignored entries are included with `ignored: true` so the tree can dim them |
-| `files.git` | `{ sessionId?, cwd? }` | `{ repo /* absolute */, branch /* 'detached' without one */, ahead, behind, files: { path /* absolute */, rel /* to the root, may start with ../ */, status: 'modified'\|'added'\|'deleted'\|'renamed'\|'copied'\|'conflict'\|'new', added?, deleted? }[], added, deleted }`, or `null` outside a git repository or without git: the uncommitted changes of the repository that contains the root, staged or not, against `HEAD` (the empty tree before the first commit). `added`/`deleted` are lines; a binary file has none. New (untracked) files count all their lines (text files up to 1 MB, the first 500 files). Runs `git status --porcelain=v2` and `git diff --numstat` with `GIT_OPTIONAL_LOCKS=0`, so it never takes the index lock an agent's git command needs; each git call times out after 10s. For the Files tab's git line |
+| `files.list` | `{ sessionId?, cwd?, dir? /* relative to root */ }` | `{ root, dir /* '' for root */, entries: { name, rel, isDir, size?, mtime? /* ISO */, ignored?: true }[], truncated, total }`: one directory, directories first. `.git` is omitted, and ignored entries are included with `ignored: true` so the tree can dim them. One directory lists at most 10000 entries — a bigger one stops there: `truncated` is true and `total` counts what the directory actually holds |
+| `files.git` | `{ sessionId?, cwd? }` | `{ repo /* absolute */, branch /* 'detached' without one */, ahead, behind, files: { path /* absolute */, rel /* to the root, may start with ../ */, status: 'modified'\|'added'\|'deleted'\|'renamed'\|'copied'\|'conflict'\|'new', added?, deleted? }[], added, deleted, truncated, filesDropped }`, or `null` outside a git repository or without git: the uncommitted changes of the repository that contains the root, staged or not, against `HEAD` (the empty tree before the first commit). `added`/`deleted` are lines; a binary file has none. New (untracked) files count all their lines (text files up to 1 MB, the first 500 files). The status/numstat read keeps at most 2 MB, and `files` at most 5000 entries — `truncated` is true when a read stopped at its bound, `filesDropped` how many entries fell past the cap. Runs `git status --porcelain=v2` and `git diff --numstat` with `GIT_OPTIONAL_LOCKS=0`, so it never takes the index lock an agent's git command needs; each git call times out after 10s. For the Files tab's git line |
 
 The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.GetCwd`), then `Paths.DefaultWorkspace`.
 
@@ -268,8 +269,9 @@ The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.
   - If PowerShell is not installed, the tool is still registered and returns a clear error.
 - stdin is closed. Output is decoded as UTF-8, ANSI/VT escape codes are stripped, and live output goes to
   `ToolContext.Output` in batches of about 50ms.
-- Timeout: `timeout` is in seconds. Values over 3600 are read as milliseconds, and `timeout_ms` is also accepted. The default
-  comes from `shell.timeoutSeconds`, and the maximum is 1800. On timeout or cancellation the **whole process tree** is killed
+- Timeout: `timeout` is in **seconds**, clamped to the maximum (1800) — a value over the max is clamped, never read as
+  milliseconds, so a 7200 s request waits the max, not 8 s. `timeout_ms` is the entry point for milliseconds. The default
+  comes from `shell.timeoutSeconds`. On timeout or cancellation the **whole process tree** is killed
   (`Process.Kill(entireProcessTree: true)`). If an orphaned grandchild keeps the pipes open, the call still returns about
   0.75s after the shell exits.
 - Model-facing output:
@@ -571,6 +573,12 @@ details: { questions: { question, options: { label, description? }[], multiple }
 `plugins/NetPI.Tools.Agents` (`agent_spawn`, and `agent` with the actions `wait`, `send`, `list`, `result`, `cancel`) and
 `plugins/NetPI.Agents` (`agent_choices`, and the "# Agents" section of the system prompt for agents that can spawn).
 
+Reachability: `wait`, `send`, `result` and `cancel` resolve only within the caller's own tree — the caller, its
+subagents and their descendants (an id is validated by walking `ParentAgentId` up to the caller; names match a direct
+child before a deeper one). An id, session or name from another chat does not resolve, and the result says the scope
+rather than "unknown agent". `list all=true` keeps showing every agent in the process (visibility, documented), but
+acting on a foreign id is refused.
+
 ### `agent_choices` (read-only)
 
 The agents the user set up (`agents.<id>`) as an agent that delegates sees them: the budget line, then each agent (active
@@ -770,9 +778,11 @@ details: { host, command /* the script */, shell: 'ssh', cwd, exitCode: number|n
 ### `ssh_read` (read-only, summary arg `path`)
 
 `{ host, path, offset?, limit?, cwd? }`. Like `read`: LF-normalized text without line numbers, at most 2000 lines / 50KB
-per call, 1-based `offset` (negative counts from the end), the same "Use offset=N to continue" footer. Up to 8 MB of the
-file is fetched per call. A missing file, a directory or a binary file (NUL bytes) gives an error; binary files are for
-`ssh_copy`.
+per call, 1-based `offset` (negative counts from the end), the same "Use offset=N to continue" footer. A single line that
+outruns the 50KB budget is clamped to it and named (`[Line N is X long; showing its first Y. Use ssh_run (e.g. cut -c,
+fold) to inspect the rest.]`, like the local `read`), so one line of a minified bundle is not handed over whole. Up to
+8 MB of the file is fetched per call. A missing file, a directory or a binary file (NUL bytes) gives an error; binary
+files are for `ssh_copy`.
 
 ```ts
 details: { host, path /* "host:path" */, startLine, endLine, totalLines, truncated, bytes /* file size */ }
@@ -780,9 +790,13 @@ details: { host, path /* "host:path" */, startLine, endLine, totalLines, truncat
 
 ### `ssh_write` (summary arg `path`)
 
-`{ host, path, content, append?, cwd? }`. The content goes to `cat >file` (or `>>` with `append`) as UTF-8 bytes, exactly
-as given (no line-ending conversion). Parent folders are created; an existing file is overwritten in place, so it keeps
-its owner and permissions. The text says Created, Wrote or Appended.
+`{ host, path, content, append?, cwd? }`. The content (UTF-8, exactly as given, no line-ending conversion) is at most 16 MB;
+over the cap the call is refused with what to do instead (`ssh_run` for host-side writes, `ssh_copy` to upload a local
+file). A replace streams to a temporary file in the target's own directory and is put in place with an atomic rename
+(`mv -f`), like `ssh_edit`, so an interrupted or timed-out transfer leaves the old content exactly as it was — the target
+is never truncated. An existing file keeps its owner and permissions; a new one gets mode 644. With `append` the content
+streams straight in (`cat >>`), which cannot shorten the file. Parent folders are created; the text says Created, Wrote or
+Appended.
 
 ```ts
 details: { host, path /* "host:path" */, created, append, bytes, lines }
@@ -791,8 +805,10 @@ details: { host, path /* "host:path" */, created, append, bytes, lines }
 ### `ssh_edit` (summary arg `path`)
 
 `{ host, path, edits: { oldText, newText, replace_all? }[], cwd? }` (a single `oldText`/`newText` pair is accepted too).
-Like `edit`: each `oldText` must match exactly once unless `replace_all`, overlapping edits are refused, matching
-ignores CRLF vs LF and the file keeps its line endings. The file is read (with its content hash), edited locally and
+Like `edit`: the edits are applied **in order to the evolving text**, so a second `oldText` may match what a first `newText`
+wrote (rename the declaration, then its first use); each `oldText` must match exactly once unless `replace_all` (in the text
+the earlier edits left), matching ignores CRLF vs LF and the file keeps its line endings. A failed edit applies nothing.
+The file is read (with its content hash), edited locally and
 written back only if the hash is unchanged — a same-size edit inside one second, which size plus mtime could not see,
 is refused; otherwise nothing is written and the agent is told to read it again. The new content is written to a
 temporary file in the same directory and put in place with an atomic rename (mode preserved), so an interrupted

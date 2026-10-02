@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -18,7 +17,8 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
 {
     public const string Kind = "tools";
 
-    private readonly ConcurrentDictionary<string, object> _gates = new(StringComparer.Ordinal);
+    /// <summary>One gate per session; the bus takes it away with the session (a deleted session has no calls left to serialise).</summary>
+    private readonly SessionState<object> _gates = new(ctx.Events);
     private readonly ToolChanges _changes = new(ctx);
 
     /// <summary>After compaction (-100), the project (500) and instruction (510) notices.</summary>
@@ -40,7 +40,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         }
         var known = Known(baseline, turn.Messages);
         bool announced;
-        lock (_gates.GetOrAdd(sessionId, _ => new object()))
+        lock (_gates.GetOrAdd(sessionId, static _ => new object()))
             announced = DefinitionNotices.Announce(ctx, store, _changes, turn, changed);
         announced |= !known.SetEquals(names) && Announce(sessionId, turn.Tools, baseline, changed);
         if (announced) await turn.ReloadMessagesAsync().ConfigureAwait(false);
@@ -49,7 +49,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
     /// <summary>Appends a notice when the tools differ from what the context says, under a per-session lock.</summary>
     internal bool Announce(string sessionId, IReadOnlyList<ToolDefinition> tools, ToolBaseline baseline, ToolChanges.MetaChange? changed = null)
     {
-        lock (_gates.GetOrAdd(sessionId, _ => new object()))
+        lock (_gates.GetOrAdd(sessionId, static _ => new object()))
         {
             var context = ctx.Sessions.GetContextMessages(sessionId);
             var known = Known(baseline, context);
@@ -81,7 +81,8 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
     internal void OnSessionChanged(BusEvent e) => _changes.OnSessionChanged(e);
     internal void OnRemoteToolsChanged(BusEvent e) => _changes.OnRemoteToolsChanged(e);
 
-    /// <summary>A deleted session: nothing left to remember its tools for.</summary>
+    /// <summary>A deleted session: nothing left to remember its tools for. (The gate map releases itself: it owns its
+    /// own subscription, so no caller has to remember to call this for it.)</summary>
     internal void Forget(string sessionId) => _changes.Forget(sessionId);
 
     /// <summary>

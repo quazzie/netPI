@@ -117,11 +117,22 @@
     else if (v && gitDirty) loadGit();
   }
 
-  onMount(async () => {
-    scopeKey = await key();
-    loadDir('');
-    loadGit();
-    ctx.on('tool.end', () => gitSoon());
+  // Set when this instance is torn down. onMount has to stay synchronous for Svelte to register the teardown below
+  // (an async callback returns a Promise, so the returned function would never run: every remount — each plugin load
+  // bumps UiVersion and PluginTabHost re-mounts on it — leaked a window focus listener that ran a real files.git RPC on
+  // the next focus and kept this component graph alive). The async part therefore runs inside the mount and every step
+  // after an await checks this flag.
+  let disposed = false;
+
+  onMount(() => {
+    (async () => {
+      const k = await key();
+      if (disposed) return;
+      scopeKey = k;
+      loadDir('');
+      loadGit();
+    })();
+    const offToolEnd = ctx.on('tool.end', () => gitSoon());
     const onFocus = () => gitSoon(300);
     window.addEventListener('focus', onFocus);
     const off = ctx.app.onChange(() => {
@@ -129,7 +140,7 @@
       // in-flight answers of the old workspace are compared against.
       const switching = (async () => {
         const next = await key();
-        if (next === scopeKey) return;
+        if (disposed || next === scopeKey) return;
         scopeKey = next; // new generation: the in-flight answers of the old workspace are stale
         root = '';
         entries = new Map();
@@ -147,6 +158,8 @@
       void switching;
     });
     return () => {
+      disposed = true;
+      offToolEnd?.();
       off?.();
       window.removeEventListener('focus', onFocus);
       clearTimeout(gitTimer);

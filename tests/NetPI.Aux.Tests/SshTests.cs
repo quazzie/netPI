@@ -86,6 +86,9 @@ public static class SshTests
             var dir = T.TempDir("sshcfg");
             Directory.CreateDirectory(Path.Combine(dir, "conf.d"));
             File.WriteAllText(Path.Combine(dir, "conf.d", "a.conf"), "Host extra\n  HostName 10.0.0.9\n");
+            // a plain directory (no glob): ssh_config(5) includes the files inside it, not the directory
+            Directory.CreateDirectory(Path.Combine(dir, "plain"));
+            File.WriteAllText(Path.Combine(dir, "plain", "b.conf"), "Host fromdir\n  HostName 10.0.0.8\n");
             File.WriteAllText(Path.Combine(dir, "config"), """
                 # a comment
                 Host server
@@ -100,13 +103,15 @@ public static class SshTests
                 Match host nuc
                     User other
                 Include conf.d/*.conf
+                Include plain
                 host "quoted name"
                 """);
             var hosts = SshConfig.Read(Path.Combine(dir, "config"));
-            Check.Equal("server,nuc,extra,quoted name", string.Join(",", hosts.Select(h => h.Alias)));
+            Check.Equal("server,nuc,extra,fromdir,quoted name", string.Join(",", hosts.Select(h => h.Alias)));
             Check.Equal(new SshHost("server", "192.168.1.2", "quazzie", null), hosts[0]);
             Check.Equal(new SshHost("nuc", "192.168.1.3", null, 2222), hosts[1]);
             Check.Equal("10.0.0.9", hosts[2].HostName);
+            Check.Equal("10.0.0.8", hosts[3].HostName, "a host from a plain-directory Include is not dropped");
             Check.Equal(0, SshConfig.Read(Path.Combine(dir, "missing")).Count);
         });
 
@@ -224,7 +229,12 @@ public static class SshTests
             Check.Equal("Created nuc:/tmp/a b/it's.txt (" + Encoding.UTF8.GetByteCount(content) + " bytes, 2 lines).", created.Content);
             var call = env.Fake.Calls[^1];
             Check.Equal(content, Utf8(call.Stdin));
-            Check.Contains(Remote(call.Args), "p='/tmp/a b/it'\\''s.txt'; if [ -e \"$p\" ]; then echo existed; fi; mkdir -p -- \"$(dirname -- \"$p\")\" && cat >\"$p\"");
+            Check.Contains(Remote(call.Args), "p='/tmp/a b/it'\\''s.txt'; if [ -e \"$p\" ]; then echo existed; fi; mkdir -p -- \"$(dirname -- \"$p\")\" || exit 4; ");
+            Check.Contains(Remote(call.Args), "t=$(mktemp -- \"${p}.netpi.XXXXXX\") || exit 5");
+            Check.Contains(Remote(call.Args), "cat >\"$t\"");
+            Check.Contains(Remote(call.Args), "chmod -- \"$(stat -c '%a' -- \"$p\")\" \"$t\"");
+            Check.Contains(Remote(call.Args), "mv -f -- \"$t\" \"$p\"");
+            Check.NotContains(Remote(call.Args), "cat >\"$p\"", "the target is never the stream's destination");
             env.Fake.Reply = (_, _) => new SshExec(0, "existed\n", "", false, false);
             Check.True((await env.Run("ssh_write", new { host = "nuc", path = "x.txt", content = "a" })).Content.StartsWith("Wrote nuc:x.txt"));
             await env.Run("ssh_write", new { host = "nuc", path = "log", content = "more\n", append = true });
@@ -287,6 +297,26 @@ public static class SshTests
             Check.Contains(slow.Content, "ssh_run");
             env.Fake.Reply = (_, _) => new SshExec(-1, "", "", false, true);
             Check.Contains((await env.Run("ssh_read", new { host = "nuc", path = "/var/log/huge.log" })).Content, "aborted");
+        });
+
+        r.Add("ssh_read: a single line that outruns the page budget is clamped and named, not handed over whole", async () =>
+        {
+            var env = new Env();
+            var bigLine = new string('x', 60_000); // ~60 KB: more than the 50 KB page
+            var body = bigLine + "\nafter\n";
+            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=" + body.Length + " 1700000000\n" + body, "", false, false);
+            var res = await env.Run("ssh_read", new { host = "nuc", path = "/etc/one-line" });
+            Check.False(res.IsError, res.Content);
+            Check.True(res.Content.StartsWith(bigLine[..SshReadTool.MaxChars]), "the line is cut to the budget");
+            Check.Equal(SshReadTool.MaxChars, res.Content.IndexOf('\n'), "nothing after the clamped line except the notes");
+            Check.Contains(res.Content, $"[Line 1 is {SshToolBase.Size(60_000)} long; showing its first {SshToolBase.Size(SshReadTool.MaxChars)}");
+            Check.Contains(res.Content, "cut -c");
+            Check.NotContains(res.Content, "after", "the rest of the file is not in this page");
+            Check.True(D(res).GetProperty("truncated").GetBoolean(), "a clamped page is truncated");
+            // the page after the huge line is reachable as usual
+            var next = await env.Run("ssh_read", new { host = "nuc", path = "/etc/one-line", offset = 2 });
+            Check.Equal("after", next.Content);
+            Check.False(D(next).GetProperty("truncated").GetBoolean());
         });
 
         r.Add("ssh_edit: exact replacements keep CRLF, write only when the file is unchanged, diff for the UI", async () =>
@@ -589,8 +619,94 @@ public static class SshTests
             Check.Equal(2, all.Replacements);
             try { TextEdits.Apply("x y x", [new TextEdit("x", "z", false)], "f"); throw new AssertException("expected an error"); }
             catch (EditException ex) { Check.Contains(ex.Message, "matches 2 times"); }
+            // Edits apply to the evolving text, like the local edit: "bc" no longer exists once "ab" became "1"
             try { TextEdits.Apply("abc", [new TextEdit("ab", "1", false), new TextEdit("bc", "2", false)], "f"); throw new AssertException("expected an error"); }
-            catch (EditException ex) { Check.Contains(ex.Message, "overlap"); }
+            catch (EditException ex) { Check.Contains(ex.Message, "oldText not found"); }
+            // ...and a second edit may match what a first one wrote (rename the declaration, then its first use)
+            var seq = TextEdits.Apply("alpha beta\n", [new TextEdit("alpha beta", "alpha gamma", false), new TextEdit("alpha gamma", "omega gamma", false)], "f");
+            Check.Equal("omega gamma\n", seq.Text);
+            Check.Equal("--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-alpha beta\n+omega gamma\n", seq.Diff);
+        });
+
+        r.Add("ssh: ssh_edit and edit agree on one edit list (each edit sees what the earlier ones wrote)", async () =>
+        {
+            var dir = T.TempDir("parity");
+            var file = Path.Combine(dir, "f.txt");
+            var original = "one\ntwo\nthree\n";
+            File.WriteAllText(file, original);
+            var list = new[] { new { oldText = "one\ntwo", newText = "ONE two" }, new { oldText = "ONE two", newText = "TWO" } };
+            var remote = TextEdits.Apply(original, [new TextEdit("one\ntwo", "ONE two", false), new TextEdit("ONE two", "TWO", false)], file);
+            Check.Equal("TWO\nthree\n", remote.Text, "the second edit's oldText only exists after the first edit");
+            var local = await new NetPI.Tools.Files.EditTool().ExecuteAsync(
+                new ToolContext { SessionId = "s", AgentId = "a", CallId = "c", Cwd = dir, Services = new FakeServices(), Events = new FakeBus() },
+                T.Args(new { path = file, edits = list }), CancellationToken.None);
+            Check.False(local.IsError, local.Content);
+            Check.Equal(remote.Text, File.ReadAllText(file), "the local edit tool lands on the same text");
+
+            // and what neither tool accepts, both refuse without writing: a failed edit applies nothing
+            var failed = await new NetPI.Tools.Files.EditTool().ExecuteAsync(
+                new ToolContext { SessionId = "s", AgentId = "a", CallId = "c", Cwd = dir, Services = new FakeServices(), Events = new FakeBus() },
+                T.Args(new { path = file, edits = new[] { new { oldText = "missing", newText = "x" }, new { oldText = "TWO", newText = "3" } } }), CancellationToken.None);
+            Check.True(failed.IsError);
+            Check.Contains(failed.Content, "Edit 1 of 2 failed");
+            var ex = Check.Throws<EditException>(() => TextEdits.Apply("TWO\nthree\n", [new TextEdit("missing", "x", false), new TextEdit("TWO", "3", false)], file));
+            Check.Contains(ex.Message, "oldText not found");
+            Check.Equal("TWO\nthree\n", File.ReadAllText(file), "the file is untouched by the failed list");
+        });
+
+        r.Add("ssh_write: the remote write script, run in a local bash (a new file gets 644, an existing one keeps its mode, an interrupted stream leaves the original intact)", async () =>
+        {
+            var bash = FindBash();
+            if (bash is null)
+            {
+                Console.WriteLine("    (no local bash found; the remote script is not run)");
+                return;
+            }
+            var env = new Env();
+            env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
+            var dir = T.TempDir("sshwrite");
+            var posix = PosixPath(dir);
+            var chmodWorks = ChmodWorks(bash);
+            async Task<(int Exit, string Out, string Err)> WriteScript(object contentArg, string? prelude = null)
+            {
+                await env.Run("ssh_write", new { host = "nuc", path = $"{posix}/doc.txt", content = contentArg });
+                return RunRemote(bash, Remote(env.Fake.Calls[^1].Args), env.Fake.Calls[^1].Stdin!, prelude);
+            }
+
+            // a new file: the temp is renamed into place, mode 644, nothing left behind
+            var (nex, nout, nerr) = await WriteScript("aaaa\nbbbb\n");
+            Check.Equal(0, nex, "a write to a new file succeeds: " + nerr);
+            Check.False(nout.Contains("existed"), "the target did not exist yet");
+            Check.Equal("aaaa\nbbbb\n", File.ReadAllText(Path.Combine(dir, "doc.txt")));
+            if (chmodWorks) Check.Equal("644", RunRemote(bash, $"stat -c '%a' '{posix}/doc.txt'", null).Out.Trim(), "a new file is world-readable");
+            Check.Equal(0, Directory.GetFiles(dir).Count(f => Path.GetFileName(f) != "doc.txt"), "no temp file left behind");
+
+            // an existing file keeps its mode and content is replaced atomically
+            if (chmodWorks) RunRemote(bash, $"chmod 0640 '{posix}/doc.txt'", null);
+            var (rex, rout, rerr) = await WriteScript("cccc\ndddd\n");
+            Check.Equal(0, rex, "a write over an existing file succeeds: " + rerr);
+            Check.Contains(rout, "existed", "the existing file was detected before the stream");
+            Check.Equal("cccc\ndddd\n", File.ReadAllText(Path.Combine(dir, "doc.txt")));
+            if (chmodWorks) Check.Equal("640", RunRemote(bash, $"stat -c '%a' '{posix}/doc.txt'", null).Out.Trim(), "the existing mode is preserved");
+
+            // an interrupted stream: the temp dies with the failure, the original stays exactly as it was
+            File.WriteAllText(Path.Combine(dir, "doc.txt"), "original\n");
+            const string prelude = "fb=$(mktemp -d); printf '#!/bin/sh\\necho \"fake cat: simulated write failure\" >&2\\nexit 1\\n' > \"$fb/cat\"; chmod +x \"$fb/cat\"; export PATH=\"$fb:$PATH\"";
+            var (iex, _, ierr) = await WriteScript("new\n", prelude);
+            Check.True(iex != 0, "a failed write exits non-zero (exit " + iex + ")");
+            Check.Contains(ierr, "simulated write failure");
+            Check.Contains(ierr, "writing the temporary copy failed");
+            Check.Equal("original\n", File.ReadAllText(Path.Combine(dir, "doc.txt")), "the original is intact, not truncated");
+            Check.Equal(0, Directory.GetFiles(dir).Where(f => Path.GetFileName(f) != "doc.txt").Count(), "the temp was removed");
+
+            // over the cap: refused without a single ssh call, with the alternatives
+            var before = env.Fake.Calls.Count;
+            var big = await env.Run("ssh_write", new { host = "nuc", path = "x", content = new string('a', SshToolBase.MaxWriteBytes + 1) });
+            Check.True(big.IsError);
+            Check.Contains(big.Content, $"ssh_write streams at most {SshToolBase.Size(SshToolBase.MaxWriteBytes)}");
+            Check.Contains(big.Content, "ssh_run");
+            Check.Contains(big.Content, "ssh_copy");
+            Check.Equal(before, env.Fake.Calls.Count, "nothing was sent over the wire");
         });
 
         r.Add("ssh_copy: scp runs in the local folder with a relative name (no drive-letter colon)", async () =>
@@ -676,9 +792,9 @@ public static class SshTests
     }
 
     /// <summary>Runs a generated remote script in a local bash the way the ssh login shell would: -c script, stdin in, exit out.</summary>
-    private static (int Exit, string Out, string Err) RunRemote(string bash, string script, byte[]? stdin, string prelude = "")
+    private static (int Exit, string Out, string Err) RunRemote(string bash, string script, byte[]? stdin, string? prelude = null)
     {
-        var body = (prelude.Length > 0 ? prelude + "; " : "") + script;
+        var body = (prelude is { Length: > 0 } pre ? pre + "; " : "") + script;
         var psi = new ProcessStartInfo(bash)
         {
             UseShellExecute = false, CreateNoWindow = true,

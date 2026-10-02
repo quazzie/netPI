@@ -30,7 +30,7 @@
     { "path": "plugins/NetPI.Todo/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.ToolRepair/", "tags": ["repair", "plugins"] },
     { "path": "plugins/NetPI.Tools.Agents/", "tags": ["subagents", "ask"] },
-    { "path": "plugins/NetPI.Tools.Files/", "tags": ["tools"] },
+    { "path": "plugins/NetPI.Tools.Files/", "tags": ["tools", "ui"] },
     { "path": "plugins/NetPI.Tools.Media/", "tags": ["provider"] },
     { "path": "plugins/NetPI.Tools.Shell/", "tags": ["tools", "control"] },
     { "path": "plugins/NetPI.Tools.Ssh/", "tags": ["smoke"] },

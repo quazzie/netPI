@@ -6,6 +6,10 @@ namespace NetPI.Tools.Files;
 public sealed class FileIndex
 {
     public const int MaxIndexedEntries = 50_000;
+    /// <summary>One directory of the file tree lists at most this many entries; a bigger one is capped and reported
+    /// (<see cref="ListResult.Truncated"/> / <see cref="ListResult.Total"/>), so one directory can never grow the payload unbounded.
+    /// </summary>
+    public static int MaxListedEntries = 10_000;
     public static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(10);
 
     /// <summary>Distinct roots tracked at once: the cache and the per-root gates share the bound.</summary>
@@ -66,7 +70,7 @@ public sealed class FileIndex
 
     public sealed record ListEntry(string Name, string Rel, bool IsDir, long? Size, DateTimeOffset? Mtime, bool? Ignored);
 
-    public sealed record ListResult(string Root, string Dir, List<ListEntry> Entries);
+    public sealed record ListResult(string Root, string Dir, List<ListEntry> Entries, bool Truncated, int Total);
 
     public async Task<List<SearchHit>> SearchAsync(string root, string? query, int limit, CancellationToken ct = default)
     {
@@ -88,7 +92,8 @@ public sealed class FileIndex
         root = Path.GetFullPath(root);
         var target = string.IsNullOrWhiteSpace(dir) ? root : Path.GetFullPath(Path.IsPathRooted(dir) ? dir : Path.Combine(root, dir));
         if (!Directory.Exists(target)) throw new RpcException("not_found", $"Directory not found: {target}");
-        var entries = FileWalker.ListDirectory(target, respectIgnore: true, relativeTo: root)
+        var (entries, visible, ignored) = FileWalker.ListDirectory(target, respectIgnore: true, relativeTo: root, maxEntries: MaxListedEntries);
+        var list = entries
             .Where(e => !(e.IsDir && e.Name == ".git"))
             .OrderBy(e => e.IsDir ? 0 : 1)
             .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
@@ -96,7 +101,7 @@ public sealed class FileIndex
                 e.MTimeUtc == default ? null : new DateTimeOffset(e.MTimeUtc, TimeSpan.Zero), e.Ignored ? true : null))
             .ToList();
         var relDir = Rel(root, target);
-        return new ListResult(root, relDir == "." ? "" : relDir, entries);
+        return new ListResult(root, relDir == "." ? "" : relDir, list, visible + ignored > entries.Count, visible + ignored);
     }
 
     private static string Rel(string root, string full)

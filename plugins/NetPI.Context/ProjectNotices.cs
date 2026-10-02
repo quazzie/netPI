@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Context;
@@ -15,7 +14,8 @@ internal sealed class ProjectNotices(IPluginContext ctx) : IAgentHook
 {
     public const string Kind = "project";
 
-    private readonly ConcurrentDictionary<string, object> _gates = new(StringComparer.Ordinal);
+    /// <summary>One gate per session, released with the session (a deleted session is announced to no one).</summary>
+    private readonly SessionState<object> _gates = new(ctx.Events);
 
     /// <summary>After compaction (-100), which may compact the last notice away.</summary>
     public int Order => 500;
@@ -37,7 +37,7 @@ internal sealed class ProjectNotices(IPluginContext ctx) : IAgentHook
     /// <summary>Re-reads the session under a per-session lock (the event and the hook can race) and appends a notice if needed.</summary>
     internal bool Announce(string sessionId)
     {
-        lock (_gates.GetOrAdd(sessionId, _ => new object()))
+        lock (_gates.GetOrAdd(sessionId, static _ => new object()))
         {
             var session = ctx.Sessions.GetSession(sessionId);
             if (session is null) return false;

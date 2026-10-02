@@ -72,6 +72,11 @@ public static class Check
 
 public sealed class TestRunner
 {
+    /// <summary>Exit code when the filter selected no test at all: a broken selection, not a pass (idea-jw74xi). The
+    /// documented direct run is <c>dotnet &lt;suite&gt;.dll [filter]</c>, and it must not report green for a typo or a
+    /// renamed test. scripts/test.ps1 maps a non-zero exit with no FAIL line to a failure.</summary>
+    public const int NoTestSelected = 2;
+
     private readonly List<(string Name, Func<Task> Body)> _tests = [];
 
     public void Add(string name, Func<Task> body) => _tests.Add((name, body));
@@ -104,14 +109,15 @@ public sealed class TestRunner
             }
         }
         Console.WriteLine();
-        if (selected.Count == 0) Console.WriteLine("No test matches the filter.");
+        var nothing = selected.Count == 0;
+        if (nothing) Console.WriteLine("No test matches the filter.");
         Console.WriteLine($"{passed} passed, {failed} failed, {selected.Count} total in {total.Elapsed.TotalSeconds:0.0}s");
         if (failed > 0)
         {
             Console.WriteLine("Failures:");
             foreach (var f in failures) Console.WriteLine("  - " + f.Split('\n')[0]);
         }
-        return failed == 0 ? 0 : 1;
+        return failed > 0 ? 1 : nothing ? NoTestSelected : 0;
     }
 }
 

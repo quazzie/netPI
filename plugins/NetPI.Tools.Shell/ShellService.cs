@@ -30,12 +30,17 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         catch { }
     }
 
-    /// <summary>Timeout in seconds from args (seconds; values above 3600 are taken as milliseconds) or settings.</summary>
+    /// <summary>
+    /// Timeout from args, in seconds. <c>timeout</c> is seconds and is clamped to 1…<see cref="MaxTimeoutSeconds"/>; a value
+    /// over the max is clamped, never reinterpreted (there is no "a big number must mean milliseconds" rule: the schema
+    /// says seconds, and reinterpreting a 7200 s request as 7200 ms killed the command after 8 s). Milliseconds have
+    /// their own entry: <c>timeout_ms</c>.
+    /// </summary>
     internal int? ResolveTimeout(ToolArgs args, bool background)
     {
         double? secs = null;
         if (args.Double("timeout_ms", "timeoutMs", "timeout_millis") is { } ms) secs = ms / 1000.0;
-        else if (args.Double("timeout", "timeout_seconds", "timeoutSeconds", "timeoutSec", "timeout_s") is { } t) secs = t > 3600 ? t / 1000.0 : t;
+        else if (args.Double("timeout", "timeout_seconds", "timeoutSeconds", "timeoutSec", "timeout_s") is { } t) secs = t;
         if (secs is null)
         {
             if (background) return null;

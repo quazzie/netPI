@@ -29,6 +29,10 @@ public sealed class GoalPlugin : INetPiPlugin
             if (e.As<JsonObject>()?["contract"]?.GetValue<string>() == typeof(IAgentRuntime).FullName) goals.ExecutorChanged();
         });
         context.Events.Subscribe(EventTypes.PluginsChanged, _ => goals.ExecutorChanged());
+        context.Events.Subscribe(EventTypes.SessionDeleted, e =>
+        {
+            if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) goals.Forget(id);
+        });
         context.Tools.Register(new GoalUpdateTool(goals));
         context.Tools.Register(new GoalSetTool(goals));
         context.Services.Register<IAgentHook>(new GoalHook(goals));

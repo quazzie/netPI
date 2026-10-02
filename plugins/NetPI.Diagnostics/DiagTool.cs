@@ -144,8 +144,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         try
         {
             var result = await ctx.Rpc.InvokeAsync(known.Method, parameters, ct).ConfigureAwait(false);
-            var node = NetPiJson.ToNode(result);
-            return ToolResult.Ok(node?.ToJsonString() ?? "null", node);
+            return Cut(NetPiJson.ToNode(result));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (RpcException ex) { return ToolResult.Error($"{known.Method} failed: {ex.Message}"); }
@@ -187,7 +186,17 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         }
         catch (OperationCanceledException) { throw; }
         catch (RpcException ex) { return ToolResult.Error($"{method} failed: {ex.Message}"); }
-        var node = NetPiJson.ToNode(result);
+        return Cut(NetPiJson.ToNode(result));
+    }
+
+    /// <summary>
+    /// A method's answer as the tool result, cut at <see cref="RpcMaxChars"/> like the rpc passthrough did — every
+    /// wrapped action goes through here now. A cut answer also goes into no <c>Details</c>: the runtime persists that
+    /// node in the session database while the model only ever sees the cut text, so a multi-megabyte
+    /// <c>messages</c> page would be written to disk in full to show 20 000 characters (idea-5oitnm).
+    /// </summary>
+    private static ToolResult Cut(JsonNode? node)
+    {
         var text = node?.ToJsonString() ?? "null";
         if (text.Length <= RpcMaxChars) return ToolResult.Ok(text, node);
         return ToolResult.Ok(text[..RpcMaxChars] + $"… [cut at {RpcMaxChars} characters: ask for less, or filter it]", null);
