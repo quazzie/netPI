@@ -134,12 +134,15 @@ One-off tool `scripts/migrations/001-storage-port`: a C# console referencing the
 4. `build.ps1 -Publish -NextStart` the new build, `--apply`, start it, check a chat, ideas and a backup.
 5. **Rollback:** close NetPI, restore the snapshot and the copied app folder. Old backups are restorable only by the old build; `BACKUPS.md` says so.
 
-## What you need to decide
+## Decisions
 
-- **Plugin data as typed collections** (recommended; the checkpoint confirms it or switches to the SQLite-dialect fallback described above).
-- **Budget out of the kernel**, with the Diagnostics warning instead of an automatic refusal (recommended).
-- **Permission** to copy `netpi.db` and `settings.json` read-only for the rehearsal.
-- **Freeze** the Host, the contract assembly and the plugins this change touches on master for the duration (web and docs work may continue); land everything else first. Each plugin commit written against the old contracts would otherwise have to be ported again **(review)**.
+Decided by the owner (2026-10-02):
+- **Budget leaves the kernel.** The Diagnostics warning is the only replacement for the refusal; the owner may drop it (it is one check in an existing plugin).
+- **Permission granted** to copy `netpi.db` and `settings.json` read-only for the rehearsal. Nothing else under `%USERPROFILE%\.netpi` is touched, and the running NetPI is not stopped without asking.
+- **Freeze** the Host, the contract assembly and the plugins this change touches on master for the duration: nothing else is working on them.
+
+Left to the checkpoint (an engineering call, not a product one):
+- **Plugin data as documents in named collections** (what `ctx.Data` is above), or, if the checkpoint fails, the SQLite-dialect fallback. Recommended: documents. Plain-language version: the four plugins that keep their own data (Ideas, Agents' ledger, Context, Runtime) stop writing SQL and instead save, load and look up records by name and a few indexed fields, so any storage engine can hold them.
 
 ## Notes for a future MSSQL provider (not built now)
 
