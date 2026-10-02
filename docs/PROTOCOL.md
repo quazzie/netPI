@@ -208,7 +208,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `diag.settings` | netpi.diagnostics | → `{ file, settings }` without secrets |
 | `diag.logs` | netpi.diagnostics | `{ limit?, level?, category?, contains?, sinceMinutes? }` → log entries, oldest first |
 | `diag.failures` | netpi.diagnostics | `{ limit? }` → the saved failed requests: `{ name, time, bytes, provider, model, sessionId, transport, requestId, responseId, error }[]` |
-| `diag.failure` | netpi.diagnostics | `{ name, maxChars? }` → `{ name, bytes, truncated, content }` |
+| `diag.failure` | netpi.diagnostics | `{ name, offset?, limit? /* or maxChars */, summary? }` → `{ name, bytes, offset, returned, truncated, nextOffset?, content, shape? }`. Without `offset` it is the first `maxChars` characters, as before; with it a slice, so no body is out of reach (`nextOffset` pages on). `summary: true` returns `shape` instead of the text: the ordered `input[]`/`messages[]` kinds by index with a count per kind, no payload — enough to answer a gateway's "item 176 …" from one small result. It fills `content` only when a slice was asked for |
 | `diag.toolsets` | netpi.diagnostics | `{ sessionId }` → the context plugin's `context.toolsets` (needs it: it is what keeps the record); error `unavailable` without it |
 | `diag.snapshot` | netpi.diagnostics | `{ events? }` → `{ plugins, tools, rpc, events, logs, runtime, time }` (see `docs/PLUGIN-DIAGNOSTICS.md`) |
 | `diag.event` | netpi.diagnostics | `{ seq }` → `{ seq, type, sessionId?, time, source?, ui, data }` |

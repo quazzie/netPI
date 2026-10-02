@@ -81,7 +81,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             The arguments are the method's own: limit (how many, newest first), sessionId, runId/agentId, id (a model
             call), callId (a tool call), name (a tool or a saved failed request), type (an event type prefix), sinceSeq,
             beforeSeq, level (debug|info|warn|error), category, contains (a substring of the message), sinceMinutes,
-            maxChars, events, seq.
+            maxChars, offset, summary, events, seq.
             The actions that work on one session (calls, tools, journal, run, toolsets, messages) use the calling session
             unless you give another sessionId; sessionId "all" means no filter. journal is the exception that reads
             global: with a type and no sessionId it looks at every session, because a type filter that silently stayed
@@ -118,7 +118,9 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
                 ["category"] = Str("logs: the logger's category"),
                 ["contains"] = Str("logs: only messages containing this"),
                 ["sinceMinutes"] = Int("logs: only the last N minutes"),
-                ["maxChars"] = Int("failure: cut the body at N characters (default 200000)"),
+                ["maxChars"] = Int("failure: cut the body at N characters (default 200000); with offset, limit does the same for the slice"),
+                ["offset"] = Int("failure: start of the slice (default 0); follow nextOffset to page through a large body"),
+                ["summary"] = Bool("failure: return the body's shape (the ordered input[]/messages[] kinds, no payload) instead of its text"),
                 ["events"] = Int("snapshot: how many recent events (default 200)"),
                 ["seq"] = Int("event: the event's seq (from journal or snapshot)"),
                 ["method"] = Str("rpc: the RPC method to call, if it only reads (rpc.list is one)"),
