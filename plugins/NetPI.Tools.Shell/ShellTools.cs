@@ -197,7 +197,7 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
         var tail = Tail(args);
         var (shown, truncated, total, shownLines) = TailOf(p!, tail);
         var sb = new StringBuilder();
-        sb.Append('[').Append(Describe(p)).Append(']').Append('\n');
+        sb.Append('[').Append(Describe(p!)).Append(']').Append('\n');
         if (truncated) sb.Append($"[showing the last {shownLines} of {total} buffered lines]\n");
         sb.Append(shown.Length > 0 ? shown : "(no output yet)");
         return ToolResult.Ok(sb.ToString(), new { process = p.ToInfo(), tail, truncated });
