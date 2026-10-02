@@ -15,7 +15,7 @@ internal sealed class MemoryKeyValueStore(MemoryStorage store) : IKeyValueStore
     public void Set(string key, string? value)
     {
         lock (store.Lock)
-            store.Atomic(() =>
+            store.Apply(() =>
             {
                 store.Touch(() => (string?)store.ValuesByKey.GetValueOrDefault(key), was =>
                 {

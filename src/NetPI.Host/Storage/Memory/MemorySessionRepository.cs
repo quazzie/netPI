@@ -47,10 +47,11 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentException.ThrowIfNullOrWhiteSpace(project.Id);
-        store.Atomic(() =>
+        store.Apply(() =>
         {
             if (store.Projects.ContainsKey(project.Id))
                 throw new StorageException($"Project {project.Id} already exists");
+            store.Touch(() => (ProjectRow?)null, was => { if (was is null) store.Projects.Remove(project.Id); else store.Projects[project.Id] = was; });
             store.Projects[project.Id] = ProjectRow.Of(project);
         });
     }
@@ -58,7 +59,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
     public bool UpdateProject(ProjectInfo project)
     {
         ArgumentNullException.ThrowIfNull(project);
-        return store.Atomic(() =>
+        return store.Apply(() =>
         {
             if (!store.Projects.TryGetValue(project.Id, out var row)) return false;
             store.Touch(() => (ProjectRow?)store.Projects[project.Id], was => { if (was is not null) store.Projects[project.Id] = was; });
@@ -75,7 +76,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
 
     public void TouchProject(string id, DateTimeOffset at)
     {
-        store.Atomic(() =>
+        store.Apply(() =>
         {
             if (!store.Projects.TryGetValue(id, out var row)) return;
             store.Touch(() => (ProjectRow?)store.Projects[id], was => { if (was is not null) store.Projects[id] = was; });
@@ -85,7 +86,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
 
     public bool DeleteProject(string id)
     {
-        return store.Atomic(() =>
+        return store.Apply(() =>
         {
             if (!store.Projects.TryGetValue(id, out var row)) return false;
             store.Touch(() => (ProjectRow?)store.Projects[id], was => { if (was is not null) store.Projects[id] = was; });
@@ -97,7 +98,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
     public int ClearProject(string projectId, DateTimeOffset at)
     {
         var stamp = Row.Ms(at);
-        return store.Atomic(() =>
+        return store.Apply(() =>
         {
             var count = 0;
             foreach (var row in store.SessionRows.Values.Where(s => s.ProjectId == projectId).ToList())
@@ -169,10 +170,11 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentException.ThrowIfNullOrWhiteSpace(session.Id);
-        store.Atomic(() =>
+        store.Apply(() =>
         {
             if (store.SessionRows.ContainsKey(session.Id))
                 throw new StorageException($"Session {session.Id} already exists");
+            store.Touch(() => (SessionRow?)null, was => { if (was is null) store.SessionRows.Remove(session.Id); else store.SessionRows[session.Id] = was; });
             store.SessionRows[session.Id] = SessionRow.Of(session);
         });
     }
@@ -180,7 +182,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
     public bool UpdateSession(SessionInfo session)
     {
         ArgumentNullException.ThrowIfNull(session);
-        return store.Atomic(() =>
+        return store.Apply(() =>
         {
             if (!store.SessionRows.TryGetValue(session.Id, out var row)) return false;
             store.Touch(() => (SessionRow?)store.SessionRows[session.Id], was => { if (was is not null) store.SessionRows[session.Id] = was; });
@@ -193,7 +195,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
 
     public IReadOnlyList<string> DeleteSessionTree(string id)
     {
-        return store.Atomic<IReadOnlyList<string>>(() =>
+        return store.Apply<IReadOnlyList<string>>(() =>
         {
             if (!store.SessionRows.ContainsKey(id)) return [];
             // Breadth first, so a parent comes before its children and a cycle cannot spin here.
@@ -224,7 +226,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
     public ChatMessage AppendMessage(ChatMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        return store.Atomic(() =>
+        return store.Apply(() =>
         {
             if (!store.SessionRows.ContainsKey(message.SessionId))
                 throw new KeyNotFoundException($"Session {message.SessionId} not found");
@@ -242,7 +244,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
     public void RecordAppend(string sessionId, DateTimeOffset at, string title)
     {
         var stamp = Row.Ms(at);
-        store.Atomic(() =>
+        store.Apply(() =>
         {
             if (!store.SessionRows.TryGetValue(sessionId, out var row)) return;
             store.Touch(() => (SessionRow?)store.SessionRows[sessionId], was => { if (was is not null) store.SessionRows[sessionId] = was; });
@@ -253,7 +255,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
     public bool UpdateMessage(ChatMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        return store.Atomic(() =>
+        return store.Apply(() =>
         {
             if (!store.MessageById.TryGetValue(message.Id, out var row)) return false;
             store.Touch(() => (MessageRow?)store.MessageById[message.Id], was => { if (was is null) store.MessageById.Remove(message.Id); else store.MessageById[message.Id] = was; });
@@ -298,7 +300,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
 
     public void MarkCompacted(string sessionId, long upToSeq)
     {
-        store.Atomic(() =>
+        store.Apply(() =>
         {
             foreach (var row in store.MessagesOf(sessionId).Where(r => !r.Compacted && r.Seq <= upToSeq).ToList())
             {
@@ -310,7 +312,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
 
     public int CopyMessages(string fromSessionId, string toSessionId, long upToSeq)
     {
-        return store.Atomic(() =>
+        return store.Apply(() =>
         {
             // The target has to exist: a copy writes its messages under the target's id.
             if (!store.SessionRows.ContainsKey(toSessionId))
@@ -337,7 +339,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
     public void SetCompacted(string sessionId, IReadOnlySet<long> compactedSeqs)
     {
         ArgumentNullException.ThrowIfNull(compactedSeqs);
-        store.Atomic(() =>
+        store.Apply(() =>
         {
             foreach (var row in store.MessagesOf(sessionId))
             {
@@ -351,7 +353,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
 
     public void UpdateMessageMeta(long id, JsonObject? meta)
     {
-        store.Atomic(() =>
+        store.Apply(() =>
         {
             if (!store.MessageById.TryGetValue(id, out var row)) return;
             store.Touch(() => (MessageRow?)store.MessageById[id], was => { if (was is null) store.MessageById.Remove(id); else store.MessageById[id] = was; });
