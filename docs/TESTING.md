@@ -6,7 +6,7 @@ Three layers, all without NuGet packages (console runners, no test framework):
 
 | layer | where | what it needs |
 |---|---|---|
-| unit suites | `tests/NetPI.{Host,Providers,Tools,Agent,Aux}.Tests` | the built projects |
+| unit suites | `tests/NetPI.{Host,Providers,Tools,Agent,Aux,Storage}.Tests` | the built projects |
 | mock model server | `tests/MockLlm` | nothing (ASP.NET shared framework) |
 | end-to-end suite | `tests/NetPI.E2E` | the built app (`artifacts/dev/app`, which `scripts/e2e.ps1` builds as needed), the mock, and for the UI tests Node 22 + Playwright (`playwright-core` devDependency; falls back to an installed Edge/Chrome) |
 
@@ -18,6 +18,7 @@ Three layers, all without NuGet packages (console runners, no test framework):
 ```bash
 B="dotnet build -nologo -v q -clp:ErrorsOnly -p:BuildProjectReferences=false"
 $B src/NetPI.Abstractions/NetPI.Abstractions.csproj
+$B src/NetPI.Contracts/NetPI.Contracts.csproj
 $B src/NetPI.Host/NetPI.Host.csproj
 $B src/NetPI.Server/NetPI.Server.csproj
 for p in plugins/*/*.csproj tests/*/*.csproj; do $B "$p" || break; done
@@ -25,7 +26,7 @@ for p in plugins/*/*.csproj tests/*/*.csproj; do $B "$p" || break; done
 
 ```powershell
 $b = 'build','-nologo','-v','q','-clp:ErrorsOnly','-p:BuildProjectReferences=false'
-'src/NetPI.Abstractions','src/NetPI.Host','src/NetPI.Server' | % { dotnet @b (Get-ChildItem $_ -Filter *.csproj).FullName }
+'src/NetPI.Abstractions','src/NetPI.Contracts','src/NetPI.Host','src/NetPI.Server' | % { dotnet @b (Get-ChildItem $_ -Filter *.csproj).FullName }
 Get-ChildItem plugins/*/*.csproj, tests/*/*.csproj | % { dotnet @b $_.FullName }
 # on Windows `dotnet build NetPI.slnx` also works (it includes src/NetPI.Desktop)
 ```
@@ -43,13 +44,13 @@ Publishing while NetPI runs hot-reloads the changed plugins, which every chat ho
 
 ## Unit suites
 
-The loop that is fast: **one big run, then only what failed.** `scripts/test.ps1` builds the five suites, runs them
+The loop that is fast: **one big run, then only what failed.** `scripts/test.ps1` builds the six suites, runs them
 once, keeps the whole output in `artifacts/testlogs/<timestamp>.txt`, and finishes with the failing test names as a
 ready-to-paste `-Only` command. Re-running that while fixing takes seconds instead of the ~90 s of the full set; the
 full run belongs at the end, before a merge.
 
 ```powershell
-.\scripts\test.ps1                                   # build + run all five, print a re-run command for the failures
+.\scripts\test.ps1                                   # build + run all six, print a re-run command for the failures
 .\scripts\test.ps1 -Only "settings:", "goal:"        # just tests whose name contains these (substring, OR-ed)
 .\scripts\test.ps1 -Suite Aux -SkipBuild             # one suite, reusing the build (nothing changed)
 .\scripts\test.ps1 -Serial                           # one suite at a time, when a run misbehaves
@@ -80,7 +81,11 @@ dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll ideas        # the id
                                                                          # commit tracking (IdeasCommitTests). They run against a real temporary
                                                                          # SQLite database, not a fake; the load tests load the built plugins from
                                                                          # artifacts/dev/app (what a plain build makes), or from NETPI_APP_DIR
-tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: SQLite, settings, bus, registries, sessions, catalog, server, plugins
+tests/NetPI.Storage.Tests/bin/Debug/NetPI.Storage.Tests.dll            # the storage port: one set of scenarios run against every
+                                                                      # provider (the memory one; a provider joins with one line in
+                                                                      # Providers.All). It is the port's contract in executable form —
+                                                                      # a storage provider that does not pass it is not usable
+tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: storage, settings, bus, registries, sessions, catalog, server, plugins
 dotnet tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests.dll backup  # the snapshot: the WAL copy, retention, manifest verification, an offline restore
                                                     # into a new home, and the SQLite-backed ideas backlog travelling in it and coming
                                                     # back (BackupTests, ReviewBackupTests)
@@ -88,6 +93,14 @@ dotnet tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests.dll backup  # the snaps
 
 Every runner takes optional name filters (`… NetPI.Agent.Tests.dll abort scheduler`) and exits with 0 when all selected
 tests pass. `NETPI_TEST_LOGS=1` shows host logs in the Host suite.
+
+**The storage conformance suite** (`tests/NetPI.Storage.Tests`) is the storage port's contract in executable form:
+one set of scenarios run against every store a factory builds — ids and seqs, the session list with every filter,
+projects, the session tree, the context view and compaction, the copy a fork makes, `Atomic` (rollback and
+re-entrancy), the key-value store, the collections (every `DataOp`, ordering and paging, `Count`/`Sum`/`DeleteWhere`,
+a changed declaration, a transaction and the lock rules) and the snapshot. It holds no SQL: a provider joins with one
+line in its `Providers.All` and passes the same scenarios as every other, which is what makes a second provider
+trustworthy. Nothing about the storage port may be changed without running it (`-Suite Storage`).
 
 The web tool tests serve pages and fake SearXNG / Brave endpoints from a local Kestrel server and never read your pi
 config or `BRAVE_API_KEY`. The `screenshot` test drives a real headless Edge/Chrome/Chromium; without one installed it

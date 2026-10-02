@@ -74,7 +74,7 @@ wrap costs one tool call, not a secret read out of `server.json`.
 
 | method | what it answers |
 |---|---|
-| `diag.overview` | Start here. App and process (memory, threads, the thread pool), plugins (failed ones with their error), models per provider (loaded ones), agents with their holders and waiters, active runs (status, activity, since when), model calls running and the last 15 minutes (count, errors, median first token and duration), running tools and processes, the problems, the other `diag.*` methods |
+| `diag.overview` | Start here. App and process (memory, threads, the thread pool), **storage** (`{ provider, version?, location?, sizeBytes? }` — which provider is open, its version and its file), plugins (failed ones with their error), models per provider (loaded ones), agents with their holders and waiters, active runs (status, activity, since when), model calls running and the last 15 minutes (count, errors, median first token and duration), running tools and processes, the problems, the other `diag.*` methods |
 | `diag.problems` | What looks wrong now, worst first: failed plugins, providers that can't be reached, runs waiting on an agent that can't take work or waiting long, runs silent for minutes, model calls without a first token, failed calls, tools running long, errors in the log, a thread pool falling behind, a spent budget, saved failed requests. Each with a hint where to look next |
 | `diag.calls` | Model calls, newest first (running ones too): model, purpose, agent, chat, run, time to first token, duration, attempts (retries), tokens, stop reason, error. Filters: `sessionId`, `runId`, `agent`, `errors`, `running`, `limit`; `detail: true` adds what `diag.call` has |
 | `diag.call` | One call in detail: the request's size (messages, tools, system prompt, input chars, the person's last message), the response (text/thinking chars, tool calls), each retry and notice, the error's type, HTTP status, transient, context overflow |
@@ -140,11 +140,14 @@ when a line drops or the input ceiling is hit:
   If you see it, the dispatcher is effectively stopped; the other lines above say where.
 - `The thread pool has not started a queued work item for N s (threads, pending items, completed)` — every pool thread is
   blocked (usually a synchronous wait on async work), so no RPC, event or continuation can run until one frees up.
-- `The database gate has not been free for N s` — every statement of the process runs under one lock; a thread that holds it and
-  does not come back (a deadlock with another lock, or a call that never returns) freezes every RPC that reads or writes the
-  database, while `/api/health` and `app.info` still answer and the CPU is idle. The watchdog tries the gate without waiting once a
-  second. (A lock-order inversion between the session store's transient-session lock and this gate did exactly that until
-  2026-10-01; the store now guards its memory with the gate itself, so there is one lock and no order to get wrong.)
+- `The database gate has not been free for N s` — every statement of the process runs under one lock, the storage
+  provider's; a thread that holds it and does not come back (a deadlock with another lock, or a statement that never
+  returns) freezes every RPC that reads or writes the store, while `/api/health` and `app.info` still answer and the
+  CPU is idle. The watchdog tries the lock without waiting once a second. (A lock-order inversion between the session
+  service's transient-session state and this gate did exactly that until 2026-10-01; the session service guards its
+  in-memory sessions with that same lock now, so there is one lock and no order to get wrong. It is the provider's
+  `IStorage.Lock`, which every repository operation and every plugin transaction takes — the storage port makes that
+  rule checkable and the conformance suite pins it.)
 
 The E2E harness reads the same log line when a test fails: `artifacts/e2elogs/<run>/failures/<id>.txt` shows it under
 "server log since the test started".
