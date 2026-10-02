@@ -7,7 +7,7 @@ namespace NetPI.Migration001;
 // The collection this migration creates (plugin netpi.runtime) — the shape the Runtime plugin's AgentStore reads and
 // writes, kept here for the one-off store migration:
 //   agent_records  key: the agent id
-//       index fields: sessionId (Text), createdAt (Text, the ISO timestamp it is written as)
+//       index fields: sessionId (Text), createdAt (Text, the ISO timestamp it is written as), status (Text)
 //       { id, sessionId, parentAgentId, name, status, task, result, error, model, createdAt, finishedAt,
 //         stats: { info: AgentInfo, instructions: string|null, notifyParent: bool } }
 internal static class RuntimeMigration
@@ -15,7 +15,7 @@ internal static class RuntimeMigration
     public const string PluginId = "netpi.runtime";
     public const string Collection = "agent_records";
 
-    public static CollectionSpec Spec() => new CollectionSpec().Text("sessionId").Text("createdAt");
+    public static CollectionSpec Spec() => new CollectionSpec().Text("sessionId").Text("createdAt").Text("status");
 
     public static void Run(Database old, IStorage storage, List<string> notes)
     {
