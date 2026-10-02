@@ -907,6 +907,74 @@ public static class FileTests
             }
         });
 
+        r.Add("rpc: files.git — a large tree: the status read is bounded, the files array is capped, and the counting runs off the parse path", async () =>
+        {
+            var dir = T.TempDir("gitbig");
+
+            // 1) The files array holds at most MaxFiles entries; the rest is only counted.
+            var many = string.Join("\0", Enumerable.Range(0, GitStatus.MaxFiles + 3).Select(i => $"? files/f{i}.txt")) + "\0";
+            var capped = GitStatus.Build(dir, dir, null, many, "");
+            Check.Equal(GitStatus.MaxFiles, capped.Files.Count, "the first entries are kept");
+            Check.Equal("files/f4999.txt", capped.Files[^1].Rel, "what is dropped is the tail");
+            Check.Equal(3, capped.FilesDropped);
+            Check.False(capped.Truncated);
+
+            // 2) A read that stopped at its bound reports it and drops the half-written last entry.
+            var cut = GitStatus.Build(dir, dir, null, "# branch.head main\0? whole.txt\0? ha", "", truncated: true);
+            Check.True(cut.Truncated);
+            Check.Equal("main", cut.Branch);
+            Check.Equal("whole.txt", cut.Files[0].Rel);
+            Check.Equal(0, cut.FilesDropped);
+
+            // A rename a cut left without its old path ends the list instead of swallowing the next entry.
+            var half = GitStatus.Build(dir, dir, null, "? kept.txt\02 M 100 renamed.txt\0ren", "", truncated: true);
+            Check.Equal(1, half.Files.Count, "the orphaned rename header is dropped, not parsed into a ghost entry");
+            Check.Equal("kept.txt", half.Files[0].Rel);
+
+            // 3) End to end: a real repository, and the bound set below the real status read's size.
+            if (!await Git(dir, "init", "-q", "-b", "main"))
+            {
+                Console.WriteLine("    (no git on PATH: skipped)");
+                return;
+            }
+            await Git(dir, "config", "user.email", "test@example.com");
+            await Git(dir, "config", "user.name", "Test");
+            T.WriteText(dir, "a.txt", "1\n2\n3\n");
+            await Git(dir, "add", "-A");
+            await Git(dir, "commit", "-q", "-m", "first");
+            T.WriteText(dir, "big.txt", string.Concat(Enumerable.Repeat("line\n", 200)));
+            var ctx = new FakePluginContext(dir);
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+            var full = (GitStatus.Result?)await ctx.RpcFake.InvokeAsync("files.git", new { cwd = dir }) ?? throw new AssertException("no git status");
+            Check.False(full.Truncated);
+            Check.Equal(1, full.Files.Count);
+            Check.Equal("new 200", $"{full.Files[0].Status} {full.Files[0].Added}", "the new file's lines are counted");
+
+            var old = GitStatus.StatusMaxChars;
+            GitStatus.StatusMaxChars = 40; // below the real status read: the bound has to be visible, not fatal
+            try
+            {
+                var cutR = (GitStatus.Result?)await ctx.RpcFake.InvokeAsync("files.git", new { cwd = dir }) ?? throw new AssertException("no git status");
+                Check.True(cutR.Truncated, "the status read stopped at the bound");
+                Check.Equal(0, cutR.Files.Count, "what the cut kept holds no complete entry");
+                Check.Equal(0, cutR.FilesDropped, "dangling entries are dropped by the cut, not counted against the cap");
+            }
+            finally { GitStatus.StatusMaxChars = old; }
+
+            static async Task<bool> Git(string cwd, params string[] args)
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+                foreach (var a in args) psi.ArgumentList.Add(a);
+                try
+                {
+                    using var p = System.Diagnostics.Process.Start(psi)!;
+                    await p.WaitForExitAsync();
+                    return p.ExitCode == 0;
+                }
+                catch (System.ComponentModel.Win32Exception) { return false; }
+            }
+        });
+
         r.Add("tool definitions: labels, categories, read-only flags, guidelines", () =>
         {
             foreach (var t in FilesPlugin.CreateTools(null))
