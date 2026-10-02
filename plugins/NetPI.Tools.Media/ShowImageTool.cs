@@ -92,7 +92,12 @@ internal sealed class ShowImageTool(IPluginContext ctx, HttpClient http) : IAgen
                 using var res = await http.GetAsync(source, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
                 if (!res.IsSuccessStatusCode) return ToolResult.Error($"HTTP {(int)res.StatusCode} for {source}");
                 if (res.Content.Headers.ContentLength > max) return TooLarge(res.Content.Headers.ContentLength.Value, max);
-                bytes = await res.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+                // The declared length bounds only what the server promised: a chunked body (no Content-Length) or a body
+                // that balloons under the client's decompression must not be able to allocate up to HttpClient's own ~2 GB
+                // cap in the one host process — the read stops at the limit, like web_fetch's.
+                var (capped, cut) = await ReadCappedAsync(res.Content, max, ct).ConfigureAwait(false);
+                if (cut) return ToolResult.Error($"The image is larger than the {max / 1_000_000.0:0.#} MB limit (setting media.maxBytes): {source}");
+                bytes = capped;
                 mediaType = res.Content.Headers.ContentType?.MediaType;
                 kind = "url";
                 name = Uri.TryCreate(source, UriKind.Absolute, out var u) && Path.GetFileName(u.LocalPath) is { Length: > 0 } f ? f : "image";
@@ -134,6 +139,30 @@ internal sealed class ShowImageTool(IPluginContext ctx, HttpClient http) : IAgen
 
     private static ToolResult TooLarge(long size, long max) =>
         ToolResult.Error($"The image is too large to show ({size / 1_000_000.0:0.#} MB; the limit is {max / 1_000_000.0:0.#} MB, setting media.maxBytes).");
+
+    /// <summary>
+    /// The body read bounded by web_fetch's one (plugins cannot share code, so a copy): the stream is read in chunks and
+    /// stopped at <paramref name="max"/> bytes. <c>ReadAsByteArrayAsync</c> had no such bound — a chunked response, or a
+    /// ~1000:1 compressed one, allocates up to HttpClient's own cap in the single host process before it stops.
+    /// </summary>
+    private static async Task<(byte[] Bytes, bool Cut)> ReadCappedAsync(HttpContent content, long max, CancellationToken ct)
+    {
+        await using var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        using var ms = new MemoryStream();
+        var buffer = new byte[81920];
+        while (true)
+        {
+            var n = await stream.ReadAsync(buffer, ct).ConfigureAwait(false);
+            if (n == 0) return (ms.ToArray(), false);
+            var room = max - ms.Length;
+            if (n >= room)
+            {
+                ms.Write(buffer, 0, (int)Math.Max(0, room));
+                return (ms.ToArray(), true);
+            }
+            ms.Write(buffer, 0, n);
+        }
+    }
 
     /// <summary>The image type from the first bytes (null when it is not a known image format).</summary>
     internal static string? Sniff(byte[] b)

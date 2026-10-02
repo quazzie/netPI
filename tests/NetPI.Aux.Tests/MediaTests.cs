@@ -94,5 +94,35 @@ public static class MediaTests
             Check.Contains(big.Content, "too large");
             env.Ctx.Unload();
         });
+
+        r.Add("show_image: a length-less (chunked) body is bounded by media.maxBytes, not by HttpClient's cap", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            env.Ctx.SettingsFake.Set("media.maxBytes", JsonValue.Create(100_000));
+            var png = Convert.FromBase64String(Png1x1);
+            await using var web = await LocalWeb.StartAsync(app =>
+            {
+                // No Content-Length: Kestrel sends chunked, so the declared-length pre-check cannot see the size.
+                app.MapGet("/chunked-huge", async ctx =>
+                {
+                    ctx.Response.ContentType = "image/png";
+                    var chunk = new byte[1024];
+                    for (var i = 0; i < 300; i++) await ctx.Response.Body.WriteAsync(chunk); // ~300 KB, length unknown
+                });
+                app.MapGet("/chunked-small", async ctx =>
+                {
+                    ctx.Response.ContentType = "image/png";
+                    await ctx.Response.Body.WriteAsync(png);
+                });
+            });
+            var small = await env.Run(new { source = web.Url + "/chunked-small" });
+            Check.False(small.IsError, small.Content);
+            Check.Equal("image/png", D(small).GetProperty("mediaType").GetString());
+            var huge = await env.Run(new { source = web.Url + "/chunked-huge" });
+            Check.True(huge.IsError);
+            Check.Contains(huge.Content, "larger than the");
+            env.Ctx.Unload();
+        });
     }
 }
