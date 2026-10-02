@@ -3,9 +3,9 @@
   "flakes": [
     {
       "id": "ui.idea-image",
-      "runs": 6,
+      "runs": 7,
       "failures": 3,
-      "rate": 0.5,
+      "rate": 0.4286,
       "firstSeen": "20261002-164209-c9ca",
       "lastFailure": "20261002-164357-4982",
       "cause": "3 ui check(s) failed: \u2014 responsive",
