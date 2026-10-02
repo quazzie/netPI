@@ -135,6 +135,7 @@ internal static unsafe class Sqlite3
     [DllImport(Lib, ExactSpelling = true), SuppressGCTransition] public static extern int sqlite3_column_bytes(IntPtr stmt, int index);
 
     [DllImport(Lib, ExactSpelling = true)] public static extern byte* sqlite3_errmsg(IntPtr db);
+    [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_errcode(IntPtr db);
     [DllImport(Lib, ExactSpelling = true)] public static extern byte* sqlite3_errstr(int code);
     [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_changes(IntPtr db);
     [DllImport(Lib, ExactSpelling = true)] public static extern long sqlite3_last_insert_rowid(IntPtr db);
@@ -147,7 +148,6 @@ internal static unsafe class Sqlite3
     [DllImport(Lib, ExactSpelling = true)] public static extern IntPtr sqlite3_backup_init(IntPtr dest, byte* destName, IntPtr source, byte* sourceName);
     [DllImport(Lib, ExactSpelling = true), SuppressGCTransition] public static extern int sqlite3_backup_step(IntPtr backup, int nPage);
     [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_backup_finish(IntPtr backup);
-    [DllImport(Lib, ExactSpelling = true), SuppressGCTransition] public static extern int sqlite3_errcode(IntPtr db);
 }
 
 /// <summary>UTF-8 helpers for native strings.</summary>

@@ -10,7 +10,9 @@ namespace NetPI.Skills;
 /// like any tool: per chat, <c>tools.disabled</c>, a subagent's tool list), appended only (the conversation's cached
 /// prefix survives): every listed skill when a session first calls the model with the tool, afterwards only what changed.
 /// What the model has is read from the notices still in the context, so after compaction it is announced again, with the
-/// skills it had loaded before. Meta: <c>skills: [{ name, hash, path }]</c>, <c>removed: [name]</c>. (2) A user message that starts
+/// skills it had loaded before: the loads are recorded in <c>meta.loadedSkills</c> as they happen (the tool's result, a
+/// /skill: notice), and the announcement reads that instead of the session's whole history. Catalog meta: <c>skills: [{ name,
+/// hash, path }]</c>, <c>removed: [name]</c>. (2) A user message that starts
 /// with <c>/skill:name</c> gets a "skill" notice with that skill's instructions right after it. Meta: <c>skill</c>,
 /// <c>hash</c>, <c>path</c>, <c>for</c> (the message id); <c>missing: true</c> when there is no such skill.
 /// </summary>
@@ -19,6 +21,9 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
     public const string CatalogKind = "skills";
     public const string SkillKind = "skill";
     public const string Command = "/skill:";
+
+    /// <summary>The session's loaded skill names: <c>meta.loadedSkills</c>, appended as a skill is loaded.</summary>
+    public const string LoadedMetaKey = "loadedSkills";
 
     /// <summary>One gate per session, released with the session (a deleted session loads no skills).</summary>
     private readonly SessionState<object> _gates = new(ctx.Events);
@@ -32,7 +37,7 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
         lock (_gates.GetOrAdd(turn.Run.Session.Id, static _ => new object()))
         {
             var set = loader.Discover(turn.Run.Cwd);
-            if (turn.Tools.Any(t => t.Name == SkillTool.Name) && Catalog(turn.Run.Session.Id, turn.Messages, set) is { } catalog)
+            if (turn.Tools.Any(t => t.Name == SkillTool.Name) && Catalog(turn.Run.Session, turn.Messages, set) is { } catalog)
             {
                 ctx.Sessions.AppendMessage(turn.Run.Session.Id, catalog);
                 appended = true;
@@ -40,6 +45,7 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
             foreach (var notice in Invocations(turn.Messages, set))
             {
                 ctx.Sessions.AppendMessage(turn.Run.Session.Id, notice);
+                if (notice.Meta?["missing"] is null) RecordLoaded(ctx, turn.Run.Session.Id, notice.MetaString("skill") ?? "");
                 appended = true;
             }
         }
@@ -48,7 +54,7 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
 
     // ---------------------------------------------------------------- catalog
 
-    private ChatMessage? Catalog(string sessionId, IReadOnlyList<ChatMessage> context, SkillSet set)
+    private ChatMessage? Catalog(SessionInfo session, IReadOnlyList<ChatMessage> context, SkillSet set)
     {
         var known = Known(context);
         var current = set.Listed.ToList();
@@ -63,7 +69,7 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
             sb.Append("Skills: instructions for specific tasks. When a task matches a skill's description, load it with the skill tool " +
                       "before you start and follow it.\n\n");
             sb.Append(List(changed));
-            var lost = LoadedBefore(sessionId, context).Where(n => current.Any(s => string.Equals(s.Name, n, StringComparison.OrdinalIgnoreCase))).ToList();
+            var lost = LoadedBefore(session, context).Where(n => current.Any(s => string.Equals(s.Name, n, StringComparison.OrdinalIgnoreCase))).ToList();
             if (lost.Count > 0)
                 sb.Append("\n\nBefore the conversation was compacted you had loaded: ").Append(string.Join(", ", lost))
                   .Append(". Load a skill again if you still need its instructions.");
@@ -110,12 +116,48 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
         return known;
     }
 
-    /// <summary>Skills loaded earlier in the session whose instructions are no longer in the context (compacted away).</summary>
-    private List<string> LoadedBefore(string sessionId, IReadOnlyList<ChatMessage> context)
+    /// <summary>
+    /// The skills loaded earlier in the session whose instructions are no longer in the context (compacted away): the
+    /// session's meta (constant), minus what the context still holds. A session that was never recorded (created before
+    /// the key existed) has none.
+    /// </summary>
+    private List<string> LoadedBefore(SessionInfo? session, IReadOnlyList<ChatMessage> context)
     {
         var inContext = Loaded(context);
-        var all = Loaded(ctx.Sessions.GetMessages(sessionId));
-        return all.Where(n => !inContext.Contains(n)).ToList();
+        return LoadedFromMeta(session).Where(n => !inContext.Contains(n, StringComparer.OrdinalIgnoreCase)).ToList();
+    }
+
+    /// <summary>The skill names in the session's <c>meta.loadedSkills</c>, in load order.</summary>
+    internal static List<string> LoadedFromMeta(SessionInfo? session)
+    {
+        var names = new List<string>();
+        if (session?.Meta?[LoadedMetaKey] is JsonArray list)
+            foreach (var n in list)
+                if (n is JsonValue v && v.TryGetValue<string>(out var name) && !names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    names.Add(name);
+        return names;
+    }
+
+    /// <summary>
+    /// Record that a skill's instructions are in the session (a tool result, a /skill: notice). Names stay unique; a
+    /// session that goes away meanwhile is simply not recorded.
+    /// </summary>
+    public static void RecordLoaded(IPluginContext ctx, string sessionId, string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return;
+        try
+        {
+            ctx.Sessions.UpdateSession(sessionId, s =>
+            {
+                var meta = s.Meta ??= new JsonObject();
+                var list = meta[LoadedMetaKey] as JsonArray ?? [];
+                meta[LoadedMetaKey] = list;
+                if (list.Any(n => n is JsonValue v && v.TryGetValue<string>(out var x)
+                    && string.Equals(x, name, StringComparison.OrdinalIgnoreCase))) return;
+                list.Add(JsonValue.Create(name));
+            });
+        }
+        catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException) { } // deleted meanwhile
     }
 
     /// <summary>The names of the skills whose instructions these messages hold (skill tool results and "skill" notices), in order.</summary>

@@ -23,6 +23,78 @@ public static class SqliteTests
             Check.Equal(1L, db.Scalar<long>("PRAGMA foreign_keys"));
             Check.Equal(5000L, db.Scalar<long>("PRAGMA busy_timeout"));
             Check.Equal(1L, db.Scalar<long>("PRAGMA synchronous")); // NORMAL
+            // The tuning pragmas (idea-z86rze): reads through a map and a cache that fits the database, a capped WAL
+            // file, and no inline checkpoint (the idle timer truncates instead).
+            Check.True(db.Scalar<long>("PRAGMA mmap_size") >= 1073741824, "mmap at least a GB: " + db.Scalar<long>("PRAGMA mmap_size"));
+            Check.Equal(-65536L, db.Scalar<long>("PRAGMA cache_size"));
+            Check.Equal(67108864L, db.Scalar<long>("PRAGMA journal_size_limit"));
+            Check.Equal(0L, db.Scalar<long>("PRAGMA wal_autocheckpoint"));
+        });
+
+        r.Add("sqlite: the hot queries seek their indexes (EXPLAIN QUERY PLAN)", () =>
+        {
+            using var db = Open(out _);
+            SqliteStorage.EnsureSchema(db);
+            db.Execute("INSERT INTO sessions(id, title, created_at, updated_at) VALUES('s1', 't', 1, 1)");
+            for (var i = 1; i <= 50; i++)
+                db.Execute("INSERT INTO messages(session_id, seq, role, parts, created_at, compacted) VALUES('s1', @seq, 'user', '[]', 1, @c)",
+                    new { seq = i, c = i <= 25 ? 1 : 0 });
+            string Plan(string sql, object? args) =>
+                string.Join(" | ", db.Query("EXPLAIN QUERY PLAN " + sql, args, r => r.GetString("detail")));
+
+            // The context read of every turn: the session's live rows only.
+            var context = Plan("""
+                SELECT id, session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta
+                FROM messages WHERE session_id = @s AND compacted = 0 ORDER BY seq
+                """, new { s = "s1" });
+            Check.Contains(context, "ix_messages_live", "the context read seeks the live-only index: " + context);
+            Check.NotContains(context, "SCAN messages", context);
+
+            // The paged read (sessions.messages) and the compaction's flag update: both over (session_id, seq).
+            var page = Plan("""
+                SELECT id, session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta
+                FROM messages
+                WHERE session_id = @s AND seq < COALESCE(@before, 9223372036854775807)
+                ORDER BY seq DESC LIMIT @limit
+                """, new { s = "s1", before = (long?)40, limit = 10 });
+            Check.Contains(page, "ix_messages_session_seq", "the paged read seeks (session_id, seq): " + page);
+            Check.NotContains(page, "SCAN messages", page);
+
+            var mark = Plan("UPDATE messages SET compacted = 1 WHERE session_id = @s AND seq <= @upTo AND compacted = 0",
+                new { s = "s1", upTo = 40L });
+            Check.Contains(mark, "ix_messages_live", "MarkCompacted finds its rows through the live-only index: " + mark);
+            Check.NotContains(mark, "SCAN messages", mark);
+        });
+
+        r.Add("sqlite: the backup is a consistent copy of a live database, un-checkpointed WAL included", () =>
+        {
+            using var db = Open(out var file);
+            SqliteStorage.EnsureSchema(db);
+            db.Execute("INSERT INTO sessions(id, title, created_at, updated_at) VALUES('s1', 't', 1, 1)");
+            for (var i = 1; i <= 200; i++)
+                db.Execute("INSERT INTO messages(session_id, seq, role, parts, created_at) VALUES('s1', @seq, 'user', '[]', 1)", new { seq = i });
+            var wal = file + "-wal";
+            Check.True(File.Exists(wal) && new FileInfo(wal).Length > 0, "with auto-checkpoint off the frames are in the WAL");
+            var copy = Path.Combine(Path.GetDirectoryName(file)!, "copy.db");
+            db.BackupTo(copy);
+            using (var dest = new Database(copy))
+            {
+                Check.Equal("ok", dest.Scalar<string>("PRAGMA integrity_check"));
+                Check.Equal(1L, dest.Scalar<long>("SELECT COUNT(*) FROM sessions WHERE id = @id", new { id = "s1" }));
+                Check.Equal(200L, dest.Scalar<long>("SELECT COUNT(*) FROM messages"), "the un-checkpointed frames are in the copy");
+            }
+        });
+
+        r.Add("sqlite: the TRUNCATE checkpoint shrinks the WAL back to nothing", () =>
+        {
+            using var db = Open(out var file);
+            db.Execute("CREATE TABLE t (v INTEGER)");
+            for (var i = 1; i <= 200; i++) db.Execute("INSERT INTO t VALUES(@v)", new { v = i });
+            var wal = file + "-wal";
+            Check.True(File.Exists(wal) && new FileInfo(wal).Length > 0, "the writes left a WAL");
+            db.Execute("PRAGMA wal_checkpoint(TRUNCATE)");
+            Check.True(!File.Exists(wal) || new FileInfo(wal).Length == 0, "and the TRUNCATE checkpoint takes it back");
+            Check.Equal(200L, db.Scalar<long>("SELECT COUNT(*) FROM t"), "everything was in the database before too");
         });
 
         r.Add("sqlite: type mapping round-trips", () =>
