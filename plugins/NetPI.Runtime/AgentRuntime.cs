@@ -1103,20 +1103,20 @@ internal sealed class AgentRuntime : IAgentRuntime
 
         IAgentSlot? yielded = null;
         var model = run?.Model;
-        if (yieldSlot && run?.Lease is { IsReleased: false } lease && model is not null)
-        {
-            run.Lease = null;
-            yielded = lease;
-            lease.Dispose();
-        }
         static string WaitingFor(int n) => $"waiting for {n} agent{(n == 1 ? "" : "s")}";
         var countdown = activity is null;
         activity ??= WaitingFor(tasks.Count);
-        if (caller is not null)
+        if (caller is not null && yieldSlot && run?.Lease is { IsReleased: false } lease && model is not null)
         {
-            if (yielded is not null) SetStatus(caller, AgentStatus.Yielded, activity);
-            else SetActivity(caller, activity);
+            run.Lease = null;
+            yielded = lease;
+            // Record the yield before releasing the slot: a child that takes the slot in that window must see the
+            // parent already Yielded, not still Running (the spawn+wait race, idea-6bxcsr).
+            SetStatus(caller, AgentStatus.Yielded, activity);
+            lease.Dispose();
         }
+        else if (caller is not null)
+            SetActivity(caller, activity);
         // keep the caller's activity current ("waiting for 2 agents" → "waiting for 1 agent") as workers finish
         var remaining = tasks.Count;
         var waiting = 1;
