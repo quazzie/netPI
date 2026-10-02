@@ -9,11 +9,11 @@ internal static class ResponsesTransport
 {
     public const string Path = "/v1/responses";
 
-    public static JsonObject BuildBody(ModelRequest req, ModelOptions mo, bool allowImages)
+    public static JsonObject BuildBody(ModelRequest req, ModelOptions mo, bool allowImages, string? providerId = null)
     {
         var body = new JsonObject { ["model"] = req.Model.Id };
         if (!string.IsNullOrWhiteSpace(req.SystemPrompt)) body["instructions"] = req.SystemPrompt;
-        body["input"] = BuildInput(req.Messages, mo.ReplayReasoning, allowImages);
+        body["input"] = BuildInput(req.Messages, mo.ReplayReasoning, allowImages, providerId ?? req.Model.Provider, req.Model.Id);
 
         if (req.Tools.Count > 0)
         {
@@ -49,22 +49,37 @@ internal static class ResponsesTransport
         return body;
     }
 
-    public static JsonArray BuildInput(IReadOnlyList<ChatMessage> messages, bool replayReasoning, bool allowImages)
+    /// <summary>
+    /// The conversation as Responses input items. Reasoning goes back only to the model that produced it: a mid-chat
+    /// model switch used to replay another model's reasoning item (a foreign <c>encrypted_content</c> blob, or plain
+    /// reasoning to a backend that does not take it) and the turn was refused whole with a non-transient 400
+    /// (idea-d9k11o). A turn with no recorded provider or model (older history) is replayed, as before.
+    /// </summary>
+    public static JsonArray BuildInput(IReadOnlyList<ChatMessage> messages, bool replayReasoning, bool allowImages,
+        string? providerId = null, string? modelId = null)
     {
         var input = new JsonArray();
         var toolImages = new List<(string CallId, ImagePart Image)>();
+        var toolImagesOmitted = new List<(string CallId, int Count)>();
+
+        bool IsOurs(ChatMessage m) =>
+            (m.Provider is null || providerId is null || string.Equals(m.Provider, providerId, StringComparison.OrdinalIgnoreCase))
+            && (m.Model is null || modelId is null || string.Equals(m.Model, modelId, StringComparison.Ordinal));
 
         void FlushToolImages()
         {
-            if (toolImages.Count == 0) return;
+            if (toolImages.Count == 0 && toolImagesOmitted.Count == 0) return;
             var content = new JsonArray();
             foreach (var group in toolImages.GroupBy(x => x.CallId))
             {
                 content.Add(new JsonObject { ["type"] = "input_text", ["text"] = $"[Image(s) returned by tool call {group.Key}]" });
                 foreach (var (_, img) in group) content.Add(InputImage(img));
             }
+            foreach (var (callId, count) in toolImagesOmitted)
+                content.Add(new JsonObject { ["type"] = "input_text", ["text"] = OpenAiCommon.ToolImagesOmitted(callId, count) });
             input.Add(new JsonObject { ["role"] = "user", ["content"] = content });
             toolImages.Clear();
+            toolImagesOmitted.Clear();
         }
 
         foreach (var m in messages)
@@ -86,7 +101,7 @@ internal static class ResponsesTransport
                     {
                         switch (p)
                         {
-                            case ThinkingPart th when replayReasoning:
+                            case ThinkingPart th when replayReasoning && IsOurs(m):
                                 if (ReasoningItem(th) is { } r) reasoning.Add(r);
                                 break;
                             case TextPart t when !string.IsNullOrEmpty(t.Text):
@@ -122,6 +137,7 @@ internal static class ResponsesTransport
                         if (r.Images is { Count: > 0 } imgs)
                         {
                             if (allowImages) foreach (var img in imgs) toolImages.Add((r.CallId, img));
+                            else toolImagesOmitted.Add((r.CallId, imgs.Count));
                         }
                     }
                     break;
@@ -211,12 +227,18 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
         using (doc) HandleEvent(doc.RootElement, sse.Event);
     }
 
+    // The same 200-with-a-broken-body as on the Chat transport (idea-3ivjku).
     public void HandleJsonBody(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        if (root.Prop("error").Has()) { var (m, t) = ProviderErrors.ExtractError(root); throw ProviderErrors.FromStream(provider, t, m); }
-        Complete(root.Prop("object").ValueKind == JsonValueKind.String ? root : root.Prop("response"));
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch (JsonException) { throw ChatStreamParser.NotJson(provider, json); }
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.Prop("error").Has()) { var (m, t) = ProviderErrors.ExtractError(root); throw ProviderErrors.FromStream(provider, t, m); }
+            Complete(root.Prop("object").ValueKind == JsonValueKind.String ? root : root.Prop("response"));
+        }
     }
 
     public void Finish()

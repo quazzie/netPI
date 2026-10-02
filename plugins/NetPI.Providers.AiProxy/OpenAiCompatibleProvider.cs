@@ -232,9 +232,15 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         public string? Transport;
         public JsonObject? Body;
         public string? RequestId;
+        /// <summary>The response body as received, capped (16k) by <see cref="ProviderErrors.ReadBodySafeAsync"/>. The
+        /// dump used to keep only the 2,000-char excerpt the error message carries, so a cause outside
+        /// <c>error.message</c> was unreproducible from the file (idea-022jh1).</summary>
+        public string? ResponseBody;
         public IOpenAiStreamParser? Parser;
         public bool Dump;
-        public string? ResponseId => (Parser as ResponsesStreamParser)?.ResponseId;
+        /// <summary>Both transports report the server's id for the response (Responses: <c>response.id</c>,
+        /// Chat: the completion id); a backend with no <c>x-request-id</c> header offers only this.</summary>
+        public string? ResponseId => Parser?.ResponseId;
     }
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
@@ -301,6 +307,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                 ["error"] = new JsonObject { ["message"] = ex.Message, ["type"] = ex.ErrorType, ["status"] = ex.StatusCode },
                 ["request"] = call.Body!.DeepClone(),
             };
+            if (!string.IsNullOrEmpty(call.ResponseBody)) doc["response"] = call.ResponseBody;
             File.WriteAllText(path, doc.ToJsonString(NetPiJson.Indented));
             // keep the newest 30
             foreach (var old in new DirectoryInfo(_dumpDir).GetFiles("*.json").OrderByDescending(f => f.Name).Skip(30))
@@ -329,7 +336,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         var mo = o.ForModel(request.Model.Id);
         var allowImages = !_imageSupport.TryGetValue(request.Model.Id, out var img) || img;
         var chat = mo.Transport == OpenAiTransport.Chat;
-        var body = chat ? ChatTransport.BuildBody(request, mo, allowImages) : ResponsesTransport.BuildBody(request, mo, allowImages);
+        var body = chat ? ChatTransport.BuildBody(request, mo, allowImages) : ResponsesTransport.BuildBody(request, mo, allowImages, Id);
         if (request.CaptureDecisionContext)
         {
             var snapshot = ChatTransport.BuildBody(request, mo, allowImages);
@@ -361,6 +368,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             if (!resp.IsSuccessStatusCode)
             {
                 var errBody = await ProviderErrors.ReadBodySafeAsync(resp, ct).ConfigureAwait(false);
+                call.ResponseBody = errBody;
                 ct.ThrowIfCancellationRequested();
                 if ((int)resp.StatusCode == 404) InvalidateModels();
                 throw ProviderErrors.FromHttp(DisplayName, resp, errBody);
@@ -378,6 +386,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                 string text;
                 try { text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false); }
                 catch (Exception ex) when (ex is not ModelException) { throw Rethrow(ex, ct); }
+                call.ResponseBody = ProviderErrors.Cap(text); // same cap as the non-2xx path
                 parser.HandleJsonBody(text);
             }
             else

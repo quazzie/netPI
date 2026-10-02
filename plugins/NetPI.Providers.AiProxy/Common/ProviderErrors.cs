@@ -10,6 +10,9 @@ internal static partial class ProviderErrors
 {
     private const int MaxBodyChars = 2000;
 
+    /// <summary>How much of a response body is kept (read from a server, saved in a failed-request dump).</summary>
+    public const int MaxBody = 16_000;
+
     private static readonly HashSet<int> TransientStatus = [408, 409, 425, 429, 500, 502, 503, 504, 529];
 
     private static readonly HashSet<string> TransientTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -17,6 +20,9 @@ internal static partial class ProviderErrors
         "backend_unavailable", "overloaded_error", "overloaded", "rate_limit_error", "rate_limit_exceeded",
         "server_error", "api_error", "internal_error", "internal_server_error", "service_unavailable",
         "timeout", "timeout_error", "network_error", "unavailable",
+        // A 200 announced as JSON whose body is not (HTML from a proxy, empty, truncated): the endpoint answering
+        // wrong once is worth another attempt, and the retry used to skip it (idea-3ivjku).
+        "bad_json",
     };
 
     private static readonly HashSet<string> OverflowTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -124,11 +130,13 @@ internal static partial class ProviderErrors
     {
         try
         {
-            var s = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return s.Length > 16_000 ? s[..16_000] : s;
+            return Cap(await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
         }
         catch (Exception) when (!ct.IsCancellationRequested) { return ""; }
     }
+
+    /// <summary>A body cut to <see cref="MaxBody"/>, so a huge error page cannot fill the failed-request dump.</summary>
+    public static string Cap(string s) => s.Length > MaxBody ? s[..MaxBody] : s;
 
     /// <summary>Iterate SSE events translating transport failures into <see cref="ModelException"/>s.</summary>
     public static async IAsyncEnumerable<SseEvent> Guard(IAsyncEnumerable<SseEvent> source, string provider,

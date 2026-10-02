@@ -217,6 +217,10 @@ public sealed class OpenRouterProvider : IModelProvider
         public string? Url;
         public JsonObject? Body;
         public string? GenerationId;
+        /// <summary>The response body as received, capped (16k) by <see cref="ProviderErrors.ReadBodySafeAsync"/>. The
+        /// dump used to keep only the 2,000-char excerpt the error message carries, so a cause outside
+        /// <c>error.message</c> was unreproducible from the file (idea-022jh1).</summary>
+        public string? ResponseBody;
         public bool Dump;
     }
 
@@ -280,6 +284,7 @@ public sealed class OpenRouterProvider : IModelProvider
                 ["error"] = new JsonObject { ["message"] = ex.Message, ["type"] = ex.ErrorType, ["status"] = ex.StatusCode },
                 ["request"] = call.Body!.DeepClone(),
             };
+            if (!string.IsNullOrEmpty(call.ResponseBody)) doc["response"] = call.ResponseBody;
             File.WriteAllText(path, doc.ToJsonString(NetPiJson.Indented));
             foreach (var old in new DirectoryInfo(_dumpDir).GetFiles("*.json").OrderByDescending(f => f.Name).Skip(30))
                 try { old.Delete(); } catch { }
@@ -326,6 +331,7 @@ public sealed class OpenRouterProvider : IModelProvider
             if (!resp.IsSuccessStatusCode)
             {
                 var errBody = await ProviderErrors.ReadBodySafeAsync(resp, ct).ConfigureAwait(false);
+                call.ResponseBody = errBody;
                 ct.ThrowIfCancellationRequested();
                 if ((int)resp.StatusCode == 404) InvalidateModels();
                 throw HttpError(resp, errBody);
@@ -338,6 +344,7 @@ public sealed class OpenRouterProvider : IModelProvider
                 string text;
                 try { text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false); }
                 catch (Exception ex) when (ex is not ModelException) { throw Rethrow(ex, ct); }
+                call.ResponseBody = ProviderErrors.Cap(text);
                 try { parser.HandleJsonBody(text); }
                 finally { call.GenerationId ??= parser.GenerationId; }
             }

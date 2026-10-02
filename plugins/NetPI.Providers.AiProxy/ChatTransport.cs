@@ -46,17 +46,21 @@ internal static class ChatTransport
         if (!string.IsNullOrWhiteSpace(systemPrompt)) list.Add(new JsonObject { ["role"] = "system", ["content"] = systemPrompt });
 
         var toolImages = new List<(string CallId, ImagePart Image)>();
+        var toolImagesOmitted = new List<(string CallId, int Count)>();
         void FlushToolImages()
         {
-            if (toolImages.Count == 0) return;
+            if (toolImages.Count == 0 && toolImagesOmitted.Count == 0) return;
             var content = new JsonArray();
             foreach (var group in toolImages.GroupBy(x => x.CallId))
             {
                 content.Add(new JsonObject { ["type"] = "text", ["text"] = $"[Image(s) returned by tool call {group.Key}]" });
                 foreach (var (_, img) in group) content.Add(ImageUrl(img));
             }
+            foreach (var (callId, count) in toolImagesOmitted)
+                content.Add(new JsonObject { ["type"] = "text", ["text"] = OpenAiCommon.ToolImagesOmitted(callId, count) });
             list.Add(new JsonObject { ["role"] = "user", ["content"] = content });
             toolImages.Clear();
+            toolImagesOmitted.Clear();
         }
 
         foreach (var m in messages)
@@ -93,8 +97,11 @@ internal static class ChatTransport
                     foreach (var r in m.ToolResults)
                     {
                         list.Add(new JsonObject { ["role"] = "tool", ["tool_call_id"] = r.CallId, ["content"] = r.Content ?? "" });
-                        if (r.Images is { Count: > 0 } imgs && allowImages)
-                            foreach (var img in imgs) toolImages.Add((r.CallId, img));
+                        if (r.Images is { Count: > 0 } imgs)
+                        {
+                            if (allowImages) foreach (var img in imgs) toolImages.Add((r.CallId, img));
+                            else toolImagesOmitted.Add((r.CallId, imgs.Count));
+                        }
                     }
                     break;
 
@@ -150,6 +157,11 @@ internal sealed class ChatStreamParser(MessageAssembler asm, string provider, bo
 
     public bool Finished => _done;
 
+    /// <summary>The completion id every chunk carries. It is the only identifier a backend that sends no
+    /// <c>x-request-id</c> header offers, so a failure could not be correlated with the server's own log
+    /// (idea-uab5a4).</summary>
+    public string? ResponseId { get; private set; }
+
     public void Handle(SseEvent sse)
     {
         if (sse.IsDone) { _done = true; return; }
@@ -159,16 +171,27 @@ internal sealed class ChatStreamParser(MessageAssembler asm, string provider, bo
         using (doc) HandleChunk(doc.RootElement, streaming: true);
     }
 
+    // A server that ignores stream:true answers with a plain JSON body, but a proxy or a WAF in front of it can
+    // answer 200 + application/json with an HTML error page (or nothing). The parse used to throw a raw
+    // JsonException: no provider, no request id, no saved request, and RetryMiddleware does not retry it
+    // (idea-3ivjku).
     public void HandleJsonBody(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        HandleChunk(doc.RootElement, streaming: false);
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch (JsonException) { throw NotJson(provider, json); }
+        using (doc) HandleChunk(doc.RootElement, streaming: false);
         _done = true;
     }
+
+    /// <summary>The 200 arrived as JSON but is not: reported like any other transport failure, and retried like one.</summary>
+    public static ModelException NotJson(string provider, string json) => ProviderErrors.FromStream(provider,
+        "bad_json", $"200 with a JSON content type, but the body is not JSON: {J.Truncate(json.Trim(), 200)}");
 
     private void HandleChunk(JsonElement root, bool streaming)
     {
         if (root.ValueKind != JsonValueKind.Object) return;
+        if (root.Str("id") is { Length: > 0 } id) ResponseId ??= id;
         if (root.Prop("error").Has())
         {
             var err = root.Prop("error");

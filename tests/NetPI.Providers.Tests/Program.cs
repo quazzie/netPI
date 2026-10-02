@@ -220,6 +220,35 @@ await t.Run("Error classification (HTTP)", () =>
     return Task.CompletedTask;
 });
 
+// A server that ignores stream:true, or a proxy/WAF in front of it, can answer 200 + application/json with
+// something that is not JSON. The unguarded JsonDocument.Parse then ended the call with a raw JsonException: no
+// provider, no request id, no saved request, and RetryMiddleware.IsTransient's default (false) meant it was not
+// even retried (idea-3ivjku). All three non-streaming parsers report it like every other transport failure.
+await t.Run("a 200 whose body is not JSON is a transient, described provider error (all three parsers)", () =>
+{
+    const string html = "<!doctype html>\n<html><body><h1>502 Bad Gateway</h1></body></html>";
+    var cases = new (string Name, Action<string> Run)[]
+    {
+        ("aiproxy chat", j => new AP.ChatStreamParser(new AP.MessageAssembler(), "AiProxy", false).HandleJsonBody(j)),
+        ("aiproxy responses", j => new AP.ResponsesStreamParser(new AP.MessageAssembler(), "AiProxy").HandleJsonBody(j)),
+        ("openrouter", j => new OR.OpenRouterStreamParser(new OR.MessageAssembler(), "OpenRouter", false).HandleJsonBody(j)),
+    };
+    foreach (var (name, run) in cases)
+    foreach (var body in new[] { html, "", "{\"choices\":[" }) // an error page, an empty body, a truncated one
+    {
+        ModelException? caught = null;
+        try { run(body); } catch (ModelException ex) { caught = ex; }
+        t.Check(caught is { Transient: true, ErrorType: "bad_json" }, $"{name}: transient provider error, not a JsonException ({caught?.ErrorType})");
+        t.Check(caught?.Message.Contains("not JSON") == true, $"{name}: says what went wrong: {caught?.Message}");
+        if (body.Length > 0) t.Check(caught!.Message.Contains(body[..Math.Min(24, body.Length)]), $"{name}: quotes the body");
+    }
+    var type = "";
+    try { new AP.ResponsesStreamParser(new AP.MessageAssembler(), "AiProxy").HandleJsonBody("""{"error":{"message":"boom","type":"server_error"}}"""); }
+    catch (ModelException ex) { type = ex.ErrorType ?? ""; }
+    t.Eq("server_error", type, "a well-formed error envelope is still the server's own error");
+    return Task.CompletedTask;
+});
+
 // ================================================================== AiProxy plugin
 
 var apCtx = new FakePluginContext(new JsonObject
@@ -465,6 +494,42 @@ await t.Run("responses: an interleaved assistant turn replays reasoning → mess
     t.Eq("call:1", input[4]!["call_id"]!.GetValue<string>(), "function_call after the message");
 });
 
+// The twin of the OpenRouter and Anthropic guards: reasoning items (encrypted_content included) go back only to the
+// model that produced them. Switching a chat's model mid-chat used to replay the previous model's reasoning and the
+// next turn was refused with a non-transient 400 (idea-d9k11o).
+await t.Run("responses: reasoning is replayed only to the model that produced it", async () =>
+{
+    string Kind(JsonNode? n) => n?["type"]?.GetValue<string>() ?? n?["role"]?.GetValue<string>() ?? "?";
+    ThinkingPart Th(string text) => new() { Text = text, ProviderData = new JsonObject { ["id"] = "rs_x", ["encrypted_content"] = "ENC_" + text } };
+    var history = new List<ChatMessage>
+    {
+        ChatMessage.UserText("read a.txt"),
+        new() { Role = MessageRole.Assistant, Provider = "aiproxy", Model = "qwen3.8-27b",
+                Parts = [Th("ours"), new TextPart { Text = "Read it" }, new ToolCallPart { Id = "call:1", Name = "read", Arguments = "{}" }] },
+        new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "call:1", Name = "read", Content = "A" }] },
+        new() { Role = MessageRole.Assistant, Provider = "openrouter", Model = "stealth/bunny", Parts = [Th("foreign model"), new TextPart { Text = "Earlier" }] },
+        new() { Role = MessageRole.Assistant, Provider = "vllm", Model = "qwen3.8-27b", Parts = [Th("foreign provider"), new TextPart { Text = "Before" }] },
+        new() { Role = MessageRole.Assistant, Parts = [Th("no origin"), new TextPart { Text = "Long ago" }] },
+        ChatMessage.UserText("go on"),
+    };
+    await Collect(aiproxy, Req(Cat("qwen3.8-27b"), history));
+    var input = mock.Last("/v1/responses").Json["input"]!.AsArray();
+    t.Eq("user,reasoning,message,function_call,function_call_output,message,message,reasoning,message,user",
+        string.Join(",", input.Select(Kind)), "only our own reasoning item is replayed (a turn with no recorded origin still is)");
+    t.Eq("ENC_ours", input[1]!["encrypted_content"]?.GetValue<string>(), "our own encrypted_content goes back");
+    t.Eq("ENC_no origin", input[7]!["encrypted_content"]?.GetValue<string>(), "a turn without provider/model is replayed, as before");
+    t.Check(!mock.Last("/v1/responses").Json.ToJsonString().Contains("ENC_foreign"), "no foreign encrypted_content, from model or provider");
+    t.Eq("Read it", input[2]!["content"]![0]!["text"]?.GetValue<string>(), "the rest of each turn is still replayed");
+
+    // a model switch drops the reasoning items of the model that produced them (the turn with no recorded
+    // origin is still replayed: nothing says it came from elsewhere)
+    await Collect(aiproxy, Req(Cat("qwen38-27b-iq3s"), history));
+    input = mock.Last("/v1/responses").Json["input"]!.AsArray();
+    t.Eq("user,message,function_call,function_call_output,message,message,reasoning,message,user", string.Join(",", input.Select(Kind)), "a model switch drops the reasoning items");
+    var sent = mock.Last("/v1/responses").Json.ToJsonString();
+    t.Check(!sent.Contains("ENC_ours") && !sent.Contains("ENC_foreign"), "and their encrypted_content with them");
+});
+
 await t.Run("errors: server ids are added to the message and the failed request is saved", async () =>
 {
     var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
@@ -483,6 +548,49 @@ await t.Run("errors: server ids are added to the message and the failed request 
     var dump = JsonNode.Parse(File.ReadAllText(files[0]))!;
     t.Eq("req_abc123", dump["requestId"]?.GetValue<string>(), "dump request id");
     t.Check(dump["request"]?["input"] is JsonArray, "dump has the request body");
+    Directory.Delete(dir, true);
+});
+
+await t.Run("errors: the failed-request dump keeps the response body, not only the 2,000-char excerpt", async () =>
+{
+    // The error message quotes 2,000 characters of the body; a 400 that lists what it rejected says the rest
+    // there, so the file a bug report points at has to hold the body itself (idea-022jh1).
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
+    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.aiproxy") as JsonObject,
+        null, null, null, dir);
+    var ex = await Fails(p, Req(M("aiproxy", "rejected-tools")));
+    t.Check(ex is { StatusCode: 400 } && ex.Message.Contains("3 tools rejected") && !ex.Message.Contains("tr-abc-9999"),
+        $"the message quotes the excerpt only: {ex?.Message.Length} chars, no trace id");
+    var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
+    var response = dump["response"]?.GetValue<string>() ?? "";
+    t.Check(response.Contains("tr-abc-9999") && response.Contains("tool_79"), "the dump holds the whole body, outside error.message");
+    t.Check(response.Length < AP.ProviderErrors.MaxBody + 1, $"and it is capped ({response.Length} chars)");
+    t.Check(dump["request"]?["input"] is JsonArray, "the request is still in full");
+
+    // and on the 200-with-a-broken-body path the body is what says what happened
+    await Fails(p, Req(M("aiproxy", "bad-json")));
+    var dumps = Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json")
+        .Select(f => JsonNode.Parse(File.ReadAllText(f))!).ToList();
+    t.Check(dumps.Any(d => d["response"]?.GetValue<string>()?.Contains("502 Bad Gateway") == true), "a body that is not JSON is saved too");
+    Directory.Delete(dir, true);
+});
+
+await t.Run("errors: a 200 whose body is not JSON is described, saved with the request, and retried", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
+    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.aiproxy") as JsonObject,
+        null, null, null, dir);
+    var resp = await Fails(p, Req(M("aiproxy", "bad-json")));
+    t.Check(resp is { Transient: true, ErrorType: "bad_json" } && resp.Message.StartsWith("AiProxy: bad_json"), "responses transport: " + resp?.Message);
+    t.Check(resp!.Message.Contains("502 Bad Gateway") && resp.Message.Contains("saved"), "the body is quoted and the request saved");
+    apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
+    try
+    {
+        var chat = await Fails(p, Req(M("aiproxy", "bad-json")));
+        t.Check(chat is { Transient: true, ErrorType: "bad_json" } && chat.Message.StartsWith("AiProxy: bad_json"), "chat transport: " + chat?.Message);
+    }
+    finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+    t.Eq(2, Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Length, "both failures saved");
     Directory.Delete(dir, true);
 });
 
@@ -654,6 +762,39 @@ await t.Run("chat: request body (system, tool_calls, tool results, images, strea
     t.Check(msgs[5]!["content"]!.AsArray().Any(c => c!["type"]!.GetValue<string>() == "image_url"), "tool images after tool messages");
 });
 
+// A tool that returned images (a read on a PNG, a screenshot) told the model nothing when the model has no image
+// input: the images were dropped in silence, so the answer was written as if the image had been empty. The
+// user-message path already substituted an "[image omitted]" note; this is the same note for tool results, once
+// per call id, with the count (idea-vgwg26).
+List<ChatMessage> ToolImagesConvo() =>
+[
+    ChatMessage.UserText("what is in these?"),
+    new() { Role = MessageRole.Assistant, Provider = "x",
+            Parts = [new TextPart { Text = "Looking" },
+                     new ToolCallPart { Id = "call:img", Name = "read", Arguments = "{}" },
+                     new ToolCallPart { Id = "call:none", Name = "ls", Arguments = "{}" }] },
+    new() { Role = MessageRole.Tool, Parts =
+        [
+            new ToolResultPart { CallId = "call:img", Name = "read", Content = "chart.png", Images = [new ImagePart { MediaType = "image/png", Data = Img("a") }, new ImagePart { MediaType = "image/png", Data = Img("b") }] },
+            new ToolResultPart { CallId = "call:none", Name = "ls", Content = "a.txt", Images = [new ImagePart { MediaType = "image/png", Data = Img("c") }] },
+        ] },
+    ChatMessage.UserText("and now?"),
+];
+
+await t.Run("tool-result images are named as omitted for a text-only model (both aiproxy transports)", async () =>
+{
+    foreach (var transport in new[] { "responses", "chat" })
+    {
+        apCtx.SettingsImpl.Set("providers.aiproxy.transport", transport);
+        try { await Collect(aiproxy, Req(Cat("gemma-4"), ToolImagesConvo())); }
+        finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+        var all = mock.Last(transport == "chat" ? "/v1/chat/completions" : "/v1/responses").Json.ToJsonString();
+        t.Check(all.Contains("2 images returned by tool call call:img") && all.Contains("1 image returned by tool call call:none"),
+            $"aiproxy {transport}: both tool calls named as omitted");
+        t.Check(all.Contains("does not accept image input") && !all.Contains("data:image"), $"aiproxy {transport}: the note says why, and no image is sent");
+    }
+});
+
 await t.Run("chat: images dropped for a text-only catalog model (aiproxy gemma-4 via transport override)", async () =>
 {
     apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
@@ -682,6 +823,19 @@ await t.Run("per-model transport override with a dotted model id", async () =>
         t.Eq(gemma + 1, mock.Requests.Count(r => r.Path == "/v1/responses"), "other models still use responses");
     }
     finally { apCtx.SettingsImpl.Set("providers.aiproxy.models", null); }
+});
+
+await t.Run("chat: the completion id is kept, so a failure on a server without x-request-id has an id", async () =>
+{
+    var p = new AP.ChatStreamParser(new AP.MessageAssembler(), "P", false);
+    p.Handle(new AP.SseEvent(null, """{"id":"c1","choices":[{"index":0,"delta":{"content":"a"}}]}"""));
+    p.Handle(new AP.SseEvent(null, """{"id":"c2","choices":[{"index":0,"delta":{"content":"b"}}]}"""));
+    t.Eq("c1", p.ResponseId, "the first id wins, like every other id the provider reports");
+
+    // end to end: the vllm endpoint sends no x-request-id, and the err-chunk scenario fails after two chunks
+    var e = await Fails(apPlugin.Providers[1], Req(M("vllm", "err-chunk")));
+    t.Check(e is { Transient: true, ErrorType: "server_error" } && e.Message.Contains("response c1"), "the completion id is in the message: " + e?.Message);
+    t.Check(e!.Detail?.Contains("response c1") == true, "and in Detail");
 });
 
 await t.Run("chat: finish length, EOF, cut-off, error chunk, 400 overflow, non-streamed JSON body", async () =>
@@ -1145,6 +1299,44 @@ await t.Run("openrouter: errors keep the server's text and add generation id, up
     t.Eq(3, dumps.Length, "three failed requests saved");
     t.Check(dumps.Select(f => JsonNode.Parse(File.ReadAllText(f))!).All(d => d["request"]?["messages"] is JsonArray && d["generationId"] is not null), "dumps have the body and the generation id");
     Directory.Delete(orDumps, true);
+});
+
+await t.Run("openrouter: a 200 whose body is not JSON is described, saved and retried, not a raw JsonException", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-or-" + Guid.NewGuid().ToString("N"));
+    var p = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.openrouter") as JsonObject, null, orCtx.Bus, dir);
+    var e = await Fails(p, Req(M("openrouter", "vendor/bad-json")));
+    t.Check(e is { Transient: true, ErrorType: "bad_json" } && e.Message.StartsWith("OpenRouter: bad_json"), "described: " + e?.Message);
+    t.Check(e!.Message.Contains("502 Bad Gateway") && e.Message.Contains("saved"), "the body is quoted and the request saved");
+    Directory.Delete(dir, true);
+});
+
+await t.Run("openrouter: the failed-request dump keeps the whole response body, not the 2,000-char excerpt", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-or-" + Guid.NewGuid().ToString("N"));
+    var p = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.openrouter") as JsonObject, null, orCtx.Bus, dir);
+    var e = await Fails(p, Req(M("openrouter", "vendor/rejected-tools")));
+    t.Check(e is { StatusCode: 400 } && e.Message.Contains("3 tools rejected") && !e.Message.Contains("tr-or-7777"), "the message quotes the excerpt only");
+    var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
+    t.Check((dump["response"]?.GetValue<string>() ?? "").Contains("tr-or-7777"), "the dump holds the whole body");
+    t.Check(dump["request"]?["messages"] is JsonArray && dump["generationId"] is not null, "with the request and the generation id");
+    Directory.Delete(dir, true);
+});
+
+await t.Run("openrouter: tool-result images are named as omitted for a text-only model", async () =>
+{
+    // vendor/plain:free lists text as its only input modality, so the two images its tool returned cannot be sent
+    await Collect(openrouter, Req(await OrModel("vendor/plain:free"), ToolImagesConvo()));
+    var sent = mock.Last("/openrouter/api/v1/chat/completions").Json;
+    var all = sent.ToJsonString();
+    t.Check(all.Contains("2 images returned by tool call call:img") && all.Contains("1 image returned by tool call call:none"),
+        "both tool calls named as omitted, with the count");
+    t.Check(all.Contains("does not accept image input") && !all.Contains("data:image"), "the note says why, and no image is sent");
+
+    // a model that does take images still gets them, without a note
+    await Collect(openrouter, Req(await OrModel("stealth/bunny"), ToolImagesConvo()));
+    all = mock.Last("/openrouter/api/v1/chat/completions").Json.ToJsonString();
+    t.Check(all.Contains("data:image") && !all.Contains("omitted:"), "an image-capable model gets the images and no note");
 });
 
 await t.Run("openrouter: without an API key no models are offered and calls fail clearly", async () =>
