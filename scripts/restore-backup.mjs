@@ -19,6 +19,12 @@ export async function restoreBackup(backup, destination) {
   destination = path.resolve(destination);
   const manifest = JSON.parse(await fs.readFile(path.join(backup, 'manifest.json'), 'utf8'));
   if (manifest.version !== 1) throw new Error('Unsupported backup version');
+  // Which store wrote the snapshot decides what is checked below: the provider named the files it wrote, and only the
+  // one that ships netpi.db can be checked for its header here. A manifest without it is from a build that did not
+  // name the provider, and nothing here can say what reads its files.
+  const provider = manifest.provider;
+  if (typeof provider !== 'string' || !provider)
+    throw new Error('The manifest does not say which storage provider wrote the snapshot (one made before it did)');
   const listed = manifest.files;
   if (!listed || typeof listed !== 'object' || Array.isArray(listed) || Object.keys(listed).length === 0)
     throw new Error('The manifest lists no files');
@@ -32,9 +38,11 @@ export async function restoreBackup(backup, destination) {
     if (hash !== expected.toLowerCase()) throw new Error(`Checksum mismatch: ${name}`);
     contents.set(name, data);
   }
-  if (!contents.has('netpi.db')) throw new Error('The snapshot has no netpi.db');
+  if (provider === 'sqlite') {
+    if (!contents.has('netpi.db')) throw new Error('The snapshot has no netpi.db');
+    if (contents.get('netpi.db').subarray(0, 16).toString('ascii') !== 'SQLite format 3\0') throw new Error('Invalid SQLite database');
+  }
   if (!contents.has('settings.json')) throw new Error('The snapshot has no settings.json');
-  if (contents.get('netpi.db').subarray(0, 16).toString('ascii') !== 'SQLite format 3\0') throw new Error('Invalid SQLite database');
   const settings = JSON.parse(contents.get('settings.json').toString('utf8'));
   if (!settings || Array.isArray(settings) || typeof settings !== 'object') throw new Error('Invalid settings');
   // Exclusive creation rejects existing homes, including symlinks. On a write failure keep the partial directory

@@ -66,16 +66,25 @@ public sealed class BackupPlugin : INetPiPlugin
             var id = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N");
             staging = Path.Combine(root, ".pending-" + id);
             Directory.CreateDirectory(staging);
-            // VACUUM INTO includes committed WAL contents and creates a consistent independent database.
-            ctx.Db.Execute("VACUUM INTO @file", new { file = Path.Combine(staging, "netpi.db") });
-            File.WriteAllText(Path.Combine(staging, "settings.json"), ctx.Settings.Snapshot().ToJsonString(NetPiJson.Indented));
+            // The provider takes a consistent copy of the whole store, committed writes included, and names the files it
+            // wrote. The ideas backlog, the cards waiting for an answer and the commit cursors are in it, so a backup
+            // does not need the ideas plugin to be running, and it cannot be a snapshot that quietly left the ideas out.
+            var store = ctx.Services.Require<IStorageAccess>();
+            var written = store.Snapshot.Write(staging).ToList();
+            File.WriteAllText(Path.Combine(staging, SettingsFile), ctx.Settings.Snapshot().ToJsonString(NetPiJson.Indented));
+            written.Add(SettingsFile);
             var files = new JsonObject();
-            foreach (var name in SnapshotFiles(ctx, staging))
+            foreach (var name in written)
             {
                 using var input = File.OpenRead(Path.Combine(staging, name));
                 files[name] = Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant();
             }
-            var manifest = new JsonObject { ["version"] = 1, ["id"] = id, ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"), ["automatic"] = automatic, ["files"] = files };
+            var manifest = new JsonObject
+            {
+                ["version"] = 1, ["id"] = id, ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"), ["automatic"] = automatic,
+                // the store that wrote it, so a restore knows what reads the files the provider named
+                ["provider"] = store.Info.Provider, ["files"] = files,
+            };
             File.WriteAllText(Path.Combine(staging, "manifest.json"), manifest.ToJsonString(NetPiJson.Indented));
             ct.ThrowIfCancellationRequested();
             var destination = Path.Combine(root, id);
@@ -83,6 +92,7 @@ public sealed class BackupPlugin : INetPiPlugin
             staging = null;
             Verify(ctx.Paths.Home, id);
             // Never remove manual backups. Retention happens only after a successful new snapshot.
+            var expected = new HashSet<string>(written, StringComparer.Ordinal) { "manifest.json" };
             foreach (var old in List(ctx.Paths.Home).Where(n => n!["automatic"]?.GetValue<bool>() == true)
                 .OrderByDescending(n => n!["createdAt"]!.GetValue<string>()).Skip(Math.Clamp(ctx.Settings.Get("backup.keepCount", 7), 1, 365)))
             {
@@ -90,7 +100,7 @@ public sealed class BackupPlugin : INetPiPlugin
                 if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) continue;
                 // A snapshot this build would not write (files in it a new snapshot does not have) is kept rather than
                 // deleted: an older snapshot's ideas files are still the only copy of anything, if the user is on one.
-                if (Directory.EnumerateFileSystemEntries(path).Any(p => !Required.Contains(Path.GetFileName(p)) && Path.GetFileName(p) != "manifest.json")) continue;
+                if (Directory.EnumerateFileSystemEntries(path).Any(p => !expected.Contains(Path.GetFileName(p)))) continue;
                 foreach (var file in Directory.EnumerateFiles(path)) File.Delete(file);
                 Directory.Delete(path);
             }
@@ -111,16 +121,8 @@ public sealed class BackupPlugin : INetPiPlugin
         return Path.Combine(home, "backups", id);
     }
 
-    /// <summary>The files every snapshot has to carry: the database (which holds the ideas tables) and the settings.</summary>
-    private static readonly string[] Required = ["netpi.db", "settings.json"];
-
-    /// <summary>
-    /// The files a snapshot is made of, in the order they are written. The ideas backlog, the cards waiting for an
-    /// answer and the commit cursors are plugin-owned tables in <c>netpi.db</c>, so they travel inside the consistent
-    /// database snapshot: a backup does not need the ideas plugin to be running, and it cannot be a snapshot that
-    /// quietly left the ideas out.
-    /// </summary>
-    private static IReadOnlyList<string> SnapshotFiles(IPluginContext ctx, string staging) => Required;
+    /// <summary>The one file a snapshot has that is not the store's: the settings, which the store does not hold.</summary>
+    private const string SettingsFile = "settings.json";
 
     public static JsonObject Verify(string home, string id)
     {
@@ -143,8 +145,11 @@ public sealed class BackupPlugin : INetPiPlugin
             if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException($"Backup checksum mismatch: {name}");
         }
-        foreach (var name in Required)
-            if (!files.ContainsKey(name)) throw new InvalidDataException($"The backup manifest does not list {name}");
+        // The store's files are the ones the provider wrote and named, and it says which provider it was so a restore
+        // knows what reads them. The settings are the one file this plugin writes itself, so it is the one it requires.
+        if (manifest["provider"] is not JsonValue named || !named.TryGetValue<string>(out var provider) || provider.Length == 0)
+            throw new InvalidDataException("The backup manifest does not say which storage provider wrote it");
+        if (!files.ContainsKey(SettingsFile)) throw new InvalidDataException($"The backup manifest does not list {SettingsFile}");
         return manifest;
     }
 

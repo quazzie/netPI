@@ -108,7 +108,7 @@ internal sealed class PromptStore(IPluginContext ctx)
     {
         _prompts = ctx.Data.Collection("context_prompts", new CollectionSpec());
         // the tool names of a session's first model call: the baseline for "tools" notices. A baseline taken later
-        // (after context.reset) ignores the "tools" notices up to since_seq.
+        // (after context.reset) ignores the "tools" notices up to its sinceSeq.
         _baselines = ctx.Data.Collection("context_tools", new CollectionSpec());
         // every prompt a session was sent (the first, and one after each context.reset) with its tool definitions
         _sent = ctx.Data.Collection("context_sent", new CollectionSpec().Text("sessionId").Integer("version").Integer("afterSeq"));
