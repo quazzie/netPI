@@ -208,12 +208,20 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 continue;
 
             // 5. model call
-            if (Ctx.Sessions.GetSession(SessionId) is { } beforeCall && SessionPrompt.Revision(beforeCall) != promptRevision) continue;
+            var beforeCall = Ctx.Sessions.GetSession(SessionId);
+            if (beforeCall is null || SessionPrompt.Revision(beforeCall) != promptRevision) continue;
             ChatMessage assistant;
             try
             {
-                var afterSeq = Ctx.Sessions.GetMessages(SessionId, null, 1).LastOrDefault()?.Seq ?? 0;
-                Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq));
+                // Record the sent prompt only when it is not already recorded for this revision: re-recording would
+                // rewrite the session row and broadcast session.updated with the prompt in its meta on every model call
+                // (idea-l1o09d). The prompt a revision was sent with is stored once, when it first is. Recorded also
+                // covers the built-in prompt builder, which writes the meta without the history entry RecordSent keeps.
+                if (!SessionPrompt.Recorded(beforeCall, turn.SystemPrompt))
+                {
+                    var afterSeq = Ctx.Sessions.GetMessages(SessionId, null, 1).LastOrDefault()?.Seq ?? 0;
+                    Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq));
+                }
                 assistant = await CallModelAsync(turn, model, session, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

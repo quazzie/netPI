@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using NetPI.Context;
 
 namespace NetPI.Agent.Tests;
 
@@ -13,6 +14,8 @@ public static class ContextTests
         t.Add("context: working directory and project arrive as notices (first call, switch, moved, compaction)", ProjectNoticesFlow);
         t.Add("context: the system prompt is frozen per session; settings changes reach new sessions", FrozenPrompt);
         t.Add("context: every system prompt a session is sent is kept with its tools (context.prompts, context.prompt event)", SentPrompts);
+        t.Add("context: the sent prompt is recorded in the session row once; a later identical call rewrites nothing", PromptRecordedOnce);
+        t.Add("context: a changed tool schema revision arrives as a definition notice (the last-sent map is cached, read cold)", ToolRevisionNotices);
         t.Add("context: a fork goes on with the prompt the original had at the fork point", ForkPrompt);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
@@ -321,6 +324,118 @@ public static class ContextTests
         await Turn(h, s2.Id, "hi");
         var p2 = h.Catalog.Requests.Last().SystemPrompt!;
         Check.True(p2.StartsWith("You are someone else.") && p2.EndsWith("APPENDED LATER"), "new sessions get the new settings");
+    }
+
+    // The prompt a revision is sent with is stored in the session row when it first is: a later call with the same prompt
+    // and revision must not rewrite the row and rebroadcast session.updated just to record what is already there
+    // (idea-l1o09d). A new prompt (a profile switch) is recorded again.
+    private static async Task PromptRecordedOnce()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+
+        var meta = h.Sessions.GetSession(s.Id)!.Meta!;
+        Check.Equal(h.Catalog.Requests.Last().SystemPrompt, (string?)meta[SessionPrompt.FallbackKey], "the sent prompt is recorded in the row");
+        Check.Equal(1, ((JsonArray)meta[SessionPrompt.HistoryKey]!).Count, "one distinct prefix");
+
+        var before = h.Bus.All.Count;
+        await Turn(h, s.Id, "again");
+        var second = h.Bus.All.Skip(before).ToList();
+        // the window: after the session.updated the user's own message add brings, up to the reply's message.added —
+        // a rewrite of the session row in between would show up there (a ContextTokens update comes after the reply)
+        var userAdd = second.FindIndex(e => e.Type == EventTypes.MessageAdded);
+        var userUpdate = second.FindIndex(e => e.Type == EventTypes.SessionUpdated && e.Seq > second[userAdd].Seq);
+        var asstAdd = second.FindLastIndex(e => e.Type == EventTypes.MessageAdded);
+        Check.True(userAdd >= 0 && asstAdd > userUpdate, "the user message and the reply of the second turn");
+        Check.Equal(0, second.Skip(userUpdate + 1).Take(asstAdd - userUpdate - 1).Count(e => e.Type == EventTypes.SessionUpdated),
+            "no session row rewrite between the user message and the reply: the prompt was already recorded");
+
+        meta = h.Sessions.GetSession(s.Id)!.Meta!;
+        Check.Equal(h.Catalog.Requests.First().SystemPrompt, (string?)meta[SessionPrompt.FallbackKey], "the prompt is unchanged");
+        Check.Equal(1, ((JsonArray)meta[SessionPrompt.HistoryKey]!).Count, "still one distinct prefix");
+
+        // a new prompt (a profile switch) is written to the row again: the skip is for the unchanged case only
+        h.Settings.SetQuiet("context.appendPrompt", "AFTER THE SWITCH");
+        before = h.Bus.All.Count;
+        await h.Rpc.CallAsync("context.reset", new { sessionId = s.Id });
+        await Turn(h, s.Id, "switched");
+        var third = h.Bus.All.Skip(before).ToList();
+        var userSwitch = third.FindIndex(e => e.Type == EventTypes.MessageAdded);
+        var userSwitchUpdate = third.FindIndex(e => e.Type == EventTypes.SessionUpdated && e.Seq > third[userSwitch].Seq);
+        var asstSwitch = third.FindLastIndex(e => e.Type == EventTypes.MessageAdded);
+        Check.True(userSwitch >= 0 && asstSwitch > userSwitchUpdate, "the user message and the reply of the switched turn");
+        Check.True(third.Skip(userSwitchUpdate + 1).Take(asstSwitch - userSwitchUpdate - 1).Any(e => e.Type == EventTypes.SessionUpdated),
+            "the new prompt is written to the row");
+        var switched = h.Sessions.GetSession(s.Id)!.Meta!;
+        Check.Equal(h.Catalog.Requests.Last().SystemPrompt, (string?)switched[SessionPrompt.FallbackKey], "the new prompt is recorded");
+        Check.Contains((string?)switched[SessionPrompt.FallbackKey]!, "AFTER THE SWITCH", "the new prompt has the new settings");
+        Check.Equal(2, ((JsonArray)switched[SessionPrompt.HistoryKey]!).Count, "one entry per distinct prompt");
+    }
+
+    // A tool whose schema changed (its revision) is announced by a "tools" notice naming it updated — the model saw the
+    // old definition. The last-sent name→revision map the diff compares against is kept in the store's cache (one read
+    // when it is first needed, including for a restarted store), not re-read and re-parsed from context_sent on every
+    // model call (idea-l1o09d).
+    private static async Task ToolRevisionNotices()
+    {
+        await using var h = await TestHost.StartAsync();
+        var reg = h.Tools.Register(new RevTool("1"));
+        var s = h.NewSession();
+
+        await Turn(h, s.Id, "hi");
+        Check.Equal(0, Notices(h, s.Id, "tools").Count, "the first call sends the tools; nothing to announce");
+
+        reg.Dispose(); reg = h.Tools.Register(new RevTool("2"));
+        await Turn(h, s.Id, "changed?");
+        var n1 = Notices(h, s.Id, "tools").Single();
+        Check.Equal("Disclosed tool definitions changed. Updated: probe. Inspect the current schema before calling.", n1.Text);
+        Check.Equal("2", (string?)n1.Meta!["revisions"]?["probe"]);
+
+        reg.Dispose(); reg = h.Tools.Register(new RevTool("3"));
+        await Turn(h, s.Id, "changed again?");
+        Check.Equal(2, Notices(h, s.Id, "tools").Count, "each change is announced once");
+        Check.Equal("3", (string?)Notices(h, s.Id, "tools")[1].Meta!["revisions"]?["probe"]);
+
+        await Turn(h, s.Id, "unchanged now");
+        Check.Equal(2, Notices(h, s.Id, "tools").Count, "an unchanged definition is not re-announced");
+
+        reg.Dispose(); reg = h.Tools.Register(new RevTool("4"));
+        await Turn(h, s.Id, "and again?");
+        Check.Equal(3, Notices(h, s.Id, "tools").Count, "the next change is announced again");
+        Check.Equal("4", (string?)Notices(h, s.Id, "tools")[2].Meta!["revisions"]?["probe"]);
+
+        // a restarted store (empty cache) reads the last-sent map from context_sent: the same diff, cold
+        var cold = new PromptStore(new TestPluginContext(h, "netpi.context"));
+        cold.Initialize();
+        Check.Equal("1", cold.LastSentRevisions(s.Id)!["probe"], "the map of the tools the session was last sent");
+
+        // the store itself: RecordSent fills the map (a tool without a revision is not part of it), Delete forgets it
+        var own = new PromptStore(new TestPluginContext(h, "probe-store"));
+        own.Initialize();
+        Check.True(own.LastSentRevisions("ses_1")!.Count == 0, "nothing sent yet");
+        own.RecordSent("ses_1", "the prompt", [
+            new ToolDefinition { Name = "alpha", Description = "a", Revision = "7" },
+            new ToolDefinition { Name = "beta", Description = "b" },
+        ], 3);
+        var map = own.LastSentRevisions("ses_1")!;
+        Check.Equal("7", map["alpha"]);
+        Check.False(map.ContainsKey("beta"), "no revision: not part of the diff");
+        own.Delete("ses_1");
+        Check.True(own.LastSentRevisions("ses_1")!.Count == 0, "forgotten");
+    }
+
+    /// <summary>A probe tool the test "reloads" by registering a new instance with a new schema revision.</summary>
+    private sealed class RevTool(string revision) : IAgentTool
+    {
+        public ToolDefinition Definition { get; } = new()
+        {
+            Name = "probe",
+            Description = "A probe tool for schema revisions.",
+            Revision = revision,
+            PromptGuidelines = [],
+        };
+        public Task<ToolResult> ExecuteAsync(ToolContext context, System.Text.Json.JsonElement args, CancellationToken ct) => Task.FromResult(ToolResult.Ok(""));
     }
 
     // A fork (sessions.fork) takes the prompt the original was sent at the fork point, so its next call starts with the

@@ -89,8 +89,7 @@ public static class BudgetTests
         await h.StartPluginAsync(new NetPI.Agents.AgentsPlugin());
         Check.Equal(3, PeriodUsage(h).Count(new DataQuery().Eq("period", periodKey)), "the rebuild wrote one document per group");
 
-        JsonNode Group(string? lane) => ((JsonArray)Summary(h)["models"]!)
-            .Single(m => (m!["agent"]?.GetValue<string>()) == lane);
+        JsonNode Group(string? lane) => ((JsonArray)Summary(h)["models"]!).Single(m => (m!["agent"]?.GetValue<string>()) == lane)!;
         var alpha = Group("Alpha");
         Check.Equal(3000, (long)alpha!["calls"]!);
         Check.Equal(3.0, Math.Round(Num(alpha["costUsd"]), 6));
