@@ -257,7 +257,7 @@ public static class IdeaOps
         if (Array(Pick(input, "sections")) is { } given)
             foreach (var s in given) sections.Add(CreateSection(s, sections));
         // Images are references to files the host wrote (ideas.attach); anything else in the array is dropped here.
-        if (input["images"] is { } images) idea["images"] = IdeaImages.Sanitize(images);
+        if (input["images"] is { } images) idea["images"] = IdeaImages.Sanitize(null, images);
         if (keepExtraFields)
             foreach (var (k, v) in input)
                 if (!Protected.Contains(k) && !idea.ContainsKey(k) && Norm(k) != "description") idea[k] = v?.DeepClone();
@@ -342,7 +342,7 @@ public static class IdeaOps
             // The whole set is replaced, not merged: the card sends what it kept after the user removed one. The files
             // the dropped references named are the caller's to delete (ideas.detach), so an idea document never
             // decides what leaves the disk.
-            var next = IdeaImages.Sanitize(Pick(patch, "images"));
+            var next = IdeaImages.Sanitize(null, Pick(patch, "images"));
             if (!JsonNode.DeepEquals(idea["images"], next)) { idea["images"] = next; changes.Add("images"); }
         }
 
