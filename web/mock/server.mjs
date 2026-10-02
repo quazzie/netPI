@@ -124,6 +124,19 @@ class RpcError extends Error {
   }
 }
 const notFound = (what) => new RpcError('not_found', `${what} not found`);
+
+// eleven background idea checks in run order (oldest first): the Ideas view keeps the last 10, so mock-check-01 never shows
+const ideasWorkList = () => [
+  ...Array.from({ length: 10 }, (_, k) => ({
+    id: `mock-check-${String(k + 1).padStart(2, '0')}`,
+    purpose: `Mock check ${k + 1}`,
+    model: 'aiproxy/qwen3.8-27b',
+    status: 'finished',
+    reason: null,
+    finishedAt: new Date(Date.now() - (11 - k) * 60_000).toISOString(),
+  })),
+  { id: 'mock-verifier-dropped', purpose: 'Verify idea completion', model: 'aiproxy/qwen3.8-27b', status: 'dropped', reason: 'Model capacity did not open before the deadline', finishedAt: new Date().toISOString() },
+];
 const need = (p, k) => {
   if (p?.[k] == null || p[k] === '') throw new RpcError('bad_request', `Missing parameter: ${k}`);
   return p[k];
@@ -618,23 +631,14 @@ const handlers = {
   },
   'agent.queue': (p) => agent.queue(need(p, 'sessionId')),
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),
-  // like the Work plugin: agents.list and usage.summary
+  // like the Work plugin: agents.list and usage.summary; the ideas checks are the same list the Diagnostics tab's
+  // Ideas view reads via ideas.work (eleven in run order, oldest first — the view keeps the last 10)
+  'ideas.work': () => ideasWorkList(),
   'work.snapshot': () => ({
     agents: agentPools(),
     physicalOwners: [{ resource: 'local:aiproxy/qwen3.8-27b', key: 'qwen', holder: { leaseId: 'mock-retiring', agentId: 'old-run', label: 'Reloaded worker', since: new Date(Date.now() - 30_000).toISOString(), executorGeneration: 'previous', correlationId: 'mock-held-call', purpose: 'agent', retiring: true, cancellationRequestedAt: new Date().toISOString(), providerReturnedAt: null } }],
     resources: [{ key: 'local:aiproxy/qwen3.8-27b', model: 'aiproxy/qwen3.8-27b', capacity: 2, busy: 2, queued: 1, available: true, owners: [] }],
-    // eleven background checks in run order (oldest first): the Work tab keeps the last 10, so mock-check-01 never shows
-    ideasWork: [
-      ...Array.from({ length: 10 }, (_, k) => ({
-        id: `mock-check-${String(k + 1).padStart(2, '0')}`,
-        purpose: `Mock check ${k + 1}`,
-        model: 'aiproxy/qwen3.8-27b',
-        status: 'finished',
-        reason: null,
-        finishedAt: new Date(Date.now() - (11 - k) * 60_000).toISOString(),
-      })),
-      { id: 'mock-verifier-dropped', purpose: 'Verify idea completion', model: 'aiproxy/qwen3.8-27b', status: 'dropped', reason: 'Model capacity did not open before the deadline', finishedAt: new Date().toISOString() },
-    ],
+    ideasWork: ideasWorkList(),
     runs: [...store.agents.values()],
     processes: work.procList(),
     usage: { ...work.usageSummary(), budget: budgetStatus(), models: MOCK_SPEND },

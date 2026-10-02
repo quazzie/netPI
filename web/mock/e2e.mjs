@@ -670,12 +670,7 @@ log('plugin tab: Work');
   const nums = (await qwen.locator('.nums').innerText().catch(() => '')).replace(/\s+/g, '');
   check('work: qwen pool 2/2 busy', nums.includes('2/2'), nums);
   check('work: pool shows queued waiter', (await qwen.locator('.owner.waiting').count()) > 0);
-  check('work: the Model capacity and Physical owners sections are gone', (await page.locator('.work [data-resource]').count()) === 0 && (await page.locator('.work [data-lease]').count()) === 0 && (await page.locator('.work .np-section-label[title="Model capacity"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Physical owners"]').count()) === 0);
-  check('work: dropped background checks show their reason', (await page.locator('.work [data-background-work="mock-verifier-dropped"]').innerText()).includes('Model capacity did not open before the deadline'));
-  // the mock serves eleven checks: the tab shows the last ten, newest first, and the oldest never appears
-  const rows = page.locator('.work [data-background-work]');
-  const rowIds = await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-background-work')));
-  check('work: idea checks keep the last 10 of 11, newest first', rowIds.length === 10 && rowIds[0] === 'mock-verifier-dropped' && !rowIds.includes('mock-check-01') && rowIds[1] === 'mock-check-10' && rowIds[9] === 'mock-check-02', rowIds.join(' '));
+  check('work: the Model capacity, Physical owners and Idea checks sections are gone', (await page.locator('.work [data-resource]').count()) === 0 && (await page.locator('.work [data-lease]').count()) === 0 && (await page.locator('.work .np-section-label[title="Model capacity"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Physical owners"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Idea checks"]').count()) === 0);
   const ownerNames = await qwen.locator('.owner .name').allInnerTexts();
   check('work: a top-level lane owner shows its session title, not "main"',
     ownerNames.includes('Index docs for semantic search') && !ownerNames.includes('main') && ownerNames.includes('surveyor'), ownerNames.join(' | '));
@@ -1005,6 +1000,13 @@ log('plugin tab: Diagnostics');
   await view('Logs');
   await page.waitForTimeout(400);
   check('diagnostics: logs', (await page.locator('.diag .log').count()) > 3);
+  // background idea checks live here now (ideas.work): the mock serves eleven, the view keeps the last 10, newest first
+  await view('Ideas');
+  await page.waitForTimeout(400);
+  const workRows = page.locator('.diag [data-background-work]');
+  const workIds = await workRows.evaluateAll((els) => els.map((e) => e.getAttribute('data-background-work')));
+  check('diagnostics: the Ideas view keeps the last 10 of 11, newest first', workIds.length === 10 && workIds[0] === 'mock-verifier-dropped' && !workIds.includes('mock-check-01') && workIds[1] === 'mock-check-10' && workIds[9] === 'mock-check-02', workIds.join(' '));
+  check('diagnostics: a dropped check shows its reason', (await page.locator('.diag [data-background-work="mock-verifier-dropped"]').innerText()).includes('Model capacity did not open before the deadline'));
   await view('Context');
   await page.waitForSelector('.diag .prompt', { timeout: 5000 }).catch(() => {});
   check('diagnostics: context preview', (await page.locator('.diag .prompt').count()) > 0);

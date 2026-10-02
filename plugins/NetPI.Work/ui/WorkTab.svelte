@@ -11,7 +11,6 @@
   let { ctx } = $props();
 
   let slots = $state.raw(null); // the agents with their instances (agents.list)
-  let ideasWork = $state.raw(null);
   let disposed = false;
   let agents = $state.raw(null);
   let processes = $state.raw(null);
@@ -38,7 +37,6 @@
         const s = await ctx.rpc('work.snapshot');
         if (disposed) return;
         slots = s?.agents ?? null;
-        ideasWork = s?.ideasWork ?? null;
         agents = s?.runs ?? null;
         processes = s?.processes ?? null;
         usage = s?.usage ?? null;
@@ -99,7 +97,6 @@
       }),
       ctx.on('resources.changed', () => scheduleRefresh()),
       ctx.on('resources.released', () => scheduleRefresh()),
-      ctx.on('ideas.workChanged', (d) => { if (visible) ideasWork = d?.work ?? []; else dirty = true; }),
       ctx.on('rpc.changed', () => scheduleRefresh(600)),
       ctx.on('services.changed', () => scheduleRefresh(600)),
       ctx.on('process.started', (d) => {
@@ -236,13 +233,6 @@
       {/if}
     </Section>
 
-    <Section title="Idea checks" count={ideasWork?.filter((w) => !w.finishedAt).length || null} collapsible storageKey="work.ideas">
-      {#each (ideasWork ?? []).toReversed().slice(0, 10) as work (work.id)}
-        <div class="usage" data-background-work={work.id}><div class="np-line"><span class="np-grow">{work.purpose}</span><span>{work.status}</span></div>
-          <div class="na">{work.reason ?? work.model ?? ''}</div>
-        </div>
-      {:else}<div class="na">{ideasWork ? 'No background checks' : 'Ideas checks unavailable'}</div>{/each}
-    </Section>
     <!-- ---------------------------------------------------------------- processes -->
     <Section title="Processes" count={processes ? (running.length ? `${running.length} running` : processes.length || null) : null} collapsible storageKey="work.processes">
       {#if !processes}

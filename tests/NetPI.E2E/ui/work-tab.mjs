@@ -89,14 +89,11 @@ try {
   await page.waitForTimeout(500);
   check('the Work tab has no Model capacity section', (await page.locator('.panel.right .np-section-label[title="Model capacity"]').count()) === 0);
   check('the Work tab has no Physical owners section', (await page.locator('.panel.right .np-section-label[title="Physical owners"]').count()) === 0);
-  // give the section a bounded wait: a count right after the tab's first paint can catch the transition
-  await page
-    .locator('.panel.right .np-section-label[title="Idea checks"]')
-    .waitFor({ timeout: 10_000 })
-    .catch(() => {});
+  // the section that used to be here moved to the Diagnostics tab's Ideas view: it must not render on the Work tab
+  await page.waitForTimeout(500);
+  check('the Work tab has no Idea checks section', (await page.locator('.panel.right .np-section-label[title="Idea checks"]').count()) === 0);
   const labelTitles = await page.locator('.panel.right .np-section-label').evaluateAll((els) => els.map((e) => e.getAttribute('title')));
-  const ideaCount = await page.locator('.panel.right .np-section-label[title="Idea checks"]').count();
-  check('the Idea checks section is still there', ideaCount === 1, `count=${ideaCount}, labels: ${labelTitles.join(', ')}`);
+  check('the Work tab keeps its other sections', ['Agents', 'Runs', 'Processes', 'Usage today'].every((t) => labelTitles.includes(t)), `labels: ${labelTitles.join(', ')}`);
 
   // the agent the C# side seeded, listed by name in the Agents section
   const nameBtn = page.locator('.panel.right button.key', { hasText: AGENT });

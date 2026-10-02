@@ -483,7 +483,7 @@ Per-tab narrow layouts:
 Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle
 sizes (minified; Svelte runtime and kit included): Work 88KB, Ideas 90KB, Diagnostics 99KB, Files 67KB.
 
-**Work** (`netpi.work`, right). One `work.snapshot` feeds five collapsible sections, each with a count. The
+**Work** (`netpi.work`, right). One `work.snapshot` feeds four collapsible sections, each with a count. The
 open or closed state of each section is remembered (`storageKey`).
 
 - A summary line shows active runs, busy instances (+ queued), running processes and today's tokens.
@@ -497,8 +497,6 @@ open or closed state of each section is remembered (`storageKey`).
   activity, elapsed time, the session title (or the task, for a subagent) and a one-line meta: model · turns ·
   tools · tokens · agent. Clicking a row opens the session, and the stop button calls `agent.abort { sessionId }`.
   Finished runs are listed below under **Recent** (result or error, TimeAgo), with **Show all** past 6.
-- **Idea checks:** the background idea checks the Ideas plugin runs (the save check, recall, the verifier, the commit
-  sweep) — purpose and status, the reason or model under it. The last 10, newest first; the server keeps the last 40.
 - **Processes:** running processes first, then **Recent**. Expanding a row fetches `processes.output` (tail
   300 lines) and appends live `process.output` chunks. It falls back to polling every 2s when no chunk has
   arrived for 3s, and fetches once more on `process.exited`. The kill button is a two-step `ConfirmButton`
@@ -561,6 +559,9 @@ set, uptime, threads, framework; the full details are in its tooltip). A segment
   events) or fetches it with `diag.event { seq }`.
 - **Logs:** `logs.recent { max: 400 }`, polled every 3s while visible, newest first, with a level filter
   (All, Info+, Warn, Error, with counts). Exceptions expand.
+- **Ideas:** the background idea checks the Ideas plugin runs (the save check, recall, the verifier, the commit sweep)
+  — `ideas.work`, updated by `ideas.workChanged` and polled every 30s while visible: purpose and status with a
+  state dot, the reason or model under it. The last 10, newest first; the server keeps the last 40.
 - **Context:** for the active session, `context.preview` (estimated tokens, system prompt size, tool count,
   the system prompt with copy and expand, the tool list), `agentsmd.list` (instruction files with scope
   badges, copy path and reveal) and `skills.list` (the skills with scope, name and description, then their problems).
