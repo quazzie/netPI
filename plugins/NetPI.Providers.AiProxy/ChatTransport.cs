@@ -150,6 +150,11 @@ internal sealed class ChatStreamParser(MessageAssembler asm, string provider, bo
 
     public bool Finished => _done;
 
+    /// <summary>The completion id every chunk carries. It is the only identifier a backend that sends no
+    /// <c>x-request-id</c> header offers, so a failure could not be correlated with the server's own log
+    /// (idea-uab5a4).</summary>
+    public string? ResponseId { get; private set; }
+
     public void Handle(SseEvent sse)
     {
         if (sse.IsDone) { _done = true; return; }
@@ -179,6 +184,7 @@ internal sealed class ChatStreamParser(MessageAssembler asm, string provider, bo
     private void HandleChunk(JsonElement root, bool streaming)
     {
         if (root.ValueKind != JsonValueKind.Object) return;
+        if (root.Str("id") is { Length: > 0 } id) ResponseId ??= id;
         if (root.Prop("error").Has())
         {
             var err = root.Prop("error");

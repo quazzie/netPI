@@ -11,6 +11,8 @@ internal interface IOpenAiStreamParser
     void HandleJsonBody(string json);
     /// <summary>End of input: flush buffers, throw a transient error if the stream was truncated.</summary>
     void Finish();
+    /// <summary>The server's id for the response in flight, when the transport carries one in the body.</summary>
+    string? ResponseId => null;
 }
 
 internal static class OpenAiCommon

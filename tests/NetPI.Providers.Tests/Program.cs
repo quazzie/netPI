@@ -768,6 +768,19 @@ await t.Run("per-model transport override with a dotted model id", async () =>
     finally { apCtx.SettingsImpl.Set("providers.aiproxy.models", null); }
 });
 
+await t.Run("chat: the completion id is kept, so a failure on a server without x-request-id has an id", async () =>
+{
+    var p = new AP.ChatStreamParser(new AP.MessageAssembler(), "P", false);
+    p.Handle(new AP.SseEvent(null, """{"id":"c1","choices":[{"index":0,"delta":{"content":"a"}}]}"""));
+    p.Handle(new AP.SseEvent(null, """{"id":"c2","choices":[{"index":0,"delta":{"content":"b"}}]}"""));
+    t.Eq("c1", p.ResponseId, "the first id wins, like every other id the provider reports");
+
+    // end to end: the vllm endpoint sends no x-request-id, and the err-chunk scenario fails after two chunks
+    var e = await Fails(apPlugin.Providers[1], Req(M("vllm", "err-chunk")));
+    t.Check(e is { Transient: true, ErrorType: "server_error" } && e.Message.Contains("response c1"), "the completion id is in the message: " + e?.Message);
+    t.Check(e!.Detail?.Contains("response c1") == true, "and in Detail");
+});
+
 await t.Run("chat: finish length, EOF, cut-off, error chunk, 400 overflow, non-streamed JSON body", async () =>
 {
     var vllm = apPlugin.Providers[1];

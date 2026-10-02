@@ -234,7 +234,9 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         public string? RequestId;
         public IOpenAiStreamParser? Parser;
         public bool Dump;
-        public string? ResponseId => (Parser as ResponsesStreamParser)?.ResponseId;
+        /// <summary>Both transports report the server's id for the response (Responses: <c>response.id</c>,
+        /// Chat: the completion id); a backend with no <c>x-request-id</c> header offers only this.</summary>
+        public string? ResponseId => Parser?.ResponseId;
     }
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
