@@ -508,11 +508,11 @@ public sealed class IdeasRepository
             .Select(d => new JsonObject
             {
                 ["sessionId"] = d.Key,
-                ["rev"] = d.Doc["rev"],
-                ["n"] = d.Doc["n"],
-                ["state"] = d.Doc["state"],
-                ["tries"] = d.Doc["tries"],
-                ["at"] = d.Doc["at"],
+                ["rev"] = Copy(d.Doc, "rev"),
+                ["n"] = Copy(d.Doc, "n"),
+                ["state"] = Copy(d.Doc, "state"),
+                ["tries"] = Copy(d.Doc, "tries"),
+                ["at"] = Copy(d.Doc, "at"),
                 ["error"] = Null(d.Doc, "error"),
             }).ToList();
 
@@ -526,8 +526,8 @@ public sealed class IdeasRepository
                 ["projectId"] = Null(d.Doc, "projectId"),
                 ["projectName"] = Null(d.Doc, "projectName"),
                 ["hash"] = Null(d.Doc, "hash"),
-                ["at"] = d.Doc["at"],
-                ["tries"] = d.Doc["tries"],
+                ["at"] = Copy(d.Doc, "at"),
+                ["tries"] = Copy(d.Doc, "tries"),
                 ["error"] = Null(d.Doc, "error"),
             }).ToList();
 
@@ -538,9 +538,9 @@ public sealed class IdeasRepository
             .Select(d => new JsonObject
             {
                 ["suggestionId"] = d.Key,
-                ["action"] = d.Doc["action"],
+                ["action"] = Copy(d.Doc, "action"),
                 ["ideaId"] = Null(d.Doc, "ideaId"),
-                ["at"] = d.Doc["at"],
+                ["at"] = Copy(d.Doc, "at"),
             }).ToList();
 
     /// <summary>How a card was answered, if it was.</summary>
@@ -699,6 +699,7 @@ public sealed class IdeasRepository
         if (doc is { } existing)
         {
             var tries = Long_(existing["tries"]) + 1;
+            existing["tries"] = tries;      // the attempt count is what the bound and the backoff are computed from
             existing["at"] = IdeaOps.Now();
             if (error is null) existing.Remove("error");
             else existing["error"] = Clip(error, 200);
@@ -734,12 +735,12 @@ public sealed class IdeasRepository
     public List<JsonObject> Unread() => _unread.Find(new DataQuery().Order("at", true))
         .Select(d => new JsonObject
         {
-            ["repo"] = d.Doc["repo"],
-            ["hash"] = d.Doc["hash"],
-            ["subject"] = d.Doc["subject"],
-            ["tries"] = d.Doc["tries"],
+            ["repo"] = Copy(d.Doc, "repo"),
+            ["hash"] = Copy(d.Doc, "hash"),
+            ["subject"] = Copy(d.Doc, "subject"),
+            ["tries"] = Copy(d.Doc, "tries"),
             ["error"] = Null(d.Doc, "error"),
-            ["at"] = d.Doc["at"],
+            ["at"] = Copy(d.Doc, "at"),
         }).ToList();
 
     /// <summary>
@@ -1014,7 +1015,11 @@ public sealed class IdeasRepository
     private static long Rev(JsonObject doc) => doc["revision"] is JsonValue v && v.TryGetValue<long>(out var r) ? r : 1;
 
     /// <summary>An explicit JSON null where the old column was NULL: the export lists read it back the same way.</summary>
-    private static JsonNode? Null(JsonObject doc, string field) => doc[field] is { } v ? v : JsonValue.Create((string?)null);
+    private static JsonNode? Null(JsonObject doc, string field) => doc[field] is { } v ? (JsonNode)v.DeepClone() : JsonValue.Create((string?)null);
+
+    /// <summary>A stored field as a value of its own: a node read out of a row still belongs to it, and a document
+    /// that took it would fail (one node, one parent).</summary>
+    private static JsonNode? Copy(JsonObject doc, string field) => doc[field]?.DeepClone();
 
     private static string StampOf(DateTimeOffset when) =>
         when.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
