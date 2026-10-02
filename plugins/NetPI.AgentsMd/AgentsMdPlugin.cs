@@ -142,7 +142,7 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
             catch { /* unreadable path */ }
         }
 
-        Add(ctx.Paths.GlobalAgentsMd, "global");
+        Add(Path.Combine(ctx.Paths.Home, "AGENTS.md"), "global");
 
         var names = Setting("agentsMd.fileNames", DefaultFileNames);
         var chain = new List<string>();

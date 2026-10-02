@@ -44,12 +44,15 @@ namespace NetPI.Agents;
 /// <c>budget.providers.&lt;provider&gt;.dailyTokens</c>).</item>
 /// <item>Budgets: <c>budget.monthlyUsd</c> (the month starts on <c>budget.resetDay</c>), <c>budget.dailyUsd</c> and a
 /// agent's <c>agents.&lt;id&gt;.budget.limitUsd</c> per day. When one is spent, calls to paid models throw
-/// <see cref="BudgetExceededException"/>; <c>budget.onLimit</c> "ask" lets the user allow a chat to go over
+/// <see cref="CallRefusedException"/>; <c>budget.onLimit</c> "ask" lets the user allow a chat to go over
 /// (<c>session.meta.budgetAllowedFrom</c> = the start of the period).</item>
 /// </list>
 /// </summary>
-internal sealed partial class Ledger : IBudgetGate
+internal sealed partial class Ledger
 {
+    /// <summary>The session meta key that holds a chat's allowance to go over the budget (the start of the period it was given for). A fork starts without it: the plugin declares it as run state.</summary>
+    internal const string AllowanceMetaKey = "budgetAllowedFrom";
+
     public const double CacheReadShare = 0.1;   // of the input price, when no cache price is known (Anthropic's rate)
     public const double CacheWriteShare = 1.25;
 
@@ -290,9 +293,9 @@ internal sealed partial class Ledger : IBudgetGate
         var session = request.SessionId is null ? null : _ctx.Sessions.GetSession(request.SessionId);
         var ask = o.OnLimit == "ask" && session is { Kind: not "subagent" } && request.Purpose == "agent";
         if (ask && AllowedNow(session!)) return;
-        throw new BudgetExceededException(why + (ask
+        throw new CallRefusedException(why + (ask
             ? " You can let this chat go over, or switch it to a free model."
-            : " Raise the budget in Settings → Budget (budget.*), or use a free agent.")) { CanOverride = ask };
+            : " Raise the budget in Settings → Budget (budget.*), or use a free agent.")) { Kind = "budget", CanOverride = ask };
     }
 
     /// <summary>An agent's own daily cap: <c>agents.&lt;id&gt;.budget.limitUsd</c>.</summary>
@@ -301,7 +304,7 @@ internal sealed partial class Ledger : IBudgetGate
     private DateTime PeriodStart => Period(DateTime.Now, Options().ResetDay).Start;
 
     private bool AllowedNow(SessionInfo session) =>
-        session.Meta?["budgetAllowedFrom"] is JsonValue v && v.TryGetValue<string>(out var s) && s == PeriodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        session.Meta?[AllowanceMetaKey] is JsonValue v && v.TryGetValue<string>(out var s) && s == PeriodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
     /// <summary>budget.allow: this chat may go over the budget until the period ends; subagents still stop.</summary>
     public void Allow(string sessionId)
@@ -313,7 +316,7 @@ internal sealed partial class Ledger : IBudgetGate
         _ctx.Sessions.UpdateSession(sessionId, s =>
         {
             s.Meta ??= new JsonObject();
-            s.Meta["budgetAllowedFrom"] = from;
+            s.Meta[AllowanceMetaKey] = from;
         });
     }
 

@@ -25,7 +25,7 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
         {
             throw;
         }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or KeyNotFoundException or BudgetExceededException)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or KeyNotFoundException or CallRefusedException)
         {
             return ToolResult.Error(ex.Message);
         }
@@ -335,7 +335,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
                         .Select(g => $"- {g.Key}: {string.Join(", ", g.Select(t => t.Definition.Name).Distinct().Order(StringComparer.Ordinal))}")));
         }
 
-        return (new SpawnRequest
+        var spawn = new SpawnRequest
         {
             Task = task,
             Name = ToolArgs.Str(item, "name"),
@@ -344,9 +344,9 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             Tools = tools,
             Instructions = ToolArgs.Str(item, "instructions", "systemPrompt"),
             ParentAgentId = context.AgentId,
-            WorkspaceId = workspace,
-            Isolated = isolated,
-        }, null);
+        };
+        if (workspace is not null || isolated) spawn.Features.Set(new SpawnWorkspace(workspace, isolated));
+        return (spawn, null);
     }
 
     /// <summary>The workspace arguments of one subagent: a name/id to share, or a request for its own checkout.</summary>
@@ -376,7 +376,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         for (var i = 0; i < requests.Count; i++)
         {
             var request = requests[i];
-            if (request.WorkspaceId is null && !request.Isolated) { prepared.Add(request); continue; }
+            if (request.Workspace() is not { } asked || (asked.WorkspaceId is null && !asked.Isolated)) { prepared.Add(request); continue; }
             WorkspaceOutcome outcome;
             try
             {
@@ -393,15 +393,14 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             if (outcome.Error is not null) return Describe(single, i, $"{outcome.Error}\nNone of them was started.");
             if (outcome.Binding is null) { prepared.Add(request); continue; }
             // The workspace now exists; the child binds it (the runtime hands ownership to its own session).
-            prepared.Add(new SpawnRequest
+            var bound = new SpawnRequest
             {
                 Task = request.Task, Name = request.Name, Model = request.Model, Reasoning = request.Reasoning,
                 ParentAgentId = request.ParentAgentId, ProjectId = request.ProjectId,
-                WorkspaceId = outcome.Binding.WorkspaceId,
-                WorkspaceName = request.WorkspaceName,
-                WorkspaceBase = request.WorkspaceBase,
                 Agent = request.Agent, Tools = request.Tools, Instructions = request.Instructions, NotifyParent = request.NotifyParent,
-            });
+            };
+            bound.Features.Set(new SpawnWorkspace(outcome.Binding.WorkspaceId, Name: asked.Name, Base: asked.Base));
+            prepared.Add(bound);
         }
         requests.Clear();
         requests.AddRange(prepared);

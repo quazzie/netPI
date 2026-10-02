@@ -294,7 +294,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         if (mine is not null && string.Equals(mine.Model, model.Ref, StringComparison.OrdinalIgnoreCase)) return mine.Id;
         var onModel = agents.Where(a => string.Equals(a.Model, model.Ref, StringComparison.OrdinalIgnoreCase)).ToList();
         if (onModel.Count == 0)
-            throw new AgentUnavailableException($"No agent runs {model.Ref}. Choose an agent for this chat, or set one up on this model (Settings → Agents).");
+            throw new CallRefusedException($"No agent runs {model.Ref}. Choose an agent for this chat, or set one up on this model (Settings → Agents).") { Kind = "unavailable" };
         lock (_gate)
         {
             _models[model.Ref] = model;
@@ -366,7 +366,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         {
             w.Registration.Unregister();
             StopWaitTimeout(w);
-            w.Tcs.TrySetException(new AgentUnavailableException(UnavailableMessage(w.Request.Key, reason)));
+            w.Tcs.TrySetException(new CallRefusedException(UnavailableMessage(w.Request.Key, reason)) { Kind = "unavailable" });
         }
         var signature = Signature();
         var changed = !string.Equals(signature, Interlocked.Exchange(ref _signature, signature), StringComparison.Ordinal);
@@ -561,7 +561,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     {
         var provider = request.Provider ?? ProviderOf(request.Key);
         if (_usage is not null && _usage.IsOverBudget(provider, out var message))
-            throw new BudgetExceededException(message!);
+            throw new CallRefusedException(message!) { Kind = "budget" };
         ct.ThrowIfCancellationRequested();
 
         Waiter waiter;
@@ -573,7 +573,7 @@ internal sealed class AgentScheduler : IAgentScheduler
             if (_stopped) throw new OperationCanceledException("The agent scheduler was stopped (plugin reload).");
             var pool = GetOrCreate(request.Key, request.Provider);
             var (available, reason) = AvailabilityOf(pool);
-            if (!available) throw new AgentUnavailableException(UnavailableMessage(pool.Key, reason!));
+            if (!available) throw new CallRefusedException(UnavailableMessage(pool.Key, reason!)) { Kind = "unavailable" };
             Pump();
             if (pool.Waiters.Count == 0 && CanGrant(pool))
             {
@@ -586,7 +586,7 @@ internal sealed class AgentScheduler : IAgentScheduler
                 }
             }
             if (pool.Waiters.Count >= maxWaiters)
-                throw new AgentUnavailableException(QueueFull(pool, maxWaiters));
+                throw new CallRefusedException(QueueFull(pool, maxWaiters)) { Kind = "unavailable" };
             waiter = new Waiter { Request = request, Seq = ++_seq };
             // priority desc, then FIFO
             var index = pool.Waiters.FindIndex(w => w.Request.Priority < request.Priority);
@@ -616,7 +616,7 @@ internal sealed class AgentScheduler : IAgentScheduler
                 {
                     StopWaitTimeout(w);
                     w.Registration.Unregister();
-                    tcs.TrySetException(new AgentUnavailableException(QueueTimedOut(w.Request.Key, queueTimeout)));
+                    tcs.TrySetException(new CallRefusedException(QueueTimedOut(w.Request.Key, queueTimeout)) { Kind = "unavailable" });
                     SchedulePublish();
                 }
                 // No ExecuteSynchronously: this runs on the pool, so a Cancel from a path holding _gate cannot deadlock.

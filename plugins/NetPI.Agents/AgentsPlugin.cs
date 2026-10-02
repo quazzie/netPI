@@ -53,6 +53,13 @@ public sealed class AgentsPlugin : INetPiPlugin
         }
         catch (Exception ex) { context.Logger.LogWarning(ex, "Turning the lanes into agents failed"); }
 
+        // The registry of what runs on shared model resources outlives a reload of this plugin: a new generation adopts the registered
+        // instance (it is a plain class in the shared contracts) so the count carries across the swap, and points it at its own bus.
+        var leases = context.Services.Get<IResourceLeases>() as ResourceLeases ?? new ResourceLeases(context.Events);
+        leases.Rebind(context.Events);
+        context.Services.Register<IResourceLeases>(leases);
+        context.Sessions.DeclareForkReset(Ledger.AllowanceMetaKey);
+
         var usage = new Ledger(context);
         usage.Initialize();
         var scheduler = new AgentScheduler(context, usage);
@@ -61,9 +68,6 @@ public sealed class AgentsPlugin : INetPiPlugin
 
         context.Services.Register<IAgentScheduler>(scheduler);
         context.Services.Register<IModelMiddleware>(new LedgerMiddleware(usage, scheduler));
-        // The budget gate the model catalog requires for paid models: without the Agents plugin there is no metering,
-        // and a missing meter is why the gate fails closed rather than open.
-        context.Services.Register<IBudgetGate>(usage);
         context.Tools.Register(new AgentChoicesTool(scheduler, usage));
         context.Services.Register<IPromptSection>(new AgentsPromptSection());
 

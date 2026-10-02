@@ -98,7 +98,7 @@ public static class ModelMessages
     }
 
     /// <summary>Wraps a notice body in the <c>&lt;system-notice&gt;</c> element the system prompt names as NetPI's own.
-    /// The body is not necessarily harness-authored: skill text, <c>AGENTS.md</c> and subagent reports all come through
+    /// The body is not necessarily harness-authored: skill text, instruction files and subagent reports all come through
     /// here, so a body carrying a tag would render as a second, well-formed notice with a NetPI kind. The tag is
     /// therefore neutralised in the body and the kind is quoted.</summary>
     public static string WrapNotice(string text, string? kind)

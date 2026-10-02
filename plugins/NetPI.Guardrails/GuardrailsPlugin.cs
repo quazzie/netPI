@@ -25,6 +25,8 @@ public sealed class GuardrailsPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        // Run state of this plugin: a fork starts without it (the session service remembers the keys even when this plugin is not loaded at a fork).
+        context.Sessions.DeclareForkReset("guardrailsAllowed");
         context.Services.Register(new SettingsSection
         {
             Id = "guardrails", Title = "Guardrails", Group = "Tools", Order = 5,

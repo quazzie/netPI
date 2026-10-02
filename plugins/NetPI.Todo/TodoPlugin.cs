@@ -14,6 +14,8 @@ public sealed class TodoPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        // Run state of this plugin: a fork starts without it (the session service remembers the keys even when this plugin is not loaded at a fork).
+        context.Sessions.DeclareForkReset("todo");
         context.Tools.Register(new TodoWriteTool(context));
         context.Services.Register(new SettingsSection
         {

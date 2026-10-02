@@ -39,8 +39,6 @@ public sealed class NetPiPaths
     public required string SettingsFile { get; init; }
     public required string TempDir { get; init; }
     public required IReadOnlyList<string> PluginDirs { get; init; }
-    /// <summary>Global AGENTS.md (~/.netpi/AGENTS.md).</summary>
-    public string GlobalAgentsMd => Path.Combine(Home, "AGENTS.md");
     /// <summary>Default working directory for sessions that have no project.</summary>
     public required string DefaultWorkspace { get; init; }
 }

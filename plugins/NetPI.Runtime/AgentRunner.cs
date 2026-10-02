@@ -111,7 +111,6 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                     Agent = Info,
                     Session = session,
                     Project = project,
-                    Workspace = workspace,
                     Cwd = cwd,
                     Model = model,
                     ReasoningEffort = session.Reasoning,
@@ -121,6 +120,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                     Events = Ctx.Events,
                     CancellationToken = ct,
                 };
+                _rc.SetWorkspace(workspace);
                 _lastContextTokens = session.ContextTokens;
                 foreach (var hook in rt.Hooks())
                     await SafeAsync(() => hook.OnRunStartAsync(_rc), "OnRunStart", ct).ConfigureAwait(false);
@@ -132,7 +132,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             {
                 _rc.Session = session;
                 _rc.Project = project;
-                _rc.Workspace = workspace;
+                _rc.SetWorkspace(workspace);
                 _rc.Cwd = cwd;
                 _rc.Model = model;
                 _rc.ReasoningEffort = session.Reasoning;
@@ -143,14 +143,14 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             {
                 await EnsureSlotAsync(model, ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is BudgetExceededException or AgentUnavailableException)
+            catch (CallRefusedException ex)
             {
                 rt.AppendNotice(state, ex.Message, "error");
                 throw new RunFailedException(ex.Message, ex);
             }
 
             // 3. steering input → transcript
-            _rc.AdmissionLease = run.Lease;
+            _rc.SetAdmissionLease(run.Lease);
             DrainSteering();
 
             // 4. turn context + hooks
@@ -205,10 +205,10 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             {
                 throw;
             }
-            catch (BudgetExceededException ex)
+            catch (CallRefusedException ex)
             {
-                // the budget stopped a paid call (the ledger middleware): the UI offers "let this chat go over" when allowed
-                rt.AppendNotice(state, ex.Message, "budget", new JsonObject { ["canOverride"] = ex.CanOverride });
+                // a middleware refused the call (the ledger stopping a paid one, say): the notice carries the reason's kind, and the UI offers "let this chat go over" when allowed
+                rt.AppendNotice(state, ex.Message, ex.Kind, new JsonObject { ["canOverride"] = ex.CanOverride });
                 throw new RunFailedException(ex.Message, ex);
             }
             catch (Exception ex)
@@ -826,14 +826,19 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         }
     }
 
-    private ToolContext CallContext(string callId, Action<string>? output = null) => new()
+    private ToolContext CallContext(string callId, Action<string>? output = null)
     {
-        AdmissionLease = _rc?.AdmissionLease,
-        SessionId = SessionId, AgentId = AgentId, CallId = callId,
-        Cwd = _rc!.Cwd, Project = _rc.Project, Workspace = _rc.Workspace, Model = _rc.Model,
-        Services = Ctx.Services, Events = Ctx.Events, Output = output,
-        EligibleTools = () => ActiveTools(Ctx.Sessions.GetSession(SessionId) ?? _rc.Session),
-    };
+        var context = new ToolContext
+        {
+            SessionId = SessionId, AgentId = AgentId, CallId = callId,
+            Cwd = _rc!.Cwd, Project = _rc.Project, Model = _rc.Model,
+            Services = Ctx.Services, Events = Ctx.Events, Output = output,
+            EligibleTools = () => ActiveTools(Ctx.Sessions.GetSession(SessionId) ?? _rc.Session),
+        };
+        context.Features.Set(_rc.Workspace());
+        context.Features.Set(_rc.AdmissionLease());
+        return context;
+    }
 
     /// <summary>
     /// The session's workspace for this turn, or null when it is not bound to one (the pre-workspace behavior: the

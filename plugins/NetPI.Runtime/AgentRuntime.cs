@@ -709,7 +709,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// <summary>
     /// The agent (<c>agents.&lt;id&gt;</c>) the session's run on <paramref name="model"/> goes to, chosen by the scheduler: the
     /// chat's own agent when it runs the model, else an agent on the model, saved as the chat's agent (<c>meta.agent</c>).
-    /// Null when no agents are set up. Throws <see cref="AgentUnavailableException"/> when none runs the model.
+    /// Null when no agents are set up. Throws <see cref="CallRefusedException"/> (kind "unavailable") when none runs the model.
     /// </summary>
     internal string? AgentFor(string sessionId, ModelInfo model, IAgentScheduler scheduler)
     {
@@ -728,7 +728,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// <summary>
     /// Acquire a slot for <paramref name="model"/> on the session's agent (status Queued while waiting). Returns null without
     /// a scheduler. Survives a scheduler reload (its waiters are cancelled → re-resolve and retry). Throws
-    /// <see cref="BudgetExceededException"/>, and <see cref="AgentUnavailableException"/> when the agent can't take work.
+    /// <see cref="CallRefusedException"/> when a limit stops it or the agent can't take work.
     /// </summary>
     internal async Task<IAgentSlot?> AcquireSlotAsync(AgentState s, RunState run, ModelInfo model, int priority, CancellationToken ct)
     {
@@ -865,13 +865,23 @@ internal sealed class AgentRuntime : IAgentRuntime
         };
         if (off.Count > 0) meta[SessionTools.MetaKey] = new JsonArray([.. off.Order(StringComparer.Ordinal).Select(n => (JsonNode?)n)]);
         if (agent is not null) meta[SessionAgent.MetaKey] = agent.Key;
+        // The child's checkout is attached to its session like any other binding: the workspace and the folder it runs in.
+        if (workspaceBinding is not null)
+        {
+            meta[SessionWorkspace.MetaKey] = workspaceBinding.WorkspaceId;
+            meta[SessionCwd.MetaKey] = workspaceBinding.Root;
+        }
+        else if (ParentWorkspaceId(parentSession) is { } inherited)
+        {
+            meta[SessionWorkspace.MetaKey] = inherited;
+            if (SessionCwd.Of(parentSession) is { } parentCwd) meta[SessionCwd.MetaKey] = parentCwd;
+        }
         var session = Ctx.Sessions.CreateSession(new SessionInfo
         {
             Title = name,
             Kind = "subagent",
             ParentSessionId = parentSession?.Id ?? parentInfo?.SessionId,
             ProjectId = request.ProjectId ?? parentSession?.ProjectId,
-            WorkspaceId = workspaceBinding?.WorkspaceId ?? (workspaceBinding is null ? ParentWorkspaceId(parentSession) : null),
             Model = modelRef,
             Reasoning = reasoning,
             Meta = meta,
@@ -954,7 +964,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// </summary>
     private string? ParentWorkspaceId(SessionInfo? parentSession)
     {
-        if (parentSession?.WorkspaceId is not { Length: > 0 } id) return null;
+        if (SessionWorkspace.Of(parentSession) is not { } id) return null;
         return Ctx.Services.Get<IWorkspaceStore>()?.GetWorkspace(id) is null ? null : id;
     }
 

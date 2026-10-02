@@ -1,8 +1,18 @@
 namespace NetPI;
 
-/// <summary>No delegates or plugin objects are stored here; the leases and descriptors belong to the host.</summary>
+/// <summary>
+/// The registry of what is physically running on shared model resources (a local model's slots). A plain class in the shared contract
+/// assembly, so one instance can outlive a reload of the plugin that registered it: a new generation of that plugin adopts the registered
+/// instance and <see cref="Rebind"/>s it to its own event bus, and the count carries across the swap. No delegates or plugin objects are
+/// stored here; the leases and descriptors are plain data.
+/// </summary>
 public sealed class ResourceLeases(IEventBus events) : IResourceLeases
 {
+    private IEventBus _events = events;
+
+    /// <summary>Publish from now on through <paramref name="events"/> (the adopting plugin generation's bus: the previous one is gone).</summary>
+    public void Rebind(IEventBus events) => Volatile.Write(ref _events, events);
+
     private readonly Lock _gate = new();
     private readonly Dictionary<long, ResourceLeaseInfo> _active = [];
     private long _sequence;
@@ -51,7 +61,7 @@ public sealed class ResourceLeases(IEventBus events) : IResourceLeases
             if (update.ProviderReturned) h.ProviderReturnedAt = DateTimeOffset.UtcNow;
             h.Retiring |= update.Retiring;
         }
-        events.Publish("resources.changed", new { leaseId });
+        Volatile.Read(ref _events).Publish("resources.changed", new { leaseId });
     }
 
     private void Release(long id)
@@ -62,7 +72,7 @@ public sealed class ResourceLeases(IEventBus events) : IResourceLeases
             if (!_active.Remove(id, out var info)) return;
             resource = info.Resource;
         }
-        events.Publish("resources.released", new { resource });
+        Volatile.Read(ref _events).Publish("resources.released", new { resource });
     }
 
     private sealed class Lease(ResourceLeases owner, long id) : IResourceLease

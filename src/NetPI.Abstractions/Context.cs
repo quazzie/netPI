@@ -17,7 +17,7 @@ public sealed class PromptContext
 /// <summary>
 /// A section of the system prompt. Register with <c>context.Services.Register&lt;IPromptSection&gt;(...)</c>;
 /// the context plugin renders all sections in ascending <see cref="Order"/>. Return null/empty to skip.
-/// Suggested orders: 0 identity, 100 environment, 200 tools, 300 guidelines, 500 project instructions (AGENTS.md), 900 extra.
+/// Suggested orders: 0 identity, 100 environment, 200 tools, 300 guidelines, 500 project instructions, 900 extra.
 /// </summary>
 public interface IPromptSection
 {

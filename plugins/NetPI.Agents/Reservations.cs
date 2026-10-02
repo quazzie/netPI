@@ -126,7 +126,7 @@ internal sealed partial class Ledger
             // Fail closed, as when the ledger was unavailable: the limits cannot be checked for a paid call, and a
             // free one still runs (unrecorded — there is no in-memory ledger to keep it in).
             if (paid && limited)
-                throw new BudgetExceededException("The budget ledger is unavailable; paid calls are stopped until storage is repaired.");
+                throw new CallRefusedException("The budget ledger is unavailable; paid calls are stopped until storage is repaired.") { Kind = "budget" };
             return new Reservation(0, cost, request, agent, cfg);
         }
 
@@ -147,9 +147,9 @@ internal sealed partial class Ledger
                     why = $"The agent {agent} has spent its {Usd(cap)} for today ({Usd(spentToday)}).";
             }
             if (why is not null && !allowed)
-                throw new BudgetExceededException(why + (ask
+                throw new CallRefusedException(why + (ask
                     ? " You can let this chat go over, or switch it to a free model."
-                    : " Raise the budget in Settings → Budget (budget.*), or use a free agent.")) { CanOverride = ask };
+                    : " Raise the budget in Settings → Budget (budget.*), or use a free agent.")) { Kind = "budget", CanOverride = ask };
             string? fit = null;
             if (paid && limited)
             {
@@ -159,7 +159,7 @@ internal sealed partial class Ledger
                     || agent is not null && DailyCap(cfg) is { } cap && spentToday + cost > cap)
                     fit = $"The budget cannot fit this call's {Usd(cost)} reservation including concurrent calls. Lower the output limit, raise the budget, or use a free model.";
             }
-            if (fit is not null && !allowed) throw new BudgetExceededException(fit) { CanOverride = ask };
+            if (fit is not null && !allowed) throw new CallRefusedException(fit) { Kind = "budget", CanOverride = ask };
             // Persist before dispatch. A crash leaves a conservative reservation, not unaccounted spending.
             var id = AddCharge(request, agent, root, new Usage(), cost, price is null && paid ? "unknown" : "reserved");
             ScheduleChanged();
