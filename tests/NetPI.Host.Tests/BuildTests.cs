@@ -18,6 +18,7 @@ public static class BuildTests
         r.Add("build: a publish can be pointed at another app folder and takes an install lock", PublishTargetAndLock);
         r.Add("build: the one-plugin recipe builds into the folder the host loads plugins from", OnePluginRecipe);
         r.Add("build: a failed install frees the lock, a held one is waited for, a staged plugin is a whole folder", InstallRobustness);
+        r.Add("build: the UI bundles are reproducible and CI compares them with the committed ones", BundlesAreReproducible);
         r.Add("build: the build scripts parse (a text check cannot see a PowerShell syntax error)", ScriptsParse);
     }
 
@@ -212,6 +213,25 @@ public static class BuildTests
         var start = text.IndexOf(from, StringComparison.Ordinal);
         var end = text.IndexOf(to, Math.Max(start, 0), StringComparison.Ordinal);
         return start < 0 ? "" : text[start..(end < 0 ? text.Length : end)];
+    }
+
+    /// <summary>
+    /// Svelte hashes a component's scoped CSS from its path relative to its rootDir (process.cwd() by default), so the
+    /// same source built from another directory rewrote every committed bundle. Both builds pin rootDir to the
+    /// repository root, and the CI ui job fails when a fresh build differs from what is committed.
+    /// </summary>
+    private static void BundlesAreReproducible()
+    {
+        var app = File.ReadAllText(Path.Combine(T.RepoRoot, "web", "svelte.config.js"));
+        Check.Contains(app, "rootDir", "the app UI's Svelte build pins rootDir");
+        Check.Contains(app, "repoRoot", "to the repository root, not the directory the build ran from");
+
+        var plugins = File.ReadAllText(Path.Combine(T.RepoRoot, "web", "scripts", "build-plugins.mjs"));
+        Check.Contains(plugins, "rootDir: repo", "the plugin UIs pin rootDir to the same root");
+
+        var ci = File.ReadAllText(Path.Combine(T.RepoRoot, ".github", "workflows", "ci.yml"));
+        Check.Contains(ci, "git diff --exit-code -- web/dist", "the CI ui job checks the bundles it built against the committed ones");
+        Check.Contains(ci, "plugins/*/wwwroot", "plugin bundles included");
     }
 
     /// <summary>Run a shell command and capture its exit code and output.</summary>
