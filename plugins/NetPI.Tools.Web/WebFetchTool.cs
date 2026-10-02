@@ -246,7 +246,7 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
         }
         else if (mediaType.Contains("json") && format != "html")
         {
-            try { text = JsonNode.Parse(text)?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? text; }
+            try { text = JsonNode.Parse(text)?.ToJsonString(NetPiJson.Indented) ?? text; }
             catch (JsonException) { }
         }
         return new FetchedPage(uri.ToString(), final.ToString(), status, mediaType, title, text.Trim(), bytes.Length, cut, null);

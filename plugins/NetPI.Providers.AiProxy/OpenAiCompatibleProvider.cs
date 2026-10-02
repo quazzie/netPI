@@ -301,7 +301,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                 ["error"] = new JsonObject { ["message"] = ex.Message, ["type"] = ex.ErrorType, ["status"] = ex.StatusCode },
                 ["request"] = call.Body!.DeepClone(),
             };
-            File.WriteAllText(path, doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(path, doc.ToJsonString(NetPiJson.Indented));
             // keep the newest 30
             foreach (var old in new DirectoryInfo(_dumpDir).GetFiles("*.json").OrderByDescending(f => f.Name).Skip(30))
                 try { old.Delete(); } catch { }

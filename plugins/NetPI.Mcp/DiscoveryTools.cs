@@ -119,7 +119,7 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
                         var directory = Path.Combine(ctx.Paths.TempDir, "mcp-schemas");
                         Directory.CreateDirectory(directory);
                         var path = Path.Combine(directory, tool.Definition.Revision + ".json");
-                        await File.WriteAllTextAsync(path, tool.Definition.Parameters.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), ct).ConfigureAwait(false);
+                        await File.WriteAllTextAsync(path, tool.Definition.Parameters.ToJsonString(NetPiJson.Indented), ct).ConfigureAwait(false);
                         result.Remove("schema"); result["description"] = tool.Definition.Description;
                         result["schemaFile"] = path; result["schemaChars"] = tool.Definition.ParametersChars;
                         result["instruction"] = "Read this complete schema file before constructing arguments.";
