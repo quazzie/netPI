@@ -139,6 +139,30 @@ public static class SshTests
             Check.Equal(0, env.Fake.Calls.Count);
         });
 
+        r.Add("ssh: the dispatcher's schema covers every action's arguments", () =>
+        {
+            // The handlers read their arguments themselves; the dispatcher's schema is all the model sees, so every
+            // argument a handler accepts must be a property of it.
+            var env = new Env();
+            var def = env.Tools["ssh"].Definition;
+            var props = def.Parameters["properties"]!.AsObject();
+            void Covers(string action, params string[] args)
+            {
+                foreach (var a in args)
+                    Check.True(props.ContainsKey(a), $"{action} reads {a} but the dispatcher's schema has no {a}");
+            }
+            var actions = props["action"]!.AsObject()["enum"]!.AsArray().Select(n => n!.GetValue<string>()!).ToHashSet();
+            Check.True(actions.SetEquals(new[] { "hosts", "run", "read", "write", "edit", "copy" }),
+                "the action enum names the actions: " + string.Join(", ", actions.OrderBy(x => x)));
+            foreach (var a in def.Parameters["required"]!.AsArray().Select(n => n!.GetValue<string>()!))
+                Check.True(props.ContainsKey(a), $"required {a} is not a property");
+            Covers("run", "host", "script", "cwd", "timeout");
+            Covers("read", "host", "path", "cwd", "offset", "limit");
+            Covers("write", "host", "path", "content", "append", "cwd");
+            Covers("edit", "host", "path", "cwd", "edits", "replace_all");
+            Covers("copy", "host", "direction", "from", "to", "recursive");
+        });
+
         r.Add("ssh_run: the script goes through stdin byte for byte; fixed remote command; output and exit codes", async () =>
         {
             var env = new Env();

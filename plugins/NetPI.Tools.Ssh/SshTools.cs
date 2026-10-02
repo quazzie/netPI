@@ -44,19 +44,20 @@ internal static class SshToolSet
 /// </summary>
 internal sealed class SshTool : IAgentTool, IReadOnlyCalls
 {
-    private readonly Dictionary<string, IAgentTool> _actions;
+    private readonly Dictionary<string, SshToolBase> _actions;
 
     public SshTool(IPluginContext ctx, ISshLauncher launcher)
     {
-        _actions = new(StringComparer.OrdinalIgnoreCase)
+        var actions = new SshToolBase[]
         {
-            ["hosts"] = new SshHostsTool(ctx),
-            ["run"] = new SshRunTool(ctx, launcher),
-            ["read"] = new SshReadTool(ctx, launcher),
-            ["write"] = new SshWriteTool(ctx, launcher),
-            ["edit"] = new SshEditTool(ctx, launcher),
-            ["copy"] = new SshCopyTool(ctx, launcher),
+            new SshHostsTool(ctx),
+            new SshRunTool(ctx, launcher),
+            new SshReadTool(ctx, launcher),
+            new SshWriteTool(ctx, launcher),
+            new SshEditTool(ctx, launcher),
+            new SshCopyTool(ctx, launcher),
         };
+        _actions = actions.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
         Definition = new ToolDefinition
         {
             Name = "ssh",
@@ -64,7 +65,7 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
             Category = "ssh",
             SummaryArg = "action",
             Description = "Work on remote hosts (the aliases in ~/.ssh/config): hosts, run {host, script}, read, write, edit or copy (scp).",
-            Help = string.Join("\n", _actions.Select(a => $"- {a.Key}: {a.Value.Definition.Description}")),
+            Help = string.Join("\n", actions.Select(t => $"- {t.Name}: {t.Summary}")),
             Parameters = new JsonObject
             {
                 ["type"] = "object",
@@ -72,7 +73,7 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
                 {
                     ["action"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("hosts", "run", "read", "write", "edit", "copy") },
                     ["host"] = S(), ["script"] = S(), ["cwd"] = S(), ["timeout"] = I(),
-                    ["path"] = S(), ["offset"] = I(), ["limit"] = I(), ["content"] = S(), ["append"] = B(),
+                    ["path"] = S(), ["offset"] = I(), ["limit"] = I(), ["content"] = S(), ["append"] = B(), ["replace_all"] = B(),
                     ["edits"] = new JsonObject
                     {
                         ["type"] = "array",
@@ -103,7 +104,7 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
         return a switch { "exec" or "execute" => "run", "list" => "hosts", "cat" => "read", "scp" or "upload" or "download" => "copy", _ => a };
     }
 
-    public bool IsReadOnly(JsonElement args) => ActionOf(args) is "hosts" or "read";
+    public bool IsReadOnly(JsonElement args) => ActionOf(args) is { } a && _actions.TryGetValue(a, out var t) && t.ReadOnly;
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -126,7 +127,8 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
     private static JsonObject B() => new() { ["type"] = "boolean" };
 }
 
-internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) : IAgentTool
+/// <summary>An action of the <c>ssh</c> dispatcher: the job, the one or two lines the dispatcher's help shows, and whether it only reads.</summary>
+internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
 {
     internal const int MaxReadBytes = 8 * 1024 * 1024;
     /// <summary>The most <c>ssh_write</c> streams in one call. A slow link that stops the stream mid-way must not leave a
@@ -134,7 +136,11 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) :
     internal const int MaxWriteBytes = 16 * 1024 * 1024;
     protected IPluginContext Ctx => ctx;
     protected ISshLauncher Launcher => launcher;
-    public abstract ToolDefinition Definition { get; }
+    /// <summary>The action name ("hosts", "run", …): the dispatcher's key.</summary>
+    internal abstract string Name { get; }
+    /// <summary>What the action does: the dispatcher's help shows it under the name.</summary>
+    internal abstract string Summary { get; }
+    internal virtual bool ReadOnly => false;
 
     /// <summary>
     /// The workspace rule for a write on this machine, the one the file tools apply (a private copy: plugins do not share
@@ -231,14 +237,9 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) :
 
 internal sealed class SshHostsTool(IPluginContext ctx) : SshToolBase(ctx, new ProcessLauncher())
 {
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "ssh_hosts",
-        Label = "SSH hosts",
-        Category = "ssh",
-        ReadOnly = true,
-        Description = "The remote hosts: the aliases in the user's ~/.ssh/config, with user and address.",
-    };
+    internal override string Name => "hosts";
+    internal override bool ReadOnly => true;
+    internal override string Summary => "The remote hosts: the aliases in the user's ~/.ssh/config, with user and address.";
 
     protected override Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
@@ -258,30 +259,12 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
     private const int TailLines = 2000; // like bash
     private const int TailChars = 30 * 1024;
 
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "ssh_run",
-        Label = "SSH",
-        Category = "ssh",
-        SummaryArg = "script",
-        Description =
-            "Run a bash script on a remote host. The script is sent as it is: quotes, $, " +
-            "backslashes and heredocs need no escaping, and it can be long. cwd sets the remote working directory (default " +
-            "the home folder). stdout and stderr are merged; the exit code is reported when it is not 0. timeout (default " +
-            "120 s, max 1800) ends the whole remote process tree, and so does stopping the run.",
-        Parameters = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["host"] = new JsonObject { ["type"] = "string", ["description"] = "Host alias" },
-                ["script"] = new JsonObject { ["type"] = "string", ["description"] = "Bash script, any length" },
-                ["cwd"] = new JsonObject { ["type"] = "string", ["description"] = "Remote working directory" },
-                ["timeout"] = new JsonObject { ["type"] = "integer", ["description"] = "Seconds (default 120, max 1800)" },
-            },
-            ["required"] = new JsonArray("host", "script"),
-        },
-    };
+    internal override string Name => "run";
+    internal override string Summary =>
+        "Run a bash script on a remote host. The script is sent as it is: quotes, $, " +
+        "backslashes and heredocs need no escaping, and it can be long. cwd sets the remote working directory (default " +
+        "the home folder). stdout and stderr are merged; the exit code is reported when it is not 0. timeout (default " +
+        "120 s, max 1800) ends the whole remote process tree, and so does stopping the run.";
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
@@ -449,30 +432,11 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
         "elif command -v openssl >/dev/null 2>&1; then h=\"sha256 $(openssl dgst -sha256 -r < \"$p\" | cut -d ' ' -f 1)\"; " +
         "else h=\"cksum $(cksum < \"$p\" | cut -d ' ' -f 1)\"; fi";
 
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "ssh_read",
-        Label = "SSH read",
-        Category = "ssh",
-        ReadOnly = true,
-        SummaryArg = "path",
-        Description =
-            $"Read a text file on a remote host, like read: at most {MaxLines} lines / {MaxChars / 1024}KB per " +
-            "call; page with offset (1-based; negative counts from the end) and limit. Relative paths start at cwd or the home folder.",
-        Parameters = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["host"] = new JsonObject { ["type"] = "string" },
-                ["path"] = new JsonObject { ["type"] = "string" },
-                ["offset"] = new JsonObject { ["type"] = "integer" },
-                ["limit"] = new JsonObject { ["type"] = "integer" },
-                ["cwd"] = new JsonObject { ["type"] = "string" },
-            },
-            ["required"] = new JsonArray("host", "path"),
-        },
-    };
+    internal override string Name => "read";
+    internal override bool ReadOnly => true;
+    internal override string Summary =>
+        $"Read a text file on a remote host, like read: at most {MaxLines} lines / {MaxChars / 1024}KB per " +
+        "call; page with offset (1-based; negative counts from the end) and limit. Relative paths start at cwd or the home folder.";
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
@@ -589,32 +553,13 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
 
 internal sealed class SshWriteTool(IPluginContext ctx, ISshLauncher launcher) : SshToolBase(ctx, launcher)
 {
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "ssh_write",
-        Label = "SSH write",
-        Category = "ssh",
-        SummaryArg = "path",
-        Description =
-            $"Write a file on a remote host. The content goes as it is (UTF-8, no escaping), up to {MaxWriteBytes / 1024 / 1024} MB; " +
-            "larger content is refused with what to do instead. The content streams to a temporary file in the target's own " +
-            "directory and is put in place by an atomic rename, so a slow or dropped transfer never leaves the target truncated " +
-            "or half-written. Parent folders are created; an existing file keeps its owner and permissions; " +
-            "append (cat >>) adds to the end instead of replacing.",
-        Parameters = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["host"] = new JsonObject { ["type"] = "string" },
-                ["path"] = new JsonObject { ["type"] = "string" },
-                ["content"] = new JsonObject { ["type"] = "string" },
-                ["append"] = new JsonObject { ["type"] = "boolean" },
-                ["cwd"] = new JsonObject { ["type"] = "string" },
-            },
-            ["required"] = new JsonArray("host", "path", "content"),
-        },
-    };
+    internal override string Name => "write";
+    internal override string Summary =>
+        $"Write a file on a remote host. The content goes as it is (UTF-8, no escaping), up to {MaxWriteBytes / 1024 / 1024} MB; " +
+        "larger content is refused with what to do instead. The content streams to a temporary file in the target's own " +
+        "directory and is put in place by an atomic rename, so a slow or dropped transfer never leaves the target truncated " +
+        "or half-written. Parent folders are created; an existing file keeps its owner and permissions; " +
+        "append (cat >>) adds to the end instead of replacing.";
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
@@ -657,43 +602,11 @@ internal sealed class SshWriteTool(IPluginContext ctx, ISshLauncher launcher) : 
 
 internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : SshToolBase(ctx, launcher)
 {
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "ssh_edit",
-        Label = "SSH edit",
-        Category = "ssh",
-        SummaryArg = "path",
-        Description =
-            "Edit a file on a remote host with exact replacements, like edit: each oldText must match " +
-            "exactly once (replace_all replaces every match). Line endings (CRLF/LF) are kept. Fails without writing if the file " +
-            "changed on the host while it was being edited.",
-        Parameters = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["host"] = new JsonObject { ["type"] = "string" },
-                ["path"] = new JsonObject { ["type"] = "string" },
-                ["edits"] = new JsonObject
-                {
-                    ["type"] = "array",
-                    ["items"] = new JsonObject
-                    {
-                        ["type"] = "object",
-                        ["properties"] = new JsonObject
-                        {
-                            ["oldText"] = new JsonObject { ["type"] = "string" },
-                            ["newText"] = new JsonObject { ["type"] = "string" },
-                            ["replace_all"] = new JsonObject { ["type"] = "boolean" },
-                        },
-                        ["required"] = new JsonArray("oldText", "newText"),
-                    },
-                },
-                ["cwd"] = new JsonObject { ["type"] = "string" },
-            },
-            ["required"] = new JsonArray("host", "path", "edits"),
-        },
-    };
+    internal override string Name => "edit";
+    internal override string Summary =>
+        "Edit a file on a remote host with exact replacements, like edit: each oldText must match " +
+        "exactly once (replace_all replaces every match). Line endings (CRLF/LF) are kept. Fails without writing if the file " +
+        "changed on the host while it was being edited.";
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
@@ -772,30 +685,11 @@ internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : S
 
 internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : SshToolBase(ctx, launcher)
 {
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "ssh_copy",
-        Label = "SCP",
-        Category = "ssh",
-        SummaryArg = "from",
-        Description =
-            "Copy files or folders between this machine and a remote host with scp: direction " +
-            "upload (from = local path, to = remote path) or download (from = remote, to = local). recursive for folders. " +
-            "Use it for large or binary files.",
-        Parameters = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["host"] = new JsonObject { ["type"] = "string" },
-                ["direction"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("upload", "download") },
-                ["from"] = new JsonObject { ["type"] = "string" },
-                ["to"] = new JsonObject { ["type"] = "string" },
-                ["recursive"] = new JsonObject { ["type"] = "boolean" },
-            },
-            ["required"] = new JsonArray("host", "direction", "from", "to"),
-        },
-    };
+    internal override string Name => "copy";
+    internal override string Summary =>
+        "Copy files or folders between this machine and a remote host with scp: direction " +
+        "upload (from = local path, to = remote path) or download (from = remote, to = local). recursive for folders. " +
+        "Use it for large or binary files.";
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
