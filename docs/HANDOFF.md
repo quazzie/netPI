@@ -19,9 +19,12 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 ### Storage port and the core diet (2026-10-02)
 
-The swap-over of [docs/plans/2026-10-02-replaceable-parts.md](plans/2026-10-02-replaceable-parts.md) is in the
-working tree, and the revert point is the tag **`pre-swapover-2026-10-02`** (master before it; `git reset --hard
-pre-swapover-2026-10-02` or branch from it). Storage is now a port: `IStorageProvider` chosen by
+The swap-over of [docs/plans/2026-10-02-replaceable-parts.md](plans/2026-10-02-replaceable-parts.md) is written and
+passed its final gate (zero-warning build, six unit suites, the whole e2e suite, `core-size`); the revert point is the
+tag **`pre-swapover-2026-10-02`** (master before it; `git reset --hard pre-swapover-2026-10-02` or branch from it). It
+is **not installed** in the owner's app: their `netpi.db` still has the old schema until the one-off migration
+(`scripts/migrations/001-storage-port`, cutover steps in the plan) has run against their home with NetPI closed.
+Storage is now a port: `IStorageProvider` chosen by
 `storage.provider` (default `sqlite`, `--ephemeral` = `memory`), the only SQL lives in
 `src/NetPI.Host/Storage/Sqlite`, and a plugin keeps its data in `ctx.Data` as collections of JSON documents —
 `tests/NetPI.Storage.Tests` is the contract in executable form and a new provider must pass it. A session has no
