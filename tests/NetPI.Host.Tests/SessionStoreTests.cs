@@ -812,5 +812,28 @@ public static class SessionStoreTests
             var updated = await f.EventsAsync(EventTypes.SessionUpdated);
             Check.Equal(2, updated.Count, "one session.updated per detached session");
         });
+
+        r.Add("sessions: deleting a project publishes sessions that are already detached, with the new stamp", async () =>
+        {
+            await using var f = new Fixture();
+            var p = f.Store.CreateProject("P", T.TempDir("proj"));
+            var s = f.Store.CreateSession(new SessionInfo { Title = "Real", ProjectId = p.Id });
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("hi"));
+            var before = f.Store.GetSession(s.Id)!.UpdatedAt;
+            await f.Bus.FlushAsync();
+            lock (f.Events) f.Events.Clear();
+            // Stamps have millisecond resolution: let the clock pass the session's own, so a bump is observable at all.
+            await Wait.UntilAsync(() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > before.ToUnixTimeMilliseconds(), "the clock to pass the session's stamp");
+
+            f.Store.DeleteProject(p.Id);
+
+            var updated = await f.EventsAsync(EventTypes.SessionUpdated);
+            Check.Equal(1, updated.Count, "one session.updated for the detached session");
+            var payload = JsonSerializer.SerializeToNode(updated[0].Data, NetPiJson.Options)!["session"]!;
+            Check.True(payload["projectId"] is null, "the payload does not carry the deleted project id: " + payload.ToJsonString());
+            var published = payload["updatedAt"]!.GetValue<DateTimeOffset>();
+            Check.True(published.ToUnixTimeMilliseconds() > before.ToUnixTimeMilliseconds(), $"its stamp moved on ({published:O} after {before:O})");
+            Check.Equal(f.Store.GetSession(s.Id)!.UpdatedAt.ToUnixTimeMilliseconds(), published.ToUnixTimeMilliseconds(), "and it is the stamp the row carries now");
+        });
     }
 }
