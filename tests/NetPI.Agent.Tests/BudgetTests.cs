@@ -13,6 +13,7 @@ public static class BudgetTests
         t.Add("agents: agent_choices shows the budget, state, price, spend and note; agent_spawn needs an active agent; an agent's daily cap", AgentsAndCap);
         t.Add("budget: the period starts on budget.resetDay", Period);
         t.Add("budget: settings changes refresh usage without a model call, including file reloads", SettingsRefresh);
+        t.Add("ledger: without a database the in-memory charge list stays bounded and idle rolls are skipped", MemoryLedger);
     }
 
     /// <summary>cloud/big costs $3 / $15 per million tokens (the catalog's pricing, as OpenRouter lists it).</summary>
@@ -276,5 +277,47 @@ public static class BudgetTests
         Check.Equal("2026-08-15..2026-09-15", P(2026, 9, 10, 15));
         Check.Equal("2026-09-15..2026-10-15", P(2026, 9, 15, 15));
         Check.Equal("2025-12-28..2026-01-28", P(2026, 1, 3, 28));
+    }
+
+    /// <summary>
+    /// No database (the usage tables fail to migrate): charges live in memory. The list keeps only the current
+    /// period and today (pruned as charges are recorded, like the token totals), and the snapshot rescans it only
+    /// when a day turns or a charge is recorded or settled — not on every budget roll.
+    /// </summary>
+    private static async Task MemoryLedger()
+    {
+        await using var h = await TestHost.StartAsync(x => { Priced(x); x.Db = new ThrowingDatabase(); }, plugins: TestHost.Plugins.Agents);
+        await h.Bus.DrainAsync();
+        var ledger = h.Services.Get<IBudgetGate>() as NetPI.Agents.Ledger ?? throw new AssertException("no ledger");
+        var model = h.Catalog.Cached.First(m => m.Ref == "cloud/big");
+        ModelRequest Call() => new()
+        {
+            Model = model,
+            Messages = [new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "hi" }] }],
+            SessionId = h.NewSession().Id,
+        };
+
+        // a charge from before the period (a different day): kept until a newer charge is recorded, counts for nothing
+        var (start, _) = NetPI.Agents.Ledger.Period(DateTime.Now, 1);
+        var old = new DateTimeOffset(start).AddDays(-3);
+        ledger.BackdateCharge(old.ToUnixTimeMilliseconds(), old.UtcDateTime.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), null, 9.0);
+        Check.Equal(1, ledger.MemoryStats.Charges, "kept until a newer charge is recorded");
+        Check.Equal((0.0, 0.0), ledger.Spent(), "out of period and not today: counts for nothing");
+
+        // recording a live charge forgets the old one and counts the new one
+        var reservation = ledger.Reserve(Call(), null, null);
+        var spent = ledger.Spent();
+        Check.Equal(1, ledger.MemoryStats.Charges, "the out-of-period charge is forgotten when a new one is recorded");
+        Check.Equal(0.24576, Math.Round(spent.Period, 8), "the reservation counts for period and today");
+        Check.Equal(0.24576, Math.Round(spent.Today, 8));
+        var scans = ledger.MemoryStats.Scans;
+
+        // idle rolls are skipped; a settle makes the snapshot stale and the next roll picks up the settled cost
+        for (var i = 0; i < 5; i++) Check.Equal((spent.Period, spent.Today), ledger.Spent());
+        Check.Equal(scans, ledger.MemoryStats.Scans, "no new charge: no rescan");
+        ledger.Settle(reservation, new Usage { InputTokens = 100, OutputTokens = 10 }, true, false);
+        var after = ledger.Spent();
+        Check.Equal(0.00045, Math.Round(after.Period, 8), "the settlement replaces the reservation");
+        Check.Equal(scans + 1, ledger.MemoryStats.Scans, "a settle triggers exactly one rescan");
     }
 }

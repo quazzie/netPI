@@ -19,6 +19,11 @@ internal sealed partial class Ledger
         {
             var id = ++_nextCharge;
             _memoryCharges[id] = new Charge(ts, day, agent, cost);
+            _memorySeq++;
+            // Keep only what the next roll needs (the current period and today, like Record does for _totals):
+            // without a database the list would otherwise grow for the life of the process and be rescanned
+            // on every budget roll.
+            PruneMemoryCharges();
             return id;
         }
         // A failed write must fail the call, rather than silently disabling the budget.
@@ -35,6 +40,26 @@ internal sealed partial class Ledger
             ["output"] = u.OutputTokens, ["cacheRead"] = u.CacheReadTokens, ["cacheWrite"] = u.CacheWriteTokens,
             ["cost"] = cost, ["source"] = source,
         });
+    }
+
+    /// <summary>Forget in-memory charges that are neither in the current period nor today (under the ledger gate).</summary>
+    private void PruneMemoryCharges()
+    {
+        var day = Today;
+        var from = new DateTimeOffset(Period(DateTime.Now, Options().ResetDay).Start).ToUnixTimeMilliseconds();
+        foreach (var k in _memoryCharges.Where(c => c.Value.Ts < from && c.Value.Day != day).Select(c => c.Key).ToList())
+            _memoryCharges.Remove(k);
+    }
+
+    /// <summary>Test seam (memory mode): inject a legacy in-memory charge as if it had been made at a given moment and
+    /// had survived until now (no pruning — that is what a new record does).</summary>
+    internal void BackdateCharge(long ts, string day, string? agent, double cost)
+    {
+        lock (_gate)
+        {
+            _memoryCharges[++_nextCharge] = new Charge(ts, day, agent, cost);
+            _memorySeq++;
+        }
     }
 
     // A gate, not a bill: what the call may cost at worst, so concurrent reservations fit against the budgets.
@@ -149,7 +174,10 @@ internal sealed partial class Ledger
                     """, new { id = reservation.Id, cost, source, input = u.InputTokens, output = u.OutputTokens,
                     cacheRead = u.CacheReadTokens, cacheWrite = u.CacheWriteTokens });
             else if (_memoryCharges.TryGetValue(reservation.Id, out var charge))
+            {
                 _memoryCharges[reservation.Id] = charge with { Cost = cost };
+                _memorySeq++; // the cost changed: the next roll must rescan
+            }
             Record(reservation.Request.Model.Provider, reservation.Request.Model.Id,
                 u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens);
         }

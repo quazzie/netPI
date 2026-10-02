@@ -659,6 +659,20 @@ public sealed class NullDatabase : IDatabase
     public void Migrate(string scope, params string[] migrations) { }
 }
 
+/// <summary>Database that refuses everything (exercises the in-memory fallbacks of the plugins that use it).</summary>
+public sealed class ThrowingDatabase : IDatabase
+{
+    private static Exception Fail() => new InvalidOperationException("no database in this test");
+    public int Execute(string sql, object? args = null) => throw Fail();
+    public long Insert(string sql, object? args = null) => throw Fail();
+    public T? Scalar<T>(string sql, object? args = null) => throw Fail();
+    public List<T> Query<T>(string sql, object? args, Func<IDbRow, T> map) => throw Fail();
+    public T? QuerySingle<T>(string sql, object? args, Func<IDbRow, T> map) => throw Fail();
+    public T Transaction<T>(Func<IDatabase, T> work) => throw Fail();
+    public void Transaction(Action<IDatabase> work) => throw Fail();
+    public void Migrate(string scope, params string[] migrations) => throw Fail();
+}
+
 // ------------------------------------------------------------------ logger
 
 public sealed class ConsoleLogger(string category, bool verbose) : ILogger

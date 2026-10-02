@@ -36,6 +36,10 @@ internal sealed partial class Ledger : IBudgetGate
     private double _periodSpent, _todaySpent;
     private readonly Dictionary<string, double> _agentToday = new(StringComparer.OrdinalIgnoreCase);
     private int _changeScheduled;
+    // In-memory charges (no database): _memorySeq counts every add/settle and _memorySeqRolled is its value when the
+    // snapshot was last rescanned, so a roll skips the rescan while the day is unchanged and nothing was recorded.
+    private long _memorySeq, _memorySeqRolled = -1;
+    private int _memoryScans;   // test seam: how often the in-memory charge list was rescanned
 
     public sealed class Totals
     {
@@ -231,14 +235,16 @@ internal sealed partial class Ledger : IBudgetGate
     {
         lock (_gate)
         {
-            _costDay = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var dayChanged = day != _costDay;
+            _costDay = day;
             (_periodStart, _) = Period(now, Options().ResetDay);
-            // Read through the database: another ledger may still be settling a call after hot reload.
-            // Never publish a stale snapshot over increments made by a different thread.
             var from = new DateTimeOffset(_periodStart).ToUnixTimeMilliseconds();
-            _agentToday.Clear();
             if (_dbReady)
             {
+                // Read through the database: another ledger may still be settling a call after hot reload.
+                // Never publish a stale snapshot over increments made by a different thread.
+                _agentToday.Clear();
                 var totals = _ctx.Db.Query("""
                     SELECT lane,
                         SUM(CASE WHEN ts >= @from THEN cost_usd ELSE 0 END) AS period,
@@ -250,15 +256,30 @@ internal sealed partial class Ledger : IBudgetGate
                 _todaySpent = totals.Sum(t => t.Today);
                 foreach (var t in totals.Where(t => t.Agent is not null)) _agentToday[t.Agent!] = t.Today;
             }
+            else if (!dayChanged && _memorySeqRolled == _memorySeq)
+            {
+                // The in-memory snapshot is current: the same day (hence the same period) and nothing was
+                // recorded or settled since the last roll, so the charge list needs no rescanning.
+                return;
+            }
             else
             {
+                _memoryScans++;
+                _agentToday.Clear();
                 _periodSpent = _memoryCharges.Values.Where(c => c.Ts >= from).Sum(c => c.Cost);
                 var today = _memoryCharges.Values.Where(c => c.Day == _costDay).ToList();
                 _todaySpent = today.Sum(c => c.Cost);
                 foreach (var c in today.Where(c => c.Agent is not null))
                     _agentToday[c.Agent!] = _agentToday.GetValueOrDefault(c.Agent!) + c.Cost;
+                _memorySeqRolled = _memorySeq;
             }
         }
+    }
+
+    /// <summary>Test seam: how many in-memory charges are kept and how often their list was rescanned.</summary>
+    internal (int Charges, int Scans) MemoryStats
+    {
+        get { lock (_gate) return (_memoryCharges.Count, _memoryScans); }
     }
 
     public (double Period, double Today) Spent()
