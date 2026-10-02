@@ -9,9 +9,16 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   there are **no compatibility shims, deprecated paths, mirrors or forwarders**. A contract change updates every plugin,
   test and doc in the same change; rebuild all plugins. Existing local data that a change strands is migrated for the
   owner's setup by a one-off script (see `docs/plans/2026-10-02-replaceable-parts.md`), never by product code.
-- `src/NetPI.Host` — kernel: plugin manager, event bus, registries, SQLite (P/Invoke, no NuGet), settings, session
-  store, model catalog, Kestrel/WebSocket server. `src/NetPI.Server` = headless exe, `src/NetPI.Desktop` =
-  WinForms + WebView2 shell (Windows only).
+- `src/NetPI.Contracts` — the vocabularies built on those: agent slots/scheduler, workspaces, decisions, resource
+  leases, deferred tools, the plugins' event names. The **Host project must not reference it**, so the compiler enforces
+  the small core; a plugin that speaks none of them needs only Abstractions.
+- `src/NetPI.Host` — kernel: plugin manager, event bus, registries, settings, session service, model catalog, Kestrel/WebSocket
+  server, and **storage as a port**: `src/NetPI.Abstractions/StoragePort.cs` (`IStorageProvider` chosen by the
+  `storage.provider` setting, default `sqlite`; `--ephemeral` = the `memory` provider) with the two built-in providers in
+  `src/NetPI.Host/Storage/{Sqlite,Memory}` — the only code that writes SQL (`Sqlite3` is a P/Invoke over the OS library,
+  no NuGet). A plugin keeps its data in `ctx.Data` (`IPluginData`: named collections of JSON documents with declared
+  index fields), never in SQL, and a new provider must pass `tests/NetPI.Storage.Tests`. `src/NetPI.Server` = headless
+  exe, `src/NetPI.Desktop` = WinForms + WebView2 shell (Windows only).
 - `plugins/<Name>` — one plugin per folder; minimal csproj, conventions in `plugins/Directory.Build.props`. Plugins
   never reference each other: they talk through services (`ctx.Services`), RPC (`ctx.Rpc`) and events (`ctx.Events`).
 - `plugins/<Name>/ui` — optional Svelte tab (built to `wwwroot/ui.js` by `npm run build:plugins`, committed).
@@ -60,7 +67,8 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   applies everything that piled up. This is the one thing a worktree cannot do: the running app is a single process
   that every session shares.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
-  Agent, Aux, Host. End-to-end (real server, mock model): `.\scripts\e2e.ps1` (below; `docs/TESTING.md`).
+  Agent, Aux, Host, Storage (the storage port's conformance suite; a provider joins in its `Providers.All`).
+  End-to-end (real server, mock model): `.\scripts\e2e.ps1` (below; `docs/TESTING.md`).
 - **The test loop: one big run, then only the failures.** `.\scripts\test.ps1` builds the selected suites once
   (one generated solution), runs them (2 processes at once by default; `-Parallel 3` for three, `-Serial` for one),
   keeps the log and timings in `artifacts/testlogs`, and prints the failing names as a paste-ready `-Only` command.
@@ -94,8 +102,9 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   harness; `node scripts/netpi.mjs` is the same surface from outside. See `docs/DEBUGGING.md`.
 
 ## Conventions
-- Keep the core small; new behaviour goes into a plugin. Register everything through `IPluginContext` so hot
-  reload can remove it; resolve other plugins' services per use.
+- Keep the core small; new behaviour goes into a plugin. `node scripts/core-size.mjs` checks it (the Host references
+  only Abstractions, and neither `src/NetPI.Host` nor Abstractions names a plugin-owned type). Register everything
+  through `IPluginContext` so hot reload can remove it; resolve other plugins' services per use.
 - **A session's working directory is a workspace, not its project.** `plugins/NetPI.Workspaces` owns them and registers
   the one resolver (`IWorkspaceResolver`); ask it instead of `Sessions.GetCwd` when you need a session's root, its branch
   or its owner, and never fall back to the project path for a session that is bound to one. Adding a tool that writes

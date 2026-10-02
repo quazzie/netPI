@@ -5,6 +5,13 @@ runtime-reloadable plugin** — model providers, tools, the agent loop, agents, 
 and a Svelte UI shown in a WebView2 window. The desktop app starts its own server; the same server also runs
 headless for any browser.
 
+The core is the concepts a harness is made of: the plugin mechanism, the wire, settings, sessions/messages/projects,
+models, tools, the context contracts, the loop's contract, and **storage as a replaceable port**. Everything built on
+top of those — agents and slots, the budget ledger, workspaces, resource leases, decisions — is a plugin, and the
+kernel knows none of it; `node scripts/core-size.mjs` checks that mechanically. A plugin stores its own data through
+that port (`ctx.Data`), so a second storage provider is a class that implements it and passes the conformance suite.
+See [the plan that made it so](docs/plans/2026-10-02-replaceable-parts.md).
+
 ![netPI running three subagents on a local model that serves two at once](docs/images/netpi-subagents.png)
 
 ## Highlights
@@ -20,7 +27,8 @@ headless for any browser.
   them and resumes with only their final reports. Switch an agent off in its dialog or in the Work tab.
 - **A budget for paid models.** Every model call is recorded with its cost (OpenRouter reports it; otherwise tokens ×
   price). Set a monthly budget: agents see it, each chat shows what it cost, and paid calls reserve their estimated cost before starting; calls that cannot fit stop, or
-  ask you first. Interrupted calls remain accounted for.
+  ask you first. Interrupted calls remain accounted for. The ledger is the agents plugin's own, so nothing in the core
+  polices money — without that plugin paid calls are neither metered nor limited.
 - **Agents manage agents.** `agent_spawn`, and `agent` to wait for, message, list, read or cancel them
   (plus `agent_choices` from the agents plugin); subagents get their own (viewable, steerable) sessions and report back
   automatically. The agent that starts one chooses its tools, so a limited orchestrator can dispatch agents that can do
@@ -56,17 +64,19 @@ headless for any browser.
 - **Skills** ([Agent Skills](https://agentskills.io) standard): folders with a `SKILL.md` in the project
   (`.agents/skills`, `.netpi/skills`) or globally (`~/.agents/skills`, `~/.netpi/skills`). Agents get the catalog as a
   notice and load a skill with the `skill` tool when a task matches; `/skill:name` loads one for your message.
-- **Ideas backlog:** agents and you park research, plans and requirements in one backlog, kept in NetPI's own database
+- **Ideas backlog:** agents and you park research, plans and requirements in one backlog, kept in NetPI's own store
   beside your chats (each idea carries its project; the `ideas` tool + the Ideas tab); "send to chat" when it's time to
-  implement, and the agent closes it when done. The cards a closed chat leaves and the per-repository commit cursors are
-  tables in that same database, so a backup carries the whole backlog without the Ideas plugin. A backlog from before
-  the move is imported once at the first start, and its files are archived instead of written again.
+  implement, and the agent closes it when done. The cards a closed chat leaves and the per-repository commit cursors
+  travel in that same store, so a backup carries the whole backlog without the Ideas plugin. Moving a backlog to
+  another machine is a deliberate `ideas.export` / `ideas.import` of a portable snapshot.
 - **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Ideas,
   Diagnostics), collapsible thinking/tool blocks, diffs, live shell output, pruned chat history with "load earlier",
   slash commands and `@` file mentions. Window size and position are remembered.
-- **Backups:** automatic database/settings snapshots (the ideas backlog travels inside the database copy), manual backup
-  and verification in Settings → Data & backups, plus [restore into a new home](docs/BACKUPS.md).
-- **SQLite** storage (the OS's own SQLite: no native packages to ship).
+- **Backups:** automatic snapshots of what the storage provider writes plus the settings (the ideas backlog travels
+  inside the store's files), manual backup and verification in Settings → Data & backups, plus [restore into a new
+  home](docs/BACKUPS.md).
+- **Storage you can swap:** the built-in `sqlite` provider (the OS's own SQLite: no native packages to ship) or an
+  in-memory one (`--ephemeral`, for tests and throwaway runs), chosen by the `storage.provider` setting.
 
 ## Quick start (Windows)
 
@@ -80,9 +90,11 @@ cd C:\AI\Projects\NetPI
 
 From cmd: `build -Run` (`build.cmd` runs `build.ps1` with the same options; `build /?` lists them).
 
-On first start `%USERPROFILE%\.netpi\settings.json` is created: AiProxy at `http://127.0.0.1:8090` (Responses
-transport) and `aiproxy/qwen3.8-27b` as the default model. For Claude set `providers.anthropic.apiKey` (or the
-`ANTHROPIC_API_KEY` environment variable), for OpenRouter `providers.openrouter.apiKey` (or `OPENROUTER_API_KEY`).
+On first start `%USERPROFILE%\.netpi\settings.json` is created with the core keys only (port, plugin folders, quiet,
+disabled tools); everything else appears with the default its own plugin declares — AiProxy at
+`http://127.0.0.1:8090` (Responses transport), `aiproxy/qwen3.8-27b` as the default model. For Claude set
+`providers.anthropic.apiKey` (or the `ANTHROPIC_API_KEY` environment variable), for OpenRouter
+`providers.openrouter.apiKey` (or `OPENROUTER_API_KEY`).
 All keys: [docs/SETTINGS.md](docs/SETTINGS.md).
 
 Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized URL). Linux/macOS: `./build.sh`, then
@@ -113,18 +125,20 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
    Kestrel 127.0.0.1 + WebSocket (token auth)   │   NetPI.Agents        agents, queueing, the cost ledger, the budget
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt (frozen per session), project notices
                                                 │   NetPI.Profiles     a chat's opening instructions and tools, a default per project
-   tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices
+   tool/UI registries · settings ·              │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices
                                                 │   NetPI.Skills       Agent Skills: the catalog notice, the skill tool, /skill:name
-   session store · model catalog                │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
+   storage port (sqlite or memory) · catalog    │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
                                                 │   NetPI.Tools.*      files, shell, agents, web, media, ssh · NetPI.Todo · NetPI.Goal
                                                 │   NetPI.Ask          ask_user: questions for you, inline in the chat
                                                 │   NetPI.Guardrails   blocks dangerous commands and protected paths, or asks you first
 NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Loops · NetPI.Retry · NetPI.ToolRepair
-web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics
+NetPI.Contracts: the higher abstractions'       │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics
+web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Workspaces   checkouts, bindings, worktrees (the plugin that owns them)
                                                 └─ ~/.netpi/plugins/ (your own)
 ```
 
-Data: `~/.netpi/` — `settings.json`, `netpi.db` (sessions, messages, projects, agents, usage, the ideas backlog), `AGENTS.md`, `skills/`,
+Data: `~/.netpi/` — `settings.json`, `netpi.db` (the `sqlite` provider's file: sessions, messages, projects, the
+ledger, the ideas backlog), `AGENTS.md`, `skills/`,
 `logs/`, `webview/`, `window.json`, `workspace/` (cwd of sessions without a project).
 
 ## Develop
