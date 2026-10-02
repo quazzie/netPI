@@ -200,6 +200,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             catch (Exception ex) { ctx.Logger.LogWarning("Ideas: cannot watch the repository of project {Project}: {Message}", project.Name, ex.Message); }
         }
         DropStale(projects);
+        ForgetStale();
         foreach (var watch in Watches())
         {
             await watch.Gate.WaitAsync(ctx.Stopping).ConfigureAwait(false);
@@ -482,6 +483,9 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             ["short"] = IdeaOps.Str(commit["short"]) ?? hash[..Math.Min(7, hash.Length)],
             ["subject"] = IdeaOps.Clip(subject, 200),
             ["at"] = commit["at"]?.DeepClone() ?? IdeaOps.Now(),
+            // Where the commit was made: an idea collects commits from every repository, and the completion evidence
+            // is read in the repository the sweep is on (idea-g6siz0).
+            ["repo"] = watch.Repo,
         };
         var titles = new List<string>();
         foreach (var idea in linked) titles.Add(IdeaOps.Str(idea["title"]) ?? "?");
@@ -622,7 +626,10 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             var request = new JsonObject { ["cwd"] = watch.Path, ["hash"] = hash };
             var raw = ctx.Services.Get<IGitHistory>() is { } history ? await history.ReadAsync(request, ct).ConfigureAwait(false)
                 : NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("files.commits", request, ct).ConfigureAwait(false)) as JsonObject;
-            if (raw?["patch"]?.GetValue<string>() is not { Length: > 0 } patch) return null;
+            // A commit this repository cannot read (it was linked from another one, or its history was rewritten) is
+            // evidence we do not have, not a failure of the check: the same question would be re-paid on every sweep
+            // and the idea would stay unanswerable until it is closed by hand (idea-g6siz0).
+            if (raw?["patch"]?.GetValue<string>() is not { Length: > 0 } patch) { ReportUnreadable(hash); return false; }
             if (raw["truncated"]?.GetValue<bool>() == true) { ReportEvidenceBound(); return false; }
             patches.AppendLine(patch);
             if (patches.Length > 64000) { ReportEvidenceBound(); return false; }
@@ -665,6 +672,24 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             var skipped = work?.Begin("Completion verification", null, null, watch.ProjectId);
             if (skipped is not null) work!.Set(skipped, "skipped", "Commit patches exceed the automatic verification bound; review this idea manually");
         }
+
+        /// <summary>A linked commit this repository cannot read: the idea is not offered now, and it says why.</summary>
+        void ReportUnreadable(string hash)
+        {
+            var where = repoOf(hash);
+            ctx.Logger.LogWarning("Ideas: {Short} in {Repo} cannot be read there (it is recorded from {From}): the idea is not offered as finished, and the commits after it are read.",
+                hash.Length > 7 ? hash[..7] : hash, watch.Repo, where ?? "another repository");
+            var work = ctx.Services.Get<IBackgroundWork>();
+            var skipped = work?.Begin("Completion verification", null, null, watch.ProjectId);
+            if (skipped is not null)
+                work!.Set(skipped, "skipped", $"commit {hash[..Math.Min(7, hash.Length)]} is not in {watch.Repo} (recorded from {where ?? "another repository"}); review this idea manually");
+        }
+
+        // Where a linked commit was made, when the entry says (a commit is recorded on the idea it works on, wherever
+        // that repository is).
+        string? repoOf(string hash) =>
+            (idea["commits"] as JsonArray ?? []).OfType<JsonObject>()
+                .FirstOrDefault(c => IdeaOps.Str(c["hash"]) == hash) is { } entry ? IdeaOps.Str(entry["repo"]) : null;
     }
 
     // ------------------------------------------------------------------ the decisions
@@ -686,8 +711,19 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
 
     // ------------------------------------------------------------------ the cursors (shared with the save check)
 
-    /// <summary>How long a repository's last-seen commit is remembered.</summary>
-    private void ForgetStale() => _repo.ForgetStaleRepos(RepoKeepDays);
+    /// <summary>
+    /// Forget a repository nothing has read for a while, so the collection does not grow with deleted projects — but
+    /// never one of the repositories being watched: a cursor is the progress made before a restart, and losing it makes
+    /// the next sweep read months of commits again, recording them on ideas that did not exist when they were made
+    /// (idea-g6siz0). A project that is gone is not watched any more, so its cursor still goes.
+    /// </summary>
+    private void ForgetStale() => _repo.ForgetStaleRepos(RepoKeepDays, IsWatched);
+
+    /// <summary>Whether a repository is one of the ones this rescan is watching.</summary>
+    private bool IsWatched(string repo)
+    {
+        lock (_watchLock) return _watches.ContainsKey(repo);
+    }
 
     // ------------------------------------------------------------------ helpers
 

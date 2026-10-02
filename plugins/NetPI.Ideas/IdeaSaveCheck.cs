@@ -139,7 +139,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         for (var waited = 0; (turn == Turn.Open || IdeaRuns.SessionBusy(ctx, session.Id)) && waited < MaxDefers; waited++)
         {
             await Task.Delay(DeferStep, ct).ConfigureAwait(false);
-            if (ct.IsCancellationRequested) return;
+            if (ct.IsCancellationRequested) { FinishAsync(session.Id, token, ct, "cancelled"); return; }
             if (ctx.Sessions.GetSession(session.Id) is null) { GiveUpAsync(session.Id, token, ct); return; }
             current = ctx.Sessions.GetMessages(session.Id);
             turn = TurnOf(current);
@@ -147,6 +147,11 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         if (turn == Turn.Open || IdeaRuns.SessionBusy(ctx, session.Id)) { GiveUpAsync(session.Id, token, ct); return; }
         if (turn == Turn.Bad) { GiveUpAsync(session.Id, token, ct); return; }
         await RunAsync(session, current, token, ct).ConfigureAwait(false);
+      } catch (OperationCanceledException) {
+        // A plugin that was reloaded or stopped while the check waited leaves its claim behind, and this is what gives
+        // it back: the next close of that conversation runs the check again instead of waiting for the claim to expire
+        // (idea-g6siz0). RunAsync reports its own outcome, so only a wait that never reached it lands here.
+        FinishAsync(session.Id, token, CancellationToken.None, "cancelled");
       } catch (Exception ex) when (ex is not OperationCanceledException) {
         ctx.Logger.LogWarning("Ideas: the deferred check on {Session} failed: {Message}", session.Id, ex.Message);
       }

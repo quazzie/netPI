@@ -506,7 +506,7 @@ public static class IdeaOps
         var existing = a.OfType<JsonObject>().FirstOrDefault(c => Str(c["hash"]) == hash);
         if (existing is not null)
         {
-            foreach (var k in new[] { "short", "subject", "at" })
+            foreach (var k in new[] { "short", "subject", "at", "repo" })
                 if (entry[k] is { } v) existing[k] = v.DeepClone();
             return;
         }

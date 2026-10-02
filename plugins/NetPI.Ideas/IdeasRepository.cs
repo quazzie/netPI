@@ -59,8 +59,9 @@ public sealed record IdeaRow(JsonObject Doc, long Revision);
 /// <summary>How a card was answered, kept after the card is gone.</summary>
 public sealed record CardAnswer(string Action, string? IdeaId);
 
-/// <summary>One conversation's check mark, as it is stored.</summary>
-public sealed record CheckMark(string Rev, string State, long Tries, string At, string? Claim);
+/// <summary>One conversation's check mark, as it is stored. <paramref name="ClaimUntil"/> is when a running claim expires
+/// (unix ms): past that the check is claimable again, whoever left it behind.</summary>
+public sealed record CheckMark(string Rev, string State, long Tries, string At, string? Claim, long? ClaimUntil = null);
 
 /// <summary>
 /// The Ideas backlog in the store's plugin data: one collection per table, one repository, one write path, one
@@ -120,7 +121,7 @@ public sealed class IdeasRepository
         // instead of two backends (the old code guaranteed the same with one set of tables).
         _items = data.Collection("items", new CollectionSpec().Text("idLower").Integer("ord").Text("status").Text("projectId"));
         _cards = data.Collection("cards", new CollectionSpec().Integer("ord").Text("kind").Text("sessionId").Text("ideaId").Text("title"));
-        _resolutions = data.Collection("resolutions", new CollectionSpec());
+        _resolutions = data.Collection("resolutions", new CollectionSpec().Text("sessionId").Text("titleKey").Text("ideaId").Text("cardIdeaId"));
         _checks = data.Collection("checks", new CollectionSpec().Text("state").Text("at").Integer("claimUntil"));
         _repos = data.Collection("repos", new CollectionSpec().Text("at"));
         _imports = data.Collection("imports", new CollectionSpec());
@@ -447,9 +448,10 @@ public sealed class IdeasRepository
     public int CardCount() => (int)_cards.Count();
 
     /// <summary>
-    /// Add a card unless it is one that is already waiting: a "save" card is one per conversation per plan (kind,
-    /// session and title), a "done" card is one per idea. A check that runs twice (a retry, a restart) does not stack
-    /// them, and the card is still answerable while another window is on it (the answer is what excludes it).
+    /// Add a card unless it is one that is already waiting, or one the user already answered: a "save" card is one per
+    /// conversation per plan (kind, session and title), a "done" card is one per idea. A check that runs twice (a
+    /// retry, a restart) does not stack them, a discarded plan does not come back as a new card, and the card is still
+    /// answerable while another window is on it (the answer is what excludes it).
     /// </summary>
     public bool AddCard(JsonObject card, bool dedupe = true)
     {
@@ -467,6 +469,7 @@ public sealed class IdeasRepository
                 if (ideaId is { Length: > 0 } i)
                 {
                     if (_cards.Count(new DataQuery().Eq("ideaId", i)) > 0) return false;
+                    if (_resolutions.Count(new DataQuery().Eq("cardIdeaId", i)) > 0) return false;   // answered, one way or the other
                 }
                 else
                 {
@@ -476,6 +479,12 @@ public sealed class IdeasRepository
                     if (sessionId is { Length: > 0 } s) q.Eq("sessionId", s);
                     else q.IsNull("sessionId");
                     if (_cards.Count(q) > 0) return false;
+                    // The plan was answered for this conversation: discarding it means it is not wanted, saving it means
+                    // it is in the backlog. Either way the check must not offer it again (idea-g6siz0).
+                    var answered = new DataQuery().Eq("titleKey", TitleKey(title));
+                    if (sessionId is { Length: > 0 } s2) answered.Eq("sessionId", s2);
+                    else answered.IsNull("sessionId");
+                    if (_resolutions.Count(answered) > 0) return false;
                 }
             }
             PutCard_(id, doc, MaxCardOrd());
@@ -484,6 +493,9 @@ public sealed class IdeasRepository
         if (added) Announce("card");
         return added;
     }
+
+    /// <summary>What a card's title is matched on: the same plan, however it is capitalized.</summary>
+    private static string TitleKey(string title) => title.Trim().ToLowerInvariant();
 
     /// <summary>The idea revision a card was made from, when it is about an idea: a card written against one version
     /// of an idea cannot later claim a newer one.</summary>
@@ -565,8 +577,12 @@ public sealed class IdeasRepository
         var seen = ReadCheck(sessionId);
         if (seen is { } row && row.Rev == rev)
         {
-            if (row.State is "done" or "running") return (false, "already", (string?)null);
-            if (row.State == "failed" && row.Tries >= maxTries && Stamp(row.At) is { } at && now - at < retryAfter)
+            // A claim whose expiry has passed belongs to a check nobody is running any more (the plugin was reloaded or
+            // stopped mid-check, and the recover-at-start pass only runs on a start): it is claimable again, or that
+            // conversation is not checked for the rest of the claim's ten minutes (idea-g6siz0).
+            var claim = seen.State == "running" && seen.ClaimUntil is { } until && until <= now.ToUnixTimeMilliseconds() ? "expired" : null;
+            if (claim is null && (row.State is "done" or "running")) return (false, "already", (string?)null);
+            if (claim is null && row.State == "failed" && row.Tries >= maxTries && Stamp(row.At) is { } at && now - at < retryAfter)
                 return (false, "already", (string?)null);
         }
         var token = Ids.Short(10);
@@ -599,7 +615,8 @@ public sealed class IdeasRepository
             Str_(doc, "state") ?? "",
             Long_(doc["tries"]),
             Str_(doc, "at") ?? "",
-            Str_(doc, "claim"));
+            Str_(doc, "claim"),
+            doc["claimUntil"] is JsonValue v && v.TryGetValue<long>(out var until) ? until : null);
     }
 
     /// <summary>
@@ -762,9 +779,11 @@ public sealed class IdeasRepository
 
     /// <summary>
     /// Forget repositories nothing has read for a while, so the collection does not grow with deleted projects — and
-    /// the unread records of the repositories that go with them, so the two cannot drift apart.
+    /// the unread records of the repositories that go with them, so the two cannot drift apart. <paramref name="keep"/>
+    /// says which repositories are still wanted whatever their date (the ones being watched: their cursor is the
+    /// progress made before the last restart), because a cursor that is forgotten is read again from the start.
     /// </summary>
-    public int ForgetStaleRepos(int keepDays)
+    public int ForgetStaleRepos(int keepDays, Func<string, bool>? keep = null)
     {
         var cutoff = StampOf(DateTimeOffset.UtcNow.AddDays(-keepDays));
         _unread.DeleteWhere(new DataQuery().Lt("at", cutoff));
@@ -773,7 +792,12 @@ public sealed class IdeasRepository
         var kept = _repos.Find().Select(d => d.Key).ToHashSet();
         foreach (var d in _unread.Find())
             if (!kept.Contains(IdeaOps.Str(d.Doc["repo"]) ?? "")) _unread.Delete(d.Key);
-        return _repos.DeleteWhere(new DataQuery().Lt("at", cutoff));
+        if (keep is null) return _repos.DeleteWhere(new DataQuery().Lt("at", cutoff));
+        // A watched repository has no index field for its key, so the ones that go are deleted one by one.
+        var gone = 0;
+        foreach (var d in _repos.Find(new DataQuery().Lt("at", cutoff)))
+            if (keep(d.Key) is false && _repos.Delete(d.Key)) gone++;
+        return gone;
     }
 
     // ------------------------------------------------------------------ imports and metadata
@@ -900,10 +924,17 @@ public sealed class IdeasRepository
     }
 
     /// <summary>How a card was answered, kept after the card is gone. One answer per card: the write is the exclusion.</summary>
-    private void PutResolution_(string cardId, string action, string? ideaId)
+    private void PutResolution_(string cardId, string action, JsonObject? card, string? ideaId)
     {
         var doc = new JsonObject { ["action"] = action, ["at"] = IdeaOps.Now() };
+        // The idea this answer wrote (a retried answer reads it back), and the idea the card was about, which is what a
+        // later check matches on: a dismissal wrote nothing, so it is only excluded by the card's own idea.
         if (ideaId is not null) doc["ideaId"] = ideaId;
+        if (IdeaOps.Str(card?["ideaId"]) is { Length: > 0 } cardIdeaId) doc["cardIdeaId"] = cardIdeaId;
+        // What the card was about, so a later check can tell that this offer was answered and not make it again: the
+        // conversation and the plan's title for a "save" (idea-g6siz0).
+        if (IdeaOps.Str(card?["sessionId"]) is { Length: > 0 } sessionId) doc["sessionId"] = sessionId;
+        if (IdeaOps.Str(card?["title"]) is { } title) doc["titleKey"] = TitleKey(title);
         _resolutions.Put(cardId, doc);
     }
 
@@ -942,7 +973,7 @@ public sealed class IdeasRepository
                 "done" => MarkDone_(IdeaOps.Str(card?["ideaId"]) ?? "").Doc,
                 _ => null,
             };
-            PutResolution_(cardId, action, IdeaOps.Str(idea?["id"]));
+            PutResolution_(cardId, action, card, IdeaOps.Str(idea?["id"]));
             RemoveCard(cardId);
             return new CardResolution(idea, false, action);
         });

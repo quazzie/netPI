@@ -30,7 +30,7 @@ top of `IdeasRepository.cs`. The JSON files of the earlier versions (`ideas.json
 |---|---|
 | `items` | one document per idea (its own fields) plus `revision`, `ord` (the order the user arranged), `idLower` and `projectId`, indexed on `ord`, `status`, `projectId`, `idLower` |
 | `cards` | the suggestions waiting for an answer, with `ord`, `kind`, `sessionId`, `ideaId`, `title` as index fields |
-| `resolutions` | how a card was answered, kept after the card is gone |
+| `resolutions` | how a card was answered, kept after the card is gone, with what it was about (`sessionId`, `titleKey`, `cardIdeaId` indexed) so the same offer is not made again |
 | `checks` | the per-conversation check marks, with the claim token and expiry of a running check (`state`, `at`, `claimUntil` indexed) |
 | `repos` | the last commit read per repository (`at` indexed) |
 | `imports` | the receipts of the imports (one per source taken in) |
@@ -306,7 +306,9 @@ Whether the check may run is recorded in the `checks` collection, per **conversa
 chat has now),
 with a state: `running` is a claim in flight — it carries a token and an expiry, so a second close of an unchanged chat
 sees the claim instead of starting a second check, and a claim nobody owns any more (NetPI was stopped mid-check)
-becomes retryable at the next start. `done` is the only permanent state, and `failed` — with the reason — may be tried
+becomes retryable: at the next start, and by the next close of that chat once the expiry has passed. A check that is
+cancelled while it waits hands the claim back as it stops. `done` is the only permanent state, and `failed` — with the
+reason — may be tried
 again a few times. A check that *ran* and found nothing is `done`, not failed: "nothing worth keeping" is an answer. An
 old aborted turn does not exclude the chat, and a check whose claim was taken over cannot report over the newer
 outcome.
@@ -357,8 +359,11 @@ answered.
 listing the cards writes nothing. Two kinds: `save` (a plan a closed chat left unsaved — `{ kind: "save", sessionId,
 sessionTitle, title, summary, at, project }`) and `done` (an idea a commit may have finished — `{ kind: "done", ideaId,
 ideaRevision, title, commits: string[], at, project }`). The cards are documents in `cards`; the check marks are in
-`checks` (kept 30 days) and the last commit read per repository in `repos` (kept 60 days). The same chat and
-the same plan make one card however often the check runs, and a `done` card is one per idea.
+`checks` (kept 30 days) and the last commit read per repository in `repos` (kept 60 days, and never for a
+repository that is still being watched: its cursor is the progress made before the last restart). The same chat and
+the same plan make one card however often the check runs, a `done` card is one per idea, and **an answered card is not
+made again**: a plan discarded for a conversation, and an idea whose completion was dismissed, are not offered a second
+time.
 
 `ideas.resolve { id, action: "save" | "done" | "discard", edit?: { title?, summary? } }` → `{ saved: idea | null,
 discarded, action, alreadyResolved }`.
@@ -402,7 +407,11 @@ Files plugin's `files.commits` — a plugin cannot run `git`.
 Unseen history is read in bounded pages **oldest first** (`since..until`, then the pages in the opposite order, because
 git answers a range with its newest commits), so a burst of more than 20 is read whole: none skipped, none twice. The
 cursor moves past a commit only when it was handled — a decision that failed leaves it unread and the next sweep starts
-there — and a history that was rewritten under the cursor re-anchors at HEAD with a line in the log.
+there — and a history that was rewritten under the cursor re-anchors at HEAD with a line in the log. The completion
+evidence of a linked commit is read in the repository the sweep is on; a commit it cannot show a patch for (it was made
+in another repository, or its history was rewritten away) is evidence that is missing, not a failure: the idea is not
+offered as finished, the log says which commit could not be read, and the sweep moves on. Each commit entry records the
+repository it was made in.
 
 A project with a running, queued or yielded agent defers its sweep without moving the cursor. Run completion triggers
 another sweep, which reads the current open ideas so an agent can finish its own backlog updates first. A done

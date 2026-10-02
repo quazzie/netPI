@@ -359,6 +359,42 @@ public static class IdeasCheckTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas check: a check that is stopped while it waits hands its claim back", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
+            env.Talk();
+            env.Talk();
+            env.Says("SAVE\nNever offered\nThe check never got to run");
+            env.Ctx.SessionsFake.AppendMessage(env.Session.Id, new ChatMessage { Role = MessageRole.Assistant, Parts = [new ToolCallPart { Id = "c2", Name = "build" }] }); // the run is open: the check waits for it
+            IdeaSaveCheck.DeferStep = TimeSpan.FromSeconds(30);
+            var res = await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+            Check.Equal("running", res["reason"].Str(), "the close is not held");
+            Check.Equal("running", env.Mark(env.Session.Id)["state"].Str(), "and the claim is in flight");
+            IdeaSaveCheck.DeferStep = TimeSpan.FromSeconds(30);
+
+            var home = env.Ctx.Paths.Home;
+            // NetPI is stopped (or the plugin is reloaded) while the check is waiting: the wait is cancelled, and the
+            // store stays open, as it does in a reload, so the claim it hands back is written.
+            env.Ctx.Stop();
+
+            // A new instance over the same home, as the next start has: the claim must be retryable, not one nobody
+            // owns for the rest of its ten minutes (idea-g6siz0).
+            var next = new FakePluginContext(home, env.Ctx.PluginId);
+            var repo = IdeasRepository.Open(next.Data, next.Access, next.Log, next.Paths.Home);
+            JsonObject mark = null!;
+            for (var waited = 0; waited < 4000; waited += 25)
+            {
+                mark = repo.Checks().FirstOrDefault() ?? [];
+                if (mark["state"]?.Str() is "failed") break;
+                await Task.Delay(25);
+            }
+            Check.Equal("failed", mark["state"].Str(), "the interrupted check is retryable: " + mark.ToJsonString());
+            Check.Contains(mark["error"].Str(), "cancelled", "and it says why");
+            next.Unload();
+        });
+
         r.Add("ideas check: the digest keeps the end of a long conversation, not only its beginning", () =>
         {
             var messages = new List<ChatMessage>();
