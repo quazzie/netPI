@@ -1,7 +1,7 @@
 # Replaceable storage: a swap-over that changes nothing you can see
 
 Date: 2026-10-02
-Status: proposed (nothing implemented). One swap-over: all the code is written in one session, then a test/fix loop runs until the definition of done is met. Review snapshot: master at 59619d2. Reviewed three times the same day by one Opus agent (read-only, the third after the core was redefined); its findings are folded in and marked **(review)**.
+Status: implemented on branch `netpi/arch-plan` (2026-10-02), not yet merged or installed; see "Outcome" at the end. One swap-over: all the code is written in one session, then a test/fix loop runs until the definition of done is met. Review snapshot: master at 59619d2. Reviewed three times the same day by one Opus agent (read-only, the third after the core was redefined); its findings are folded in and marked **(review)**.
 
 ## Goal
 
@@ -199,3 +199,21 @@ It implements `IStorageProvider` with its own SQL and passes the conformance sui
 ## Not in this change
 
 Splitting the Agents plugin into a scheduler plugin and a budget plugin; turning the contract statics into services (the statics only move to `NetPI.Contracts`); splitting `NetPI.Contracts` per plugin; normalised tool arguments and guards by role; one owner per RPC and an error taxonomy; the session `meta` bag as typed data; UI slots and the shared Svelte runtime; typed decision contracts; the two small silent-failure fixes (`agent_spawn isolated` with no Workspaces, a throwing before-tool-call hook); SQL Server, Oracle or any other engine; a SQL-translation layer; hot-swapping storage at runtime; touching `ISettings`. Each can be taken later; none is needed for storage to be swappable.
+
+## Outcome (2026-10-02)
+
+Built in one pass, then a test and fix loop; the revert point is the tag `pre-swapover-2026-10-02`.
+
+**As planned:** the storage port (`StoragePort.cs`) with the `sqlite` and `memory` providers; plugin data on `ctx.Data` (Ideas, the Agents ledger and reservations, Context, Runtime, Workspaces); `NetPI.Contracts` as the shared assembly of the higher abstractions; budget out of the core (`CallRefusedException`, no gate); workspaces out of the kernel (`meta.workspaceId` + `meta.cwd`); plugin-owned settings no longer seeded; `scripts/core-size.mjs`; the one-off migration `scripts/migrations/001-storage-port` (rehearsed on a read-only copy of the owner's database: every count, the messages' SHA-256 and the ledger totals equal before and after); the Ideas legacy cutover deleted.
+
+**Where it differs from the text above:**
+- A working-directory plugin hook and a fork filter were not built: the core understands `meta.cwd`, and plugins declare run-state keys with `ISessionStore.DeclareForkReset` (remembered by the session service).
+- The Host does not reference the sqlite provider as a separate project: the built-in providers live in `src/NetPI.Host/Storage/` and the Host still references only `NetPI.Abstractions`.
+- `IStorageAccess` (info and snapshot, a service) is how Backup and Diagnostics reach the store; `FeatureSet` is the core's typed bag on the tool and run contexts.
+- The sqlite schema has no foreign key from a session to its project and message ids are never reused (both pinned by the conformance suite); a document key is a non-empty string; collection and field names are checked alike by both providers.
+- Every plugin references `NetPI.Contracts` through `plugins/Directory.Build.props`, not only the ones that speak it.
+- `BackgroundWork` lives in the Ideas plugin (its only user).
+
+**Port gaps the converters hit, left as they are:** no OR across conditions (two Ideas queries and one ledger query run several finds or an inclusion-exclusion), no group-by (the ledger keeps roll-up documents), no declared order by key beyond the default. A second provider has to implement exactly what the doc comments in `StoragePort.cs` say; the conformance suite is the check.
+
+**Verified:** the whole end-to-end suite (70 tests, with the browser UI tests), the Host (141), Agent (178), Tools (74) and Providers (58) unit suites, the storage conformance suite on both providers (104), 35 server boots with each plugin removed, a boot on the migrated copy of the owner's data (projects, sessions, workspaces, ideas, ledger, a fork of a 5,000-message chat and a backup all work), and one independent code review of the implementation whose defects are fixed.
