@@ -194,26 +194,52 @@ internal static partial class HtmlToMarkdown
 
     private static (int From, int To, bool Body) ContentRange(List<Token> t)
     {
-        int? main = null;
+        // Prefix sum of text characters, so any range's char count is O(1).
+        var prefix = new int[t.Count + 1];
+        for (var i = 0; i < t.Count; i++) prefix[i + 1] = prefix[i] + (t[i].Kind == Kind.Text ? t[i].Text.Length : 0);
+        int Chars(int from, int to) => prefix[to] - prefix[from];
+
+        // One pass finds every top-level <article> and its end (its </article> closes it), so the content is located
+        // in O(n) instead of rescanning the document for each article. The largest article is always top-level (a nested
+        // one is contained in its parent, which holds more text), so only those are candidates.
         (int From, int To, int Chars)? best = null;
+        var articleStart = -1;
+        var articleDepth = 0;
+        int? main = null;
         for (var k = 0; k < t.Count; k++)
         {
-            if (t[k].Kind != Kind.Start) continue;
-            if (t[k].Name == "main" && main is null) main = k;
-            else if (t[k].Name == "article")
+            var tok = t[k];
+            if (tok.Kind == Kind.Start)
             {
-                var end = MatchEnd(t, k);
-                var chars = 0;
-                for (var m = k; m < end && m < t.Count; m++) if (t[m].Kind == Kind.Text) chars += t[m].Text.Length;
-                if (best is null || chars > best.Value.Chars) best = (k, end, chars);
+                if (tok.Name == "main" && main is null) main = k;
+                else if (tok.Name == "article" && !tok.SelfClosing)
+                {
+                    if (articleDepth == 0) articleStart = k;
+                    articleDepth++;
+                }
+            }
+            else if (tok.Kind == Kind.End && tok.Name == "article" && articleDepth > 0)
+            {
+                articleDepth--;
+                if (articleDepth == 0)
+                {
+                    var chars = Chars(articleStart, k);
+                    if (best is null || chars > best.Value.Chars) best = (articleStart, k, chars);
+                    articleStart = -1;
+                }
             }
         }
+        if (articleDepth > 0 && articleStart >= 0)
+        {
+            // An unclosed article runs to the end, as before.
+            var chars = Chars(articleStart, t.Count);
+            if (best is null || chars > best.Value.Chars) best = (articleStart, t.Count, chars);
+        }
+
         if (main is { } mi)
         {
             var end = MatchEnd(t, mi);
-            var chars = 0;
-            for (var m = mi; m < end && m < t.Count; m++) if (t[m].Kind == Kind.Text) chars += t[m].Text.Length;
-            if (chars > 200 || best is null) return (mi, end, false);
+            if (Chars(mi, end) > 200 || best is null) return (mi, end, false);
         }
         if (best is { Chars: > 200 } b) return (b.From, b.To, false);
         var body = t.FindIndex(x => x.Kind == Kind.Start && x.Name == "body");

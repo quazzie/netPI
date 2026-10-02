@@ -154,6 +154,17 @@ public static class WebTests
             Check.Equal("Post title", HtmlToMarkdown.Convert(html, null).Title);
         });
 
+        r.Add("web: the largest <article> is the content when there is no <main>", () =>
+        {
+            var html = "<html><body>"
+                + "<article><p>tiny</p></article>"
+                + $"<article><p>{new string('L', 300)}</p></article>"
+                + "</body></html>";
+            var md = HtmlToMarkdown.Convert(html, null).Content;
+            Check.Contains(md, new string('L', 100), "the larger article's content");
+            Check.NotContains(md, "tiny", "the smaller sibling article is dropped");
+        });
+
         r.Add("web_fetch: pages as Markdown, paged with offset from a cache; JSON, text, images, binary, errors", async () =>
         {
             var hits = new ConcurrentDictionary<string, int>();

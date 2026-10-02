@@ -319,11 +319,53 @@ internal sealed class ProcessLauncher : ISshLauncher
     /// <summary>More than ssh_read fetches (the file plus its stat line), so a file is never cut here.</summary>
     public const int MaxChars = SshToolBase.MaxReadBytes + 64 * 1024;
 
+    /// <summary>
+    /// The tail of a command's output, at most <see cref="MaxChars"/> chars. A queue of chunks, so appending and
+    /// trimming are O(1) amortized per chunk — not a <see cref="StringBuilder"/> whose <c>Remove(0, …)</c> re-shifts
+    /// the whole buffer on every chunk past the cap (quadratic in the output size).
+    /// </summary>
     private sealed class Sink
     {
-        public readonly StringBuilder Text = new();
+        private readonly Queue<string> _chunks = new();
+        private int _length;
+        private readonly object _lock = new();
         public bool Cut;
-        public override string ToString() { lock (Text) return Text.ToString(); }
+
+        public void Append(string chunk)
+        {
+            lock (_lock)
+            {
+                _chunks.Enqueue(chunk);
+                _length += chunk.Length;
+                if (_length > MaxChars)
+                {
+                    while (_length > MaxChars && _chunks.Count > 1)
+                        _length -= _chunks.Dequeue().Length;
+                    Cut = true;
+                }
+            }
+        }
+
+        public override string ToString()
+        {
+            lock (_lock)
+            {
+                if (_chunks.Count == 0) return "";
+                var sb = new StringBuilder(_length);
+                var overflow = _length - MaxChars; // positive only when a single chunk alone outran the cap
+                foreach (var c in _chunks)
+                {
+                    if (overflow > 0)
+                    {
+                        if (c.Length <= overflow) { overflow -= c.Length; continue; }
+                        sb.Append(c, overflow, c.Length - overflow);
+                        overflow = 0;
+                    }
+                    else sb.Append(c);
+                }
+                return sb.ToString();
+            }
+        }
     }
 
     public async Task<SshExec> RunAsync(string exe, IReadOnlyList<string> args, byte[]? stdin, string? workDir, Action<string>? onStdout,
@@ -386,15 +428,7 @@ internal sealed class ProcessLauncher : ISshLauncher
             catch (Exception) { return; }
             if (n == 0) return;
             var chunk = new string(buffer, 0, n);
-            lock (sink.Text)
-            {
-                sink.Text.Append(chunk);
-                if (sink.Text.Length > MaxChars) // keep the tail
-                {
-                    sink.Text.Remove(0, sink.Text.Length - MaxChars);
-                    sink.Cut = true;
-                }
-            }
+            sink.Append(chunk);
             try { live?.Invoke(chunk); } catch (Exception) { }
         }
     }
