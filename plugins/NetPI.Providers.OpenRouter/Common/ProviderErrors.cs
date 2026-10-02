@@ -17,6 +17,9 @@ internal static partial class ProviderErrors
         "backend_unavailable", "overloaded_error", "overloaded", "rate_limit_error", "rate_limit_exceeded",
         "server_error", "api_error", "internal_error", "internal_server_error", "service_unavailable",
         "timeout", "timeout_error", "network_error", "unavailable",
+        // A 200 announced as JSON whose body is not (HTML from a proxy, empty, truncated): the endpoint answering
+        // wrong once is worth another attempt, and the retry used to skip it (idea-3ivjku).
+        "bad_json",
     };
 
     private static readonly HashSet<string> OverflowTypes = new(StringComparer.OrdinalIgnoreCase)

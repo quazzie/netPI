@@ -264,12 +264,20 @@ internal sealed class OpenRouterStreamParser(MessageAssembler asm, string provid
         using (doc) HandleChunk(doc.RootElement, streaming: true);
     }
 
+    // The same 200-with-a-broken-body as on the AiProxy transports (idea-3ivjku): a raw JsonException carried no
+    // provider, no generation id, no saved request, and was not retried.
     public void HandleJsonBody(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        HandleChunk(doc.RootElement, streaming: false);
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch (JsonException) { throw NotJson(provider, json); }
+        using (doc) HandleChunk(doc.RootElement, streaming: false);
         _done = true;
     }
+
+    /// <summary>The 200 arrived as JSON but is not: reported like any other transport failure, and retried like one.</summary>
+    public static ModelException NotJson(string provider, string json) => ProviderErrors.FromStream(provider,
+        "bad_json", $"200 with a JSON content type, but the body is not JSON: {J.Truncate(json.Trim(), 200)}");
 
     private void HandleChunk(JsonElement root, bool streaming)
     {

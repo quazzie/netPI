@@ -211,12 +211,18 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
         using (doc) HandleEvent(doc.RootElement, sse.Event);
     }
 
+    // The same 200-with-a-broken-body as on the Chat transport (idea-3ivjku).
     public void HandleJsonBody(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        if (root.Prop("error").Has()) { var (m, t) = ProviderErrors.ExtractError(root); throw ProviderErrors.FromStream(provider, t, m); }
-        Complete(root.Prop("object").ValueKind == JsonValueKind.String ? root : root.Prop("response"));
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch (JsonException) { throw ChatStreamParser.NotJson(provider, json); }
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.Prop("error").Has()) { var (m, t) = ProviderErrors.ExtractError(root); throw ProviderErrors.FromStream(provider, t, m); }
+            Complete(root.Prop("object").ValueKind == JsonValueKind.String ? root : root.Prop("response"));
+        }
     }
 
     public void Finish()

@@ -220,6 +220,35 @@ await t.Run("Error classification (HTTP)", () =>
     return Task.CompletedTask;
 });
 
+// A server that ignores stream:true, or a proxy/WAF in front of it, can answer 200 + application/json with
+// something that is not JSON. The unguarded JsonDocument.Parse then ended the call with a raw JsonException: no
+// provider, no request id, no saved request, and RetryMiddleware.IsTransient's default (false) meant it was not
+// even retried (idea-3ivjku). All three non-streaming parsers report it like every other transport failure.
+await t.Run("a 200 whose body is not JSON is a transient, described provider error (all three parsers)", () =>
+{
+    const string html = "<!doctype html>\n<html><body><h1>502 Bad Gateway</h1></body></html>";
+    var cases = new (string Name, Action<string> Run)[]
+    {
+        ("aiproxy chat", j => new AP.ChatStreamParser(new AP.MessageAssembler(), "AiProxy", false).HandleJsonBody(j)),
+        ("aiproxy responses", j => new AP.ResponsesStreamParser(new AP.MessageAssembler(), "AiProxy").HandleJsonBody(j)),
+        ("openrouter", j => new OR.OpenRouterStreamParser(new OR.MessageAssembler(), "OpenRouter", false).HandleJsonBody(j)),
+    };
+    foreach (var (name, run) in cases)
+    foreach (var body in new[] { html, "", "{\"choices\":[" }) // an error page, an empty body, a truncated one
+    {
+        ModelException? caught = null;
+        try { run(body); } catch (ModelException ex) { caught = ex; }
+        t.Check(caught is { Transient: true, ErrorType: "bad_json" }, $"{name}: transient provider error, not a JsonException ({caught?.ErrorType})");
+        t.Check(caught?.Message.Contains("not JSON") == true, $"{name}: says what went wrong: {caught?.Message}");
+        if (body.Length > 0) t.Check(caught!.Message.Contains(body[..Math.Min(24, body.Length)]), $"{name}: quotes the body");
+    }
+    var type = "";
+    try { new AP.ResponsesStreamParser(new AP.MessageAssembler(), "AiProxy").HandleJsonBody("""{"error":{"message":"boom","type":"server_error"}}"""); }
+    catch (ModelException ex) { type = ex.ErrorType ?? ""; }
+    t.Eq("server_error", type, "a well-formed error envelope is still the server's own error");
+    return Task.CompletedTask;
+});
+
 // ================================================================== AiProxy plugin
 
 var apCtx = new FakePluginContext(new JsonObject
@@ -483,6 +512,25 @@ await t.Run("errors: server ids are added to the message and the failed request 
     var dump = JsonNode.Parse(File.ReadAllText(files[0]))!;
     t.Eq("req_abc123", dump["requestId"]?.GetValue<string>(), "dump request id");
     t.Check(dump["request"]?["input"] is JsonArray, "dump has the request body");
+    Directory.Delete(dir, true);
+});
+
+await t.Run("errors: a 200 whose body is not JSON is described, saved with the request, and retried", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
+    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.aiproxy") as JsonObject,
+        null, null, null, dir);
+    var resp = await Fails(p, Req(M("aiproxy", "bad-json")));
+    t.Check(resp is { Transient: true, ErrorType: "bad_json" } && resp.Message.StartsWith("AiProxy: bad_json"), "responses transport: " + resp?.Message);
+    t.Check(resp!.Message.Contains("502 Bad Gateway") && resp.Message.Contains("saved"), "the body is quoted and the request saved");
+    apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
+    try
+    {
+        var chat = await Fails(p, Req(M("aiproxy", "bad-json")));
+        t.Check(chat is { Transient: true, ErrorType: "bad_json" } && chat.Message.StartsWith("AiProxy: bad_json"), "chat transport: " + chat?.Message);
+    }
+    finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+    t.Eq(2, Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Length, "both failures saved");
     Directory.Delete(dir, true);
 });
 
@@ -1145,6 +1193,16 @@ await t.Run("openrouter: errors keep the server's text and add generation id, up
     t.Eq(3, dumps.Length, "three failed requests saved");
     t.Check(dumps.Select(f => JsonNode.Parse(File.ReadAllText(f))!).All(d => d["request"]?["messages"] is JsonArray && d["generationId"] is not null), "dumps have the body and the generation id");
     Directory.Delete(orDumps, true);
+});
+
+await t.Run("openrouter: a 200 whose body is not JSON is described, saved and retried, not a raw JsonException", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-or-" + Guid.NewGuid().ToString("N"));
+    var p = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.openrouter") as JsonObject, null, orCtx.Bus, dir);
+    var e = await Fails(p, Req(M("openrouter", "vendor/bad-json")));
+    t.Check(e is { Transient: true, ErrorType: "bad_json" } && e.Message.StartsWith("OpenRouter: bad_json"), "described: " + e?.Message);
+    t.Check(e!.Message.Contains("502 Bad Gateway") && e.Message.Contains("saved"), "the body is quoted and the request saved");
+    Directory.Delete(dir, true);
 });
 
 await t.Run("openrouter: without an API key no models are offered and calls fail clearly", async () =>

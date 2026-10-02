@@ -159,12 +159,22 @@ internal sealed class ChatStreamParser(MessageAssembler asm, string provider, bo
         using (doc) HandleChunk(doc.RootElement, streaming: true);
     }
 
+    // A server that ignores stream:true answers with a plain JSON body, but a proxy or a WAF in front of it can
+    // answer 200 + application/json with an HTML error page (or nothing). The parse used to throw a raw
+    // JsonException: no provider, no request id, no saved request, and RetryMiddleware does not retry it
+    // (idea-3ivjku).
     public void HandleJsonBody(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        HandleChunk(doc.RootElement, streaming: false);
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch (JsonException) { throw NotJson(provider, json); }
+        using (doc) HandleChunk(doc.RootElement, streaming: false);
         _done = true;
     }
+
+    /// <summary>The 200 arrived as JSON but is not: reported like any other transport failure, and retried like one.</summary>
+    public static ModelException NotJson(string provider, string json) => ProviderErrors.FromStream(provider,
+        "bad_json", $"200 with a JSON content type, but the body is not JSON: {J.Truncate(json.Trim(), 200)}");
 
     private void HandleChunk(JsonElement root, bool streaming)
     {
