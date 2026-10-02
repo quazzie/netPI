@@ -557,7 +557,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                $"or fixes it), pick it even when it only advances the idea. Pick {none} when it is about something else.",
                 labels, "the link question", projectId, ct).ConfigureAwait(false);
             if (decision is { Skipped: not null } or { Failed: not null }) return new Decision(null, decision.Skipped, decision.Failed); // one commit, one question
-            var pick = IdeaMatch.Pick(decision.Probs!, labels.OfType<JsonValue>().Select(v => IdeaOps.Str(v) ?? "").ToList());
+            var pick = IdeaMatch.Pick(decision!.Probs!, labels.OfType<JsonValue>().Select(v => IdeaOps.Str(v) ?? "").ToList());
             if (!pick.Clear(threshold)) break;   // no clear winner
             best = [window[pick.Index]];
             break;                                                          // one commit, one idea

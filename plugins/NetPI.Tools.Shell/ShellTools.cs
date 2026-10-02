@@ -195,7 +195,7 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
     {
         if (!TryGet(args, out var p, out var error)) return ToolResult.Error(error!);
         var tail = Tail(args);
-        var (shown, truncated, total, shownLines) = TailOf(p, tail);
+        var (shown, truncated, total, shownLines) = TailOf(p!, tail);
         var sb = new StringBuilder();
         sb.Append('[').Append(Describe(p)).Append(']').Append('\n');
         if (truncated) sb.Append($"[showing the last {shownLines} of {total} buffered lines]\n");
@@ -224,7 +224,7 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
     /// <summary>The job is done: the process line says its status, exit code and duration, then the tail of its output.</summary>
     private static ToolResult Exited(ManagedProcess p, int tail)
     {
-        var (shown, truncated, total, shownLines) = TailOf(p, tail);
+        var (shown, truncated, total, shownLines) = TailOf(p!, tail);
         var sb = new StringBuilder();
         sb.Append('[').Append(Describe(p)).Append(']').Append('\n');
         if (truncated) sb.Append($"[showing the last {shownLines} of {total} buffered lines]\n");

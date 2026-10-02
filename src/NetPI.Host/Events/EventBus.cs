@@ -161,7 +161,7 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
         }
         catch (ChannelClosedException) { }
         if (!wrote) marker.Done.TrySetResult();   // the bus is going away: nothing is left to wait for
-        marker.Done.Task.ContinueWith(f => { lock (_flushLock) _flushes.RemoveAll(m => ReferenceEquals(m, f)); },
+        _ = marker.Done.Task.ContinueWith(f => { lock (_flushLock) _flushes.RemoveAll(m => ReferenceEquals(m, f)); },
             TaskContinuationOptions.ExecuteSynchronously);
         await marker.Done.Task.ConfigureAwait(false);   // done when every live line has passed the marker
     }

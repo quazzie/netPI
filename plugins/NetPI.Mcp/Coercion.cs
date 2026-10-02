@@ -56,7 +56,7 @@ internal static class Coercion
             if (properties is null) return value;
             var copy = new JsonObject();
             // Cloned, because a value left as it was still belongs to the arguments it came from.
-            foreach (var (key, child) in obj) copy[key] = (Walk(child, properties[key] ?? Extra(schema, root), root, depth + 1) ?? child).DeepClone();
+            foreach (var (key, child) in obj) copy[key] = (Walk(child, properties[key] ?? Extra(schema, root), root, depth + 1) ?? child)?.DeepClone();
             return copy;
         }
         if (value is JsonArray array)
@@ -64,7 +64,7 @@ internal static class Coercion
             var items = schema["items"];
             if (items is null) return value;
             var copy = new JsonArray();
-            foreach (var child in array) copy.Add((Walk(child, items, root, depth + 1) ?? child).DeepClone());
+            foreach (var child in array) copy.Add((Walk(child, items, root, depth + 1) ?? child)?.DeepClone());
             return copy;
         }
         return value;
