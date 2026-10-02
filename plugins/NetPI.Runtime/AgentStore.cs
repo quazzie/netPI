@@ -10,10 +10,14 @@ namespace NetPI.Runtime;
 //   agent_records  key: the agent id
 //       index fields: sessionId (text), createdAt (text, the ISO timestamp it is written as), status (text)
 //       { id, sessionId, parentAgentId, name, status, task, result, error, model, createdAt, finishedAt,
-//         stats: { info: AgentInfo, instructions: string|null, notifyParent: bool } }
+//         stats: { info: AgentInfo, instructions: string|null, notifyParent: bool },
+//         queue: [ { mode: "steer"|"queue", input: UserInput } ] }
 
 /// <summary>Persisted agent record (so recent agents survive restarts).</summary>
-internal sealed record AgentRecord(AgentInfo Info, string? Instructions, bool NotifyParent);
+internal sealed record AgentRecord(AgentInfo Info, string? Instructions, bool NotifyParent, List<QueuedRecord> Queue);
+
+/// <summary>One input in the agent's queue, with how it was offered (a steer or a follow-up).</summary>
+internal sealed record QueuedRecord(string Mode, UserInput Input);
 
 /// <summary>
 /// Agent records in the plugin's own <c>agent_records</c> collection (see the file's header for its shape). Every call is
@@ -61,7 +65,7 @@ internal sealed class AgentStore(IPluginContext ctx)
         }
     }
 
-    public void Save(AgentInfo info, string? instructions, bool notifyParent)
+    public void Save(AgentInfo info, string? instructions, bool notifyParent, IReadOnlyList<QueuedRecord> queue)
     {
         try
         {
@@ -78,6 +82,11 @@ internal sealed class AgentStore(IPluginContext ctx)
                 ["model"] = info.Model,
                 ["createdAt"] = Iso(info.CreatedAt),
                 ["finishedAt"] = info.FinishedAt is { } f ? Iso(f) : null,
+                ["queue"] = new JsonArray(queue.Select(q => new JsonObject
+                {
+                    ["mode"] = q.Mode,
+                    ["input"] = NetPiJson.ToNode(q.Input),
+                }).ToArray()),
                 ["stats"] = new JsonObject
                 {
                     ["info"] = JsonSerializer.SerializeToNode(info, NetPiJson.Options),
@@ -147,7 +156,15 @@ internal sealed class AgentStore(IPluginContext ctx)
         if (Time(doc, "createdAt") is { } c) info.CreatedAt = c;
         if (Time(doc, "finishedAt") is { } f) info.FinishedAt = f;
         info.Activity = null;
-        info.QueuedMessages = 0;
-        return new AgentRecord(info, instructions, notify);
+        var queue = new List<QueuedRecord>();
+        if (doc["queue"] is JsonArray arr)
+            foreach (var e in arr)
+                if (e is JsonObject q && q["mode"] is JsonValue mv && mv.TryGetValue<string>(out var mode) && q["input"] is JsonObject iq)
+                {
+                    try { queue.Add(new QueuedRecord(mode, iq.Deserialize<UserInput>(NetPiJson.Options) ?? new UserInput())); }
+                    catch { /* one corrupt entry: drop it, keep the rest */ }
+                }
+        info.QueuedMessages = queue.Count;
+        return new AgentRecord(info, instructions, notify, queue);
     }
 }

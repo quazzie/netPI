@@ -352,7 +352,7 @@ public static class SubagentTests
             if (IsChild(r))
             {
                 // The child holds the slot here: its parent must already be recorded as Yielded.
-                var parent = h.Runtime.GetBySession(h.Runtime.GetBySession(r.SessionId)!.ParentSessionId!);
+                var parent = h.Runtime.GetBySession(r.SessionId!)?.ParentSessionId is { } ps ? h.Runtime.GetBySession(ps) : null;
                 if (parent?.Status != AgentStatus.Yielded)
                     lock (violations) violations.Add($"{tag}: the parent was {parent?.Status} while its child held the slot");
                 return Reply.Text("REPORT " + r.SessionId);
