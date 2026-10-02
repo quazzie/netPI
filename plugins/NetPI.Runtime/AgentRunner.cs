@@ -178,6 +178,20 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 await SafeAsync(() => hook.OnBeforeModelCallAsync(turn), "OnBeforeModelCall", ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
 
+            // A hook may have moved the session's workspace: a parked switch is drained at this boundary (the
+            // previous batch's tools are done), and so is a switch made from the UI mid-turn. If the root changed, this
+            // iteration's root and prompt were built against the checkout the session just left, and the model call
+            // they were built for would still work there — the call the switch promised would run one later, with its
+            // whole tool batch and its guard. Restart the iteration: the fresh pass re-reads the session, re-resolves
+            // the root, rebuilds the prompt against it, and the very next model call is the one that was promised the
+            // new workspace. Nothing was spent: no model call happened yet in this pass.
+            var afterHooks = Ctx.Sessions.GetSession(SessionId) ?? session;
+            var switchedWorkspace = ResolveWorkspace(afterHooks);
+            var switchedCwd = switchedWorkspace?.Root ?? Ctx.Sessions.GetCwd(afterHooks);
+            if (!string.Equals(switchedWorkspace?.WorkspaceId, workspace?.WorkspaceId, StringComparison.Ordinal)
+                || !string.Equals(switchedCwd, cwd, StringComparison.Ordinal))
+                continue;
+
             // 5. model call
             if (Ctx.Sessions.GetSession(SessionId) is { } beforeCall && SessionPrompt.Revision(beforeCall) != promptRevision) continue;
             ChatMessage assistant;

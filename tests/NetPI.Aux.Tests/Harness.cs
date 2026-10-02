@@ -441,6 +441,9 @@ public sealed class FakeModelCatalog : IModelCatalog
     public Func<ModelRequest, CancellationToken, Task<ChatMessage>>? AsyncResponder { get; set; }
     /// <summary>Explicit second-pass verification script, separate from draft generation.</summary>
     public Func<ModelRequest, ChatMessage>? VerifierResponder { get; set; }
+    /// <summary>When set, StreamAsync serves this instead of throwing: a scripted answer as stream events, so a test
+    /// can drive the runner's streaming path (the real loop).</summary>
+    public Func<ModelRequest, CancellationToken, IAsyncEnumerable<ModelStreamEvent>>? StreamResponder { get; set; }
     public List<ModelInfo> Models { get; } = [];
     public ConcurrentQueue<ModelRequest> Requests { get; } = new();
     public Func<ModelRequest, ChatMessage> Responder { get; set; } = _ => new ChatMessage
@@ -459,7 +462,12 @@ public sealed class FakeModelCatalog : IModelCatalog
     public IReadOnlyList<ModelInfo> Cached => Models;
     public IModelProvider? GetProvider(string providerId) => null;
     public IReadOnlyList<IModelProvider> Providers => [];
-    public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken ct) => throw new NotSupportedException();
+    public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken ct)
+    {
+        Requests.Enqueue(request);
+        if (StreamResponder is { } responder) return responder(request, ct);
+        throw new NotSupportedException();
+    }
     public Task<ChatMessage> CompleteAsync(ModelRequest request, CancellationToken ct)
     {
         Requests.Enqueue(request);

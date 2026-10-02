@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetPI.Runtime;
 using NetPI.Tools.Ssh;
 using NetPI.Workspaces;
 
@@ -36,6 +37,7 @@ public static class WorkspaceTests
         t.Add("workspaces: ssh copy refuses a download into another checkout of the repository and allows one into the worker's own", SshDownloadRefused);
         t.Add("workspaces: the notice names the checkout, the branch and what a write outside it does", NoticeText);
         t.Add("workspaces: a switch asked for mid-batch is applied at the next model call", DeferredSwitch);
+        t.Add("workspaces: the switch is in the next model call's batch and guard, not one call later", SwitchVisibleToNextModelCall);
         t.Add("workspaces: every consumer agrees on the assigned root", ConsumersAgree);
         t.Add("workspaces: the identity changes with the binding, so a stale answer is recognizably stale", IdentityChanges);
     }
@@ -684,6 +686,101 @@ public static class WorkspaceTests
         Check.Equal(w2.Id, env.Ctx.SessionsFake.GetSession(session.Id)!.WorkspaceId, "the failed switch changed the binding");
         try { Directory.Delete(first, true); Directory.Delete(second, true); } catch { }
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// The tool's promise, watched end to end through the real model/tool loop: a switch requested while a batch
+    /// is running takes effect in the <em>next</em> model call — the very call after the batch, with its tools and its
+    /// guard resolving against the new checkout. The turn's root is settled before the hook pass, so without a
+    /// re-resolution after it (idea-y0i6gu) the promised call still works in the checkout the session just left,
+    /// and the "moved" notice arrives one call late.
+    /// </summary>
+    private static async Task SwitchVisibleToNextModelCall()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("switch, next model call"); return; }
+
+        // The real host registers the session store as a service (the tools ask for it by contract).
+        env.Ctx.Services.Register<ISessionStore>(env.Ctx.Sessions);
+
+        // Two checkouts of the project's repository: the session starts in "from" and switches to "to" mid-run.
+        var from = env.Provision("from", "ses_from");
+        Check.True(from.Ok, from.Error ?? "");
+        var to = env.Provision("to", "ses_to");
+        Check.True(to.Ok, to.Error ?? "");
+        var session = env.Ctx.SessionsFake.CreateSession(new SessionInfo
+        {
+            Title = "switcher", ProjectId = env.Project.Id, Model = "scripted/m",
+        });
+        var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
+        store.SetSessionWorkspace(session.Id, from.Binding!.WorkspaceId);   // what sessions.setWorkspace does
+
+        // The real loop: the runtime plugin's model/tool loop, the workspaces plugin's hooks and tool, and a write tool
+        // as the probe the switch has to land in.
+        new RuntimePlugin().StartAsync(env.Ctx, CancellationToken.None).GetAwaiter().GetResult();
+        env.Ctx.Tools.Register(new NetPI.Tools.Files.WriteTool(env.Ctx.Settings));
+        env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "scripted", Id = "m", ContextWindow = 100_000 });
+
+        var script = new Queue<ChatMessage>(new[]
+        {
+            // Batch 1: the switch, asked while its own batch runs — parked, promised for the next call.
+            T.Assistant("", T.Call("c1", "workspace", Json(new { action = "switch", id = to.Binding!.WorkspaceId }).GetRawText())),
+            // Batch 2: the promised call. Its write and its info must resolve in the new checkout.
+            T.Assistant("",
+                T.Call("c2", "write", Json(new { path = "probe.txt", content = "landed" }).GetRawText()),
+                T.Call("c3", "workspace", Json(new { action = "info" }).GetRawText())),
+            // Batch 3: done.
+            T.Assistant("done"),
+        });
+        env.Ctx.ModelsFake.StreamResponder = (_, _) => StreamOf(script.Dequeue());
+
+        var runtime = env.Ctx.Services.Get<IAgentRuntime>()!;
+        await runtime.SendAsync(session.Id, new UserInput { Text = "switch and write" });
+        for (var i = 0; i < 400 && runtime.GetBySession(session.Id)?.Status is AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded; i++)
+            await Task.Delay(25);
+        var agent = runtime.GetBySession(session.Id)!;
+        Check.Equal(AgentStatus.Idle, agent.Status, "the run ended (not still busy)");
+        Check.Equal(null, agent.Error, agent.Error ?? "the run failed");
+
+        // The promised call's write landed in the new checkout — not in the one the session just left.
+        Check.True(File.Exists(Path.Combine(to.Binding.Root, "probe.txt")), "the next model call's write did not land in the new workspace");
+        Check.False(File.Exists(Path.Combine(from.Binding.Root, "probe.txt")), "the next model call's write landed in the workspace the session left");
+
+        // The info the same batch asked for describes the new root.
+        var info = env.Ctx.SessionsFake.Messages.SelectMany(m => m.ToolResults).First(r => r.CallId == "c3");
+        Check.Contains(info.Content, to.Binding.Root);
+        Check.NotContains(info.Content, from.Binding.Root);
+
+        // The move is announced in the promised call's context — the model is told where it is before it works there.
+        var requests = env.Ctx.ModelsFake.Requests.ToArray();
+        Check.Equal(3, requests.Length, "one call per batch; the restarted pass spent no model call");
+        var moved = requests[1].Messages.FirstOrDefault(m =>
+            m.Role == MessageRole.Notice && m.MetaString("kind") == "workspace"
+            && m.Text.Contains("moved to workspace", StringComparison.Ordinal));
+        Check.True(moved is not null, "the promised call's context does not say the session moved");
+        Check.Contains(moved!.Text, to.Binding.Root);
+        Check.True(requests[0].Messages.All(m => m.Text.Contains("moved to workspace", StringComparison.Ordinal) is false),
+            "the first call was still in the old workspace");
+    }
+
+    /// <summary>A scripted assistant message as the stream events the runner consumes.</summary>
+    private static IAsyncEnumerable<ModelStreamEvent> StreamOf(ChatMessage message)
+    {
+        message.Role = MessageRole.Assistant;
+        message.StopReason ??= message.ToolCalls.Any() ? "tool_use" : "stop";
+        var events = new List<ModelStreamEvent>();
+        foreach (var part in message.Parts)
+        {
+            if (part is TextPart { Text.Length: > 0 } text) events.Add(new TextDelta(text.Text));
+            else if (part is ToolCallPart call) events.Add(new ToolCallStarted(call.Id, call.Name));
+        }
+        events.Add(new StreamCompleted(message));
+        return Events(events);
+
+        static async IAsyncEnumerable<ModelStreamEvent> Events(List<ModelStreamEvent> list)
+        {
+            foreach (var e in list) yield return e;
+        }
     }
 
     private static Task ConsumersAgree()
