@@ -5,9 +5,12 @@ Agent rework additions (2026-10-01): `decide.bulkModel` (empty) selects an expli
 `loops.contextChecks` (false) enables provider-captured conversation checks. `loops.routingHints` and `loops.skillHints` (false) add advisory checks to that flow. `todo.checkCommits` (false) suggests completed checklist items after successful commits. These opt-in consumers do not automatically change models, tools, spending permission or goal status; cache performance remains endpoint-dependent.
 
 All settings live in `~/.netpi/settings.json` (Windows: `%USERPROFILE%\.netpi\settings.json`; override the folder
-with `NETPI_HOME`). The file is created with sensible defaults on first start, accepts `//` comments and trailing
-commas, and is watched: edits apply live. Keys are shown as dotted paths — `providers.aiproxy.baseUrl` means
-`{ "providers": { "aiproxy": { "baseUrl": … } } }`.
+with `NETPI_HOME`). The file is created on first start with the **core keys only** — `server.port`,
+`server.devOrigins`, `plugins.disabled`, `plugins.dirs`, `plugins.quiet`, `tools.disabled` — and nothing about one
+machine: no default model, no agents, no provider. Every other setting belongs to a plugin and appears with the
+default that plugin declares (`settings.schema`), so a fresh install is what each owner says it is. The file accepts
+`//` comments and trailing commas, and is watched: edits apply live. Keys are shown as dotted paths —
+`providers.aiproxy.baseUrl` means `{ "providers": { "aiproxy": { "baseUrl": … } } }`.
 
 If the file does not parse (a hand edit that dropped a comma), the app keeps serving the last valid document, no
 `settings.set` or `settings.replace` is saved over the broken file (it would be replaced by defaults plus one change,
@@ -36,7 +39,21 @@ so the default applies again). The agents and the budget have their own page; th
 | `plugins.quiet` | `false` | while on, a plugin reload (a `/reload`, a build that replaced a plugin's files) is recorded and **not applied**: the running version keeps serving, so nothing swaps under a running chat and no in-memory plugin state is lost. Switching it off applies everything that piled up, in plugin start order. `diag.overview` lists what is waiting in `deferred`, and `plugins.reloaded` says `kind: "deferred"`. The one thing a git worktree cannot do: the running app is one process that every session shares |
 | `tools.disabled` | `[]` | tool names hidden from every chat (e.g. `["pwsh"]`); only in this file: the dialog switches whole plugins, and each chat switches its own tools (the composer's tools button, `meta.toolsOff`) |
 | `logging.level` | `Information` | host log level (`~/.netpi/logs/netpi-YYYYMMDD.log`) |
-| `database.sqlitePath` | – | explicit SQLite library (default: `winsqlite3.dll` on Windows, `libsqlite3` elsewhere; env `NETPI_SQLITE`) |
+
+Two of the keys above are read at **startup only**, so a change to them takes effect on the next start (the dialog
+says so): `storage.provider` and `database.sqlitePath`.
+
+## Storage
+
+| key | default | |
+|---|---|---|
+| `storage.provider` | `sqlite` | the storage provider the store is opened with: `sqlite` (`<home>/netpi.db`) or `memory`. Selection fails closed — a provider that is missing or broken stops the startup with a message that says what to do. `memory` runs only when it is asked for, because running after a broken install would lose every chat; `netpi-server --ephemeral` is that switch for a throwaway run or a test. A provider of your own drops in as an implementation of `IStorageProvider` and has to pass `tests/NetPI.Storage.Tests` (docs/PLUGINS.md) |
+| `database.sqlitePath` | – | explicit SQLite **library** to load (default: `winsqlite3.dll` on Windows, `libsqlite3` elsewhere; env `NETPI_SQLITE`); only the `sqlite` provider reads it, and only the `Sqlite3` P/Invoke layer |
+
+The port is `src/NetPI.Abstractions/StoragePort.cs`: sessions/messages/projects, the core's small key-value store,
+each plugin's own collections of JSON documents (`ctx.Data`), and a snapshot of the whole store. A provider reads its
+own keys from the settings it is handed (`StorageOpenOptions.Settings`, namespaced under `storage.<id>.*`). There is
+no SQL outside `src/NetPI.Host/Storage/Sqlite`, and nothing a plugin stores leaves its JSON document.
 
 ## Providers
 
@@ -201,13 +218,15 @@ where a chat runs, the profile who it is.
 | `budget.warnPercent` | `80` | from here `agent_choices` tells agents to use paid agents only when you asked |
 | `budget.onLimit` | `"stop"` | when a budget is spent: `"stop"` paid calls, or `"ask"`: your chats stop with "let this chat go over" (`budget.allow`), subagents stop |
 
-Every provider attempt (including each retry) is recorded in `usage_calls`. Before dispatch, paid calls reserve
+Every provider attempt (including each retry) is recorded in the ledger the Agents plugin keeps in `ctx.Data`.
+Before dispatch, paid calls reserve
 their estimate at the configured/catalog price: the input counted in tokens at the cache-read rate (in an agent
 loop the context is re-read, and a call that misses the cache is corrected by the settlement) and the output at
 the effective maximum the provider accepts. Admission and reservation are one
-SQLite transaction, so concurrent chats and plugin generations share the same remaining budget. A reservation
+transaction, so concurrent chats and plugin generations share the same remaining budget. A reservation
 that would exceed a monthly, daily or per-agent limit stops the call; `budget.onLimit: "ask"` offers the existing
-explicit per-chat override. Subagents cannot override. Unknown cloud prices are refused when a dollar cap applies:
+explicit per-chat override (`budgetAllowedFrom` in the session's meta). Subagents cannot override. Unknown cloud prices
+are refused when a dollar cap applies:
 configure **both** input and output prices in the agent, or explicitly allow the chat to go over.
 
 Completed usage replaces the reservation with provider-reported cost, else a token-price estimate. Interrupted
@@ -215,8 +234,9 @@ calls settle from the usage actually used (reported, or estimated from what was 
 the full reservation. A failure or stop before the first byte settles at $0, so a storm of 503/529s cannot lock
 the budget. Persistent reservations survive crashes and hot reload; a lost final bill stays marked
 reserved/unsettled instead of silently disappearing. A hot swap briefly runs two ledger generations on one call;
-the first reserves, the other passes through its mark. Paid models also need the budget gate: while the Agents
-plugin is not loaded, the model catalog refuses non-local models. The Budget page identifies
+the first reserves, the other passes through its mark. The ledger is **the Agents plugin's own**, and the model
+catalog refuses no model: without that plugin (or while its ledger cannot be read or written) paid calls run neither
+metered nor limited, which is the trade this design makes. The Budget page identifies
 reserved/unsettled, interrupted estimates and unknown-price calls separately.
 
 Reservations are estimates, not a provider billing guarantee: tokenization, image billing and provider price
@@ -302,7 +322,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `shell.pwshPath` | auto | `pwsh` (PowerShell 7), falls back to Windows PowerShell |
 | `shell.pwshAlways` | `false` | offer `pwsh` even when no PowerShell was found |
 | `shell.timeoutSeconds` | `120` | default per command (max 1800) |
-| `ideas.fileName` | `ideas.json` | the name the ideas file had before the backlog moved into NetPI's database: the one-time cutover reads it and an export is written under it by default. The backlog is **not** written there any more (docs/PLUGIN-IDEAS.md) |
+| `ideas.fileName` | `ideas.json` | the name the ideas file had before the backlog moved into the store. Nothing reads or writes it any more; an export is written under it when a path is given, and `ideas.list` reports it so an older UI still has a hint (docs/PLUGIN-IDEAS.md) |
 | `ideas.recall` | `true` | while the first message of a chat is typed, a decision looks for the open idea it continues and the composer offers to add it (needs the Decide plugin) |
 | `ideas.recallThreshold` | `0.8` | the probability an idea needs before it is offered (0.3–0.99); 0.8 gave no false offer on 56 unrelated messages (docs/DECISION-MODELS.md, "Ideas recall") |
 | `ideas.saveCheck` | `true` | when a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down; a new plan gets a card to save or discard, work on an open idea is attached to that idea instead |
@@ -319,7 +339,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 
 ## Workspaces
 
-A workspace is the checkout a session works in — a root, a branch, a starting commit, an owner (`docs/PROTOCOL.md` for the RPCs and events). Isolation is at the checkout level, deciding which of a repository's checkouts a worker's files land in: **it is not an OS sandbox** (a shell command is never parsed, and code a worker runs keeps the user's privileges). A project that is not a git repository gets a plain folder, and is otherwise unaffected by these settings.
+A workspace is the checkout a session works in — a root, a branch, a starting commit, an owner (`docs/PROTOCOL.md` for the RPCs and events). The `netpi.workspaces` plugin owns them: it registers `workspaces.*`, `sessions.setWorkspace` and the `workspace.*` / `session.workspace` events, keeps its own collection of workspaces, and writes the binding to the session as `meta.workspaceId` with `meta.cwd` (the folder the chat then runs in). Isolation is at the checkout level, deciding which of a repository's checkouts a worker's files land in: **it is not an OS sandbox** (a shell command is never parsed, and code a worker runs keeps the user's privileges). A project that is not a git repository gets a plain folder, and is otherwise unaffected by these settings.
 
 | key | default | |
 |---|---|---|
