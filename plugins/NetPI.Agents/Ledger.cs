@@ -132,11 +132,19 @@ internal sealed partial class Ledger
         }
         // The roll-up is maintained in every call's transaction; a period it has not caught up on (a store that
         // pre-dates it, or a changed budget.resetDay) is rebuilt from the calls once, in one transaction.
-        if (_calls is not null && _periodUsage is not null)
-        {
-            try { _ctx.Data.Transaction(CatchUpPeriodUsage); }
-            catch (Exception ex) { _ctx.Logger.LogDebug(ex, "The period usage roll-up could not be caught up"); }
-        }
+        RebuildPeriodUsage();
+    }
+
+    /// <summary>
+    /// The start's catch-up, on demand: a changed <c>budget.resetDay</c> moved the current period's border while the
+    /// app runs, and the roll-up the calls maintain is keyed by the period — so the period is rebuilt from the calls,
+    /// in one transaction, before the next <c>usage.changed</c> goes out.
+    /// </summary>
+    public void RebuildPeriodUsage()
+    {
+        if (_calls is null || _periodUsage is null) return;   // the store is unavailable: nothing to rebuild, and a paid call is refused anyway
+        try { _ctx.Data.Transaction(CatchUpPeriodUsage); }
+        catch (Exception ex) { _ctx.Logger.LogDebug(ex, "The period usage roll-up could not be rebuilt"); }
     }
 
     // ---------------------------------------------------------------- settings
