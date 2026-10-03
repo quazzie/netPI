@@ -169,9 +169,9 @@
       {project}
       bind:form
       onsubmit={save}
-      {onbrowse}
+      onbrowse={browse}
       onprofile={setProfile}
-      {onstart}
+      onstart={startSession}
       onopen={open}
     />
   {:else}
