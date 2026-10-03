@@ -82,16 +82,19 @@ public static class BuildTests
 
     private static async Task DefaultOutput()
     {
-        // what a running NetPI watches and hot-reloads from: never a build's output
-        foreach (var project in new[]
-                 {
-                     "plugins/NetPI.Context/NetPI.Context.csproj",
-                     "plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj",
-                     "src/NetPI.Server/NetPI.Server.csproj",
-                     "tests/NetPI.Aux.Tests/NetPI.Aux.Tests.csproj",   // references plugins: a test build rebuilt them
-                 })
+        // what a running NetPI watches and hot-reloads from: never a build's output. The four OutDir reads are
+        // one parallel round (the MSBuild CLI's -getProperty is single-project, so this is not one process, but the
+        // wall time is the slowest evaluation, not the sum of four sequential ones).
+        var projects = new[]
         {
-            var dir = (await OutDirOf(project))!.Replace('\\', '/');
+            "plugins/NetPI.Context/NetPI.Context.csproj",
+            "plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj",
+            "src/NetPI.Server/NetPI.Server.csproj",
+            "tests/NetPI.Aux.Tests/NetPI.Aux.Tests.csproj",   // references plugins: a test build rebuilt them
+        };
+        var dirs = await Task.WhenAll(projects.Select(async p => (p, (await OutDirOf(p))!.Replace('\\', '/'))));
+        foreach (var (project, dir) in dirs)
+        {
             Check.True(dir.EndsWith('/'), $"{project}: OutDir is a folder ({dir})");
             Check.False(dir.Contains("/artifacts/app/"), $"{project} would write into the app a running NetPI loads plugins from: {dir}");
         }

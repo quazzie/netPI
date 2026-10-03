@@ -28,22 +28,43 @@ public static class SampleBuild
     {
         var project = Path.Combine(T.RepoRoot, "tests", "SamplePlugin", "SamplePlugin.csproj");
         var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host && File.Exists(host) ? host : "dotnet";
-        foreach (var variant in new[] { "v1", "v2", "fail" })
+        var variants = new[] { "v1", "v2", "fail" };
+        // The three variants write disjoint obj/out dirs, so they build at once: the wall time is the slowest
+        // build, not the sum of three sequential `dotnet build` startups.
+        var procs = new Dictionary<string, Process>();
+        var outs = new Dictionary<string, Task<string>>();
+        var errs = new Dictionary<string, Task<string>>();
+        try
         {
-            var psi = new ProcessStartInfo(dotnet)
+            foreach (var variant in variants)
             {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
-            foreach (var a in new[] { "build", project, "-c", Configuration, $"-p:SampleVariant={variant}", "-p:BuildProjectReferences=false", "-nologo", "-v:q", "-clp:ErrorsOnly" })
-                psi.ArgumentList.Add(a);
-            using var p = Process.Start(psi)!;
-            var stdout = p.StandardOutput.ReadToEndAsync();
-            var stderr = p.StandardError.ReadToEndAsync();
-            await p.WaitForExitAsync();
-            if (p.ExitCode != 0) throw new AssertException($"building SamplePlugin ({variant}) failed:\n{await stdout}\n{await stderr}");
-            if (!File.Exists(Path.Combine(Dir(variant), "SamplePlugin.dll"))) throw new AssertException($"SamplePlugin ({variant}) output missing");
+                var psi = new ProcessStartInfo(dotnet)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                };
+                foreach (var a in new[] { "build", project, "-c", Configuration, $"-p:SampleVariant={variant}", "-p:BuildProjectReferences=false", "-nologo", "-v:q", "-clp:ErrorsOnly" })
+                    psi.ArgumentList.Add(a);
+                var p = Process.Start(psi)!;
+                procs[variant] = p;
+                outs[variant] = p.StandardOutput.ReadToEndAsync();
+                errs[variant] = p.StandardError.ReadToEndAsync();
+            }
+            foreach (var variant in variants)
+            {
+                await procs[variant].WaitForExitAsync();
+                if (procs[variant].ExitCode != 0)
+                {
+                    foreach (var other in procs.Values) other.Kill(true);
+                    throw new AssertException($"building SamplePlugin ({variant}) failed:\n{await outs[variant]}\n{await errs[variant]}");
+                }
+                if (!File.Exists(Path.Combine(Dir(variant), "SamplePlugin.dll"))) throw new AssertException($"SamplePlugin ({variant}) output missing");
+            }
+        }
+        finally
+        {
+            foreach (var p in procs.Values) p.Dispose();
         }
     }
 }

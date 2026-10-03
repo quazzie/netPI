@@ -43,7 +43,7 @@ param(
     [string]$Config = 'Release',
     [switch]$SkipBuild,
     [switch]$Serial,
-    [ValidateRange(1, 5)][int]$Parallel = 2
+    [ValidateRange(1, 5)][int]$Parallel = 3
 )
 
 $ErrorActionPreference = 'Stop'
@@ -114,9 +114,21 @@ try {
     $parallel = if ($Serial) { 1 } else { [math]::Max(1, [math]::Min($Parallel, $suites.Count)) }
     if ($parallel -gt 1) { Write-Host "running up to $parallel suite processes at once" -ForegroundColor DarkGray }
 
-    # Longest first: with a fixed worker count that keeps the tail from being one long suite.
+    # Longest first: with a fixed worker count that keeps the tail from being one long suite. Order by the
+    # previous run's wall time (the newest run json in artifacts\testlogs) so the queue tracks what actually
+    # took long; when there is no log yet (or a suite is new), fall back to the known relative costs.
+    $prevWall = @{}
+    $runJson = Get-ChildItem -Path $logDir -Filter '*.json' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike '*.result.json' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($runJson) {
+        try {
+            $prev = Get-Content -LiteralPath $runJson.FullName -Raw | ConvertFrom-Json
+            foreach ($su in $prev.suites) { $prevWall[$su.suite] = [double]$su.wallSeconds }
+        } catch { $prevWall = @{} }
+    }
+    $fallback = @{ Tools = 3; Aux = 3; Agent = 2; Host = 2; Storage = 1; Providers = 1 }
     $queue = [System.Collections.Generic.Queue[string]]::new()
-    foreach ($s in ($suites | Sort-Object { $known = @{ Tools = 3; Aux = 3; Agent = 2; Host = 2; Storage = 1; Providers = 1 }[$_] } -Descending)) { $queue.Enqueue($s) }
+    foreach ($s in ($suites | Sort-Object { $prevWall[$s] ?? $fallback[$s] } -Descending)) { $queue.Enqueue($s) }
 
     $running = @{}
     $pending = $suites.Count
