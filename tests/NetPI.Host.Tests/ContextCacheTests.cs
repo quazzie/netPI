@@ -90,6 +90,16 @@ public static class ContextCacheTests
             Check.True(cache.TryGet("s") is not null);
         });
 
+        r.Add("context cache: the list a cold read hands back is not the list an append extends", () =>
+        {
+            var cache = new ContextCache();
+            var read = Rows("s", 1, 2);
+            Read(cache, "s", read, 2); // the service returns this very list to its caller after filling the cache
+            cache.Append(Msg("s", 3));
+            Check.Equal(2, read.Count, "the caller's list does not grow under its feet (it is enumerated outside the cache's lock)");
+            Check.Equal(3, cache.TryGet("s")!.Count, "and the cache did take the append");
+        });
+
         r.Add("context cache: a read that missed a message that committed while it ran is not cached", () =>
         {
             var cache = new ContextCache();

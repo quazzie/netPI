@@ -67,7 +67,7 @@ internal sealed class ContextCache
         lock (_lock)
         {
             if (generation != _generation.GetValueOrDefault(sessionId) || _entries.ContainsKey(sessionId)) return;
-            _entries[sessionId] = new Entry(rows, newest);
+            _entries[sessionId] = new Entry([.. rows], newest); // its own list: the caller keeps (and reads) the one it passed, while an append extends the cached one
             _lru.AddLast(sessionId);
             while (_lru.Count > Sessions)
             {

@@ -123,7 +123,8 @@ internal sealed partial class Ledger
         foreach (var d in _calls.Find(new DataQuery().Ge("ts", from)))
         {
             var call = d.Doc;
-            var key = (Lane: call["lane"]?.GetValue<string>(), Provider: call["provider"]?.GetValue<string>(), Model: call["model"]?.GetValue<string>());
+            // grouped by the key the roll-up is stored under (the lane lower-cased): "Solo" and "solo" are one lane, not two groups that overwrite each other
+            var key = (Lane: call["lane"]?.GetValue<string>()?.ToLowerInvariant(), Provider: call["provider"]?.GetValue<string>(), Model: call["model"]?.GetValue<string>());
             if (!groups.TryGetValue(key, out var g))
             {
                 g = new JsonObject
@@ -139,14 +140,14 @@ internal sealed partial class Ledger
                     ["costUsd"] = 0.0,
                     ["unknownCalls"] = 0L,
                 };
-                if (key.Lane is not null) g["lane"] = key.Lane;
+                if (call["lane"]?.GetValue<string>() is { } lane) g["lane"] = lane; // as the first call of the group spelled it
                 groups[key] = g;
             }
             Add(g, call, D(call["costUsd"]), call["costSource"]?.GetValue<string>() == "unknown" ? 1L : 0L);
         }
         _periodUsage.DeleteWhere(new DataQuery().Eq("period", period));
         foreach (var (k, g) in groups)
-            _periodUsage.Put(period + "|" + (k.Lane?.ToLowerInvariant() ?? "") + "|" + k.Provider + "|" + k.Model, g);
+            _periodUsage.Put(period + "|" + (k.Lane ?? "") + "|" + k.Provider + "|" + k.Model, g);
     }
 
     /// <summary>The next call id: a stored sequence, so ids never repeat across hot reloads.</summary>

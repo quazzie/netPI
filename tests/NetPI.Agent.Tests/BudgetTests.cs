@@ -78,7 +78,7 @@ public static class BudgetTests
                 ["sessionId"] = "ses_" + i,
                 ["rootSessionId"] = "ses_" + i,
             };
-            if (i < 3000) doc["lane"] = "Alpha";
+            if (i < 3000) doc["lane"] = i % 2 == 0 ? "Alpha" : "alpha"; // one lane, spelled two ways: the rebuild must not make two groups that overwrite each other
             else if (i < 6000) doc["lane"] = "Beta";
             calls.Put("8" + i, doc);
         }

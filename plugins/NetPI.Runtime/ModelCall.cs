@@ -232,7 +232,7 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
             rt.Emit(EventTypes.UsageRecorded, new JsonObject
             {
                 ["provider"] = final.Provider ?? model.Provider,
-                ["model"] = final.Model ?? model.Id,
+                ["model"] = model.Id,
                 ["usage"] = NetPiJson.ToNode(usage),
                 ["sessionId"] = SessionId,
                 ["agentId"] = AgentId,

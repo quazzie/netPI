@@ -63,6 +63,7 @@ public sealed class AnthropicProvider : IModelProvider
             Ttl = TimeSpan.FromSeconds(o.ModelsCacheSeconds),
             FailureTtl = TimeSpan.FromSeconds(Math.Min(60, o.ModelsCacheSeconds)),
             Url = o.Root,
+            LogOnce = false, // every failed attempt is a line: the fallback table is what answers, and the log is where it says why
             // A failed call falls back to the static capability table, not to the last list: the models API returns
             // ids alone, and it is that table which says what a Claude id can do.
             OnFailure = () => (o.FallbackModels.Count > 0 ? o.FallbackModels : [.. ClaudeCapabilities.FallbackModels])
