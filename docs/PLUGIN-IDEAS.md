@@ -527,7 +527,7 @@ score of a none-case overlaps the right idea's), so the pick-or-none decisions s
 - the commit notice (above): the three open ideas nearest a commit, when there are too many to list;
 - the `ideas` tool's `list` with a `query` no idea fully contains: the five closest ideas (same status and tag filters)
   under "Closest by meaning", `details.closest` = `[{id, title, score}]`;
-- the tool's `add`: existing ideas whose card is at least `ideas.similarThreshold` (0.82) close to the new one's are
+- the tool's `add`: existing ideas whose card is at least `ideas.similarThreshold` (0.80) close to the new one's are
   named (`details.similar`), a warning, never a refusal;
 - `ideas.similar` and `ideas.reindex` (RPC).
 

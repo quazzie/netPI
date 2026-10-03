@@ -120,7 +120,7 @@ public sealed class IdeasPlugin : INetPiPlugin
                 SettingInfo.Bool("ideas.semantic", "Meaning search", true,
                     "With an embedding model (the Embeddings plugin, embed.model): the backlog is embedded in the background, the commit notice names the open ideas closest to the commit, the ideas tool adds the closest ideas when a search finds no word match, and a new idea names the existing ones it resembles. Off, or without embeddings, everything works as before."),
                 SettingInfo.Number("ideas.similarThreshold", "Similar idea threshold", IdeaVectors.DefaultSimilarThreshold,
-                    "How close (cosine, card to card) an existing idea has to be before a new one is said to resemble it. 0.82 is about the top 5 % of nearest neighbours in a 231-idea backlog with bge-base.", 0.5, 0.99),
+                    "How close (cosine, card to card) an existing idea has to be before a new one is said to resemble it. 0.80 is about the top 7 % of nearest neighbours in a 231-idea backlog with bge-base; the known duplicate pair scored 0.807-0.824.", 0.5, 0.99),
                 SettingInfo.Int("ideas.commitNoticeDebounceSec", "Commit notice debounce", IdeaCommitNoticeHook.DefaultDebounceSec,
                     "Seconds a run waits after a commit notice before it may get the next one, so a burst of commits costs one notice instead of one each.", 0, 3600),
             ],

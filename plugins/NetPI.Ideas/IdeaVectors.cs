@@ -23,9 +23,9 @@ public sealed class IdeaVectors : IDisposable
     public const int MaxChunks = 12;
     /// <summary>How long a backlog write waits before the index follows it, so a burst of edits is one pass.</summary>
     public static readonly TimeSpan Debounce = TimeSpan.FromSeconds(2);
-    /// <summary>Cosine (bge-base, card to card) above which an idea is called similar: 0.82 is about the top 5 % of each
-    /// idea's nearest other idea in the 231-idea backlog, and the known duplicate pair scored 0.824 (decisions-lab nuc-plan.md).</summary>
-    public const double DefaultSimilarThreshold = 0.82;
+    /// <summary>Cosine (bge-base, card to card) above which an idea is called similar: 0.80 is about the top 7 % of each
+    /// idea's nearest other idea in the 231-idea backlog; the known duplicate pair scored 0.807-0.824 (decisions-lab nuc-plan.md).</summary>
+    public const double DefaultSimilarThreshold = 0.80;
 
     private readonly IPluginContext _ctx;
     private readonly IdeasRepository _repo;
