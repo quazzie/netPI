@@ -128,7 +128,7 @@ try {
     }
     $fallback = @{ Tools = 3; Aux = 3; Agent = 2; Host = 2; Storage = 1; Providers = 1 }
     $queue = [System.Collections.Generic.Queue[string]]::new()
-    foreach ($s in ($suites | Sort-Object { $prevWall[$s] ?? $fallback[$s] } -Descending)) { $queue.Enqueue($s) }
+    foreach ($s in ($suites | Sort-Object { $prevWall[$_] ?? $fallback[$_] } -Descending)) { $queue.Enqueue($s) }
 
     $running = @{}
     $pending = $suites.Count
