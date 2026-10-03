@@ -230,6 +230,9 @@ public static class WorkspaceTests
         Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("SSH", A("""{"action":"download","destination":"/w/x"}""")), "the action says the direction; name case");
         Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"scp","mode":"download","dest":"/w/x"}""")));
         Check.True(WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"upload","from":"/w/x","to":"/remote"}""")) is null, "an upload only reads");
+        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"download","mode":"upload","to":"/w/x"}""")), "the tool fills direction from the action, so mode does not turn the download into an upload");
+        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"download","mode":"upload","to":"/w/x"}""")), "direction comes before mode");
+        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"upload","mode":"download","from":"/w/x","to":"/remote"}""")) is null, "the action's upload wins over mode");
         Check.True(WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"run","script":"ls","to":"/w/x"}""")) is null, "not a copy");
         Check.True(WorkspaceGuard.SshDownloadTarget("bash", A("""{"action":"copy","direction":"download","to":"/w/x"}""")) is null, "only the ssh tool");
         return Task.CompletedTask;

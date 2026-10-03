@@ -170,7 +170,8 @@ internal sealed partial class RuleSet
 
     /// <summary>
     /// Whether an ssh call is a download, routed as the ssh tool routes it: the action is <c>copy</c> (or scp, upload,
-    /// download), and the direction is the <c>direction</c> argument, or the action itself when that says upload/download.
+    /// download), and the direction is what the tool resolves: the action itself when it says upload/download and there is
+    /// no <c>direction</c> argument (the dispatcher fills it in), otherwise <c>direction</c>, then <c>mode</c>.
     /// </summary>
     internal static bool IsSshDownload(string tool, ToolArgs args)
     {
@@ -178,10 +179,16 @@ internal sealed partial class RuleSet
         var action = args.Str("action", "verb", "command")?.Trim().ToLowerInvariant();
         if (action is null && args.Has("script")) action = "run";
         if (action is not ("copy" or "scp" or "upload" or "download")) return false;
-        var direction = args.Str("direction", "mode")?.Trim().ToLowerInvariant();
-        if (direction is null && args.Str("action")?.Trim().ToLowerInvariant() is "upload" or "download")
-            direction = args.Str("action")!.Trim().ToLowerInvariant();
+        var direction = SshDirection(args);
         return direction == "download";
+    }
+
+    /// <summary>The direction of an ssh copy as the tool reads it (the ssh dispatcher, then ssh_copy), so a call cannot name one and be run as another.</summary>
+    private static string? SshDirection(ToolArgs args)
+    {
+        var action = args.Str("action")?.Trim().ToLowerInvariant();
+        var direction = args.Str("direction") is null && action is "upload" or "download" ? action : args.Str("direction", "mode");
+        return direction?.Trim().ToLowerInvariant();
     }
 
     /// <summary>

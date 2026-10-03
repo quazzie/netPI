@@ -94,7 +94,8 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
 
     /// <summary>
     /// The local path an ssh download writes, routed as the ssh tool routes it: the action is <c>copy</c> (or scp, upload,
-    /// download) and the direction is the <c>direction</c> argument, or the action itself when that says upload/download.
+    /// download) and the direction is what the tool resolves: the action itself when it says upload/download and there is no
+    /// <c>direction</c> argument (the dispatcher fills it in), otherwise <c>direction</c>, then <c>mode</c>.
     /// Null for any other call. (The guardrails plugin keeps its own copy of this rule for its protected paths: plugins do
     /// not share code.)
     /// </summary>
@@ -104,8 +105,8 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
         var action = args.Str("action", "verb", "command")?.Trim().ToLowerInvariant();
         if (action is null && args.Has("script")) action = "run";
         if (action is not ("copy" or "scp" or "upload" or "download")) return null;
-        var direction = args.Str("direction", "mode")?.Trim().ToLowerInvariant();
-        if (direction is null && args.Str("action")?.Trim().ToLowerInvariant() is "upload" or "download") direction = args.Str("action")!.Trim().ToLowerInvariant();
+        var spoken = args.Str("action")?.Trim().ToLowerInvariant();
+        var direction = (args.Str("direction") is null && spoken is "upload" or "download" ? spoken : args.Str("direction", "mode"))?.Trim().ToLowerInvariant();
         return direction == "download" ? args.Str("to", "destination", "dest", "target")?.Trim() : null;
     }
 

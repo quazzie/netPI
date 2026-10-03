@@ -252,9 +252,13 @@ public static class GuardrailsTests
         Check.True(Blocks("ssh", new { action = "scp", mode = "download", host = "nuc", from = "/tmp/k", destination = key }), "scp, mode, destination");
         Check.True(Blocks("ssh", new { action = "copy", direction = "download", from = "/tmp/k", target = key }), "target is a destination name");
         Check.True(Blocks("ssh", new { action = "copy", direction = "download", script = "echo hi", to = key }), "a script does not hide the download");
+        // the tool fills "direction" from the action when it is missing, and then reads direction before mode: so does the guard
+        Check.True(Blocks("ssh", new { action = "download", mode = "upload", host = "nuc", from = "/tmp/k", to = key }), "mode does not override the action's direction");
+        Check.True(Blocks("ssh", new { action = "copy", direction = "download", mode = "upload", from = "/tmp/k", to = key }), "direction comes before mode");
 
         Check.True(Judge(rules, "ssh", new { action = "copy", direction = "upload", host = "nuc", from = key, to = "/tmp/k" }) is null, "an upload only reads");
         Check.True(Judge(rules, "ssh", new { action = "upload", from = key, to = "/tmp/k" }) is null, "action upload");
+        Check.True(Judge(rules, "ssh", new { action = "upload", mode = "download", from = "/tmp/k", to = key }) is null, "the action's upload wins over mode: the tool uploads");
         Check.True(Judge(rules, "ssh", new { action = "run", script = "ls", to = key }) is null, "not a copy");
         Check.True(Judge(rules, "ssh", new { action = "copy", direction = "download", from = "/tmp/k", to = Path.Combine(Home, "project", "k") }) is null, "a download elsewhere");
         return Task.CompletedTask;
