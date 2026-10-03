@@ -109,7 +109,7 @@ public static class ToolArgsTests
             Check.True(o["properties"]!["path"] is not null && o["properties"]!["offset"] is not null && o["properties"]!["all"] is not null);
             Check.Equal("the file", o["properties"]?["path"]?["description"]?.GetValue<string>());
             Check.True(o["properties"]!["offset"]!["description"] is null, "an empty description is left out");
-            Check.Equal("path", (o["required"] as JsonArray)!.Single().GetValue<string>(), "only required properties are listed");
+            Check.Equal("path", (o["required"] as JsonArray)!.Single()!.GetValue<string>(), "only required properties are listed");
 
             var s = ToolSchema.Str("", "info", "list");
             Check.Equal("string", s["type"]?.GetValue<string>());

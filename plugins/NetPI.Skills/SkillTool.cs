@@ -43,7 +43,7 @@ internal sealed class SkillTool(SkillLoader loader, IPluginContext ctx) : IAgent
         var names = set.Listed.Select(s => s.Name).ToList();
         string Choices() => names.Count > 0 ? "The skills: " + string.Join(", ", names) + "." : "No skills are available here.";
 
-        var name = Arg(args, "name") ?? Arg(args, "skill");
+        var name = new ToolArgs(args).Str("name", "skill");
         if (string.IsNullOrWhiteSpace(name)) return Task.FromResult(ToolResult.Error("Missing 'name'. " + Choices()));
         var skill = set.Find(name);
         if (skill is null) return Task.FromResult(ToolResult.Error($"No skill named \"{name.Trim()}\" here. {Choices()}"));
@@ -84,18 +84,4 @@ internal sealed class SkillTool(SkillLoader loader, IPluginContext ctx) : IAgent
         return false;
     }
 
-    private static string? Arg(JsonElement args, string key)
-    {
-        if (args.ValueKind == JsonValueKind.String)
-        {
-            // some models send the arguments as a JSON string
-            try
-            {
-                using var doc = JsonDocument.Parse(args.GetString() ?? "");
-                return Arg(doc.RootElement.Clone(), key);
-            }
-            catch (JsonException) { return null; }
-        }
-        return args.ValueKind == JsonValueKind.Object && args.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-    }
 }

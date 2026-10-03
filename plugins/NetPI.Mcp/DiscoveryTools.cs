@@ -71,13 +71,14 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var query = args.TryGetProperty("query", out var q) && q.ValueKind == JsonValueKind.String ? q.GetString()!.Trim() : "";
+        var a = new ToolArgs(args);
+        var query = a.Str("query")?.Trim() ?? "";
         if (query.Length is 0 or > 500) return ToolResult.Error("query must contain 1–500 characters.");
-        var detail = args.TryGetProperty("detail", out var d) ? d.GetString() : "summary";
+        var detail = a.Str("detail") ?? "summary";
         if (detail is not ("summary" or "schema")) return ToolResult.Error("detail must be summary or schema.");
-        var limit = args.TryGetProperty("limit", out var l) ? l.GetInt32() : detail == "schema" ? 1 : 3;
+        var limit = a.Int("limit") ?? (detail == "schema" ? 1 : 3);
         limit = Math.Clamp(limit, 1, detail == "schema" ? 1 : 5);
-        var server = args.TryGetProperty("server", out var s) ? s.GetString() : null;
+        var server = a.Str("server");
         var eligible = Eligible(ctx, context).ToHashSet(ReferenceEqualityComparer.Instance);
         var catalog = manager.Catalog().Where(t => eligible.Contains(t) && (server is null || t.ServerId == server)).ToList();
         var resources = detail == "schema" ? new List<RemoteResource>() : manager.Resources(server);
@@ -148,7 +149,8 @@ internal sealed class McpCallTool(IPluginContext ctx, ServerManager manager) : I
     public ValueTask<ResolvedToolCall> ResolveAsync(ToolContext context, JsonElement arguments, CancellationToken ct)
     {
         var tool = Check(context, arguments);
-        var inner = arguments.GetProperty("arguments");
+        var a = new ToolArgs(arguments);
+        if (!a.TryGet(out var inner, "arguments")) throw new McpException("mcp_call needs 'arguments': the tool's arguments (an object, {} for none).");
         if (inner.ValueKind != JsonValueKind.Object) throw new McpException("arguments must be an object.");
         var schema = tool.Definition.Parameters;
         var args = JsonNode.Parse(inner.GetRawText()) as JsonObject ?? throw new McpException("arguments must be an object.");
@@ -177,8 +179,9 @@ internal sealed class McpCallTool(IPluginContext ctx, ServerManager manager) : I
     { Check(context, originalArguments); return ValueTask.CompletedTask; }
     private RemoteTool Check(ToolContext context, JsonElement args)
     {
-        var id = args.GetProperty("id").GetString()!;
-        var revision = args.GetProperty("revision").GetString();
+        var a = new ToolArgs(args);
+        var id = a.Str("id") ?? throw new McpException("mcp_call needs 'id': the exact tool id from mcp_search.");
+        var revision = a.Str("revision");
         var tool = manager.Find(id) ?? throw new McpException("MCP tool no longer exists. Search again.");
         if (!McpSearchTool.Eligible(ctx, context).Any(t => ReferenceEquals(t, tool))) throw new McpException("This MCP tool is disabled or outside this agent's tool selection.");
         if (revision != tool.Definition.Revision) throw new McpException("MCP schema revision changed. Inspect its schema again.");
