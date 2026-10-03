@@ -42,6 +42,11 @@ public static class PluginIndependenceTests
                 var app = Environment.GetEnvironmentVariable("NETPI_APP_DIR") ?? Path.Combine(T.RepoRoot, "artifacts", "dev", "app");
                 var built = Path.Combine(app, "plugins", name);
                 Check.True(File.Exists(Path.Combine(built, name + ".dll")), $"build {name} first");
+                // the host preloads the contract assemblies into the default context: a plugin must not ship a copy next to itself
+                foreach (var contracts in new[] { "NetPI.Abstractions", "NetPI.Contracts" })
+                    Check.False(File.Exists(Path.Combine(built, contracts + ".dll")), $"{name}: {contracts}.dll must not be copied next to the plugin");
+                if (File.Exists(Path.Combine(Path.GetDirectoryName(project)!, "plugin.json")))
+                    Check.True(File.Exists(Path.Combine(built, "plugin.json")), $"{name}: plugin.json is copied to the build output");
                 var root = T.TempDir("plugin-independent");
                 T.CopyDir(built, Path.Combine(root, name));
                 await using var server = await PluginTests.StartAsync(root).WaitAsync(TimeSpan.FromSeconds(10));

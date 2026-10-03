@@ -373,6 +373,8 @@ Write-Output 'LOCK-OK'
             if (publish) psi.ArgumentList.Add("-Publish");
             psi.ArgumentList.Add("-AppDir");
             psi.ArgumentList.Add(appDir);
+            // -NoClean: artifacts\dev\app is what the other suites load plugins from while this runs; emptying it under them fails them
+            psi.ArgumentList.Add("-NoClean");
             using var p = Process.Start(psi)!;
             var outTask = p.StandardOutput.ReadToEndAsync();
             var errTask = p.StandardError.ReadToEndAsync();

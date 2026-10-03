@@ -66,7 +66,9 @@ The suites are built **once**, as one generated solution holding just the reques
 so shared dependencies are compiled once instead of once per suite. Up to five suite *processes* then run at a
 time (`-Parallel`, 1–5, default 2; `-Serial` for one). Each suite gets its own temporary root (`NETPI_TEST_ROOT`, under
 the system temp — not the repo, because the git tests create real repositories and a nested one behaves
-differently), so two invocations of the same suite never delete each other's files.
+differently), so two invocations of the same suite never delete each other's files. A suite still running after
+`-TimeoutMinutes` (default 30) is stopped and fails the run, instead of being waited for. The build test runs `build.ps1`
+with `-NoClean`, so it builds over `artifacts/dev/app` instead of emptying it under the suites that load plugins from it.
 
 Next to each suite's result the script prints the **process time** and the time the suite's own timers reported, and
 calls out any suite that spent more than three seconds outside its own tests. That gap is not noise: it is the

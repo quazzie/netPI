@@ -30,6 +30,7 @@
   .\build.ps1 -Pending      # what the next start of NetPI would pick up
   .\build.ps1 -Run           # publish and start the desktop app
   .\build.ps1 -SkipWeb       # don't run npm even if it is installed
+  .\build.ps1 -NoClean       # build over artifacts\dev\app without emptying it first (what the build test does)
   From cmd: build.cmd runs this script with the same options (build -Run, build /?).
 #>
 param(
@@ -42,7 +43,8 @@ param(
     [switch] $Discard,
     [switch] $Run,
     [switch] $Test,
-    [string] $AppDir
+    [string] $AppDir,
+    [switch] $NoClean
 )
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -238,7 +240,9 @@ function Show-PublishCost([string[]] $pluginNames) {
 
 # ---- .NET: always into the dev tree. Nothing below this point can fail halfway into artifacts\app.
 Step "dotnet build ($Configuration)"
-if (Test-Path $dev) { Remove-Item -Recurse -Force $dev }   # nothing stale (a removed plugin, an old wwwroot) survives
+# nothing stale (a removed plugin, an old wwwroot) survives - unless -NoClean: the test suites load plugins from this tree, so
+# the build test builds over it instead of emptying it under them
+if (-not $NoClean -and (Test-Path $dev)) { Remove-Item -Recurse -Force $dev }
 dotnet build NetPI.slnx -c $Configuration --nologo
 if ($LASTEXITCODE) { throw 'dotnet build failed' }
 

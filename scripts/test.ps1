@@ -36,6 +36,7 @@
   .\scripts\test.ps1 -Only "a failed write" -SkipBuild   # the fix loop: no rebuild if nothing changed
   .\scripts\test.ps1 -Parallel 3                         # run up to 3 suite processes at once
   .\scripts\test.ps1 -Serial                             # one suite at a time (diagnostics)
+  .\scripts\test.ps1 -TimeoutMinutes 10                  # stop a suite that runs longer than that, and fail the run
 #>
 param(
     [string[]]$Only,
@@ -43,7 +44,10 @@ param(
     [string]$Config = 'Release',
     [switch]$SkipBuild,
     [switch]$Serial,
-    [ValidateRange(1, 5)][int]$Parallel = 3
+    [ValidateRange(1, 5)][int]$Parallel = 3,
+    # A suite still running after this long hangs (the slowest one takes a few minutes): it is stopped and the run fails,
+    # instead of waiting for it for ever.
+    [ValidateRange(1, 240)][int]$TimeoutMinutes = 30
 )
 
 $ErrorActionPreference = 'Stop'
@@ -158,6 +162,14 @@ try {
             # suite's by the time this one finishes, so the post-run block must not read the loop variable.
             $running[$s] = @{ Job = $job; Sw = $sw; ResultFile = $resultFile }
         }
+        foreach ($late in @($running.Keys | Where-Object { $running[$_].Job.State -eq 'Running' -and $running[$_].Sw.Elapsed.TotalMinutes -gt $TimeoutMinutes })) {
+            Stop-Job $running[$late].Job -ErrorAction SilentlyContinue
+            # the job's own process goes with Stop-Job, the dotnet it started does not
+            Get-CimInstance Win32_Process -Filter "Name = 'dotnet.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like "*NetPI.$late.Tests.dll*" } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            $running[$late].TimedOut = $true
+        }
         $done = @($running.Keys | Where-Object { $running[$_].Job.State -ne 'Running' })
         if ($done.Count -eq 0) { Start-Sleep -Milliseconds 50; continue }
         foreach ($s in $done) {
@@ -167,6 +179,7 @@ try {
             $out = @(); $code = 0
             try { $r = Receive-Job $entry.Job -ErrorAction Stop; $out = @($r.Out); $code = [int]$r.Code }
             catch { $out = @("the suite process could not be run: $_") }
+            if ($entry.TimedOut) { $out = @("the suite ran longer than $TimeoutMinutes minutes and was stopped (-TimeoutMinutes)"); $code = -1 }
             Remove-Job $entry.Job -Force -ErrorAction SilentlyContinue
             $running.Remove($s); $pending--
 
@@ -206,7 +219,10 @@ try {
             # The exit code is the authority. A suite that dies part-way through — reported as green
             # is how a broken run hides. A run that matched nothing is already reported above
             # (the runner exits 2 for it), so it is not a crash here.
-            if ($code -ne 0 -and $failedTests.Count -eq 0 -and -not $noMatch) {
+            if ($entry.TimedOut) {
+                $failures.Add([pscustomobject]@{ Suite = $s; Name = "(suite stopped after $TimeoutMinutes minutes: it hangs)" })
+            }
+            elseif ($code -ne 0 -and $failedTests.Count -eq 0 -and -not $noMatch) {
                 $failures.Add([pscustomobject]@{ Suite = $s; Name = "(suite process exited $code without reporting a failure - crash?)" })
             }
             elseif ($code -eq 0 -and -not $result -and -not $noMatch) {
