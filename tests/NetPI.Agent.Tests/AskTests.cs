@@ -293,6 +293,18 @@ public static class AskTests
         var many = Parse("""{ "question": "Pick", "options": ["a","b","c","d","e","f","g","h","i","j"] }""", out _);
         Check.Equal(AskUserTool.MaxOptions, many[0].Options.Count, "options are capped");
 
+        // The card wraps a long label over several lines, so the cap bounds the payload, not what the user can read:
+        // an option that carried its meaning in the label (it used to be cut at 120 characters) must reach them whole.
+        var label = new string('x', 350);
+        var kept = Parse($$"""{ "question": "Which?", "options": ["{{label}}"] }""", out _);
+        Check.Equal(label, kept[0].Options[0].Label, "a 350-character label is not clipped");
+        var cut = Parse($$"""{ "question": "Which?", "options": ["{{new string('y', 500)}}"] }""", out _);
+        Check.Equal(401, cut[0].Options[0].Label!.Length, "past the cap (400) the label is cut, and marked as cut");
+        Check.True(cut[0].Options[0].Label!.EndsWith("…"), "a clipped label says so");
+        var desc = new string('z', 650);
+        var described = Parse($$"""{ "question": "Which?", "options": [{ "label": "a", "description": "{{desc}}" }] }""", out _);
+        Check.Equal(601, described[0].Options[0].Description!.Length, "a description is cut at 600, and marked");
+
         var qs = new List<AskQuestion> { new("Which?", [new("A", null)], false) };
         Check.Equal("The user answered in their own words: whatever works", AskUserTool.Render(qs, new AskAnswer([[]], "whatever works")));
         Check.Equal("The user answered: A\nThey added: and hurry", AskUserTool.Render(qs, new AskAnswer([["A"]], "and hurry")));
