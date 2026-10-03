@@ -18,17 +18,30 @@ export function useRefresh(ctx, { load, events = [], pollMs = 0, delayMs = 300, 
   let timer = 0; // the coalesced event load
   let pollTimer = 0;
   let inflight = null;
+  let again = false; // a request came in during the load that runs
   const isVisible = () => (parent ? parent() : shown);
 
-  /** Load now. Never two at a time: a slow answer is the one that finishes first, not the one that started last. */
+  /**
+   * Load now. Never two at a time: a slow answer is the one that finishes first, not the one that started last. A request
+   * that arrives while a load runs (a click that changed what the load is about, an event) is one more load after it, not
+   * the answer of the load that started before it: what that one read may be what the request just made out of date.
+   */
   function refresh() {
     if (disposed) return Promise.resolve();
-    if (inflight) return inflight;
+    if (inflight) {
+      again = true;
+      return inflight;
+    }
     inflight = (async () => {
       try {
-        await load();
-      } catch {
-        /* the tab shows its own error */
+        do {
+          again = false;
+          try {
+            await load();
+          } catch {
+            /* the tab shows its own error */
+          }
+        } while (again && !disposed);
       } finally {
         inflight = null;
       }

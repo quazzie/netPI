@@ -169,6 +169,22 @@ const polled = await page.evaluate(() => window.ctx.stats);
 check('the poll keeps loading', polled.calls > 2, `calls=${polled.calls}`);
 check('a load slower than the poll never has a second in flight', polled.peak === 1, `peak=${polled.peak}`);
 
+// 3b: a request that arrives while a load runs is one more load after it (what the running one read may be what the request
+// just made stale), never the answer of the load that started first, and several requests in that window are still one
+await open(80, 0, 20);
+await page.waitForTimeout(150);
+const midLoad = await page.evaluate(async () => {
+  const before = window.ctx.stats.calls;
+  const first = window.tab.refresh();
+  await new Promise((r) => setTimeout(r, 20)); // the load is running now
+  const second = window.tab.refresh();
+  window.tab.refresh();
+  await Promise.all([first, second]);
+  return { loads: window.ctx.stats.calls - before, peak: window.ctx.stats.peak, settled: window.ctx.stats.inFlight };
+});
+check('a request during a load is one more load after it', midLoad.loads === 2, `loads=${midLoad.loads}`);
+check('and still never two in flight', midLoad.peak === 1 && midLoad.settled === 0, `peak=${midLoad.peak} inFlight=${midLoad.settled}`);
+
 // 4: a hidden tab loads nothing; showing it loads once, however many events arrived meanwhile
 await open(10, 0, 30);
 await page.waitForTimeout(120);

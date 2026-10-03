@@ -17,8 +17,12 @@ const CLOSES = (marker) => (line) => {
   const m = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
   return !!m && m[1][0] === marker[0] && m[1].length >= marker.length;
 };
-/** Lines that carry the block above them on into the next one. */
-const CONTINUES = /^(?: {4,}|\t|>|[-+*]|\d{1,9}[.)]|\[[^\]]+\]:)/;
+/**
+ * Lines that carry the block above them on into the next one. Any indented line does: three spaces under a "1. " item are
+ * the item's own paragraph (CommonMark indents by the marker's width), and one that is really a new paragraph merely stays
+ * in the live tail a little longer, which costs a render, not a wrong one.
+ */
+const CONTINUES = /^(?: |\t|>|[-+*]|\d{1,9}[.)]|\[[^\]]+\]:)/;
 
 /** The index in `text` where the complete blocks end and the block still being written begins. */
 export function splitLive(text) {

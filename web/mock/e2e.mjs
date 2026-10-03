@@ -695,6 +695,12 @@ log('plugin tab: Work');
   check('work: a top-level lane owner shows its session title, not "main"; a subagent its name',
     ownerNames.includes('Index docs for semantic search') && !ownerNames.includes('main') && ownerNames.includes('surveyor'), ownerNames.join(' | '));
   check('work: a subagent says whose work it is', /for Refactor provider retry policy/.test(await qwen.locator('.slot.busy', { hasText: 'surveyor' }).innerText()));
+  // the shared clock ticks: a live elapsed time moves on its own (a clock nobody is told about stays at its first value)
+  const elapsed = () => page.locator('.work .np-elapsed').allInnerTexts();
+  const e0 = await elapsed();
+  await page.waitForTimeout(2300);
+  const e1 = await elapsed();
+  check('work: a running elapsed time ticks', e0.length > 0 && e0.join('|') !== e1.join('|'), `${e0.join(' ')} → ${e1.join(' ')}`);
   // the agents are always listed; an inactive one says why; each has a switch
   const gemma = page.locator('.work .pool[data-agent="gemma"]');
   check('work: an agent whose model is not loaded is listed as such', (await gemma.locator('.st').innerText()) === 'not loaded' && /isn't loaded/.test(await gemma.locator('.second').innerText()));

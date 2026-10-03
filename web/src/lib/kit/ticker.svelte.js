@@ -2,7 +2,7 @@
 // last of them is gone (a plugin tab bundles its own copy of the kit, and its clocks used to outlive the tab).
 import { onDestroy } from 'svelte';
 
-const clocks = new Map(); // ms → { value: $state, timer, users }
+const clocks = new Map(); // ms → $state({ value, timer, users })
 
 /**
  * A clock that ticks every `ms`. Call it from a component's script — that is where it subscribes — and call the getter it
@@ -11,8 +11,9 @@ const clocks = new Map(); // ms → { value: $state, timer, users }
 export function clock(ms) {
   let c = clocks.get(ms);
   if (!c) {
-    const value = $state(Date.now());
-    clocks.set(ms, (c = { value, timer: 0, users: 0 }));
+    // the whole record is state: a $state primitive copied into a plain object would be a number nobody is told about
+    const record = $state({ value: Date.now(), timer: 0, users: 0 });
+    clocks.set(ms, (c = record));
   }
   c.users++;
   if (!c.timer) {
