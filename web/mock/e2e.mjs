@@ -989,6 +989,7 @@ log('plugin tab: Ideas');
     'ideas: Edit opens the same dialog, filled in',
     (await dlg.locator('.i-title').inputValue()) === 'Dialog edit target' && (await dlg.locator('.i-summary').inputValue()) === 'before' && (await dlg.locator('.i-tags').inputValue()) === 't1',
   );
+  await page.waitForTimeout(400); // past the dialog's fade-in
   await shot(page, '27c-idea-dialog');
   // someone else writes the idea while the dialog is open: the save is a conflict, never an overwrite
   await rpcCall('ideas.update', { id: edited.id, patch: { summary: 'changed elsewhere' } });
@@ -1021,6 +1022,7 @@ log('plugin tab: Ideas');
   await moreMenu(refCard, 'Refine with an agent');
   await dlg.waitFor({ timeout: 3000 }).catch(() => {});
   check('ideas: "Refine with an agent" opens the dialog with the task on', (await dlg.locator('.refine').count()) === 1 && /Save and refine/.test(await dlg.locator('.i-submit').innerText()));
+  await page.waitForTimeout(400); // past the dialog's fade-in
   await shot(page, '27d-idea-refine');
   await dlg.locator('.i-hint').fill('check the Files plugin first');
   await dlg.locator('.i-submit').click();
