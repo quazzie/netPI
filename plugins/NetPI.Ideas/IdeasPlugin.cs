@@ -22,7 +22,7 @@ public sealed class IdeasPlugin : INetPiPlugin
     /// <summary>The event a window listens for so it re-reads the backlog (published after a commit, never before).</summary>
     public const string ChangedEvent = "ideas.changed";
 
-    public async Task StartAsync(IPluginContext context, CancellationToken ct)
+    public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         var work = new IdeaWork(context);
         context.Services.Register<IBackgroundWork>(work);
@@ -33,6 +33,39 @@ public sealed class IdeasPlugin : INetPiPlugin
             history = context.Services.Get<IGitHistory>() is not null || context.Rpc.Exists("files.commits"),
             models = context.Models.Cached.Count > 0,
         }), "Availability of optional Ideas enhancements, independently of backlog storage");
+        RegisterSettings(context);
+
+        var repo = IdeasRepository.Open(context.Data, context.Services.Get<IStorageAccess>(), context.Logger, context.Paths.Home);
+        var locator = new IdeasLocator(() => context.Sessions, context.Paths, () => context.Settings);
+        var snapshots = new IdeaSnapshots(repo);
+
+        // A claim nobody owns any more (NetPI was stopped mid-check) is retryable again, before anything asks.
+        try { repo.RecoverExpiredClaims(); } catch (Exception ex) { context.Logger.LogDebug("Ideas: the check claims could not be recovered: {Message}", ex.Message); }
+
+        // Every write announces itself once it has committed, so a second window re-reads the canonical state.
+        var events = new IdeasEvents(context, repo, locator);
+        repo.OnChanged = events.Changed;
+
+        // The commits the sweep could not decide after its bound of attempts (idea-kooctc): the cursor has moved past
+        // them, and the record is what is re-read on demand.
+        context.Rpc.RegisterReadOnly("ideas.unread", (_, _) => Task.FromResult<object?>(
+            new JsonArray(repo.Unread().Select(u => (JsonNode)u).ToArray())),
+            "The commits the commit sweep could not decide after its bound of attempts: { } → [{ repo, hash, subject, tries, error, at }]. The cursor has moved past them, so later commits are read; the record is what is re-read on demand");
+
+        context.Tools.Register(new IdeasTool(repo, locator));
+
+        var rpc = new IdeasRpc(repo, locator, events, snapshots, context.Paths.Home);
+        rpc.Register(context.Rpc);
+        RegisterVerifyUpdate(context, repo);
+        new IdeaRecall(context, repo, locator).Register(context.Rpc);
+        var saveCheck = new IdeaSaveCheck(context, repo);
+        saveCheck.Register(context.Rpc);
+        RegisterCommitChecks(context, repo, saveCheck);
+        RegisterUi(context);
+        return Task.CompletedTask;
+    }
+
+    private void RegisterSettings(IPluginContext context) =>
         context.Services.Register(new SettingsSection
         {
             Id = "ideas", Title = "Ideas", Group = "Tools", Order = 60,
@@ -74,27 +107,8 @@ public sealed class IdeasPlugin : INetPiPlugin
             ],
         });
 
-        var repo = IdeasRepository.Open(context.Data, context.Services.Get<IStorageAccess>(), context.Logger, context.Paths.Home);
-        var locator = new IdeasLocator(() => context.Sessions, context.Paths, () => context.Settings);
-        var snapshots = new IdeaSnapshots(repo);
-
-        // A claim nobody owns any more (NetPI was stopped mid-check) is retryable again, before anything asks.
-        try { repo.RecoverExpiredClaims(); } catch (Exception ex) { context.Logger.LogDebug("Ideas: the check claims could not be recovered: {Message}", ex.Message); }
-
-        // Every write announces itself once it has committed, so a second window re-reads the canonical state.
-        var events = new IdeasEvents(context, repo, locator);
-        repo.OnChanged = events.Changed;
-
-        // The commits the sweep could not decide after its bound of attempts (idea-kooctc): the cursor has moved past
-        // them, and the record is what is re-read on demand.
-        context.Rpc.RegisterReadOnly("ideas.unread", (_, _) => Task.FromResult<object?>(
-            new JsonArray(repo.Unread().Select(u => (JsonNode)u).ToArray())),
-            "The commits the commit sweep could not decide after its bound of attempts: { } → [{ repo, hash, subject, tries, error, at }]. The cursor has moved past them, so later commits are read; the record is what is re-read on demand");
-
-        context.Tools.Register(new IdeasTool(repo, locator));
-
-        var rpc = new IdeasRpc(repo, locator, events, snapshots, context.Paths.Home);
-        rpc.Register(context.Rpc);
+    private void RegisterVerifyUpdate(IPluginContext context, IdeasRepository repo)
+    {
         context.Rpc.Register("ideas.verifyUpdate", async (request, token) =>
         {
             var id = request.Required("id");
@@ -110,9 +124,10 @@ public sealed class IdeasPlugin : INetPiPlugin
             var changed = repo.Update(id, patch, fromUi: true, expectedRevision: current.Revision);
             return new { applied = true, reason = verdict.Reason, idea = changed.Doc };
         }, "Verify a proposed update against evidence and apply only to the captured revision: {id,expectedRevision,patch,evidence}; conflicting or unverifiable updates remain unapplied");
-        new IdeaRecall(context, repo, locator).Register(context.Rpc);
-        var saveCheck = new IdeaSaveCheck(context, repo);
-        saveCheck.Register(context.Rpc);
+    }
+
+    private void RegisterCommitChecks(IPluginContext context, IdeasRepository repo, IdeaSaveCheck saveCheck)
+    {
         // Phase 3: watch the projects' repositories. Started after the tab, and it never blocks the start: a project
         // that cannot be watched is retried on the next rescan.
         var commitCheck = context.Track(new IdeaCommitCheck(context, repo, saveCheck));
@@ -123,7 +138,10 @@ public sealed class IdeasPlugin : INetPiPlugin
         context.Services.Register<IAgentHook>(new IdeaCommitNoticeHook(
             () => context.Settings,
             projectId => repo.OpenIdeas(projectId)));
+    }
 
+    private void RegisterUi(IPluginContext context)
+    {
         context.Ui.AddTab(new UiTabInfo { Id = "ideas", Title = "Ideas", Panel = UiPanel.Right, Icon = "idea", Order = 20, Module = "ui.js" });
         context.Ui.AddCommand(new SlashCommandInfo
         {

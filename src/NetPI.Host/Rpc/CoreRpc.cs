@@ -18,58 +18,93 @@ internal static class CoreRpc
 
     public static void Register(HostKernel k, List<IDisposable> registrations)
     {
-        void Add(string method, string description, Func<RpcRequest, object?> handler, bool readOnly = false) =>
-            registrations.Add(k.Rpc.Register(method, (req, _) => Task.FromResult(handler(req)), description, readOnly));
+        var add = new Adder(k, registrations);
+        RegisterApp(add);
+        RegisterProjects(add);
+        RegisterSessions(add);
+        RegisterSessionMessages(add);
+        RegisterModels(add);
+        RegisterUi(add);
+        RegisterPlugins(add);
+        RegisterSettings(add);
+        RegisterMisc(add);
+    }
 
-        void AddAsync(string method, string description, Func<RpcRequest, CancellationToken, Task<object?>> handler, bool readOnly = false) =>
-            registrations.Add(k.Rpc.Register(method, (req, ct) => handler(req, ct), description, readOnly));
+    /// <summary>
+    /// How each section adds its methods: the kernel and the list that keeps its registrations alive. An answer that
+    /// is computed right here goes through <see cref="Add"/>, one that awaits through <see cref="AddAsync"/>.
+    /// </summary>
+    private sealed class Adder
+    {
+        /// <summary>The kernel the sections read through.</summary>
+        public readonly HostKernel K;
+        private readonly List<IDisposable> _registrations;
 
-        // ------------------------------------------------------------ app
-        Add("app.info", "Host information → { version, os, home, appDir, defaultWorkspace, desktop, maxMessageBytes, ... }", _ => new
+        public Adder(HostKernel k, List<IDisposable> registrations)
+        {
+            K = k;
+            _registrations = registrations;
+        }
+
+        public void Add(string method, string description, Func<RpcRequest, object?> handler, bool readOnly = false) =>
+            _registrations.Add(K.Rpc.Register(method, (req, _) => Task.FromResult(handler(req)), description, readOnly));
+
+        public void AddAsync(string method, string description, Func<RpcRequest, CancellationToken, Task<object?>> handler, bool readOnly = false) =>
+            _registrations.Add(K.Rpc.Register(method, (req, ct) => handler(req, ct), description, readOnly));
+    }
+
+    // ------------------------------------------------------------ app
+    private static void RegisterApp(Adder a) =>
+        a.Add("app.info", "Host information → { version, os, home, appDir, defaultWorkspace, desktop, maxMessageBytes, ... }", _ => new
         {
             version = HostInfo.Version,
             os = HostInfo.OsName,
             osDescription = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-            home = k.Paths.Home,
-            appDir = k.Paths.AppDir,
-            defaultWorkspace = k.Paths.DefaultWorkspace,
-            settingsFile = k.Paths.SettingsFile,
-            desktop = k.Options.Desktop,
+            home = a.K.Paths.Home,
+            appDir = a.K.Paths.AppDir,
+            defaultWorkspace = a.K.Paths.DefaultWorkspace,
+            settingsFile = a.K.Paths.SettingsFile,
+            desktop = a.K.Options.Desktop,
             pid = Environment.ProcessId,
             dotnet = Environment.Version.ToString(),
-            sqlite = k.Storage.Info is { Provider: "sqlite" } info ? info.Version : null,
+            sqlite = a.K.Storage.Info is { Provider: "sqlite" } info ? info.Version : null,
             pathSeparator = Path.DirectorySeparatorChar.ToString(),
             maxMessageBytes = WsHub.MaxMessageBytes,
         }, readOnly: true);
 
-        // ------------------------------------------------------------ projects
-        Add("projects.list", "All projects → ProjectInfo[]", _ => k.Sessions.ListProjects(), readOnly: true);
+    // ------------------------------------------------------------ projects
+    private static void RegisterProjects(Adder a)
+    {
+        a.Add("projects.list", "All projects → ProjectInfo[]", _ => a.K.Sessions.ListProjects(), readOnly: true);
 
-        Add("projects.create", "Create a project: { name, path, create? } → ProjectInfo", req =>
+        a.Add("projects.create", "Create a project: { name, path, create? } → ProjectInfo", req =>
         {
             var path = ExistingDirectory(req.Required("path"), req.Bool("create") == true);
-            return k.Sessions.CreateProject(req.Str("name") ?? "", path);
+            return a.K.Sessions.CreateProject(req.Str("name") ?? "", path);
         });
 
-        Add("projects.update", "Update a project: { id, name?, path?, meta? } → ProjectInfo (meta is merged key by key; a null value removes a key)", req =>
+        a.Add("projects.update", "Update a project: { id, name?, path?, meta? } → ProjectInfo (meta is merged key by key; a null value removes a key)", req =>
         {
             var path = req.Str("path") is { Length: > 0 } p ? ExistingDirectory(p, req.Bool("create") == true) : null;
             var meta = req.Prop("meta") is { ValueKind: JsonValueKind.Object } m ? JsonNode.Parse(m.GetRawText()) as JsonObject : null;
-            return k.Sessions.UpdateProject(req.Required("id"), req.Str("name"), path, meta);
+            return a.K.Sessions.UpdateProject(req.Required("id"), req.Str("name"), path, meta);
         });
 
-        Add("projects.delete", "Delete a project (its sessions are detached): { id } → true", req =>
+        a.Add("projects.delete", "Delete a project (its sessions are detached): { id } → true", req =>
         {
-            k.Sessions.DeleteProject(req.Required("id"));
+            a.K.Sessions.DeleteProject(req.Required("id"));
             return true;
         });
+    }
 
-        // ------------------------------------------------------------ sessions
-        Add("sessions.list", "Sessions, pinned first then newest first: { projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, archivedOnly? (only archived; takes precedence over includeArchived), limit?, offset? } → SessionInfo[]",
-            req => k.Sessions.ListSessions(req.Bind<SessionQuery>()), readOnly: true);
+    // ------------------------------------------------------------ sessions
+    private static void RegisterSessions(Adder a)
+    {
+        a.Add("sessions.list", "Sessions, pinned first then newest first: { projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, archivedOnly? (only archived; takes precedence over includeArchived), limit?, offset? } → SessionInfo[]",
+            req => a.K.Sessions.ListSessions(req.Bind<SessionQuery>()), readOnly: true);
 
-        Add("sessions.create", "Create a session: { title?, projectId?, model?, reasoning? } → SessionInfo", req =>
-            k.Sessions.CreateSession(new SessionInfo
+        a.Add("sessions.create", "Create a session: { title?, projectId?, model?, reasoning? } → SessionInfo", req =>
+            a.K.Sessions.CreateSession(new SessionInfo
             {
                 Title = req.Str("title") ?? "",
                 ProjectId = req.Str("projectId"),
@@ -77,27 +112,27 @@ internal static class CoreRpc
                 Reasoning = req.Str("reasoning"),
             }));
 
-        Add("sessions.fork", "Fork a chat: a new chat with its messages up to a message, the original unchanged: { id, upToSeq? (the last) } → SessionInfo (publishes session.forked)", req =>
+        a.Add("sessions.fork", "Fork a chat: a new chat with its messages up to a message, the original unchanged: { id, upToSeq? (the last) } → SessionInfo (publishes session.forked)", req =>
         {
             var id = req.Required("id");
-            var from = k.Sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
+            var from = a.K.Sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
             if (from.Kind == "subagent") throw new RpcException("bad_request", "A subagent's chat can't be forked: fork the chat that started it.");
-            var last = k.Sessions.GetMessages(id, null, 1).LastOrDefault()?.Seq ?? 0;
+            var last = a.K.Sessions.GetMessages(id, null, 1).LastOrDefault()?.Seq ?? 0;
             var upTo = Math.Clamp(req.Int64("upToSeq") ?? last, 0, last);
-            var context = SessionFork.ContextTokens(k.Sessions.GetMessages(id, upTo + 1, 50));
-            var taken = k.Sessions.ListSessions(new SessionQuery { Search = SessionFork.BaseTitle(from.Title), IncludeArchived = true, Limit = 1000 })
+            var context = SessionFork.ContextTokens(a.K.Sessions.GetMessages(id, upTo + 1, 50));
+            var taken = a.K.Sessions.ListSessions(new SessionQuery { Search = SessionFork.BaseTitle(from.Title), IncludeArchived = true, Limit = 1000 })
                 .Select(s => s.Title).ToHashSet(StringComparer.Ordinal);
-            return k.Sessions.ForkSession(id, upTo, SessionFork.Template(from, upTo, context, k.Sessions.ForkResetKeys(), taken));
+            return a.K.Sessions.ForkSession(id, upTo, SessionFork.Template(from, upTo, context, a.K.Sessions.ForkResetKeys(), taken));
         });
 
-        Add("sessions.get", "One session: { id } → SessionInfo", req =>
+        a.Add("sessions.get", "One session: { id } → SessionInfo", req =>
         {
             var id = req.Required("id");
-            return k.Sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
+            return a.K.Sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
         }, readOnly: true);
 
-        Add("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, pinned?, meta? } → SessionInfo (null clears model/reasoning)", req =>
-            k.Sessions.UpdateSession(req.Required("id"), s =>
+        a.Add("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, pinned?, meta? } → SessionInfo (null clears model/reasoning)", req =>
+            a.K.Sessions.UpdateSession(req.Required("id"), s =>
             {
                 if (req.Prop("title") is { ValueKind: JsonValueKind.String } t) s.Title = t.GetString()!.Trim();
                 if (req.Prop("model") is { } m) s.Model = m.ValueKind == JsonValueKind.String && m.GetString() is { Length: > 0 } mv ? mv : null;
@@ -107,21 +142,24 @@ internal static class CoreRpc
                 if (req.Prop("meta") is { } meta) s.Meta = meta.ValueKind == JsonValueKind.Object ? JsonNode.Parse(meta.GetRawText()) as JsonObject : null;
             }));
 
-        Add("sessions.delete", "Delete a session and its subagent sessions: { id } → true", req =>
+        a.Add("sessions.delete", "Delete a session and its subagent sessions: { id } → true", req =>
         {
-            k.Sessions.DeleteSession(req.Required("id"));
+            a.K.Sessions.DeleteSession(req.Required("id"));
             return true;
         });
 
-        Add("sessions.setProject", "Attach/detach a project: { id, projectId: string|null } → SessionInfo (publishes session.project)",
-            req => k.Sessions.SetSessionProject(req.Required("id"), req.Str("projectId")));
+        a.Add("sessions.setProject", "Attach/detach a project: { id, projectId: string|null } → SessionInfo (publishes session.project)",
+            req => a.K.Sessions.SetSessionProject(req.Required("id"), req.Str("projectId")));
+    }
 
-        Add("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq. The page is bounded in messages AND in serialized size: when the page overflows its byte budget it comes back shorter, with hasMore set and ending at an earlier seq, which the client follows with beforeSeq.", req =>
+    private static void RegisterSessionMessages(Adder a)
+    {
+        a.Add("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq. The page is bounded in messages AND in serialized size: when the page overflows its byte budget it comes back shorter, with hasMore set and ending at an earlier seq, which the client follows with beforeSeq.", req =>
         {
             var id = req.Required("id");
-            if (k.Sessions.GetSession(id) is null) throw new RpcException("not_found", $"Session {id} not found");
+            if (a.K.Sessions.GetSession(id) is null) throw new RpcException("not_found", $"Session {id} not found");
             var limit = Math.Clamp(req.Int("limit") ?? 60, 1, 2000);
-            var page = k.Sessions.GetMessages(id, req.Int64("beforeSeq"), limit + 1);
+            var page = a.K.Sessions.GetMessages(id, req.Int64("beforeSeq"), limit + 1);
             var hasMore = page.Count > limit;
             if (hasMore) page = page.Skip(1).ToList();
 
@@ -143,137 +181,150 @@ internal static class CoreRpc
             return new { messages = taken, hasMore };
         }, readOnly: true);
 
-        Add("sessions.stats", "Session-service counters: → { contextCache: { hits, reads } } — the cached contexts: a hit is a read served without touching the store, a read went to it", _ =>
+        a.Add("sessions.stats", "Session-service counters: → { contextCache: { hits, reads } } — the cached contexts: a hit is a read served without touching the store, a read went to it", _ =>
         {
-            var (hits, reads) = k.Sessions.ContextCache;
+            var (hits, reads) = a.K.Sessions.ContextCache;
             return new { contextCache = new { hits, reads } };
         }, readOnly: true);
+    }
 
-        // ------------------------------------------------------------ models
-        AddAsync("models.list", "Models of all providers: { refresh? } → { models, defaultModel }", async (req, ct) =>
+    // ------------------------------------------------------------ models
+    private static void RegisterModels(Adder a) =>
+        a.AddAsync("models.list", "Models of all providers: { refresh? } → { models, defaultModel }", async (req, ct) =>
         {
-            var models = await k.Models.ListAsync(req.Bool("refresh") ?? false, ct).ConfigureAwait(false);
-            return new { models, defaultModel = k.Models.DefaultModelRef };
+            var models = await a.K.Models.ListAsync(req.Bool("refresh") ?? false, ct).ConfigureAwait(false);
+            return new { models, defaultModel = a.K.Models.DefaultModelRef };
         }, readOnly: true);
 
-        // ------------------------------------------------------------ ui
-        Add("ui.tabs", "Plugin UI tabs → UiTabInfo[]", _ => k.Ui.Tabs, readOnly: true);
-        Add("ui.commands", "Slash commands → SlashCommandInfo[]", _ => k.Ui.Commands, readOnly: true);
+    // ------------------------------------------------------------ ui
+    private static void RegisterUi(Adder a)
+    {
+        a.Add("ui.tabs", "Plugin UI tabs → UiTabInfo[]", _ => a.K.Ui.Tabs, readOnly: true);
+        a.Add("ui.commands", "Slash commands → SlashCommandInfo[]", _ => a.K.Ui.Commands, readOnly: true);
 
-        Add("ui.state.get", "Persisted UI state: { key } → JSON or null", req =>
+        a.Add("ui.state.get", "Persisted UI state: { key } → JSON or null", req =>
         {
-            var raw = k.Sessions.GetValue(UiStatePrefix + req.Required("key"));
+            var raw = a.K.Sessions.GetValue(UiStatePrefix + req.Required("key"));
             if (raw is null) return null;
             try { return JsonNode.Parse(raw); }
             catch (JsonException) { return null; }
         }, readOnly: true);
 
-        Add("ui.state.set", "Persist UI state: { key, value } → true (null value deletes)", req =>
+        a.Add("ui.state.set", "Persist UI state: { key, value } → true (null value deletes)", req =>
         {
             var key = req.Required("key");
             var value = req.Prop("value");
-            k.Sessions.SetValue(UiStatePrefix + key,
+            a.K.Sessions.SetValue(UiStatePrefix + key,
                 value is null || value.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined ? null : value.Value.GetRawText());
             return true;
         });
+    }
 
-        // ------------------------------------------------------------ plugins
-        Add("plugins.list", "Plugins → PluginInfo[]", _ => k.Plugins.List(), readOnly: true);
+    // ------------------------------------------------------------ plugins
+    private static void RegisterPlugins(Adder a)
+    {
+        a.Add("plugins.list", "Plugins → PluginInfo[]", _ => a.K.Plugins.List(), readOnly: true);
 
-        AddAsync("plugins.reload", "Reload a plugin: { id } → true", async (req, ct) =>
+        a.AddAsync("plugins.reload", "Reload a plugin: { id } → true", async (req, ct) =>
         {
-            await k.Plugins.ReloadAsync(req.Required("id"), ct).ConfigureAwait(false);
+            await a.K.Plugins.ReloadAsync(req.Required("id"), ct).ConfigureAwait(false);
             return true;
         });
 
-        AddAsync("plugins.setEnabled", "Enable/disable a plugin: { id, enabled } → true", async (req, ct) =>
+        a.AddAsync("plugins.setEnabled", "Enable/disable a plugin: { id, enabled } → true", async (req, ct) =>
         {
             var enabled = req.Bool("enabled") ?? throw new RpcException("bad_request", "Missing parameter 'enabled'");
-            await k.Plugins.SetEnabledAsync(req.Required("id"), enabled, ct).ConfigureAwait(false);
+            await a.K.Plugins.SetEnabledAsync(req.Required("id"), enabled, ct).ConfigureAwait(false);
             return true;
         });
 
-        AddAsync("plugins.rescan", "Look for new/removed plugin folders → true", async (_, ct) =>
+        a.AddAsync("plugins.rescan", "Look for new/removed plugin folders → true", async (_, ct) =>
         {
-            await k.Plugins.RescanAsync(ct).ConfigureAwait(false);
+            await a.K.Plugins.RescanAsync(ct).ConfigureAwait(false);
             return true;
         });
+    }
 
-        // ------------------------------------------------------------ settings
+    // ------------------------------------------------------------ settings
+    private static void RegisterSettings(Adder a)
+    {
         // settings.get is deliberately NOT read-only: it returns the document as it is, API keys and all (that is why
         // diag.settings redacts), so it must not be reachable from a tool. Everything marked below only reads.
-        Add("settings.get", "Settings document → { path, settings }", _ => new { path = k.Settings.FilePath, settings = k.Settings.Snapshot() });
+        a.Add("settings.get", "Settings document → { path, settings }", _ => new { path = a.K.Settings.FilePath, settings = a.K.Settings.Snapshot() });
 
-        Add("settings.set", "Set one value: { path (dotted), value } → true (null removes the key)", req =>
+        a.Add("settings.set", "Set one value: { path (dotted), value } → true (null removes the key)", req =>
         {
             var path = req.Required("path");
             var value = req.Prop("value");
-            k.Settings.Set(path, value is null || value.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            a.K.Settings.Set(path, value is null || value.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
                 ? null
                 : JsonNode.Parse(value.Value.GetRawText()));
             return true;
         });
 
-        Add("settings.replace", "Replace the whole document: { settings: object, base?: the document as loaded } → true. With base, a document that changed since the load is a conflict (409) instead of a lost update.", req =>
+        a.Add("settings.replace", "Replace the whole document: { settings: object, base?: the document as loaded } → true. With base, a document that changed since the load is a conflict (409) instead of a lost update.", req =>
         {
             if (req.Prop("settings") is not { ValueKind: JsonValueKind.Object } s)
                 throw new RpcException("bad_request", "'settings' must be a JSON object");
             if (req.Prop("base") is { ValueKind: JsonValueKind.Object } baseDoc &&
-                !JsonNode.DeepEquals(k.Settings.Snapshot(), JsonNode.Parse(baseDoc.GetRawText())))
+                !JsonNode.DeepEquals(a.K.Settings.Snapshot(), JsonNode.Parse(baseDoc.GetRawText())))
                 throw new RpcException("conflict", "The settings changed after you loaded them; reload and save again");
-            k.Settings.Replace((JsonObject)JsonNode.Parse(s.GetRawText())!);
+            a.K.Settings.Replace((JsonObject)JsonNode.Parse(s.GetRawText())!);
             return true;
         });
 
-        Add("settings.schema", "The settings the dialog shows as controls → SettingsSection[] (host and plugins, by group and order)", _ =>
+        a.Add("settings.schema", "The settings the dialog shows as controls → SettingsSection[] (host and plugins, by group and order)", _ =>
         {
             string[] groups = ["General", "Models", "Agents", "Context", "Tools"];
             int Rank(string g) => Array.IndexOf(groups, g) is var i and >= 0 ? i : groups.Length;
-            return CoreSettings.Sections(Path.Combine(k.Paths.Home, "workspace")).Concat(k.Services.GetAll<SettingsSection>())
+            return CoreSettings.Sections(Path.Combine(a.K.Paths.Home, "workspace")).Concat(a.K.Services.GetAll<SettingsSection>())
                 .OrderBy(s => Rank(s.Group)).ThenBy(s => s.Order).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }, readOnly: true);
+    }
 
-        // ------------------------------------------------------------ misc
-        Add("fs.dirs", "Folder picker: { path? } → { path, parent, dirs: {name,path}[], roots }", req => ListDirectories(req.Str("path")), readOnly: true);
+    // ------------------------------------------------------------ misc
+    private static void RegisterMisc(Adder a)
+    {
+        a.Add("fs.dirs", "Folder picker: { path? } → { path, parent, dirs: {name,path}[], roots }", req => ListDirectories(req.Str("path")), readOnly: true);
 
-        Add("tools.list", "Tool registrations → { name, label, description, category, readOnly, pluginId, active, disabled, priority }[]", _ =>
+        a.Add("tools.list", "Tool registrations → { name, label, description, category, readOnly, pluginId, active, disabled, priority }[]", _ =>
         {
-            var active = new HashSet<IAgentTool>(k.Tools.All, ReferenceEqualityComparer.Instance);
-            return k.Tools.Registrations.Select(r =>
+            var active = new HashSet<IAgentTool>(a.K.Tools.All, ReferenceEqualityComparer.Instance);
+            return a.K.Tools.Registrations.Select(r =>
             {
                 var d = r.Tool.Definition;
                 return new
                 {
                     name = d.Name, label = d.Label, description = d.Description, category = d.Category, readOnly = d.ReadOnly,
-                    pluginId = r.PluginId, active = active.Contains(r.Tool), disabled = k.Tools.IsDisabled(d.Name), priority = r.Priority,
+                    pluginId = r.PluginId, active = active.Contains(r.Tool), disabled = a.K.Tools.IsDisabled(d.Name), priority = r.Priority,
                 };
             }).ToList();
         }, readOnly: true);
 
-        Add("rpc.list", "RPC methods → { method, description, pluginId }[]", _ => k.Rpc.List(), readOnly: true);
+        a.Add("rpc.list", "RPC methods → { method, description, pluginId }[]", _ => a.K.Rpc.List(), readOnly: true);
 
-        Add("services.list", "Registered services (diagnostics)", _ => k.Services.List(), readOnly: true);
+        a.Add("services.list", "Registered services (diagnostics)", _ => a.K.Services.List(), readOnly: true);
 
-        AddAsync("events.flush", "Wait until every event published before this call has been delivered: its answer follows them on the same socket → true", async (_, ct) =>
+        a.AddAsync("events.flush", "Wait until every event published before this call has been delivered: its answer follows them on the same socket → true", async (_, ct) =>
         {
-            await k.Bus.FlushAsync().WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+            await a.K.Bus.FlushAsync().WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
             return true;
         }, readOnly: true);
 
-        Add("events.recent", "Recent bus events: { max? } → { type, sid, d, seq, ts, source }[]", req =>
+        a.Add("events.recent", "Recent bus events: { max? } → { type, sid, d, seq, ts, source }[]", req =>
         {
             var max = Math.Clamp(req.Int("max") ?? 200, 1, 500);
-            return k.Bus.Recent(max).Select(e => new
+            return a.K.Bus.Recent(max).Select(e => new
             {
                 type = e.Type, sid = e.SessionId, d = SafeElement(e.Data), seq = e.Seq, ts = e.Time.ToUnixTimeMilliseconds(), source = e.Source, ui = e.Ui,
             }).ToList();
         }, readOnly: true);
 
-        Add("logs.recent", "Recent log entries: { max? } → { time, level, category, message, exception? }[]", req =>
+        a.Add("logs.recent", "Recent log entries: { max? } → { time, level, category, message, exception? }[]", req =>
         {
             var max = Math.Clamp(req.Int("max") ?? 200, 1, 2000);
-            return k.LogSink.Recent(max).Select(e => new
+            return a.K.LogSink.Recent(max).Select(e => new
             {
                 time = e.Time, level = LogSink.LevelTag(e.Level).ToLowerInvariant(), category = e.Category, message = e.Message, exception = e.Exception,
             }).ToList();
