@@ -400,11 +400,23 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - What the chat cost on paid models (`usage.session`, with its subagents) shows next to the context ring once it is more
   than nothing, refreshed on `usage.changed`; the tooltip splits the chat from its subagents.
 - The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`. Hover reads
-  it in one line; **pressing it opens a popout** (idea-kp4fq5) with used / window / free and what the prompt is made
-  of — `context.preview { sessionId }` gives the system prompt (≈ tokens, chars / 3.6) and the tools, with a line
-  when the prompt is frozen. It fails soft: no Context plugin, and the rows say so. The popout's last line opens
-  Diagnostics on the context view (`localStorage netpi.diag.view`, then `openPanelTab`), where the full prompt,
-  tools, AGENTS.md and skills are.
+  it in one line; **pressing it opens a popout** (idea-kp4fq5) with used / window / free, how often this chat was
+  compacted and what the prompt is made of — `context.preview { sessionId }` gives the system prompt (≈ tokens,
+  chars / 3.6) and the tools, with a line when the prompt is frozen. It fails soft: no Context plugin, and the rows
+  say so. The popout's last lines open Diagnostics on the context view (`localStorage netpi.diag.view`, then
+  `openPanelTab`), where the full prompt, tools, AGENTS.md and skills are.
+- **Compactions** in that popout are counted from the chat's own history: every compaction appends a summary message
+  (`role: summary`, `meta.kind: "compaction"`), so `chat.messages.filter((m) => m.role === 'summary' && m.meta?.kind === 'compaction')`
+  is the count — a summary folded into a later one stays in the history, so this counts compactions, not summaries.
+  While `chat.hasMore` is true older messages sit outside the window and the row reads `n+` with a title saying so
+  (and `—` when nothing is loaded). Under it, the newest compaction's own meta: `tokensBefore → tokensAfter · mode ·
+  time`. **Compact now** calls `compaction.run { sessionId }` (what `/compact` does) with a 5-minute deadline: the
+  button spins and is disabled while it runs, and it is hidden when the Compaction plugin is not loaded (`hasRpc`),
+  **not** when `compaction.enabled` is off — that setting gates the auto hook only. It is disabled while the session's
+  agent is running, queued or yielded, the states the server refuses with `busy`; its tooltip carries the server's own
+  sentence. The result (including "Nothing to compact" and a timeout that may still have compacted server-side) is a
+  toast, never a silent no-op. Nothing refreshes by hand: the service publishes `session.context` and appends the
+  summary, so the ring and the count follow on their own.
 - The person's own queued inputs (`agent.queue`, `source: "user"`) appear as chips; the × on a chip calls `agent.dequeue`.
   Internal ones (a subagent's report, a harness notice) are never shown: they are for the agent. `agent.notice` shows
   as a transient banner, which clears when the model streams again or the run ends. A compaction's banner is kept

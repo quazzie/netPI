@@ -373,6 +373,10 @@ export function seed() {
   const long = mkSession({ id: 'ses_long', title: 'Lane scheduler hardening', projectId: netpi.id, model: DEFAULT_MODEL, reasoning: 'medium', createdAt: iso(now - 6 * HOUR) });
   let t = now - 6 * HOUR;
   for (let i = 0; i < 32; i++) t = seedCycle(long.id, i, t, REPO) + 20_000;
+  // one compaction in this chat's history: the context popout counts the summaries, and says 1+ because the window
+  // holds only the newest 200 of these messages
+  const longSeq = (store.messages.get(long.id) ?? []).at(-1).seq;
+  pushMessage(long.id, 'summary', [text('## Summary of earlier conversation\n\n- The lane scheduler: leases by key, priority ordering, release on failure.\n- Budget tests: two of them still fail on the unknown-pool case.\n- Next: the release path, then the e2e run.')], { meta: { kind: 'compaction', coversUpToSeq: longSeq, tokensBefore: 96_400, tokensAfter: 48_200, messages: 41, mode: 'auto', summarizer: 'aiproxy/qwen3.8-27b' } }, now - 5 * HOUR);
   long.updatedAt = iso(now - 12 * MIN);
   long.contextTokens = 48_200;
 
@@ -381,7 +385,7 @@ export function seed() {
   const sub = mkSession({ id: 'ses_sub1', title: 'explorer: map websocket handlers', projectId: netpi.id, parentSessionId: show.id, kind: 'subagent', model: 'aiproxy/qwen3.8-27b', createdAt: iso(now - 170 * MIN) });
   const sub2 = mkSession({ id: 'ses_sub2', title: 'tester: reproduce disconnect', projectId: netpi.id, parentSessionId: show.id, kind: 'subagent', model: 'aiproxy/gemma-4', createdAt: iso(now - 165 * MIN) });
   t = now - 3 * HOUR;
-  pushMessage(show.id, 'summary', [text('## Summary of earlier conversation\n\n- The UI loses stream events after a reconnect because `sub` is not re-sent.\n- We agreed to re-subscribe on `hello` and refetch the active session.\n- Open question: should the server replay missed events (it keeps a ring buffer)?')], { meta: { kind: 'compaction', upToSeq: 0 } }, t);
+  pushMessage(show.id, 'summary', [text('## Summary of earlier conversation\n\n- The UI loses stream events after a reconnect because `sub` is not re-sent.\n- We agreed to re-subscribe on `hello` and refetch the active session.\n- Open question: should the server replay missed events (it keeps a ring buffer)?')], { meta: { kind: 'compaction', coversUpToSeq: 0, tokensBefore: 41_200, tokensAfter: 18_600, messages: 24, mode: 'auto', summarizer: 'aiproxy/qwen3.8-27b' } }, t);
   pushMessage(show.id, 'user', [text('After a reconnect the chat stops updating until I switch tabs. Can you find out why? Use a subagent to map the websocket handlers while you look at the client.')], {}, (t += 60_000));
   const sa = newId('call');
   const sa2 = newId('call');
@@ -404,6 +408,9 @@ export function seed() {
   pushMessage(show.id, 'assistant', [text("Found it. The server drops a connection's subscriptions when the socket closes, and the client never re-sends `sub` after reconnecting — so scoped events (`stream.*`, `message.added`) stop arriving for the open session until a tab switch triggers a new `sub`.\n\n**Fix:** re-send the subscription in `onopen` and refetch the active session's messages (events published while disconnected are not replayed). I've made that change; the reconnect test now passes.")], { provider: 'aiproxy', model: 'qwen3.8-27b', stopReason: 'stop', usage: usage(12000, 210, 11000), durationMs: 2600, meta: { ttftMs: 310 } }, (t += 2700));
   pushMessage(show.id, 'notice', [text(`Project changed to **aiproxy** (\`C:\\src\\aiproxy\`). The working directory is now \`C:\\src\\aiproxy\`.`)], { meta: { kind: 'project', projectId: aiproxy.id } }, (t += 30_000));
   pushMessage(show.id, 'notice', [text(`Project changed to **netpi** (\`${REPO}\`). The working directory is now \`${REPO}\`.`)], { meta: { kind: 'project', projectId: netpi.id } }, (t += 20_000));
+  // a second compaction, typed as /compact: this chat fits in its window, so the popout counts it exactly
+  const showSeq = (store.messages.get(show.id) ?? []).at(-1).seq;
+  pushMessage(show.id, 'summary', [text('## Summary of earlier conversation\n\n- The reconnect bug: subscriptions are dropped with the socket, and the client never re-sends them.\n- The fix (`resubscribe()` in `onopen`) is in and the reconnect test passes.')], { meta: { kind: 'compaction', coversUpToSeq: showSeq, tokensBefore: 27_300, tokensAfter: 9_400, messages: 11, mode: 'manual', summarizer: 'aiproxy/qwen3.8-27b' } }, (t += 4_000));
   show.updatedAt = iso(now - 25 * MIN);
   show.contextTokens = 21_400;
 

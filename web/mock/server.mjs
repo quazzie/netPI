@@ -11,7 +11,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
-import { store, seed, resetStore, seedMany, clearBulk, MODELS, DEFAULT_MODEL, REPO, mkSession, pushMessage, agentFor, newId, text } from './store.mjs';
+import { store, seed, resetStore, seedMany, clearBulk, MODELS, DEFAULT_MODEL, REPO, mkSession, pushMessage, agentFor, modelInfo, newId, text } from './store.mjs';
 import { createAgentRuntime } from './agent.mjs';
 import { createWork } from './work.mjs';
 import { createIdeas } from './ideas.mjs';
@@ -144,6 +144,7 @@ const need = (p, k) => {
   if (p?.[k] == null || p[k] === '') throw new RpcError('bad_request', `Missing parameter: ${k}`);
   return p[k];
 };
+const kTokens = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 function getSession(id) {
   const s = store.sessions.get(id);
   if (!s) throw notFound(`Session ${id}`);
@@ -704,17 +705,32 @@ const handlers = {
   'agent.get': (p = {}) => (p.sessionId ? (store.agents.get(p.sessionId) ?? null) : ([...store.agents.values()].find((a) => a.id === p.id) ?? null)),
 
   // --- misc plugins
-  'compaction.run': (p) => {
+  // compaction.run: what /compact and the context popout's "Compact now" call. Mirrors the Compaction plugin: it refuses
+  // while the agent runs, narrates over agent.notice, then leaves one summary behind and publishes the new size.
+  'compaction.run': async (p) => {
     const sid = need(p, 'sessionId');
+    const s = getSession(sid);
+    const status = agentFor(sid).status;
+    if (status === 'running' || status === 'queued' || status === 'yielded')
+      throw new RpcError('busy', 'The agent is running in this session. Compaction happens automatically while it runs; wait for it to finish (or abort it) to compact manually.');
     const msgs = store.messages.get(sid) ?? [];
     if (msgs.length < 4) return 'Nothing to compact yet';
     const upTo = msgs[msgs.length - 3].seq;
     let n = 0;
     for (const m of msgs) if (m.seq <= upTo && !m.compacted) (m.compacted = true), n++;
+    const tokensBefore = s.contextTokens || 24_000;
+    const notice = (phase, text_) => publish('agent.notice', { sessionId: sid, level: 'info', text: text_, kind: 'compaction', phase, mode: 'manual' }, sid);
+    notice('start', `Compacting context (~${kTokens(tokensBefore)} tokens, ${n} messages)…`);
+    await new Promise((r) => setTimeout(r, 800)); // the summarizer call: long enough to see the popout's button working
     publish('messages.compacted', { sessionId: sid, upToSeq: upTo }, sid);
-    const m = pushMessage(sid, 'summary', [text(`## Summary\n\n${n} earlier messages were summarized. Key points: the agent scheduler now fails with a clear error for unknown pools; tests are green.`)], { meta: { kind: 'compaction', upToSeq: upTo } });
+    const tokensAfter = Math.max(2_000, Math.round(tokensBefore * 0.35));
+    const m = pushMessage(sid, 'summary', [text(`## Summary\n\n${n} earlier messages were summarized. Key points: the agent scheduler now fails with a clear error for unknown pools; tests are green.`)], { meta: { kind: 'compaction', coversUpToSeq: upTo, tokensBefore, tokensAfter, messages: n, mode: 'manual', summarizer: s.model ?? DEFAULT_MODEL } });
     publish('message.added', { sessionId: sid, message: m }, sid);
-    return `Compacted ${n} messages`;
+    s.contextTokens = tokensAfter;
+    publish('session.context', { sessionId: sid, used: tokensAfter, window: modelInfo(s.model).contextWindow ?? 0 });
+    const message = `Context compacted: ~${kTokens(tokensBefore)} → ~${kTokens(tokensAfter)} tokens (${n} messages summarized).`;
+    notice('done', message);
+    return message;
   },
   ...ideas.api,
   'diag.snapshot': (p = {}) => ({

@@ -283,6 +283,34 @@ await page.keyboard.press('Escape');
 await page.waitForTimeout(150);
 check('Esc closes the context popout', (await page.locator('.popover .cx').count()) === 0);
 
+// the popout's compaction row and its "Compact now". This chat's window holds 200 of ~330 messages, so the count
+// is a lower bound and says so.
+await ring.click();
+await page.waitForSelector('.popover .cx');
+await page.waitForTimeout(250);
+var cRow = page.locator('.popover .cx .row', { hasText: 'Compactions' });
+var cTitle = (await cRow.getAttribute('title')) ?? '';
+var cText = await cRow.locator('b').innerText();
+check('the popout counts compactions as a lower bound', cText === '1+' && /not loaded/.test(cTitle), `${cText} — ${cTitle}`);
+var cRead = await page.locator('.popover .cx .read').innerText();
+check('the newest compaction reads what it did', /96k → 48k · auto/.test(cRead), cRead);
+var ringBefore = await ring.getAttribute('aria-label');
+await page.locator('.popover .cx .foot button', { hasText: 'Compact now' }).click();
+await page
+  .waitForFunction(() => [...document.querySelectorAll('.popover .cx .row')].some((r) => /Compactions/.test(r.innerText) && /2\+/.test(r.innerText)), null, { timeout: 15_000 })
+  .catch(() => {});
+var cAfter = await cRow.locator('b').innerText();
+check('Compact now compacts and the count follows', cAfter === '2+', cAfter);
+var readAfter = await page.locator('.popover .cx .read').innerText();
+check('the reading follows the newest compaction', /48k → 17k · manual/.test(readAfter), readAfter);
+var ringAfter = await ring.getAttribute('aria-label');
+check('the ring follows session.context after a compaction', ringBefore !== ringAfter, `${ringBefore} → ${ringAfter}`);
+var compactToast = (await page.evaluate(() => window.__toasts ?? [])).at(-1) ?? '';
+check('the result of a manual compaction is a toast', /Context compacted/.test(compactToast), compactToast);
+await shot(page, '03c-compactions');
+await page.keyboard.press('Escape');
+await page.waitForTimeout(150);
+
 }
 // ------------------------------------------------------------------ new session + streaming
 if (want('new session + agent run')) {
@@ -298,6 +326,22 @@ check('the run status line is above the composer', (await page.locator('.dock .r
   await page.locator('.dock .run-status').innerText().catch(() => ''));
 await page.waitForSelector('.item[data-kind="prompt"]', { timeout: 3000 }).catch(() => {});
 check('the system prompt row appears after the first message is sent', (await page.locator('.item[data-kind="prompt"]').count()) === 1);
+// a manual compaction is refused while the agent runs, and the popout's button says so before it can be pressed
+{
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const refused = await rpcCall('compaction.run', { sessionId: sid });
+  check('a manual compaction is refused while the agent runs', refused?.error?.code === 'busy', JSON.stringify(refused?.error ?? null));
+  await ring.click();
+  await page.waitForSelector('.popover .cx');
+  const fresh = await page.locator('.popover .cx .row', { hasText: 'Compactions' }).locator('b').innerText();
+  check('a fresh chat has compacted nothing', fresh === '0', fresh);
+  const compactBtn = page.locator('.popover .cx .foot button', { hasText: 'Compact now' });
+  const busyTip = (await compactBtn.getAttribute('title')) ?? '';
+  check('Compact now is disabled while the agent runs', (await compactBtn.isDisabled()) && /wait for it to finish/.test(busyTip), busyTip);
+  await shot(page, '04b-compact-while-busy');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+}
 await page.waitForSelector('.tool[data-status="ok"]', { timeout: 15000 });
 
 // steer + queue while running
@@ -2186,9 +2230,12 @@ await ta.fill('/compact');
 await ta.press('Enter'); // accepts the popup entry
 await page.waitForTimeout(100);
 if ((await ta.inputValue()).startsWith('/compact')) await ta.press('Enter');
-await page.waitForSelector('.notice', { hasText: 'Summary' }).catch(() => {});
-await page.waitForTimeout(300);
-check('/compact (server rpc command) adds a summary', (await page.locator('.notice .label', { hasText: 'Summary' }).count()) > 0);
+// poll what the check counts: the summarizer takes a moment, so a fixed pause here was a race (and the waitForSelector
+// that used to stand here matched a different row at once)
+var summaryRow = page.locator('.notice .label', { hasText: 'Summary' });
+for (let i = 0; i < 60 && !(await summaryRow.count()); i++) await page.waitForTimeout(250);
+check('/compact (server rpc command) adds a summary', (await summaryRow.count()) > 0,
+  (await page.evaluate(() => window.__toasts ?? [])).slice(-1).join(''));
 
 }
 // ------------------------------------------------------------------ tab drag & drop
@@ -2856,7 +2903,7 @@ log('capability removal and recovery');
   const draft = 'Keep this draft while the executor is unavailable.';
   await ta.fill(draft);
   try {
-    await rpcCall('mock.capabilities', { missing: ['agent.send', 'runs.list', 'context.preview'] });
+    await rpcCall('mock.capabilities', { missing: ['agent.send', 'runs.list', 'context.preview', 'compaction.run'] });
     await page.getByText('Execution unavailable — enable Runtime to send. Your draft is kept.').waitFor();
     check('composer keeps the draft when execution disappears', await ta.inputValue() === draft);
     check('sending is disabled without an executor', await page.locator('.composer button.send').isDisabled());
@@ -2864,6 +2911,15 @@ log('capability removal and recovery');
     await page.locator('.plugin-root').getByRole('button', { name: 'Context', exact: true }).click();
     await page.locator('.plugin-root').getByText('Context preview unavailable', { exact: false }).waitFor();
     check('diagnostics keeps instruction discovery without context preview', await page.locator('.plugin-root').getByText('AGENTS.md', { exact: true }).count() > 0);
+    // the popout keeps its rows without the plugin, but has nothing to compact with
+    await ring.click();
+    await page.waitForSelector('.popover .cx');
+    const noCompact = page.locator('.popover .cx .foot button', { hasText: 'Compact now' });
+    await noCompact.waitFor({ state: 'detached', timeout: 5_000 }).catch(() => {});
+    check('the popout hides Compact now when the plugin is not loaded', (await noCompact.count()) === 0, `${await noCompact.count()} button(s)`);
+    await shot(page, '26c-no-compaction-plugin');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
     await rpcCall('mock.capabilities', { missing: [] });
     await page.waitForFunction(() => !document.querySelector('.composer button.send')?.disabled);
     check('execution recovery keeps the draft and restores Send', await ta.inputValue() === draft);
