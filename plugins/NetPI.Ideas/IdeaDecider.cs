@@ -61,7 +61,7 @@ internal sealed class IdeaDecider(IPluginContext ctx)
             var name = ctx.Settings.GetOr("ideas.model", IdeaRecall.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaRecall.DefaultModel;
             var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
             // The decision runs on the same backend as the chats, so it takes a slot like everything else.
-            var admission = await _admission.EnterAsync(model, purpose, sessionId, projectId, ct, wait).ConfigureAwait(false);
+            var admission = await _admission.EnterAsync(model, purpose, sessionId, projectId, ct, wait, decision: true).ConfigureAwait(false);
             if (!admission.Admitted)
                 return admission.Retryable
                     ? Answer.Drop(admission.Reason ?? "the model was full")
@@ -72,7 +72,7 @@ internal sealed class IdeaDecider(IPluginContext ctx)
                 ["model"] = name,
                 ["messages"] = new JsonArray(system),
                 ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = labels }),
-            }, deadline.Token, admission.Slot, model?.Ref, IdeaAdmission.Priority).ConfigureAwait(false);
+            }, deadline.Token, admission.Slot, model?.Ref, IdeaAdmission.Priority, lane: true).ConfigureAwait(false);
             var answer = raw as JsonObject ?? JsonSerializer.SerializeToNode(raw) as JsonObject;
             if (answer?["branches"] is not JsonArray { Count: > 0 } branches || branches[0]?["probabilities"] is not JsonObject probs)
                 return Answer.Fail("the decision did not come back as a branch of probabilities");

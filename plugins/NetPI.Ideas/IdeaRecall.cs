@@ -15,7 +15,8 @@ namespace NetPI.Ideas;
 /// made while the user types reuse NInfer's cache of it. Measured (docs/DECISION-MODELS.md, "Ideas recall"): at
 /// p ≥ 0.8 no false chip on 56 none cases, 95 ms. <c>ideas.attach</c> adds the chosen idea to the chat as a notice.
 /// </summary>
-public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo, IdeasLocator locator)
+public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo, IdeasLocator locator,
+    IdeaVectors? vectors = null, IdeaOutcomes? outcomes = null)
 {
     /// <summary>The model the checks are measured on (the setting's default; <c>ideas.model</c> names another one).</summary>
     public const string DefaultModel = "qwen3.8-27b";
@@ -63,7 +64,10 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
 
         // One window while the user types (latency is the whole point here); a backlog larger than the letters is
         // ranked by what the message shares with each idea, so the ideas past the 51st are still eligible.
-        var window = IdeaMatch.Windows(open, text, maxWindows: 1).First();
+        // Above 51 ideas the meaning ranking joins the word ranking (below that every idea is offered, in backlog order,
+        // so the list stays the same while the user types and NInfer keeps it cached).
+        var ranking = vectors is null ? null : await vectors.RankAsync(text, open, ct).ConfigureAwait(false);
+        var window = IdeaMatch.Windows(open, text, maxWindows: 1, ranking).First();
         var list = IdeaMatch.Options(window, "none of these: the message is about something else", out var none, out var labels);
         var system = "You match the first message of a new chat with an AI coding agent to the user's backlog of open ideas " +
                      "(planned features, fixes and experiments), so the agent can be given the idea's notes. Reply with the letter of the best option only.\n\n" +
@@ -86,9 +90,11 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
         var pick = IdeaMatch.Pick(probs, IdeaMatch.Names(labels));
         if (pick is null) return Result("error", error: "the decision returned no usable probabilities");
         var threshold = Math.Clamp(ctx.Settings.GetOr("ideas.recallThreshold", DefaultThreshold), 0.3, 0.99);
-        return pick.Clear(threshold)
-            ? Result("model", MatchOf(window[pick.Index], pick.P))
-            : Result("none");
+        if (!pick.Clear(threshold)) return Result("none");
+        // A chip shown is recorded (with the probabilities); ideas.attach records the ones the user added, so a chip
+        // shown and never added is the user's "no".
+        outcomes?.Record("recall", "shown", IdeaOutcomes.Pick(pick, IdeaOps.Str(window[pick.Index]["id"]), threshold, text).Also("sessionId", sessionId));
+        return Result("model", MatchOf(window[pick.Index], pick.P));
     }
 
     public async Task<object?> Attach(RpcRequest req, CancellationToken ct)
@@ -102,6 +108,10 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
         var notice = ChatMessage.NoticeText(ToNotice(idea, "the ideas backlog"), "idea");
         notice.Meta!["ideaId"] = IdeaOps.Str(idea["id"]);
         var added = ctx.Sessions.AppendMessage(sessionId, notice);
+        outcomes?.Record("recall", "added", new JsonObject
+        {
+            ["ideaId"] = IdeaOps.Str(idea["id"]), ["sessionId"] = sessionId, ["via"] = req.Str("via") ?? "user",
+        });
         return new JsonObject { ["noticeId"] = added.Id, ["ideaId"] = IdeaOps.Str(idea["id"]) };
     }
 

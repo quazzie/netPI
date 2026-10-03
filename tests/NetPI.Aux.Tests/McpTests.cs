@@ -98,6 +98,23 @@ public static class McpTests
             var schema=Tool()["inputSchema"]!.AsObject();
             await Check.ThrowsAsync<Exception>(()=>c.CallAsync("weather",T.Args(new {city="malformed"}),schema,timeout.Token));
         });
+        r.Add("mcp: a query that shares no word with any tool finds the closest by meaning (embeddings), and says so", async () => {
+            foreach (var withEmbeddings in new[] { false, true })
+            {
+                var ctx=new FakePluginContext();
+                ctx.Sessions.CreateSession(new SessionInfo {Id="ses_1"});
+                // "forecast" and "rainy" mean weather to this embedder; the word ranking has never heard of them.
+                if (withEmbeddings) ctx.ServicesFake.Register<IEmbeddingService>(new Synonyms());
+                ctx.Settings.Set("mcp.servers",new JsonObject {["fixture"]=Config().Json()});
+                await using var manager=new ServerManager(ctx); await manager.StartAsync([],CancellationToken.None);
+                await Connected(manager,"fixture");
+                var search=new McpSearchTool(ctx,manager); ctx.Tools.Register(search);
+                var result=JsonNode.Parse((await search.ExecuteAsync(Context(ctx),T.Args(new {query="rainy forecast"}),CancellationToken.None)).Content)!;
+                Check.Equal(!withEmbeddings,(bool)result["noMatch"]!);
+                if (withEmbeddings) { Check.Contains(result["match"]!.GetValue<string>(),"meaning"); Check.Contains(result["results"]!.ToJsonString(),"weather"); }
+                else Check.True(result["match"] is null);
+            }
+        });
         r.Add("mcp: 250 tools keep visible schema prefix constant and disclosure scoped to retained chat", async () => {
             var ctx=new FakePluginContext();
             ctx.Sessions.CreateSession(new SessionInfo {Id="ses_1"});
@@ -272,5 +289,15 @@ public static class McpTests
             await using var rejected=new McpConnection(config with {Url=auth.Url},100000,_=>{});
             await Check.ThrowsAsync<McpHttpException>(()=>rejected.InitializeAsync(CancellationToken.None));
         });
+    }
+
+    /// <summary>An embedder that knows two synonyms: "forecast" and "rainy" are weather (a bag of words otherwise).</summary>
+    private sealed class Synonyms : IEmbeddingService
+    {
+        public string? Model => "synonyms";
+        public bool Available => true;
+        public Task<EmbeddingResult> EmbedAsync(EmbeddingRequest request, CancellationToken ct) =>
+            Task.FromResult(new EmbeddingResult("synonyms", 64, request.Texts
+                .Select(t => EmbeddingsTests.BagOfWords.Vector(t.ToLowerInvariant().Replace("forecast", "weather").Replace("rainy", "weather"))).ToList()));
     }
 }

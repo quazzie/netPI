@@ -63,7 +63,7 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
     /// plugin): there is nothing to be admitted to, and nothing to starve.
     /// </summary>
     public async Task<Admission> EnterAsync(ModelInfo? model, string purpose, string? sessionId, string? projectId,
-        CancellationToken ct, TimeSpan? wait = null)
+        CancellationToken ct, TimeSpan? wait = null, bool decision = false)
     {
         var work = ctx.Services.Get<IBackgroundWork>();
         var workId = work?.Begin(purpose, model?.Ref, sessionId, projectId);
@@ -74,6 +74,13 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
             var reason = $"{model.Ref} is a paid model and ideas.allowPaidModel is off";
             if (workId is not null) work!.Set(workId, "skipped", reason);
             return Admission.Skip(reason);
+        }
+        // A short decision on a local model goes on the server's decision lane (decide.lane): it does not queue behind
+        // the chats' slots, so the recall answers while two agents work and the sweep is not dropped for a full model.
+        if (decision && model.IsLocal && ctx.Settings.GetOr("decide.lane", true))
+        {
+            if (workId is not null) work!.Set(workId, "running", "decision lane");
+            return Admission.Held(new Leased(new Noop(), ctx, purpose, model.Ref, Stopwatch.StartNew(), work, workId));
         }
         var scheduler = ctx.Services.Get<IAgentScheduler>();
         if (scheduler is null)

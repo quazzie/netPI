@@ -12,6 +12,10 @@ public sealed class DecisionRequest
     public IAgentSlot? ExistingLease { get; init; }
     public string? HeldModel { get; init; }
     public string? ReasoningEffort { get; init; }
+    /// <summary>A single short check (a guard question, a pick-one): on a local model it skips the agents' slots, because
+    /// NInfer answers decisions on its own lane ahead of agent work (decisions first; setting <c>decide.lane</c>). Bulk
+    /// work (the <c>decide</c> tool) never sets it, so a file of items cannot crowd out the agents.</summary>
+    public bool Lane { get; init; }
 }
 
 public interface IDecisionService
@@ -29,13 +33,14 @@ public static class DecisionCapabilities
 {
     public static bool Available(IServiceRegistry services, IRpcRegistry rpc, string method) => services.Get<IDecisionService>() is not null || rpc.Exists(method);
     public static async Task<JsonObject?> InvokeAsync(IServiceRegistry services, IRpcRegistry rpc, string method, JsonObject body,
-        CancellationToken ct, IAgentSlot? held = null, string? heldModel = null, int priority = 0)
+        CancellationToken ct, IAgentSlot? held = null, string? heldModel = null, int priority = 0, bool lane = false)
     {
         if (services.Get<IDecisionService>() is { } service)
             return await service.EvaluateAsync(new DecisionRequest
             {
                 Model = body["model"]?.GetValue<string>(), Body = (JsonObject)body.DeepClone(), Conversation = method == "decide.decision",
                 ExistingLease = held, HeldModel = heldModel, Priority = priority, ReasoningEffort = body["reasoning_effort"]?.GetValue<string>(),
+                Lane = lane,
             }, ct).ConfigureAwait(false);
         return NetPiJson.ToNode(await rpc.InvokeAsync(method, body, ct).ConfigureAwait(false)) as JsonObject;
     }

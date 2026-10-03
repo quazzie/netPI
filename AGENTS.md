@@ -31,6 +31,13 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   `tests/MockLlm` (scripted model server), `tests/NetPI.E2E` (end-to-end suite).
 
 ## Build & test
+- **Hunting one failing test? Run that one test, not the suite.** A full sweep (`scripts\test.ps1` with no filter, or
+  `scripts\e2e.ps1` with no selector) takes minutes, holds the machine, and tells you nothing the single test does not.
+  While fixing: `dotnet tests/NetPI.<X>.Tests/bin/Debug/NetPI.<X>.Tests.dll "<test name substring>"`, or
+  `.\scripts\test.ps1 -Suite <X> -Only "<name>"`, or `.\scripts\e2e.ps1 -Only <id>` / `-Failed` (the failure file in
+  `artifacts/e2elogs/<run>/failures/` already holds the evidence: read it instead of running again). The full sweep runs
+  **once**, at the end, as the gate before a merge — never as the loop, never "to see if it still passes", never again
+  after a one-test fix until everything you meant to change is in.
 - **Work in a worktree, not here** (see `C:\AI\Projects\AGENTS.md`): one worktree and branch per agent. It is how you
   avoid another agent's *edits* reaching you and yours reaching them. Several fixes can share that one tree — take them
   one at a time, one commit each, merging each into `master` before the next.

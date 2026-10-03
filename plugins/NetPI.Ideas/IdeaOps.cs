@@ -182,6 +182,10 @@ public static class IdeaOps
     /// <summary>The text, clipped to <paramref name="n"/> characters with an ellipsis when it was longer.</summary>
     public static string Clip(string s, int n) => s.Length > n ? s[..n] + "…" : s;
 
+    /// <summary>The start and the end of a long text (half each) around an ellipsis: a conversation is judged by how it
+    /// began and how it ended, not by its first pages only.</summary>
+    public static string ClipEnds(string s, int n) => s.Length <= n ? s : s[..(n / 2)] + "\n…\n" + s[^(n - n / 2)..];
+
     // ------------------------------------------------------------------ normalization
 
     public static string NormalizeStatus(string? s)

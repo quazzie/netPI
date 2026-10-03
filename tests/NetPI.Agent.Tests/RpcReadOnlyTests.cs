@@ -55,7 +55,7 @@ public static class RpcReadOnlyTests
             var expected = new Dictionary<string, (string[] ReadOnly, string[] Writable)>
             {
                 ["netpi.runtime"] = (["agent.queue", "runs.list", "agent.get", "agent.tools"], ["agent.send", "agent.abort", "agent.dequeue", "agent.setTools"]),
-                ["netpi.guardrails"] = (["guard.pending"], ["guard.answer"]),
+                ["netpi.guardrails"] = (["guard.pending", "guard.outcomes"], ["guard.answer"]),
                 ["netpi.context"] = (["context.preview", "context.prompts", "context.toolsets"], ["context.reset"]),
                 ["netpi.agentsmd"] = (["agentsmd.list"], []),
                 ["netpi.profiles"] = (["profiles.list"], ["profiles.apply"]),

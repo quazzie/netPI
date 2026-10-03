@@ -1,6 +1,6 @@
 # Ideas plugin (`netpi.ideas`)
 
-Agent rework update (2026-10-01): automatic save/completion proposals require a separate low-priority verifier. Work and `ideas.work` expose waiting, dropped, rejected and verified outcomes with reasons. Completion evidence includes bounded complete patches; revision and project activity are checked again before writing. `ideas.applyVerifiedUpdates` defaults true, applying verified unchanged completion without a card; false retains a verified review card. `ideas.verifyUpdate` checks explicit proposed patches against supplied evidence and rejects stale revisions. Basic backlog CRUD remains independent of optional model/decision/history capabilities. See SETTINGS.md and PROTOCOL.md for the new contracts.
+Agent rework update (2026-10-01): automatic save/completion proposals require a separate low-priority verifier. Work and `ideas.work` expose waiting, dropped, rejected and verified outcomes with reasons. Completion evidence includes bounded complete patches; revision and project activity are checked again before writing. `ideas.applyVerifiedUpdates` defaults false since 2026-10-03 (a verified review card; true applies verified unchanged completion without a card). `ideas.verifyUpdate` checks explicit proposed patches against supplied evidence and rejects stale revisions. Basic backlog CRUD remains independent of optional model/decision/history capabilities. See SETTINGS.md and PROTOCOL.md for the new contracts.
 
 A backlog of ideas, research, plans and deferred work for the user and for agents. Agents work with it through the
 `ideas` tool. The user works with it in the **Ideas** tab (right panel) and through `/idea <title>`.
@@ -37,6 +37,7 @@ top of `IdeasRepository.cs`. The JSON files of the earlier versions (`ideas.json
 | `imports` | the receipts of the imports (one per source taken in) |
 | `meta` | small values, one key each: the root-level fields the old JSON file had (`legacy-root`) |
 | `unread` | the commits a sweep could not decide, keyed by repository and hash |
+| `decisions` | every check's answer and what came of it, one row each (`site`, `result`, `at` indexed): the probabilities, the idea chosen or none, a clip of what was judged; the newest 5,000 (`ideas.decisions`) |
 | `vectors` | the embeddings, one document per idea: `{ model, dim, hash, at, chunks: [base64 float32…] }` (`model` indexed). Chunk 0 is the card (title, summary, tags), the rest the sections in 1,500-character pieces (at most 12). Derived data: deleting the collection only costs a re-embed |
 
 Moving a backlog between machines is deliberate: `ideas.export` writes a portable snapshot document and
@@ -551,8 +552,21 @@ score of a none-case overlaps the right idea's), so the pick-or-none decisions s
   named (`details.similar`), a warning, never a refusal;
 - `ideas.similar` and `ideas.reindex` (RPC).
 
-Not yet: the save check's verifier and cards, the commit link window (`IdeaCommitCheck.LinkAsync`), the recall pre-filter,
-the ranking above 51 open ideas (`IdeaMatch.Windows`) and the tab's "≈" search (idea-61wg9p, later phases).
+Since phase 2 (2026-10-03) also:
+
+- **commit link**: the question reads the commit's subject, body and changed paths (from the same reader the done question
+  uses), the commit is the question and the ideas the cached system message, the ideas come in meaning order, and a
+  commit whose closest open idea is below `ideas.linkFloor` (0.6) is not asked about at all (most commits are about no
+  idea; each was a 5090 decision);
+- **save check**: a drafted plan that is the same as an open idea (card cosine ≥ `ideas.similarThreshold`) is recorded on
+  that idea instead of a second card; otherwise the verifier sees the look-alikes and rejects a repeat. The prompt now
+  says what the user asked: only the ideas backlog counts as saved, a plan written only to a document is not;
+- **attach** reads the start and the end of the chat (was: its first 4,000 characters only);
+- **above 51 open ideas** (recall, attach, link) the candidates are ordered by words and meaning fused, not shared words alone;
+- **the commit notice** names an idea only at or above `ideas.noticeFloor` (0.6).
+
+Every check records its answer (`decisions`, `ideas.decisions`). Not yet: the recall pre-filter (on the measured sets the
+similarity of a none-case overlaps a right one, so no floor is safe there) and the tab's "≈" search.
 
 ## The agent tool: `ideas` (category `ideas`)
 

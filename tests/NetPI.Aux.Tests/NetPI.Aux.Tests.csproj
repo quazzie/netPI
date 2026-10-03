@@ -33,6 +33,7 @@
     <ProjectReference Include="../../plugins/NetPI.Tools.Media/NetPI.Tools.Media.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Decide/NetPI.Decide.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Embeddings/NetPI.Embeddings.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Memory/NetPI.Memory.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Ssh/NetPI.Tools.Ssh.csproj" />
     <!-- workspaces: the tests drive real git worktrees, the file tools' guard and the shell's cwd. -->
     <ProjectReference Include="../../plugins/NetPI.Workspaces/NetPI.Workspaces.csproj" />

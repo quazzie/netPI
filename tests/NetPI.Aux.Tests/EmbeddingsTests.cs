@@ -20,12 +20,15 @@ public static class EmbeddingsTests
         public string? Model { get; set; } = model;
         public bool Available { get; set; } = true;
         public List<(EmbeddingKind Kind, string Text)> Seen { get; } = [];
+        /// <summary>Words that mean another word to this embedder (and to nothing else): meaning without shared words.</summary>
+        public Dictionary<string, string> Synonyms { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public Task<EmbeddingResult> EmbedAsync(EmbeddingRequest request, CancellationToken ct)
         {
             if (!Available || Model is null) throw new EmbeddingException("unavailable", "down");
             lock (Seen) Seen.AddRange(request.Texts.Select(t => (request.Kind, t)));
-            return Task.FromResult(new EmbeddingResult(Model, 64, request.Texts.Select(Vector).ToList()));
+            return Task.FromResult(new EmbeddingResult(Model, 64, request.Texts
+                .Select(t => Vector(string.Join(" ", t.Split(" ").Select(w => Synonyms.GetValueOrDefault(w.Trim(), w))))).ToList()));
         }
 
         public static float[] Vector(string text)
@@ -331,6 +334,91 @@ public static class EmbeddingsTests
             var plain = await CommitAndAsk();
             Check.NotContains(plain!.Text, "closest");
             Check.Contains(plain.Text, "If it finished one of that project's open ideas");
+        });
+
+        r.Add("ideas embeddings: the commit description is the message and the changed paths, not git's header lines", () =>
+        {
+            const string show = "commit 1a2b3c4d5e\nAuthor:     Tommy <t@x>\nAuthorDate: Sat Oct 3 18:00:00 2026 +0200\nCommit:     Tommy <t@x>\nCommitDate: Sat Oct 3 18:00:00 2026 +0200\n\n" +
+                                "    Ideas: link reads the commit body\n\n    The question now sees the body and the files.\n\n" +
+                                " plugins/NetPI.Ideas/IdeaCommitCheck.cs | 40 +++++---\n docs/PLUGIN-IDEAS.md | 3 +\n 2 files changed\n\ndiff --git a/x b/x\n+secret patch line";
+            var text = IdeaCommitCheck.CommitDescription(show)!;
+            Check.True(text.StartsWith("Ideas: link reads the commit body", StringComparison.Ordinal), text);
+            Check.Contains(text, "The question now sees the body and the files.");
+            Check.Contains(text, "Changed: plugins/NetPI.Ideas/IdeaCommitCheck.cs, docs/PLUGIN-IDEAS.md");
+            Check.NotContains(text, "Author");
+            Check.NotContains(text, "secret patch line");
+            Check.Equal("abc", IdeaOps.ClipEnds("abc", 10));
+            var ends = IdeaOps.ClipEnds(new string('a', 50) + new string('z', 50), 20);
+            Check.True(ends.StartsWith("aaaaaaaaaa", StringComparison.Ordinal) && ends.EndsWith("zzzzzzzzzz", StringComparison.Ordinal), ends);
+            return Task.CompletedTask;
+        });
+
+        r.Add("ideas embeddings: above 51 ideas the ranking fuses words and meaning, so a paraphrased idea is in the first window", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            for (var i = 0; i < 60; i++) await env.AddIdea($"Filler topic number {i} about widgets", $"Widgets and gadgets item {i}.");
+            var target = await env.AddIdea("Collapsing a process row leaks a timer", "The Work tab keeps a timer per collapsed process row.");
+            await env.Reindex();
+            var repo = IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home);
+            using var vectors = new IdeaVectors(env.Ctx, repo);
+            var open = repo.OpenIdeas(null);
+            // "widgets" is in every filler idea and no word of the text is in the target, so shared words alone put the
+            // target last; to the embedder "folding", "drips" and "clock" mean collapsing, leaks and timer.
+            const string text = "widgets: folding drips clock";
+            foreach (var (w, m) in new[] { ("folding", "collapsing"), ("drips", "leaks"), ("clock", "timer") }) env.Embedder.Synonyms[w] = m;
+            Check.True(IdeaMatch.Ranked(open, text).FindIndex(i => i["id"]!.GetValue<string>() == target) >= IdeaMatch.MaxOptions, "words alone push it past the first window");
+            var ranked = (await vectors.RankAsync(text, open, CancellationToken.None))!;
+            Check.True(ranked.FindIndex(i => i["id"]!.GetValue<string>() == target) < IdeaMatch.MaxOptions, "fused: inside the first window");
+            Check.True(await vectors.RankAsync(text, open.Take(10).ToList(), CancellationToken.None) is null, "51 or fewer: nothing to rank");
+        });
+
+        r.Add("ideas embeddings: ideas.decisions records the recall chips that were added", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var session = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s" });
+            var id = await env.AddIdea("Radio buffer top-up", "Songs per batch should refill when raised.");
+            await env.Ctx.Rpc.InvokeAsync("ideas.attach", new JsonObject { ["sessionId"] = session.Id, ["id"] = id });
+            var log = (JsonObject)NetPiJson.ToNode(await env.Ctx.Rpc.InvokeAsync("ideas.decisions", new JsonObject { ["site"] = "recall" }))!;
+            Check.Equal(1, log["summary"]!["recall"]!["added"]!.GetValue<int>());
+            var row = log["rows"]![0]!;
+            Check.Equal(id, row["ideaId"]!.GetValue<string>());
+            Check.Equal("user", row["via"]!.GetValue<string>());
+        });
+
+        r.Add("memory: a chat is embedded in pieces (start, summaries, end kept); search finds the chat by meaning, not the current one", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("memory"));
+            var embedder = new BagOfWords();
+            ctx.ServicesFake.Register<IEmbeddingService>(embedder);
+            var radio = ctx.SessionsFake.CreateSession(new SessionInfo { Title = "Radio buffer" });
+            ctx.SessionsFake.AppendMessage(radio.Id, ChatMessage.UserText("the radio runs out of buffered songs when the batch size is raised"));
+            ctx.SessionsFake.AppendMessage(radio.Id, new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "Top up the queue whenever songs per batch grows." }] });
+            var other = ctx.SessionsFake.CreateSession(new SessionInfo { Title = "Timer leak" });
+            ctx.SessionsFake.AppendMessage(other.Id, ChatMessage.UserText("the work tab leaks a timer per collapsed process row"));
+            var current = ctx.SessionsFake.CreateSession(new SessionInfo { Title = "Now" });
+            ctx.SessionsFake.AppendMessage(current.Id, ChatMessage.UserText("buffered songs batch radio queue"));
+            await new NetPI.Memory.MemoryPlugin().StartAsync(ctx, CancellationToken.None);
+            var swept = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.reindex", new JsonObject()))!;
+            Check.Equal(3, swept["indexed"]!.GetValue<int>());
+            Check.Equal(0, ((JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.reindex", new JsonObject()))!)["indexed"]!.GetValue<int>(), "nothing changed: nothing re-embedded");
+            var found = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.search",
+                new JsonObject { ["query"] = "radio buffered songs batch", ["excludeSessionId"] = current.Id, ["limit"] = 2 }))!;
+            Check.True(found["available"]!.GetValue<bool>());
+            Check.Equal(radio.Id, found["chats"]![0]!["sessionId"]!.GetValue<string>());
+            Check.NotContains(found.ToJsonString(), current.Id);
+
+            var long_ = Enumerable.Range(0, 200).Select(i => ChatMessage.UserText($"line {i} " + new string('x', 300))).ToList();
+            var chunks = NetPI.Memory.MemoryIndex.Chunks(new SessionInfo { Title = "Long" }, long_, 8);
+            Check.Equal(8, chunks.Count);
+            Check.Contains(chunks[0], "line 0 ");
+            Check.Contains(chunks[^1], "line 199 ");
+
+            embedder.Model = null;
+            var off = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.search", new JsonObject { ["query"] = "radio" }))!;
+            Check.False(off["available"]!.GetValue<bool>());
+            ctx.Unload();
         });
     }
 }

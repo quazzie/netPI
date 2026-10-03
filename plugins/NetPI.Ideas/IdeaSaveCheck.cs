@@ -18,7 +18,8 @@ namespace NetPI.Ideas;
 /// backlog without a click, and the click is one transaction: the idea, the record of the answer and the card leaving
 /// the queue commit together, so an interrupted answer can neither lose a card nor save an idea twice.
 /// </summary>
-public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, IdeaVerifyQueue queue)
+public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, IdeaVerifyQueue queue,
+    IdeaVectors? vectors = null, IdeaOutcomes? outcomes = null)
 {
     public const double DefaultAttachThreshold = 0.8;
     public const int MinUserMessages = 2;
@@ -58,7 +59,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
         Answer NOTHING for a loose end: a pending deploy, commit or restart, a failed one-off task, troubleshooting,
         work that was actually done, and a chat that only answered a question.
 
-        A plan written to docs/plans in the repository counts as saved: answer NOTHING for it.
+        Only the ideas backlog counts as saved: the user reads the Ideas tab, not documents. A plan written only to a
+        file (docs/plans or anywhere else in the repository) is NOT saved: answer SAVE for it.
 
         Answer with NOTHING, or with three lines and nothing else:
         SAVE
@@ -232,7 +234,32 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
             string.Equals(IdeaOps.Str(i["title"])?.Trim(), draft.Title.Trim(), StringComparison.OrdinalIgnoreCase));
         if (alreadySaved) { FinishAsync(session.Id, token, ct, null); return null; }
 
-        var verdict = await new IdeaVerifier(ctx).VerifyAsync($"Save plan: {draft.Title}\n{draft.Summary}", digest, session.Id, project?.Id, ct).ConfigureAwait(false);
+        // The backlog already holds it (embeddings, card to card at ideas.similarThreshold): the chat worked on that idea,
+        // so it is recorded there instead of a second card for the same plan. A done or rejected look-alike is only
+        // evidence for the verifier: the plan may be the next step of a finished idea.
+        var draftCard = new JsonObject { ["title"] = draft.Title, ["summary"] = draft.Summary };
+        var similar = vectors is null ? [] : await vectors.SimilarToAsync(draftCard, 3, ct).ConfigureAwait(false);
+        if (similar.FirstOrDefault(s => IdeaOps.Str(s.Idea["status"]) is not ("done" or "rejected")) is { } same
+            && IdeaOps.Str(same.Idea["id"]) is { Length: > 0 } sameId)
+        {
+            RecordAsync(sameId, session, ct);
+            outcomes?.Record("save", "merged", new JsonObject
+            {
+                ["sessionId"] = session.Id, ["ideaId"] = sameId, ["score"] = same.Score, ["text"] = IdeaOps.Clip($"{draft.Title} — {draft.Summary}", 300),
+            });
+            FinishAsync(session.Id, token, ct, null);
+            return null;
+        }
+        var existing = similar.Count == 0 ? "" :
+            "\n\nExisting ideas that look alike (reject the proposal if it repeats one of them):\n" +
+            string.Join('\n', similar.Select(s => $"- {IdeaOps.Str(s.Idea["id"])} [{IdeaOps.Str(s.Idea["status"]) ?? "open"}] {IdeaOps.Str(s.Idea["title"])} — {IdeaOps.Clip(IdeaOps.Str(s.Idea["summary"]) ?? "", 240)}"));
+
+        var verdict = await new IdeaVerifier(ctx).VerifyAsync($"Save plan: {draft.Title}\n{draft.Summary}{existing}", digest, session.Id, project?.Id, ct).ConfigureAwait(false);
+        outcomes?.Record("save", verdict.Verified ? "verified" : verdict.Deferred ? "deferred" : "rejected", new JsonObject
+        {
+            ["sessionId"] = session.Id, ["text"] = IdeaOps.Clip($"{draft.Title} — {draft.Summary}", 300), ["reason"] = IdeaOps.Clip(verdict.Reason ?? "", 300),
+            ["similar"] = similar.Count == 0 ? null : new JsonArray(similar.Select(s => (JsonNode)new JsonObject { ["id"] = IdeaOps.Str(s.Idea["id"]), ["score"] = s.Score }).ToArray()),
+        });
         if (!verdict.Verified)
         {
             if (verdict.Deferred) return verdict.Reason;   // the queue retries this; the mark belongs to it now
@@ -328,10 +355,12 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
             return;
         }
 
-        // Bounded: the digest picks the window when the backlog has more ideas than one decision can offer.
+        // Bounded: the digest picks the window when the backlog has more ideas than one decision can offer (words and,
+        // with embeddings, meaning).
         IdeaPick? best = null;
         List<JsonObject>? bestWindow = null;
-        foreach (var window in IdeaMatch.Windows(open, digest))
+        var ranking = vectors is null ? null : await vectors.RankAsync(IdeaOps.ClipEnds(digest, 4000), open, ct).ConfigureAwait(false);
+        foreach (var window in IdeaMatch.Windows(open, digest, ranking: ranking))
         {
             var list = IdeaMatch.Options(window, "none of these: the conversation is about something else", out var none, out var labels);
             var answer = await _decider.AskAsync(new JsonObject
@@ -343,7 +372,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
             }, "Which open idea is this conversation about? " +
                "Read the conversation: pick the idea it worked on (built, tested, discussed, or changed its plan), " +
                $"pick {none} when it is about something else. Answer with one letter.\n\n" +
-               $"Conversation:\n<<<\n{IdeaOps.Clip(digest, 4000)}\n>>>",
+               $"Conversation:\n<<<\n{IdeaOps.ClipEnds(digest, 4000)}\n>>>",
                 labels, "the attach question", sessionId: null, projectId: null, wait: null, Timeout, ct).ConfigureAwait(false);
             var pick = Pick(answer, labels);
             if (pick is null) return; // no usable answer: nothing is attached, and the save check still runs
@@ -351,8 +380,12 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
             if (best.P > 0.5 || pick.None >= best.P) break; // decided (or nothing in this window): no further windows
         }
         if (best is null || bestWindow is null) return;
-        if (!best.Clear(Math.Clamp(ctx.Settings.GetOr("ideas.attachThreshold", DefaultAttachThreshold), 0.3, 0.99))) return;
-        if (IdeaOps.Str(bestWindow[best.Index]["id"]) is not { Length: > 0 } chosenId) return;
+        var threshold = Math.Clamp(ctx.Settings.GetOr("ideas.attachThreshold", DefaultAttachThreshold), 0.3, 0.99);
+        var candidate = IdeaOps.Str(bestWindow[best.Index]["id"]);
+        var clear = best.Clear(threshold);
+        outcomes?.Record("attach", clear ? "attached" : "none", IdeaOutcomes.Pick(best, candidate, threshold).Also("sessionId", session.Id));
+        if (!clear) return;
+        if (candidate is not { Length: > 0 } chosenId) return;
         RecordAsync(chosenId, session, ct);
     }
 

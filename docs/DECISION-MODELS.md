@@ -503,7 +503,12 @@ still open. The yue2 taskbar idea (v9dg6g), which the commits seem to finish, st
 
 ## Known limits and next experiments
 
-- **Four decision sites guard on a threshold and against "none"; none of them guards against a near-tie** (idea-grc0s8,
+- **Status 2026-10-03:** the near-tie rule below is built: `DecisionConfidence.Clear` (a 0.15 margin over the runner-up and
+  over "none") guards the four ideas sites, the guard and `DecisionHints`; the 0.15 itself is not measured against the
+  thresholds. Since 2026-10-03 every ideas check records its answer and probabilities (`ideas.decisions`) and every guard
+  question its result and the user's answer (`guard.outcomes`), so the accuracy in daily use, against the user's own
+  answers, can be read. Short checks on a local model run on NInfer's decision lane without an agent slot (`decide.lane`).
+- **(History) Four decision sites guard on a threshold and against "none"; none of them guards against a near-tie** (idea-grc0s8,
   found 2026-09-28 while building the commit check). Every pick-one in the ideas plugin asks "which of these, or none"
   and takes the winner when it clears its threshold *and* beats `none`:
 

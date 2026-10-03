@@ -90,6 +90,19 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
             .ToList();
         var ranked = McpSearchTool.Score(candidates, query, c => c.Exact, c => c.Text)
             .OrderByDescending(s => s.Score).ThenBy(s => s.Item.Id, StringComparer.Ordinal).Take(limit).ToList();
+        // No word in common with any tool (a paraphrase, another language's term): with embeddings, the closest by meaning
+        // instead of "no match". Only then: a word match stays the ranking it always was.
+        var byMeaning = false;
+        if (ranked.Count == 0 && candidates.Count > 0 && ctx.Services.Get<IEmbeddingService>() is { Available: true } embedder)
+        {
+            var near = await NearestAsync(embedder, query, candidates.Select(c => (c.Kind + ":" + c.Id, c.Exact + "\n" + c.Text)).ToList(), ct).ConfigureAwait(false);
+            if (near is not null)
+            {
+                ranked = near.Where(n => n.Score >= MeaningFloor).Take(limit)
+                    .Select(n => (Score: (double)n.Score, Item: candidates[n.Index], Id: candidates[n.Index].Exact)).ToList();
+                byMeaning = ranked.Count > 0;
+            }
+        }
         var budget = ToolResultLimit.Fit(ctx.Settings, manager.Limit("mcp.discoveryChars", 4000, 1024, 20000));
         var disclosures = new JsonArray(); var results = new JsonArray();
         var known = DiscoveryState.Current(ctx.Sessions, context.SessionId);
@@ -132,8 +145,46 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
             results.Add(result);
             if (disclosure is not null) disclosures.Add(disclosure);
         }
-        return ToolResult.Ok(new JsonObject { ["results"] = results, ["noMatch"] = results.Count == 0 }.ToJsonString(),
-            new JsonObject { ["kind"] = DiscoveryState.Kind, ["schemas"] = disclosures });
+        var answer = new JsonObject { ["results"] = results, ["noMatch"] = results.Count == 0 };
+        if (byMeaning) answer["match"] = "meaning: no tool shares a word with the query; these are the closest in meaning";
+        return ToolResult.Ok(answer.ToJsonString(), new JsonObject { ["kind"] = DiscoveryState.Kind, ["schemas"] = disclosures });
+    }
+
+    /// <summary>Below this cosine (bge-base) a tool is not offered as a meaning match: an unrelated tool is not an answer.</summary>
+    internal const float MeaningFloor = 0.55f;
+    private readonly Dictionary<string, float[]> _vectors = new(StringComparer.Ordinal);
+    private readonly Lock _gate = new();
+
+    /// <summary>
+    /// Cosine of the query against each candidate (its name and search text), best first; candidate vectors are kept per
+    /// id and text, so a catalogue is embedded once and a changed tool again. Null on any embedding failure.
+    /// </summary>
+    private async Task<List<(int Index, float Score)>?> NearestAsync(IEmbeddingService embedder, string query, List<(string Key, string Text)> items, CancellationToken ct)
+    {
+        try
+        {
+            string KeyOf((string Key, string Text) i) => i.Key + "\n" + i.Text.GetHashCode(StringComparison.Ordinal);
+            List<(string Key, string Text)> missing;
+            lock (_gate) missing = items.Where(i => !_vectors.ContainsKey(KeyOf(i))).ToList();
+            if (missing.Count > 0)
+            {
+                var docs = await embedder.EmbedAsync(new EmbeddingRequest { Texts = missing.Select(m => m.Text.Length > 2000 ? m.Text[..2000] : m.Text).ToList(), Background = true }, ct).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    if (_vectors.Count > 4000) _vectors.Clear();
+                    for (var i = 0; i < missing.Count; i++) _vectors[KeyOf(missing[i])] = docs.Vectors[i];
+                }
+            }
+            var q = (await embedder.EmbedAsync(new EmbeddingRequest { Texts = [query], Kind = EmbeddingKind.Query }, ct).ConfigureAwait(false)).Vectors[0];
+            lock (_gate)
+                return items.Select((item, index) => (index, score: _vectors.TryGetValue(KeyOf(item), out var v) ? VectorMath.Dot(q, v) : -1f))
+                    .OrderByDescending(x => x.score).Select(x => (x.index, x.score)).ToList();
+        }
+        catch (EmbeddingException ex)
+        {
+            ctx.Logger.LogDebug("mcp_search: no meaning match ({Code}): {Message}", ex.Code, ex.Message);
+            return null;
+        }
     }
 }
 

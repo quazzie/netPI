@@ -22,8 +22,18 @@ namespace NetPI.Ideas;
 /// Verified unchanged completion applies when ideas.applyVerifiedUpdates is enabled; otherwise one verified card is
 /// offered. A partial, uncertain or unverifiable proposal never closes an idea.
 /// </summary>
-public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, IdeaSaveCheck save) : IDisposable
+public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, IdeaSaveCheck save,
+    IdeaVectors? vectors = null, IdeaOutcomes? outcomes = null) : IDisposable
 {
+    /// <summary>
+    /// With embeddings, a commit whose closest open idea is below this cosine is not asked about at all: most commits are
+    /// about no idea (187 of 216 measured), and each would cost a 5090 decision. Measured with bge-base on the labelled
+    /// commits: the right idea scored ≥ 0.67 for 90 % of them, the best idea of an unrelated commit 0.58 at the median
+    /// (decisions-lab nuc-plan.md). 0 asks about every commit.
+    /// </summary>
+    public const double DefaultLinkFloor = 0.6;
+    /// <summary>The commit description the link question and the embedding read: subject, body and changed paths.</summary>
+    public const int MaxDescriptionChars = 1500;
     public const double DefaultLinkThreshold = 0.7;
     public const double DefaultDoneThreshold = 0.8;
     /// <summary>Commits read per page. A burst (a rebase, a merge train) is read oldest first, in bounded pages.</summary>
@@ -537,7 +547,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         foreach (var idea in NamedIn(subject, open)) linked.Add(idea);   // deterministic: the message names the id
         if (linked.Count == 0)
         {
-            var decision = await LinkAsync(open, commit, watch.ProjectId, ctx.Stopping).ConfigureAwait(false);
+            var decision = await LinkAsync(watch, open, commit, watch.ProjectId, ctx.Stopping).ConfigureAwait(false);
             if (decision is { Skipped: { } skipped })
             {
                 // (idea-np3a5g) A skip (no model, or a paid one the user did not allow) will not change on a retry,
@@ -616,23 +626,49 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// commit on the strength of probabilities that were computed to compete with each other. A commit that really
     /// finishes two ideas names both ids, or gets linked to the one it names best.
     /// </summary>
-    private async Task<Decision> LinkAsync(List<JsonObject> open, JsonObject commit, string? projectId, CancellationToken ct)
+    private async Task<Decision> LinkAsync(Watch watch, List<JsonObject> open, JsonObject commit, string? projectId, CancellationToken ct)
     {
         if (!DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.decision")) return Decision.None;
         var subject = IdeaOps.Str(commit["subject"]) ?? "";
-        var author = IdeaOps.Str(commit["author"]) ?? "";
+        var hash = IdeaOps.Str(commit["short"]) ?? IdeaOps.Clip(IdeaOps.Str(commit["hash"]) ?? "", 7);
+        // The commit as a person would read it: subject, body and the paths it touched (the sweep's list has the
+        // subject only). The text is what the embedding and the question both judge.
+        var description = await DescribeAsync(watch, commit, ct).ConfigureAwait(false) ?? subject;
         var threshold = Math.Clamp(ctx.Settings.GetOr("ideas.linkThreshold", DefaultLinkThreshold), 0.3, 0.99);
+
+        // With embeddings: skip the decision for a commit no open idea is close to, and offer the ideas in meaning order.
+        List<JsonObject> candidates = open;
+        double? closest = null;
+        if (vectors is not null && await vectors.NearestAsync(description, open, open.Count, ct).ConfigureAwait(false) is { Count: > 0 } near)
+        {
+            closest = near[0].Score;
+            var floor = Math.Clamp(ctx.Settings.GetOr("ideas.linkFloor", DefaultLinkFloor), 0, 0.99);
+            if (near[0].Score < floor)
+            {
+                outcomes?.Record("link", "skipped", new JsonObject
+                {
+                    ["commit"] = hash, ["repo"] = watch.Repo, ["closest"] = near[0].Score, ["closestId"] = IdeaOps.Str(near[0].Idea["id"]),
+                    ["floor"] = floor, ["text"] = IdeaOps.Clip(subject, 300),
+                });
+                return Decision.None;
+            }
+            // Ideas the embedding could not score (not indexed yet) keep their place after the scored ones.
+            var scored = near.Select(s => s.Idea).ToList();
+            candidates = [.. scored, .. open.Where(i => !scored.Contains(i))];
+        }
+
         List<JsonObject>? best = null;
-        foreach (var window in IdeaMatch.Windows(open, subject + " " + author))
+        foreach (var window in IdeaMatch.Windows(candidates, description, ranking: candidates))
         {
             var list = IdeaMatch.Options(window, "none of these: this commit is about something else", out var none, out var labels);
+            // The ideas are the system message and the commit is the question, so a burst of commits reuses NInfer's
+            // cache of the list instead of re-reading it for every commit.
             var answer = await _decider.AskAsync(new JsonObject
             {
                 ["role"] = "system",
                 ["content"] = "You decide which of the user's backlog of open ideas a git commit was about, so the commit can be " +
-                              "recorded on it. Answer with the letter of the best option only.\n\n" +
-                              $"Commit by {author}:\n{subject}\n\nOpen ideas:\n" + list,
-            }, $"Which open idea is this commit about? Pick it when the commit works on it (implements it, or a step of it, " +
+                              "recorded on it. Answer with the letter of the best option only.\n\nOpen ideas:\n" + list,
+            }, $"Commit:\n<<<\n{description}\n>>>\n\nWhich open idea is this commit about? Pick it when the commit works on it (implements it, a step of it, " +
                $"or fixes it), pick it even when it only advances the idea. Pick {none} when it is about something else.",
                 labels, "the link question", sessionId: null, projectId: projectId, wait: null,
                 timeout: IdeaSaveCheck.Timeout, ct: ct).ConfigureAwait(false);
@@ -641,11 +677,55 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             if (answer.WillRepeat) return new Decision(null, answer.Reason, null);
             if (answer.Probs is not { } probs) return new Decision(null, null, answer.Reason);
             var pick = IdeaMatch.Pick(probs, IdeaMatch.Names(labels));
-            if (pick is null || !pick.Clear(threshold)) break;   // no clear winner
-            best = [window[pick.Index]];
+            var clear = pick is not null && pick.Clear(threshold);
+            outcomes?.Record("link", clear ? "linked" : "none",
+                IdeaOutcomes.Pick(pick, pick is null ? null : IdeaOps.Str(window[pick.Index]["id"]), threshold, subject)
+                    .Also("commit", hash).Also("repo", watch.Repo).Also("closest", closest));
+            if (!clear) break;                                              // no clear winner
+            best = [window[pick!.Index]];
             break;                                                          // one commit, one idea
         }
         return new(best ?? [], null, null);
+    }
+
+    /// <summary>
+    /// Subject, body and changed paths of one commit, read with the same reader the done question uses (the message and
+    /// the stat before the first diff); null when it cannot be read, and the caller falls back to the subject.
+    /// </summary>
+    private async Task<string?> DescribeAsync(Watch watch, JsonObject commit, CancellationToken ct)
+    {
+        if (IdeaOps.Str(commit["hash"]) is not { Length: > 0 } hash) return null;
+        try
+        {
+            var request = new JsonObject { ["cwd"] = watch.Path, ["hash"] = hash };
+            var raw = ctx.Services.Get<IGitHistory>() is { } history ? await history.ReadAsync(request, ct).ConfigureAwait(false)
+                : NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("files.commits", request, ct).ConfigureAwait(false)) as JsonObject;
+            return raw?["patch"]?.GetValue<string>() is { Length: > 0 } patch ? CommitDescription(patch) : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
+    }
+
+    /// <summary>
+    /// <c>git show --format=fuller --stat --patch</c> output → the message (without the header lines) and the changed
+    /// paths, clipped to <see cref="MaxDescriptionChars"/>.
+    /// </summary>
+    internal static string? CommitDescription(string show)
+    {
+        var head = show.Split("\ndiff --git ", 2)[0];
+        var message = new List<string>();
+        var files = new List<string>();
+        foreach (var raw in head.Replace("\r", "").Split('\n'))
+        {
+            if (raw.StartsWith("commit ") || raw.StartsWith("Author:") || raw.StartsWith("AuthorDate:") || raw.StartsWith("Commit:")
+                || raw.StartsWith("CommitDate:") || raw.StartsWith("Merge:")) continue;
+            if (raw.StartsWith("    ")) { message.Add(raw.Trim()); continue; }
+            var stat = raw.Trim();
+            if (stat.Contains(" | ")) files.Add(stat[..stat.IndexOf(" | ", StringComparison.Ordinal)].Trim());
+        }
+        var text = string.Join('\n', message.SkipWhile(l => l.Length == 0)).Trim();
+        if (files.Count > 0) text += "\n\nChanged: " + string.Join(", ", files.Take(30));
+        text = text.Trim();
+        return text.Length == 0 ? null : IdeaOps.Clip(text, MaxDescriptionChars);
     }
 
     /// <summary>
@@ -682,7 +762,13 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         // will make again — idea-np3a5g) and a drop alike mean "no offer now", and the cursor moves either way.
         if (answer.Probs is not { } probs) return false;
         var threshold = Math.Clamp(ctx.Settings.GetOr("ideas.doneThreshold", DefaultDoneThreshold), 0.3, 0.99);
-        if (!DecisionConfidence.Clear(probs.GetValueOrDefault("DONE"), probs.GetValueOrDefault("MORE"), threshold)) return false;
+        var done = DecisionConfidence.Clear(probs.GetValueOrDefault("DONE"), probs.GetValueOrDefault("MORE"), threshold);
+        outcomes?.Record("done", done ? "offered" : "more", new JsonObject
+        {
+            ["ideaId"] = id, ["p"] = Math.Round(probs.GetValueOrDefault("DONE"), 4), ["threshold"] = threshold,
+            ["commits"] = new JsonArray(committed.Select(c => (JsonNode)c).ToArray()),
+        });
+        if (!done) return false;
         // The result judges this exact snapshot. A later revision must be judged again, never stamped onto old text.
         var current = _repo.Find(id);
         if (current is null || IdeaOps.Str(current.Doc["status"]) is not ("open" or "planned" or "in-progress" or "parked")) return false;
@@ -737,7 +823,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         if (!verdict.Verified) return verdict.Retryable ? null : false;
         current = _repo.Find(id);
         if (current is null || IdeaRuns.ProjectBusy(ctx, watch.ProjectId) || current.Revision != revision) return null;
-        if (ctx.Settings.GetOr("ideas.applyVerifiedUpdates", true))
+        if (ctx.Settings.GetOr("ideas.applyVerifiedUpdates", false))
         {
             var patch = new JsonObject { ["status"] = "done", ["addSections"] = new JsonArray(new JsonObject
             { ["kind"] = "research", ["title"] = "Completion verification", ["content"] = verdict.Reason + "\n\n" + string.Join('\n', linked) }) };

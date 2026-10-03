@@ -16,6 +16,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
+| `plugins/NetPI.Memory` | `netpi.memory` | `memory_search` | `memory.search`, `memory.reindex` |
 | `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy`) | – |
 | `plugins/NetPI.Workspaces` | `netpi.workspaces` | `workspace` (actions `info` `list` `switch`) | `workspaces.*` (see `docs/PROTOCOL.md`) |
@@ -1081,3 +1082,12 @@ details: the same value as JSON (the chat shows it)
 Discovery result Details: `{kind:"mcp-discovery",schemas:[{id,revision,serverId}]}`; these retained disclosures authorize the exact revision. Remote result Details: `{kind:"mcp",serverId,tool,structuredContent,content:[metadata]}`, with indirect dispatch adding `resolvedTool` and effective `arguments`. Text/structured content is model-facing; supported images use ImagePart. Binary data is excluded from metadata and text, resource links remain links.
 
 An argument the model wrote as JSON text inside a string, or a list it wrapped in a one-property `{"item": …}` object, is repaired against the discovered schema when — and only when — the call would otherwise fail validation: the schema for that path asks for a non-string type, the text parses exactly to it, and the repaired arguments validate. Arguments that already match are never rewritten, a string the schema allows is never re-read, an object where the schema also permits an object is never unwrapped, a list of lists keeps its nesting, and what cannot be repaired keeps the original error, which names the expected type and what arrived (e.g. `$.list_only: expected boolean, got string`).
+
+## `memory_search` (plugins/NetPI.Memory)
+
+Finds earlier chats by meaning: `{ query, limit? (5, at most 10), project? ("all"; default the session's project) }`. The
+Memory plugin embeds every chat in the background (the Embeddings plugin's model; pieces of ~1,200 characters: the first
+request, the compaction summaries, the rest of the conversation with its start and end kept first) and scores a chat by
+its best piece. Content: one line per chat, `- ses_… "Title" (date, score): snippet`, best first, the current chat left out.
+Details: `{ chats: [{ sessionId, title, projectId, updatedAt, score, snippet }] }`. Without an embedding model, or with the
+server not answering, the tool says so as an error. Read-only.

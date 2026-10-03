@@ -280,6 +280,37 @@ public static class IdeasCheckTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas check: a drafted plan the backlog already holds is recorded on that idea, not offered as a second card (embeddings)", async () =>
+        {
+            var env = new Env();
+            env.Ctx.ServicesFake.Register<IEmbeddingService>(new EmbeddingsTests.BagOfWords());
+            await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
+            var idea = (await env.Rpc("ideas.add", new JsonObject { ["projectId"] = env.Project.Id, ["idea"] = new JsonObject
+                { ["title"] = "Nudge counter reset", ["summary"] = "Reset the nudge counter when a good answer comes in." } }))["id"].Str()!;
+            await env.Rpc("ideas.reindex", new JsonObject());
+            env.Talk();
+            env.Talk();
+            env.Decide(_ => new() { ["A"] = 0.02, ["B"] = 0.98 });   // the attach question: none
+            env.Says("SAVE\nNudge counter reset\nReset the nudge counter when a good answer comes in.");
+
+            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+            await env.WaitForMark(env.Session.Id);
+            Check.Equal(0, (await env.Cards()).Count, "no second card for the same plan");
+            Check.True((await env.SessionsOn(idea)).Contains(env.Session.Id), "the chat is recorded on the idea it repeats");
+            var log = (JsonObject)NetPiJson.ToNode(await env.Ctx.RpcFake.Call("ideas.decisions", new JsonObject { ["site"] = "save" }))!;
+            Check.Equal("merged", log["rows"]![0]!["result"].Str());
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas check: the save prompt says a plan written only to a document is not saved", () =>
+        {
+            var prompt = typeof(IdeaSaveCheck).GetField("SaveSystem", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null) as string;
+            Check.Contains(prompt, "Only the ideas backlog counts as saved");
+            Check.NotContains(prompt, "counts as saved: answer NOTHING");
+            return Task.CompletedTask;
+        });
+
         r.Add("ideas check: an answer we cannot read is no crash, and the save check still runs", async () =>
         {
             foreach (var answer in new Func<JsonObject, object?>[]
