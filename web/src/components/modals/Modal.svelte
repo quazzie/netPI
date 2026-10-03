@@ -83,7 +83,7 @@
     const prev = document.activeElement;   // before the background goes inert: that blurs whatever had the focus
     const uninert = inertBackground(overlay);
     const first = dialog?.querySelector('[data-autofocus]') ?? dialog?.querySelector('input, textarea, select, button:not(.x)');
-    first?.focus?.();
+    first?.focus?.({ preventScroll: true });
     return () => {
       stack.splice(stack.indexOf(me), 1);
       window.removeEventListener('keydown', onKey, true);

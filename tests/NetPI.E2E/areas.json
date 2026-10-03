@@ -6,6 +6,7 @@
     { "path": "src/NetPI.Host/", "tags": ["smoke", "lifecycle", "server", "sessions", "settings", "plugins", "startup", "profiles"] },
     { "path": "src/NetPI.Server/", "tags": ["smoke"] },
     { "path": "src/NetPI.Desktop/", "ignore": true },
+    { "path": "src/NetPI.WindowsAgent/", "ignore": true },
 
     { "path": "plugins/NetPI.Agents/", "tags": ["agents", "slots", "subagents", "scheduling"] },
     { "path": "plugins/NetPI.AgentsMd/", "tags": ["context"] },
@@ -41,6 +42,7 @@
     { "path": "plugins/NetPI.Tools.Shell/", "tags": ["tools", "control"] },
     { "path": "plugins/NetPI.Tools.Ssh/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Tools.Web/", "tags": ["smoke"] },
+    { "path": "plugins/NetPI.Tools.Windows/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Work/", "tags": ["scheduling"], "ids": ["ui.smoke"] },
     { "path": "plugins/NetPI.Workspaces/", "tags": ["subagents", "tools"] },
     { "path": "plugins/Directory.Build.props", "all": true },
