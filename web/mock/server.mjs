@@ -94,6 +94,7 @@ const RPC_DOCS = {
   'diag.snapshot': 'Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }',
   'diag.toolsets': "A session's tools now and every change with its cause → { sessionId, tools, baseline, changes, reloads }",
   'ideas.list': 'Ideas of a project/session: { sessionId?, projectId? } → { file, scope, ideas, … }',
+  'ideas.picks': 'Lean ranked ideas for the start screen: { projectId?, limit? } → { picks: [{ id, title, summary, status, priority, projectId, projectName, updatedAt }] }',
   'files.list': 'List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries }',
   'files.search': 'Fuzzy file-name search for @ mentions: { sessionId?, query, limit? } → { path, rel, isDir }[]',
   'files.git': "The workspace's changes since the last commit, for the Files tab: { sessionId?, cwd? } → { repo, branch, ahead, behind, files, added, deleted } | null",

@@ -128,6 +128,52 @@ public static class IdeaOps
         return p.Value.Name is { Length: > 0 } n ? n : p.Value.Id;
     }
 
+    // ------------------------------------------------------------------ picks
+
+    /// <summary>
+    /// The ideas to offer where a session is about to start (the welcome screen, idea-ky14bu): a few small fields, no
+    /// sections, images or commits — the list a window reads on every start has to stay cheap. Only what nobody is
+    /// working on yet: <c>open</c> and <c>planned</c>, never <c>in-progress</c> (that one is being worked on now, in
+    /// some chat), <c>parked</c>, <c>done</c> or <c>rejected</c>. Ranked: the target project's own ideas first, then the
+    /// unbound ("global") ones, and inside a group the newer, higher-priority idea wins, with the user's own order as
+    /// the last tie-break so two ideas updated the same second never swap places between reads.
+    /// </summary>
+    public static List<JsonObject> Picks(IEnumerable<JsonObject> ideas, string? projectId, int limit)
+    {
+        var rank = new Dictionary<string, int>(StringComparer.Ordinal) { ["open"] = 0, ["planned"] = 1 };
+        var weight = new Dictionary<string, int>(StringComparer.Ordinal) { ["high"] = 0, ["medium"] = 1, ["low"] = 2 };
+
+        return ideas
+            .Select((idea, ord) => (idea, ord, project: ProjectOf(idea)))
+            .Where(x => x.project is null || (projectId is { Length: > 0 } && x.project.Value.Id == projectId))
+            .Where(x => rank.ContainsKey(Str(x.idea, "status") ?? "")) // open or planned, never in-progress/done/parked/rejected
+            .OrderByDescending(x => projectId is { Length: > 0 } && x.project is not null) // this project before global
+            .ThenBy(x => rank[Str(x.idea, "status") ?? "open"]) // open before planned
+            .ThenBy(x => weight.GetValueOrDefault(Str(x.idea, "priority") ?? "medium", 1))
+            .ThenByDescending(x => Str(x.idea, "updatedAt") ?? "", StringComparer.Ordinal)
+            .ThenBy(x => x.ord)
+            .Take(Math.Max(1, limit))
+            .Select(x => Pick(x.idea))
+            .ToList();
+    }
+
+    /// <summary>The lean form of an idea: what a card shows before it is opened, and nothing that grows with its sections.</summary>
+    private static JsonObject Pick(JsonObject idea)
+    {
+        var project = ProjectOf(idea);
+        return new JsonObject
+        {
+            ["id"] = Str(idea, "id"),
+            ["title"] = Str(idea, "title") ?? "",
+            ["summary"] = OneLine(Str(idea, "summary")),
+            ["status"] = Str(idea, "status") ?? "open",
+            ["priority"] = Str(idea, "priority") ?? "medium",
+            ["projectId"] = project?.Id,
+            ["projectName"] = project?.Name,
+            ["updatedAt"] = Str(idea, "updatedAt"),
+        };
+    }
+
     // ------------------------------------------------------------------ text
 
     /// <summary>The text on one line: the newlines of a title or a summary become spaces.</summary>
