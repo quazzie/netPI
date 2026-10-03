@@ -390,7 +390,15 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             Info.QueuedMessages = state.FollowUps.Count;
             if (state.SteerSignal.IsCancellationRequested) state.SteerSignal = new CancellationTokenSource();
         }
-        foreach (var input in items) rt.PersistInput(state, input, "steer");
+        foreach (var input in items)
+        {
+            // A drained agent-result notice is the parent's copy of the report — unless a wait already returned
+            // the report (ResultConsumed): then the notice is dropped, not persisted as a second copy.
+            if (input.NoticeKind == "agent-result" && input.Source?.StartsWith("agent:", StringComparison.Ordinal) == true
+                && !rt.ClaimNoticeForParent(input.Source!["agent:".Length..]))
+                continue;
+            rt.PersistInput(state, input, "steer");
+        }
         rt.PublishQueue(state);
         rt.PublishStatus(state);
     }

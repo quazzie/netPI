@@ -25,6 +25,8 @@ internal sealed class AgentState(AgentInfo info)
     public bool ResultConsumed { get; set; }
     /// <summary>Id of the agent-result input queued at the parent (removed again if a WaitAsync consumes the result first).</summary>
     public string? PendingNotificationId { get; set; }
+    /// <summary>The parent's transcript already has the report: its run took the agent-result notice, so a wait must not return it again.</summary>
+    public bool NoticeDrained { get; set; }
     /// <summary>The run was cancelled because its parent was aborted: don't notify (or wake) the parent.</summary>
     public bool CancelledByParent { get; set; }
 
