@@ -30,7 +30,7 @@ log file) belongs on the nuc models. Kev-9B is no longer recommended for any tas
 | **Log lines**: subsystem, severity, needs a human, routine | **Laya-logs-qwen** (421M, fine-tuned on Qwen3.8-27B's labels), — not served: `laya-tasks` was removed 2026-10-03 (no consumer); the checkpoint stays on the nuc | **0.78 / 0.93 / 0.93 / 0.97** | 37 ms/line on the 4070 (all 4 questions, p50 over the LAN; 0.42 s iGPU) | Qwen3.8-27B itself 0.79 / 0.92 / 0.95 / 0.93 (0.7 s/line); Laya-logs on Kev-9B's labels 0.53 / 0.89 / 0.84 / 0.91 | 120 real lines, hand-labelled |
 | **Browser**: which element next | **MiniLM ranker (fine-tuned) → top-20 → qwen3.8-27b** `/v1/decision` (20 lettered options); live in Chrome: the page's UIA controls → qwen3.8-27b chat, reasoning low | top-1 **0.461** (target in top-20: 0.846); × the Qwen-taught Laya picker 0.478; live, whole tasks: **16/16** ("Browser use" below) | ranker 65 ms (nuc) + 124 ms per step on the 5090 | Laya picker taught by Qwen 0.320 (nuc); the old Laya picker × Kev-9B 0.392 | Mind2Web, 475 steps on 14 websites never trained on |
 | **Computer use (Windows)**: which control next | **qwen3.8-27b**, zero-shot, over the whole UI Automation list (writes the control's number, thinking off) | top-1 **0.98** (43/44); live, whole tasks: **18/19** at reasoning low with a plan line, 15/19 thinking off ("Live computer use" below) | 139 ms per step on the 5090 (p50; 189 controls at most); live 0.2–0.4 s per step through AiGateway | Kev-9B 0.89, top-3 0.98 (~1 s, 4070); small rankers 0.55 | 44 hand-made tasks in 5 Windows apps; 19 live multi-step tasks in 4 apps |
-| **Dangerous command** (guardrail second opinion) | **qwen3.8-27b** `/v1/decision` | agrees with Qwen's generative labels 0.998 / 0.993 / 0.988 / 0.912; at p(yes) < 0.2 on the three risk questions it calls 696 of 852 harmless, none of them risky | 0.31 s per command (4 questions), 5090 | Kev-9B (remote_change unusable: 327 false yes); on the 12 hand-made: Kev-9B 12/12 | 852 real commands, reference = Qwen generative (not human yet; see "NInfer baselines", 0.4) |
+| **Dangerous command** (guardrail second opinion) | **qwen3.8-27b** `/v1/decision` | agrees with Qwen's generative labels 0.998 / 0.993 / 0.988 / 0.912; at p(yes) < 0.2 on the three risk questions it calls 696 of 852 harmless, none of them risky | 0.31 s per command (4 questions), 5090 | **Intern-Decision-4B** (nuc :8011, 0.17 s, equal recall on the 50 hand labels but much worse precision — "Intern-Decision-4B / -2B" below); Kev-9B (remote_change unusable: 327 false yes); on the 12 hand-made: Kev-9B 12/12 | 852 real commands, reference = Qwen generative (not human yet; see "NInfer baselines", 0.4) |
 | **Agent stuck / looping** | **Kev-9B** or **laya:typed-decisions** | 6/6 | 0.1 s / 9 ms | Kev-4B 6/6 | 6 hand-made traces — **too small** |
 | **Issue triage** | **laya:typed-decisions** (9 ms) | 8/8 | 9 ms (Ollaya, removed 2026-10-03) | Kev-9B / Kev-4B 8/8 | 8 hand-made issues — **too small** |
 | **Ideas recall**: which open idea a new chat's first message continues | **qwen3.8-27b** `/v1/decision`, one pick-one question: the open ideas as lettered options (title + summary) plus "none", the list in the system prompt ("Ideas recall" below) | at p ≥ 0.8: real first messages 3/6 right, 0/34 false; written ones 42/46 right, 0/22 false, no wrong idea | 95 ms p50 (the list cached: 1,866 of 1,960 tokens) | titles only: 37/46, 1/22 false; one yes/no per idea: 2.2 s and worse | 42 real first messages (6 with an idea) + 68 written by Claude — **small** |
@@ -566,3 +566,63 @@ still open. The yue2 taskbar idea (v9dg6g), which the commits seem to finish, st
   (destructive precision 0.03), although it scored 8–11/12 on the hand-made suite.
 - **Stuck, triage:** the suites are 6–8 hand-made cases — enough to rank models roughly, not to trust a choice. They
   need real sets from NetPI's journal before a model is picked for them.
+
+## Intern-Decision-4B / -2B on the nuc, evaluated 2026-10-03
+
+The question behind this: could a 4B decision model trained for typed decisions replace qwen3.8-27b on the nuc's
+4070, freeing the 5090? (`FrogNano-4B` is a coding agent, not a decision model — not tested. `Qwen3.8` has no 4B;
+the open release is 27B dense + 2.4T MoE. The 4B that exists is **Qwen3.5-4B**, and it already ships as a decision
+model: **`internlm/Intern-Decision-4B`, Qwen3.5-4B decision-tuned**, whose request and response shapes are exactly
+TypeSafe System One (`state`, `questions:{id:{type:choice|score|noul, instructions, criteria}}` → `answers` with
+`probabilities`/`confidence`/`choice`/`noul`/`score`), so it drops in beside `laya-tasks` as an `api: "systemone"`
+engine. Setup, scripts and the service are in `decisions-lab` (`/home/quazzie/idecision` on the nuc, `:8011`).
+
+**It does not replace the 27B, but the 4B is a credible second model for the guard.** Zero-shot, no training.
+
+**Log lines** (120 real lines, `log_questions_q.json`, 4 questions in one request, over the LAN):
+
+| model | category | severity | actionable | routine | ms/line |
+|---|---|---|---|---|---|
+| qwen3.8-27b `/v1/decision` (5090) | 0.675 | **0.892** | 0.875 | **0.908** | 95 |
+| Laya-logs-qwen (421M, trained) | **0.78** | 0.93 | 0.93 | 0.97 | **31** |
+| Intern-Decision-2B (4070) | 0.625 | 0.842 | 0.858 | 0.700 | 113 |
+| **Intern-Decision-4B (4070)** | 0.733 | 0.833 | **0.900** | 0.758 | 199 |
+
+The 4B beats the 27B on `category` and `actionable` and loses on `severity` and badly on `routine`. **The yes/no
+questions collapse toward the majority class**: on `routine` (gold 83 yes / 37 no) the 4B answers yes 112 times and
+no 8; on `actionable` (gold 18 yes / 102 no) it answers yes 10 times. So `actionable` 0.900 is barely above the
+always-"no" baseline (0.850) — recall on the positives is 8/18. This is the verification collapse LLM2Jev reports for
+narrow training mixtures, and **no temperature fixes it**: the probabilities are saturated (confidence p50 0.92–0.99),
+so re-scaling leaves the argmax unchanged from T=1 to T=50.
+
+**Guard** (852 real commands, reference = Qwen's generative labels; `p0_guard.mjs run idecision4b`):
+
+| model | destructive P/R | stops_process P/R | remote_change P/R | read_only | p50 |
+|---|---|---|---|---|---|
+| qwen3.8-27b | 1.00 / 0.83 | 0.87 / 1.00 | 0.68 / 0.83 | 0.912 | 311 ms |
+| **Intern-Decision-4B** | 0.48 / **0.83** | 0.78 / 0.95 | 0.49 / **0.94** | 0.871 | **170 ms** |
+| Intern-Decision-2B | 0.28 / 0.75 | 0.59 / 1.00 | 0.08 / 0.44 | 0.751 | 108 ms |
+
+Recall is as good as the 27B's (destructive equal, remote_change better), precision is much worse. Against the **50
+hand labels** (`guard_label_report.mjs`, the disputed cases) the 4B is level with the 27B decision: destructive
+48/50 (27B 49), stops_process 41/50 (39), remote_change 44/50 (45), read_only 16/50 (17). It is *not* safe enough to
+replace it as the guardrail second opinion: on the 852 at t=0.2 it clears 685 commands with 3 risky among them, the
+27B clears 696 with 0 — and one of the 3 (#371) is a case where the *hand label agrees with the 4B* and the Qwen
+generative reference is wrong. The card's fitted temperature (T=2.100509 for the 2B) does **not** transfer: at
+T≈1.5–3 every threshold flips to "yes" and nothing clears.
+
+**Browser element choice** (475 Mind2Web test steps, ranker top-20): Intern-Decision-4B **0.267**, below
+Kev-9B zero-shot 0.307 and below the *trained* 421M Laya picker 0.320, far below the 27B's 0.425–0.461. It does not
+help as an ensemble partner either: `qwen^1 × idec^w` peaks at 0.442 (w=0.25) against the 27B's 0.444, and a
+weighted average at 0.446 — noise. They agree on 37 % of steps and are right 52.3 % of those, and the oracle is
+0.518, so there is headroom the 4B is too weak to take (`idec_ensemble.mjs`).
+
+**Verdict.** Keep the 27B for browser, Windows and the agentic loops. The 4B earns a place only as a *fast,
+off-5090 second opinion on the guard* — 170 ms against 311 ms, at equal recall on the hand labels — and only after
+fine-tuning to fix the verification collapse and a calibration pass fitted on our own labels (`guard_temp.mjs`
+recomputes any temperature offline from the stored probabilities). **Not worth training as a 27B replacement**: it
+frees no VRAM (the 5090 is at 450 MiB free with the 27B resident — the model is the agents'), and the tasks it could
+offload are either bulk work Laya-logs already does 6× faster or work that needs generation. The one genuinely new
+capability it brings is **options beyond 26** (`SystemOne.cs` caps at the alphabet, which is why the 189-control
+Windows case cannot be a decision at all); a numeric-identifier readout lifts that cap, and that is the one experiment
+still worth running.
