@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const webDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(webDir, '..');
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, webDir, ['VITE_', 'NETPI_']);

@@ -500,7 +500,7 @@ Per-tab narrow layouts:
 ### Built-in plugin tabs
 
 Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle
-sizes (minified; Svelte runtime and kit included): Work 88KB, Ideas 90KB, Diagnostics 99KB, Files 67KB.
+sizes (minified; Svelte runtime and kit included): Work 103KB, Ideas 113KB, Diagnostics 118KB, Files 76KB.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,
 Finished), each with a count. The open or closed state of each section is remembered (`storageKey`,
@@ -704,7 +704,6 @@ Import from `@netpi/kit`. The build aliases it to `web/src/lib/kit/index.js`, an
 | `Collapsible` | `title` or `header` snippet, `bind:open` |
 | `Markdown` | `text`, `highlight` (default `true`) |
 | `Icon` | `name` (host icon set) or an inline `<svg>` string, `size`, `stroke` |
-| `Spinner` | `size` |
 
 The kit also exports the helpers `timeAgo`, `duration`, `tokens`, `usd`, `bytes`, `relPath`, `basename`, `truncate`,
 `stamp`, `renderMarkdown` and `host`, plus:

@@ -97,17 +97,6 @@ export async function useAgent(sessionId, id) {
   }
 }
 
-/** Switch an agent on or off. */
-export async function setAgentEnabled(id, enabled) {
-  try {
-    app.slots = (await rpc('agents.setEnabled', { id, enabled })) ?? app.slots;
-    return true;
-  } catch (e) {
-    toast(e.message, 'error');
-    return false;
-  }
-}
-
 /** The agent for a new chat: the last one chosen while it is active, else the first active one, else the last one. */
 export function defaultAgent() {
   const last = agentById(load(LAST_KEY, null));

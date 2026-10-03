@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { Icon, IconButton, SearchInput, Menu, Empty, Button, basename, prepareImage, useRefresh } from '@netpi/kit';
+  import { Icon, IconButton, SearchInput, Menu, Empty, Button, prepareImage, useRefresh } from '@netpi/kit';
   import IdeaCard from './IdeaCard.svelte';
   import NewIdea from './NewIdea.svelte';
   import { STATUSES, ACTIVE, STATUS_TONE, matches, GROUP_ORDER, CLOSED_ORDER } from './model.js';

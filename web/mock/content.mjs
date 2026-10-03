@@ -116,13 +116,6 @@ src/NetPI.Host/Lanes/LanePool.cs
 src/NetPI.Host/Lanes/AgentScheduler.cs
 tests/NetPI.Host.Tests/SchedulerTests.cs`;
 
-export const LS_OUTPUT = `Lanes/
-Plugins/
-Agents/
-Program.cs  3.1 KB
-NetPI.Host.csproj  1.2 KB
-appsettings.json  412 B`;
-
 export const THINK_1 = `The user wants the agent scheduler to fail gracefully when a pool is unknown. First I should read **AgentScheduler.cs** to see how pools are looked up — I suspect \`_pools[pool]\` throws a KeyNotFoundException that bubbles up to the agent loop.
 
 Then build to make sure the solution compiles before changing anything, and only then edit.`;

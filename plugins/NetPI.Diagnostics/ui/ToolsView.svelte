@@ -1,5 +1,5 @@
 <script>
-  import { SearchInput, Empty, Icon } from '@netpi/kit';
+  import { SearchInput, Empty } from '@netpi/kit';
   let { tools, error } = $props();
   let q = $state('');
   let showShadowed = $state(true);
