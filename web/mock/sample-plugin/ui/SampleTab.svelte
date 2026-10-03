@@ -31,6 +31,10 @@
       ctx.app.toast(`Sample: ${e.message}`, 'error');
     }
   }
+  // The empty states below are `{#if}` siblings, not the `{:else}` branch of the two lists. A keyed each with a
+  // fallback, whose list is replaced again while it is still mounting (this tab refreshes on mount and again when it
+  // is shown), trips a Svelte 5.57 bug: `reconcile` moves a row next to a row whose DOM nodes do not exist yet and
+  // throws "Cannot read properties of null (reading 'start')" — the list then renders empty. Keep the `{#if}` here.
 
   onMount(() => {
     refresh();
@@ -84,6 +88,7 @@
     {#snippet actions()}
       {#if busy.length}<Badge tone="accent">{busy.length} busy</Badge>{/if}
     {/snippet}
+    {#if !agents.length}<Empty icon="bot">No agents</Empty>{/if}
     {#each agents as a (a.id)}
       <div class="np-row" role="button" tabindex="0" onclick={() => ctx.app.openSession(a.sessionId)} onkeydown={(e) => e.key === 'Enter' && ctx.app.openSession(a.sessionId)}>
         <StatusDot status={tone(a.status)} />
@@ -91,19 +96,16 @@
         <span class="np-row-sub">{a.activity ?? a.status}</span>
         {#if a.startedAt}<TimeAgo time={a.startedAt} class="np-dim np-small" />{/if}
       </div>
-    {:else}
-      <Empty icon="bot">No agents</Empty>
     {/each}
   </Section>
 
   <Section title="Lanes">
+    {#if !lanes.length}<Empty>No lane pools</Empty>{/if}
     {#each lanes as l (l.key)}
       <div class="np-stack-sm lane">
         <div class="np-hstack"><span class="np-mono">{l.key}</span><span class="np-spacer"></span><span class="np-dim np-small">{l.busy}/{l.capacity} busy · {l.queued} queued</span></div>
         <div class="np-progress" style="--value: {l.capacity ? l.busy / l.capacity : 0}" data-tone={l.busy >= l.capacity ? 'warn' : undefined}></div>
       </div>
-    {:else}
-      <Empty>No lane pools</Empty>
     {/each}
   </Section>
 

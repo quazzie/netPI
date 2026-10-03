@@ -85,6 +85,39 @@ export function createIdeas({ publish }) {
 
   const api = {
     'ideas.list': () => ({ file, fileName: 'ideas.json', exists: doc.exists, ideas: doc.ideas }),
+    // The lean, ranked list the welcome screen reads on every window start (idea-ky14bu): the target project's own
+    // open/planned ideas first, then the global ones. Same rule as plugins/NetPI.Ideas (IdeaOps.Picks).
+    'ideas.picks': (p) => {
+      const rank = { open: 0, planned: 1 };
+      const weight = { high: 0, medium: 1, low: 2 };
+      const target = p.projectId ? String(p.projectId) : null;
+      const limit = Math.min(24, Math.max(1, Number(p.limit ?? 5) || 5));
+      return {
+        picks: doc.ideas
+          .map((idea, ord) => ({ idea, ord, project: idea.project ?? null }))
+          .filter((x) => !x.project || (target && x.project.id === target))
+          .filter((x) => rank[x.idea.status] !== undefined)
+          .sort(
+            (a, b) =>
+              ((target && a.project ? 0 : 1) - (target && b.project ? 0 : 1)) ||
+              rank[a.idea.status] - rank[b.idea.status] ||
+              (weight[a.idea.priority] ?? 1) - (weight[b.idea.priority] ?? 1) ||
+              String(b.idea.updatedAt ?? '').localeCompare(String(a.idea.updatedAt ?? '')) ||
+              a.ord - b.ord,
+          )
+          .slice(0, limit)
+          .map((x) => ({
+            id: x.idea.id,
+            title: x.idea.title,
+            summary: String(x.idea.summary ?? '').replace(/[\r\n]+/g, ' ').trim(),
+            status: x.idea.status,
+            priority: x.idea.priority ?? 'medium',
+            projectId: x.project?.id ?? null,
+            projectName: x.project?.name ?? null,
+            updatedAt: x.idea.updatedAt,
+          })),
+      };
+    },
     'ideas.get': (p) => find(p.id),
     'ideas.add': (p) => {
       const proj = stamp(p);

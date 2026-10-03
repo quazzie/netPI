@@ -212,7 +212,7 @@ public static class IdeasTests
             var env = new Env();
             await env.StartAsync();
             var flags = env.Ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
-            foreach (var m in new[] { "ideas.work", "ideas.capabilities", "ideas.unread", "ideas.list", "ideas.get", "ideas.suggestions", "ideas.toPrompt", "ideas.image" })
+            foreach (var m in new[] { "ideas.work", "ideas.capabilities", "ideas.unread", "ideas.list", "ideas.picks", "ideas.get", "ideas.suggestions", "ideas.toPrompt", "ideas.image" })
             {
                 Check.True(flags.TryGetValue(m, out var readOnly), $"{m} is registered");
                 Check.True(readOnly, $"{m} only reads, so it is marked read-only");
@@ -220,6 +220,56 @@ public static class IdeasTests
             // The other side of the claim: what writes stays unmarked, so nothing reaches it by accident.
             foreach (var m in new[] { "ideas.add", "ideas.update", "ideas.delete", "ideas.reorder", "ideas.resolve", "ideas.addImage", "ideas.removeImage", "ideas.import", "ideas.quickAdd" })
                 Check.False(flags.GetValueOrDefault(m), $"{m} changes something, so it stays writable");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas: ideas.picks offers the target project's open ideas, then the global ones, and nothing being worked on", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            async Task<JsonObject> Add(string project, JsonObject idea) => await env.Rpc("ideas.add", new JsonObject { ["projectId"] = project, ["idea"] = idea });
+
+            // Demo: one high open (added first, so the priority decides it is still first), one low open, one planned,
+            // one done and one in-progress — the last two are somebody's work in progress, not something to offer.
+            var high = await Add(env.Project.Id, new JsonObject { ["title"] = "Demo high open", ["priority"] = "high" });
+            await Add(env.Project.Id, new JsonObject { ["title"] = "Demo low open", ["priority"] = "low" });
+            await Add(env.Project.Id, new JsonObject { ["title"] = "Demo planned", ["status"] = "planned" });
+            await Add(env.Project.Id, new JsonObject { ["title"] = "Demo done", ["status"] = "done" });
+            await Add(env.Project.Id, new JsonObject { ["title"] = "Demo running", ["status"] = "in-progress", ["priority"] = "high" });
+            await Add(env.Project2.Id, new JsonObject { ["title"] = "Other open", ["priority"] = "high" });
+            await Add("global", new JsonObject { ["title"] = "Global open" });
+
+            var picks = (JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project.Id }))["picks"]!;
+            var titles = picks.Select(p => p!["title"].Str()).ToList();
+            Check.Equal("Demo high open, Demo low open, Demo planned, Global open", string.Join(", ", titles));
+            Check.True(titles.Contains("Demo high open") && titles.IndexOf("Demo high open") < titles.IndexOf("Demo low open"),
+                "priority before recency, so a high idea older than a low one still leads");
+            Check.False(titles.Any(t => t.StartsWith("Demo done") || t.StartsWith("Demo running")), "never what is done or in progress");
+
+            // Lean on purpose: the welcome screen reads this on every window start.
+            var first = (JsonObject)picks[0]!;
+            Check.Equal(high["id"].Str(), first["id"].Str());
+            Check.Equal("Demo", first["projectName"].Str());
+            Check.Equal(env.Project.Id, first["projectId"].Str());
+            Check.Equal("high", first["priority"].Str());
+            Check.True(first["updatedAt"].Str() is { Length: > 0 }, "updatedAt, so the row can say how old it is");
+            foreach (var heavy in new[] { "sections", "images", "commits", "sessions", "tags" })
+                Check.False(first.ContainsKey(heavy), $"a pick carries no {heavy}");
+
+            // Another project sees its own ideas first; an unknown one only the global ones.
+            var other = (JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project2.Id }))["picks"]!;
+            Check.Equal("Other open, Global open", string.Join(", ", other.Select(p => p!["title"].Str())));
+            var unknown = (JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = "prj_nope00" }))["picks"]!;
+            Check.Equal("Global open", string.Join(", ", unknown.Select(p => p!["title"].Str())));
+            var none = (JsonArray)(await env.Rpc("ideas.picks", new JsonObject()))["picks"]!;
+            Check.Equal("Global open", string.Join(", ", none.Select(p => p!["title"].Str())),
+                "with no target project only the global ones are relevant");
+
+            // The limit is the caller's, clamped to something a screen can show.
+            Check.Equal(1, ((JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project.Id, ["limit"] = 1 }))["picks"]!).Count);
+            Check.Equal(1, ((JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project.Id, ["limit"] = 0 }))["picks"]!).Count);
+            Check.Equal(4, ((JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project.Id, ["limit"] = "99" }))["picks"]!).Count,
+                "there are only four to show");
             env.Ctx.Unload();
         });
 

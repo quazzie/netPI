@@ -194,6 +194,16 @@ the + tab all start in the project shown. The project button in the composer bar
 `/project` open `ProjectPicker` for a session, which calls `sessions.setProject`; the context plugin then appends
 a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
 
+**Ideas on the start screen** (`Welcome.svelte`, idea-ky14bu). Above "Recent sessions" the welcome screen offers at
+most three ideas from the backlog, read from the Ideas plugin with `ideas.picks { projectId, limit: 3 }` — the project's
+own open/planned ideas first, then the global ones (`state/welcomeIdeas.svelte.js` holds the list; it reads once per
+window and again on `ideas.changed`, and switches itself off when the method is unknown, so a NetPI without the plugin
+— or with an older one — shows exactly the screen it always did). The host does no ranking of its own: it owns neither
+the backlog nor the notion of "relevant". A row's project name is shown only when it is not the project the screen
+targets, and a click starts a session in the idea's own project with the idea attached (`ideas.attach`, as the
+composer chip does), titled after the idea. If the attach cannot happen the Ideas tab opens instead of dropping the
+click.
+
 **Projects dialog** (`ProjectsModal`, opened with `openProjects({ view, id?, sessionId?, select? })`). One dialog with
 three views, each a component (`ProjectsListView`, `ProjectsNewView`, `ProjectsEditView`) and the dialog itself holding
 what they share — which view is open, the form behind the footers, and create/save/remove: `list` (filter, new session,

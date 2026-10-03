@@ -18,8 +18,9 @@ const argVal = (n) => (argv.indexOf(n) >= 0 ? argv[argv.indexOf(n) + 1] : null);
 const OUT = argVal('--out') ? path.resolve(argVal('--out')) : path.join(here, 'screenshots');
 // Sections: each log('name') header below starts one. --only runs just the named sections (a name, or a part of one, case-insensitive):
 // every other section is skipped with its setup, it is not merely left unreported. --list prints the names. A name that matches
-// nothing is an error (exit 2) before anything starts, so a typo cannot be a green empty run.
-const SECTIONS = [...fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').matchAll(/^(?:if \(!EXTERNAL[^\n]*\{\n  )?log\('([^'\n]+)'\);/gm)].map((m) => m[1]);
+// nothing is an error (exit 2) before anything starts, so a typo cannot be a green empty run. The header pattern takes the
+// end of the line as \r?\n, or a section written as `if (…) { log(…)` is invisible to --only on a CRLF checkout (Windows).
+const SECTIONS = [...fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').matchAll(/^(?:if \(!EXTERNAL[^\n]*\{\r?\n  )?log\('([^'\n]+)'\);/gm)].map((m) => m[1]);
 if (argv.includes('--list')) {
   console.log(SECTIONS.join('\n'));
   process.exit(0);
@@ -1687,6 +1688,85 @@ log('start screen: the project new sessions start in');
   const id3 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   const s3 = id3 ? await rpcCall('sessions.get', { id: id3 }) : null;
   check('the start screen recreates a session in the chosen project', s3?.projectId === idOf('website'), String(s3?.projectId));
+}
+
+}
+if (want('welcome screen: ideas to work on')) {
+log('welcome screen: ideas to work on');
+{
+  // idea-ky14bu: the start screen suggests what is in the backlog, and a click starts that work.
+  const projects = await rpcCall('projects.list');
+  const idOf = (name) => projects.find((p) => p.name === name)?.id;
+  while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
+  await page.waitForSelector('.welcome .target');
+
+  // The target decides which ideas are relevant: point the start screen at the project the seeded backlog belongs to
+  // (the pickers start a session in what you pick, so the target is set the way a fresh window reads it).
+  await page.evaluate((id) => localStorage.setItem('netpi.lastProject', JSON.stringify(id)), idOf('netpi'));
+  await page.reload();
+  await page.waitForSelector('.welcome .target');
+  const rows = page.locator('.welcome .prow');
+  await rows.first().waitFor({ timeout: 4000 }).catch(() => {});
+  const wanted = (await rpcCall('ideas.picks', { projectId: idOf('netpi'), limit: 3 })).picks ?? [];
+  const shown = await rows.allInnerTexts();
+  const wantedTitles = wanted.map((w) => w.title);
+  check('welcome screen: the target is the project the backlog belongs to',
+    (await page.locator('.welcome .target').innerText()).includes('netpi'), await page.locator('.welcome .target').innerText());
+  check('welcome screen: the ideas of the project it targets, at most three, in their order',
+    shown.length > 0 && shown.length === wantedTitles.length && shown.length <= 3 && shown.every((t, i) => t.includes(wantedTitles[i])),
+    `${shown.length} of ${wantedTitles.length}: ${shown.map((t) => t.split('\n')[0]).join(' / ')}`);
+  check('welcome screen: nothing that is being worked on (in-progress, done, parked) is offered',
+    !shown.some((t) => /Cache the model list|Stream compaction summaries|Semantic search/.test(t)), shown.join(' / '));
+  const box = await rows.first().boundingBox();
+  const recentBox = await page.locator('.welcome .recent').boundingBox().catch(() => null);
+  check('welcome screen: the ideas sit above the recent sessions',
+    !!box && (!recentBox || box.y < recentBox.y), recentBox ? `${Math.round(box.y)} vs ${Math.round(recentBox.y)}` : 'no recent sessions');
+  await shot(page, '12c-welcome-ideas');
+
+  // A click starts the work: a chat in the idea's project with the idea in it.
+  const first = wanted[0];
+  await rows.first().click();
+  await page.waitForSelector('.topbar .tab.active');
+  await page.waitForTimeout(400);
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const started = sid ? await rpcCall('sessions.get', { id: sid }) : null;
+  const msgs = sid ? (await rpcCall('sessions.messages', { id: sid })).messages ?? [] : [];
+  const notice = msgs.find((m) => m.meta?.kind === 'idea');
+  check('welcome screen: a click starts a chat on the idea with the idea attached',
+    started?.projectId === idOf('netpi') && notice?.meta?.ideaId === first.id && (await page.locator('.composer').count()) === 1,
+    `${sid} ${started?.projectId} notice ${notice?.meta?.ideaId ?? 'none'}`);
+  check('welcome screen: and titles the chat after the idea', started?.title === first.title, started?.title);
+  await shot(page, '12d-welcome-idea-started');
+
+  // The backlog moves in another window: ideas.changed moves the offer with it.
+  await page.locator('.topbar .tab.active .tab-close').click();
+  await page.waitForSelector('.welcome .target');
+  await rpcCall('ideas.update', { id: first.id, patch: { status: 'done' } });
+  await page.waitForFunction((gone) => ![...document.querySelectorAll('.welcome .prow')].some((r) => r.textContent.includes(gone)), first.title, { timeout: 4000 }).catch(() => {});
+  check('welcome screen: an idea finished elsewhere disappears from the offer',
+    (await page.locator('.welcome .prow', { hasText: first.title }).count()) === 0);
+  await rpcCall('ideas.update', { id: first.id, patch: { status: first.status } });
+
+  // No Ideas plugin (or an older one, without ideas.picks): the start screen is exactly as it was.
+  await rpcCall('mock.capabilities', { missing: ['ideas.picks'] });
+  try {
+    await page.reload();
+    await page.waitForSelector('.welcome .target');
+    await page.waitForTimeout(700);
+    check('welcome screen: without ideas.picks nothing is offered and nothing breaks',
+      (await page.locator('.welcome .prow').count()) === 0 && (await page.locator('.welcome .recent, .keys').count()) > 0);
+    await shot(page, '12e-welcome-no-ideas');
+  } finally {
+    await rpcCall('mock.capabilities', { missing: [] });
+  }
+
+  // the next section works from the "website" session: close everything and recreate it from the start screen
+  while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
+  await page.waitForSelector('.welcome .target');
+  await page.locator('.welcome .target').click();
+  await page.waitForSelector('.popover .item');
+  await page.locator('.popover .item', { hasText: 'website' }).first().click();
+  await page.waitForTimeout(500);
 }
 
 }

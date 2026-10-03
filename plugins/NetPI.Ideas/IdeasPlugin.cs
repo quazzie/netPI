@@ -186,9 +186,16 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
     private readonly IdeaSnapshots _snapshots = snapshots;
     private readonly string _home = home;
 
+    /// <summary>How many ideas the welcome screen is offered when it asks for none.</summary>
+    public const int DefaultPickLimit = 5;
+
     public void Register(IRpcRegistry rpc)
     {
         rpc.RegisterReadOnly("ideas.list", List, "The ideas backlog: { } → { storage: { backend, database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }");
+        rpc.RegisterReadOnly("ideas.picks", Picks,
+            "Ideas to offer where a session is about to start (the welcome screen): { projectId?, limit? } → { picks: [{ id, title, summary, status, priority, projectId?, projectName?, updatedAt }] }. " +
+            "Lean on purpose (no sections, images or commits) so a window can read it on every start: the target project's own " +
+            $"open/planned ideas first, then the global ones, at most {IdeasRpc.DefaultPickLimit} unless a limit is asked for");
         rpc.RegisterReadOnly("ideas.get", Get, "{ id } → idea (with its revision)");
         rpc.RegisterReadOnly("ideas.review", Review,
             "Why an idea's completion is not judged automatically, and what a reviewer has to read: { id } → { ideaId, revision, review: { limit, at, revision, commits: [{ hash, short, subject, repo, files?, note? }], requirements: [...] } | null }. " +
@@ -249,6 +256,17 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
             ["file"] = _locator.LegacyFile(),
             ["fileName"] = _locator.FileName(),
             ["exists"] = _repo.Count() > 0,
+        });
+    });
+
+    public Task<object?> Picks(RpcRequest req, CancellationToken ct) => Guard(() =>
+    {
+        ct.ThrowIfCancellationRequested();
+        var projectId = req.Str("projectId"); // an id, as the welcome screen has it; an unknown one simply matches nothing
+        var limit = Math.Clamp(req.Int("limit") ?? DefaultPickLimit, 1, 24);
+        return Task.FromResult<object?>(new JsonObject
+        {
+            ["picks"] = new JsonArray(IdeaOps.Picks(_repo.All(), projectId, limit).Select(i => (JsonNode?)i).ToArray()),
         });
     });
 

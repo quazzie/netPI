@@ -156,7 +156,7 @@ Every idea carries an integer **`revision`**, raised by every stored change. `id
 `ideas.update` all return it, and `ideas.update` takes it back as `expectedRevision` — that is how a stale window is
 turned into a `conflict` instead of a silent overwrite.
 
-The methods that only read are registered `readOnly`: `ideas.list`, `ideas.get`, `ideas.suggestions`,
+The methods that only read are registered `readOnly`: `ideas.list`, `ideas.picks`, `ideas.get`, `ideas.suggestions`,
 `ideas.toPrompt`, `ideas.image` and the three `ideas.work`/`ideas.capabilities`/`ideas.unread` views. A tool may call
 those without `--write` (`docs/PROTOCOL.md`); everything else this plugin registers writes.
 
@@ -189,6 +189,26 @@ projects), `not_found` (idea, session or project — also a card that is gone), 
 `file`, `fileName` and `exists` are kept only so an older UI has something to show; `storage` is the answer now, and
 nothing in the plugin writes the file they name. No filtering happens on the server. The tab filters by project, status
 and tag client-side.
+
+### `ideas.picks`
+
+`{ projectId?, limit? }` → `{ picks: [{ id, title, summary, status, priority, projectId?, projectName?, updatedAt }] }`
+
+The short list a screen offers where a session is about to start (the welcome screen reads it, idea-ky14bu). It is
+deliberately lean — no `sections`, `images`, `commits`, `sessions` or `tags` — so a window can read it on every start
+without carrying the whole backlog; the detail is one `ideas.get` away.
+
+Only what nobody is working on yet: `open` and `planned`. Never `in-progress` (that one is being worked on in some
+chat), `parked`, `done` or `rejected`. Ranked:
+
+1. the `projectId`'s own ideas, then the unbound ("global") ones — with no `projectId`, only the global ones;
+2. `open` before `planned`;
+3. `high`, then `medium`, then `low` priority;
+4. the more recently updated first, with the user's own order as the last tie-break (so two ideas updated in the same
+   second never swap places between reads).
+
+`limit` defaults to 5 and is clamped to 1–24. An unknown `projectId` is not an error: it simply matches no bound idea,
+so the global ones are what comes back.
 
 ### `ideas.get`
 

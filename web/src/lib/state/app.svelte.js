@@ -13,6 +13,7 @@ import { loadAsks, askEvent, pendingIn, approvalIn, pruneSession } from './asks.
 import { loadPlans, planEvent, planWaiting, prunePlans } from './plans.svelte.js';
 import { recall } from '../../components/composer/ideaRecall.svelte.js';
 import { suggestions } from '../../components/composer/ideaSuggestions.svelte.js';
+import { welcomeIdeas } from './welcomeIdeas.svelte.js';
 import { formatBytes, payloadBytes, sendBudget } from '../images.js';
 
 const TABS_KEY = 'netpi.openTabs';
@@ -828,6 +829,10 @@ function onEvent(d, env) {
       break;
     case 'ideas.resolved':
       suggestions.resolved(d);
+      break;
+    case 'ideas.changed':
+      // the backlog moved: the welcome screen offers what is in it now, and this window's picks too
+      welcomeIdeas.changed();
       break;
     default:
       break;
