@@ -31,13 +31,17 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   `tests/MockLlm` (scripted model server), `tests/NetPI.E2E` (end-to-end suite).
 
 ## Build & test
+- **Verification is proportional to the change, including before a merge.** Docs, comments, formatting and line
+  endings need the relevant link/diff/checkout or reproducible-build checks, not test suites. A small plugin UI edit
+  needs its bundle build and a focused UI check; a plugin behavior change needs its owning tests and affected E2E
+  cases. Use full gates for shared contract changes, cross-cutting behavior, or an explicit user request. A merge
+  alone never justifies a full run. Broaden checks only when the affected scope or new evidence calls for it.
 - **Hunting one failing test? Run that one test, not the suite.** A full sweep (`scripts\test.ps1` with no filter, or
   `scripts\e2e.ps1` with no selector) takes minutes, holds the machine, and tells you nothing the single test does not.
   While fixing: `dotnet tests/NetPI.<X>.Tests/bin/Debug/NetPI.<X>.Tests.dll "<test name substring>"`, or
   `.\scripts\test.ps1 -Suite <X> -Only "<name>"`, or `.\scripts\e2e.ps1 -Only <id>` / `-Failed` (the failure file in
-  `artifacts/e2elogs/<run>/failures/` already holds the evidence: read it instead of running again). The full sweep runs
-  **once**, at the end, as the gate before a merge — never as the loop, never "to see if it still passes", never again
-  after a one-test fix until everything you meant to change is in.
+  `artifacts/e2elogs/<run>/failures/` already holds the evidence: read it instead of running again). When the scope
+  warrants a full sweep, run it once; after a fix, rerun the failures and affected tests, not the whole set.
 - **Work in a worktree, not here** (see `C:\AI\Projects\AGENTS.md`): one worktree and branch per agent. It is how you
   avoid another agent's *edits* reaching you and yours reaching them. Several fixes can share that one tree — take them
   one at a time, one commit each, merging each into `master` before the next.
@@ -83,17 +87,17 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
   Agent, Aux, Host, Storage (the storage port's conformance suite; a provider joins in its `Providers.All`).
   End-to-end (real server, mock model): `.\scripts\e2e.ps1` (below; `docs/TESTING.md`).
-- **The test loop: one big run, then only the failures.** `.\scripts\test.ps1` builds the selected suites once
+- **The test loop: select the affected tests, then only the failures.** `.\scripts\test.ps1` builds the selected suites once
   (one generated solution), runs them (2 processes at once by default; `-Parallel 3` for three, `-Serial` for one),
   keeps the log and timings in `artifacts/testlogs`, and prints the failing names as a paste-ready `-Only` command.
-  Re-run those while fixing, and the full run again before merging. `-Suite Aux`, `-Only "settings:"` (substring,
+  Re-run those while fixing; merging does not require a wider run. `-Suite Aux`, `-Only "settings:"` (substring,
   OR-ed), `-SkipBuild`. Never re-run the whole set to check one fix. The summary shows each suite's process time
   next to its own reported test time: a gap there means the runner waited on output that never arrived.
 - **End-to-end: pick what your change can reach; never the whole suite while you work.** `.\scripts\e2e.ps1 -Changed` runs
   the tests your changed files can affect (`tests/NetPI.E2E/areas.json` maps them); `-Only <id|substring>`, `-Tag <area>`,
   `-Smoke`, `-Failed` (what failed and has not passed since, across runs) and `-List` pick by hand. One test is ~2 s, one
   edited plugin plus its tests ~9 s, the smoke set ~10 s, and it builds only the projects whose sources changed. The whole
-  suite (sharded, ~35 s) is the gate before a merge and after any change to `NetPI.Abstractions`: run it once, not as a
+  suite is for shared contract changes or cross-cutting behavior, not every merge: run it once, not as a
   loop. A run lists *every* failure at once, each with its evidence in `artifacts/e2elogs/<run>/failures/<id>.txt` (the
   server log, the mock model's requests and the client events since that test began): read that instead of running again
   to see what happened, fix, then `-Failed`. A changed E2E runner is checked with `.\scripts\e2e.ps1 -SelfTest`.

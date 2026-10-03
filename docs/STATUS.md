@@ -33,8 +33,8 @@ Windows validation on 2026-10-03: the six unit suites (`scripts/test.ps1`) from 
 | Host | 170 passed |
 | Storage | 104 passed |
 
-Coverage details are in [TESTING.md](TESTING.md). The end-to-end and mock-UI gates run once per merge
-(`scripts/e2e.ps1`, `npm run e2e`; the CI workflow's jobs mirror them).
+Coverage and verification scope are in [TESTING.md](TESTING.md). Small changes use focused checks; full gates
+are for shared contracts or cross-cutting behavior. The checked-in CI workflow runs broader jobs when invoked.
 
 ## Remaining limits
 
