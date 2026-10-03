@@ -1,6 +1,6 @@
 # Transient sessions: don't save a session that is closed before doing anything
 
-Status: planned · 2026-07-14
+Status: implemented · 2026-07-14
 
 ## Problem
 

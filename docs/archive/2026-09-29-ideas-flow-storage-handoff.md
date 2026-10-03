@@ -134,7 +134,7 @@ Definition of done: pending cards and ideas survive interrupted operations; back
 
 ## Dispatch prompt
 
-Read docs/plans/2026-09-29-ideas-flow-storage-handoff.md and repository instructions. Implement assignment <A/B/C/D/E> in your own branch/worktree, respecting dependencies and owned files. Reproduce each relevant finding in a test before fixing it. Coordinate shared contracts and test registration with the parent. Preserve documented behavior and unknown fields; do not deploy or touch live data/settings. Return your commit, changed paths, tests/results, compatibility notes and outstanding integration risks. The coordinator owns final validation and docs.
+Read docs/archive/2026-09-29-ideas-flow-storage-handoff.md and repository instructions. Implement assignment <A/B/C/D/E> in your own branch/worktree, respecting dependencies and owned files. Reproduce each relevant finding in a test before fixing it. Coordinate shared contracts and test registration with the parent. Preserve documented behavior and unknown fields; do not deploy or touch live data/settings. Return your commit, changed paths, tests/results, compatibility notes and outstanding integration risks. The coordinator owns final validation and docs.
 
 
 ## What was done (2026-09-29, branch `ideas-flow`)

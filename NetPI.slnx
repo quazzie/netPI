@@ -31,6 +31,7 @@
     <Project Path="plugins/NetPI.Tools.Ssh/NetPI.Tools.Ssh.csproj" />
     <Project Path="plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj" />
     <Project Path="plugins/NetPI.Work/NetPI.Work.csproj" />
+    <Project Path="plugins/NetPI.Workspaces/NetPI.Workspaces.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/NetPI.Abstractions/NetPI.Abstractions.csproj" />

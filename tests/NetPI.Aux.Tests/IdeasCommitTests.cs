@@ -5,7 +5,7 @@ namespace NetPI.Aux.Tests;
 
 /// <summary>
 /// The commit check's own bookkeeping: where it is in a repository's history, what it does with a burst, a worktree, a
-/// decision that fails and a history that was rewritten (docs/plans/2026-09-29-ideas-flow-storage-handoff.md, assignment
+/// decision that fails and a history that was rewritten (docs/archive/2026-09-29-ideas-flow-storage-handoff.md, assignment
 /// C). The repository is a fake that behaves like <c>git log since..until</c>, so each case is exact.
 /// </summary>
 public static class IdeasCommitTests

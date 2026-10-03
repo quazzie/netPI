@@ -1,6 +1,6 @@
 # Testing NetPI
 
-The Host plugin-independence gate scans all 30 plugin projects and current shared/imported build declarations for peer dependencies, then starts/stops each plugin alone. Agent regressions cover reload admission, shutdown timeout, waiter cancellation, prompt races, profiles without Context and reset forks after Context reload. Aux tests cover shared decision admission, alternate providers, verifier cancellation acknowledgement and optimistic verified updates. `web/mock/e2e.mjs --only 'plugin tab: Work|capability removal and recovery' --no-dev` exercises physical capacity/background outcomes and executor/Context UI recovery. The mock-only capability scenario creates its own session and does not run against an external server.
+The Host plugin-independence gate scans all 31 plugin projects and current shared/imported build declarations for peer dependencies, then starts/stops each plugin alone. Agent regressions cover reload admission, shutdown timeout, waiter cancellation, prompt races, profiles without Context and reset forks after Context reload. Aux tests cover shared decision admission, alternate providers, verifier cancellation acknowledgement and optimistic verified updates. `web/mock/e2e.mjs --only 'plugin tab: Work|capability removal and recovery' --no-dev` exercises physical capacity/background outcomes and executor/Context UI recovery. The mock-only capability scenario creates its own session and does not run against an external server.
 
 Three layers, all without NuGet packages (console runners, no test framework):
 
@@ -63,8 +63,8 @@ passes (`12 passed, 0 failed, 3 skipped, 15 total`), and the script prints how m
 not a failure — it says what was missing — but it is never counted as a pass either.
 
 The suites are built **once**, as one generated solution holding just the requested projects (`artifacts/test-speed`),
-so shared dependencies are compiled once instead of once per suite. Up to three suite *processes* then run at a
-time (`-Parallel`, default 2; `-Serial` for one). Each suite gets its own temporary root (`NETPI_TEST_ROOT`, under
+so shared dependencies are compiled once instead of once per suite. Up to five suite *processes* then run at a
+time (`-Parallel`, 1–5, default 2; `-Serial` for one). Each suite gets its own temporary root (`NETPI_TEST_ROOT`, under
 the system temp — not the repo, because the git tests create real repositories and a nested one behaves
 differently), so two invocations of the same suite never delete each other's files.
 

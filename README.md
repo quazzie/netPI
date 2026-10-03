@@ -98,7 +98,7 @@ disabled tools); everything else appears with the default its own plugin declare
 All keys: [docs/SETTINGS.md](docs/SETTINGS.md).
 
 Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized URL). Linux/macOS: `./build.sh`, then
-`artifacts/app/netpi-server --open`.
+`artifacts/dev/app/netpi-server --open` (a build lands in the dev tree; `--publish` installs it).
 
 ## Using it
 
