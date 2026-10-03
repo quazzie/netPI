@@ -537,8 +537,9 @@ Per-tab narrow layouts:
 ### Built-in plugin tabs
 
 Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle sizes
-(minified, Svelte and the kit shared with the host rather than copied in): Work 48KB, Ideas 57KB, Diagnostics 61KB,
-Files 28KB, Mcp 16KB.
+(minified, Svelte and the kit shared with the host rather than copied in, seven tabs 229KB): Diagnostics 61KB,
+Work 48KB, Ideas 34KB, Files 29KB, Agents 23KB, Web 17KB, Mcp 16KB. `build:plugins` prints the current sizes; they
+move with the tabs, so treat this list as the shape, not as numbers to keep in step.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,
 Finished), each with a count. The open or closed state of each section is remembered (`storageKey`,
