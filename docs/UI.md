@@ -228,7 +228,9 @@ into locals first, because after the parent clears the modal state or the row re
    `beforeSeq`. After a prepend, the list is scrolled so the first previously visible item stays where it was
    on screen. The window holds at most 200 messages. When new messages push it past 220, the oldest are
    dropped and **Load earlier** comes back. When loading earlier pushes it past 200, the newest are dropped
-   instead: new messages then only increase a counter, and **Jump to latest** reloads the tail.
+   instead: new messages then only increase a counter. **Load newer** pages forward from the window's newest
+   message with `afterSeq` (dropping the oldest past 200, so **Load earlier** comes back), and **Jump to latest**
+   reloads the tail.
 2. **Items** (`lib/chatItems.js`). The messages become render items: `user`, `text` (assistant markdown),
    `steps`, `notice`, `prompt` (a system prompt the chat was sent), `status` (error/aborted/length) and `images`. Consecutive thinking and tool_call parts,
    even across several assistant messages, form one **steps** group. Tool results from `tool` messages are
@@ -845,8 +847,6 @@ names or an inline `<svg …>` string.
 - Slash commands with `rpc` receive `{ sessionId, args }` and may return a string, which is shown as a toast.
   The `clientAction` values the UI understands are `openTab:<pluginId>/<tabId>`, `insert:<text>` and
   `settings`.
-- `sessions.messages` has only `beforeSeq`. An `afterSeq` parameter would let the pruned window page forward;
-  today it reloads the tail instead.
 - A `UiTabInfo.panel` sent as a number (enum without a string converter) is accepted: `0` is left, `1` is right.
 - The Work tab reads `usage.summary` providers' `budgetTokens` and `budgetUsed` (input + output + cache write),
   `AgentSlots.status`/`available`/`unavailable`/`disabled`, `SlotHolder.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.

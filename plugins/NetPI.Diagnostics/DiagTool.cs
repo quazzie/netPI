@@ -32,7 +32,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         ("journal", "diag.journal", "the events that matter as a timeline, oldest first (no per-token events)", true),
         ("run", "diag.run", "one run in depth: sessionId or agentId", true),
         ("toolsets", "diag.toolsets", "a session's tools now and every change with the cause (a plugin reload, a profile, the user, a setting)", true),
-        ("messages", "sessions.messages", "a page of a session's messages in full (role, text, tool calls and their results), oldest first: beforeSeq pages back", true),
+        ("messages", "sessions.messages", "a page of a session's messages in full (role, text, tool calls and their results), oldest first: beforeSeq pages back, afterSeq forward", true),
         ("logs", "diag.logs", "log entries, oldest first", false),
         ("settings", "diag.settings", "the settings document without secrets", false),
         ("failures", "diag.failures", "failed requests the providers saved, newest first", false),
@@ -77,10 +77,10 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             the session's tools now, the baseline they started from and every change with its cause
             (plugin-reload with the plugin ids, profile, user, settings).
             messages is the full text of a chat: a page of its messages (role, text, tool calls, tool results), oldest
-            first, with beforeSeq to page back. It is how you read another chat - what it was asked, and what it answered.
+            first, with beforeSeq to page back and afterSeq to page forward (the messages after a seq, oldest first). It is how you read another chat - what it was asked, and what it answered.
             The arguments are the method's own: limit (how many, newest first), sessionId, runId/agentId, id (a model
             call), callId (a tool call), name (a tool or a saved failed request), type (an event type prefix), sinceSeq,
-            beforeSeq, level (debug|info|warn|error), category, contains (a substring of the message), sinceMinutes,
+            beforeSeq, afterSeq, level (debug|info|warn|error), category, contains (a substring of the message), sinceMinutes,
             maxChars, offset, summary, events, seq.
             The actions that work on one session (calls, tools, journal, run, toolsets, messages) use the calling session
             unless you give another sessionId; sessionId "all" means no filter. journal is the exception that reads
@@ -111,6 +111,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
                 ["type"] = Str("journal: an event type or prefix (\"agent\", \"tool.\")"),
                 ["sinceSeq"] = Int("journal: only events after this seq"),
                 ["beforeSeq"] = Int("messages: page back to the messages before this seq"),
+                ["afterSeq"] = Int("messages: page forward to the messages after this seq, oldest first"),
                 ["errors"] = Bool("calls, tools: only the failed ones"),
                 ["running"] = Bool("calls, tools: only the ones running now"),
                 ["detail"] = Bool("calls: the request and response with them"),
@@ -142,7 +143,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
                 $"Unknown action \"{action}\". This tool only reads: use one of {string.Join(", ", Actions.Select(x => x.Action))}. " +
                 "Changing the app (reloading plugins, writing settings) is up to the user: /reload, or the Diagnostics tab.");
 
-        var parameters = Parameters(a, action, context.SessionId);
+        var parameters = Declared(Parameters(a, action, context.SessionId), method);
         try
         {
             var result = await ctx.Rpc.InvokeAsync(method, parameters, ct).ConfigureAwait(false);
@@ -202,6 +203,20 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         var text = node?.ToJsonString() ?? "null";
         if (text.Length <= RpcMaxChars) return ToolResult.Ok(text, node);
         return ToolResult.Ok(text[..RpcMaxChars] + $"… [cut at {RpcMaxChars} characters: ask for less, or filter it]", null);
+    }
+
+    /// <summary>
+    /// Only the arguments the method declares (idea-yvcy8b): the tool's schema is the union of every action's arguments, so
+    /// a model that sends limit to an action whose method takes none would otherwise get the host's "unknown parameter".
+    /// A method that declares nothing gets everything, as before.
+    /// </summary>
+    private JsonObject Declared(JsonObject parameters, string method)
+    {
+        var declared = ctx.Rpc.List().FirstOrDefault(m => string.Equals(m.Method, method, StringComparison.Ordinal))?.Params;
+        if (declared is null) return parameters;
+        foreach (var key in parameters.Select(kv => kv.Key).ToList())
+            if (!declared.Any(p => string.Equals(p.Name, key, StringComparison.Ordinal))) parameters.Remove(key);
+        return parameters;
     }
 
     /// <summary>The call's own arguments, minus the action, plus the session the action defaults to.</summary>

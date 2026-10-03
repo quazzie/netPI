@@ -121,6 +121,19 @@ public static class MessageTests
             Check.Equal(0, store.Sessions.GetMessages("nope").Count, "a session with no messages has none");
         });
 
+        Providers.Add(r, "messages: GetMessagesAfter is the oldest page after a seq, ascending (idea-t6odez)", store =>
+        {
+            Build.WithMessages(store, "s1", 5);
+            Build.WithMessages(store, "s2", 2);
+            string After(long seq, int limit) => string.Join(",", Build.Seqs(store.Sessions.GetMessagesAfter("s1", seq, limit)));
+            Check.Equal("1,2,3,4,5", After(0, 10), "after 0 is the whole chat");
+            Check.Equal("3,4", After(2, 2), "the oldest messages after the seq, not the newest");
+            Check.Equal("5", After(4, 10), "strictly after: the seq itself is not repeated");
+            Check.Equal("", After(5, 10), "nothing after the last message");
+            Check.Equal("1", After(0, 0), "a limit below one is one");
+            Check.Equal(0, store.Sessions.GetMessagesAfter("nope", 0, 10).Count, "a session with no messages has none");
+        });
+
         Providers.Add(r, "messages: ReadContext is the uncompacted messages and the newest uncompacted seq", store =>
         {
             Build.WithMessages(store, "s1", 5);

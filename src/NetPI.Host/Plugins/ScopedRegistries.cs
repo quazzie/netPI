@@ -98,6 +98,9 @@ internal sealed class ScopedRpcRegistry(RpcRegistry inner, PluginScope scope) : 
     public IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly) =>
         scope.Track(inner.Register(method, handler, description, scope.PluginId, readOnly));
 
+    public IDisposable Register(RpcMethod method, RpcHandler handler) =>
+        scope.Track(inner.Register(method, handler, scope.PluginId));
+
     public Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default) =>
         inner.InvokeAsync(method, parameters, ct);
 

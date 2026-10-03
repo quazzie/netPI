@@ -284,6 +284,10 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
         });
     }
 
+    public IReadOnlyList<ChatMessage> GetMessagesAfter(string sessionId, long afterSeq, int limit) =>
+        store.Read<IReadOnlyList<ChatMessage>>(() =>
+            [.. store.MessagesOf(sessionId).Where(r => r.Seq > afterSeq).Take(Math.Max(1, limit)).Select(r => r.ToMessage())]);
+
     public (IReadOnlyList<ChatMessage> Rows, long Newest) ReadContext(string sessionId)
     {
         return store.Read<(IReadOnlyList<ChatMessage> Rows, long Newest)>(() =>

@@ -30,6 +30,7 @@ EmbeddingsTests.Register(runner);
 DecisionReworkTests.Register(runner);
 LoopTests.Register(runner);
 SshTests.Register(runner);
+SchedulesTests.Register(runner);
 PanelTests.Register(runner);
 InspectTests.Register(runner);
 RpcReadOnlyTests.Register(runner);

@@ -20,6 +20,20 @@ public static class UiTests
             catch { if (!proc.HasExited) proc.Kill(true); throw; }
             Check.Equal(0, proc.ExitCode, await stdout + await stderr);
         });
+        r.Add("ui.rpc-contract", "ui: every method the UI mock answers and every method the UI calls by name exists in the server's rpc.list (idea-yvcy8b)", async () =>
+        {
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in new[] { Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "rpc-contract.mjs"), "--url", env.BaseUrl, "--token", Env.Token })
+                psi.ArgumentList.Add(a);
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            try { await proc.WaitForExitAsync(timeout.Token); }
+            catch { if (!proc.HasExited) proc.Kill(true); throw; }
+            var output = await stdout;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            Check.Equal(0, proc.ExitCode, output + await stderr);
+        }, 60);
         r.Add("ui.files-mount", "ui: the Files tab's teardown runs — unmounting it stops the focus listener, and three remounts leave none behind (idea-1zs9go)", async () =>
         {
             // No server needed: the script mounts the committed plugin bundle itself (the one that ships) with a stub

@@ -257,7 +257,15 @@ await page.locator('.scroller').evaluate((el) => (el.scrollTop = 0));
 await page.waitForTimeout(150);
 await shot(page, '03-load-earlier');
 if (hasNewer) {
-  await page.locator('.earlier button', { hasText: 'jump to latest' }).click();
+  // load newer pages forward with afterSeq (idea-t6odez): the window's newest message moves on, nothing is repeated
+  const lastKey = () => page.evaluate(() => [...document.querySelectorAll('.content .item')].at(-1)?.dataset.key ?? null);
+  const keyBefore = await lastKey();
+  await page.locator('.earlier button', { hasText: 'Load newer' }).click();
+  await page.waitForFunction((k) => [...document.querySelectorAll('.content .item')].at(-1)?.dataset.key !== k, keyBefore, { timeout: 5_000 }).catch(() => {});
+  const keys = await page.evaluate(() => [...document.querySelectorAll('.content .item')].map((e) => e.dataset.key));
+  check('load newer pages forward', keys.at(-1) !== keyBefore && new Set(keys).size === keys.length, `${keyBefore} → ${keys.at(-1)}, ${keys.length} items`);
+  const jump = page.locator('.earlier button', { hasText: 'jump to latest' });
+  if (await jump.count()) await jump.click();
   await page.waitForTimeout(400);
 }
 var domCount = await page.locator('.content .item').count();
@@ -1047,7 +1055,7 @@ log('plugin tab: Ideas');
   await dlg.locator('.i-hint').fill('check the Files plugin first');
   await dlg.locator('.i-submit').click();
   await dlg.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
-  const asked = (await rpcCall('ideas.mockRefines')).at(-1);
+  const asked = (await rpcCall('mock.ideaRefines')).at(-1);
   check('ideas: refining starts a chat on the idea, on any agent, with the focus', asked?.id === edited.id && asked.agent === 'any' && asked.hint === 'check the Files plugin first', JSON.stringify(asked));
   await page.waitForTimeout(600);
   check('ideas: the refine chat is on the card under Chats', (await refCard.locator('.ev-link', { hasText: 'Refine idea: Dialog edit target' }).count()) === 1);
@@ -1065,39 +1073,6 @@ log('plugin tab: Ideas');
   if (projectId) await rpcCall('ideas.add', { projectId, idea: { title: 'Added over RPC', tags: ['rpc'] } });
   await page.waitForSelector('.ideas .card:has-text("Added over RPC")', { timeout: 3000 }).catch(() => {});
   check('ideas: refetch on ideas.changed', (await page.locator('.ideas .card', { hasText: 'Added over RPC' }).count()) > 0);
-}
-
-}
-if (want('ideas: recall on the first message (the chip above the composer)')) {
-log('ideas: recall on the first message (the chip above the composer)');
-{
-  await rpcCall('ideas.add', { projectId: 'global', idea: { title: 'Nudge counter reset after a good answer', summary: 'Reset the nudge counter.' } });
-  await page.keyboard.press('Control+t');
-  await page.waitForTimeout(500);
-  const chip = page.locator('[aria-label="Matching idea"]');
-  await ta.fill('hi');
-  await page.waitForTimeout(1400);
-  check('recall: no chip for a short or unrelated first message', (await chip.count()) === 0);
-  await ta.fill('the nudge counter should reset after a good answer from the agent');
-  await chip.waitFor({ timeout: 4000 }).catch(() => {});
-  check('recall: a matching idea shows a chip while the first message is typed', /Nudge counter reset/.test(await chip.innerText().catch(() => '')));
-  await shot(page, '27b-idea-chip');
-  await chip.locator('button', { hasText: 'Add' }).click();
-  // the notice is collapsed (its label shows); the chat's messages hold it with the idea's text
-  await page.waitForSelector('.notice:has-text("Idea from the backlog")', { timeout: 3000 }).catch(() => {});
-  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const msgs = (await rpcCall('sessions.messages', { id: sid }))?.messages ?? [];
-  const note = msgs.find((m) => m.role === 'notice' && m.meta?.kind === 'idea');
-  check(
-    'recall: Add puts the idea into the chat as a notice',
-    (await page.locator('.notice', { hasText: 'Idea from the backlog' }).count()) > 0 && /Nudge counter reset/.test(note?.parts?.[0]?.text ?? ''),
-  );
-  check('recall: the chip goes away after Add', (await chip.count()) === 0);
-  await ta.fill('');
-  await page.locator('.topbar .tab.active .tab-close').click();
-  await page.waitForTimeout(200);
-  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
-  await page.waitForTimeout(300);
 }
 
 }

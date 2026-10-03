@@ -183,6 +183,15 @@ public sealed class FakeRpc(Ownership? owner = null) : IRpcRegistry
     public ConcurrentDictionary<string, string> Owners { get; } = new();
     /// <summary>What each method was registered as, so List() can report readOnly like the real registry (idea-de1s7t).</summary>
     public ConcurrentDictionary<string, bool> ReadOnly { get; } = new();
+    /// <summary>Declared parameters, checked on every call like the real registry does (idea-yvcy8b).</summary>
+    public ConcurrentDictionary<string, IReadOnlyList<RpcParam>> Declared { get; } = new();
+
+    public IDisposable Register(RpcMethod method, RpcHandler handler)
+    {
+        var d = RegisterFor(method.Name, handler, "test", method.ReadOnly);
+        if (method.Params is { } ps) Declared[method.Name] = ps;
+        return d;
+    }
 
     public IDisposable Register(string method, RpcHandler handler, string? description = null) => Register(method, handler, description, false);
 
@@ -193,7 +202,8 @@ public sealed class FakeRpc(Ownership? owner = null) : IRpcRegistry
         Handlers[method] = handler;
         Owners[method] = pluginId;
         ReadOnly[method] = readOnly;
-        var d = new Disposer(() => { Handlers.TryRemove(method, out _); Owners.TryRemove(method, out _); ReadOnly.TryRemove(method, out _); });
+        Declared.TryRemove(method, out _);
+        var d = new Disposer(() => { Handlers.TryRemove(method, out _); Owners.TryRemove(method, out _); ReadOnly.TryRemove(method, out _); Declared.TryRemove(method, out _); });
         owner?.Own(d);
         return d;
     }
@@ -202,7 +212,10 @@ public sealed class FakeRpc(Ownership? owner = null) : IRpcRegistry
     {
         if (!Handlers.TryGetValue(method, out var h)) throw new RpcException("not_found", $"Unknown method {method}");
         var p = parameters is null ? default : NetPiJson.ToElement(parameters);
-        return h(new RpcRequest { Method = method, Params = p }, ct);
+        var declared = Declared.TryGetValue(method, out var ps) ? ps : null;
+        if (declared is not null && new RpcMethod(method, Params: declared).Validate(p) is { } problem)
+            throw new RpcException("bad_request", $"{method}: {problem}");
+        return h(new RpcRequest { Method = method, Params = p, Declared = declared }, ct);
     }
 
     public Task<object?> Call(string method, object? parameters = null) => InvokeAsync(method, parameters);
@@ -210,7 +223,7 @@ public sealed class FakeRpc(Ownership? owner = null) : IRpcRegistry
     /// <summary>Invoke and return the result as JSON (what the UI would receive).</summary>
     public async Task<JsonNode?> CallAsync(string method, object? parameters = null) => NetPiJson.ToNode(await InvokeAsync(method, parameters));
 
-    public IReadOnlyList<RpcMethodInfo> List() => Handlers.Keys.Select(k => new RpcMethodInfo(k, null, Owners.GetValueOrDefault(k) ?? "test", ReadOnly.GetValueOrDefault(k))).ToList();
+    public IReadOnlyList<RpcMethodInfo> List() => Handlers.Keys.Select(k => new RpcMethodInfo(k, null, Owners.GetValueOrDefault(k) ?? "test", ReadOnly.GetValueOrDefault(k), Declared.GetValueOrDefault(k))).ToList();
     public bool Exists(string method) => Handlers.ContainsKey(method);
 }
 

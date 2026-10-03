@@ -262,6 +262,15 @@ They include settings secrets and the images attached to ideas, and exclude proj
 credentials. Copy snapshots to separate storage for disk-failure protection. See [BACKUPS.md](BACKUPS.md) for restore
 instructions.
 
+## Schedules
+
+| key | default | meaning |
+|---|---|---|
+| `schedules.enabled` | `true` | Start due runs (`netpi.schedules`, `schedules.*` in PROTOCOL.md). Off: nothing starts; due runs wait and the missed-run rule applies when it is back on |
+| `schedules.missedGraceHours` | `24` | A run that fell due while NetPI was not running still starts if it is at most this late (0–720 h); a later one is recorded as `missed`. Never more than one catch-up run |
+| `schedules.minIntervalMinutes` | `5` | The smallest `minutes` an `every` cadence may have (1–1440) |
+| `schedules.maxRunsPerDay` | `48` | Runs one schedule may start in any 24 hours (1–1440); past it, a run is skipped |
+
 ## Context and AGENTS.md
 
 | key | default | |
@@ -454,6 +463,9 @@ refuses an `ssh` download into another checkout of the repository.
 | `ssh.config` | `~/.ssh/config` | where the host aliases come from; any other file is also passed to ssh and scp (`-F`) |
 | `ssh.connectTimeoutSeconds` | `10` | (2–120) |
 | `ssh.timeoutSeconds` | `120` | default `ssh` `run` timeout (max 1800) |
+| `ssh.reuseConnections` | `true` | where the client cannot multiplex (Windows), keep connections to a host open between calls (below) |
+| `ssh.connectionsPerHost` | `3` | kept connections per host (1–8): calls running at the same time; one more opens its own ssh |
+| `ssh.idleSeconds` | `300` | a kept connection unused this long is closed (10–3600) |
 
 Where the client supports it, calls to one host ride a single master connection (OpenSSH `ControlMaster`, 5 minutes
 after the last call): the first call of a run pays the TCP + transport + auth handshake, the rest reuse the socket. The
@@ -464,8 +476,13 @@ control sockets live in `~/.netpi/ssh/` (one per host and user, hashed), so they
 - The idle timeout is only passed to a client that accepts it. OpenSSH_for_Windows (NetPI's own client on Windows) has
   no `ControlIdleTimeout`, and asking for it fails every call with `Bad configuration option`.
 - A client that cannot multiplex gets no master connection: OpenSSH_for_Windows accepts `ControlMaster` and then fails
-  every session with `getsockname failed: Not a socket`, so those calls each do their own handshake, as they did before
-  connection reuse. This is the normal case on Windows.
+  every session with `getsockname failed: Not a socket`. This is the normal case on Windows, and there the plugin keeps
+  connections itself instead (`ssh.reuseConnections`): one long-lived ssh per host runs a small `sh` loop that takes one
+  call at a time (the command base64-encoded, its stdin as counted bytes saved to a temp file first, output ended by a
+  per-call random marker with the exit code), up to `ssh.connectionsPerHost` side by side. A handshake costs ~300 ms to
+  a LAN host and a call over a kept connection a few ms (measured 2026-10-03). A timeout or abort kills that connection,
+  as killing a per-call ssh did; a host whose kept connection will not start (auth, host key, no POSIX `sh`, `base64`
+  or count-exact `head -c`) runs its calls the old way for 10 minutes, so ssh's own errors read as before.
 
 Both questions are answered once per client, offline (`ssh -o … -G localhost` and `ssh -O check`), and take a few
 milliseconds; anything unexpected answers "not supported", so a call never fails because of the check itself.

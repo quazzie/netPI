@@ -179,5 +179,11 @@ internal static class JsonUtil
     }
 
     public static long? Int64(this RpcRequest req, string name) =>
-        req.Prop(name) is { ValueKind: JsonValueKind.Number } v && v.TryGetInt64(out var l) ? l : null;
+        req.Prop(name) switch
+        {
+            { ValueKind: JsonValueKind.Number } v when v.TryGetInt64(out var l) => l,
+            // a quoted number means the number, as RpcRequest.Int reads it (a declared integer accepts both)
+            { ValueKind: JsonValueKind.String } v when long.TryParse(v.GetString(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var q) => q,
+            _ => null,
+        };
 }

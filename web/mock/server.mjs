@@ -89,7 +89,7 @@ const RPC_DOCS = {
   'agent.send': 'Send a message to a session\'s agent: { sessionId, text, images?, mode? } → AgentInfo',
   'agent.abort': 'Abort the current run of a session\'s agent: { sessionId } → bool',
   'sessions.list': 'Sessions, newest first: { projectId?, search?, includeSubagents?, includeArchived?, archivedOnly?, limit?, offset? }',
-  'sessions.messages': 'Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore }',
+  'sessions.messages': 'Message page: { id, beforeSeq? | afterSeq?, limit? (60) } → { messages, hasMore }',
   'work.snapshot': 'Aggregated overview for the Work tab → { agents, runs, processes, usage, time, errors? }',
   'diag.snapshot': 'Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }',
   'diag.toolsets': "A session's tools now and every change with its cause → { sessionId, tools, baseline, changes, reloads }",
@@ -516,9 +516,13 @@ const handlers = {
     msgLoads.set(id, (msgLoads.get(id) ?? 0) + 1);
     getSession(id);
     let msgs = store.messages.get(id) ?? [];
+    if (p.beforeSeq != null && p.afterSeq != null) throw new RpcError('bad_request', 'sessions.messages: beforeSeq and afterSeq page in opposite directions; give one of them');
     if (p.beforeSeq != null) msgs = msgs.filter((m) => m.seq < p.beforeSeq);
     const limit = p.limit ?? 60;
-    const page = msgs.slice(Math.max(0, msgs.length - limit));
+    // afterSeq: the oldest messages after it (the forward page); otherwise the newest before beforeSeq
+    const forward = p.afterSeq != null;
+    if (forward) msgs = msgs.filter((m) => m.seq > p.afterSeq);
+    const page = forward ? msgs.slice(0, limit) : msgs.slice(Math.max(0, msgs.length - limit));
     const answer = { messages: page, hasMore: msgs.length > page.length };
     // the hold: the page is read, a message is committed and published while the answer is still on its way, and
     // the older page answers last — the client has shown that message already, so it must not lose it

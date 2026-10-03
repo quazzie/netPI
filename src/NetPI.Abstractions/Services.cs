@@ -30,6 +30,18 @@ public sealed class RpcRequest
     public JsonElement Params { get; init; }
     /// <summary>Websocket client id when called from the UI, null for in-process calls.</summary>
     public string? ClientId { get; init; }
+    /// <summary>
+    /// The parameters the method declared (<see cref="RpcMethod.Params"/>), or null for a method registered without them.
+    /// A handler that reads a name outside the declaration fails at once — a typo in a parameter name is found by the
+    /// first test that calls the method, not by a user whose filter is silently ignored.
+    /// </summary>
+    public IReadOnlyList<RpcParam>? Declared { get; init; }
+
+    private void Check(string name)
+    {
+        if (Declared is { } declared && !declared.Any(p => p.Name == name))
+            throw new InvalidOperationException($"{Method} reads parameter '{name}', which it does not declare");
+    }
 
     public T Bind<T>() where T : new()
     {
@@ -37,9 +49,12 @@ public sealed class RpcRequest
         return Params.Deserialize<T>(NetPiJson.For(typeof(T))) ?? new T();
     }
 
-    public string? Str(string name) =>
-        Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null
+    public string? Str(string name)
+    {
+        Check(name);
+        return Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null
             ? (v.ValueKind == JsonValueKind.String ? v.GetString() : v.GetRawText()) : null;
+    }
 
     public string Required(string name) => Str(name) ?? throw new RpcException("bad_request", $"Missing parameter '{name}'");
 
@@ -49,8 +64,10 @@ public sealed class RpcRequest
     /// (<c>JsonNumberHandling.AllowReadingFromString</c>). Refusing it instead would ignore the caller's filter in
     /// silence, and a filter that is silently ignored is worse than one that errors.
     /// </summary>
-    public int? Int(string name) =>
-        Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v)
+    public int? Int(string name)
+    {
+        Check(name);
+        return Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v)
             ? v.ValueKind switch
             {
                 JsonValueKind.Number when v.TryGetInt32(out var n) => n,
@@ -58,10 +75,13 @@ public sealed class RpcRequest
                 _ => null,
             }
             : null;
+    }
 
     /// <summary>A boolean parameter, or null; <c>"true"</c> counts as <c>true</c> (see <see cref="Int"/>).</summary>
-    public bool? Bool(string name) =>
-        Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v)
+    public bool? Bool(string name)
+    {
+        Check(name);
+        return Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v)
             ? v.ValueKind switch
             {
                 JsonValueKind.True => true,
@@ -70,9 +90,13 @@ public sealed class RpcRequest
                 _ => null,
             }
             : null;
+    }
 
-    public JsonElement? Prop(string name) =>
-        Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v) ? v : null;
+    public JsonElement? Prop(string name)
+    {
+        Check(name);
+        return Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v) ? v : null;
+    }
 }
 
 public sealed class RpcException(string code, string message) : Exception(message)
@@ -80,7 +104,76 @@ public sealed class RpcException(string code, string message) : Exception(messag
     public string Code { get; } = code;
 }
 
-public sealed record RpcMethodInfo(string Method, string? Description, string PluginId, bool ReadOnly = false);
+public sealed record RpcMethodInfo(string Method, string? Description, string PluginId, bool ReadOnly = false, IReadOnlyList<RpcParam>? Params = null);
+
+/// <summary>The JSON types a declared RPC parameter may have (<see cref="RpcParam.Type"/>).</summary>
+public static class RpcParamType
+{
+    public const string String = "string";
+    public const string Integer = "integer";
+    public const string Number = "number";
+    public const string Boolean = "boolean";
+    public const string Object = "object";
+    public const string Array = "array";
+    public const string Any = "any";
+}
+
+/// <summary>One declared parameter of an RPC method: what <c>rpc.list</c> shows and what a request is checked against.</summary>
+public sealed record RpcParam(string Name, string Type = RpcParamType.String, bool Required = false, string? Description = null)
+{
+    public static RpcParam Req(string name, string type = RpcParamType.String, string? description = null) => new(name, type, true, description);
+    public static RpcParam Opt(string name, string type = RpcParamType.String, string? description = null) => new(name, type, false, description);
+}
+
+/// <summary>
+/// An RPC method with its parameters declared (idea-yvcy8b). A request is checked against them before the handler runs:
+/// an unknown parameter, a missing required one or one of the wrong type is a <c>bad_request</c> that names it, and a
+/// handler that reads a name it did not declare fails on its first call (<see cref="RpcRequest.Declared"/>) instead of
+/// quietly reading nothing. <see cref="Params"/> null is a method registered the older way: no checks.
+/// </summary>
+public sealed record RpcMethod(string Name, string? Description = null, bool ReadOnly = false, IReadOnlyList<RpcParam>? Params = null)
+{
+    /// <summary>The first problem with these parameters, or null when they fit the declaration.</summary>
+    public string? Validate(JsonElement parameters)
+    {
+        if (Params is null) return null;
+        if (parameters.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return Params.FirstOrDefault(p => p.Required) is { } missing ? $"Missing parameter '{missing.Name}'" : null;
+        if (parameters.ValueKind != JsonValueKind.Object) return "parameters must be a JSON object";
+        foreach (var prop in parameters.EnumerateObject())
+            if (!Params.Any(p => p.Name == prop.Name))
+                return $"unknown parameter '{prop.Name}' (takes {(Params.Count == 0 ? "none" : string.Join(", ", Params.Select(p => p.Name)))})";
+        foreach (var p in Params)
+        {
+            var present = parameters.TryGetProperty(p.Name, out var v) && v.ValueKind != JsonValueKind.Null;
+            if (!present) { if (p.Required) return $"Missing parameter '{p.Name}'"; continue; }
+            if (!Fits(p.Type, v)) return $"Parameter '{p.Name}' must be {Article(p.Type)}";
+        }
+        return null;
+    }
+
+    private static bool Fits(string type, JsonElement v) => type switch
+    {
+        RpcParamType.String => v.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array),
+        RpcParamType.Integer => v.ValueKind == JsonValueKind.Number ? v.TryGetInt64(out _)
+            : v.ValueKind == JsonValueKind.String && long.TryParse(v.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
+        RpcParamType.Number => v.ValueKind == JsonValueKind.Number
+            || v.ValueKind == JsonValueKind.String && double.TryParse(v.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out _),
+        RpcParamType.Boolean => v.ValueKind is JsonValueKind.True or JsonValueKind.False
+            || v.ValueKind == JsonValueKind.String && bool.TryParse(v.GetString(), out _),
+        RpcParamType.Object => v.ValueKind == JsonValueKind.Object,
+        RpcParamType.Array => v.ValueKind == JsonValueKind.Array,
+        _ => true,
+    };
+
+    private static string Article(string type) => type switch
+    {
+        RpcParamType.Integer => "an integer",
+        RpcParamType.Object => "an object",
+        RpcParamType.Array => "an array",
+        _ => "a " + type,
+    };
+}
 
 public interface IRpcRegistry
 {
@@ -92,6 +185,11 @@ public interface IRpcRegistry
     IDisposable Register(string method, RpcHandler handler, string? description = null);
     /// <summary>Register a method that only reads, so the read-only paths may call it (reported by <c>rpc.list</c>).</summary>
     IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly);
+    /// <summary>
+    /// Register a method with its parameters declared: requests are checked against them before the handler runs, and
+    /// <c>rpc.list</c> shows them. A registry that does not check (a test fake) registers it the older way.
+    /// </summary>
+    IDisposable Register(RpcMethod method, RpcHandler handler) => Register(method.Name, handler, method.Description, method.ReadOnly);
     /// <summary>Invoke a method in-process (plugins can call each other through RPC).</summary>
     Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default);
     IReadOnlyList<RpcMethodInfo> List();

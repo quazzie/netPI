@@ -916,7 +916,9 @@ The `usage` block is what makes the cost of a decision measurable rather than as
 `plugins/NetPI.Tools.Ssh`. Remote work through the system OpenSSH client (`ssh.path`: Windows OpenSSH, else Git's) with
 the user's `~/.ssh/config`, keys, agent and `known_hosts` as they are. **Scripts and file contents go through ssh's
 stdin, never through arguments**: the remote command line is a short one the plugin builds (paths single-quoted), so
-the agent's text is never quoted or escaped and has no length limit. Every call uses `BatchMode=yes` (nothing prompts), `StrictHostKeyChecking=yes`
+the agent's text is never quoted or escaped and has no length limit. On Windows the calls to one host ride kept
+connections (`SshBroker`, `ssh.reuseConnections`; elsewhere OpenSSH's own `ControlMaster`), so a run of calls pays the
+handshake once. Every call uses `BatchMode=yes` (nothing prompts), `StrictHostKeyChecking=yes`
 (an unknown host key fails; the user connects once first), `ConnectTimeout`, keep-alives and `LogLevel=ERROR`. The
 plugin never reads key files and never uses passwords. Settings: `ssh.*` in `docs/SETTINGS.md`.
 

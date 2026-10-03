@@ -31,6 +31,7 @@
     { "path": "shared/ProviderKit/", "tags": ["provider", "usage"] },
     { "path": "plugins/NetPI.Retry/", "tags": ["retry"] },
     { "path": "plugins/NetPI.Runtime/", "tags": ["smoke", "control", "chat", "scheduling", "sessions"] },
+    { "path": "plugins/NetPI.Schedules/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Skills/", "tags": ["skills"] },
     { "path": "plugins/NetPI.Todo/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.ToolRepair/", "tags": ["repair", "plugins"] },
@@ -61,6 +62,8 @@
     { "path": "tests/NetPI.E2E/", "tags": ["smoke"], "selfTest": true },
     { "path": "tests/NetPI.Aux.Tests/McpFixture.cs", "tags": ["mcp"] },
 
+    { "path": "docs/PROTOCOL.md", "ids": ["inspect.protocol-docs"] },
+    { "path": "web/mock/", "ids": ["ui.rpc-contract"] },
     { "path": "docs/", "ignore": true },
     { "path": ".github/", "ignore": true },
     { "path": "scripts/", "ignore": true },

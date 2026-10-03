@@ -35,6 +35,7 @@
     <ProjectReference Include="../../plugins/NetPI.Embeddings/NetPI.Embeddings.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Memory/NetPI.Memory.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Ssh/NetPI.Tools.Ssh.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Schedules/NetPI.Schedules.csproj" />
     <!-- workspaces: the tests drive real git worktrees, the file tools' guard and the shell's cwd. -->
     <ProjectReference Include="../../plugins/NetPI.Workspaces/NetPI.Workspaces.csproj" />
     <!-- The real model/tool loop, so a workspace switch can be watched across model calls (idea-y0i6gu). -->

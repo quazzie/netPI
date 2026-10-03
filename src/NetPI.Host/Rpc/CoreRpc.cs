@@ -46,12 +46,58 @@ internal static class CoreRpc
             _registrations = registrations;
         }
 
-        public void Add(string method, string description, Func<RpcRequest, object?> handler, bool readOnly = false) =>
-            _registrations.Add(K.Rpc.Register(method, (req, _) => Task.FromResult(handler(req)), description, readOnly));
+        /// <summary>
+        /// A core method; its requests are checked against <paramref name="parameters"/>, or against its row in
+        /// <see cref="Declarations"/>, or — a method that takes nothing — against no parameters at all (idea-yvcy8b).
+        /// </summary>
+        public void Add(string method, string description, Func<RpcRequest, object?> handler, bool readOnly = false, RpcParam[]? parameters = null) =>
+            _registrations.Add(K.Rpc.Register(new RpcMethod(method, description, readOnly, parameters ?? Declared(method)), (req, _) => Task.FromResult(handler(req))));
 
-        public void AddAsync(string method, string description, Func<RpcRequest, CancellationToken, Task<object?>> handler, bool readOnly = false) =>
-            _registrations.Add(K.Rpc.Register(method, (req, ct) => handler(req, ct), description, readOnly));
+        public void AddAsync(string method, string description, Func<RpcRequest, CancellationToken, Task<object?>> handler, bool readOnly = false, RpcParam[]? parameters = null) =>
+            _registrations.Add(K.Rpc.Register(new RpcMethod(method, description, readOnly, parameters ?? Declared(method)), (req, ct) => handler(req, ct)));
+
+        private static RpcParam[] Declared(string method) => Declarations.TryGetValue(method, out var p) ? p : [];
     }
+
+    private static RpcParam Req(string name, string type = RpcParamType.String) => RpcParam.Req(name, type);
+    private static RpcParam Opt(string name, string type = RpcParamType.String) => RpcParam.Opt(name, type);
+
+    /// <summary>
+    /// The parameters of the core methods that take any, in one place (the descriptions say what they mean). A method
+    /// missing here takes none, so a mistyped name in a request is a bad_request that names it, not a silent default.
+    /// </summary>
+    private static readonly Dictionary<string, RpcParam[]> Declarations = new(StringComparer.Ordinal)
+    {
+        ["projects.create"] = [Opt("name"), Req("path"), Opt("create", RpcParamType.Boolean)],
+        ["projects.update"] = [Req("id"), Opt("name"), Opt("path"), Opt("create", RpcParamType.Boolean), Opt("meta", RpcParamType.Object)],
+        ["projects.delete"] = [Req("id")],
+        ["sessions.list"] =
+        [
+            Opt("projectId"), Opt("search"), Opt("includeSubagents", RpcParamType.Boolean), Opt("parentSessionId"),
+            Opt("includeArchived", RpcParamType.Boolean), Opt("archivedOnly", RpcParamType.Boolean), Opt("attachedKey"), Opt("attachedValue"),
+            Opt("includeUnmaterialized", RpcParamType.Boolean), Opt("limit", RpcParamType.Integer), Opt("offset", RpcParamType.Integer),
+        ],
+        ["sessions.create"] = [Opt("title"), Opt("projectId"), Opt("model"), Opt("reasoning")],
+        ["sessions.fork"] = [Req("id"), Opt("upToSeq", RpcParamType.Integer)],
+        ["sessions.get"] = [Req("id")],
+        ["sessions.update"] =
+        [
+            Req("id"), Opt("title"), Opt("model"), Opt("reasoning"), Opt("archived", RpcParamType.Boolean),
+            Opt("pinned", RpcParamType.Boolean), Opt("meta", RpcParamType.Object),
+        ],
+        ["sessions.delete"] = [Req("id")],
+        ["sessions.setProject"] = [Req("id"), Opt("projectId")],
+        ["models.list"] = [Opt("refresh", RpcParamType.Boolean)],
+        ["ui.state.get"] = [Req("key")],
+        ["ui.state.set"] = [Req("key"), Opt("value", RpcParamType.Any)],
+        ["plugins.reload"] = [Req("id")],
+        ["plugins.setEnabled"] = [Req("id"), Req("enabled", RpcParamType.Boolean)],
+        ["settings.set"] = [Req("path"), Opt("value", RpcParamType.Any)],
+        ["settings.replace"] = [Req("settings", RpcParamType.Object), Opt("base", RpcParamType.Object)],
+        ["fs.dirs"] = [Opt("path")],
+        ["events.recent"] = [Opt("max", RpcParamType.Integer)],
+        ["logs.recent"] = [Opt("max", RpcParamType.Integer)],
+    };
 
     // ------------------------------------------------------------ app
     private static void RegisterApp(Adder a) =>
@@ -166,14 +212,25 @@ internal static class CoreRpc
 
     private static void RegisterSessionMessages(Adder a)
     {
-        a.Add("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq. The page is bounded in messages AND in serialized size: when the page overflows its byte budget it comes back shorter, with hasMore set and ending at an earlier seq, which the client follows with beforeSeq.", req =>
+        a.Add("sessions.messages", "Message page: { id, beforeSeq? | afterSeq?, limit? (60) } → { messages, hasMore } ascending by seq. Without a cursor, or with beforeSeq, the newest messages before it (hasMore: older ones are left, follow with beforeSeq); with afterSeq, the oldest messages after it (hasMore: newer ones are left, follow with afterSeq = the last seq). The page is bounded in messages AND in serialized size: a page that overflows its byte budget comes back shorter with hasMore set.", req =>
         {
             var id = req.Required("id");
             a.K.Sessions.Require(id);
             var limit = Math.Clamp(req.Int("limit") ?? 60, 1, 2000);
-            var (messages, hasMore) = MessagePage((before, take) => a.K.Sessions.GetMessages(id, before, take), req.Int64("beforeSeq"), limit);
+            var before = req.Int64("beforeSeq");
+            var after = req.Int64("afterSeq");
+            if (before is not null && after is not null) throw new RpcException("bad_request", "sessions.messages: beforeSeq and afterSeq page in opposite directions; give one of them");
+            var (messages, hasMore) = after is { } from
+                ? MessagePageForward((seq, take) => a.K.Sessions.GetMessagesAfter(id, seq, take), from, limit)
+                : MessagePage((b, take) => a.K.Sessions.GetMessages(id, b, take), before, limit);
             return new { messages, hasMore };
-        }, readOnly: true);
+        }, readOnly: true, parameters:
+        [
+            RpcParam.Req("id", RpcParamType.String, "the session"),
+            RpcParam.Opt("beforeSeq", RpcParamType.Integer, "older than this seq (exclusive)"),
+            RpcParam.Opt("afterSeq", RpcParamType.Integer, "newer than this seq (exclusive)"),
+            RpcParam.Opt("limit", RpcParamType.Integer, "at most this many messages (1–2000, default 60)"),
+        ]);
 
         a.Add("sessions.stats", "Session-service counters: → { contextCache: { hits, reads } } — the cached contexts: a hit is a read served without touching the store, a read went to it", _ =>
         {
@@ -224,6 +281,40 @@ internal static class CoreRpc
         // the limit itself cut the page and there are older messages left: the client asks for the next beforeSeq
         if (taken.Count == limit && more) hasMore = true;
         taken.Reverse();
+        return (taken, hasMore);
+    }
+
+    /// <summary>
+    /// The forward page (idea-t6odez): the OLDEST whole messages after <paramref name="afterSeq"/> while they fit
+    /// <see cref="MaxPageBytes"/>, ascending, and whether newer ones are left. Read in growing windows like
+    /// <see cref="MessagePage"/>, so a run of big messages is not materialized to be dropped; the first message is always kept.
+    /// </summary>
+    internal static (List<ChatMessage> Messages, bool HasMore) MessagePageForward(Func<long, int, IReadOnlyList<ChatMessage>> readAfter, long afterSeq, int limit)
+    {
+        var taken = new List<ChatMessage>(limit);
+        var size = 0;
+        var after = afterSeq;
+        var hasMore = false;
+        var more = true;
+        for (var window = 1; taken.Count < limit && more;)
+        {
+            var batch = readAfter(after, window);
+            more = batch.Count == window;
+            foreach (var m in batch)
+            {
+                if (taken.Count >= limit) break;
+                var len = Wire.SerializeValue(m).Length;
+                if (taken.Count > 0 && size + len > MaxPageBytes) { hasMore = true; more = false; break; }
+                taken.Add(m);
+                size += len;
+            }
+            if (!more || batch.Count == 0) break;
+            after = batch[^1].Seq;
+            var perMessage = Math.Max(1, size / taken.Count);
+            window = Math.Min(Math.Min(window * 2, 1 + (MaxPageBytes - size) / perMessage), limit + 1 - taken.Count);
+        }
+        // the limit cut the page: look one past it, so hasMore is "newer messages exist", not "the page was full"
+        if (taken.Count == limit && more) hasMore = readAfter(taken[^1].Seq, 1).Count > 0;
         return (taken, hasMore);
     }
 

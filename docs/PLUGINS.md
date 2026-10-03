@@ -79,6 +79,12 @@ public sealed class MyPlugin : INetPiPlugin
         // an RPC method for the UI (and for other plugins: ctx.Rpc.InvokeAsync("my.hello"))
         ctx.Rpc.Register("my.hello", (req, _) => Task.FromResult<object?>(new { hello = req.Str("name") ?? "world" }));
 
+        // the same with its parameters declared (prefer this for a new method): a request with an unknown, missing or
+        // mistyped parameter is a bad_request naming it before the handler runs, rpc.list shows the params, and a
+        // handler that reads a name it did not declare throws on its first call (a test finds it, not a user)
+        ctx.Rpc.Register(new RpcMethod("my.greet", "Greet: { name } → { hello }", ReadOnly: true, [RpcParam.Req("name")]),
+            (req, _) => Task.FromResult<object?>(new { hello = req.Required("name") }));
+
         // listen to the event bus (agent.status, message.added, tool.end, agents.changed, …)
         ctx.Events.Subscribe("tool.end", e => ctx.Logger.LogInformation("tool finished: {Data}", e.Data));
 
