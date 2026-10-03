@@ -49,10 +49,10 @@ public sealed class FilesPlugin : INetPiPlugin
 
         context.Rpc.Register("files.open", (req, _) =>
         {
-            var (path, action) = FileOpener.Decide(context, ResolveRoot(context, req), req.Required("path"), req.Bool("confirm") ?? false);
+            var (path, action) = FileOpener.Decide(context, ResolveRoot(context, req), req.Required("path"), req.Bool("confirm") ?? false, req.Bool("user") ?? false);
             if (action != "confirm") FileOpener.Run(path, action);
             return Task.FromResult<object?>(new { path, action });
-        }, "Open a path with the operating system (files in their default app, folders in the file manager, scripts for editing, executables only revealed): { path, sessionId?, cwd?, confirm? } → { path, action }, where action 'confirm' is a path outside the session's workspace: ask the user, then call again with confirm: true");
+        }, "Open a path with the operating system (files in their default app, folders in the file manager): { path, sessionId?, cwd?, confirm?, user? } → { path, action }, where action 'confirm' is a path outside the session's workspace: ask the user, then call again with confirm: true. Without user? the rules stay conservative (text and code in an editor, executables and other binaries only revealed); with user: true — the user picked this file deliberately — every file opens with its default program, executables and scripts included, like a double click in the file manager");
 
         context.Rpc.RegisterReadOnly("files.git", async (req, token) =>
             await GitStatus.ReadAsync(ResolveRoot(context, req), token).ConfigureAwait(false),

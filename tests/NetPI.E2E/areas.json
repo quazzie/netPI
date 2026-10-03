@@ -6,6 +6,7 @@
     { "path": "src/NetPI.Host/", "tags": ["smoke", "lifecycle", "server", "sessions", "settings", "plugins", "startup", "profiles"] },
     { "path": "src/NetPI.Server/", "tags": ["smoke"] },
     { "path": "src/NetPI.Desktop/", "ignore": true },
+    { "path": "src/NetPI.WindowsAgent/", "ignore": true },
 
     { "path": "plugins/NetPI.Agents/", "tags": ["agents", "slots", "subagents", "scheduling"] },
     { "path": "plugins/NetPI.AgentsMd/", "tags": ["context"] },
@@ -31,6 +32,7 @@
     { "path": "shared/ProviderKit/", "tags": ["provider", "usage"] },
     { "path": "plugins/NetPI.Retry/", "tags": ["retry"] },
     { "path": "plugins/NetPI.Runtime/", "tags": ["smoke", "control", "chat", "scheduling", "sessions"] },
+    { "path": "plugins/NetPI.Schedules/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Skills/", "tags": ["skills"] },
     { "path": "plugins/NetPI.Todo/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.ToolRepair/", "tags": ["repair", "plugins"] },
@@ -40,6 +42,7 @@
     { "path": "plugins/NetPI.Tools.Shell/", "tags": ["tools", "control"] },
     { "path": "plugins/NetPI.Tools.Ssh/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Tools.Web/", "tags": ["smoke"] },
+    { "path": "plugins/NetPI.Tools.Windows/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Work/", "tags": ["scheduling"], "ids": ["ui.smoke"] },
     { "path": "plugins/NetPI.Workspaces/", "tags": ["subagents", "tools"] },
     { "path": "plugins/Directory.Build.props", "all": true },
@@ -61,6 +64,8 @@
     { "path": "tests/NetPI.E2E/", "tags": ["smoke"], "selfTest": true },
     { "path": "tests/NetPI.Aux.Tests/McpFixture.cs", "tags": ["mcp"] },
 
+    { "path": "docs/PROTOCOL.md", "ids": ["inspect.protocol-docs"] },
+    { "path": "web/mock/", "ids": ["ui.rpc-contract"] },
     { "path": "docs/", "ignore": true },
     { "path": ".github/", "ignore": true },
     { "path": "scripts/", "ignore": true },

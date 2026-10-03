@@ -228,7 +228,9 @@ into locals first, because after the parent clears the modal state or the row re
    `beforeSeq`. After a prepend, the list is scrolled so the first previously visible item stays where it was
    on screen. The window holds at most 200 messages. When new messages push it past 220, the oldest are
    dropped and **Load earlier** comes back. When loading earlier pushes it past 200, the newest are dropped
-   instead: new messages then only increase a counter, and **Jump to latest** reloads the tail.
+   instead: new messages then only increase a counter. **Load newer** pages forward from the window's newest
+   message with `afterSeq` (dropping the oldest past 200, so **Load earlier** comes back), and **Jump to latest**
+   reloads the tail.
 2. **Items** (`lib/chatItems.js`). The messages become render items: `user`, `text` (assistant markdown),
    `steps`, `notice`, `prompt` (a system prompt the chat was sent), `status` (error/aborted/length) and `images`. Consecutive thinking and tool_call parts,
    even across several assistant messages, form one **steps** group. Tool results from `tool` messages are
@@ -246,9 +248,12 @@ into locals first, because after the parent clears the modal state or the row re
    these views: `ssh` `run` the shell view (prompt `host$`), `read` the read view, `write`/`edit` the diff view. A call with an `action` is shown as `<tool>_<action>` when the UI has a view for that name (`viewName` in `web/src/lib/tools.js`, one rule and no list of tools: `ssh` + `run` as `ssh_run`, `process` + `output` as `process_output`), so a tool with actions reuses the views of the tools it merged and older chats with the old names look the same.
    - **File links.** `renderMarkdown` marks links whose target is a local path (relative, `C:\…`, `file://`) as
      `a.file-link[data-path]` with `href="#"`; one delegated click handler opens them with the operating system
-     through `files.open`, so a link never navigates the app. A path outside the session's workspace comes back
-     as `action: 'confirm'` and the user is asked before it opens. Web links keep `target="_blank"` (the desktop
-     shell opens them in the default browser).
+     through `files.open`, so a link never navigates the app. The path came from the model, so the click is asked
+     about first ("Open this file?", saying that the default program runs — an executable included) and only then is
+     `files.open` called with `user: true`, so it opens like a double click in the file manager rather than being
+     revealed. A path outside the session's workspace comes back as `action: 'confirm'` and is a second question.
+     The "Open file" button of `read`/`write`/`edit` rows is the same call without the question: the user pressed it.
+     Web links keep `target="_blank"` (the desktop shell opens them in the default browser).
    - **Plan strip.** `TodoStrip` (in the composer dock) shows the session's `meta.todo` while any item is open:
      `done/total` and the current item, expanding to the checklist.
    - **Idea cards.** `IdeaCards` (in the composer dock) shows the offers `ideas.suggestions` returns, for the window
@@ -635,9 +640,13 @@ set, uptime, threads, framework; the full details are in its tooltip). A segment
 - The header shows the project name, the root path (shortened from the left), the eye (when there are ignored
   entries), **collapse all** and **refresh**.
 - The filter box calls `files.search` (debounced 140ms, 200 results) and shows a flat list.
-- Clicking a file opens it with the operating system (`files.open`: its default app). Clicking a folder expands it;
-  a folder in the filtered list is shown in the tree. The `@` button of a row (on hover or focus) inserts
-  `@rel/path ` into the composer (quoted when the path has spaces; folders end in `/`).
+- Clicking a row selects it; a folder also expands, and a folder in the filtered list is shown in the tree. **Double
+  clicking a file** opens it with the operating system (`files.open` with `user: true`: its default app, whatever that
+  is — a document in Word, an executable launched, a file nothing is associated with getting the system's
+  choose-a-program dialog), like a double click in the file manager does. A changed file outside the session's
+  workspace (its `rel` starts with `../`) is asked about first, because that is a second thing to say yes to. The `@`
+  button of a row (on hover or focus) inserts `@rel/path ` into the composer (quoted when the path has spaces; folders
+  end in `/`).
 - The context menu (right-click or ⋯) has Open, Insert @mention, Insert path, Copy relative path, Copy absolute
   path, Reveal in Explorer (desktop only) and Refresh folder.
 - Keyboard: ↑ ↓ move, → ← expand and collapse, Enter opens, and the context-menu key opens the menu.
@@ -845,8 +854,6 @@ names or an inline `<svg …>` string.
 - Slash commands with `rpc` receive `{ sessionId, args }` and may return a string, which is shown as a toast.
   The `clientAction` values the UI understands are `openTab:<pluginId>/<tabId>`, `insert:<text>` and
   `settings`.
-- `sessions.messages` has only `beforeSeq`. An `afterSeq` parameter would let the pruned window page forward;
-  today it reloads the tail instead.
 - A `UiTabInfo.panel` sent as a number (enum without a string converter) is accepted: `0` is left, `1` is right.
 - The Work tab reads `usage.summary` providers' `budgetTokens` and `budgetUsed` (input + output + cache write),
   `AgentSlots.status`/`available`/`unavailable`/`disabled`, `SlotHolder.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.

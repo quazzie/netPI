@@ -312,7 +312,7 @@ internal sealed class ProcessLauncher : ISshLauncher
     /// trimming are O(1) amortized per chunk — not a <see cref="StringBuilder"/> whose <c>Remove(0, …)</c> re-shifts
     /// the whole buffer on every chunk past the cap (quadratic in the output size).
     /// </summary>
-    private sealed class Sink
+    internal sealed class Sink
     {
         private readonly Queue<string> _chunks = new();
         private int _length;

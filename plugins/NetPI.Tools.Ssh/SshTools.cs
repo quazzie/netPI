@@ -26,16 +26,21 @@ public sealed class SshPlugin : INetPiPlugin
                 SettingInfo.FilePath("ssh.config", "ssh config", "The host aliases come from here.", "~/.ssh/config"),
                 SettingInfo.FilePath("ssh.path", "ssh", "Empty: the one found.", SshOptions.FindSsh()),
                 SettingInfo.FilePath("ssh.scpPath", "scp", "Empty: the one next to ssh.", SshOptions.Sibling(SshOptions.FindSsh(), OperatingSystem.IsWindows() ? "scp.exe" : "scp")),
+                SettingInfo.Bool("ssh.reuseConnections", "Reuse connections", true, "Keep a connection to a host open between calls where the ssh client cannot share one itself (Windows), so a run of calls pays the handshake once."),
+                SettingInfo.Int("ssh.connectionsPerHost", "Connections per host", 3, "Calls that run at the same time on one host; one more opens its own connection.", 1, 8),
+                SettingInfo.Int("ssh.idleSeconds", "Close idle connections after", 300, null, 10, 3600, "s"),
             ],
         });
-        foreach (var tool in SshToolSet.Create(context, new ProcessLauncher())) context.Tools.Register(tool);
+        // One broker for every action: its connections outlive a call, and a reload's Track disposal closes them.
+        var broker = context.Track(new SshBroker(context.Logger));
+        foreach (var tool in SshToolSet.Create(context, new ProcessLauncher(), broker)) context.Tools.Register(tool);
         return Task.CompletedTask;
     }
 }
 
 internal static class SshToolSet
 {
-    public static IAgentTool[] Create(IPluginContext ctx, ISshLauncher launcher) => [new SshTool(ctx, launcher)];
+    public static IAgentTool[] Create(IPluginContext ctx, ISshLauncher launcher, SshBroker? broker = null) => [new SshTool(ctx, launcher, broker)];
 }
 
 /// <summary>
@@ -46,7 +51,7 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
 {
     private readonly Dictionary<string, SshToolBase> _actions;
 
-    public SshTool(IPluginContext ctx, ISshLauncher launcher)
+    public SshTool(IPluginContext ctx, ISshLauncher launcher, SshBroker? broker = null)
     {
         var actions = new SshToolBase[]
         {
@@ -57,6 +62,7 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
             new SshEditTool(ctx, launcher),
             new SshCopyTool(ctx, launcher),
         };
+        foreach (var action in actions) action.Broker = broker;
         _actions = actions.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
         Definition = new ToolDefinition
         {
@@ -136,6 +142,8 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
     internal const int MaxWriteBytes = 16 * 1024 * 1024;
     protected IPluginContext Ctx => ctx;
     protected ISshLauncher Launcher => launcher;
+    /// <summary>The per-host connections, where the client cannot multiplex (<see cref="SshBroker"/>); null: one ssh per call.</summary>
+    internal SshBroker? Broker { get; set; }
     /// <summary>The action name ("hosts", "run", …): the dispatcher's key.</summary>
     internal abstract string Name { get; }
     /// <summary>What the action does: the dispatcher's help shows it under the name.</summary>
@@ -204,13 +212,21 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
 
     private static string Names(List<SshHost> hosts) => hosts.Count == 0 ? "(none)" : string.Join(", ", hosts.Select(h => h.Alias));
 
-    /// <summary>ssh [common options] -T -- host remoteCommand</summary>
-    protected Task<SshExec> Ssh(SshOptions o, SshHost host, string remoteCommand, byte[]? stdin, TimeSpan timeout, CancellationToken ct,
+    /// <summary>
+    /// ssh [common options] -T -- host remoteCommand — over a kept connection when the client cannot share one itself
+    /// (no control directory: Windows) and ssh.reuseConnections is on, else one ssh for this call.
+    /// </summary>
+    protected async Task<SshExec> Ssh(SshOptions o, SshHost host, string remoteCommand, byte[]? stdin, TimeSpan timeout, CancellationToken ct,
         Action<string>? onStdout = null, Action<string>? onStderr = null)
     {
+        if (o.ControlDir is null && Broker is { } broker && ctx.Settings.Get("ssh.reuseConnections", true)
+            && await broker.TryRunAsync(o, host, remoteCommand, stdin, timeout,
+                Math.Clamp(ctx.Settings.Get("ssh.connectionsPerHost", 3), 1, 8), TimeSpan.FromSeconds(Math.Clamp(ctx.Settings.Get("ssh.idleSeconds", 300), 10, 3600)),
+                onStdout, onStderr, ct).ConfigureAwait(false) is { } kept)
+            return kept;
         var args = o.CommonArgs();
         args.AddRange(["-T", "--", host.Alias, remoteCommand]);
-        return launcher.RunAsync(o.Ssh, args, stdin, null, onStdout, onStderr, timeout, ct);
+        return await launcher.RunAsync(o.Ssh, args, stdin, null, onStdout, onStderr, timeout, ct).ConfigureAwait(false);
     }
 
     /// <summary>ssh's own failures (exit 255) with a hint for the common ones.</summary>
@@ -593,7 +609,7 @@ internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : S
         if (edits.Count == 0) return ToolResult.Error("ssh_edit needs edits: [{ \"oldText\", \"newText\" }].");
         var cwd = a.Str("cwd");
 
-        var reader = new SshReadTool(Ctx, Launcher);
+        var reader = new SshReadTool(Ctx, Launcher) { Broker = Broker };
         var file = await reader.Fetch(o, host, path, cwd, hash: true, tail: false, ct).ConfigureAwait(false);
         if (file.Error is not null) return ToolResult.Error(file.Error);
         if (file.Cut) return ToolResult.Error($"{Where(host, path)} is larger than {MaxReadBytes / 1024 / 1024} MB; edit it with ssh_run (sed, python) instead.");

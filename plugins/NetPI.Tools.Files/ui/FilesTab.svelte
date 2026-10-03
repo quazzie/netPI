@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { Icon, IconButton, SearchInput, Menu, Empty, bytes, basename, copyText, desktop, useRefresh } from '@netpi/kit';
+  import { Icon, IconButton, SearchInput, Menu, Empty, bytes, basename, confirm, copyText, desktop, useRefresh } from '@netpi/kit';
 
   let { ctx } = $props();
 
@@ -16,6 +16,7 @@
   let git = $state.raw(null); // files.git: the changes since the last commit; null outside a repository
   let gitOpen = $state(false); // the list shows the changed files instead of the tree
   let menu = $state();
+  let selected = $state(''); // the row a single click selected (a file opens on a double click, like the file manager)
   let listEl = $state();
   let visible = true;
   let dirty = false;
@@ -216,7 +217,14 @@
     ctx.app.insertText(`@${p.includes(' ') ? `"${p}"` : p} `);
   }
 
-  /** Click or Enter: a file opens; a folder expands in the tree, or (a search result) is shown in the tree. */
+  /** One click, like the file manager: a folder expands in the tree (a search result is shown in it), a file is only
+   * selected — opening it is a double click, because that runs whatever program is associated with it. */
+  function select(e, flat = false) {
+    selected = e.rel;
+    if (e.isDir) flat ? showInTree(e.rel) : toggleDir(e);
+  }
+
+  /** Double click or Enter: a file opens; a folder expands in the tree, or (a search result) is shown in the tree. */
   function activate(e, flat = false) {
     if (e.isDir) flat ? showInTree(e.rel) : toggleDir(e);
     else if (!e.gone) openPath(e);
@@ -234,11 +242,28 @@
     listEl?.querySelector(`[data-rel="${CSS.escape(rel)}"]`)?.focus();
   }
 
-  /** Open with the operating system (files.open): the default app, a folder in the file manager. */
+  /**
+   * Open with the operating system: the file's default program, a folder in the file manager. `user: true` says the user
+   * picked this row on purpose (a double click here, the row menu's "Open"), which is what makes a double click behave
+   * like one in the file manager — every kind of file, executables and scripts included, opens the way Windows would,
+   * and a file nothing is associated with gets the "choose a program" dialog.
+   */
   async function openPath(e) {
+    const call = (confirmed) => ctx.rpc('files.open', { ...loc(), path: e.path ?? e.rel, user: true, ...(confirmed ? { confirm: true } : {}) });
     try {
-      const r = await ctx.rpc('files.open', { ...loc(), path: e.path ?? e.rel });
-      if (r?.action === 'reveal') ctx.app.toast(`Shown in the file manager: ${r.path}`);
+      const r = await call(false);
+      // A changed file outside the session's workspace — the repository is bigger than its root, so its rel starts with
+      // ../ — is not opened until the user says so: the host answers 'confirm' and opens nothing itself.
+      if (r?.action === 'confirm') {
+        const ok = await confirm({
+          title: 'Open a file outside the workspace?',
+          message: `${r.path}\n\nThis session works somewhere else, so opening it is your call.`,
+          confirmLabel: 'Open',
+          danger: true,
+        });
+        if (!ok) return;
+        await call(true);
+      }
     } catch (err) {
       ctx.app.toast(err.message, 'error');
     }
@@ -359,10 +384,11 @@
           class="frow flat"
           data-row
           role="treeitem"
-          aria-selected="false"
+          aria-selected={selected === r.rel}
           tabindex="0"
-          title={r.isDir ? `Show ${r.rel} in the tree` : r.rel}
-          onclick={() => activate(e, true)}
+          title={r.isDir ? `Show ${r.rel} in the tree` : `${r.rel} — double-click to open it`}
+          onclick={() => select(e, true)}
+          ondblclick={() => activate(e, true)}
           onkeydown={(ev) => onKey(ev, e, true)}
           oncontextmenu={(ev) => onContext(ev, e)}
         >
@@ -388,10 +414,11 @@
           data-row
           data-status={f.status}
           role="treeitem"
-          aria-selected="false"
+          aria-selected={selected === f.rel}
           tabindex="0"
-          title="{f.rel}: {what}"
-          onclick={() => activate(e, true)}
+          title="{f.rel}: {what}{e.gone ? '' : ' — double-click to open it'}"
+          onclick={() => select(e, true)}
+          ondblclick={() => activate(e, true)}
           onkeydown={(ev) => onKey(ev, e, true)}
           oncontextmenu={(ev) => onContext(ev, e)}
         >
@@ -429,11 +456,12 @@
             data-row
             data-rel={e.rel}
             role="treeitem"
-            aria-selected="false"
+            aria-selected={selected === e.rel}
             aria-expanded={e.isDir ? expanded.has(e.rel) : undefined}
             tabindex="0"
-            title={e.rel}
-            onclick={() => activate(e)}
+            title={e.isDir ? e.rel : `${e.rel} — double-click to open it`}
+            onclick={() => select(e)}
+            ondblclick={() => activate(e)}
             onkeydown={(ev) => onKey(ev, e)}
             oncontextmenu={(ev) => onContext(ev, e)}
           >
@@ -541,6 +569,10 @@
   .frow:focus-visible {
     box-shadow: inset 0 0 0 1px var(--accent-line);
     background: var(--bg-2);
+  }
+  /* the row a click selected (a double click is what opens a file) */
+  .frow[aria-selected='true'] {
+    background: var(--bg-3);
   }
   .frow.ignored {
     opacity: 0.45;

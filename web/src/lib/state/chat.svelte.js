@@ -130,6 +130,7 @@ export class ChatStore {
   newerCount = $state(0);
   loading = $state(false);
   loadingEarlier = $state(false);
+  loadingNewer = $state(false);
   error = $state(null);
   loaded = $state(false);
   stale = false;
@@ -252,6 +253,46 @@ export class ChatStore {
       return false;
     } finally {
       this.loadingEarlier = false;
+    }
+  }
+
+  /**
+   * The page after the window's last message (sessions.messages afterSeq, idea-t6odez): read on from where an older
+   * window ends instead of dropping it for the tail. Older messages fall off the front past the cap. When the server says
+   * nothing newer is left, the window reaches the tail again and live messages append to it as usual; messages that
+   * landed while it was detached are already in the pages read (events then were counted, not appended).
+   */
+  async loadNewer() {
+    if (this.loadingNewer || !this.hasNewer || !this.messages.length) return false;
+    this.loadingNewer = true;
+    try {
+      let added = 0;
+      for (let round = 0; round < 3; round++) {
+        const last = this.messages[this.messages.length - 1].seq;
+        const counted = this.newerCount;
+        const res = await rpc('sessions.messages', { id: this.id, afterSeq: last, limit: PAGE });
+        const newer = (res?.messages ?? []).filter((m) => m.seq > last);
+        let next = this.messages.concat(newer);
+        if (next.length > CAP) {
+          next = next.slice(next.length - CAP);
+          this.hasMore = true;
+        }
+        this.messages = next;
+        added += newer.length;
+        if (res?.hasMore) return added > 0;
+        // the tail is reached, unless a message arrived (and was only counted) while this page was read: read once more
+        if (this.newerCount === counted) {
+          this.hasNewer = false;
+          this.newerCount = 0;
+          return added > 0;
+        }
+      }
+      return added > 0;
+    } catch (e) {
+      this.error = e?.message ?? String(e);
+      return false;
+    } finally {
+      this.loadingNewer = false;
     }
   }
 

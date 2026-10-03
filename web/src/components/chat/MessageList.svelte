@@ -227,8 +227,11 @@
 
     {#if chat.hasNewer}
       <div class="earlier">
+        <button class="np-btn np-btn-sm" onclick={() => chat.loadNewer()} disabled={chat.loadingNewer}>
+          <Icon name="chevron-down" size={13} /> Load newer
+        </button>
         <button class="np-btn np-btn-sm" onclick={jumpToLatest}>
-          <Icon name="arrow-down" size={13} /> Newer messages{chat.newerCount ? ` (${chat.newerCount} new)` : ''} — jump to latest
+          <Icon name="arrow-down" size={13} /> Jump to latest{chat.newerCount ? ` (${chat.newerCount} new)` : ''}
         </button>
       </div>
     {/if}

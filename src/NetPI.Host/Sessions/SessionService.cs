@@ -437,6 +437,9 @@ internal sealed class SessionService : ISessionStore
     public IReadOnlyList<ChatMessage> GetMessages(string sessionId, long? beforeSeq = null, int? limit = null) =>
         _repo.GetMessages(sessionId, beforeSeq, limit);
 
+    public IReadOnlyList<ChatMessage> GetMessagesAfter(string sessionId, long afterSeq, int limit) =>
+        _repo.GetMessagesAfter(sessionId, afterSeq, Math.Max(1, limit));
+
     public IReadOnlyList<ChatMessage> GetContextMessages(string sessionId)
     {
         // A warm read is just the copy of the cached context (before this, a turn re-read the whole history and

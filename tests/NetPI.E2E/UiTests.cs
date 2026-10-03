@@ -20,6 +20,20 @@ public static class UiTests
             catch { if (!proc.HasExited) proc.Kill(true); throw; }
             Check.Equal(0, proc.ExitCode, await stdout + await stderr);
         });
+        r.Add("ui.rpc-contract", "ui: every method the UI mock answers and every method the UI calls by name exists in the server's rpc.list (idea-yvcy8b)", async () =>
+        {
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in new[] { Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "rpc-contract.mjs"), "--url", env.BaseUrl, "--token", Env.Token })
+                psi.ArgumentList.Add(a);
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            try { await proc.WaitForExitAsync(timeout.Token); }
+            catch { if (!proc.HasExited) proc.Kill(true); throw; }
+            var output = await stdout;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            Check.Equal(0, proc.ExitCode, output + await stderr);
+        }, 60);
         r.Add("ui.files-mount", "ui: the Files tab's teardown runs — unmounting it stops the focus listener, and three remounts leave none behind (idea-1zs9go)", async () =>
         {
             // No server needed: the script mounts the committed plugin bundle itself (the one that ships) with a stub
@@ -42,7 +56,7 @@ public static class UiTests
                 + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
             Check.Equal(0, proc.ExitCode, "files-mount exit code; stderr: " + err);
         }, 120);
-        r.Add("ui.idea-conflict", "ui: the Ideas tab saves with the revision its editor was opened on — a stale save is a conflict, not an overwrite, and an open editor survives a status change (idea-c3hihl)", async () =>
+        r.Add("ui.idea-conflict", "ui: an Ideas card opens the idea dialog on the current revision (idea-c3hihl), a status change claims none, and the play button starts a chat", async () =>
         {
             // No server needed: the script mounts the committed plugin bundle itself with a stub ctx whose
             // ideas.update enforces the same expectedRevision rule as the host.

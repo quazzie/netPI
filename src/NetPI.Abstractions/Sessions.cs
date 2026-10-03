@@ -168,6 +168,12 @@ public interface ISessionStore
     ChatMessage? GetMessage(long id);
     /// <summary>Messages ordered by seq ascending. With <paramref name="beforeSeq"/>/<paramref name="limit"/> returns the page ending just before beforeSeq.</summary>
     IReadOnlyList<ChatMessage> GetMessages(string sessionId, long? beforeSeq = null, int? limit = null);
+    /// <summary>
+    /// The page after a message (idea-t6odez): messages with seq strictly greater than <paramref name="afterSeq"/>,
+    /// ascending, at most <paramref name="limit"/> (≥ 1). Seq is assigned in commit order and never reused, so a reader
+    /// that pages on from the last seq it saw misses no message and never sees an older gap filled in later.
+    /// </summary>
+    IReadOnlyList<ChatMessage> GetMessagesAfter(string sessionId, long afterSeq, int limit);
     /// <summary>Messages that make up the model context: the latest summary (if any) plus all non-compacted messages.</summary>
     IReadOnlyList<ChatMessage> GetContextMessages(string sessionId);
     /// <summary>Mark all messages with seq &lt;= upToSeq as compacted.</summary>

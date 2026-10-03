@@ -200,12 +200,15 @@ try {
     const pane = page.locator('.panel.right > .body .pane:not([hidden])');
     const text = (await pane.innerText().catch(() => '')).replace(/\s+/g, ' ');
     check('ideas grouped by status', /IN-PROGRESS/i.test(text) && /OPEN/i.test(text), text.slice(0, 140));
-    check('a closed idea is its title only', text.includes('Smoke idea B') && !text.includes('SMOKE-SUMMARY-B'), text.slice(0, 140));
+    check('an idea in the list is its title and a short summary', text.includes('Smoke idea B') && text.includes('SMOKE-SUMMARY-B'), text.slice(0, 140));
     await pane.locator('.card .main', { hasText: 'Smoke idea A' }).first().click();
-    await page.waitForTimeout(400);
-    const open = await pane.innerText().catch(() => '');
-    check('opening an idea reveals summary, meta and sections', open.includes('SMOKE-SUMMARY-A') && /in-progress/.test(open), open.slice(0, 140).replace(/\s+/g, ' '));
+    const dialog = page.locator('.idea-dialog');
+    await dialog.waitFor({ timeout: 5_000 }).catch(() => {});
+    const open = await dialog.innerText().catch(() => '');
+    const fields = await dialog.locator('.i-summary').inputValue().catch(() => '');
+    check('clicking an idea opens the whole idea in the dialog', fields.includes('SMOKE-SUMMARY-A') && /Smoke idea A/.test(await dialog.locator('.i-title').inputValue().catch(() => '')), (fields || open).slice(0, 140).replace(/\s+/g, ' '));
     await shot(page, 'ui-07b-ideas-open');
+    await page.keyboard.press('Escape');
   }
 
   const filesOpened = await openStripTab('left', 'Files');

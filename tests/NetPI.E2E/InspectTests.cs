@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace NetPI.E2E;
 
@@ -96,6 +97,43 @@ public static class InspectTests
             Check.True(back.Healthy, back.Describe());
             Check.True((await env.Rpc("app.info")).S("home") is { Length: > 0 }, "an ordinary RPC works again");
         }, 60);
+        r.Add("inspect.protocol-docs", "docs: every RPC method the server registers is in docs/PROTOCOL.md, and no method row names one that is gone (idea-yvcy8b)", async () =>
+        {
+            var live = (await env.Rpc("rpc.list")).Arr().Select(m => m.S("method")!).ToHashSet(StringComparer.Ordinal);
+            var loaded = (await env.Rpc("plugins.list")).Arr().Where(p => p.B("loaded") || p.S("state") is "loaded" or "running")
+                .Select(p => p.S("id")!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var doc = File.ReadAllText(Path.Combine(env.RepoRoot, "docs", "PROTOCOL.md")).Replace("\r\n", "\n");
+            var (missing, stale) = ProtocolDrift(doc, live, loaded);
+            Check.True(missing.Count == 0, $"{missing.Count} method(s) the server registers are not in docs/PROTOCOL.md: {string.Join(", ", missing)}");
+            Check.True(stale.Count == 0, $"{stale.Count} method row(s) in docs/PROTOCOL.md name a method the server does not have: {string.Join(", ", stale)}");
+        });
+    }
+
+    /// <summary>
+    /// The drift between the live method list and docs/PROTOCOL.md. Missing: a registered method the document never names
+    /// in backticks. Stale: a row of a method table (the first cell a backticked dotted name, outside the Events section)
+    /// whose method is not registered — skipped when the row's plugin column names a plugin this server did not load.
+    /// </summary>
+    internal static (List<string> Missing, List<string> Stale) ProtocolDrift(string doc, HashSet<string> live, HashSet<string> loadedPlugins)
+    {
+        // a name alone in backticks, or one that opens a code span with its parameters (`mcp.save {id,config}`)
+        var named = Regex.Matches(doc, @"`([a-z]\w*(?:\.\w+)+)[`\s]").Select(m => m.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
+        var missing = live.Where(m => !named.Contains(m)).Order(StringComparer.Ordinal).ToList();
+        var stale = new List<string>();
+        var section = "";
+        foreach (var line in doc.Split('\n'))
+        {
+            if (line.StartsWith("## ", StringComparison.Ordinal)) { section = line[3..].Trim(); continue; }
+            if (section.StartsWith("Events", StringComparison.Ordinal) || section.StartsWith("Data shapes", StringComparison.Ordinal)
+                || section.StartsWith("WebSocket", StringComparison.Ordinal) || section.StartsWith("Plugin UI", StringComparison.Ordinal)) continue;
+            var row = Regex.Match(line, @"^\|\s*`([a-z]\w*(?:\.\w+)+)`\s*\|([^|]*)\|");
+            // desktop.* is the WinForms shell's own (src/NetPI.Desktop), registered only when the host runs inside it
+            if (!row.Success || live.Contains(row.Groups[1].Value) || row.Groups[1].Value.StartsWith("desktop.", StringComparison.Ordinal)) continue;
+            var plugin = row.Groups[2].Value.Trim().Trim('`');
+            if (plugin.StartsWith("netpi.", StringComparison.Ordinal) && !loadedPlugins.Contains(plugin)) continue;
+            stale.Add(row.Groups[1].Value);
+        }
+        return (missing, stale);
     }
 
     /// <summary>Stops (or resumes) every thread of a process, as if it had hung: the process stays alive and answers nothing.</summary>

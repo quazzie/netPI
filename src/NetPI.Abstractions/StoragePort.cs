@@ -150,6 +150,12 @@ public interface ISessionRepository
     /// <summary>Ascending by seq. With <paramref name="limit"/> (and optionally <paramref name="beforeSeq"/>): the page of that many messages ending just before it, still ascending.</summary>
     IReadOnlyList<ChatMessage> GetMessages(string sessionId, long? beforeSeq = null, int? limit = null);
     /// <summary>
+    /// The page after a message (idea-t6odez): messages with seq strictly greater than <paramref name="afterSeq"/>,
+    /// ascending, at most <paramref name="limit"/> (≥ 1). Seq is assigned in commit order and never reused, so a reader
+    /// that pages on from the last seq it saw misses no message and never sees an older gap filled in later.
+    /// </summary>
+    IReadOnlyList<ChatMessage> GetMessagesAfter(string sessionId, long afterSeq, int limit);
+    /// <summary>
     /// The session's uncompacted messages ascending, and the highest uncompacted seq (0 when none) read <b>after</b> the rows, so it is never
     /// lower than the last row's seq. A message that committed between the two reads shows as Newest > the last row's seq, which the session
     /// service takes as "this view is already stale: do not cache it".

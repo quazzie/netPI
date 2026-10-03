@@ -21,6 +21,8 @@ public static class MessagePageTests
         r.Add("sessions.messages: the limit bounds the page, hasMore says what is left", LimitAndHasMore);
         r.Add("sessions.messages: beforeSeq pages back, and a message over the budget still comes back", PagingBack);
         r.Add("sessions.messages: the handler answers a real session with the newest messages that fit", ThroughTheRpc);
+        r.Add("sessions.messages: afterSeq pages forward with the oldest messages that fit (idea-t6odez)", PagingForward);
+        r.Add("sessions.messages: afterSeq through the handler, and both cursors at once are refused", ForwardThroughTheRpc);
     }
 
     /// <summary>A reader over a chat that counts what it hands out: the rows a page pulled are its memory bound.</summary>
@@ -36,6 +38,21 @@ public static class MessagePageTests
             Windows.Add((beforeSeq, limit));
             var rows = all.Where(m => beforeSeq is not { } before || m.Seq < before).ToList();
             var page = rows.Skip(Math.Max(0, rows.Count - limit)).ToList();
+            RowsRead += page.Count;
+            return page;
+        }
+    }
+
+    /// <summary>The forward reader: the oldest rows after a seq, counted like <see cref="Reader"/>.</summary>
+    private sealed class ForwardReader(List<ChatMessage> all)
+    {
+        public int RowsRead { get; private set; }
+        public List<(long After, int Limit)> Windows { get; } = [];
+
+        public List<ChatMessage> Read(long afterSeq, int limit)
+        {
+            Windows.Add((afterSeq, limit));
+            var page = all.Where(m => m.Seq > afterSeq).Take(Math.Max(1, limit)).ToList();
             RowsRead += page.Count;
             return page;
         }
@@ -110,6 +127,67 @@ public static class MessagePageTests
         Page([3L], Seqs(one), "the newest message, though it does not fit the budget");
         Check.True(bigHasMore);
         Check.Equal(2, big.RowsRead, "one message to keep and the one that did not fit");
+    }
+
+    private static void PagingForward()
+    {
+        var image = new string('x', 1024);
+        var reader = new ForwardReader([.. Enumerable.Range(1, 10).Select(i => Message(i, image))]);
+
+        var (page, hasMore) = CoreRpc.MessagePageForward(reader.Read, 3, 4);
+        Page([4L, 5L, 6L, 7L], Seqs(page), "the four messages just after seq 3");
+        Check.True(hasMore, "three newer messages are left");
+
+        var (rest, noMore) = CoreRpc.MessagePageForward(reader.Read, 7, 4);
+        Page([8L, 9L, 10L], Seqs(rest), "the rest of the chat");
+        Check.False(noMore, "nothing newer: the client is at the bottom");
+
+        var exact = new ForwardReader([.. Enumerable.Range(1, 4).Select(i => Message(i, image))]);
+        var (four, exactMore) = CoreRpc.MessagePageForward(exact.Read, 0, 4);
+        Check.Equal(4, four.Count);
+        Check.False(exactMore, "a page the limit filled exactly says there is nothing after it (it looked one past)");
+
+        var (none, emptyMore) = CoreRpc.MessagePageForward(reader.Read, 10, 60);
+        Check.Equal(0, none.Count);
+        Check.False(emptyMore);
+
+        // the budget: ten ~3 MiB messages, two fit, and the page is the OLDEST two after the cursor
+        var big = new ForwardReader([.. Enumerable.Range(1, 10).Select(i => Message(i, new string('y', 3 * 1024 * 1024)))]);
+        var (two, bigMore) = CoreRpc.MessagePageForward(big.Read, 0, 60);
+        Page([1L, 2L], Seqs(two), "the oldest whole messages that fit the budget");
+        Check.True(bigMore, "the budget left newer messages");
+        Check.Equal(3, big.RowsRead, "the two it keeps and the one that did not fit");
+
+        var whale = new ForwardReader([.. Enumerable.Range(1, 3).Select(i => Message(i, new string('z', 12 * 1024 * 1024)))]);
+        var (one, whaleMore) = CoreRpc.MessagePageForward(whale.Read, 0, 60);
+        Page([1L], Seqs(one), "a message over the budget still comes back alone");
+        Check.True(whaleMore);
+    }
+
+    private static async Task ForwardThroughTheRpc()
+    {
+        await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"));
+        var sessions = server.Kernel.Sessions;
+        var talk = sessions.CreateSession(new SessionInfo { Title = "talk" });
+        for (var i = 0; i < 30; i++)
+            sessions.AppendMessage(talk.Id, new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = $"line {i}" }] });
+
+        // walk forward from the start in pages of 12: every message once, in order
+        var seen = new List<long>();
+        long after = 0;
+        for (var round = 0; round < 5; round++)
+        {
+            var page = NetPiJson.ToNode(await server.Kernel.Rpc.InvokeAsync("sessions.messages", new { id = talk.Id, afterSeq = after, limit = 12 }))!.AsObject();
+            var seqs = Seqs(page);
+            seen.AddRange(seqs);
+            if (!page["hasMore"]!.GetValue<bool>()) break;
+            after = seqs[^1];
+        }
+        Page([.. Enumerable.Range(1, 30).Select(i => (long)i)], seen, "the forward walk");
+
+        var refused = await Check.ThrowsAsync<RpcException>(() =>
+            server.Kernel.Rpc.InvokeAsync("sessions.messages", new { id = talk.Id, beforeSeq = 10, afterSeq = 2 }));
+        Check.Equal("bad_request", refused.Code);
     }
 
     private static async Task ThroughTheRpc()

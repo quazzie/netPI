@@ -40,11 +40,13 @@ public static class Catalog
         ["ui.idea-image"] = "needs-node ideas",
         ["ui.idea-meaning"] = "needs-node ideas",
         ["ui.smoke"] = "needs-node",
+        ["ui.rpc-contract"] = "needs-node",
         // These three drive a playwright script too, but had no tag at all, so the catalog self-test ("every ui test is
         // marked as needing node") was red on master and -SkipTags needs-node let them through.
         ["ui.pinned-sessions"] = "needs-node",
         ["ui.remove-agent"] = "needs-node",
         ["ui.work-tab"] = "needs-node",
+        ["ui.close-empty-session"] = "needs-node",
     };
 
     public static IReadOnlyCollection<string> ExtraIds => Extra.Keys;

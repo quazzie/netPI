@@ -12,7 +12,7 @@ cannot know more than its teacher, so the teacher's quality is the ceiling.
 
 | device (nuc) | memory | good for |
 |---|---|---|
-| RTX 4070 | 12 GB | the fine-tuned Laya task models (1.2 GB for the server, ~0.85 GB per further model), rankers, training; Kev-9B (10.3 GB) or Kev-4B (6.5 GB) when asked for by name; yue2 renders (up to ~6 GB) |
+| RTX 4070 | 12 GB | Frigate's vision model (Qwen3.5-9B, 7.1 GB, resident), the embedding server (bge-base), rankers, training; fine-tuned Laya task models when served (1.2 GB for the server, ~0.85 GB per further model; none since 2026-10-03); Kev-9B (10.3 GB) or Kev-4B (6.5 GB) when asked for by name; yue2 renders (up to ~6 GB) |
 | Arc iGPU | ~48 GB shared | small and mid encoders (Laya 421M: 0.4 s/line); Kev is too slow here (Kev-4B 4.9 s) |
 | NPU | shared | tiny always-on encoders (MiniLM: 5 ms/line); larger models are slow or inexact |
 | shared with | | Frigate runs object detection on the NPU and the iGPU, and video decoding on the iGPU |
@@ -27,12 +27,12 @@ log file) belongs on the nuc models. Kev-9B is no longer recommended for any tas
 
 | task | recommended | score | speed / where | runner-up | test set |
 |---|---|---|---|---|---|
-| **Log lines**: subsystem, severity, needs a human, routine | **Laya-logs-qwen** (421M, fine-tuned on Qwen3.8-27B's labels), served as `laya-logs` by `laya-tasks` (nuc :8010, `/v1/systemone`; through AiGateway once D73 is deployed) | **0.78 / 0.93 / 0.93 / 0.97** | 37 ms/line on the 4070 (all 4 questions, p50 over the LAN; 0.42 s iGPU) | Qwen3.8-27B itself 0.79 / 0.92 / 0.95 / 0.93 (0.7 s/line); Laya-logs on Kev-9B's labels 0.53 / 0.89 / 0.84 / 0.91 | 120 real lines, hand-labelled |
+| **Log lines**: subsystem, severity, needs a human, routine | **Laya-logs-qwen** (421M, fine-tuned on Qwen3.8-27B's labels), — not served: `laya-tasks` was removed 2026-10-03 (no consumer); the checkpoint stays on the nuc | **0.78 / 0.93 / 0.93 / 0.97** | 37 ms/line on the 4070 (all 4 questions, p50 over the LAN; 0.42 s iGPU) | Qwen3.8-27B itself 0.79 / 0.92 / 0.95 / 0.93 (0.7 s/line); Laya-logs on Kev-9B's labels 0.53 / 0.89 / 0.84 / 0.91 | 120 real lines, hand-labelled |
 | **Browser**: which element next | **MiniLM ranker (fine-tuned) → top-20 → qwen3.8-27b** `/v1/decision` (20 lettered options); live in Chrome: the page's UIA controls → qwen3.8-27b chat, reasoning low | top-1 **0.461** (target in top-20: 0.846); × the Qwen-taught Laya picker 0.478; live, whole tasks: **16/16** ("Browser use" below) | ranker 65 ms (nuc) + 124 ms per step on the 5090 | Laya picker taught by Qwen 0.320 (nuc); the old Laya picker × Kev-9B 0.392 | Mind2Web, 475 steps on 14 websites never trained on |
 | **Computer use (Windows)**: which control next | **qwen3.8-27b**, zero-shot, over the whole UI Automation list (writes the control's number, thinking off) | top-1 **0.98** (43/44); live, whole tasks: **18/19** at reasoning low with a plan line, 15/19 thinking off ("Live computer use" below) | 139 ms per step on the 5090 (p50; 189 controls at most); live 0.2–0.4 s per step through AiGateway | Kev-9B 0.89, top-3 0.98 (~1 s, 4070); small rankers 0.55 | 44 hand-made tasks in 5 Windows apps; 19 live multi-step tasks in 4 apps |
 | **Dangerous command** (guardrail second opinion) | **qwen3.8-27b** `/v1/decision` | agrees with Qwen's generative labels 0.998 / 0.993 / 0.988 / 0.912; at p(yes) < 0.2 on the three risk questions it calls 696 of 852 harmless, none of them risky | 0.31 s per command (4 questions), 5090 | Kev-9B (remote_change unusable: 327 false yes); on the 12 hand-made: Kev-9B 12/12 | 852 real commands, reference = Qwen generative (not human yet; see "NInfer baselines", 0.4) |
 | **Agent stuck / looping** | **Kev-9B** or **laya:typed-decisions** | 6/6 | 0.1 s / 9 ms | Kev-4B 6/6 | 6 hand-made traces — **too small** |
-| **Issue triage** | **laya:typed-decisions** (9 ms) | 8/8 | 9 ms (Ollaya) | Kev-9B / Kev-4B 8/8 | 8 hand-made issues — **too small** |
+| **Issue triage** | **laya:typed-decisions** (9 ms) | 8/8 | 9 ms (Ollaya, removed 2026-10-03) | Kev-9B / Kev-4B 8/8 | 8 hand-made issues — **too small** |
 | **Ideas recall**: which open idea a new chat's first message continues | **qwen3.8-27b** `/v1/decision`, one pick-one question: the open ideas as lettered options (title + summary) plus "none", the list in the system prompt ("Ideas recall" below) | at p ≥ 0.8: real first messages 3/6 right, 0/34 false; written ones 42/46 right, 0/22 false, no wrong idea | 95 ms p50 (the list cached: 1,866 of 1,960 tokens) | titles only: 37/46, 1/22 false; one yes/no per idea: 2.2 s and worse | 42 real first messages (6 with an idea) + 68 written by Claude — **small** |
 
 ### Any LLM as a decision model (logit readout)
@@ -525,11 +525,11 @@ still open. The yue2 taskbar idea (v9dg6g), which the commits seem to finish, st
   winner to beat the **runner-up** by a margin (or, for the `none` sites, to beat `none` by a margin as well) and to fall
   back to "no offer" when it does not — the probability of every label is already in the answer, so it is a threshold and
   a subtraction, not a new decision. It has not been measured; the runs above tuned the thresholds *against* `none` only.
-- **The log teacher is the ceiling, and the student reaches it.** Retrained on Qwen3.8-27B's labels, Laya went from
+- **The log teacher is the ceiling, and the student reaches it.** **Removed from the nuc 2026-10-03** (the user: a different project; nothing in NetPI asked it): the `laya-tasks` container is gone, the checkpoint `out/laya/logs-laya-3ep-qwen` and `serve_tasks.py` stay in `/home/quazzie/train`. Retrained on Qwen3.8-27B's labels, Laya went from
   0.53 to 0.78 on the subsystem and matches its teacher on the rest (gold per epoch: 0.79 / 0.93 / 0.95 / 0.91 after
   1, 0.76 / 0.92 / 0.93 / 0.97 after 2, 0.78 / 0.93 / 0.93 / 0.97 after 3: flat after the first epoch, so more epochs
   do not help; a better teacher or more varied lines would). Checkpoint `out/laya/logs-laya-3ep-qwen` on the nuc,
-  served by `laya-tasks` as `laya-logs` since 2026-09-26 (first as `logs`); it reproduces its gold scores exactly when served
+  served by `laya-tasks` as `laya-logs` from 2026-09-26 (first as `logs`) until 2026-10-03; it reproduces its gold scores exactly when served
   (`serve_check.mjs`). The Kev-taught `out/laya/logs-laya-4ep` stays on disk but is not resident (add
   `laya-logs-kev=/t/out/laya/logs-laya-4ep` to compare). `laya-tasks` is a plain container
   that `/home/quazzie/train/serve.sh` starts (not a Dockhand stack); its last line lists the served
@@ -540,7 +540,7 @@ still open. The yue2 taskbar idea (v9dg6g), which the commits seem to finish, st
   same (0.78 / 0.93 / 0.93 / 0.97), none of the 480 answers flips (probability change p50 0.0003, max 0.047;
   `serve_dump.mjs --diff`), and p50 drops from 37 to 31 ms. Each further Laya model costs ~0.85 GB. `LAYA_WEIGHTS=fp32`
   restores the old placement.
-- **Kev-9B and `laya-tasks` do not fit on the 4070 together.** Kev-9B (10.3 GB plus ~0.5 GB of compute buffers)
+- **Kev-9B and `laya-tasks` did not fit on the 4070 together** (moot since `laya-tasks` was removed 2026-10-03). Kev-9B (10.3 GB plus ~0.5 GB of compute buffers)
   failed to load on 2026-09-26 with `cudaMalloc failed: out of memory` while `laya-tasks` held 1.9 GB; with
   `laya-tasks` stopped it loads in 6 s. At 1.2 GB it is still too tight (10.8 + 1.2 of 12 GB). The hub's fit check
   counts only the models it manages, so it reports "fits". The `decide` default is Qwen3.8-27B since 2026-09-27, so

@@ -50,7 +50,7 @@ public static class SshTests
         public StringBuilder Live { get; } = new();
 
         /// <summary>Without a config a test config is written into the temp folder; a given config (live tests) is only read.</summary>
-        public Env(ISshLauncher? launcher = null, string? config = null)
+        public Env(ISshLauncher? launcher = null, string? config = null, SshBroker? broker = null)
         {
             if (config is null)
             {
@@ -59,7 +59,7 @@ public static class SshTests
             }
             Ctx.SettingsFake.Set("ssh.config", JsonValue.Create(config));
             if (launcher is null) Ctx.SettingsFake.Set("ssh.path", JsonValue.Create("fake-ssh"));
-            Tools = SshToolSet.Create(Ctx, launcher ?? Fake).ToDictionary(t => t.Definition.Name);
+            Tools = SshToolSet.Create(Ctx, launcher ?? Fake, broker).ToDictionary(t => t.Definition.Name);
         }
 
         /// <summary>"ssh_run" etc.: the ssh tool with that action (the tests name the jobs as the tools they once were).</summary>
@@ -840,9 +840,156 @@ public static class SshTests
                 Console.WriteLine("    (set NETPI_SSH_TEST_HOSTS=nuc,server to run against real hosts)");
                 return;
             }
-            foreach (var host in hosts) await Live(host);
+            foreach (var host in hosts)
+            {
+                await Live(host);
+                // the same suite again over kept connections (idea-pac35h): every result has to be the same
+                using var broker = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+                var watch = Stopwatch.StartNew();
+                await Live(host, broker);
+                Console.WriteLine($"    {host} over kept connections: {watch.ElapsedMilliseconds} ms, {broker.Open()} open at the end");
+            }
+        });
+
+        r.Add("ssh broker: calls share one connection; stdout, stderr, exit codes, stdin and unread stdin keep their bytes (idea-pac35h)", async () =>
+        {
+            if (FindBash() is not { } bash) { Console.WriteLine("    (no local bash found; the broker is not run)"); return; }
+            var starts = 0;
+            using var broker = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, LocalBash(bash, () => Interlocked.Increment(ref starts)));
+            var live = new StringBuilder();
+            Task<SshExec?> Run(string command, string? stdin = null, int seconds = 20, int perHost = 3) =>
+                broker.TryRunAsync(BrokerOptions, BrokerHost, command, stdin is null ? null : Encoding.UTF8.GetBytes(stdin), TimeSpan.FromSeconds(seconds),
+                    perHost, TimeSpan.FromMinutes(5), s => { lock (live) live.Append(s); }, null, CancellationToken.None);
+
+            var r1 = (await Run("echo hello; echo oops >&2; exit 3"))!;
+            Check.Equal("hello\n", r1.Stdout);
+            Check.Equal("oops\n", r1.Stderr, "stderr is its own stream, ended by its own marker");
+            Check.Equal(3, r1.ExitCode);
+            Check.Equal("hello\n", live.ToString(), "the live output is the command's, without the end marker");
+
+            Check.Equal("line1\nno newline", (await Run("cat", "line1\nno newline"))!.Stdout, "stdin arrives byte for byte, and output without a final newline keeps it that way");
+            Check.Equal("åäö € ✓", (await Run("printf 'åäö € ✓'"))!.Stdout);
+            Check.Equal("x __netpi_end_0123 X 0\ny", (await Run("printf 'x __netpi_end_0123 X 0\\ny'"))!.Stdout, "a marker-like line with another nonce is output");
+
+            // a command that does not read its stdin must not leave the bytes for the next frame
+            var big = new string('z', 300_000);
+            Check.Equal(0, (await Run("true", big))!.ExitCode);
+            Check.Equal("after\n", (await Run("echo after"))!.Stdout);
+            Check.Equal(300_000.ToString(), (await Run("wc -c | tr -d ' '", big))!.Stdout.Trim(), "a large stdin is delivered whole");
+
+            Check.Equal(1, starts, "every call rode the one connection");
+            Check.Equal(1, broker.Open());
+        });
+
+        r.Add("ssh broker: connections open up to the limit, a call past it runs the old way, a timeout drops its connection", async () =>
+        {
+            if (FindBash() is not { } bash) { Console.WriteLine("    (no local bash found; the broker is not run)"); return; }
+            var starts = 0;
+            using var broker = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, LocalBash(bash, () => Interlocked.Increment(ref starts)));
+            Task<SshExec?> Run(string command, int perHost, int seconds = 20) =>
+                broker.TryRunAsync(BrokerOptions, BrokerHost, command, null, TimeSpan.FromSeconds(seconds), perHost, TimeSpan.FromMinutes(5), null, null, CancellationToken.None);
+
+            var both = await Task.WhenAll(Run("sleep 1; echo a", 2), Run("sleep 1; echo b", 2));
+            Check.Equal("a\nb\n", string.Concat(both.Select(r => r!.Stdout)));
+            Check.Equal(2, starts, "two calls at once: two connections");
+
+            var slow = Run("sleep 2; echo slow", 2);
+            var slower = Run("sleep 2; echo slower", 2);
+            await Task.Delay(300);
+            Check.Equal(null, await Run("echo third", 2), "both connections busy: the call runs the old way (null)");
+            Check.Equal("slow\n", (await slow)!.Stdout);
+            Check.Equal("slower\n", (await slower)!.Stdout);
+
+            // what a call printed before it was stopped is in its result: ssh_run reads its process group id from there to
+            // end the remote work, and a short last line was once held back as a possible end marker and lost
+            var stopped = (await Run("printf '__netpi_pgid=4242\\n'; " + Ticking.Replace("echo tick", "echo tick >&2", StringComparison.Ordinal), 2, seconds: 1))!;
+            Check.True(stopped.TimedOut);
+            Check.Equal("__netpi_pgid=4242\n", stopped.Stdout);
+
+            var timedOut = (await Run(Ticking, 2, seconds: 1))!;
+            Check.True(timedOut.TimedOut, "the call's own timeout");
+            Check.Equal(0, broker.Open(), "both connections timed out (the stopped call and this one) and are gone");
+            Check.Equal("fine\n", (await Run("echo fine", 2))!.Stdout, "the next call works");
+
+            using var abort = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+            var aborted = (await broker.TryRunAsync(BrokerOptions, BrokerHost, Ticking, null, TimeSpan.FromSeconds(20), 2, TimeSpan.FromMinutes(5), null, null, abort.Token))!;
+            Check.True(aborted.Aborted && !aborted.TimedOut, "an abort is an abort");
+        });
+
+        r.Add("ssh broker: a connection whose handshake does not come back sends the host's calls the old way for a while", async () =>
+        {
+            if (FindBash() is not { } bash) { Console.WriteLine("    (no local bash found; the broker is not run)"); return; }
+            var starts = 0;
+            var cooldown = SshBroker.Cooldown;
+            try
+            {
+                using var broker = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+                    LocalBash(bash, () => Interlocked.Increment(ref starts), replace: "echo 'Permission denied (publickey).' >&2; exit 255"));
+                Task<SshExec?> Run() => broker.TryRunAsync(BrokerOptions, BrokerHost, "echo hi", null, TimeSpan.FromSeconds(10), 3, TimeSpan.FromMinutes(5), null, null, CancellationToken.None);
+                Check.Equal(null, await Run(), "no handshake: the call runs the old way, which reports ssh's own error");
+                Check.Equal(null, await Run());
+                Check.Equal(1, starts, "the host is not tried again while it cools down");
+                Check.Equal(0, broker.Open());
+
+                // with no cooldown the next call tries again (the cooldown is fixed when the handshake fails)
+                SshBroker.Cooldown = TimeSpan.Zero;
+                using var again = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+                    LocalBash(bash, () => Interlocked.Increment(ref starts), replace: "exit 255"));
+                for (var i = 0; i < 2; i++)
+                    Check.Equal(null, await again.TryRunAsync(BrokerOptions, BrokerHost, "echo hi", null, TimeSpan.FromSeconds(10), 3, TimeSpan.FromMinutes(5), null, null, CancellationToken.None));
+                Check.Equal(3, starts, "after the cooldown it is tried again");
+            }
+            finally { SshBroker.Cooldown = cooldown; }
+        });
+
+        r.Add("ssh tool: where the client cannot multiplex, calls go through the broker; ssh.reuseConnections off is one ssh per call", async () =>
+        {
+            if (!OperatingSystem.IsWindows() || FindBash() is not { } bash) { Console.WriteLine("    (Windows with a local bash only: elsewhere the client multiplexes itself)"); return; }
+            var starts = 0;
+            using var broker = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, LocalBash(bash, () => Interlocked.Increment(ref starts)));
+            var env = new Env(broker: broker);
+            var first = await env.Run("ssh_run", new { host = "nuc", script = "echo kept" });
+            Check.Contains(first.Content, "kept");
+            await env.Run("ssh_run", new { host = "nuc", script = "echo again" });
+            Check.Equal(0, env.Fake.Calls.Count, "no ssh of its own");
+            Check.Equal(1, starts, "two calls, one connection");
+
+            env.Ctx.SettingsFake.Set("ssh.reuseConnections", JsonValue.Create(false));
+            await env.Run("ssh_run", new { host = "nuc", script = "echo own" });
+            Check.Equal(1, env.Fake.Calls.Count, "reuse off: the call runs its own ssh");
         });
     }
+
+    private static readonly SshOptions BrokerOptions = new("ssh", "scp", "config", true, 5, 30, null);
+    private static readonly SshHost BrokerHost = new("h1", null, null, null);
+
+    /// <summary>
+    /// A command that runs until it is stopped and then ends by itself: killing the local bash that stands in for the
+    /// remote side does not reach an MSYS child, but a writer whose pipe has closed dies on its next write. A plain
+    /// sleep would outlive the test and hold the runner's output open for its full length.
+    /// </summary>
+    private const string Ticking = "while :; do echo tick || exit; sleep 0.2; done";
+
+    /// <summary>
+    /// The broker's connection as a local bash running the remote command, as sshd would: PATH with the bash's own tools
+    /// (Git's usr\bin on Windows) and SHELL set. <paramref name="replace"/> runs instead of the broker script (a failing ssh).
+    /// </summary>
+    private static SshBroker.Starter LocalBash(string bash, Action onStart, string? replace = null) => (_, _, remote) =>
+    {
+        onStart();
+        var psi = new ProcessStartInfo(bash)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false),
+        };
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add(replace ?? remote);
+        if (OperatingSystem.IsWindows() && Path.GetDirectoryName(bash) is { Length: > 0 } binDir)
+            psi.Environment["PATH"] = binDir + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+        psi.Environment["SHELL"] = OperatingSystem.IsWindows() ? "/usr/bin/bash" : "/bin/bash";
+        return Process.Start(psi)!;
+    };
 
     /// <summary>A local bash to run the generated remote scripts in (Git Bash on Windows, /bin/bash elsewhere).</summary>
     private static string? FindBash()
@@ -904,9 +1051,9 @@ public static class SshTests
         return r.Exit == 0 && r.Out.Trim() == "604";
     }
 
-    private static async Task Live(string host)
+    private static async Task Live(string host, SshBroker? broker = null)
     {
-        var env = new Env(new ProcessLauncher(), SshOptions.DefaultConfigPath);
+        var env = new Env(new ProcessLauncher(), SshOptions.DefaultConfigPath, broker);
         var dir = $"/tmp/netpi-ssh-test-{Guid.NewGuid():N}"[..34];
         async Task<ToolResult> Run(string script, int timeout = 60, string? cwd = null, CancellationToken ct = default)
         {

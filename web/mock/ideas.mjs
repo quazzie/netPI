@@ -277,7 +277,7 @@ export function createIdeas({ publish }) {
       changed();
       return { sessionId: s.id, title: s.title, agent: p.agent ?? 'any' };
     },
-    'ideas.mockRefines': () => refines,
+    'mock.ideaRefines': () => refines,
     'ideas.quickAdd': (p) => {
       if (!p.args?.trim()) throw err('bad_request', 'Usage: /idea <title>');
       const idea = api['ideas.add']({ sessionId: p.sessionId, idea: { title: p.args.trim() } });
@@ -362,7 +362,7 @@ export function createIdeas({ publish }) {
   };
 
   /** The mock walkthrough: offer the commit check's card for an idea (the real one needs a repository). */
-  api.commitFinishesIdea = (phrase) => {
+  const commitFinishesIdea = (phrase) => {
     const idea = doc.ideas.find((i) => i.title.toLowerCase().includes(String(phrase).toLowerCase()));
     if (!idea) return null;
     const suggestion = {
@@ -380,7 +380,7 @@ export function createIdeas({ publish }) {
   };
 
   /** The mock walkthrough: make a chat leave the given plan when its tab is closed. */
-  api.closeLeavesPlan = (phrase, title = `Plan: ${phrase}`) => {
+  const closeLeavesPlan = (phrase, title = `Plan: ${phrase}`) => {
     for (const [sid, messages] of store.messages) {
       const said = messages
         .filter((m) => m.role === 'user')
@@ -459,5 +459,5 @@ export function createIdeas({ publish }) {
     doc.exists = true;
   }
 
-  return { api, seed, closeLeavesPlan: (phrase, title) => api.closeLeavesPlan(phrase, title), commitFinishesIdea: (phrase) => api.commitFinishesIdea(phrase) };
+  return { api, seed, closeLeavesPlan, commitFinishesIdea };
 }
