@@ -10,6 +10,28 @@ namespace NetPI.Host.Tests;
 
 public static class ModelCatalogTests
 {
+    /// <summary>A provider whose listings the test completes by hand: each ListModelsAsync call gets its own
+    /// TaskCompletionSource, so the test controls which of several concurrent refreshes finishes in which order.</summary>
+    private sealed class HeldProvider(string id) : IModelProvider
+    {
+        public string Id => id;
+        public string DisplayName => id;
+        public bool IsLocal => true;
+        private readonly List<TaskCompletionSource<IReadOnlyList<ModelInfo>>> _calls = [];
+        public int CallCount { get { lock (_calls) return _calls.Count; } }
+        public TaskCompletionSource<IReadOnlyList<ModelInfo>> Call(int i) { lock (_calls) return _calls[i]; }
+
+        public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(bool refresh, CancellationToken ct)
+        {
+            var tcs = new TaskCompletionSource<IReadOnlyList<ModelInfo>>(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_calls) _calls.Add(tcs);
+            return tcs.Task;
+        }
+
+        public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken ct) =>
+            throw new NotSupportedException("this provider only lists");
+    }
+
     private sealed class FakeProvider(string id, params ModelInfo[] models) : IModelProvider
     {
         public bool Fail { get; set; }
@@ -206,6 +228,41 @@ public static class ModelCatalogTests
             Check.Equal(3, (await catalog.ListAsync(refresh: true)).Count);
             reg2.Dispose();
             await Wait.Until(async () => (await catalog.ListAsync()).Count == 2, "provider removal invalidates");
+        });
+
+        r.Add("models: the newest refresh wins even when an older one finishes last, and a provider removed mid-refresh does not come back", async () =>
+        {
+            var dir = T.TempDir("models");
+            await using var bus = new EventBus(NullLogger.Instance);
+            using var settings = new SettingsStore(Path.Combine(dir, "settings.json"), NullLogger.Instance);
+            var services = new ServiceRegistry();
+            using var catalog = new ModelCatalog(services, settings, bus, NullLogger.Instance);
+            var held = new HeldProvider("held");
+            using var reg = services.Register<IModelProvider>(held);
+
+            // Two explicit refreshes overlap: A starts first (its listing is held), B starts while A runs.
+            var a = catalog.ListAsync(refresh: true);
+            await Wait.Until(() => held.CallCount >= 1, "refresh A reached the provider");
+            var b = catalog.ListAsync(refresh: true);
+            await Wait.Until(() => held.CallCount >= 2, "refresh B reached the provider");
+            held.Call(1).TrySetResult([Model("held", "new")]);   // B finishes first: the catalog shows the new models
+            await b;
+            Check.Equal("held/new", string.Join(",", catalog.Cached.Select(m => m.Ref)), "the newest refresh is live");
+            held.Call(0).TrySetResult([Model("held", "old")]);   // the older refresh finishes last
+            await a;
+            Check.Equal("held/new", string.Join(",", catalog.Cached.Select(m => m.Ref)), "an older refresh that finishes last does not overwrite the newer result");
+
+            // A provider that goes away while a refresh is pending must not come back with that refresh, even when
+            // its own listing succeeds after the removal.
+            var ghost = new HeldProvider("gone");
+            var ghostReg = services.Register<IModelProvider>(ghost);
+            var c = catalog.ListAsync(refresh: true);
+            await Wait.Until(() => held.CallCount >= 3 && ghost.CallCount >= 1, "the refresh listed both providers");
+            ghostReg.Dispose();
+            held.Call(2).TrySetResult([Model("held", "v3")]);
+            ghost.Call(0).TrySetResult([Model("gone", "ghost")]);   // it still answers: its instance is alive
+            await c;
+            Check.Equal("held/v3", string.Join(",", catalog.Cached.Select(m => m.Ref)), "the removed provider does not come back with the pending refresh");
         });
 
         r.Add("models: stream normalizes messages and runs middleware lowest Order outermost", async () =>

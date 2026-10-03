@@ -198,11 +198,22 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
                     if (seen.Add(m.Ref)) all.Add(m);
             }
 
-            string signature;
-            bool changed;
+            string signature = "";
+            bool changed = false;
             lock (_gate)
             {
-                foreach (var stale in _lastByProvider.Keys.Where(k => !live.Contains(k)).ToList()) _lastByProvider.Remove(stale);
+                if (generation != _generation)
+                {
+                    // This refresh started before a newer one, and a newer one finished: it may still finish last, but
+                    // its listing is what that older moment asked for, so it publishes nothing and keeps the cache
+                    // the newest refresh owns (whichever refresh finishes last would otherwise win).
+                    return _cached;
+                }
+                // A provider removed while this refresh was running must not come back with it: its listing may have
+                // succeeded after the removal, or fallen back to its last known models.
+                var liveNow = new HashSet<string>(_services.GetAll<IModelProvider>().Select(p => p.Id), StringComparer.OrdinalIgnoreCase);
+                all = all.Where(m => liveNow.Contains(m.Provider)).ToList();
+                foreach (var stale in _lastByProvider.Keys.Where(k => !liveNow.Contains(k)).ToList()) _lastByProvider.Remove(stale);
                 signature = Signature(all);
                 changed = signature != _signature;
                 _signature = signature;
