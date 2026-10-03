@@ -17,14 +17,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { hostUi } from './host.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const bundle = fs.readFileSync(path.join(root, 'plugins/NetPI.Tools.Files/wwwroot/ui.js'));
+const host = hostUi(root);
 // A side panel with the same overflow the real one has, so the tab lays out as it does in the app.
-const html = `<!doctype html><html><head><style>
+const html = `<!doctype html><html><head>${host.head}<style>
   body {margin:0;background:#191919;color:#ddd;font-family:system-ui}
-  .panel { position:fixed; inset:0 0 0 auto; width:340px; height:400px; overflow:auto; border-left:1px solid #333 }
-</style></head><body><div class="panel"><div id="app"></div></div><script type="module">
+  .fixture-panel { position:fixed; inset:0 0 0 auto; width:340px; height:400px; overflow:auto; border-left:1px solid #333; z-index:9999; background:#191919 }
+</style></head><body><div id="app" hidden></div><div class="fixture-panel"><div id="fixture"></div></div><script type="module">
 import {mount} from '/ui.js';
 // Every method the tab calls is recorded, so the test can count files.git calls over the socket-free stub.
 window.__calls = [];
@@ -46,18 +48,19 @@ const ctx = {
     toast: () => {},
   },
 };
-let handle = mount(document.getElementById('app'), ctx);
+let handle = mount(document.getElementById('fixture'), ctx);
 // PluginTabHost.cleanup(): unmount the instance, then mount a fresh one on an empty container (a remount).
 window.__unmount = () => handle.unmount();
 window.__remount = () => {
   handle.unmount();
   const el = document.createElement('div');
-  document.getElementById('app').replaceChildren(el);
+  document.getElementById('fixture').replaceChildren(el);
   handle = mount(el, ctx);
 };
 window.__gitCalls = () => window.__calls.filter((m) => m === 'files.git').length;
 </script></body></html>`;
 const server = http.createServer((req, res) => {
+  if (host.serve(req, res)) return;
   res.setHeader('Content-Type', req.url === '/ui.js' ? 'text/javascript' : 'text/html');
   res.end(req.url === '/ui.js' ? bundle : html);
 });
@@ -91,7 +94,7 @@ try {
 
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.waitForFunction(() => window.__calls?.includes('files.list'), null, { timeout: 15_000 });
-  const text = await page.locator('#app').innerText();
+  const text = await page.locator('#fixture').innerText();
   check('the tab mounted and listed the workspace', text.includes('notes.txt'), text.replace(/\s+/g, ' ').slice(0, 80));
 
   const afterMount = await git();

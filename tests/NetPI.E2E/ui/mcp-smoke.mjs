@@ -3,28 +3,30 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { hostUi } from './host.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PANEL = Number(process.env.MCP_PANEL || 300);
 const bundle = fs.readFileSync(path.join(root, 'plugins/NetPI.Mcp/wwwroot/ui.js'));
+const host = hostUi(root);
 // The tab is mounted the way the app mounts it: inside a short, scrolling side panel. A menu positioned inside that
 // panel is clipped by it, which is how the action menu lost four of its five items (idea-pii7hv) — a bare page cannot
 // see that, so the panel is part of the fixture, not an accident of the test.
-const html = `<!doctype html><html><head><style>
+const html = `<!doctype html><html><head>${host.head}<style>
   body {margin:0;background:#191919;color:#ddd;font-family:system-ui}
-  .panel { position:fixed; inset:40px 0 0 auto; width:${PANEL}px; height:190px; overflow:auto; border-left:1px solid #333}
-</style></head><body><div class="panel"><div id="app"></div></div><script type="module">
+  .fixture-panel { position:fixed; inset:40px 0 0 auto; width:${PANEL}px; height:190px; overflow:auto; border-left:1px solid #333; z-index:9999; background:#191919}
+</style></head><body><div id="app" hidden></div><div class="fixture-panel"><div id="fixture"></div></div><script type="module">
 import {mount} from '/ui.js';
 const server = {id:'fixture',status:'connected',toolCount:1,config:{enabled:true,transport:'stdio',command:'node',args:[],cwd:'C:/tools',pinned:[],readOnly:[]}};
 const tool = {id:'mcp_fixture_weather_123456789',name:'weather',description:'City weather',exposed:true,deferred:true,readOnly:false,schema:{type:'object',properties:{city:{type:'string'}}}};
-mount(document.getElementById('app'),{on:()=>()=>{},rpc:async(method,args)=>{
+mount(document.getElementById('fixture'),{on:()=>()=>{},rpc:async(method,args)=>{
   if(method==='mcp.list')return {servers:[server]};
   if(method==='mcp.tools')return {tools:[tool]};
   if(method==='mcp.save')throw Error('Connection failed; review configuration');
   return {servers:[server]};
 }});
 </script></body></html>`;
-const server = http.createServer((req,res)=>{res.setHeader('Content-Type',req.url==='/ui.js'?'text/javascript':'text/html');res.end(req.url==='/ui.js'?bundle:html);});
+const server = http.createServer((req,res)=>{if(host.serve(req,res))return;res.setHeader('Content-Type',req.url==='/ui.js'?'text/javascript':'text/html');res.end(req.url==='/ui.js'?bundle:html);});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 let browser;
 const errors=[];

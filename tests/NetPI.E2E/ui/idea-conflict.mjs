@@ -16,15 +16,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { hostUi } from './host.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const bundle = fs.readFileSync(path.join(root, 'plugins/NetPI.Ideas/wwwroot/ui.js'));
+const host = hostUi(root);
 // A side panel, wide enough that the status menu is not clipped by it: the cards are opened in this test, and a menu
 // positioned inside a panel is clipped by that panel.
-const html = `<!doctype html><html><head><style>
+const html = `<!doctype html><html><head>${host.head}<style>
   body {margin:0;background:#191919;color:#ddd;font-family:system-ui}
-  .panel { position:fixed; inset:0 0 0 auto; width:520px; height:900px; overflow:auto; border-left:1px solid #333 }
-</style></head><body><div class="panel"><div id="app"></div></div><script type="module">
+  .fixture-panel { position:fixed; inset:0 0 0 auto; width:520px; height:900px; overflow:auto; border-left:1px solid #333; z-index:9999; background:#191919 }
+</style></head><body><div id="app" hidden></div><div class="fixture-panel"><div id="fixture"></div></div><script type="module">
 import {mount} from '/ui.js';
 const now = () => new Date().toISOString();
 const ideas = [
@@ -76,9 +78,10 @@ const ctx = {
     openSession: () => {},
   },
 };
-mount(document.getElementById('app'), ctx);
+mount(document.getElementById('fixture'), ctx);
 </script></body></html>`;
 const server = http.createServer((req, res) => {
+  if (host.serve(req, res)) return;
   res.setHeader('Content-Type', req.url === '/ui.js' ? 'text/javascript' : 'text/html');
   res.end(req.url === '/ui.js' ? bundle : html);
 });
