@@ -9,7 +9,7 @@ The work itself is in the ideas backlog, one idea per thread: **`idea-0m4hml`** 
 
 ## Where things stand
 
-NetPI consumer update (2026-10-01): captured full-context checks, finished/ask-user hints, optional routing/skill hints, commit-to-todo suggestions, configured bulk routing and conservative probability/margin checks are implemented and functionally tested. IDecisionService provides shared admission and trusted same-model lease reuse. Ideas proposals require a separate read-only low-priority verifier; verified unchanged completion can apply automatically. See [the implementation pass](plans/2026-10-01-agent-rework-pass.md) and SETTINGS.md for opt-ins.
+NetPI consumer update (2026-10-01): captured full-context checks, finished/ask-user hints, optional routing/skill hints, commit-to-todo suggestions, configured bulk routing and conservative probability/margin checks are implemented and functionally tested. IDecisionService provides shared admission and trusted same-model lease reuse. Ideas proposals require a separate read-only low-priority verifier; verified unchanged completion can apply automatically. See [the implementation pass](archive/2026-10-01-agent-rework-pass.md) and SETTINGS.md for opt-ins.
 
 This pass does not revalidate historical performance numbers on the current engine. Responses-to-chat conversion preserves supported conversation content but does not prove identical tokenization or encrypted/opaque reasoning cache equivalence. Re-measure cached_tokens, next-turn cache survival, latency and hint quality in an explicitly available idle window before claiming benefits or enabling consumers by default. idea-0m4hml remains in progress for that measurement.
 

@@ -1,5 +1,7 @@
 # NetPI repository audit — 2026-09-30
 
+Archived 2026-10-03: historical audit of the commit named below, not a current defect list. Consult the Ideas backlog and current source for individual findings; archiving this report does not claim every finding is fixed.
+
 Reviewed commit `62d40102b97e58e54ac1ed604b38195355b3ed6f` on isolated branch `codex/repo-audit`. This is a review report; application source was not changed or installed. The running app was queried only for read-only RPC metadata. Consolidated into the main repository on 2026-10-01. References now point into the main checkout; line numbers and findings describe the reviewed commit above and may have changed since. The original report and probe evidence are preserved under artifacts/consolidation/2026-10-01/NetPI-repo-audit/.
 
 P1 means fix soon because the behavior can execute unintended work, lose state, or cross chat boundaries. P2 means a concrete correctness defect. P3 means a lower-impact resource/lifecycle defect. Reproduced means a focused local probe exercised actual application logic; it does not imply a live provider or full browser walkthrough.
