@@ -71,6 +71,36 @@ public static class IdeasCheckTests
 
         public async Task<JsonArray> Cards() => (JsonArray)(await Rpc("ideas.suggestions", new JsonObject()))["suggestions"]!.AsArray();
 
+        /// <summary>The background checks' own work list, newest last: what is waiting, running or finished, and why.</summary>
+        public async Task<List<BackgroundWorkInfo>> Work() => (List<BackgroundWorkInfo>)(await Ctx.RpcFake.Call("ideas.work", new JsonObject()))!;
+
+        /// <summary>Wait until a work item's reason says this (the check behind it got that far).</summary>
+        public async Task<BackgroundWorkInfo> WaitForWork(string text, int ms = 5000)
+        {
+            for (var waited = 0; waited < ms; waited += 25)
+            {
+                var item = (await Work()).LastOrDefault(w => w.Reason?.Contains(text, StringComparison.OrdinalIgnoreCase) == true);
+                if (item is not null) return item;
+                await Task.Delay(25);
+            }
+            throw new AssertException($"no background work ever said '{text}'");
+        }
+
+        /// <summary>A model that answers the draft, and a verifier that is cancelled while a chat is queued ahead of it.</summary>
+        public void YieldsVerifier(string title, string summary)
+        {
+            Ctx.ModelsFake.AsyncResponder = async (request, token) =>
+            {
+                if (request.SystemPrompt?.StartsWith("Independently verify", StringComparison.Ordinal) != true)
+                    return new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = $"SAVE\n{title}\n{summary}" }] };
+                // A yielded call is cancelled before the provider answers it: the verifier only starts its next attempt
+                // once this one ended, which is exactly what the real provider cancellation looks like.
+                token.ThrowIfCancellationRequested();
+                return new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart
+                    { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"The scripted conversation contains this unfinished plan\"}" }] };
+            };
+        }
+
         /// <summary>Wait until there are <paramref name="count"/> cards (the check runs behind the closed tab).</summary>
         public async Task<JsonArray> WaitForCards(int count, int ms = 5000)
         {
@@ -126,6 +156,8 @@ public static class IdeasCheckTests
         public List<int> Priorities { get; } = [];
         public List<string> Labels { get; } = [];
         public bool Grant { get; set; } = true;
+        /// <summary>A chat is waiting for a slot: what the verifier yields to and the deferred queue waits for.</summary>
+        public bool Queued { get; set; }
 
         private sealed class Slot(Action release) : IAgentSlot
         {
@@ -138,7 +170,11 @@ public static class IdeasCheckTests
 
         public string Resolve(ModelInfo model) => model.Ref;
         public string Resolve(ModelInfo model, string? agent) => model.Ref;
-        public IReadOnlyList<AgentSlots> Snapshot() => [];
+        public IReadOnlyList<AgentSlots> Snapshot() => [new AgentSlots
+        {
+            Model = "aiproxy/qwen3.8-27b",
+            Waiters = Queued ? [new SlotHolder { Priority = 0, AgentId = "chat" }] : [],
+        }];
         public bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease)
         {
             lock (this)
@@ -536,6 +572,64 @@ public static class IdeasCheckTests
             Check.Equal(0, (await env.Cards()).Count, "and no card");
             Check.Equal(0, env.Scheduler.Taken, "and it never took a slot");
             Check.Contains(string.Join("|", env.Ctx.Log.Lines), "paid model", "the log says why");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas check: a plan the model was too busy to verify is offered when the model is free — no second close", async () =>
+        {
+            var env = new Env();
+            env.Ctx.ServicesFake.Register<IAgentScheduler>(env.Scheduler);
+            env.Ctx.SettingsFake.Set("ideas.verifyRetrySeconds", 1);   // the deferred retry is a second away
+            await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
+            env.Talk();
+            env.Talk();
+            env.YieldsVerifier("Deferred plan", "The chat left this behind");
+            env.Scheduler.Queued = true;   // a chat is queued ahead of the checks: every verification yields its slot
+
+            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+            var deferred = await env.WaitForWork("yielded three times");
+            Check.Contains(deferred.Reason, "no attempt yet", "and the work list says the proposal is waiting for its turn: " + deferred.Reason);
+            Check.Contains(deferred.Reason, "the next one in about", "naming when it is looked at again");
+            Check.Equal(3, env.Ctx.ModelsFake.Requests.Count(q => q.SystemPrompt!.StartsWith("Independently verify")), "the verifier gave up after its bound of three");
+            Check.Equal(0, (await env.Cards()).Count, "nothing is offered while the model is busy");
+            Check.Equal("running", env.Mark(env.Session.Id)["state"].Str(), "the check keeps its claim: the queue owns the proposal now");
+
+            // The chats go idle. Nothing else happens: no second close, no commit — the proposal is judged now.
+            env.Scheduler.Queued = false;
+            env.Ctx.Bus.Publish(new BusEvent { Type = AgentSchedulerEvents.Changed });
+            var cards = await env.WaitForCards(1, 10000);
+            Check.Equal("Deferred plan", cards[0]!["title"].Str());
+            Check.Equal("done", env.Mark(env.Session.Id)["state"].Str(), "and the check is done, not retryable");
+            Check.Equal(4, env.Ctx.ModelsFake.Requests.Count(q => q.SystemPrompt!.StartsWith("Independently verify")), "one verification answered: the retry spent one attempt, not a storm");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas check: a deferred plan whose conversation moved on is given up instead of offered", async () =>
+        {
+            var env = new Env();
+            env.Ctx.ServicesFake.Register<IAgentScheduler>(env.Scheduler);
+            env.Ctx.SettingsFake.Set("ideas.verifyRetrySeconds", 1);
+            await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
+            env.Talk();
+            env.Talk();
+            env.YieldsVerifier("Stale plan", "Read from a conversation that has moved on");
+            env.Scheduler.Queued = true;
+
+            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+            await env.WaitForWork("yielded three times");
+
+            // The chat is worked on again: the proposal was read from a revision that is not there any more.
+            env.Talk("and one more thing", "On it.");
+            env.Scheduler.Queued = false;
+            env.Ctx.Bus.Publish(new BusEvent { Type = AgentSchedulerEvents.Changed });
+
+            var mark = await env.WaitForMark(env.Session.Id, 10000);
+            Check.Equal("failed", mark["state"]!.Str(), "the check is retryable again, not left waiting: " + mark.ToJsonString());
+            Check.Contains(mark["error"]!.Str(), "moved on", "and it says what ended it");
+            Check.Equal(0, (await env.Cards()).Count, "a plan read from another revision is not offered");
+            Check.Equal(3, env.Ctx.ModelsFake.Requests.Count(q => q.SystemPrompt!.StartsWith("Independently verify")), "and it was never verified again");
             env.Ctx.Unload();
         });
 

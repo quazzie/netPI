@@ -18,7 +18,7 @@ namespace NetPI.Ideas;
 /// backlog without a click, and the click is one transaction: the idea, the record of the answer and the card leaving
 /// the queue commit together, so an interrupted answer can neither lose a card nor save an idea twice.
 /// </summary>
-public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
+public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, IdeaVerifyQueue queue)
 {
     public const double DefaultAttachThreshold = 0.8;
     public const int MinUserMessages = 2;
@@ -71,6 +71,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
     /// <summary>Every pick-one question a check asks, asked in one place.</summary>
     private readonly IdeaDecider _decider = new(ctx);
     private readonly IdeasRepository _repo = repo;
+    /// <summary>Where a verification the model was too busy to judge waits for it to be free (idea-ujife1).</summary>
+    private readonly IdeaVerifyQueue _queue = queue;
 
     public void Register(IRpcRegistry rpc)
     {
@@ -199,40 +201,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
                 FinishAsync(session.Id, token, ct, null);
                 return;
             }
-
-            if (IdeaRuns.SessionBusy(ctx, session.Id)) { GiveUpAsync(session.Id, token, ct); return; }
-            // A plan the agent saved while this check was in flight must not be offered a second time.
-            var alreadySaved = _repo.All().Any(i =>
-                (i["sessionIds"] as JsonArray ?? []).Any(s => IdeaOps.Str(s) == session.Id) &&
-                string.Equals(IdeaOps.Str(i["title"])?.Trim(), draft.Value.Title.Trim(), StringComparison.OrdinalIgnoreCase));
-            if (alreadySaved) { FinishAsync(session.Id, token, ct, null); return; }
-
-            var verdict = await new IdeaVerifier(ctx).VerifyAsync($"Save plan: {draft.Value.Title}\n{draft.Value.Summary}", digest, session.Id, project?.Id, ct).ConfigureAwait(false);
-            if (!verdict.Verified) { FinishAsync(session.Id, token, ct, verdict.Retryable ? verdict.Reason : null); return; }
-            if (IdeaRuns.SessionBusy(ctx, session.Id) || Revision(ctx.Sessions.GetMessages(session.Id)) != Revision(messages)) { GiveUpAsync(session.Id, token, ct); return; }
-
-            var suggestion = new JsonObject
-            {
-                ["id"] = "sg_" + Guid.NewGuid().ToString("N")[..10],
-                ["kind"] = "save",
-                ["sessionId"] = session.Id,
-                ["sessionTitle"] = IdeaOps.Clip(session.Title, 120),
-                ["title"] = draft.Value.Title,
-                ["summary"] = draft.Value.Summary,
-                ["at"] = IdeaOps.Now(),
-                ["seen"] = false,
-                ["verified"] = true,
-                ["verification"] = verdict.Reason,
-            };
-            if (project is not null) suggestion["project"] = new JsonObject { ["id"] = project.Id, ["name"] = project.Name };
-            else suggestion["project"] = null;
-
-            // One card per chat per plan: a check that runs twice (a retry, a restart) does not stack them.
-            if (_repo.AddCard(suggestion))
-            {
-                ctx.Events.Publish(SuggestedEvent, new JsonObject { ["suggestion"] = suggestion.DeepClone() });
-            }
-            FinishAsync(session.Id, token, ct, null);
+            if (await OfferAsync(session, messages, digest, draft.Value, project, token, ct).ConfigureAwait(false) is { } deferred)
+                DeferProposal(session, messages, draft.Value, project, token, deferred);   // the queue owns the claim now
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -245,6 +215,89 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
             ctx.Logger.LogWarning("Ideas: the save check on {Session} failed: {Message}", session.Id, ex.Message);
             FinishAsync(session.Id, token, ct, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Offer the drafted plan: the verifier, then the card. Null when the check is over — the card is waiting for the
+    /// user, or the plan is not offered at all. The reason the verifier deferred the proposal otherwise: the queue
+    /// tries it again when the model is free, and the mark stays as it is until then (idea-ujife1).
+    /// </summary>
+    private async Task<string?> OfferAsync(SessionInfo session, IReadOnlyList<ChatMessage> messages, string digest,
+        (string Title, string Summary) draft, ProjectInfo? project, string? token, CancellationToken ct)
+    {
+        if (IdeaRuns.SessionBusy(ctx, session.Id)) { GiveUpAsync(session.Id, token, ct); return null; }
+        // A plan the agent saved while this check was in flight must not be offered a second time.
+        var alreadySaved = _repo.All().Any(i =>
+            (i["sessionIds"] as JsonArray ?? []).Any(s => IdeaOps.Str(s) == session.Id) &&
+            string.Equals(IdeaOps.Str(i["title"])?.Trim(), draft.Title.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (alreadySaved) { FinishAsync(session.Id, token, ct, null); return null; }
+
+        var verdict = await new IdeaVerifier(ctx).VerifyAsync($"Save plan: {draft.Title}\n{draft.Summary}", digest, session.Id, project?.Id, ct).ConfigureAwait(false);
+        if (!verdict.Verified)
+        {
+            if (verdict.Deferred) return verdict.Reason;   // the queue retries this; the mark belongs to it now
+            FinishAsync(session.Id, token, ct, verdict.Retryable ? verdict.Reason : null);
+            return null;
+        }
+        if (IdeaRuns.SessionBusy(ctx, session.Id) || Revision(ctx.Sessions.GetMessages(session.Id)) != Revision(messages)) { GiveUpAsync(session.Id, token, ct); return null; }
+
+        var suggestion = new JsonObject
+        {
+            ["id"] = "sg_" + Guid.NewGuid().ToString("N")[..10],
+            ["kind"] = "save",
+            ["sessionId"] = session.Id,
+            ["sessionTitle"] = IdeaOps.Clip(session.Title, 120),
+            ["title"] = draft.Title,
+            ["summary"] = draft.Summary,
+            ["at"] = IdeaOps.Now(),
+            ["seen"] = false,
+            ["verified"] = true,
+            ["verification"] = verdict.Reason,
+        };
+        if (project is not null) suggestion["project"] = new JsonObject { ["id"] = project.Id, ["name"] = project.Name };
+        else suggestion["project"] = null;
+
+        // One card per chat per plan: a check that runs twice (a retry, a restart) does not stack them.
+        if (_repo.AddCard(suggestion))
+        {
+            ctx.Events.Publish(SuggestedEvent, new JsonObject { ["suggestion"] = suggestion.DeepClone() });
+        }
+        FinishAsync(session.Id, token, ct, null);
+        return null;
+    }
+
+    /// <summary>
+    /// The proposal the model was too busy to judge, kept until it can be: one job per conversation and revision, and
+    /// the claim this check holds goes with it. A queue that will not take it leaves the mark retryable, which is what
+    /// the next close of this conversation acts on.
+    /// </summary>
+    private void DeferProposal(SessionInfo session, IReadOnlyList<ChatMessage> messages, (string Title, string Summary) draft,
+        ProjectInfo? project, string? token, string reason)
+    {
+        var rev = Revision(messages);
+        if (_queue.Defer($"save:{session.Id}:{rev}", session.Id, project?.Id,
+            async ct =>
+            {
+                // What this proposal is worth is a fact about this conversation at this revision: it is asked again
+                // only while that is still true, and given up as soon as it is not. Either way the check's own mark is
+                // written here — a job that is dropped without ever running hands it back through giveUp below.
+                if (ctx.Sessions.GetSession(session.Id) is null) return GiveUp("the conversation is gone");
+                if (IdeaRuns.SessionBusy(ctx, session.Id)) return IdeaVerifyQueue.Outcome.Later;
+                var current = ctx.Sessions.GetMessages(session.Id);
+                if (Revision(current) != rev) return GiveUp("the conversation moved on since the plan was read");
+                return await OfferAsync(session, current, Digest(current), draft, project, token, ct).ConfigureAwait(false) is { } again
+                    ? IdeaVerifyQueue.Outcome.Again(again)
+                    : IdeaVerifyQueue.Outcome.Done();
+
+                IdeaVerifyQueue.Outcome GiveUp(string why)
+                {
+                    FinishAsync(session.Id, token, CancellationToken.None, why);
+                    return IdeaVerifyQueue.Outcome.Failed(why);
+                }
+            },
+            reason, giveUp: why => FinishAsync(session.Id, token, CancellationToken.None, why)))
+            return;
+        FinishAsync(session.Id, token, CancellationToken.None, $"{reason}; the deferred verification queue would not take it");
     }
 
     /// <summary>

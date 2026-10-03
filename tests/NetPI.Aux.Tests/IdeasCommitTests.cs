@@ -56,6 +56,17 @@ public static class IdeasCommitTests
         /// <summary>Hashes the repository cannot show a patch for: a commit from another repository, or one whose
         /// history was rewritten away.</summary>
         public HashSet<string> Unreadable { get; } = [];
+        /// <summary>Hashes whose patch git cut: the commit is there, its patch is not whole.</summary>
+        public HashSet<string> Truncated { get; } = [];
+        /// <summary>How long the scripted patch of every commit is (a rework of many commits outgrows the bound).</summary>
+        public int PatchChars { get; set; } = 0;
+        /// <summary>
+        /// Run when a patch is asked for, before it is answered: how a test edits the idea while its evidence is
+        /// being read. It runs inside the synchronous handler on purpose — the checks start the first sweep without
+        /// waiting for it, and a handler that really yielded would let a test assert before the plugin watched
+        /// anything.
+        /// </summary>
+        public Action<string>? OnPatch { get; set; }
         /// <summary>How the link question is answered (letters → probability).</summary>
         public Func<JsonArray, Dictionary<string, double>> Link { get; set; } = labels => new() { [labels[0]!.Str()!] = 0.95, [labels[^1]!.Str()!] = 0.03 };
         /// <summary>When set, the decision throws this many times before answering.</summary>
@@ -74,9 +85,16 @@ public static class IdeasCommitTests
             Session = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s", ProjectId = Project.Id });
             Ctx.RpcFake.Register("files.commits", (req, _) =>
             {
-                if (req.Str("hash") is { } patchHash) return Task.FromResult<object?>(Unreadable.Contains(patchHash)
-                    ? new JsonObject { ["hash"] = patchHash }   // nothing here: the commit is not in this repository
-                    : new JsonObject { ["hash"] = patchHash, ["patch"] = "diff --git a/fix b/fix\n+scripted completed implementation", ["truncated"] = false });
+                if (req.Str("hash") is { } patchHash)
+                {
+                    OnPatch?.Invoke(patchHash);
+                    if (Unreadable.Contains(patchHash)) return Task.FromResult<object?>(new JsonObject { ["hash"] = patchHash });
+                    var patch = PatchChars > 0
+                        ? "diff --git a/src/impl.cs b/src/impl.cs\n+" + new string('x', PatchChars)
+                        : "diff --git a/fix b/fix\n+scripted completed implementation";
+                    return Task.FromResult<object?>(new JsonObject
+                    { ["hash"] = patchHash, ["patch"] = patch, ["truncated"] = Truncated.Contains(patchHash) });
+                }
                 Repo.Roots.Add((req.Str("cwd"), req.Str("gitDir"), req.Str("commonDir")));
                 var (commits, reachable) = Repo.Read(req.Str("since"), req.Str("until"), req.Int("limit") ?? 20);
                 var list = new JsonArray();
@@ -151,6 +169,20 @@ public static class IdeasCommitTests
         }
 
         public async Task<int> Cards() => ((JsonArray)(await Rpc("ideas.suggestions", new JsonObject()))["suggestions"]!.AsArray()).Count;
+
+        /// <summary>The idea's "Needs review" state, as the ideas.review RPC answers it (null: it carries none).</summary>
+        public async Task<JsonObject?> Review(string ideaId)
+        {
+            var answer = await Rpc("ideas.review", new JsonObject { ["id"] = ideaId });
+            return answer["review"] as JsonObject;
+        }
+
+        /// <summary>The idea's "Needs review" section, as the tab reads it.</summary>
+        public async Task<JsonObject?> ReviewSection(string ideaId)
+        {
+            var idea = await Rpc("ideas.get", new JsonObject { ["id"] = ideaId });
+            return (idea["sections"] as JsonArray ?? []).OfType<JsonObject>().FirstOrDefault(s => s["title"]!.Str() == IdeaReview.Title);
+        }
     }
 
     /// <summary>A backend with no free slot: the wait runs out and admission drops the work, exactly as in the app.</summary>
@@ -189,6 +221,140 @@ public static class IdeasCommitTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("ideas commits: evidence past the bounds leaves a review state on the idea instead of only a skipped line", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.AddIdea("Rework the transcript indexer", "- parse the log without the whole file\n- keep the index warm between runs\n- document the format it reads");
+            for (var i = 1; i <= IdeaCommitCheck.MaxEvidenceCommits + 1; i++) env.Repo.Commit($"step {i} of the rework ({idea})");
+
+            await env.Check!.SweepNowAsync();
+
+            var after = await env.Rpc("ideas.get", new JsonObject { ["id"] = idea });
+            Check.Equal("open", after["status"].Str(), "completion is not claimed from evidence the check cannot read");
+            Check.Equal(0, await env.Cards());
+
+            var review = await env.Review(idea) ?? throw new AssertException("the idea carries no review state");
+            Check.Contains(review["limit"]!.Str(), $"{IdeaCommitCheck.MaxEvidenceCommits + 1} linked commits", "it names the bound that was reached: " + review["limit"]!.Str());
+            Check.Contains(review["limit"]!.Str(), $"at most {IdeaCommitCheck.MaxEvidenceCommits}", "and the bound itself");
+            var commits = (review["commits"] as JsonArray)!.AsArray();
+            Check.Equal(IdeaCommitCheck.MaxEvidenceCommits + 1, commits.Count, "every linked commit is named, not just the first bound's worth");
+            Check.Equal(env.Repo.Path, commits[0]!["repo"]!.Str(), "each says where its evidence has to be read");
+            Check.Equal(env.Repo.Commits[^1].Hash[..7], commits[^1]!["short"]!.Str(), "including the newest one");
+            Check.Equal(null, commits[0]!["files"], "and no file list is invented: no patch was read");
+
+            var requirements = (review["requirements"] as JsonArray)!.Select(r => r.Str()!).ToList();
+            Check.Equal(3, requirements.Count, "the requirements are the idea's own list");
+            Check.Equal("parse the log without the whole file", requirements[0]);
+
+            var section = await env.ReviewSection(idea) ?? throw new AssertException("the idea carries no review section");
+            var content = section["content"]!.Str();
+            Check.Contains(content, "- [ ] parse the log without the whole file", "the section a reviewer reads carries the checklist");
+            Check.Contains(content, env.Repo.Path, "and the repository to read the evidence from");
+            Check.Contains(content, "ideas.verifyUpdate", "and how to finish the idea explicitly");
+            Check.Contains(env.Ctx.Log.Lines.FirstOrDefault(l => l.Contains("not judged as finished")) ?? "", "not judged as finished");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: a patch git cut is named on the idea, and the review state is refreshed, never stacked", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.AddIdea("Finish the migration", "- port the reader\n- keep the writer where it is");
+            env.Repo.Commit($"implement {idea}");
+            env.Truncated.Add(env.Repo.Commits[0].Hash);
+            env.PatchChars = 400;   // the patch names a path before it is cut
+
+            await env.Check!.SweepNowAsync();
+
+            var review = await env.Review(idea) ?? throw new AssertException("the idea carries no review state");
+            Check.Contains(review["limit"]!.Str(), "cut by git", "the limit says exactly what stopped the check: " + review["limit"]!.Str());
+            Check.Contains(review["commits"]![0]!["note"]!.Str(), "cut this patch", "and the commit says why");
+            Check.Equal("src/impl.cs", review["commits"]![0]!["files"]![0]!.Str(), "with the paths it did read, so a reviewer knows where to look");
+
+            // Another commit whose patch is cut too: the state is refreshed in place.
+            env.Repo.Commit($"and the rest of it ({idea})");
+            env.Truncated.Add(env.Repo.Commits[1].Hash);
+            await env.Check.SweepNowAsync();
+
+            var idea2 = await env.Rpc("ideas.get", new JsonObject { ["id"] = idea });
+            var sections = (idea2["sections"] as JsonArray ?? []).AsArray().Where(s => s!["title"]!.Str() == IdeaReview.Title).ToList();
+            Check.Equal(1, sections.Count, "one review state on the idea, not one per sweep");
+            var again = (await env.Review(idea))!;
+            Check.Equal(2, (again["commits"] as JsonArray)!.Count, "and it names the evidence as it is now");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: evidence the repository cannot read is a review state too, and the sweep is not pinned", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.AddIdea("Finished somewhere else", "- move the writer\n- keep the reader working");
+            env.Repo.Commit($"first {idea}");
+            await env.Check!.SweepNowAsync();
+            env.Unreadable.Add(env.Repo.Commits[0].Hash);   // a commit made in another repository
+            env.Repo.Commit($"second {idea}");
+
+            await env.Check!.SweepNowAsync();
+
+            var review = await env.Review(idea) ?? throw new AssertException("the idea carries no review state");
+            Check.Contains(review["limit"]!.Str(), "is missing", "the missing evidence is the bound that was reached: " + review["limit"]!.Str());
+            Check.Contains(review["commits"]![0]!["note"]!.Str(), env.Repo.Path, "and the commit says where it cannot be read");
+            Check.Equal(2, (review["requirements"] as JsonArray)!.Count, "with what a reviewer has to support");
+            Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "and the sweep still moves on: missing evidence is not a failure that pins it");
+            Check.Equal(0, await env.Cards(), "nothing is offered on evidence that is not there");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: a review state never stamps over an edit the user made while the evidence was read", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.AddIdea("Rework the indexer", "Everything of it has to be built before it is done.");
+            env.Repo.Commit($"implement {idea}");
+            env.Truncated.Add(env.Repo.Commits[0].Hash);
+            // The user edits the idea while its patches are being read.
+            env.OnPatch = _ => env.Rpc("ideas.update", new JsonObject
+            {
+                ["id"] = idea,
+                ["patch"] = new JsonObject { ["summary"] = "And a requirement the user added while it was checked" },
+            }).GetAwaiter().GetResult();
+
+            await env.Check!.SweepNowAsync();
+
+            var after = await env.Rpc("ideas.get", new JsonObject { ["id"] = idea });
+            Check.Equal("And a requirement the user added while it was checked", after["summary"]!.Str(), "their edit stands");
+            var review = await env.Review(idea) ?? throw new AssertException("the review state was lost");
+            Check.Contains(review["limit"]!.Str(), "cut by git", "and the review state is recorded on the revision the idea has now");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: the same review state is written once, not churned onto the idea by every sweep", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.AddIdea("A big rework", "- one\n- two");
+            var review = new IdeaReview(env.Ctx, IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home));
+            var commits = new List<JsonObject> { new JsonObject { ["hash"] = "abc1234def", ["short"] = "abc1234", ["subject"] = "rework", ["repo"] = env.Repo.Path } };
+
+            Check.True(review.Record(idea, "11 linked commits", commits), "the state is recorded");
+            var revision = (await env.Rpc("ideas.get", new JsonObject { ["id"] = idea }))["revision"]!.GetValue<long>();
+            Check.True(review.Record(idea, "11 linked commits", commits), "the same evidence asked again is still recorded");
+            Check.Equal(revision, (await env.Rpc("ideas.get", new JsonObject { ["id"] = idea }))["revision"]!.GetValue<long>(),
+                "without writing: a sweep that finds the same state does not churn the idea's revision");
+
+            // Evidence that changed: the state is refreshed where it is, still as one section.
+            Check.True(review.Record(idea, "the patch of abc1234 was cut by git and is not complete", commits));
+            var idea2 = await env.Rpc("ideas.get", new JsonObject { ["id"] = idea });
+            var sections = (idea2["sections"] as JsonArray ?? []).AsArray().Where(s => s!["title"]!.Str() == IdeaReview.Title).ToList();
+            Check.Equal(1, sections.Count, "one review state on the idea");
+            Check.Contains(sections[0]!["content"]!.Str(), "cut by git", "and it is the newer evidence that is on it");
+
+            var untouched = await env.AddIdea("Nothing to review here");
+            Check.Equal(null, await env.Review(untouched), "and an idea that never hit a bound carries no review state");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas commits: complete verified patches mark an idle idea done without a card", async () =>
         {
             var env = new Env();

@@ -58,7 +58,10 @@ public sealed class IdeasPlugin : INetPiPlugin
         rpc.Register(context.Rpc);
         RegisterVerifyUpdate(context, repo);
         new IdeaRecall(context, repo, locator).Register(context.Rpc);
-        var saveCheck = new IdeaSaveCheck(context, repo);
+        // What a verification the model was too busy to judge waits for (idea-ujife1): a bounded number of proposals,
+        // retried when foreground work settles, so a busy model strands neither the check nor its claim.
+        var queue = context.Track(new IdeaVerifyQueue(context));
+        var saveCheck = new IdeaSaveCheck(context, repo, queue);
         saveCheck.Register(context.Rpc);
         RegisterCommitChecks(context, repo, saveCheck);
         RegisterUi(context);
@@ -81,6 +84,8 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "When a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down. A new plan gets a card to save or discard; work on an open idea is attached to it instead."),
                 SettingInfo.Bool("ideas.verify", "Verify automatic proposals", true, "A read-only low-priority worker verifies proposals before they are shown or applied. Disabling this stops automatic proposals."),
                 SettingInfo.Str("ideas.verifyModel", "Verifier model", "", "Empty uses ideas.model. The verifier yields to higher-priority queued work after its provider acknowledges cancellation."),
+                SettingInfo.Int("ideas.verifyRetrySeconds", "Deferred verification retry", IdeaVerifyQueue.DefaultRetrySeconds,
+                    $"How long a proposal the verifier could not judge waits before it is tried again (1–3600). It doubles with every attempt and caps at ten minutes, and a proposal is tried at most {IdeaVerifyQueue.MaxTries} times before it goes back to being retryable on the next close of that chat. The wait starts when higher-priority work on the model settles, and no attempt is made while any is queued.", 1, 3600),
                 SettingInfo.Bool("ideas.applyVerifiedUpdates", "Apply verified completion updates", true, "Mark an idea done after independent verification, only if its revision is unchanged and its project is idle."),
                 SettingInfo.Number("ideas.attachThreshold", "Attach threshold", IdeaSaveCheck.DefaultAttachThreshold,
                     "The probability a closed chat has to be about an open idea before the chat is attached to it. 0.8 was right on 5 of 6 (docs/DECISION-MODELS.md).", 0.3, 0.99),
@@ -184,6 +189,9 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
     {
         rpc.RegisterReadOnly("ideas.list", List, "The ideas backlog: { } → { storage: { backend, database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }");
         rpc.RegisterReadOnly("ideas.get", Get, "{ id } → idea (with its revision)");
+        rpc.RegisterReadOnly("ideas.review", Review,
+            "Why an idea's completion is not judged automatically, and what a reviewer has to read: { id } → { ideaId, revision, review: { limit, at, revision, commits: [{ hash, short, subject, repo, files?, note? }], requirements: [...] } | null }. " +
+            "The automatic completion stays blocked until the requirements are supported; the same state is a \"Needs review\" section on the idea");
         rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, images? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project");
         rpc.Register("ideas.addImage", Attach,
             "Store an image for an idea and return its reference: { data (base64), mediaType, name? } → { path, name, mediaType, bytes }. " +
@@ -248,6 +256,19 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
         ct.ThrowIfCancellationRequested();
         var id = req.Required("id");
         return Task.FromResult<object?>(_repo.Find(id)?.Doc ?? throw new RpcException("not_found", $"Idea {id} not found"));
+    });
+
+    public Task<object?> Review(RpcRequest req, CancellationToken ct) => Guard(() =>
+    {
+        ct.ThrowIfCancellationRequested();
+        var id = req.Required("id");
+        var found = _repo.Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
+        return Task.FromResult<object?>(new JsonObject
+        {
+            ["ideaId"] = id,
+            ["revision"] = found.Revision,
+            ["review"] = IdeaReview.State(found.Doc),
+        });
     });
 
     public Task<object?> Add(RpcRequest req, CancellationToken ct) => Guard(() =>

@@ -5,7 +5,14 @@ namespace NetPI.Ideas;
 /// <summary>A bounded, read-only verifier. Cancellation yields only after the provider call has ended.</summary>
 internal sealed class IdeaVerifier(IPluginContext ctx)
 {
-    internal sealed record Verdict(bool Verified, string Reason, bool Retryable = false);
+    /// <summary>
+    /// The answer, and what a caller can do with it. <paramref name="Retryable"/> means "not now, and asking again
+    /// may answer"; <paramref name="Deferred"/> is the narrower kind of that — the model was busy (it was dropped,
+    /// or this verification yielded its slot three times), so the work is still there and the queue
+    /// (<see cref="IdeaVerifyQueue"/>) may try it when the model is free. A model that is missing or not allowed is
+    /// retryable but never deferred: asking again would answer the same.
+    /// </summary>
+    internal sealed record Verdict(bool Verified, string Reason, bool Retryable = false, bool Deferred = false);
     public async Task<Verdict> VerifyAsync(string proposed, string evidence, string? sessionId, string? projectId, CancellationToken ct)
     {
         if (!Setting("ideas.verify", true)) { Skipped("Ideas verification is disabled"); return new(false, "Ideas verification is disabled"); }
@@ -19,7 +26,7 @@ internal sealed class IdeaVerifier(IPluginContext ctx)
         {
             deadline.Token.ThrowIfCancellationRequested();
             var admission = await new IdeaAdmission(ctx).EnterAsync(model, "Ideas verifier", sessionId, projectId, deadline.Token).ConfigureAwait(false);
-            if (!admission.Admitted) return new(false, admission.Reason ?? "Verifier admission failed", admission.Retryable);
+            if (!admission.Admitted) return new(false, admission.Reason ?? "Verifier admission failed", admission.Retryable, admission.Retryable);
             using var slot = admission.Lease!;
             using var yielding = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
             var scheduler = ctx.Services.Get<IAgentScheduler>();
@@ -58,7 +65,7 @@ internal sealed class IdeaVerifier(IPluginContext ctx)
                 throw;
             }
         }
-        return new(false, "Verifier yielded three times; the proposal remains retryable", true);
+        return new(false, "Verifier yielded three times; the proposal remains retryable", true, true);
 
         void Skipped(string reason)
         {
