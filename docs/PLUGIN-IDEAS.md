@@ -37,6 +37,7 @@ top of `IdeasRepository.cs`. The JSON files of the earlier versions (`ideas.json
 | `imports` | the receipts of the imports (one per source taken in) |
 | `meta` | small values, one key each: the root-level fields the old JSON file had (`legacy-root`) |
 | `unread` | the commits a sweep could not decide, keyed by repository and hash |
+| `vectors` | the embeddings, one document per idea: `{ model, dim, hash, at, chunks: [base64 float32…] }` (`model` indexed). Chunk 0 is the card (title, summary, tags), the rest the sections in 1,500-character pieces (at most 12). Derived data: deleting the collection only costs a re-embed |
 
 Moving a backlog between machines is deliberate: `ideas.export` writes a portable snapshot document and
 `ideas.import` takes one in. There is no automatic reading of old files.
@@ -505,8 +506,33 @@ with a backlog that size any few of them are an arbitrary slice, so the notice s
 `ideas` tool and obliges the agent to nothing. With three or fewer it names them and asks for an update or a one-line
 "none of them".
 
+With embeddings on (`ideas.semantic`, an `embed.model`) a larger backlog is no longer silent: the commit message (the
+`-m` texts of the command, else the `[branch hash] subject` line git prints) is embedded, and the notice names the three
+open ideas closest to it by id and title, as candidates the agent checks ("possibly none of them is about it"). The
+lookup is bounded (the client's 1.5 s timeout, 3 s for the whole step); no answer is the plain notice.
+
 The card flow is unchanged and still needed: a commit the agent closed is no longer open, so it is not offered twice,
 and a commit nobody made in a chat is exactly what the watcher is for. Skips: `ideas.tellAgentOnCommit` off.
+
+### Meaning search (embeddings, idea-61wg9p)
+
+An optional enhancement on the Embeddings plugin's `IEmbeddingService` (`plugins/NetPI.Embeddings`, settings `embed.*`),
+resolved per use: without it, with `embed.model` empty, `ideas.semantic` off or the server failing, every path below is
+exactly what it was. `IdeaVectors` keeps the `vectors` collection in step with the backlog — a pass 2 s after a write
+(a burst is one pass) embeds only the ideas whose text hash or model changed and drops the vectors of deleted ideas; a
+search that meets an unindexed idea leaves it out and starts a pass. Search is a cosine scan in process (the best of an
+idea's chunks). Embeddings only **shortlist**: similarity cannot tell "none of these" (on the measured sets the top
+score of a none-case overlaps the right idea's), so the pick-or-none decisions stay the judges. Where it is used:
+
+- the commit notice (above): the three open ideas nearest a commit, when there are too many to list;
+- the `ideas` tool's `list` with a `query` no idea fully contains: the five closest ideas (same status and tag filters)
+  under "Closest by meaning", `details.closest` = `[{id, title, score}]`;
+- the tool's `add`: existing ideas whose card is at least `ideas.similarThreshold` (0.82) close to the new one's are
+  named (`details.similar`), a warning, never a refusal;
+- `ideas.similar` and `ideas.reindex` (RPC).
+
+Not yet: the save check's verifier and cards, the commit link window (`IdeaCommitCheck.LinkAsync`), the recall pre-filter,
+the ranking above 51 open ideas (`IdeaMatch.Windows`) and the tab's "≈" search (idea-61wg9p, later phases).
 
 ## The agent tool: `ideas` (category `ideas`)
 
@@ -522,7 +548,7 @@ up to the user.
 | action | args | notes |
 |---|---|---|
 | `add` | `{ title, summary?, priority?, tags?, sections?: [{kind, title?, content}], project? }` | `createdBy: "agent:<id>"`. `project` (a project id/name, or `"global"`/`""` for unbound) overrides the session's project. |
-| `list` | `{ status?, tag?, query?, project? }` | `project` selects the scope: no argument → the session's project **plus** the unbound "global" ideas (an unbound session sees only the unbound ones); `"all"` → every project (each line carries a project label); `"global"` → the unbound ones; a project id or name → that project only. Unknown projects give an error listing the known ones. Compact lines: `- idea-… [status · priority (· project)] Title — summary #tags (n sections)`. By default done and rejected ideas are hidden, with a count of how many were hidden. `status` also takes `active` and `all`, or a comma-separated list. `query` needs every word to appear in the title, summary, tags or sections. |
+| `list` | `{ status?, tag?, query?, project? }` | `project` selects the scope: no argument → the session's project **plus** the unbound "global" ideas (an unbound session sees only the unbound ones); `"all"` → every project (each line carries a project label); `"global"` → the unbound ones; a project id or name → that project only. Unknown projects give an error listing the known ones. Compact lines: `- idea-… [status · priority (· project)] Title — summary #tags (n sections)`. By default done and rejected ideas are hidden, with a count of how many were hidden. `status` also takes `active` and `all`, or a comma-separated list. `query` needs every word to appear in the title, summary, tags or sections; when no idea does and embeddings are on, the five closest ideas by meaning follow ("Closest by meaning"). |
 | `get` | `{ id }` | Full markdown (the meta line carries the project: `… · project: NetPI · …` or `… · project: global · …`). Section headings carry the section ids: `## Plan: Rollout [sec-4f0a]`, and an idea with sections ends with a line on how to change or add one (`updateSections` / `addSections`). |
 | `update` | `{ id, title?, summary?, status?, priority?, tags?, project?, addSections?: [{kind, title?, content}], updateSections?: [{id, title?, content?, kind?}], removeSectionIds? }` (the section shapes are in the tool's schema, not only in its manual) | `project` (id/name, `"global"`, or `null`) rebinds/unbinds the idea. A `sections` argument is treated as `addSections`, and unknown fields are ignored. The session id is added to `sessionIds`. |
 

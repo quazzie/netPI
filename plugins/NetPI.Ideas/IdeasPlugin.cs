@@ -32,10 +32,13 @@ public sealed class IdeasPlugin : INetPiPlugin
             decisions = DecisionCapabilities.Available(context.Services, context.Rpc, "decide.decision"),
             history = context.Services.Get<IGitHistory>() is not null || context.Rpc.Exists("files.commits"),
             models = context.Models.Cached.Count > 0,
+            embeddings = context.Services.Get<IEmbeddingService>() is { Model: not null, Available: true },
         }), "Availability of optional Ideas enhancements, independently of backlog storage");
         RegisterSettings(context);
 
         var repo = IdeasRepository.Open(context.Data, context.Services.Get<IStorageAccess>(), context.Logger, context.Paths.Home);
+        // Meaning search over the backlog (idea-61wg9p): an optional enhancement on the Embeddings plugin's service.
+        var vectors = context.Track(new IdeaVectors(context, repo));
         var locator = new IdeasLocator(() => context.Sessions, context.Paths, () => context.Settings);
         var snapshots = new IdeaSnapshots(repo);
 
@@ -44,7 +47,12 @@ public sealed class IdeasPlugin : INetPiPlugin
 
         // Every write announces itself once it has committed, so a second window re-reads the canonical state.
         var events = new IdeasEvents(context, repo, locator);
-        repo.OnChanged = events.Changed;
+        repo.OnChanged = reason =>
+        {
+            events.Changed(reason);
+            vectors.Changed();
+        };
+        vectors.Changed(); // the first pass embeds what is not indexed yet (nothing, without embeddings)
 
         // The commits the sweep could not decide after its bound of attempts (idea-kooctc): the cursor has moved past
         // them, and the record is what is re-read on demand.
@@ -52,7 +60,8 @@ public sealed class IdeasPlugin : INetPiPlugin
             new JsonArray(repo.Unread().Select(u => (JsonNode)u).ToArray())),
             "The commits the commit sweep could not decide after its bound of attempts: { } → [{ repo, hash, subject, tries, error, at }]. The cursor has moved past them, so later commits are read; the record is what is re-read on demand");
 
-        context.Tools.Register(new IdeasTool(repo, locator));
+        context.Tools.Register(new IdeasTool(repo, locator, vectors));
+        RegisterMeaningSearch(context, repo, vectors);
 
         var rpc = new IdeasRpc(repo, locator, events, snapshots, context.Paths.Home);
         rpc.Register(context.Rpc);
@@ -64,7 +73,7 @@ public sealed class IdeasPlugin : INetPiPlugin
         var queue = context.Track(new IdeaVerifyQueue(context));
         var saveCheck = new IdeaSaveCheck(context, repo, queue);
         saveCheck.Register(context.Rpc);
-        RegisterCommitChecks(context, repo, saveCheck);
+        RegisterCommitChecks(context, repo, saveCheck, vectors);
         RegisterUi(context);
         return Task.CompletedTask;
     }
@@ -108,10 +117,46 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "After the agent itself runs a successful git commit or git merge in the session's project, one notice asks it to mark the idea that commit finished (or to say that none of them is about it). Nothing happens when the project has no open idea. The cards above stay: they are what catches a commit made outside any chat."),
                 SettingInfo.Int("ideas.commitNoticesPerRun", "Commit notices per run", IdeaCommitNoticeHook.DefaultMaxPerRun,
                     "How many of those notices one run may get, so a run that commits in a loop is asked a bounded number of times.", 0, 10),
+                SettingInfo.Bool("ideas.semantic", "Meaning search", true,
+                    "With an embedding model (the Embeddings plugin, embed.model): the backlog is embedded in the background, the commit notice names the open ideas closest to the commit, the ideas tool adds the closest ideas when a search finds no word match, and a new idea names the existing ones it resembles. Off, or without embeddings, everything works as before."),
+                SettingInfo.Number("ideas.similarThreshold", "Similar idea threshold", IdeaVectors.DefaultSimilarThreshold,
+                    "How close (cosine, card to card) an existing idea has to be before a new one is said to resemble it. 0.82 is about the top 5 % of nearest neighbours in a 231-idea backlog with bge-base.", 0.5, 0.99),
                 SettingInfo.Int("ideas.commitNoticeDebounceSec", "Commit notice debounce", IdeaCommitNoticeHook.DefaultDebounceSec,
                     "Seconds a run waits after a commit notice before it may get the next one, so a burst of commits costs one notice instead of one each.", 0, 3600),
             ],
         });
+
+    private static void RegisterMeaningSearch(IPluginContext context, IdeasRepository repo, IdeaVectors vectors)
+    {
+        context.Rpc.RegisterReadOnly("ideas.similar", async (request, token) =>
+        {
+            var limit = Math.Clamp(request.Int("limit") ?? 5, 1, 50);
+            var id = request.Str("id");
+            var source = id is { Length: > 0 } ? repo.Find(id)?.Doc ?? throw new RpcException("not_found", $"Idea {id} not found") : null;
+            var text = source is not null ? IdeaVectors.Card(source) : request.Str("text") ?? throw new RpcException("bad_request", "Supply id or text");
+            var status = request.Str("status") ?? "active";
+            var candidates = repo.All()
+                .Where(i => IdeaOps.Str(i["id"]) != IdeaOps.Str(source?["id"]) && IdeaOps.Matches(i, status, null, null))
+                .Where(i => request.Str("projectId") is not { Length: > 0 } p || IdeaOps.MatchesProject(i, p, includeUnbound: true))
+                .ToList();
+            var near = await vectors.NearestAsync(text, candidates, limit, token,
+                source is null ? EmbeddingKind.Query : EmbeddingKind.Document, cardsOnly: source is not null).ConfigureAwait(false);
+            return new JsonObject
+            {
+                ["available"] = near is not null,
+                ["ideas"] = new JsonArray((near ?? []).Select(s => (JsonNode)new JsonObject
+                {
+                    ["id"] = IdeaOps.Str(s.Idea["id"]), ["title"] = IdeaOps.Str(s.Idea["title"]), ["status"] = IdeaOps.Str(s.Idea["status"]) ?? "open",
+                    ["score"] = s.Score,
+                }).ToArray()),
+            };
+        }, "Ideas closest in meaning (embeddings): { id | text, limit? (5), status? (active), projectId? } → { available, ideas: [{ id, title, status, score }] }; available false when there are no embeddings");
+        context.Rpc.Register("ideas.reindex", async (_, token) =>
+        {
+            try { return await vectors.ReindexAsync(token).ConfigureAwait(false); }
+            catch (EmbeddingException ex) { throw new RpcException(ex.Code, ex.Message); }
+        }, "Bring the backlog's embeddings in step now (normally done in the background after every change): { } → { enabled, model?, indexed?, unchanged?, removed? }");
+    }
 
     private void RegisterVerifyUpdate(IPluginContext context, IdeasRepository repo)
     {
@@ -132,7 +177,7 @@ public sealed class IdeasPlugin : INetPiPlugin
         }, "Verify a proposed update against evidence and apply only to the captured revision: {id,expectedRevision,patch,evidence}; conflicting or unverifiable updates remain unapplied");
     }
 
-    private void RegisterCommitChecks(IPluginContext context, IdeasRepository repo, IdeaSaveCheck saveCheck)
+    private void RegisterCommitChecks(IPluginContext context, IdeasRepository repo, IdeaSaveCheck saveCheck, IdeaVectors vectors)
     {
         // Phase 3: watch the projects' repositories. Started after the tab, and it never blocks the start: a project
         // that cannot be watched is retried on the next rescan.
@@ -143,7 +188,8 @@ public sealed class IdeasPlugin : INetPiPlugin
         // made the commit. It is a notice, so the agent (which knows what it just committed) updates the idea itself.
         context.Services.Register<IAgentHook>(new IdeaCommitNoticeHook(
             () => context.Settings,
-            projectId => repo.OpenIdeas(projectId)));
+            projectId => repo.OpenIdeas(projectId),
+            (text, projectId, ct) => vectors.NearestAsync(text, repo.OpenIdeas(projectId), IdeaCommitNoticeHook.MaxNamedIdeas, ct)));
     }
 
     private void RegisterUi(IPluginContext context)

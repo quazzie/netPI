@@ -26,6 +26,7 @@
     <Project Path="plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />
     <Project Path="plugins/NetPI.Tools.Files/NetPI.Tools.Files.csproj" />
     <Project Path="plugins/NetPI.Decide/NetPI.Decide.csproj" />
+    <Project Path="plugins/NetPI.Embeddings/NetPI.Embeddings.csproj" />
     <Project Path="plugins/NetPI.Tools.Media/NetPI.Tools.Media.csproj" />
     <Project Path="plugins/NetPI.Tools.Shell/NetPI.Tools.Shell.csproj" />
     <Project Path="plugins/NetPI.Tools.Ssh/NetPI.Tools.Ssh.csproj" />

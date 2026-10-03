@@ -82,10 +82,11 @@ public sealed class IdeasLocator(Func<ISessionStore?> sessions, NetPiPaths paths
 /// and the <c>project</c> argument (or the update's <c>project</c> patch field) changes that. Deleting is left to the
 /// user, in the Ideas tab.
 /// </summary>
-public sealed class IdeasTool(IdeasRepository repo, IdeasLocator locator) : IAgentTool
+public sealed class IdeasTool(IdeasRepository repo, IdeasLocator locator, IdeaVectors? vectors = null) : IAgentTool
 {
     private readonly IdeasRepository _repo = repo;
     private readonly IdeasLocator _locator = locator;
+    private readonly IdeaVectors? _vectors = vectors;
 
     public ToolDefinition Definition { get; } = new()
     {
@@ -98,7 +99,8 @@ public sealed class IdeasTool(IdeasRepository repo, IdeasLocator locator) : IAge
             "The user's backlog of ideas, kept in NetPI's own database; ideas carry a project. Deleting is up to the user.\n" +
             "- list: the open ideas of the session's project plus the unbound \"global\" ones (id, status, priority, title, summary, " +
             "tags). Filters: status (open, parked, planned, in-progress, done, rejected; also active = not done or rejected, the " +
-            "default, or all), tag, query (words that must all appear in the title, summary, tags or sections), project.\n" +
+            "default, or all), tag, query (words that must all appear in the title, summary, tags or sections; when none matches, the ideas " +
+            "closest in meaning are listed instead, if embeddings are on), project.\n" +
             "- get {id}: one idea in full, with its section ids (sec-…).\n" +
             "- add {title (short, specific), summary (one or two sentences: what and why), priority (default medium), tags, sections}: " +
             "sections are the details, each {kind, title, content (Markdown)}; kinds: research, plan, requirements, design, decision, " +
@@ -206,17 +208,35 @@ public sealed class IdeasTool(IdeasRepository repo, IdeasLocator locator) : IAge
         return IdeaOps.Str(args, "title") is { Length: > 0 } ? "add" : "list";
     }
 
-    private Task<ToolResult> AddAsync(ToolContext context, JsonObject args, CancellationToken ct)
+    private async Task<ToolResult> AddAsync(ToolContext context, JsonObject args, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         // The project argument overrides the session's project (which is the default stamp).
         var stamp = IdeaOps.Has(args, "project") ? _locator.ResolveRef(IdeaOps.Str(args, "project")) : _locator.ProjectOfTool(context);
         var idea = _repo.Add(Build(context, args, stamp));
         var n = (idea.Doc["sections"] as JsonArray)?.Count ?? 0;
-        return Task.FromResult(ToolResult.Ok($"Added idea {IdeaOps.Str(idea.Doc["id"])}: {IdeaOps.Str(idea.Doc["title"])}" +
+        var text = $"Added idea {IdeaOps.Str(idea.Doc["id"])}: {IdeaOps.Str(idea.Doc["title"])}" +
             (n > 0 ? $" ({n} section{(n == 1 ? "" : "s")})" : "") +
-            $" to the ideas backlog (project {IdeaOps.ProjectLabel(idea.Doc)})", Details(idea.Doc)));
+            $" to the ideas backlog (project {IdeaOps.ProjectLabel(idea.Doc)})";
+        var details = Details(idea.Doc);
+        // A warning, never a refusal: the agent (or the user) decides whether it repeats one of them.
+        var similar = _vectors is null ? [] : await _vectors.SimilarToAsync(idea.Doc, 3, ct).ConfigureAwait(false);
+        if (similar.Count > 0)
+        {
+            text += "\nIt resembles existing ideas; if it repeats one, update that one instead and set this one to rejected:\n" +
+                    string.Join('\n', similar.Select(ScoredLine));
+            details["similar"] = Scores(similar);
+        }
+        return ToolResult.Ok(text, details);
     }
+
+    private static string ScoredLine(IdeaScore s) =>
+        $"- {IdeaOps.Str(s.Idea["id"])} [{IdeaOps.Str(s.Idea["status"]) ?? "open"}] {IdeaOps.Str(s.Idea["title"])} (similarity {s.Score:0.00})";
+
+    private static JsonArray Scores(IEnumerable<IdeaScore> scores) => new(scores.Select(s => (JsonNode)new JsonObject
+    {
+        ["id"] = IdeaOps.Str(s.Idea["id"]), ["title"] = IdeaOps.Str(s.Idea["title"]), ["score"] = s.Score,
+    }).ToArray());
 
     /// <summary>The new idea, built the way every creator builds one (the tool is not special).</summary>
     private JsonObject Build(ToolContext context, JsonObject args, ProjectInfo? stamp)
@@ -226,7 +246,7 @@ public sealed class IdeasTool(IdeasRepository repo, IdeasLocator locator) : IAge
         return created;
     }
 
-    private Task<ToolResult> ListAsync(ToolContext context, JsonObject args, CancellationToken ct)
+    private async Task<ToolResult> ListAsync(ToolContext context, JsonObject args, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var status = IdeaOps.Str(args, "status");
@@ -270,7 +290,7 @@ public sealed class IdeasTool(IdeasRepository repo, IdeasLocator locator) : IAge
 
         var where = all ? "all projects" : scopeInfo is null ? "the global backlog" : $"project \"{scopeInfo.Name}\"";
         if (inScope.Count == 0 && unboundShown == 0)
-            return Task.FromResult(ToolResult.Ok($"No ideas yet in {where}.", new JsonObject { ["project"] = scopeInfo?.Name, ["count"] = 0, ["total"] = 0 }));
+            return ToolResult.Ok($"No ideas yet in {where}.", new JsonObject { ["project"] = scopeInfo?.Name, ["count"] = 0, ["total"] = 0 });
         var head = lines.Count == 0
             ? $"No matching ideas in {where} ({inScope.Count} total)."
             : lines.Count == unboundShown && unboundShown > 0
@@ -278,7 +298,19 @@ public sealed class IdeasTool(IdeasRepository repo, IdeasLocator locator) : IAge
                 : $"{lines.Count} idea{(lines.Count == 1 ? "" : "s")} in {where}{(includeUnbound && unboundShown > 0 ? $" ({unboundShown} global)" : "")}:";
         var text = head + (lines.Count > 0 ? "\n" + string.Join('\n', lines) : "");
         if (hiddenCount > 0) text += $"\n({hiddenCount} done/rejected hidden; pass status \"all\" to include them.)";
-        return Task.FromResult(ToolResult.Ok(text, new JsonObject { ["project"] = scopeInfo?.Name, ["count"] = lines.Count, ["total"] = inScope.Count }));
+        var details = new JsonObject { ["project"] = scopeInfo?.Name, ["count"] = lines.Count, ["total"] = inScope.Count };
+        // No idea holds every word: a synonym, a typo, or the same thing in other words. The closest ideas by meaning
+        // (under the same status and tag filters) are more often what the agent was looking for than "nothing".
+        if (lines.Count == 0 && !string.IsNullOrWhiteSpace(query) && _vectors is not null)
+        {
+            var pool = inScope.Where(i => IdeaOps.Matches(i, effective, tag, null)).ToList();
+            if (await _vectors.NearestAsync(query, pool, 5, ct).ConfigureAwait(false) is { Count: > 0 } near)
+            {
+                text += "\nClosest by meaning (no idea contains every word; check that one is really about it):\n" + string.Join('\n', near.Select(ScoredLine));
+                details["closest"] = Scores(near);
+            }
+        }
+        return ToolResult.Ok(text, details);
     }
 
     private Task<ToolResult> GetAsync(JsonObject args, CancellationToken ct)

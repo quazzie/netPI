@@ -14,6 +14,7 @@
     { "path": "plugins/NetPI.Compaction/", "tags": ["compaction"] },
     { "path": "plugins/NetPI.Context/", "tags": ["context", "skills"] },
     { "path": "plugins/NetPI.Decide/", "tags": ["smoke"] },
+    { "path": "plugins/NetPI.Embeddings/", "tags": ["smoke", "ideas"] },
     { "path": "plugins/NetPI.Diagnostics/", "tags": ["inspect"] },
     { "path": "plugins/NetPI.Goal/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Guardrails/", "tags": ["smoke", "tools"] },

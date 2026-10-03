@@ -16,6 +16,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
+| `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy`) | – |
 | `plugins/NetPI.Workspaces` | `netpi.workspaces` | `workspace` (actions `info` `list` `switch`) | `workspaces.*` (see `docs/PROTOCOL.md`) |
 
