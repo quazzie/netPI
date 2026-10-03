@@ -10,6 +10,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../Shared/Harness.cs" Link="SharedHarness.cs" />
+    <Compile Include="../Shared/Fakes.cs" Link="SharedFakes.cs" />
     <Compile Include="../Shared/Usings.cs" Link="SharedUsings.cs" />
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
     <ProjectReference Include="../../src/NetPI.Contracts/NetPI.Contracts.csproj" />
