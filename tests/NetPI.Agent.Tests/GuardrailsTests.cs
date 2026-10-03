@@ -25,6 +25,7 @@ public static class GuardrailsTests
         t.Add("guardrails: a redirection, comment, quotes, sudo or a wrapper do not hide a blocked command; a rule that times out blocks", Decorations);
         t.Add("guardrails: a deliberate wait over the limit is refused in every shell that names one; a short one, a quoted sleep and a bounded timeout are not", SleepForms);
         t.Add("guardrails: a long wait blocks with the alternatives, or asks and is remembered for the chat", LongWait);
+        t.Add("guardrails: a long wait in the same command never hides a blocked command or another ask (nor does allowing the wait allow them)", LongWaitBesideRules);
         t.Add("guardrails: an ssh download into a protected path is refused; an upload from it, and a download elsewhere, are not", SshDownload);
     }
 
@@ -209,6 +210,37 @@ public static class GuardrailsTests
         await h.IdleAsync(s.Id);
         Check.Equal(1, h.Bus.OfType("guard.asked").Count, "allowed in this chat: it does not ask twice");
         Check.Equal(3, ran.Count);
+    }
+
+    /// <summary>The sleep verdict is one verdict beside the rules': `sleep 60; rm -rf ~` is blocked whatever the sleep action is.</summary>
+    private static async Task LongWaitBesideRules()
+    {
+        await using var h = await StartAsync();
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        h.Settings.Set("guardrails.maxSleepAction", JsonValue.Create("ask"));
+        h.Settings.Set("guardrails.commands", new JsonArray([.. RuleSet.DefaultCommands.Select(x => (JsonNode)x), "ask: ^git push"]));
+        var s = h.NewSession();
+        var command = "sleep 60; rm -rf /";
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("ok") : Reply.Tool("bash", new { command });
+        await h.SendAsync(s.Id, "wipe it after a minute");
+        await h.IdleAsync(s.Id);
+        Check.Contains(Results(h, s.Id)[0].Content, "`rm -rf /` matches the guardrail", "the blocked command is named, not the sleep");
+        Check.Equal(0, ran.Count);
+        Check.Equal(0, h.Bus.OfType("guard.asked").Count, "a block ends the call before anything is asked");
+
+        // two asks in one command: the user is asked about both, and allowing the wait for the chat does not allow the push
+        command = "sleep 60; git push";
+        await h.SendAsync(s.Id, "push after a minute");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 1, "the first ask waits");
+        var first = FakeBus.Data(h.Bus.OfType("guard.asked")[0]);
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)first["approvalId"]!, allow = true, scope = "session" });
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 2, "the second ask waits");
+        var second = FakeBus.Data(h.Bus.OfType("guard.asked")[1]);
+        Check.True((string?)first["kind"] != (string?)second["kind"], "one ask is the rule's, the other the sleep's");
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)second["approvalId"]!, allow = false });
+        await h.IdleAsync(s.Id);
+        Check.Equal(0, ran.Count, "refusing either one ends the call");
     }
 
     /// <summary>scp writes the destination of a download on this machine, where the call says: it is a write like write and edit.</summary>

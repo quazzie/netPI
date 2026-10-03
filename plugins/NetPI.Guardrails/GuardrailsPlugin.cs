@@ -208,41 +208,14 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             }
             catch (JsonException) { return null; } // the tool refuses invalid JSON itself: nothing runs
             var run = turn.Run;
-            // The typed sleep rule first: no regular expression can say "longer than N seconds".
-            var verdict = Sleeps.Check(call.Name, args, maxSleep, AskOnSleep())
-                ?? (rules.Count == 0 ? null : rules.Check(call.Name, args, path => Resolve(run, call, path)));
-            if (verdict is null) return null;
-            if (verdict.Action == GuardAction.Block) return Block(Why(verdict) + " Nothing ran. If it is really needed, tell the user what and why: they can do it themselves or change the rule.");
-            // The user allowed this ask rule for the rest of the chat (guard.answer scope "session").
-            if (approvals.AllowedInSession(run.Session.Id, verdict.Rule))
-            {
-                ctx.Events.Publish("guard.cleared", new JsonObject
-                {
-                    ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
-                    ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["by"] = "session",
-                });
-                return null;
-            }
-            // An ask rule on a command: a decision model may clear a confidently read-only one (SecondOpinion). Neither a
-            // path verdict nor a long sleep is one: a path ask is about where the call writes, which the model does not
-            // read, and a long wait is a deliberate sleep the rule has already priced.
-            Opinion? opinion = null;
-            if (verdict.Kind == "command" && RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
-            {
-                opinion = await secondOpinion.AskAsync(call.Name, command, run.Cwd, RuleSet.HostOf(args), ct, run).ConfigureAwait(false);
-                if (opinion is { Harmless: true })
-                {
-                    ctx.Events.Publish("guard.cleared", new JsonObject
-                    {
-                        ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
-                        ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["by"] = "opinion", ["opinion"] = opinion.ToJson(),
-                    });
-                    return null;
-                }
-            }
-            if (run.Agent.IsSubagent)
-                return Block(Why(verdict) + " It asks the user first, and a subagent can't ask: nobody watches its chat. Nothing ran; say in your report what you needed.");
-            return await AskAsync(run, call, verdict, opinion, ct).ConfigureAwait(false);
+            // The typed sleep rule: no regular expression can say "longer than N seconds". It is one verdict beside the
+            // rules', never instead of them: `sleep 60; rm -rf ~` is blocked by the rule whatever the sleep says, and a sleep
+            // the user allowed does not allow what is in the same command.
+            var sleep = Sleeps.Check(call.Name, args, maxSleep, AskOnSleep());
+            var rule = rules.Count == 0 ? null : rules.Check(call.Name, args, path => Resolve(run, call, path));
+            foreach (var verdict in Ordered(rule, sleep))
+                if (await JudgeAsync(run, call, args, verdict, ct).ConfigureAwait(false) is { } decision) return decision;
+            return null;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
@@ -250,6 +223,49 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             ctx.Logger.LogWarning(ex, "Guardrails could not check {Tool}", call.Name);
             return Block($"the guardrails could not check this call ({ex.Message}), so it did not run.");
         }
+    }
+
+    /// <summary>The verdicts of one call, the ones that block first (any of them ends the call), then the rules' ask, then the sleep's.</summary>
+    private static IEnumerable<Verdict> Ordered(Verdict? rule, Verdict? sleep)
+    {
+        var all = new[] { rule, sleep }.OfType<Verdict>().ToList();
+        return all.Where(v => v.Action == GuardAction.Block).Concat(all.Where(v => v.Action != GuardAction.Block));
+    }
+
+    /// <summary>One verdict: a block, a clearance (allowed for the chat, or a harmless second opinion), or the user's answer. Null: the call may go on.</summary>
+    private async ValueTask<ToolCallDecision?> JudgeAsync(AgentRunContext run, ToolCallPart call, JsonElement args, Verdict verdict, CancellationToken ct)
+    {
+        if (verdict.Action == GuardAction.Block) return Block(Why(verdict) + " Nothing ran. If it is really needed, tell the user what and why: they can do it themselves or change the rule.");
+        // The user allowed this ask rule for the rest of the chat (guard.answer scope "session").
+        if (approvals.AllowedInSession(run.Session.Id, verdict.Rule))
+        {
+            ctx.Events.Publish("guard.cleared", new JsonObject
+            {
+                ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
+                ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["by"] = "session",
+            });
+            return null;
+        }
+        // An ask rule on a command: a decision model may clear a confidently read-only one (SecondOpinion). Neither a
+        // path verdict nor a long sleep is one: a path ask is about where the call writes, which the model does not
+        // read, and a long wait is a deliberate sleep the rule has already priced.
+        Opinion? opinion = null;
+        if (verdict.Kind == "command" && RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
+        {
+            opinion = await secondOpinion.AskAsync(call.Name, command, run.Cwd, RuleSet.HostOf(args), ct, run).ConfigureAwait(false);
+            if (opinion is { Harmless: true })
+            {
+                ctx.Events.Publish("guard.cleared", new JsonObject
+                {
+                    ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
+                    ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["by"] = "opinion", ["opinion"] = opinion.ToJson(),
+                });
+                return null;
+            }
+        }
+        if (run.Agent.IsSubagent)
+            return Block(Why(verdict) + " It asks the user first, and a subagent can't ask: nobody watches its chat. Nothing ran; say in your report what you needed.");
+        return await AskAsync(run, call, verdict, opinion, ct).ConfigureAwait(false);
     }
 
     private async ValueTask<ToolCallDecision?> AskAsync(AgentRunContext run, ToolCallPart call, Verdict verdict, Opinion? opinion, CancellationToken ct)
