@@ -272,11 +272,17 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
         var cwd = a.Str("cwd", "dir", "directory", "workdir");
         var timeout = Math.Clamp(a.Int("timeout", "timeout_seconds") ?? o.Timeout, 1, 1800);
 
-        // The remote login shell only sees this fixed line: it saves stdin (the script) to a temp file and runs it in its
-        // own session (setsid) under timeout, which ends the whole process group; the first output line is its PGID.
-        var remote =
-            "t=$(mktemp) && cat >\"$t\" && setsid --wait bash -c 'echo " + PgidMarker + "$$; exec timeout -k 5 " + timeout +
-            " bash \"$0\" </dev/null 2>&1' \"$t\"; c=$?; rm -f \"$t\"; exit $c";
+        // The remote login shell only sees this fixed line: it saves stdin (the script) to a temp file and runs it under
+        // timeout in a process group of its own, which a kill can end whole; the first output line is that group's id. The
+        // group comes from job control (set -m: the background job is its own group, and its pid is the id), not from
+        // setsid --wait: BusyBox's setsid (the Home Assistant SSH add-on, any Alpine) has no --wait. BusyBox's timeout also
+        // kills only its child and exits 143 (137 after -k) where GNU's ends the group and exits 124, so a timeout is
+        // recognised by the exit code together with the elapsed time ($SECONDS), the group is ended here, and the exit code
+        // is the one the tool reports for a timeout (124). The outer shell's stderr is only its job notices ("Terminated"):
+        // the script's own stderr is merged into stdout inside.
+        var remote = $$"""
+            t=$(mktemp) && cat >"$t" && bash -c 'set -m; bash -c "echo {{PgidMarker}}\$\$; exec timeout -k 5 {{timeout}} bash \"\$0\" </dev/null 2>&1" "$0" & p=$!; wait $p; c=$?; if [ $SECONDS -ge {{timeout}} ] && { [ $c -eq 124 ] || [ $c -eq 137 ] || [ $c -eq 143 ]; }; then kill -TERM -- -$p; sleep 1; kill -KILL -- -$p; c=124; fi 2>/dev/null; exit $c' "$t" 2>/dev/null; c=$?; rm -f "$t"; exit $c
+            """;
         var body = Sh.Cd(cwd) + "\n" + Sh.Lf(script).TrimStart('\uFEFF');
         if (!body.EndsWith('\n')) body += "\n";
 

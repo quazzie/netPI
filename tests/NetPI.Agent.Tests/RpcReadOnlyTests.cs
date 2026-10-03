@@ -23,7 +23,7 @@ public static class RpcReadOnlyTests
             await h.StartPluginAsync(new PlanPlugin());
             var flags = ctx.Rpc.List().ToDictionary(m => m.Method, m => m.ReadOnly);
 
-            foreach (var m in new[] { "goal.get", "ask.pending", "agents.list", "usage.summary", "usage.session", "budget.status", "plan.get", "plan.list", "plan.offers" })
+            foreach (var m in new[] { "goal.get", "ask.pending", "agents.list", "usage.summary", "usage.session", "budget.status", "plan.get", "plan.list", "plan.offers", "usage.history", "usage.chats" })
                 Check.True(flags.TryGetValue(m, out var ro) && ro, $"{m} only reads, so it is marked read-only");
             foreach (var m in new[] { "goal.set", "goal.edit", "goal.pause", "goal.resume", "goal.clear", "ask.answer", "agents.use", "agents.setEnabled", "budget.allow", "plan.enter", "plan.exit", "plan.answer", "plan.enterAnswer", "plan.command" })
                 Check.True(flags.TryGetValue(m, out var rw) && !rw, $"{m} changes the app, so it stays unmarked");

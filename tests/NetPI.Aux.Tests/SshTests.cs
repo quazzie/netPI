@@ -177,7 +177,10 @@ public static class SshTests
             var args = string.Join(" ", call.Args);
             foreach (var part in new[] { "BatchMode=yes", "StrictHostKeyChecking=yes", "ConnectTimeout=10", "LogLevel=ERROR", "-T -- nuc " })
                 Check.Contains(args, part);
-            Check.Contains(Remote(call.Args), "setsid --wait bash -c 'echo __netpi_pgid=$$; exec timeout -k 5 30 bash \"$0\" </dev/null 2>&1' \"$t\"");
+            var remote = Remote(call.Args);
+            Check.Contains(remote, "bash -c 'set -m; bash -c \"echo __netpi_pgid=\\$\\$; exec timeout -k 5 30 bash \\\"\\$0\\\" </dev/null 2>&1\" \"$0\" & p=$!; wait $p;");
+            Check.NotContains(remote, "setsid", "no util-linux setsid: BusyBox's has no --wait (Home Assistant's SSH add-on)");
+            Check.Contains(remote, "if [ $SECONDS -ge 30 ] && { [ $c -eq 124 ] || [ $c -eq 137 ] || [ $c -eq 143 ]; }; then kill -TERM -- -$p;", "a timeout BusyBox reports as 143 ends the group and is reported as 124");
             Check.Equal("cd -- '/srv/it'\\''s here' || exit 125; \necho \"it's $HOME\" \\ ok\ncat <<'EOF'\nquote \" and ' and `x` — ü\nEOF\n", Utf8(call.Stdin));
             Check.Equal("nuc", D(res).GetProperty("host").GetString());
 

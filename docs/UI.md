@@ -266,6 +266,12 @@ into locals first, because after the parent clears the modal state or the row re
      card is one line, `Question · question → answer` (the answer keeps its room on a narrow chat), which opens to every
      question and its answer; a stopped run or a new message instead reads "not answered". The run status line says
      "Waiting for your answer", and the chat's tab and session row get an `asking` dot (warn colour).
+   - **Usage tab** (right panel, plugin `netpi.agents`, `plugins/NetPI.Agents/ui`): what the models cost. A period picker (the budget periods so far,
+     `usage.history`) chooses what the tab shows: the period's total with the monthly limit's bar and today's figure (the current period),
+     calls and tokens, a bar per day of the last 30 (switching to tokens when nothing cost money), each agent and model with its
+     cost, the chats that cost most (`usage.chats`, a click opens the chat) and every period with the all-time total, a click
+     choosing it. Free and local models count in calls and tokens but cost nothing; cloud calls without a known price are counted apart.
+     The daily figures stay in the Work tab; this one is for the totals.
    - **Plan mode.** The composer bar has a Plan pill (`PlanPill`, session meta `planMode`): off → click to plan first;
      Planning → click to leave; Plan ready (a plan waits, in the chat) and Plan approved are states only. A `plan_submit` call is
      an item of its own (`plan`, `PlanCard`): while the plugin holds the plan as awaiting (`lib/state/plans.svelte.js`: `plan.list`

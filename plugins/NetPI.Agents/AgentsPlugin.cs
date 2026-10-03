@@ -9,7 +9,7 @@ namespace NetPI.Agents;
 /// <c>budget.*</c>; <c>models.localSlots</c> (1) and <c>models.cloudSlots</c> (4) for model calls
 /// without an agent; still read: <c>budget.providers.&lt;provider&gt;.dailyTokens</c>. The lanes of earlier versions become agents on the first
 /// start (<see cref="AgentUpgrade"/>).</para>
-/// <para>RPC: <c>agents.list</c>, <c>agents.use</c>, <c>agents.setEnabled</c>, <c>usage.summary</c>, <c>usage.session</c>,
+/// <para>RPC: <c>agents.list</c>, <c>agents.use</c>, <c>agents.setEnabled</c>, <c>usage.summary</c>, <c>usage.history</c>, <c>usage.chats</c>, <c>usage.session</c>,
 /// <c>budget.status</c>, <c>budget.allow</c>. Events: <c>agents.changed { agents }</c>, <c>usage.changed</c> (the budget
 /// status). For agents that delegate: the <c>agent_choices</c> tool and an "Agents" system prompt section.</para>
 /// </summary>
@@ -126,6 +126,11 @@ public sealed class AgentsPlugin : INetPiPlugin
             "Today's tokens per provider, the budget, this period's calls per model → { day, providers, budget, models }");
         context.Rpc.RegisterReadOnly("usage.session", (r, _) => Task.FromResult<object?>(usage.SessionCost(r.Required("sessionId"))),
             "What a chat cost: { sessionId } → { costUsd, calls, withSubagentsUsd, withSubagentsCalls }");
+        context.Rpc.RegisterReadOnly("usage.history", (r, _) => Task.FromResult<object?>(usage.History(r.Str("period"), r.Int("days") ?? 30)),
+            "What the usage tab shows: { period? (the day a budget period starts, default: the current one), days? (30) } → { period, current, end, resetDay, totals, allTime, periods[] (newest first), agents[], models[], days[], budget }");
+        context.Rpc.RegisterReadOnly("usage.chats", (r, _) => Task.FromResult<object?>(usage.Chats(r.Str("period"), r.Int("limit") ?? 10)),
+            "The chats that cost most in a period (a subagent counts for the chat that started it): { period?, limit? (10) } → { period, chats[], chatCount, noChat, totals, truncated }");
+        context.Ui.AddTab(new UiTabInfo { Id = "usage", Title = "Usage", Panel = UiPanel.Right, Icon = "dollar", Order = 12, Module = "ui.js" });
         context.Rpc.RegisterReadOnly("budget.status", (_, _) => Task.FromResult<object?>(usage.BudgetStatus()),
             "The budget: { monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }");
         context.Rpc.Register("budget.allow", async (r, token) =>
