@@ -144,12 +144,20 @@ internal sealed class ChromiumProcess : IAsyncDisposable
         catch (Exception) { /* gone already, or it didn't answer: the process kill below is the fallback */ }
     }
 
+    private async Task<bool> ExitedWithinAsync(TimeSpan timeout)
+    {
+        if (_process.HasExited) return true;
+        try { await _process.WaitForExitAsync().WaitAsync(timeout).ConfigureAwait(false); return true; }
+        catch (TimeoutException) { return false; }
+    }
+
     public async ValueTask DisposeAsync()
     {
         await CloseBrowserAsync().ConfigureAwait(false);
         try
         {
-            if (!_process.HasExited)
+            // Browser.close lets it flush its profile (cookies, storage) and exit on its own: give it a moment before the kill.
+            if (!await ExitedWithinAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false))
             {
                 _process.Kill(entireProcessTree: true);
                 await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
