@@ -425,6 +425,11 @@ index, that a tab compiled against them mounts and renders the host's kit compon
 follows host state (what two runtimes cannot do), and that no host, another svelte, or a host missing an export each
 fail with a message saying which.
 
+`node web/scripts/check-projects.mjs` is the unit suite for `web/src/lib/projects.js` (what the projects panel and the
+projects dialog share) and for the three views of the dialog: the counts, the filter and order, and the remove flow in
+Node against stubbed state, then the views themselves in a headless browser — rows and counts, the filter narrowing
+the list, both forms, and what a failing rpc leaves on screen instead of a spinner.
+
 On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
 `/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.
 

@@ -82,6 +82,7 @@ web/
       TopBar.svelte  BudgetPill.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
       ModelMenu.svelte (the searchable model list)  ModelSelect.svelte (a model field that opens it)
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
+      (the projects panel and the projects dialog share lib/projects.js: counts, filter/order, remove)
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
                ToolRow, NoticeRow, PromptRow, SentBlock, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
@@ -182,9 +183,13 @@ the + tab all start in the project shown. The project button in the composer bar
 a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
 
 **Projects dialog** (`ProjectsModal`, opened with `openProjects({ view, id?, sessionId?, select? })`). One dialog with
-three views: `list` (filter, new session, edit, remove), `new` (folder with Browse…, name, create-folder) and `edit`
-(name and folder, the project's sessions, the instruction files for its folder from `agentsmd.list { projectId }`,
-its skills and their problems from `skills.list { projectId }`, remove). The pickers' footer opens it (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
+three views, each a component (`ProjectsListView`, `ProjectsNewView`, `ProjectsEditView`) and the dialog itself holding
+what they share — which view is open, the form behind the footers, and create/save/remove: `list` (filter, new session,
+edit, remove), `new` (folder with Browse…, name, create-folder) and `edit` (name and folder, the project's sessions, the
+instruction files for its folder from `agentsmd.list { projectId }`, its skills and their problems from
+`skills.list { projectId }`, remove). The Projects tab lists the same projects with the same code: the counts, the
+filter and order, and the remove flow (with its confirm) are `lib/projects.js`, so the panel and the dialog cannot
+drift apart. The pickers' footer opens the dialog (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
 row click, the edit button) and the command palette. A project created from a picker is attached to that session, or
 in select mode becomes the project new sessions start in. Dialogs can stack (a confirm or the folder picker over the
 projects dialog): `Modal` keeps a stack, and Esc closes only the top one. While a dialog is open it owns the keyboard:
