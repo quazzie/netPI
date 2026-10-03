@@ -64,6 +64,11 @@ internal sealed class MemoryPluginData(MemoryStorage store, string pluginId, Plu
                 }
                 if (collection.Fields.Count != spec.Fields.Count || spec.Fields.Any(f => !collection.Fields.TryGetValue(f.Key, out var t) || t != f.Value))
                 {
+                    // A field that is new to the declaration is read from every stored document (the sqlite provider back-fills its
+                    // column): a document holding the wrong kind of value in it refuses the declaration, and nothing has changed yet.
+                    foreach (var (field, type) in spec.Fields)
+                        if (!collection.Fields.ContainsKey(field))
+                            foreach (var stored in collection.Docs.Values) MemoryDataCollection.CheckFieldType(stored, field, type);
                     // A changed declaration is applied to the documents that are already stored. In memory that needs
                     // no rewrite: a document that does not carry the new field is a field with no value, which is
                     // exactly what a row stored before the column was added reads as.
@@ -109,10 +114,14 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
     /// <summary>A document whose value in a declared index field is not of the field's type is refused (as the sqlite provider refuses it), never stored as "no value".</summary>
     private void CheckFieldTypes(JsonObject doc)
     {
-        foreach (var (field, type) in collection.Fields)
-            if (doc.TryGetPropertyValue(field, out var node) && node is not null && node.GetValueKind() is not (System.Text.Json.JsonValueKind.Null or System.Text.Json.JsonValueKind.Undefined)
-                && Field(node, type) is null)
-                throw new ArgumentException($"Field '{field}' is declared {type}, and the document holds {node.GetValueKind()}");
+        foreach (var (field, type) in collection.Fields) CheckFieldType(doc, field, type);
+    }
+
+    internal static void CheckFieldType(JsonObject doc, string field, DataFieldType type)
+    {
+        if (doc.TryGetPropertyValue(field, out var node) && node is not null && node.GetValueKind() is not (System.Text.Json.JsonValueKind.Null or System.Text.Json.JsonValueKind.Undefined)
+            && Field(node, type) is null)
+            throw new ArgumentException($"Field '{field}' is declared {type}, and the document holds {node.GetValueKind()}");
     }
 
     public void Put(string key, JsonObject doc)

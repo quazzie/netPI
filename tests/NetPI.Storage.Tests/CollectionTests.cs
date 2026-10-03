@@ -258,6 +258,69 @@ public static class CollectionTests
             Check.Equal(0L, data.Collection("other", new CollectionSpec().Text("t")).Count(), "and so is the other collection");
         });
 
+        Providers.Add(r, "collections: a declaration changed inside a transaction that rolls back leaves the plugin's handle as it was", store =>
+        {
+            var data = store.Plugins.For("test");
+            var docs = data.Collection("things", new CollectionSpec().Integer("n"));
+            docs.Put("a", Build.Doc(("n", 1L)));
+            Check.Throws<InvalidOperationException>(() => data.Transaction(() =>
+            {
+                var wider = data.Collection("things", new CollectionSpec().Integer("n").Integer("added"));
+                Check.True(ReferenceEquals(docs, wider), "the same handle takes the new declaration");
+                throw new InvalidOperationException("boom");
+            }));
+            // the rollback took the new column away again, and the handle the plugin still holds must not write to it
+            docs.Put("b", Build.Doc(("n", 2L)));
+            Check.Equal(2L, docs.Count(), "the handle still writes");
+            Check.Equal(1L, docs.Count(new DataQuery().Eq("n", 2L)), "and its declared field still queries");
+            Check.Throws<ArgumentException>(() => docs.Find(new DataQuery().Eq("added", 1L)), "the field the rolled back declaration added is not an index field");
+
+            // declaring it for real afterwards works, and applies to what is stored
+            var again = data.Collection("things", new CollectionSpec().Integer("n").Integer("added"));
+            Check.True(ReferenceEquals(docs, again));
+            Check.Equal(2L, again.Count(new DataQuery().IsNull("added")), "both documents have no value in the new field");
+        });
+
+        Providers.Add(r, "collections: a declaration the stored documents cannot satisfy fails and leaves the handle usable", store =>
+        {
+            // The case a hot reload meets: the new version indexes a field some stored document holds the wrong kind of value in.
+            var data = store.Plugins.For("test");
+            var docs = data.Collection("things", new CollectionSpec().Integer("n"));
+            docs.Put("a", Build.Doc(("n", 1L), ("added", "not a number")));
+            Check.Throws<ArgumentException>(() => data.Collection("things", new CollectionSpec().Integer("n").Integer("added")), "the back-fill cannot read the document");
+            docs.Put("b", Build.Doc(("n", 2L)));
+            Check.Equal(2L, docs.Count(), "the plugin that held the handle (the generation that keeps running) still writes");
+            Check.Throws<ArgumentException>(() => docs.Find(new DataQuery().Eq("added", 1L)), "the refused field was not taken on");
+
+            docs.Put("a", Build.Doc(("n", 1L), ("added", 5L)));
+            var again = data.Collection("things", new CollectionSpec().Integer("n").Integer("added"));
+            Check.Equal("a", string.Join(",", Build.Keys(again.Find(new DataQuery().Eq("added", 5L)))), "once the document is right the declaration applies");
+        });
+
+        Providers.Add(r, "collections: a nested transaction that rolls back takes its declaration with it, the outer one keeps its own", store =>
+        {
+            var data = store.Plugins.For("test");
+            var docs = data.Collection("things", new CollectionSpec().Integer("n"));
+            data.Transaction(() =>
+            {
+                data.Collection("things", new CollectionSpec().Integer("n").Integer("kept"));
+                try
+                {
+                    data.Transaction(() =>
+                    {
+                        data.Collection("things", new CollectionSpec().Integer("n").Integer("kept").Integer("lost"));
+                        throw new InvalidOperationException("boom");
+                    });
+                }
+                catch (InvalidOperationException) { }
+                docs.Put("a", Build.Doc(("n", 1L), ("kept", 7L)));
+            });
+            Check.Equal("a", string.Join(",", Build.Keys(docs.Find(new DataQuery().Eq("kept", 7L)))), "the outer transaction's declaration is in, and writes through it");
+            Check.Throws<ArgumentException>(() => docs.Find(new DataQuery().Eq("lost", 1L)), "the nested one's is not");
+            docs.Put("b", Build.Doc(("n", 2L)));
+            Check.Equal(2L, docs.Count());
+        });
+
         Providers.Add(r, "collections: a transaction is re-entrant and its own writes are visible inside it", store =>
         {
             var data = store.Plugins.For("test");

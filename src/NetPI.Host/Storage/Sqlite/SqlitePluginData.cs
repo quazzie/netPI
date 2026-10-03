@@ -31,6 +31,9 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
     private readonly Dictionary<string, SqliteCollection> _open = new(StringComparer.Ordinal);
     // Collections first declared inside a plugin transaction: their table is created inside it, so a rollback takes it away again.
     private readonly List<string> _createdInTransaction = [];
+    // Collections whose declaration a plugin transaction changed, with the declaration they had: a rollback takes the column
+    // away again, so the handle the plugin holds takes its old declaration back (it is the same object for every generation).
+    private readonly List<(SqliteCollection Collection, Dictionary<string, DataFieldType> Previous)> _redeclaredInTransaction = [];
 
     public IDataCollection Collection(string name, CollectionSpec spec)
     {
@@ -41,8 +44,10 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
             lock (_open)
             {
                 var fields = spec.Fields.ToDictionary(f => f.Key, f => f.Value, StringComparer.Ordinal);
+                if (!db.InTransaction) { _createdInTransaction.Clear(); _redeclaredInTransaction.Clear(); }   // nothing of the plugin's is open to roll back
                 _open.TryGetValue(name, out var existing);
                 if (existing is not null && existing.SameFields(fields)) return existing;
+                var previous = existing?.Declaration;
                 // The same collection object is kept when its declaration changes: a handle a plugin holds stays the collection.
                 var collection = db.Transaction(_ => SqliteCollection.OpenOrUpgrade(db, pluginId, name, fields, existing));
                 if (existing is null)
@@ -50,6 +55,7 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
                     _open[name] = collection;
                     if (db.InTransaction) _createdInTransaction.Add(name);
                 }
+                else if (db.InTransaction) _redeclaredInTransaction.Add((existing, previous!));
                 return collection;
             }
         }
@@ -62,15 +68,18 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
         lock (_gate)
         {
             var joined = db.InTransaction;
+            int created, redeclared;
+            lock (_open) { created = _createdInTransaction.Count; redeclared = _redeclaredInTransaction.Count; }
             try
             {
                 var result = db.Transaction(_ => work());
-                if (!joined) lock (_open) _createdInTransaction.Clear();
+                if (!joined) lock (_open) { _createdInTransaction.Clear(); _redeclaredInTransaction.Clear(); }
                 return result;
             }
             catch
             {
-                if (!joined) ForgetCreated();
+                // a nested transaction that fails rolls back to its savepoint: what it declared goes with it, what the outer one did stays
+                UndoDeclarations(created, redeclared);
                 throw;
             }
         }
@@ -82,13 +91,19 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
         Transaction<object?>(() => { work(); return null; });
     }
 
-    /// <summary>The transaction rolled back: a collection it created has no table any more, so the next declaration creates it again.</summary>
-    private void ForgetCreated()
+    /// <summary>
+    /// A transaction (or a nested one, to its savepoint) rolled back: a collection it created has no table any more, so the next
+    /// declaration creates it again, and a collection whose declaration it changed takes the old one back, last change first.
+    /// </summary>
+    private void UndoDeclarations(int created, int redeclared)
     {
         lock (_open)
         {
-            foreach (var name in _createdInTransaction) _open.Remove(name);
-            _createdInTransaction.Clear();
+            for (var i = _redeclaredInTransaction.Count - 1; i >= redeclared; i--)
+                _redeclaredInTransaction[i].Collection.Redeclare(_redeclaredInTransaction[i].Previous);
+            _redeclaredInTransaction.RemoveRange(redeclared, _redeclaredInTransaction.Count - redeclared);
+            for (var i = created; i < _createdInTransaction.Count; i++) _open.Remove(_createdInTransaction[i]);
+            _createdInTransaction.RemoveRange(created, _createdInTransaction.Count - created);
         }
     }
 }
@@ -123,6 +138,11 @@ internal sealed class SqliteCollection : IDataCollection
     }
 
     public string Name { get; }
+
+    /// <summary>The declaration the collection has now (what a failed or rolled back change goes back to).</summary>
+    internal Dictionary<string, DataFieldType> Declaration => _fields;
+
+    internal void Redeclare(Dictionary<string, DataFieldType> fields) => Declare(fields);
 
     internal bool SameFields(Dictionary<string, DataFieldType> other) =>
         other.Count == _fields.Count && other.All(f => _fields.TryGetValue(f.Key, out var t) && t == f.Value);
@@ -167,8 +187,18 @@ internal sealed class SqliteCollection : IDataCollection
         }
         db.Execute("UPDATE _collections SET spec = @spec WHERE id = @id", new { spec = specJson.ToJsonString(), id = row.Id });
         var collection = existing ?? new SqliteCollection(db, name, tableName, fields);
+        var previous = collection._fields;
         collection.Declare(fields);
-        if (backfill.Count > 0) collection.Backfill(backfill);
+        try
+        {
+            if (backfill.Count > 0) collection.Backfill(backfill);
+        }
+        catch
+        {
+            // the caller's transaction rolls the columns back; the handle the plugin keeps must not keep the declaration they were for
+            collection.Declare(previous);
+            throw;
+        }
         return collection;
     }
 
