@@ -815,7 +815,8 @@ plugin never reads key files and never uses passwords. Settings: `ssh.*` in `doc
 - **Hosts** are the concrete `Host` aliases of the config, read on every call (`Include` followed; wildcard and
   negated patterns and `Match` blocks skipped). Aliases match ignoring case; any other host is refused with the list.
   This is a guardrail, not a sandbox: agents also have `bash`.
-- **Remote side:** Linux (a POSIX login shell, bash, coreutils `timeout`/`mktemp`/`stat`, util-linux `setsid`).
+- **Remote side:** Linux (a POSIX login shell, bash, `timeout` and `mktemp`, `stat`; GNU coreutils or BusyBox, so Alpine
+  hosts such as Home Assistant's SSH add-on work too).
 - **Paths** are remote: relative ones start at `cwd` (if given) or the home folder; a leading `~/` is expanded. A
   `cwd` that does not exist is reported as such. Each call is one ssh connection (0.2–0.5 s on a LAN).
 - ssh's own failures (exit 255) are errors with ssh's message and a hint for an unknown host key or a refused key.
@@ -836,8 +837,9 @@ details: { hosts: { alias, hostName: string|null, user: string|null, port: numbe
 ### `ssh_run` (summary arg `script`)
 
 `{ host, script, cwd?, timeout? (seconds; ssh.timeoutSeconds = 120, max 1800) }`. The script (CRLF → LF) is saved to a
-remote temp file and run with `bash` in its own session (`setsid`) under `timeout -k 5`, stdin `/dev/null`, stderr merged
-into stdout. A timeout (exit 124) ends the whole remote process group, background children included; so does stopping
+remote temp file and run with `bash` in a process group of its own (job control, not `setsid`: BusyBox's has no `--wait`)
+under `timeout -k 5`, stdin `/dev/null`, stderr merged into stdout. A timeout (exit 124; BusyBox's `timeout` says 143 or 137, which
+the wrapper recognises by the elapsed time and turns into 124) ends the whole remote process group, background children included; so does stopping
 the run (a second ssh call sends TERM, then KILL, to the group). The temp file is removed. Output and notes like
 `bash`: live output in the UI, progress lines collapsed, the last 2000 lines / 30KB for the model with the whole output
 saved to `<tmp>/netpi/ssh-<host>-….log` when it was cut, `[exit code N]` for a non-zero exit (not `isError`),
