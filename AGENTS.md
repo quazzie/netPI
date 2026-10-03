@@ -104,7 +104,9 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 - UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`. The bundles are
   reproducible — Svelte hashes scoped CSS from a path under the repository root, not from where the build ran, and CI
   fails when a fresh build differs from the committed ones — so commit `web/dist` or a plugin's `wwwroot/ui.js` only
-  with the *source* change under `web/src` or `ui/`.
+  with the *source* change under `web/src` or `ui/`. A worktree checks out CRLF here (`core.autocrlf`), and the bundles
+  are byte-compared: build after converting the sources (`web/src`, `plugins/*/ui`, `web/public`) to LF, or every bundle
+  is rewritten with the line-ending noise and new hashes.
 
 ## Inspecting the running app
 - The **`diag` tool** (read-only, one action per method: overview, problems, calls, tools, journal, run, toolsets,

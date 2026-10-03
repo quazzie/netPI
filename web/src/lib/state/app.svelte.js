@@ -390,9 +390,25 @@ export function closeTab(id) {
   }
   resubscribe();
   persistTabs();
+  // A chat closed before its first message is not a session: the host stores it in memory only (the first message
+  // is what materializes it, so sessions.list never returns it again) and a list reload is the only thing that would
+  // take its row away. Without this the "New session" it was created as stays in the list for the rest of the window.
+  forgetEmptySession(id);
   // Closing is when a plan gets forgotten (plugins/NetPI.Ideas): ask in the background what the chat leaves unsaved.
   // Fire and forget — the tab is already gone and nothing here may hold up the next one.
   rpc('ideas.closed', { sessionId: id }).catch(() => {});
+}
+
+/**
+ * A chat with nothing in it leaves the list with its tab: no messages means the host never stored it, so the row is
+ * this window's own leftover. Both checks must agree — the session's own count and the messages the open chat holds —
+ * so a chat whose row is one message behind (an append that has not arrived as session.updated yet) stays.
+ */
+function forgetEmptySession(id) {
+  const session = app.sessionsById.get(id);
+  if (!session || (session.messageCount ?? 0) > 0 || (peekChat(id)?.messages?.length ?? 0) > 0) return;
+  app.sessions = app.sessions.filter((s) => s.id !== id);
+  dropChat(id);   // the session is gone, so its store and its draft blobs go with it
 }
 
 export function moveTab(id, toIndex) {

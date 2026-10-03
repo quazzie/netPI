@@ -158,6 +158,38 @@ public static class UiTests
             Check.Equal(0, proc.ExitCode, "pin exit code; stderr: " + err);
             Env.Log($"screenshots: {outDir}");
         }, 120);
+        r.Add("ui.close-empty-session", "ui: closing a chat with no messages takes it out of the sessions list; one with messages keeps its row", async () =>
+        {
+            // Unique per run: a shared server (shards, -Repeat) keeps sessions from earlier runs, so the script counts rows
+            // and finds the seeded one by a title nothing else has.
+            var stamp = Guid.NewGuid().ToString("N")[..6];
+            var keep = await env.NewSession(title: $"Keep me {stamp}");
+            await env.Run(keep.S("id")!, "hello [s:echo]");
+
+            var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "close-empty-session.mjs");
+            var outDir = env.ScreenshotDir;
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--session", $"Keep me {stamp}", "--out", outDir })
+                psi.ArgumentList.Add(a);
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            try { await proc.WaitForExitAsync(cts.Token); }
+            catch (OperationCanceledException) { if (!proc.HasExited) proc.Kill(true); throw new AssertException("ui close-empty-session timed out"); }
+            var output = await stdout;
+            var err = await stderr;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+            Check.True(json is not null, "close-empty-session output: " + output + err);
+            using var doc = JsonDocument.Parse(json!);
+            var failed = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failed.Count == 0, $"{failed.Count} ui check(s) failed:\n      " + string.Join("\n      ", failed)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+            Check.Equal(0, proc.ExitCode, "close-empty-session exit code; stderr: " + err);
+            Env.Log($"screenshots: {outDir}");
+        }, 120);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id

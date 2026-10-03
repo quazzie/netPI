@@ -822,7 +822,9 @@ names or an inline `<svg …>` string.
   materializes it (`session.created` → `message.added` → `session.updated`), and the profiles plugin gives it its
   default profile there (the `session.updated` that follows carries it; the hook still guarantees it is set before the
   first model call). The app never replaces a session with an older copy (`updatedAt`), so an RPC result that arrives
-  after that event can't take the profile away again.
+  after that event can't take the profile away again. Closing such a tab takes its row out of the list too: the host
+  never stored it, so a list reload would only lose it at the next window — `closeTab` drops it (and its chat store
+  and draft) as soon as the tab is gone, and leaves a chat with messages alone.
 - `message.added` for a **steering** input has `meta.kind: 'steer'` (and `'queued'` for a queued follow-up),
   so the UI can tag the input and keep the run's steps grouped. `meta.agentName` and `meta.sessionId` on
   `agent-result` and `agent-message` notices enable the "open" link. A `budget` notice with `meta.canOverride` (the
