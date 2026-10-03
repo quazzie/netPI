@@ -51,7 +51,10 @@ public sealed class GuardrailsPlugin : INetPiPlugin
                     "A command runs without asking only when p(destructive), p(stops a process) and p(changes a remote) are each below it. p(read-only) is asked and shown, but not required: the model underrates builds and test runs as read-only (dotnet test 0.05-0.4), so a read-only bar cleared none of 50 hand-labelled hard commands, while the risk questions alone at 0.2 cleared 20 of their 39 read-only ones and none of the risky ones.", 0.01, 0.5),
             ],
         });
-        var approvals = _approvals = new Approvals(context);
+        var outcomes = new GuardOutcomes(context.Data, context.Logger);
+        var approvals = _approvals = new Approvals(context, outcomes);
+        context.Rpc.RegisterReadOnly("guard.outcomes", (req, _) => Task.FromResult<object?>(outcomes.Read(req.Str("result"), req.Int("limit") ?? 50)),
+            "What became of the guard questions: { result? (cleared|session|allowed|allowed-session|denied|steered|cancelled|stopped|subagent), limit? (50) } → { summary: { result: count }, rows: [{ at, result, sessionId, tool, kind, rule, subject, opinion? }] } (newest first)");
         context.Services.Register<IAgentHook>(new GuardHook(context, approvals, new SecondOpinion(context)));
         context.Rpc.RegisterReadOnly("guard.pending", (req, _) => Task.FromResult<object?>(approvals.List(req.Str("sessionId"))),
             "Tool calls waiting for the user's OK (guardrails ask rules): { sessionId? } → { approvalId, sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }[]");
@@ -71,8 +74,9 @@ public sealed class GuardrailsPlugin : INetPiPlugin
 }
 
 /// <summary>Tool calls that wait for the user's OK, by unique approval id.</summary>
-internal sealed class Approvals(IPluginContext ctx)
+internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = null)
 {
+    public GuardOutcomes? Outcomes => outcomes;
     private readonly ConcurrentDictionary<string, Entry> _byApproval = new(StringComparer.Ordinal);
 
     internal sealed class Entry
@@ -105,6 +109,7 @@ internal sealed class Approvals(IPluginContext ctx)
         var data = new JsonObject { ["approvalId"] = e.ApprovalId, ["sessionId"] = e.SessionId, ["callId"] = e.CallId, ["status"] = status };
         if (forSession) data["scope"] = "session";
         ctx.Events.Publish("guard.closed", data);
+        outcomes?.Record(status == "allowed" && forSession ? "allowed-session" : status, e.SessionId, e.Tool, e.Verdict, e.Opinion);
         return true;
     }
 
@@ -241,6 +246,7 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
                 ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
                 ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["by"] = "session",
             });
+            approvals.Outcomes?.Record("session", run.Session.Id, call.Name, verdict, null);
             return null;
         }
         // An ask rule on a command: a decision model may clear a confidently read-only one (SecondOpinion). Neither a
@@ -257,11 +263,15 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
                     ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
                     ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["by"] = "opinion", ["opinion"] = opinion.ToJson(),
                 });
+                approvals.Outcomes?.Record("cleared", run.Session.Id, call.Name, verdict, opinion);
                 return null;
             }
         }
         if (run.Agent.IsSubagent)
+        {
+            approvals.Outcomes?.Record("subagent", run.Session.Id, call.Name, verdict, opinion);
             return Block(Why(verdict) + " It asks the user first, and a subagent can't ask: nobody watches its chat. Nothing ran; say in your report what you needed.");
+        }
         return await AskAsync(run, call, verdict, opinion, ct).ConfigureAwait(false);
     }
 

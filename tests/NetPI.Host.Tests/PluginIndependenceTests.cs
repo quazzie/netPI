@@ -23,8 +23,12 @@ public static class PluginIndependenceTests
                 {
                     var include = (string?)node.Attribute("Include") ?? "";
                     var text = include.Replace('\\', '/');
+                    // a helper program a plugin ships (built first, its assembly not referenced, not a plugin) is no peer:
+                    // NetPI.Tools.Windows builds its UI Automation helper that way
+                    var helper = (string?)node.Attribute("ReferenceOutputAssembly") == "false"
+                                 && !projects.Any(p => text.EndsWith("/" + Path.GetFileName(p), StringComparison.OrdinalIgnoreCase));
                     if (node.Name.LocalName == "ProjectReference")
-                        Check.True(text.Contains("NetPI.Abstractions") || text.Contains("NetPI.Contracts"), $"peer project reference in {file}: {include}");
+                        Check.True(text.Contains("NetPI.Abstractions") || text.Contains("NetPI.Contracts") || helper, $"peer project reference in {file}: {include}");
                     if (node.Name.LocalName is "Reference" or "HintPath" or "Compile" or "Import")
                     {
                         var value = text + " " + (string?)node.Attribute("Project") + " " + (node.Name.LocalName == "HintPath" ? node.Value : "");

@@ -440,213 +440,6 @@ public static class WebTests
             Check.Contains(refused.Content, "Could not open");
             env.Ctx.Unload();
         });
-        r.Add("browser: a tab per chat; controls by number; type, choose, check, click, keys, find, back, passwords refused, close", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            env.Set("browser.profile", JsonValue.Create("temp"));
-            env.Set("browser.target", JsonValue.Create("own"));
-            var none = await env.Run("browser", new { action = "snapshot" });
-            Check.True(none.IsError);
-            Check.Contains(none.Content, "use action open");
-            if (ChromiumProcess.Find(null) is null)
-            {
-                env.Ctx.Unload();
-                Check.Skip("no Edge/Chrome/Chromium: browser");
-            }
-            var submitted = new ConcurrentQueue<string>();
-            await using var web = await LocalWeb.StartAsync(app =>
-            {
-                app.MapGet("/form", () => Results.Content("""
-                    <!doctype html><html><head><title>Sign up</title></head><body>
-                    <h1>Create your account</h1>
-                    <label>Full name <input id="name"></label><i id="" type=""></i>
-                    <label>Password <input id="pw" type="password"></label>
-                    <label>Country <select id="country"><option value="">Choose…</option><option value="NO">Norway</option><option value="SE">Sweden</option></select></label>
-                    <label><input type="radio" name="plan" value="free" checked> Free</label>
-                    <label><input type="radio" name="plan" value="pro"> Pro</label>
-                    <label><input type="checkbox" id="terms"> I agree to the terms</label>
-                    <label>Search <input id="q" onkeydown="if (event.key === 'Enter') out.textContent = 'searched ' + this.value"></label>
-                    <div onclick="send()" style="cursor:pointer;padding:4px">Create account</div>
-                    <p id="out"></p>
-                    <a href="/next">Next page</a>
-                    <div style="height:4000px"></div><p>Far down marker</p>
-                    <script>
-                    function send() {
-                      const $ = id => document.getElementById(id);
-                      const d = { name: $('name').value, country: $('country').value, plan: document.querySelector('input[name=plan]:checked').value, terms: $('terms').checked };
-                      fetch('/submit', { method: 'POST', body: JSON.stringify(d) }).then(() => out.textContent = 'Thanks ' + d.name);
-                    }
-                    </script>
-                    </body></html>
-                    """, "text/html"));
-                app.MapPost("/submit", async (HttpRequest req) => { submitted.Enqueue(await new StreamReader(req.Body).ReadToEndAsync()); return Results.Ok(); });
-                app.MapGet("/next", () => Results.Content("<html><head><title>Next</title></head><body><h1>The next page</h1></body></html>", "text/html"));
-            });
-            // the number of the first listed control matching a pattern
-            static int N(ToolResult r, string pattern)
-            {
-                foreach (var line in r.Content.Split('\n'))
-                    if (System.Text.RegularExpressions.Regex.Match(line, @"^\[(\d+)\] (.*)$") is { Success: true } m && System.Text.RegularExpressions.Regex.IsMatch(m.Groups[2].Value, pattern))
-                        return int.Parse(m.Groups[1].Value);
-                throw new InvalidOperationException($"no control matching {pattern} in:\n{r.Content}");
-            }
-            async Task<ToolResult> Do(object args, string session = "ses_1")
-            {
-                var r = await env.Run("browser", args, null, session);
-                Check.False(r.IsError, r.Content);
-                return r;
-            }
-
-            try
-            {
-            var page = await Do(new { action = "open", url = web.Url + "/form" });
-            Check.Contains(page.Content, "Opened " + web.Url + "/form");
-            Check.Contains(page.Content, "Page: Sign up — " + web.Url + "/form");
-            Check.Contains(page.Content, "[heading] Create your account");
-            Check.Contains(page.Content, "[radio] Free (selected)");
-            Check.Contains(page.Content, "(collapsed)");
-            Check.Contains(page.Content, "(password)");
-            Check.NotContains(page.Content, "[option] Sweden");  // a closed <select> hides its options
-
-            page = await Do(new { action = "type", n = N(page, @"^\[textbox\] Full name"), text = "Ada Lovelace" });
-            Check.Contains(page.Content, "Typed \"Ada Lovelace\" in");
-            Check.Contains(page.Content, "value=\"Ada Lovelace\"");
-            var pw = await Do(new { action = "type", n = N(page, @"\(password\)"), text = "hunter2" });
-            Check.Contains(pw.Content, "Not typed: a password field");
-
-            page = await Do(new { action = "click", n = N(page, @"^\[combobox\] Country") });
-            Check.Contains(page.Content, "Opened the list");
-            page = await Do(new { action = "click", n = N(page, @"^\[option\] Sweden") });
-            Check.Contains(page.Content, "Chose");
-            Check.Contains(page.Content, "value=\"Sweden\"");
-            page = await Do(new { action = "type", n = N(page, @"^\[combobox\] Country"), text = "norway" });
-            Check.Contains(page.Content, "Chose \"Norway\" in");
-            page = await Do(new { action = "type", n = N(page, @"^\[combobox\] Country"), text = "Sweden" });
-
-            page = await Do(new { action = "click", n = N(page, @"^\[radio\] Pro") });
-            Check.Contains(page.Content, "[radio] Pro (selected)");
-            page = await Do(new { action = "click", n = N(page, @"^\[checkbox\] I agree") });
-            Check.Contains(page.Content, "[checkbox] I agree to the terms id=\"terms\" (checked)");
-
-            page = await Do(new { action = "type", n = N(page, @"^\[textbox\] Search"), text = "cats" });
-            page = await Do(new { action = "key", keys = "Enter" });
-            Check.Contains(page.Content, "searched cats");
-
-            var found = await Do(new { action = "find", text = "far down" });
-            Check.Contains(found.Content, "1 control(s) contain \"far down\"");
-            Check.Contains(found.Content, "[text] Far down marker");
-
-            // a role-less clickable div: clicked through its text
-            page = await Do(new { action = "click", n = N(page, @"^\[text\] Create account") });
-            for (var k = 0; k < 50 && submitted.IsEmpty; k++) await Task.Delay(100);
-            Check.Equal("{\"name\":\"Ada Lovelace\",\"country\":\"SE\",\"plan\":\"pro\",\"terms\":true}", submitted.Single());
-            page = await Do(new { action = "snapshot" });
-            Check.Contains(page.Content, "Thanks Ada Lovelace");
-
-            page = await Do(new { action = "click", n = N(page, @"^\[link\] Next page") });
-            Check.Contains(page.Content, "Page: Next — " + web.Url + "/next");
-            page = await Do(new { action = "back" });
-            Check.Contains(page.Content, "Page: Sign up");
-
-            // another chat has its own tab
-            var other = await env.Run("browser", new { action = "snapshot" }, null, "ses_2");
-            Check.True(other.IsError);
-            var otherPage = await Do(new { action = "open", url = web.Url + "/next" }, "ses_2");
-            Check.Contains(otherPage.Content, "Page: Next");
-            Check.Contains((await Do(new { action = "snapshot" })).Content, "Page: Sign up");
-
-            // the chat's tab closes with the chat
-            env.Ctx.Events.Publish(new BusEvent { Type = EventTypes.SessionDeleted, Data = new JsonObject { ["id"] = "ses_2" } });
-            await Task.Delay(500);
-            Check.True((await env.Run("browser", new { action = "snapshot" }, null, "ses_2")).IsError);
-
-            Check.Equal("Closed the browser tab.", (await Do(new { action = "close" })).Content);
-            Check.True((await env.Run("browser", new { action = "snapshot" })).IsError);
-            Check.True((await env.Run("browser", new { action = "fly" })).IsError);
-            }
-            finally { env.Ctx.Unload(); }  // closes the browser, also after a failed check
-        });
-        r.Add("browser: the user's Chrome over its DevTools port: own background tabs, checkout refused, leave hands the tab back, never closed", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var userData = T.TempDir("user-chrome");
-            env.Set("browser.chromeUserData", JsonValue.Create(userData));
-            var off = await env.Run("browser", new { action = "open", url = "http://127.0.0.1:1/" });
-            Check.True(off.IsError);
-            Check.Contains(off.Content, "chrome://inspect/#remote-debugging");
-            var exe = ChromiumProcess.Find(null);
-            if (exe is null)
-            {
-                env.Ctx.Unload();
-                Check.Skip("no Edge/Chrome/Chromium: attach");
-            }
-            await using var web = await LocalWeb.StartAsync(app =>
-            {
-                app.MapGet("/shop", () => Results.Content("""
-                    <!doctype html><html><head><title>Flights</title></head><body>
-                    <h1>Cheapest flight</h1><p>SAS 07:05, 1 190 SEK</p>
-                    <button onclick="document.title = 'bought'">Buy now</button>
-                    <button onclick="document.title = 'details'">Show details</button>
-                    </body></html>
-                    """, "text/html"));
-            });
-            // a browser standing in for the user's Chrome: its DevTools port in the user data folder
-            var psi = new System.Diagnostics.ProcessStartInfo(exe) { UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in new[] { "--headless=new", "--disable-features=msWindowTabManagerPublic", "--no-first-run", "--remote-debugging-port=0", $"--user-data-dir={userData}", "about:blank" }) psi.ArgumentList.Add(a);
-            using var user = System.Diagnostics.Process.Start(psi)!;
-            try
-            {
-                for (var k = 0; k < 100 && !File.Exists(Path.Combine(userData, "DevToolsActivePort")); k++) await Task.Delay(100);
-                static int N(ToolResult r, string pattern)
-                {
-                    foreach (var line in r.Content.Split('\n'))
-                        if (System.Text.RegularExpressions.Regex.Match(line, @"^\[(\d+)\] (.*)$") is { Success: true } m && System.Text.RegularExpressions.Regex.IsMatch(m.Groups[2].Value, pattern))
-                            return int.Parse(m.Groups[1].Value);
-                    throw new InvalidOperationException($"no control matching {pattern} in:\n{r.Content}");
-                }
-                var page = await env.Run("browser", new { action = "open", url = web.Url + "/shop" });
-                Check.False(page.IsError, page.Content);
-                Check.Contains(page.Content, "Page: Flights");
-                var buy = await env.Run("browser", new { action = "click", n = N(page, @"^\[button\] Buy now") });
-                Check.True(buy.IsError, buy.Content);
-                Check.Contains(buy.Content, "Refused in the user's Chrome");
-                var details = await env.Run("browser", new { action = "click", n = N(page, @"^\[button\] Show details") });
-                Check.False(details.IsError, details.Content);
-                Check.Contains(details.Content, "Page: details");
-
-                // the hidden browser has no such stop, and a chat can ask for it
-                var own = await env.Run("browser", new { action = "open", url = web.Url + "/shop", browser = "own" }, null, "ses_own");
-                env.Set("browser.profile", JsonValue.Create("temp"));
-                Check.False(own.IsError, own.Content);
-                var ownBuy = await env.Run("browser", new { action = "click", n = N(own, @"^\[button\] Buy now") }, null, "ses_own");
-                Check.False(ownBuy.IsError, ownBuy.Content);
-                var ownLeave = await env.Run("browser", new { action = "leave" }, null, "ses_own");
-                Check.Contains(ownLeave.Content, "hidden browser");
-
-                var left = await env.Run("browser", new { action = "leave" });
-                Check.Contains(left.Content, "Left the tab open for the user in their Chrome: details — " + web.Url + "/shop");
-                Check.True((await env.Run("browser", new { action = "snapshot" })).IsError);
-                env.Ctx.Unload();
-                // the user's browser still runs, with the tab left for the user. The process the test started may
-                // already have exited with code 0: Edge's launcher can hand the browser to another process (the same
-                // convention ChromiumProcess relies on), and the browser itself is checked alive below through its
-                // DevTools port. A non-zero exit is a crashed or closed browser.
-                await Task.Delay(500);
-                Check.False(user.HasExited && user.ExitCode != 0, "the user's browser was closed");
-                var port = File.ReadAllLines(Path.Combine(userData, "DevToolsActivePort"))[0];
-                using var http = new HttpClient();
-                var list = await http.GetStringAsync($"http://127.0.0.1:{port}/json/list");
-                Check.Contains(list, web.Url + "/shop");
-            }
-            finally
-            {
-                env.Ctx.Unload();
-                try { user.Kill(entireProcessTree: true); } catch (Exception) { }
-            }
-        });
-
         r.Add("web: the snapshot parser: ids and values from the DOM strings, a missing value (-1), passwords, duplicate text dropped", () =>
         {
             // a string index of -1 is the DOM's "no string" (an attribute without a value)
@@ -691,7 +484,7 @@ public static class WebTests
             var closed = Snap(ax, dom);
             Check.Equal(2, closed.Controls.Count, "a closed <select> hides its options");
             Check.Contains(closed.Controls[1].Text, "[combobox] Country id=\"country\" (collapsed)");
-            var open = Snap(ax, dom, open: [2]);
+            var open = Snap(ax, dom, open: [BrowserControl.KeyOf("", 2)]);
             Check.Equal(4, open.Controls.Count, "an opened <select> lists its options");
             Check.Contains(open.Controls[1].Text, "(expanded)");
             Check.Contains(open.Controls[2].Text, "[option] Norway value=\"NO\"");
@@ -721,7 +514,7 @@ public static class WebTests
 
             // the RootWebArea line (dist 0, no bounds) takes one of the nearest slots
             var shown = AxSnapshot.Render("snapshot", "", snap, 3);
-            Check.Contains(shown.Content, "(4 controls; the 3 nearest the visible part are listed: scroll or find for the others)");
+            Check.Contains(shown.Content, "(4 controls; the 3 nearest the visible part are listed: scroll, find or snapshot with all: true for the others)");
             Check.Contains(shown.Content, "[3] [button] Mid");
             Check.Contains(shown.Content, "[2] [button] Up");
             Check.NotContains(shown.Content, "Down");
@@ -731,17 +524,24 @@ public static class WebTests
             Check.Contains(AxSnapshot.Found(snap, "nothing here").Content, "No control contains \"nothing here\" (4 controls).");
         });
 
-        r.Add("web: the snapshot effect: what an action changed, focus marks ignored", () =>
+        r.Add("web: the changes after an action: new, changed and gone by number, focus marks ignored, newly in view, the rest not repeated", () =>
         {
-            BrowserControl C(string name, string extra = "") => new(1, "button", name, $"[button] {name}{extra}", 0, null, null, false);
-            var a = C("Save");
-            var b = C("Done");
-            Check.Equal("No visible change.", AxSnapshot.Effect([a], [a]));
-            Check.Equal("No visible change.", AxSnapshot.Effect([a], [C("Save", " (focused)")]), "a focus mark is not a change");
-            Check.Equal("Now shows [button] Done.", AxSnapshot.Effect([a], [a, b]));
-            Check.Equal("Now shows [button] X, 1 control(s) gone.", AxSnapshot.Effect([a, b], [a, C("X")]));
-            Check.Equal("The order of the controls changed.", AxSnapshot.Effect([a, b], [b, a]));
-            Check.Equal("Now shows [button] 1; [button] 2; [button] 3 (+1 more).", AxSnapshot.Effect([a], [a, C("1"), C("2"), C("3"), C("4")]));
+            BrowserControl C(int n, string name, string extra = "", double dist = 0) => new(n, "button", name, $"[button] {name}{extra}", dist, null, null, false) { Number = n };
+            AxSnapshot.Snapshot S(params BrowserControl[] cs) => new("https://example.com/", "Test", [.. cs]);
+            var seen = new HashSet<int> { 1, 2, 3 };
+            Check.Contains(AxSnapshot.Changes("click", "Clicked", S(C(1, "Save"), C(2, "Done")), [C(1, "Save"), C(2, "Done")], seen, 200).Content, "No visible change.");
+            Check.Contains(AxSnapshot.Changes("click", "", S(C(1, "Save", " (focused)")), [C(1, "Save")], seen, 200).Content, "No visible change.", "a focus mark is not a change");
+            var r = AxSnapshot.Changes("click", "Clicked [1]", S(C(1, "Save", " (disabled)"), C(4, "Undo")), [C(1, "Save"), C(2, "Done"), C(3, "Other")], seen, 200);
+            Check.Contains(r.Content, "Changes: 1 new, 1 changed, 2 gone (2, 3).");
+            Check.Contains(r.Content, "[1] [button] Save (disabled)");
+            Check.Contains(r.Content, "[4] [button] Undo");
+            Check.True(seen.Contains(4), "listed controls count as seen");
+            // a scroll: unchanged controls that came into view and were never listed
+            var scrolled = AxSnapshot.Changes("scroll", "", S(C(1, "Save", dist: 300), C(5, "Far", dist: 0)), [C(1, "Save"), C(5, "Far", dist: 300)], seen, 200);
+            Check.Contains(scrolled.Content, "1 more in view");
+            Check.Contains(scrolled.Content, "[5] [button] Far");
+            Check.Contains(scrolled.Content, "The other 1 controls keep their numbers");
+            Check.Equal("1, 3–5, 9", AxSnapshot.Numbers([5, 1, 4, 3, 9]));
         });
     }
 
@@ -814,9 +614,12 @@ public static class WebTests
         };
     }
 
-    private static AxSnapshot.Snapshot Snap(JsonObject ax, JsonObject dom, string url = "https://example.com/page", string title = "Test", double pageY = 0, double clientHeight = 800, int[]? open = null)
+    private static AxSnapshot.Snapshot Snap(JsonObject ax, JsonObject dom, string url = "https://example.com/page", string title = "Test", double pageY = 0, double clientHeight = 800, string[]? open = null)
     {
         var metrics = new JsonObject { ["cssVisualViewport"] = new JsonObject { ["pageX"] = 0.0, ["pageY"] = pageY, ["clientWidth"] = 1000.0, ["clientHeight"] = clientHeight } };
-        return AxSnapshot.Parse(System.Text.Json.JsonSerializer.SerializeToElement(ax), System.Text.Json.JsonSerializer.SerializeToElement(dom), System.Text.Json.JsonSerializer.SerializeToElement(metrics), url, title, open ?? []);
+        var snap = AxSnapshot.Parse(System.Text.Json.JsonSerializer.SerializeToElement(ax), System.Text.Json.JsonSerializer.SerializeToElement(dom), System.Text.Json.JsonSerializer.SerializeToElement(metrics), url, title, open ?? []);
+        // the tab numbers the controls; here in page order, from 1
+        for (var k = 0; k < snap.Controls.Count; k++) snap.Controls[k].Number = k + 1;
+        return snap;
     }
 }

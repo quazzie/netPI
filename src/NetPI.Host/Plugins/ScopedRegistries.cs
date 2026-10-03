@@ -98,6 +98,9 @@ internal sealed class ScopedRpcRegistry(RpcRegistry inner, PluginScope scope) : 
     public IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly) =>
         scope.Track(inner.Register(method, handler, description, scope.PluginId, readOnly));
 
+    public IDisposable Register(RpcMethod method, RpcHandler handler) =>
+        scope.Track(inner.Register(method, handler, scope.PluginId));
+
     public Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default) =>
         inner.InvokeAsync(method, parameters, ct);
 
@@ -130,5 +133,5 @@ internal sealed class ScopedUiRegistry(UiRegistry inner, PluginScope scope, Func
 
 internal sealed class ScopedHttpRegistry(HttpRegistry inner, PluginScope scope) : IHttpRegistry
 {
-    public IDisposable Map(string path, Func<HttpContext, Task> handler) => scope.Track(inner.Map(scope.PluginId, path, handler));
+    public IDisposable Map(string path, Func<HttpContext, Task> handler, bool open = false) => scope.Track(inner.Map(scope.PluginId, path, handler, open));
 }

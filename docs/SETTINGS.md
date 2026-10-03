@@ -1,6 +1,6 @@
 # Settings reference
 
-Agent rework additions (2026-10-01): `decide.bulkModel` (empty) selects an explicitly configured model for batches at `decide.bulkThreshold` (8); an explicit per-call model wins. `ideas.verify` (true) requires independent verification before automatic proposals appear; switching it off stops those proposals. `ideas.verifyModel` (empty) inherits `ideas.model`; `ideas.applyVerifiedUpdates` (true) applies verified completion only to an unchanged idea in an idle project. Verification respects paid-model policy and queue deadlines.
+Agent rework additions (2026-10-01): `decide.bulkModel` (empty) selects an explicitly configured model for batches at `decide.bulkThreshold` (8); an explicit per-call model wins. `ideas.verify` (true) requires independent verification before automatic proposals appear; switching it off stops those proposals. `ideas.verifyModel` (empty) inherits `ideas.model`; `ideas.applyVerifiedUpdates` (false since 2026-10-03; true applies verified completion without a card, only to an unchanged idea in an idle project). Verification respects paid-model policy and queue deadlines.
 
 `loops.contextChecks` (false) enables provider-captured conversation checks. `loops.routingHints` and `loops.skillHints` (false) add advisory checks to that flow. `todo.checkCommits` (false) suggests completed checklist items after successful commits. These opt-in consumers do not automatically change models, tools, spending permission or goal status; cache performance remains endpoint-dependent.
 
@@ -262,6 +262,15 @@ They include settings secrets and the images attached to ideas, and exclude proj
 credentials. Copy snapshots to separate storage for disk-failure protection. See [BACKUPS.md](BACKUPS.md) for restore
 instructions.
 
+## Schedules
+
+| key | default | meaning |
+|---|---|---|
+| `schedules.enabled` | `true` | Start due runs (`netpi.schedules`, `schedules.*` in PROTOCOL.md). Off: nothing starts; due runs wait and the missed-run rule applies when it is back on |
+| `schedules.missedGraceHours` | `24` | A run that fell due while NetPI was not running still starts if it is at most this late (0–720 h); a later one is recorded as `missed`. Never more than one catch-up run |
+| `schedules.minIntervalMinutes` | `5` | The smallest `minutes` an `every` cadence may have (1–1440) |
+| `schedules.maxRunsPerDay` | `48` | Runs one schedule may start in any 24 hours (1–1440); past it, a run is skipped |
+
 ## Context and AGENTS.md
 
 | key | default | |
@@ -312,6 +321,9 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `nudge.enabled` / `nudge.maxPerRun` | `true` / `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it. `maxPerRun` counts *consecutive* nudges: any acceptable response (a tool call, a final answer, an aborted or errored turn) resets it, so the cap bounds one stall episode rather than the whole run |
 | `loops.enabled` / `loops.maxHintsPerRun` | `true` / `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results (the whole result text, durations and times aside, and its images: two screenshots or page snapshots that differ anywhere are progress), the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
 | `loops.repeats` | `3` | the call about to run counts (2–10) |
+| `loops.contextEvery` | `4` | the full-conversation checks (`loops.contextChecks`) run on every Nth model call of a run, at most 8 per run, with their own budget (the compact check keeps its 5) |
+| `memory.enabled` | `true` | with an embedding model (`embed.model`) every chat is embedded in the background (a sweep every 5 minutes) and `memory_search` finds earlier chats by meaning; the text goes only to the embedding server |
+| `memory.maxChunksPerChat` | `24` | pieces of ~1,200 characters a chat is embedded as (4–200); the start, the summaries and the end are kept first |
 | `loops.model` | – | a decision model (`qwen3.8-27b`, `kev-9b`) that also reads the goal and the last 10 steps when 6 of the last 8 use one tool and 3 of them failed, and hints at p(stuck) ≥ 0.8 (`decide.ask`, needs the Decide plugin; at most 5 checks per run, 10 s each) |
 | `toolRepair.enabled` | `true` | execute tool calls a model wrote as text (`<tool_call>…`), but only when the message is nothing but the call: an answer that also explains, documents or quotes the markup stays text, and the nudge asks for a real call |
 | `retry.enabled` / `retry.maxAttempts` | `true` / `6` | retries lost connections and stalled streams |
@@ -330,8 +342,6 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `shell.pwshAlways` | `false` | offer `pwsh` even when no PowerShell was found |
 | `shell.timeoutSeconds` | `120` | default per command (max 1800) |
 | `ideas.fileName` | `ideas.json` | the name the ideas file had before the backlog moved into the store. Nothing reads or writes it any more; an export is written under it when a path is given, and `ideas.list` reports it so an older UI still has a hint (docs/PLUGIN-IDEAS.md) |
-| `ideas.recall` | `true` | while the first message of a chat is typed, a decision looks for the open idea it continues and the composer offers to add it (needs the Decide plugin) |
-| `ideas.recallThreshold` | `0.8` | the probability an idea needs before it is offered (0.3–0.99); 0.8 gave no false offer on 56 unrelated messages (docs/DECISION-MODELS.md, "Ideas recall") |
 | `ideas.saveCheck` | `true` | when a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down; a new plan gets a card to save or discard, work on an open idea is attached to that idea instead |
 | `ideas.attachThreshold` | `0.8` | the probability a closed chat has to be about an open idea before it is attached to it (0.3–0.99); 0.8 was right on 5 of 6 |
 | `ideas.model` | `qwen3.8-27b` | the decision model of the idea checks (asked through the Decide plugin's server) and the model that drafts the save check |
@@ -342,8 +352,12 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `ideas.closeOnCommit` | `true` | watch every project's repository: a commit is recorded on the open idea it works on, and when it may have finished one you get a card to mark it done (needs the Files plugin to read the commits and Decide for the questions) |
 | `ideas.linkThreshold` | `0.7` | the probability a commit has to be about an open idea before it is recorded on it (0.3–0.99); 0.7 linked no wrong idea in 187 commits |
 | `ideas.doneThreshold` | `0.8` | the probability an idea has to be finished before you are offered (0.3–0.99); 0.8 offered 4 of 5 finished ideas and nothing that was only advanced |
-| `ideas.tellAgentOnCommit` | `true` | after the agent itself runs a successful `git commit`/`git merge` in the session's project, one notice asks it to mark the idea that commit finished. Silent when the project has no open idea, and when there are more than three of them the notice names none and asks for nothing (a backlog that size says nothing about this commit). The cards above stay: they catch a commit made outside any chat |
+| `ideas.tellAgentOnCommit` | `true` | after the agent itself runs a successful `git commit`/`git merge` in the session's project, one notice asks it to mark the idea that commit finished. Silent when the project has no open idea. With more than three of them the notice names none and asks for nothing (a backlog that size says nothing about this commit), unless embeddings are on (`ideas.semantic`): then it names the three open ideas closest in meaning to the commit message, as candidates. The cards above stay: they catch a commit made outside any chat |
 | `ideas.commitNoticesPerRun` | `2` | how many of those notices one run may get (0–10), so a run that commits in a loop is asked a bounded number of times |
+| `ideas.semantic` | `true` | with embeddings (`embed.model`): the backlog is embedded in the background, the commit notice names the open ideas nearest a commit, the `ideas` tool lists the closest ideas when no idea holds every word of a `query`, and adding an idea names the existing ones it resembles. Off, or without embeddings, all of it behaves as before |
+| `ideas.linkFloor` | `0.6` | with embeddings, a commit whose closest open idea is below this cosine is not asked about (no 5090 decision; `ideas.decisions` records it as `skipped`). The right idea scored ≥ 0.67 for 90 % of the labelled commits, an unrelated commit's best idea 0.58 at the median. 0 asks about every commit |
+| `ideas.noticeFloor` | `0.6` | the commit notice names an open idea only when it is at least this close to the commit message |
+| `ideas.similarThreshold` | `0.80` | cosine (card to card) above which an existing idea is said to resemble a new one (0.5–0.99). 0.80 is about the top 7 % of each idea's nearest other idea in a 231-idea backlog with bge-base; the known duplicate pair scored 0.807-0.824 |
 | `ideas.commitNoticeDebounceSec` | `30` | seconds a run waits after a commit notice before it may get the next one (0–3600), so a burst of commits costs one notice instead of one each; 0 turns the debounce off and leaves only the per-run cap |
 
 ## Workspaces
@@ -402,16 +416,25 @@ refuses an `ssh` download into another checkout of the repository.
 | `web.search.count` | `8` | results per search (max 20) |
 | `media.maxBytes` | `10000000` | largest image `show_image` shows |
 | `decide.baseUrl` | – | server for `decide` (`POST /v1/systemone`); empty = `providers.aiproxy.baseUrl` |
-| `decide.model` | `qwen3.8-27b` | decision model `decide` asks: `qwen3.8-27b` on NInfer (through AiGateway's System One bridge; the best without training, no extra memory, shares the 5090 with the agents), `laya-logs` for the four log questions on the nuc, or `kev-9b`/`kev-4b` on the nuc (load it from AiHub first; it takes the whole 4070). See docs/DECISION-MODELS.md |
+| `decide.model` | `qwen3.8-27b` | decision model `decide` asks: `qwen3.8-27b` on NInfer (through AiGateway's System One bridge; the best without training, no extra memory, shares the 5090 with the agents), or `kev-9b`/`kev-4b` on the nuc (load it from AiHub first; it takes the whole 4070). See docs/DECISION-MODELS.md |
 | `decide.maxItems` | `500` | most items per `decide` call (1–5000) |
 | `decide.parallel` | `4` | `decide` requests at once (1–16) |
+| `decide.groupSimilarity` | `0.985` | with embeddings, `decide` items at or above this cosine share one decision (a log line that differs only in a timestamp); identical items always do; 0 = only identical ones. Kept high on purpose: lines that differ in an error code must stay apart |
+| `decide.lane` | `true` | a single short check on a local model (the guard's second opinion, the idea checks, loop and todo hints) does not take an agent slot: NInfer answers decisions on its own lane ahead of agent work (decisions first). Off: every decision waits for a slot like a chat. The `decide` tool's batches always take slots |
+| `embed.baseUrl` | – | an OpenAI-compatible `POST /v1/embeddings` server for the Embeddings plugin; empty = `providers.aiproxy.baseUrl`. The owner's: `http://192.168.1.3:8012` (the nuc's `embed-tasks`) |
+| `embed.model` | – | the embedding model; **empty switches embeddings off** (every consumer then behaves as without them). `bge-base-en-v1.5` was measured (decisions-lab `nuc-plan.md`) |
+| `embed.queryPrefix` | – | put in front of search texts only, never stored documents (bge: `Represent this sentence for searching relevant passages: `) |
+| `embed.timeoutMs` | `1500` | how long an interactive embedding call waits (100–60000); indexing in the background waits up to 30 s per batch. A timeout or failure backs off (5 s, doubling, at most 5 min), and calls fail at once meanwhile |
+| `embed.batchSize` | `64` | texts per request (1–256) |
 | `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` and `browser` (found in the usual install folders or on PATH) |
-| `browser.target` | `chrome` | Where a chat's `browser` tab opens: `chrome`, the user's running Chrome (remote debugging allowed at `chrome://inspect/#remote-debugging`), or `own`, the agents' hidden browser. A call can ask for the other with `browser` |
+| `browser.target` | `own` | Where a chat's `browser` tab opens: `own`, the agents' browser (headless; the user sees it, and logs in, in the chat's Browser view), or `chrome`, the user's running Chrome — through the NetPI extension when it is connected, else through remote debugging allowed at `chrome://inspect/#remote-debugging`. A call can ask for the other with `browser` |
 | `browser.chromeUserData` | Chrome's default | The folder holding the user's Chrome `DevToolsActivePort` (`%LOCALAPPDATA%\Google\Chrome\User Data`, `~/Library/Application Support/Google/Chrome`, `~/.config/google-chrome`) |
-| `browser.headless` | `true` | `false`: the agents' browser opens a window (to log in to a site by hand, or to watch). Applies when the browser next starts |
+| `browser.headless` | `true` | `false`: the agents' browser opens a window of its own. The chat's Browser view shows its tab either way. Applies when the browser next starts |
 | `browser.profile` | `default` | A name: logins and cookies are kept in `<home>/browser/<name>`. `temp`: a fresh profile each time the browser starts, deleted when it closes |
-| `browser.idleMinutes` | `10` | The browser closes after this many minutes without a `browser` call (1–1440); the chats' tabs close with it |
-| `browser.maxControls` | `200` | Controls listed per page, the ones nearest the visible part (50–1000); `find` reaches the rest |
+| `browser.idleMinutes` | `10` | The agents' browser closes after this many minutes without a `browser` call and with no Browser view open (1–1440); the chats' tabs close with it. The connection to the user's Chrome over its DevTools port is kept while a chat has a tab there (Chrome asks again for every new connection) |
+| `browser.maxControls` | `200` | Controls listed per page, the ones nearest the visible part (50–5000); `find`, and `snapshot` with `all`, reach the rest |
+| `windows.maxControls` | `300` | Controls listed per window by the `windows` tool, the ones nearest the visible part (50–5000); `find`, and `snapshot` with `all`, reach the rest |
+| `windows.journal` | `true` | Every `windows` step (the action, its arguments, the result) as a JSON line in `<home>/windows/journal-yyyyMMdd.jsonl`: data to train a smaller control picker on |
 
 ## Goals
 
@@ -440,6 +463,9 @@ refuses an `ssh` download into another checkout of the repository.
 | `ssh.config` | `~/.ssh/config` | where the host aliases come from; any other file is also passed to ssh and scp (`-F`) |
 | `ssh.connectTimeoutSeconds` | `10` | (2–120) |
 | `ssh.timeoutSeconds` | `120` | default `ssh` `run` timeout (max 1800) |
+| `ssh.reuseConnections` | `true` | where the client cannot multiplex (Windows), keep connections to a host open between calls (below) |
+| `ssh.connectionsPerHost` | `3` | kept connections per host (1–8): calls running at the same time; one more opens its own ssh |
+| `ssh.idleSeconds` | `300` | a kept connection unused this long is closed (10–3600) |
 
 Where the client supports it, calls to one host ride a single master connection (OpenSSH `ControlMaster`, 5 minutes
 after the last call): the first call of a run pays the TCP + transport + auth handshake, the rest reuse the socket. The
@@ -450,8 +476,13 @@ control sockets live in `~/.netpi/ssh/` (one per host and user, hashed), so they
 - The idle timeout is only passed to a client that accepts it. OpenSSH_for_Windows (NetPI's own client on Windows) has
   no `ControlIdleTimeout`, and asking for it fails every call with `Bad configuration option`.
 - A client that cannot multiplex gets no master connection: OpenSSH_for_Windows accepts `ControlMaster` and then fails
-  every session with `getsockname failed: Not a socket`, so those calls each do their own handshake, as they did before
-  connection reuse. This is the normal case on Windows.
+  every session with `getsockname failed: Not a socket`. This is the normal case on Windows, and there the plugin keeps
+  connections itself instead (`ssh.reuseConnections`): one long-lived ssh per host runs a small `sh` loop that takes one
+  call at a time (the command base64-encoded, its stdin as counted bytes saved to a temp file first, output ended by a
+  per-call random marker with the exit code), up to `ssh.connectionsPerHost` side by side. A handshake costs ~300 ms to
+  a LAN host and a call over a kept connection a few ms (measured 2026-10-03). A timeout or abort kills that connection,
+  as killing a per-call ssh did; a host whose kept connection will not start (auth, host key, no POSIX `sh`, `base64`
+  or count-exact `head -c`) runs its calls the old way for 10 minutes, so ssh's own errors read as before.
 
 Both questions are answered once per client, offline (`ssh -o … -G localhost` and `ssh -O check`), and take a few
 milliseconds; anything unexpected answers "not supported", so a call never fails because of the check itself.

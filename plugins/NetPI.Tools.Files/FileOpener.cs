@@ -4,14 +4,24 @@ using System.Text.RegularExpressions;
 namespace NetPI.Tools.Files;
 
 /// <summary>
-/// <c>files.open</c>: open a path from the chat or the file tree with the operating system, the way a double click in the
-/// file manager would. Folders open in the file manager; text and code (any extension) open for editing in an editor
-/// (the "edit" verb) rather than running; a small allowlist of passive viewers (images without svg, pdf) opens with the
-/// default program; everything else — unknown binaries, Office documents, rdp/iso/vhd, add-ins, installers — is only
-/// revealed, never launched. Relative paths resolve against the session's working directory, like the file tools;
-/// <c>file://</c> URLs and a trailing <c>:line[:col]</c> or <c>#L…</c> are accepted. A network path (<c>\\server\share</c>)
-/// is refused, and a path outside the session's workspace comes back as <c>confirm</c> instead of opening, so the caller
-/// asks the user first.
+/// <c>files.open</c>: open a path from the chat or the file tree with the operating system. <para>
+/// Two modes, chosen by <c>user</c> — whether the user deliberately picked this file themselves (a double click in the
+/// file tree, a chat file link they confirmed):
+/// <list type="bullet">
+/// <item><c>user: true</c>: exactly what a double click in the file manager does. Every file opens with its default
+/// program, executables and scripts included; a file nothing is associated with gets the operating system's "choose a
+/// program" dialog.</item>
+/// <item>without it (the default): folders open in the file manager; text and code (any extension) open for editing in an
+/// editor (the "edit" verb) rather than running; a small allowlist of passive viewers (images without svg, pdf) opens
+/// with the default program; everything else — unknown binaries, Office documents, rdp/iso/vhd, add-ins, installers — is
+/// only revealed, never launched. This is for callers showing a path the model wrote: a click there must not become a
+/// launch vector.</item>
+/// </list>
+/// </para>
+/// <para>Either way: relative paths resolve against the session's working directory, like the file tools; <c>file://</c>
+/// URLs and a trailing <c>:line[:col]</c> or <c>#L…</c> are accepted. A network path (<c>\\server\share</c>) is
+/// refused, and a path outside the session's workspace comes back as <c>confirm</c> instead of opening, so the caller
+/// asks the user first — that question stands in both modes.</para>
 /// </summary>
 internal static partial class FileOpener
 {
@@ -35,9 +45,10 @@ internal static partial class FileOpener
         ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".avif", ".tif", ".tiff", ".pdf",
     };
 
-    /// <summary>What to do: <c>folder</c>, <c>edit</c> (text/code), <c>open</c> (a known viewer), <c>reveal</c> (everything else)
-    /// or <c>confirm</c> (outside the workspace: the caller asks the user, then calls again with <paramref name="confirmed"/>).</summary>
-    internal static (string Path, string Action) Decide(IPluginContext context, string root, string raw, bool confirmed = false)
+    /// <summary>What to do: <c>folder</c>, <c>edit</c> (text/code), <c>open</c> (the default program), <c>reveal</c>
+    /// (everything else) or <c>confirm</c> (outside the workspace: the caller asks the user, then calls again with
+    /// <paramref name="confirmed"/>).</summary>
+    internal static (string Path, string Action) Decide(IPluginContext context, string root, string raw, bool confirmed = false, bool user = false)
     {
         raw = raw.Trim().Trim('"', '\'', '`', '<', '>');
         if (raw.Length == 0) throw new RpcException("bad_request", "No path given");
@@ -59,6 +70,10 @@ internal static partial class FileOpener
         // Outside the workspace the session works in: nothing is opened until the user has said so.
         if (!confirmed && !IsUnder(full, root)) return (full, "confirm");
         if (Directory.Exists(full)) return (full, "folder");
+        // The user picked this file themselves, so it is opened the way a double click in the file manager opens it: the
+        // default program for every kind of file. Nothing here has to know which kinds are safe to launch, because the
+        // caller has already put a question in front of the user.
+        if (user) return (full, "open");
         var ext = Path.GetExtension(full);
         if (Executable.Contains(ext) || (!OperatingSystem.IsWindows() && IsUnixExecutable(full) && !Script.Contains(ext))) return (full, "reveal");
         // A text file — any code, config or script extension — opens in an editor: the editor shows it, it does not run it.

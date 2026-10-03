@@ -17,7 +17,7 @@ internal sealed class IdeaVerifier(IPluginContext ctx)
     {
         if (!ctx.Settings.GetOr("ideas.verify", true)) { Skipped("Ideas verification is disabled"); return new(false, "Ideas verification is disabled"); }
         var name = ctx.Settings.GetOr("ideas.verifyModel", "").Trim();
-        if (name.Length == 0) name = ctx.Settings.GetOr("ideas.model", IdeaRecall.DefaultModel);
+        if (name.Length == 0) name = ctx.Settings.GetOr("ideas.model", IdeaDecider.DefaultModel);
         var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
         if (model is null) { Skipped($"Verifier model {name} is unavailable"); return new(false, $"Verifier model {name} is unavailable", true); }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, ctx.Stopping);

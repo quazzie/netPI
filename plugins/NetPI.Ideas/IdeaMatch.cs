@@ -74,14 +74,16 @@ internal static class IdeaMatch
     /// window is only asked about when the first one found nothing (bounded, so a burst of checks stays cheap).
     /// Backlog order breaks ties, which keeps the result the same for the same backlog and the same text.
     /// </summary>
-    public static IEnumerable<List<JsonObject>> Windows(IReadOnlyList<JsonObject> candidates, string? text, int maxWindows = MaxWindows)
+    public static IEnumerable<List<JsonObject>> Windows(IReadOnlyList<JsonObject> candidates, string? text, int maxWindows = MaxWindows,
+        IReadOnlyList<JsonObject>? ranking = null)
     {
         if (candidates.Count <= MaxOptions)
         {
             yield return [.. candidates];
             yield break;
         }
-        var ranked = Ranked(candidates, text);
+        // A ranking the caller already has (words and meaning fused, IdeaVectors.RankAsync) wins over shared words alone.
+        var ranked = ranking ?? Ranked(candidates, text);
         for (var w = 0; w < maxWindows && w * MaxOptions < ranked.Count; w++)
             yield return ranked.Skip(w * MaxOptions).Take(MaxOptions).ToList();
     }

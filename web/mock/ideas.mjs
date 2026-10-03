@@ -85,6 +85,39 @@ export function createIdeas({ publish }) {
 
   const api = {
     'ideas.list': () => ({ file, fileName: 'ideas.json', exists: doc.exists, ideas: doc.ideas }),
+    // The lean, ranked list the welcome screen reads on every window start (idea-ky14bu): the target project's own
+    // open/planned ideas first, then the global ones. Same rule as plugins/NetPI.Ideas (IdeaOps.Picks).
+    'ideas.picks': (p) => {
+      const rank = { open: 0, planned: 1 };
+      const weight = { high: 0, medium: 1, low: 2 };
+      const target = p.projectId ? String(p.projectId) : null;
+      const limit = Math.min(24, Math.max(1, Number(p.limit ?? 5) || 5));
+      return {
+        picks: doc.ideas
+          .map((idea, ord) => ({ idea, ord, project: idea.project ?? null }))
+          .filter((x) => !x.project || (target && x.project.id === target))
+          .filter((x) => rank[x.idea.status] !== undefined)
+          .sort(
+            (a, b) =>
+              ((target && a.project ? 0 : 1) - (target && b.project ? 0 : 1)) ||
+              rank[a.idea.status] - rank[b.idea.status] ||
+              (weight[a.idea.priority] ?? 1) - (weight[b.idea.priority] ?? 1) ||
+              String(b.idea.updatedAt ?? '').localeCompare(String(a.idea.updatedAt ?? '')) ||
+              a.ord - b.ord,
+          )
+          .slice(0, limit)
+          .map((x) => ({
+            id: x.idea.id,
+            title: x.idea.title,
+            summary: String(x.idea.summary ?? '').replace(/[\r\n]+/g, ' ').trim(),
+            status: x.idea.status,
+            priority: x.idea.priority ?? 'medium',
+            projectId: x.project?.id ?? null,
+            projectName: x.project?.name ?? null,
+            updatedAt: x.idea.updatedAt,
+          })),
+      };
+    },
     'ideas.get': (p) => find(p.id),
     'ideas.add': (p) => {
       const proj = stamp(p);
@@ -215,26 +248,6 @@ export function createIdeas({ publish }) {
       for (const s of idea.sections) lines.push('', `## ${s.kind[0].toUpperCase()}${s.kind.slice(1)}${s.title ? `: ${s.title}` : ''}`, s.content);
       return lines.join('\n');
     },
-    // Recall on the first message (the server asks a decision model; here: an id in the text, else the open idea of
-    // the chat's project or the global ones that shares the most title words, at least two).
-    'ideas.recall': (p) => {
-      const s = store.sessions.get(p.sessionId);
-      if (!s) throw err('not_found', `Unknown session ${p.sessionId}`);
-      const t = String(p.text ?? '').toLowerCase();
-      const open = doc.ideas.filter((i) => !['done', 'rejected'].includes(i.status) && (!i.project || i.project.id === s.projectId));
-      const byId = open.find((i) => t.includes(i.id.toLowerCase()));
-      if (byId) return { match: { id: byId.id, title: byId.title, p: 1 }, reason: 'id', ms: 0 };
-      if (t.trim().length < 12) return { match: null, reason: 'short', ms: 0 };
-      const words = (x) => new Set(x.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []);
-      const have = words(t);
-      let best = null;
-      let score = 1;
-      for (const i of open) {
-        const n = [...words(i.title)].filter((w) => have.has(w)).length;
-        if (n > score) (best = i), (score = n);
-      }
-      return best ? { match: { id: best.id, title: best.title, p: 0.9 }, reason: 'model', ms: 90 } : { match: null, reason: 'none', ms: 90 };
-    },
     'ideas.attach': (p) => {
       const idea = find(p.id);
       if (!store.sessions.has(p.sessionId)) throw err('not_found', `Unknown session ${p.sessionId}`);
@@ -264,7 +277,7 @@ export function createIdeas({ publish }) {
       changed();
       return { sessionId: s.id, title: s.title, agent: p.agent ?? 'any' };
     },
-    'ideas.mockRefines': () => refines,
+    'mock.ideaRefines': () => refines,
     'ideas.quickAdd': (p) => {
       if (!p.args?.trim()) throw err('bad_request', 'Usage: /idea <title>');
       const idea = api['ideas.add']({ sessionId: p.sessionId, idea: { title: p.args.trim() } });
@@ -349,7 +362,7 @@ export function createIdeas({ publish }) {
   };
 
   /** The mock walkthrough: offer the commit check's card for an idea (the real one needs a repository). */
-  api.commitFinishesIdea = (phrase) => {
+  const commitFinishesIdea = (phrase) => {
     const idea = doc.ideas.find((i) => i.title.toLowerCase().includes(String(phrase).toLowerCase()));
     if (!idea) return null;
     const suggestion = {
@@ -367,7 +380,7 @@ export function createIdeas({ publish }) {
   };
 
   /** The mock walkthrough: make a chat leave the given plan when its tab is closed. */
-  api.closeLeavesPlan = (phrase, title = `Plan: ${phrase}`) => {
+  const closeLeavesPlan = (phrase, title = `Plan: ${phrase}`) => {
     for (const [sid, messages] of store.messages) {
       const said = messages
         .filter((m) => m.role === 'user')
@@ -446,5 +459,5 @@ export function createIdeas({ publish }) {
     doc.exists = true;
   }
 
-  return { api, seed, closeLeavesPlan: (phrase, title) => api.closeLeavesPlan(phrase, title), commitFinishesIdea: (phrase) => api.commitFinishesIdea(phrase) };
+  return { api, seed, closeLeavesPlan, commitFinishesIdea };
 }

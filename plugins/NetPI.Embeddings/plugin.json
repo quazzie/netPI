@@ -1,0 +1,5 @@
+{
+  "id": "netpi.embeddings",
+  "name": "Embeddings",
+  "description": "Text embeddings from an OpenAI-compatible /v1/embeddings server, for meaning search in other plugins (the Ideas backlog first)."
+}

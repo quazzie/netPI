@@ -96,7 +96,7 @@ web/
                ToolRow, NoticeRow, PromptRow, SentBlock, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
       composer/ Composer, ProfilePicker, ProjectPicker, AgentPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing,
-                QueueChips, GoalStrip, TodoStrip, IdeaChip, RunStatus
+                QueueChips, GoalStrip, TodoStrip, RunStatus
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
                SettingInfo), SettingsRow, AgentsEditor + AgentDialog, BudgetView, ProfilesEditor + ProfileDialog,
@@ -166,7 +166,7 @@ Plugin tabs attach to the same bus through `ctx.on`.
 | `app` (`state/app.svelte.js`) | `sessions`/`projects`/`models` (`$state.raw` arrays, replaced on change) plus derived `…ById` maps, `agents`, `context`, `unread`, `openTabs`, `activeId`, `uiTabs`, `commands`. Actions: `openSession`, `newSession`, `closeTab`, `moveTab`, `updateSession`, `setSessionProject`, `sendMessage`, `abortAgent`, `dequeue`, … |
 | `ChatStore` (`state/chat.svelte.js`) | per session: `messages` window, `hasMore`, `hasNewer`, `stream` (StreamState), `live` (callId → LiveTool), `queue`, `notice`, `pendingUser`, `expanded` (UI memory), `draft`, `images`, scroll memory. The 5 most recently used stores stay cached (LRU); a store that is still streaming is never evicted. |
 | `ui` (`state/ui.svelte.js`) | `layout` (width, collapsed and active tab per side), `prefs` (theme, collapse steps, Enter behaviour, expand thinking), `modals`, `toasts`, and the `composer` bridge (`insertText`, `focus`, `setText`). |
-| `tabs` (`state/tabs.svelte.js`) | the side-panel tab registry: core tabs (`registerCoreTab`) plus plugin tabs (`ui.tabs`), sorted by `order`. |
+| `tabs` (`state/tabs.svelte.js`) | the tab registry: core tabs (`registerCoreTab`) plus plugin tabs (`ui.tabs`), sorted by `order`; side-panel tabs (`left`/`right`) and session views (`session`: shown in a chat's area instead of its messages, switched from the chat header, `sessionViews[sessionId]` says which, `openView` / the `ui.open` event open one). |
 
 **Persistence** uses localStorage (read synchronously at startup, every access in try/catch) plus a debounced
 `ui.state.set` as the durable copy. The keys are `netpi.layout`, `netpi.prefs` and `netpi.openTabs`. The UI
@@ -194,6 +194,16 @@ the + tab all start in the project shown. The project button in the composer bar
 `/project` open `ProjectPicker` for a session, which calls `sessions.setProject`; the context plugin then appends
 a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
 
+**Ideas on the start screen** (`Welcome.svelte`, idea-ky14bu). Above "Recent sessions" the welcome screen offers at
+most three ideas from the backlog, read from the Ideas plugin with `ideas.picks { projectId, limit: 3 }` — the project's
+own open/planned ideas first, then the global ones (`state/welcomeIdeas.svelte.js` holds the list; it reads once per
+window and again on `ideas.changed`, and switches itself off when the method is unknown, so a NetPI without the plugin
+— or with an older one — shows exactly the screen it always did). The host does no ranking of its own: it owns neither
+the backlog nor the notion of "relevant". A row's project name is shown only when it is not the project the screen
+targets, and a click starts a session in the idea's own project with the idea attached (`ideas.attach`, as the
+composer chip does), titled after the idea. If the attach cannot happen the Ideas tab opens instead of dropping the
+click.
+
 **Projects dialog** (`ProjectsModal`, opened with `openProjects({ view, id?, sessionId?, select? })`). One dialog with
 three views, each a component (`ProjectsListView`, `ProjectsNewView`, `ProjectsEditView`) and the dialog itself holding
 what they share — which view is open, the form behind the footers, and create/save/remove: `list` (filter, new session,
@@ -218,7 +228,9 @@ into locals first, because after the parent clears the modal state or the row re
    `beforeSeq`. After a prepend, the list is scrolled so the first previously visible item stays where it was
    on screen. The window holds at most 200 messages. When new messages push it past 220, the oldest are
    dropped and **Load earlier** comes back. When loading earlier pushes it past 200, the newest are dropped
-   instead: new messages then only increase a counter, and **Jump to latest** reloads the tail.
+   instead: new messages then only increase a counter. **Load newer** pages forward from the window's newest
+   message with `afterSeq` (dropping the oldest past 200, so **Load earlier** comes back), and **Jump to latest**
+   reloads the tail.
 2. **Items** (`lib/chatItems.js`). The messages become render items: `user`, `text` (assistant markdown),
    `steps`, `notice`, `prompt` (a system prompt the chat was sent), `status` (error/aborted/length) and `images`. Consecutive thinking and tool_call parts,
    even across several assistant messages, form one **steps** group. Tool results from `tool` messages are
@@ -236,17 +248,14 @@ into locals first, because after the parent clears the modal state or the row re
    these views: `ssh` `run` the shell view (prompt `host$`), `read` the read view, `write`/`edit` the diff view. A call with an `action` is shown as `<tool>_<action>` when the UI has a view for that name (`viewName` in `web/src/lib/tools.js`, one rule and no list of tools: `ssh` + `run` as `ssh_run`, `process` + `output` as `process_output`), so a tool with actions reuses the views of the tools it merged and older chats with the old names look the same.
    - **File links.** `renderMarkdown` marks links whose target is a local path (relative, `C:\…`, `file://`) as
      `a.file-link[data-path]` with `href="#"`; one delegated click handler opens them with the operating system
-     through `files.open`, so a link never navigates the app. A path outside the session's workspace comes back
-     as `action: 'confirm'` and the user is asked before it opens. Web links keep `target="_blank"` (the desktop
-     shell opens them in the default browser).
+     through `files.open`, so a link never navigates the app. The path came from the model, so the click is asked
+     about first ("Open this file?", saying that the default program runs — an executable included) and only then is
+     `files.open` called with `user: true`, so it opens like a double click in the file manager rather than being
+     revealed. A path outside the session's workspace comes back as `action: 'confirm'` and is a second question.
+     The "Open file" button of `read`/`write`/`edit` rows is the same call without the question: the user pressed it.
+     Web links keep `target="_blank"` (the desktop shell opens them in the default browser).
    - **Plan strip.** `TodoStrip` (in the composer dock) shows the session's `meta.todo` while any item is open:
      `done/total` and the current item, expanding to the checklist.
-   - **Idea chip.** `IdeaChip` (in the composer dock, after the plan strip) looks for the open idea the first message
-     continues: `ideas.recall` about 1 s after typing pauses (12 characters or more, again when the text changed by
-     20), and once more on the sent text of a chat this window saw empty (opening an old chat never asks). A match
-     shows one line: the idea's title, **Add** (`ideas.attach`: the idea joins the chat as an `idea` notice) and ✕.
-     Added or dismissed, that chat is not asked again; the state is per chat in `composer/ideaRecall.svelte.js`.
-     The send never waits for it.
    - **Idea cards.** `IdeaCards` (in the composer dock) shows the offers `ideas.suggestions` returns, for the window
      rather than a chat — the chat a plan came from is closed. Two kinds: a **plan a closed chat left unsaved** (title,
      summary, **Save** / **Edit** / **Discard**) and an **idea a commit may have finished** ("may be done", the idea's
@@ -631,9 +640,13 @@ set, uptime, threads, framework; the full details are in its tooltip). A segment
 - The header shows the project name, the root path (shortened from the left), the eye (when there are ignored
   entries), **collapse all** and **refresh**.
 - The filter box calls `files.search` (debounced 140ms, 200 results) and shows a flat list.
-- Clicking a file opens it with the operating system (`files.open`: its default app). Clicking a folder expands it;
-  a folder in the filtered list is shown in the tree. The `@` button of a row (on hover or focus) inserts
-  `@rel/path ` into the composer (quoted when the path has spaces; folders end in `/`).
+- Clicking a row selects it; a folder also expands, and a folder in the filtered list is shown in the tree. **Double
+  clicking a file** opens it with the operating system (`files.open` with `user: true`: its default app, whatever that
+  is — a document in Word, an executable launched, a file nothing is associated with getting the system's
+  choose-a-program dialog), like a double click in the file manager does. A changed file outside the session's
+  workspace (its `rel` starts with `../`) is asked about first, because that is a second thing to say yes to. The `@`
+  button of a row (on hover or focus) inserts `@rel/path ` into the composer (quoted when the path has spaces; folders
+  end in `/`).
 - The context menu (right-click or ⋯) has Open, Insert @mention, Insert path, Copy relative path, Copy absolute
   path, Reveal in Explorer (desktop only) and Refresh folder.
 - Keyboard: ↑ ↓ move, → ← expand and collapse, Enter opens, and the context-menu key opens the menu.
@@ -822,7 +835,9 @@ names or an inline `<svg …>` string.
   materializes it (`session.created` → `message.added` → `session.updated`), and the profiles plugin gives it its
   default profile there (the `session.updated` that follows carries it; the hook still guarantees it is set before the
   first model call). The app never replaces a session with an older copy (`updatedAt`), so an RPC result that arrives
-  after that event can't take the profile away again.
+  after that event can't take the profile away again. Closing such a tab takes its row out of the list too: the host
+  never stored it, so a list reload would only lose it at the next window — `closeTab` drops it (and its chat store
+  and draft) as soon as the tab is gone, and leaves a chat with messages alone.
 - `message.added` for a **steering** input has `meta.kind: 'steer'` (and `'queued'` for a queued follow-up),
   so the UI can tag the input and keep the run's steps grouped. `meta.agentName` and `meta.sessionId` on
   `agent-result` and `agent-message` notices enable the "open" link. A `budget` notice with `meta.canOverride` (the
@@ -839,8 +854,6 @@ names or an inline `<svg …>` string.
 - Slash commands with `rpc` receive `{ sessionId, args }` and may return a string, which is shown as a toast.
   The `clientAction` values the UI understands are `openTab:<pluginId>/<tabId>`, `insert:<text>` and
   `settings`.
-- `sessions.messages` has only `beforeSeq`. An `afterSeq` parameter would let the pruned window page forward;
-  today it reloads the tail instead.
 - A `UiTabInfo.panel` sent as a number (enum without a string converter) is accepted: `0` is left, `1` is right.
 - The Work tab reads `usage.summary` providers' `budgetTokens` and `budgetUsed` (input + output + cache write),
   `AgentSlots.status`/`available`/`unavailable`/`disabled`, `SlotHolder.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.

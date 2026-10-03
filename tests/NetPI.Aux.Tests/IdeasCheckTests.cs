@@ -280,6 +280,37 @@ public static class IdeasCheckTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas check: a drafted plan the backlog already holds is recorded on that idea, not offered as a second card (embeddings)", async () =>
+        {
+            var env = new Env();
+            env.Ctx.ServicesFake.Register<IEmbeddingService>(new EmbeddingsTests.BagOfWords());
+            await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
+            var idea = (await env.Rpc("ideas.add", new JsonObject { ["projectId"] = env.Project.Id, ["idea"] = new JsonObject
+                { ["title"] = "Nudge counter reset", ["summary"] = "Reset the nudge counter when a good answer comes in." } }))["id"].Str()!;
+            await env.Rpc("ideas.reindex", new JsonObject());
+            env.Talk();
+            env.Talk();
+            env.Decide(_ => new() { ["A"] = 0.02, ["B"] = 0.98 });   // the attach question: none
+            env.Says("SAVE\nNudge counter reset\nReset the nudge counter when a good answer comes in.");
+
+            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+            await env.WaitForMark(env.Session.Id);
+            Check.Equal(0, (await env.Cards()).Count, "no second card for the same plan");
+            Check.True((await env.SessionsOn(idea)).Contains(env.Session.Id), "the chat is recorded on the idea it repeats");
+            var log = (JsonObject)NetPiJson.ToNode(await env.Ctx.RpcFake.Call("ideas.decisions", new JsonObject { ["site"] = "save" }))!;
+            Check.Equal("merged", log["rows"]![0]!["result"].Str());
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas check: the save prompt says a plan written only to a document is not saved", () =>
+        {
+            var prompt = typeof(IdeaSaveCheck).GetField("SaveSystem", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null) as string;
+            Check.Contains(prompt, "Only the ideas backlog counts as saved");
+            Check.NotContains(prompt, "counts as saved: answer NOTHING");
+            return Task.CompletedTask;
+        });
+
         r.Add("ideas check: an answer we cannot read is no crash, and the save check still runs", async () =>
         {
             foreach (var answer in new Func<JsonObject, object?>[]
@@ -476,38 +507,6 @@ public static class IdeasCheckTests
             Check.Equal(null, IdeaSaveCheck.EffortFor(withHigh), "no low: the model's default, never 'high'");
             Check.Equal("none", IdeaSaveCheck.EffortFor(none));
             Check.Equal(null, IdeaSaveCheck.EffortFor(new ModelInfo { Provider = "p", Id = "m" }), "no reasoning at all");
-        });
-
-        r.Add("ideas check: ideas past the 51st are still eligible for recall", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
-            for (var i = 0; i < 60; i++)
-                await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = $"Filler idea number {i}" } });
-            var last = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject
-            {
-                ["title"] = "Rework the transcript indexer",
-                ["summary"] = "The transcript indexer is slow on long sessions.",
-            } }))["id"].Str()!;
-            env.Decide(body =>
-            {
-                // The model answers for the option whose title is the one we want (the options are in the system prompt).
-                var options = body["messages"]![0]!["content"]!.Str();
-                var letter = options.Split('\n')
-                    .FirstOrDefault(l => l.Contains("Rework the transcript indexer", StringComparison.Ordinal))?[..1];
-                Check.True(letter is { Length: 1 }, "the idea past the 51st was offered to the model");
-                // A decision weighs every label it is offered (a partial answer is not an answer), so answer them all.
-                var probs = body["branches"]![0]!["labels"]!.AsArray()
-                    .Select(l => l.Str()!)
-                    .ToDictionary(l => l, l => l == letter ? 0.91 : 0.09 / 50);
-                return probs;
-            });
-
-            var res = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = "the transcript indexer is slow, can we rework it" });
-            Check.Equal("model", res["reason"].Str(), "it is found: " + res.ToJsonString());
-            Check.Equal(last, res["match"]!["id"].Str());
-            env.Ctx.Unload();
         });
 
         r.Add("ideas check: background model work waits for a slot, and work that does not get one is dropped, not run anyway", async () =>

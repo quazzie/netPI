@@ -503,11 +503,27 @@ public static class IdeasCommitTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas commits: with decide.lane on, a full model does not stop the sweep's question (the decision lane)", async () =>
+        {
+            var env = new Env();
+            var full = new FullScheduler();
+            env.Ctx.ServicesFake.Register<IAgentScheduler>(full);
+            await env.StartAsync();
+            env.Ctx.SettingsFake.Set("ideas.checkWaitSeconds", 1);   // what still takes a slot (the verifier, a generation) gives up fast
+            var idea = await env.AddIdea("Bound the sweep");
+            env.Repo.Commit("a commit the sweep cannot afford right now");
+            await env.Check!.SweepNowAsync();
+            Check.Equal(1, (await env.CommitsOn(idea)).Count, "the link question was answered while the chats hold every slot");
+            Check.NotContains(string.Join("|", env.Ctx.Log.Lines), "the link question was dropped");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas commits: a full model drops the sweep's question, and the commit is read again", async () =>
         {
             var env = new Env();
             var full = new FullScheduler();
             env.Ctx.ServicesFake.Register<IAgentScheduler>(full);
+            env.Ctx.SettingsFake.Set("decide.lane", false); // decisions take slots like a chat: the drop path
             await env.StartAsync();
             env.Ctx.SettingsFake.Set("ideas.commitRetrySeconds", 0); // no backoff: this test drives the retries back to back
             var idea = await env.AddIdea("Bound the sweep");

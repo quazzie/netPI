@@ -29,6 +29,10 @@ public static class SampleBuild
         var project = Path.Combine(T.RepoRoot, "tests", "SamplePlugin", "SamplePlugin.csproj");
         var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host && File.Exists(host) ? host : "dotnet";
         var variants = new[] { "v1", "v2", "fail" };
+        // Restore once first: NuGet writes its assets into the project's one obj/ (not the per-variant intermediate
+        // dirs), so three concurrent restores in a fresh checkout race on the same files ("Cannot create a file when
+        // that file already exists"). The checkout that already had them never saw it.
+        await RunAsync(dotnet, ["restore", project, "-nologo", "-v:q"], "restoring SamplePlugin");
         // The three variants write disjoint obj/out dirs, so they build at once: the wall time is the slowest
         // build, not the sum of three sequential `dotnet build` startups.
         var procs = new Dictionary<string, Process>();
@@ -44,7 +48,7 @@ public static class SampleBuild
                     RedirectStandardError = true,
                     UseShellExecute = false, CreateNoWindow = true,
                 };
-                foreach (var a in new[] { "build", project, "-c", Configuration, $"-p:SampleVariant={variant}", "-p:BuildProjectReferences=false", "-nologo", "-v:q", "-clp:ErrorsOnly" })
+                foreach (var a in new[] { "build", project, "--no-restore", "-c", Configuration, $"-p:SampleVariant={variant}", "-p:BuildProjectReferences=false", "-nologo", "-v:q", "-clp:ErrorsOnly" })
                     psi.ArgumentList.Add(a);
                 var p = Process.Start(psi)!;
                 procs[variant] = p;
@@ -66,6 +70,17 @@ public static class SampleBuild
         {
             foreach (var p in procs.Values) p.Dispose();
         }
+    }
+
+    private static async Task RunAsync(string exe, string[] args, string what)
+    {
+        var psi = new ProcessStartInfo(exe) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        var stdout = p.StandardOutput.ReadToEndAsync();
+        var stderr = p.StandardError.ReadToEndAsync();
+        await p.WaitForExitAsync();
+        if (p.ExitCode != 0) throw new AssertException($"{what} failed:\n{await stdout}\n{await stderr}");
     }
 }
 

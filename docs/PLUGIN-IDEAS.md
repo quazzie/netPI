@@ -1,6 +1,6 @@
 # Ideas plugin (`netpi.ideas`)
 
-Agent rework update (2026-10-01): automatic save/completion proposals require a separate low-priority verifier. Work and `ideas.work` expose waiting, dropped, rejected and verified outcomes with reasons. Completion evidence includes bounded complete patches; revision and project activity are checked again before writing. `ideas.applyVerifiedUpdates` defaults true, applying verified unchanged completion without a card; false retains a verified review card. `ideas.verifyUpdate` checks explicit proposed patches against supplied evidence and rejects stale revisions. Basic backlog CRUD remains independent of optional model/decision/history capabilities. See SETTINGS.md and PROTOCOL.md for the new contracts.
+Agent rework update (2026-10-01): automatic save/completion proposals require a separate low-priority verifier. Work and `ideas.work` expose waiting, dropped, rejected and verified outcomes with reasons. Completion evidence includes bounded complete patches; revision and project activity are checked again before writing. `ideas.applyVerifiedUpdates` defaults false since 2026-10-03 (a verified review card; true applies verified unchanged completion without a card). `ideas.verifyUpdate` checks explicit proposed patches against supplied evidence and rejects stale revisions. Basic backlog CRUD remains independent of optional model/decision/history capabilities. See SETTINGS.md and PROTOCOL.md for the new contracts.
 
 A backlog of ideas, research, plans and deferred work for the user and for agents. Agents work with it through the
 `ideas` tool. The user works with it in the **Ideas** tab (right panel) and through `/idea <title>`.
@@ -10,7 +10,7 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
   `plugins/NetPI.Ideas/wwwroot/ui.js` (source in `plugins/NetPI.Ideas/ui/`) and is served at `/plugins/netpi.ideas/ui.js`.
 - Slash command: `{ name: "idea", argsHint: "<title>", rpc: "ideas.quickAdd" }`.
 - Settings: `ideas.fileName` (default `"ideas.json"`; the name the JSON backlog had — kept so an older UI still has
-  a hint, read and written by nothing), `ideas.recall`, `ideas.recallThreshold`,
+  a hint, read and written by nothing),
   `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`, `ideas.allowPaidModel`, `ideas.checkWaitSeconds`,
   `ideas.verifyRetrySeconds`,
   `ideas.closeOnCommit`,
@@ -37,6 +37,8 @@ top of `IdeasRepository.cs`. The JSON files of the earlier versions (`ideas.json
 | `imports` | the receipts of the imports (one per source taken in) |
 | `meta` | small values, one key each: the root-level fields the old JSON file had (`legacy-root`) |
 | `unread` | the commits a sweep could not decide, keyed by repository and hash |
+| `decisions` | every check's answer and what came of it, one row each (`site`, `result`, `at` indexed): the probabilities, the idea chosen or none, a clip of what was judged; the newest 5,000 (`ideas.decisions`) |
+| `vectors` | the embeddings, one document per idea: `{ model, dim, hash, at, chunks: [base64 float32…] }` (`model` indexed). Chunk 0 is the card (title, summary, tags), the rest the sections in 1,500-character pieces (at most 12). Derived data: deleting the collection only costs a re-embed |
 
 Moving a backlog between machines is deliberate: `ideas.export` writes a portable snapshot document and
 `ideas.import` takes one in. There is no automatic reading of old files.
@@ -156,7 +158,7 @@ Every idea carries an integer **`revision`**, raised by every stored change. `id
 `ideas.update` all return it, and `ideas.update` takes it back as `expectedRevision` — that is how a stale window is
 turned into a `conflict` instead of a silent overwrite.
 
-The methods that only read are registered `readOnly`: `ideas.list`, `ideas.get`, `ideas.suggestions`,
+The methods that only read are registered `readOnly`: `ideas.list`, `ideas.picks`, `ideas.get`, `ideas.suggestions`,
 `ideas.toPrompt`, `ideas.image` and the three `ideas.work`/`ideas.capabilities`/`ideas.unread` views. A tool may call
 those without `--write` (`docs/PROTOCOL.md`); everything else this plugin registers writes.
 
@@ -189,6 +191,26 @@ projects), `not_found` (idea, session or project — also a card that is gone), 
 `file`, `fileName` and `exists` are kept only so an older UI has something to show; `storage` is the answer now, and
 nothing in the plugin writes the file they name. No filtering happens on the server. The tab filters by project, status
 and tag client-side.
+
+### `ideas.picks`
+
+`{ projectId?, limit? }` → `{ picks: [{ id, title, summary, status, priority, projectId?, projectName?, updatedAt }] }`
+
+The short list a screen offers where a session is about to start (the welcome screen reads it, idea-ky14bu). It is
+deliberately lean — no `sections`, `images`, `commits`, `sessions` or `tags` — so a window can read it on every start
+without carrying the whole backlog; the detail is one `ideas.get` away.
+
+Only what nobody is working on yet: `open` and `planned`. Never `in-progress` (that one is being worked on in some
+chat), `parked`, `done` or `rejected`. Ranked:
+
+1. the `projectId`'s own ideas, then the unbound ("global") ones — with no `projectId`, only the global ones;
+2. `open` before `planned`;
+3. `high`, then `medium`, then `low` priority;
+4. the more recently updated first, with the user's own order as the last tie-break (so two ideas updated in the same
+   second never swap places between reads).
+
+`limit` defaults to 5 and is clamped to 1–24. An unknown `projectId` is not an error: it simply matches no bound idea,
+so the global ones are what comes back.
 
 ### `ideas.get`
 
@@ -287,16 +309,12 @@ with `ideas.get`, so the text is not spent twice (once in the prompt, once in th
 `{ sessionId, args }` → `string` toast, for example `"Idea added (project NetPI): Cache model list (idea-k3x9q2)"` or
 `"Idea added (global backlog): …"`. An empty `args` gives `bad_request` with `"Usage: /idea <title>"`.
 
-### `ideas.recall` (the chip above the composer)
+### `ideas.recall` (removed 2026-10-03)
 
-`{ sessionId, text }` → `{ match: { id, title, p } | null, reason, error?, ms }`: which open idea the first message of a
-chat continues (docs/plans/2026-09-27-ideas-follow-the-session.md). An idea id in the text is the match (`reason:
-"id"`, `p: 1`). Otherwise one decision through `decide.decision` (setting `ideas.model`, default `qwen3.8-27b`) over the
-open ideas (not done or rejected) of the session's project and the global ones: title and summary as lettered options
-plus "none", the list as the system prompt so repeated checks reuse NInfer's cache. A match needs p ≥
-`ideas.recallThreshold` (0.8) and to beat "none" (`reason: "model"`). Otherwise `reason` is `none`, `short` (under 12
-characters), `off` (`ideas.recall` is false), `unavailable` (no Decide plugin) or `error` (the decision failed or took
-over 10 s; `error` holds the message, and the server log has it too).
+The composer's idea chip (which open idea the first message of a chat continues, one decision per typing pause) is
+gone, with its settings `ideas.recall` and `ideas.recallThreshold`: it found 3 of 6 real matches in its measurement,
+cost a 5090 decision on every pause, and offered an idea to chats that already had it (a refine chat). The agent
+finds ideas itself (the `ideas` tool's meaning search, `memory_search`); `ideas.attach` stays for the tab and refine.
 
 ### `ideas.attach`
 
@@ -505,8 +523,46 @@ with a backlog that size any few of them are an arbitrary slice, so the notice s
 `ideas` tool and obliges the agent to nothing. With three or fewer it names them and asks for an update or a one-line
 "none of them".
 
+With embeddings on (`ideas.semantic`, an `embed.model`) a larger backlog is no longer silent: the commit message (the
+`-m` texts of the command, else the `[branch hash] subject` line git prints) is embedded, and the notice names the three
+open ideas closest to it by id and title, as candidates the agent checks ("possibly none of them is about it"). The
+lookup is bounded (the client's 1.5 s timeout, 3 s for the whole step); no answer is the plain notice.
+
 The card flow is unchanged and still needed: a commit the agent closed is no longer open, so it is not offered twice,
 and a commit nobody made in a chat is exactly what the watcher is for. Skips: `ideas.tellAgentOnCommit` off.
+
+### Meaning search (embeddings, idea-61wg9p)
+
+An optional enhancement on the Embeddings plugin's `IEmbeddingService` (`plugins/NetPI.Embeddings`, settings `embed.*`),
+resolved per use: without it, with `embed.model` empty, `ideas.semantic` off or the server failing, every path below is
+exactly what it was. `IdeaVectors` keeps the `vectors` collection in step with the backlog — a pass 2 s after a write
+(a burst is one pass) embeds only the ideas whose text hash or model changed and drops the vectors of deleted ideas; a
+search that meets an unindexed idea leaves it out and starts a pass. Search is a cosine scan in process (the best of an
+idea's chunks). Embeddings only **shortlist**: similarity cannot tell "none of these" (on the measured sets the top
+score of a none-case overlaps the right idea's), so the pick-or-none decisions stay the judges. Where it is used:
+
+- the commit notice (above): the three open ideas nearest a commit, when there are too many to list;
+- the `ideas` tool's `list` with a `query` no idea fully contains: the five closest ideas (same status and tag filters)
+  under "Closest by meaning", `details.closest` = `[{id, title, score}]`;
+- the tool's `add`: existing ideas whose card is at least `ideas.similarThreshold` (0.80) close to the new one's are
+  named (`details.similar`), a warning, never a refusal;
+- `ideas.similar` and `ideas.reindex` (RPC).
+
+Since phase 2 (2026-10-03) also:
+
+- **commit link**: the question reads the commit's subject, body and changed paths (from the same reader the done question
+  uses), the commit is the question and the ideas the cached system message, the ideas come in meaning order, and a
+  commit whose closest open idea is below `ideas.linkFloor` (0.6) is not asked about at all (most commits are about no
+  idea; each was a 5090 decision);
+- **save check**: a drafted plan that is the same as an open idea (card cosine ≥ `ideas.similarThreshold`) is recorded on
+  that idea instead of a second card; otherwise the verifier sees the look-alikes and rejects a repeat. The prompt now
+  says what the user asked: only the ideas backlog counts as saved, a plan written only to a document is not;
+- **attach** reads the start and the end of the chat (was: its first 4,000 characters only);
+- **above 51 open ideas** (recall, attach, link) the candidates are ordered by words and meaning fused, not shared words alone;
+- **the commit notice** names an idea only at or above `ideas.noticeFloor` (0.6).
+
+Every check records its answer (`decisions`, `ideas.decisions`). Not yet: the recall pre-filter (on the measured sets the
+similarity of a none-case overlaps a right one, so no floor is safe there) and the tab's "≈" search.
 
 ## The agent tool: `ideas` (category `ideas`)
 
@@ -522,7 +578,7 @@ up to the user.
 | action | args | notes |
 |---|---|---|
 | `add` | `{ title, summary?, priority?, tags?, sections?: [{kind, title?, content}], project? }` | `createdBy: "agent:<id>"`. `project` (a project id/name, or `"global"`/`""` for unbound) overrides the session's project. |
-| `list` | `{ status?, tag?, query?, project? }` | `project` selects the scope: no argument → the session's project **plus** the unbound "global" ideas (an unbound session sees only the unbound ones); `"all"` → every project (each line carries a project label); `"global"` → the unbound ones; a project id or name → that project only. Unknown projects give an error listing the known ones. Compact lines: `- idea-… [status · priority (· project)] Title — summary #tags (n sections)`. By default done and rejected ideas are hidden, with a count of how many were hidden. `status` also takes `active` and `all`, or a comma-separated list. `query` needs every word to appear in the title, summary, tags or sections. |
+| `list` | `{ status?, tag?, query?, project? }` | `project` selects the scope: no argument → the session's project **plus** the unbound "global" ideas (an unbound session sees only the unbound ones); `"all"` → every project (each line carries a project label); `"global"` → the unbound ones; a project id or name → that project only. Unknown projects give an error listing the known ones. Compact lines: `- idea-… [status · priority (· project)] Title — summary #tags (n sections)`. By default done and rejected ideas are hidden, with a count of how many were hidden. `status` also takes `active` and `all`, or a comma-separated list. `query` needs every word to appear in the title, summary, tags or sections; when no idea does and embeddings are on, the five closest ideas by meaning follow ("Closest by meaning"). |
 | `get` | `{ id }` | Full markdown (the meta line carries the project: `… · project: NetPI · …` or `… · project: global · …`). Section headings carry the section ids: `## Plan: Rollout [sec-4f0a]`, and an idea with sections ends with a line on how to change or add one (`updateSections` / `addSections`). |
 | `update` | `{ id, title?, summary?, status?, priority?, tags?, project?, addSections?: [{kind, title?, content}], updateSections?: [{id, title?, content?, kind?}], removeSectionIds? }` (the section shapes are in the tool's schema, not only in its manual) | `project` (id/name, `"global"`, or `null`) rebinds/unbinds the idea. A `sections` argument is treated as `addSections`, and unknown fields are ignored. The session id is added to `sessionIds`. |
 

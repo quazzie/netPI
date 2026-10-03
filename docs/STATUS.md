@@ -60,7 +60,7 @@ Coverage details are in [TESTING.md](TESTING.md). The end-to-end and mock-UI gat
 
 ## Useful next capabilities
 
-Language-server diagnostics, PDF/Office reading and scheduled runs remain backlog items. MCP, partial rollback
+Language-server diagnostics and PDF/Office reading remain backlog items; scheduled runs are `netpi.schedules` (RPC only for now, no tab). MCP, partial rollback
 and worktree automation were deliberately deferred or dropped in the earlier harness plan; they are not accidental
 omissions. See [the archived harness decisions](archive/2026-09-26-harness-gaps.md).
 

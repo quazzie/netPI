@@ -650,6 +650,16 @@ public static class GuardrailsTests
         await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[1])["approvalId"]!, allow = false });
         await h.IdleAsync(s.Id);
 
+        // Every outcome is recorded, with the opinion behind it: the user's answers are the labels the model is judged on.
+        var outcomes = (await h.Rpc.CallAsync("guard.outcomes", new { }))!.AsObject();
+        Check.Equal(1, (int?)outcomes["summary"]!["cleared"]);
+        Check.Equal(1, (int?)outcomes["summary"]!["allowed"]);
+        Check.Equal(1, (int?)outcomes["summary"]!["denied"]);
+        var newest = outcomes["rows"]!.AsArray()[0]!;
+        Check.Equal("denied", (string?)newest["result"]);
+        Check.Equal("git status", (string?)newest["subject"]);
+        Check.Equal(0.02, (double?)newest["opinion"]!["p"]!["remote_change"]);
+
         Check.True(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.85, ["destructive"] = 0.1, ["stops_process"] = 0.1, ["remote_change"] = 0.19 }, 0.2));
         Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.85, ["destructive"] = 0.1, ["stops_process"] = 0.1, ["remote_change"] = 0.2 }, 0.2), "a risk at the threshold");
         Check.True(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.1, ["destructive"] = 0, ["stops_process"] = 0, ["remote_change"] = 0 }, 0.2), "read-only is shown, not required");

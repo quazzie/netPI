@@ -5,14 +5,14 @@ import { rpc, subscribe, onOpen, connect } from '../rpc.svelte.js';
 import { bus } from '../bus.js';
 import { load, save, persist, fetchRemote } from '../persist.js';
 import { getChat, peekChat, dropChat, allChats } from './chat.svelte.js';
-import { toast, syncUiStateFromHost, composer } from './ui.svelte.js';
+import { toast, syncUiStateFromHost, composer, openView } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
 import { loadAsks, askEvent, pendingIn, approvalIn, pruneSession } from './asks.svelte.js';
 import { loadPlans, planEvent, planWaiting, prunePlans } from './plans.svelte.js';
-import { recall } from '../../components/composer/ideaRecall.svelte.js';
 import { suggestions } from '../../components/composer/ideaSuggestions.svelte.js';
+import { welcomeIdeas } from './welcomeIdeas.svelte.js';
 import { formatBytes, payloadBytes, sendBudget } from '../images.js';
 
 const TABS_KEY = 'netpi.openTabs';
@@ -390,9 +390,25 @@ export function closeTab(id) {
   }
   resubscribe();
   persistTabs();
+  // A chat closed before its first message is not a session: the host stores it in memory only (the first message
+  // is what materializes it, so sessions.list never returns it again) and a list reload is the only thing that would
+  // take its row away. Without this the "New session" it was created as stays in the list for the rest of the window.
+  forgetEmptySession(id);
   // Closing is when a plan gets forgotten (plugins/NetPI.Ideas): ask in the background what the chat leaves unsaved.
   // Fire and forget — the tab is already gone and nothing here may hold up the next one.
   rpc('ideas.closed', { sessionId: id }).catch(() => {});
+}
+
+/**
+ * A chat with nothing in it leaves the list with its tab: no messages means the host never stored it, so the row is
+ * this window's own leftover. Both checks must agree — the session's own count and the messages the open chat holds —
+ * so a chat whose row is one message behind (an append that has not arrived as session.updated yet) stays.
+ */
+function forgetEmptySession(id) {
+  const session = app.sessionsById.get(id);
+  if (!session || (session.messageCount ?? 0) > 0 || (peekChat(id)?.messages?.length ?? 0) > 0) return;
+  app.sessions = app.sessions.filter((s) => s.id !== id);
+  dropChat(id);   // the session is gone, so its store and its draft blobs go with it
 }
 
 export function moveTab(id, toIndex) {
@@ -496,7 +512,6 @@ function removeSessionLocal(id) {
   dropChat(id);
   // drop the per-session bookkeeping that would otherwise keep an entry for this chat forever
   saidJustNow.delete(id);
-  recall.prune(id);
   pruneSession(id);
   prunePlans(id);
   app.agents.delete(id); // its last run state (agent.status), a subagent's included
@@ -812,11 +827,26 @@ function onEvent(d, env) {
       if (type === 'plan.changed') planNotification(d);
       else if (type === 'plan.enter.asked') notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Suggests plan mode${d.reason ? `: ${firstLine(d.reason)}` : ''}`);
       break;
+    case 'ui.open':
+      // a plugin shows the user one of its session views in a chat (e.g. the agent's browser): there now, and a
+      // notification when the chat is not the one in front
+      if (d?.sessionId) {
+        openView(d.sessionId, d.view ?? null);
+        if (d.view && d.sessionId !== app.activeId) {
+          const s = app.sessionsById.get(d.sessionId);
+          if (s?.kind !== 'subagent') notifyAbout(d.sessionId, s, firstLine(d.text || 'Wants to show you something'));
+        }
+      }
+      break;
     case 'ideas.suggested':
       suggestions.event(d);
       break;
     case 'ideas.resolved':
       suggestions.resolved(d);
+      break;
+    case 'ideas.changed':
+      // the backlog moved: the welcome screen offers what is in it now, and this window's picks too
+      welcomeIdeas.changed();
       break;
     default:
       break;

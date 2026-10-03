@@ -212,7 +212,7 @@ public static class IdeasTests
             var env = new Env();
             await env.StartAsync();
             var flags = env.Ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
-            foreach (var m in new[] { "ideas.work", "ideas.capabilities", "ideas.unread", "ideas.list", "ideas.get", "ideas.suggestions", "ideas.toPrompt", "ideas.image" })
+            foreach (var m in new[] { "ideas.work", "ideas.capabilities", "ideas.unread", "ideas.list", "ideas.picks", "ideas.get", "ideas.suggestions", "ideas.toPrompt", "ideas.image" })
             {
                 Check.True(flags.TryGetValue(m, out var readOnly), $"{m} is registered");
                 Check.True(readOnly, $"{m} only reads, so it is marked read-only");
@@ -220,6 +220,56 @@ public static class IdeasTests
             // The other side of the claim: what writes stays unmarked, so nothing reaches it by accident.
             foreach (var m in new[] { "ideas.add", "ideas.update", "ideas.delete", "ideas.reorder", "ideas.resolve", "ideas.addImage", "ideas.removeImage", "ideas.import", "ideas.quickAdd" })
                 Check.False(flags.GetValueOrDefault(m), $"{m} changes something, so it stays writable");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas: ideas.picks offers the target project's open ideas, then the global ones, and nothing being worked on", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            async Task<JsonObject> Add(string project, JsonObject idea) => await env.Rpc("ideas.add", new JsonObject { ["projectId"] = project, ["idea"] = idea });
+
+            // Demo: one high open (added first, so the priority decides it is still first), one low open, one planned,
+            // one done and one in-progress — the last two are somebody's work in progress, not something to offer.
+            var high = await Add(env.Project.Id, new JsonObject { ["title"] = "Demo high open", ["priority"] = "high" });
+            await Add(env.Project.Id, new JsonObject { ["title"] = "Demo low open", ["priority"] = "low" });
+            await Add(env.Project.Id, new JsonObject { ["title"] = "Demo planned", ["status"] = "planned" });
+            await Add(env.Project.Id, new JsonObject { ["title"] = "Demo done", ["status"] = "done" });
+            await Add(env.Project.Id, new JsonObject { ["title"] = "Demo running", ["status"] = "in-progress", ["priority"] = "high" });
+            await Add(env.Project2.Id, new JsonObject { ["title"] = "Other open", ["priority"] = "high" });
+            await Add("global", new JsonObject { ["title"] = "Global open" });
+
+            var picks = (JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project.Id }))["picks"]!;
+            var titles = picks.Select(p => p!["title"].Str()).ToList();
+            Check.Equal("Demo high open, Demo low open, Demo planned, Global open", string.Join(", ", titles));
+            Check.True(titles.Contains("Demo high open") && titles.IndexOf("Demo high open") < titles.IndexOf("Demo low open"),
+                "priority before recency, so a high idea older than a low one still leads");
+            Check.False(titles.Any(t => t.StartsWith("Demo done") || t.StartsWith("Demo running")), "never what is done or in progress");
+
+            // Lean on purpose: the welcome screen reads this on every window start.
+            var first = (JsonObject)picks[0]!;
+            Check.Equal(high["id"].Str(), first["id"].Str());
+            Check.Equal("Demo", first["projectName"].Str());
+            Check.Equal(env.Project.Id, first["projectId"].Str());
+            Check.Equal("high", first["priority"].Str());
+            Check.True(first["updatedAt"].Str() is { Length: > 0 }, "updatedAt, so the row can say how old it is");
+            foreach (var heavy in new[] { "sections", "images", "commits", "sessions", "tags" })
+                Check.False(first.ContainsKey(heavy), $"a pick carries no {heavy}");
+
+            // Another project sees its own ideas first; an unknown one only the global ones.
+            var other = (JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project2.Id }))["picks"]!;
+            Check.Equal("Other open, Global open", string.Join(", ", other.Select(p => p!["title"].Str())));
+            var unknown = (JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = "prj_nope00" }))["picks"]!;
+            Check.Equal("Global open", string.Join(", ", unknown.Select(p => p!["title"].Str())));
+            var none = (JsonArray)(await env.Rpc("ideas.picks", new JsonObject()))["picks"]!;
+            Check.Equal("Global open", string.Join(", ", none.Select(p => p!["title"].Str())),
+                "with no target project only the global ones are relevant");
+
+            // The limit is the caller's, clamped to something a screen can show.
+            Check.Equal(1, ((JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project.Id, ["limit"] = 1 }))["picks"]!).Count);
+            Check.Equal(1, ((JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project.Id, ["limit"] = 0 }))["picks"]!).Count);
+            Check.Equal(4, ((JsonArray)(await env.Rpc("ideas.picks", new JsonObject { ["projectId"] = env.Project.Id, ["limit"] = "99" }))["picks"]!).Count,
+                "there are only four to show");
             env.Ctx.Unload();
         });
 
@@ -912,61 +962,6 @@ public static class IdeasTests
             var done = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Finished one", ["status"] = "done" } }))["id"].Str()!;
             return (env, mine, global, other);
         }
-
-        r.Add("ideas: recall asks one decision over the open ideas of the chat's project and the global ones; a clear match is returned", async () =>
-        {
-            var (env, mine, global, _) = await RecallEnv();
-            var seen = FakeDecision(env, _ => new() { ["A"] = 0.91, ["B"] = 0.04, ["C"] = 0.05 });
-            var res = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = "the nudge plugin keeps nudging after a good answer" });
-            Check.Equal("model", res["reason"].Str());
-            Check.Equal(mine, res["match"]!["id"].Str());
-            Check.Equal("Nudge reset", res["match"]!["title"].Str());
-
-            var asked = seen.Single();
-            Check.Equal("qwen3.8-27b", asked["model"].Str());
-            var system = asked["messages"]![0]!["content"].Str()!;
-            Check.Contains(system, "A) [Demo] Nudge reset — Reset the nudge counter");
-            Check.Contains(system, "B) [global] Calm ideas tab");
-            Check.Contains(system, "C) none of these");
-            Check.False(system.Contains("Other project idea"), "another project's idea is not offered");
-            Check.False(system.Contains("Finished one"), "a done idea is not offered");
-            Check.Equal("A|B|C", string.Join("|", asked["branches"]![0]!["labels"]!.AsArray().Select(x => x.Str())));
-            Check.Contains(asked["branches"]![0]!["content"].Str()!, "the nudge plugin keeps nudging");
-        });
-
-        r.Add("ideas: recall stays quiet below the threshold, when none wins, for short text, when off and without the Decide plugin", async () =>
-        {
-            var (env, _, _, _) = await RecallEnv();
-            async Task<string?> Reason(string text) =>
-                (await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = text }))["reason"].Str();
-
-            Check.Equal("unavailable", await Reason("something long enough to ask about"));
-            var probs = new Dictionary<string, double> { ["A"] = 0.7, ["B"] = 0.1, ["C"] = 0.2 };
-            FakeDecision(env, _ => probs);
-            Check.Equal("none", await Reason("something long enough to ask about"));
-            probs = new() { ["A"] = 0.45, ["B"] = 0.0, ["C"] = 0.55 };
-            env.Ctx.SettingsFake.Set("ideas.recallThreshold", JsonValue.Create(0.4));
-            Check.Equal("none", await Reason("something long enough to ask about"));
-            Check.Equal("short", await Reason("hi"));
-            env.Ctx.SettingsFake.Set("ideas.recall", JsonValue.Create(false));
-            Check.Equal("off", await Reason("something long enough to ask about"));
-        });
-
-        r.Add("ideas: recall matches an idea id in the text without a model; a failing decision is an error, not an exception", async () =>
-        {
-            var (env, mine, _, other) = await RecallEnv();
-            var seen = FakeDecision(env, _ => throw new RpcException("http_500", "qwen3.8-27b: HTTP 500 (request gw-1)"));
-            var byId = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = $"check {mine} please" });
-            Check.Equal("id", byId["reason"].Str());
-            Check.Equal(mine, byId["match"]!["id"].Str());
-            Check.Equal(0, seen.Count);
-
-            // Another project's id is not a match here; the decision is asked, and its failure is reported.
-            var failed = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = $"look at {other} in the other project" });
-            Check.Equal("error", failed["reason"].Str());
-            Check.Contains(failed["error"].Str()!, "request gw-1");
-            Check.True(failed["match"] is null);
-        });
 
         r.Add("ideas: attach adds the idea to the chat as a notice and records the session on the idea", async () =>
         {

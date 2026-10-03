@@ -20,6 +20,20 @@ public static class UiTests
             catch { if (!proc.HasExited) proc.Kill(true); throw; }
             Check.Equal(0, proc.ExitCode, await stdout + await stderr);
         });
+        r.Add("ui.rpc-contract", "ui: every method the UI mock answers and every method the UI calls by name exists in the server's rpc.list (idea-yvcy8b)", async () =>
+        {
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in new[] { Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "rpc-contract.mjs"), "--url", env.BaseUrl, "--token", Env.Token })
+                psi.ArgumentList.Add(a);
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            try { await proc.WaitForExitAsync(timeout.Token); }
+            catch { if (!proc.HasExited) proc.Kill(true); throw; }
+            var output = await stdout;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            Check.Equal(0, proc.ExitCode, output + await stderr);
+        }, 60);
         r.Add("ui.files-mount", "ui: the Files tab's teardown runs — unmounting it stops the focus listener, and three remounts leave none behind (idea-1zs9go)", async () =>
         {
             // No server needed: the script mounts the committed plugin bundle itself (the one that ships) with a stub
@@ -42,7 +56,7 @@ public static class UiTests
                 + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
             Check.Equal(0, proc.ExitCode, "files-mount exit code; stderr: " + err);
         }, 120);
-        r.Add("ui.idea-conflict", "ui: the Ideas tab saves with the revision its editor was opened on — a stale save is a conflict, not an overwrite, and an open editor survives a status change (idea-c3hihl)", async () =>
+        r.Add("ui.idea-conflict", "ui: an Ideas card opens the idea dialog on the current revision (idea-c3hihl), a status change claims none, and the play button starts a chat", async () =>
         {
             // No server needed: the script mounts the committed plugin bundle itself with a stub ctx whose
             // ideas.update enforces the same expectedRevision rule as the host.
@@ -63,6 +77,27 @@ public static class UiTests
             Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
                 + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
             Check.Equal(0, proc.ExitCode, "idea-conflict exit code; stderr: " + err);
+        }, 120);
+        r.Add("ui.idea-meaning", "ui: the Ideas tab's ≈ toggle ranks ideas by meaning (ideas.similar) when the server has embeddings, is absent without them, and switching it off is word search again (idea-61wg9p)", async () =>
+        {
+            // No server needed: the script mounts the committed plugin bundle with a stub ctx that answers ideas.similar.
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "idea-meaning.mjs"));
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            try { await proc.WaitForExitAsync(timeout.Token); }
+            catch { if (!proc.HasExited) proc.Kill(true); throw; }
+            var output = await stdout;
+            var err = await stderr;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+            Check.True(json is not null, "idea-meaning output: " + output + err);
+            using var doc = JsonDocument.Parse(json!);
+            var failedChecks = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+            Check.Equal(0, proc.ExitCode, "idea-meaning exit code; stderr: " + err);
         }, 120);
         r.Add("ui.smoke", "ui: send [s:tools] in the browser, streamed text + tool rows, plugin tabs, no console errors (screenshots)", async () =>
         {
@@ -158,6 +193,38 @@ public static class UiTests
             Check.Equal(0, proc.ExitCode, "pin exit code; stderr: " + err);
             Env.Log($"screenshots: {outDir}");
         }, 120);
+        r.Add("ui.close-empty-session", "ui: closing a chat with no messages takes it out of the sessions list; one with messages keeps its row", async () =>
+        {
+            // Unique per run: a shared server (shards, -Repeat) keeps sessions from earlier runs, so the script counts rows
+            // and finds the seeded one by a title nothing else has.
+            var stamp = Guid.NewGuid().ToString("N")[..6];
+            var keep = await env.NewSession(title: $"Keep me {stamp}");
+            await env.Run(keep.S("id")!, "hello [s:echo]");
+
+            var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "close-empty-session.mjs");
+            var outDir = env.ScreenshotDir;
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--session", $"Keep me {stamp}", "--out", outDir })
+                psi.ArgumentList.Add(a);
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            try { await proc.WaitForExitAsync(cts.Token); }
+            catch (OperationCanceledException) { if (!proc.HasExited) proc.Kill(true); throw new AssertException("ui close-empty-session timed out"); }
+            var output = await stdout;
+            var err = await stderr;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+            Check.True(json is not null, "close-empty-session output: " + output + err);
+            using var doc = JsonDocument.Parse(json!);
+            var failed = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failed.Count == 0, $"{failed.Count} ui check(s) failed:\n      " + string.Join("\n      ", failed)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+            Check.Equal(0, proc.ExitCode, "close-empty-session exit code; stderr: " + err);
+            Env.Log($"screenshots: {outDir}");
+        }, 120);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id

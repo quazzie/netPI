@@ -115,6 +115,14 @@ public sealed class FakeSessionStore : ISessionStore
         return all;
     }
 
+    /// <summary>As the real store: seq strictly after <c>afterSeq</c>, ascending, at most <c>limit</c>.</summary>
+    public IReadOnlyList<ChatMessage> GetMessagesAfter(string sessionId, long afterSeq, int limit)
+    {
+        var page = Messages.Where(m => m.SessionId == sessionId && m.Seq > afterSeq).OrderBy(m => m.Seq).Take(Math.Max(1, limit)).ToList();
+        MessagesRead += page.Count;
+        return page;
+    }
+
     public IReadOnlyList<ChatMessage> GetContextMessages(string sessionId)
     {
         lock (Messages)

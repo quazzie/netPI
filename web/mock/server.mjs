@@ -89,17 +89,19 @@ const RPC_DOCS = {
   'agent.send': 'Send a message to a session\'s agent: { sessionId, text, images?, mode? } → AgentInfo',
   'agent.abort': 'Abort the current run of a session\'s agent: { sessionId } → bool',
   'sessions.list': 'Sessions, newest first: { projectId?, search?, includeSubagents?, includeArchived?, archivedOnly?, limit?, offset? }',
-  'sessions.messages': 'Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore }',
+  'sessions.messages': 'Message page: { id, beforeSeq? | afterSeq?, limit? (60) } → { messages, hasMore }',
   'work.snapshot': 'Aggregated overview for the Work tab → { agents, runs, processes, usage, time, errors? }',
   'diag.snapshot': 'Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }',
   'diag.toolsets': "A session's tools now and every change with its cause → { sessionId, tools, baseline, changes, reloads }",
   'ideas.list': 'Ideas of a project/session: { sessionId?, projectId? } → { file, scope, ideas, … }',
+  'ideas.picks': 'Lean ranked ideas for the start screen: { projectId?, limit? } → { picks: [{ id, title, summary, status, priority, projectId, projectName, updatedAt }] }',
   'files.list': 'List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries }',
   'files.search': 'Fuzzy file-name search for @ mentions: { sessionId?, query, limit? } → { path, rel, isDir }[]',
   'files.git': "The workspace's changes since the last commit, for the Files tab: { sessionId?, cwd? } → { repo, branch, ahead, behind, files, added, deleted } | null",
   'logs.recent': 'Recent log entries: { max? } → { time, level, category, message, exception? }[]',
 };
 const filesOpened = [];
+const filesOpenCalls = []; // { path, user } per files.open call: the flag says the user picked the file on purpose
 const msgLoads = new Map(); // e2e test helper: sessions.messages calls per session — a fresh call means the chat store was rebuilt (evicted and reopened)
 
 const SYSTEM_PROMPT = (project, session) => `You are a coding agent running in NetPI, an agent harness on the user's own machine. Work through the tools you have: act rather than describe, check the results and verify your work when practical. Ask only when a request is genuinely ambiguous or an action would be destructive. Be concise, and end with a short summary of what you did or found.
@@ -515,9 +517,13 @@ const handlers = {
     msgLoads.set(id, (msgLoads.get(id) ?? 0) + 1);
     getSession(id);
     let msgs = store.messages.get(id) ?? [];
+    if (p.beforeSeq != null && p.afterSeq != null) throw new RpcError('bad_request', 'sessions.messages: beforeSeq and afterSeq page in opposite directions; give one of them');
     if (p.beforeSeq != null) msgs = msgs.filter((m) => m.seq < p.beforeSeq);
     const limit = p.limit ?? 60;
-    const page = msgs.slice(Math.max(0, msgs.length - limit));
+    // afterSeq: the oldest messages after it (the forward page); otherwise the newest before beforeSeq
+    const forward = p.afterSeq != null;
+    if (forward) msgs = msgs.filter((m) => m.seq > p.afterSeq);
+    const page = forward ? msgs.slice(0, limit) : msgs.slice(Math.max(0, msgs.length - limit));
     const answer = { messages: page, hasMore: msgs.length > page.length };
     // the hold: the page is read, a message is committed and published while the answer is still on its way, and
     // the older page answers last — the client has shown that message already, so it must not lose it
@@ -797,9 +803,11 @@ const handlers = {
     const pr = s?.projectId ? store.projects.get(s.projectId) : null;
     const full = path.isAbsolute(rel) ? rel : path.join(pr?.path ?? REPO, rel.replace(/:\d+(:\d+)?$/, ''));
     filesOpened.push(full);
+    filesOpenCalls.push({ path: full, user: !!p.user });
     return { path: full, action: 'open' };
   },
   'mock.filesOpened': () => filesOpened,
+  'mock.filesOpenCalls': () => filesOpenCalls,
   // test helper: the chat whose user turns contain this phrase leaves the given plan when its tab is closed
   'mock.closeLeavesPlan': (p = {}) => ideas.closeLeavesPlan(need(p, 'phrase'), p.title),
   // test helper: offer the commit check's card for the idea whose title contains this phrase

@@ -6,10 +6,11 @@ using System.Text.Json.Nodes;
 namespace NetPI.Tools.Web;
 
 /// <summary>
-/// <c>screenshot</c>: a URL rendered by a headless Edge/Chrome (DevTools protocol over a WebSocket, a fresh profile per
-/// call), or with no URL the NetPI window as the user sees it (the desktop shell's <c>desktop.capture</c> RPC).
+/// <c>screenshot</c>: a URL rendered headless — in a throw-away browser context of the agents' running browser (no
+/// cookies, nothing kept; no browser start per call), or a browser of its own when the agents' browser shows windows —
+/// or with no URL the NetPI window as the user sees it (the desktop shell's <c>desktop.capture</c> RPC).
 /// </summary>
-internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
+internal sealed class ScreenshotTool(IPluginContext ctx, BrowserHost host) : IAgentTool
 {
     public ToolDefinition Definition { get; } = new()
     {
@@ -89,7 +90,7 @@ internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
         var notes = new List<string>();
         try
         {
-            await using var browser = await ScreenshotPage.LaunchAsync(exe, width, height, ct).ConfigureAwait(false);
+            await using var browser = await ScreenshotPage.OpenAsync(host, exe, width, height, ct).ConfigureAwait(false);
             await browser.SendAsync("Page.enable", null, ct).ConfigureAwait(false);
             await browser.SendAsync("Runtime.enable", null, ct).ConfigureAwait(false);
             await browser.SendAsync("Log.enable", null, ct).ConfigureAwait(false);
@@ -150,18 +151,31 @@ internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
 }
 
 /// <summary>
-/// The page a screenshot is taken of: a browser of its own (a throw-away profile, one per call) and its first page,
-/// over the same DevTools connection the browser tool uses.
+/// The page a screenshot is taken of: a throw-away context of the agents' running browser (<see cref="ScratchPage"/>), or
+/// a browser of its own (a throw-away profile, one per call) when that browser shows windows.
 /// </summary>
 internal sealed class ScreenshotPage : IAsyncDisposable
 {
-    private readonly ChromiumProcess _process;
+    private readonly ChromiumProcess? _process;
+    private readonly ScratchPage? _scratch;
     private CdpConnection? _cdp;
     private volatile TaskCompletionSource _loaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public ConcurrentQueue<string> ConsoleErrors { get; } = new();
 
     private ScreenshotPage(ChromiumProcess process) => _process = process;
+
+    private ScreenshotPage(ScratchPage scratch)
+    {
+        _scratch = scratch;
+        scratch.Event += (method, p) => OnEvent(method, p, null);
+    }
+
+    public static async Task<ScreenshotPage> OpenAsync(BrowserHost host, string exe, int width, int height, CancellationToken ct)
+    {
+        if (await host.ScratchAsync(width, height, ct).ConfigureAwait(false) is { } scratch) return new ScreenshotPage(scratch);
+        return await LaunchAsync(exe, width, height, ct).ConfigureAwait(false);
+    }
 
     /// <summary>Start a headless browser for one call and attach to the first page it opened.</summary>
     public static async Task<ScreenshotPage> LaunchAsync(string exe, int width, int height, CancellationToken ct)
@@ -193,7 +207,7 @@ internal sealed class ScreenshotPage : IAsyncDisposable
         {
             try
             {
-                var list = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{_process.Port}/json/list", ct).ConfigureAwait(false)) as JsonArray;
+                var list = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{_process!.Port}/json/list", ct).ConfigureAwait(false)) as JsonArray;
                 wsUrl = list?.FirstOrDefault(t => (string?)t?["type"] == "page")?["webSocketDebuggerUrl"]?.GetValue<string>();
             }
             catch (HttpRequestException) { }
@@ -201,7 +215,7 @@ internal sealed class ScreenshotPage : IAsyncDisposable
         }
         if (wsUrl is null)
         {
-            using var res = await http.PutAsync($"http://127.0.0.1:{_process.Port}/json/new?about:blank", null, ct).ConfigureAwait(false);
+            using var res = await http.PutAsync($"http://127.0.0.1:{_process!.Port}/json/new?about:blank", null, ct).ConfigureAwait(false);
             wsUrl = JsonNode.Parse(await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false))?["webSocketDebuggerUrl"]?.GetValue<string>()
                     ?? throw new InvalidOperationException("the browser has no page to drive");
         }
@@ -210,8 +224,8 @@ internal sealed class ScreenshotPage : IAsyncDisposable
     }
 
     public Task<JsonElement> SendAsync(string method, object? parameters, CancellationToken ct) =>
-        (_cdp ?? throw new InvalidOperationException("the browser page is not connected"))
-            .SendAsync(method, parameters, null, ct);
+        _scratch is not null ? _scratch.SendAsync(method, parameters, ct)
+            : (_cdp ?? throw new InvalidOperationException("the browser page is not connected")).SendAsync(method, parameters, null, ct);
 
     public async Task<string?> EvaluateStringAsync(string expression, CancellationToken ct)
     {
@@ -267,9 +281,10 @@ internal sealed class ScreenshotPage : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_scratch is not null) { await _scratch.DisposeAsync().ConfigureAwait(false); return; }
         var cdp = _cdp;
         _cdp = null;
         if (cdp is not null) await cdp.DisposeAsync().ConfigureAwait(false);
-        await _process.DisposeAsync().ConfigureAwait(false);
+        if (_process is not null) await _process.DisposeAsync().ConfigureAwait(false);
     }
 }

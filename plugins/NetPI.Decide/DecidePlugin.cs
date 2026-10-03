@@ -23,11 +23,15 @@ public sealed class DecidePlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Str("decide.baseUrl", "Server URL", "", "Empty: the AiProxy/AiGateway server (providers.aiproxy.baseUrl)."),
-                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. laya-logs: the four log questions on the nuc. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070)."),
+                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070)."),
                 SettingInfo.Int("decide.maxItems", "Most items per call", 500, null, 1, 5000),
                 SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16),
                 SettingInfo.Str("decide.bulkModel", "Bulk decision model", "", "Explicit model for multi-item work; empty keeps the caller's choice. Does not load models."),
                 SettingInfo.Int("decide.bulkThreshold", "Items before bulk routing", 8, null, 2, 5000),
+                SettingInfo.Number("decide.groupSimilarity", "Share answers between near-identical items", DecideTool.DefaultGroupSimilarity,
+                    "With embeddings, decide items at or above this cosine share one decision (a log line that differs only in a timestamp). Identical items always do. 0: only identical ones. Kept high: lines that differ in an error code must stay apart.", 0, 1),
+                SettingInfo.Bool("decide.lane", "Short checks on the decision lane", true,
+                    "A single short check (the guard's second opinion, the idea checks, loop hints) on a local model does not take an agent slot: NInfer answers decisions on its own lane ahead of agent work. Off: every decision waits for a slot like a chat. The decide tool always takes slots."),
             ],
         });
         var http = context.Track(new HttpClient { Timeout = TimeSpan.FromSeconds(120) });
@@ -83,14 +87,17 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
         var id = Model(request.Model);
         var model = await ctx.Models.FindAsync(id, ct).ConfigureAwait(false);
         var wireModel = model?.Id ?? id;
+        // A short check on a local model goes on NInfer's decision lane: no agent slot, and no serializing behind the
+        // other decisions on the same model (they are queued and answered first by the server itself).
+        var lane = request.Lane && model is { IsLocal: true } && ctx.Settings.GetOr("decide.lane", true);
         // A decision on the caller's live model reuses admission and serializes; it cannot take its own slot twice.
-        var reuse = request.ExistingLease is { IsReleased: false } && model is not null
+        var reuse = !lane && request.ExistingLease is { IsReleased: false } && model is not null
             && string.Equals(request.HeldModel, model.Ref, StringComparison.OrdinalIgnoreCase);
         IDisposable? slot = null;
         if (reuse) await _reuse.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (!reuse && model is not null)
+            if (!reuse && !lane && model is not null)
             {
                 var scheduler = ctx.Services.Get<IAgentScheduler>();
                 var admission = new AgentSlotRequest

@@ -32,12 +32,21 @@
     <ProjectReference Include="../../plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Media/NetPI.Tools.Media.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Decide/NetPI.Decide.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Embeddings/NetPI.Embeddings.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Memory/NetPI.Memory.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Ssh/NetPI.Tools.Ssh.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Schedules/NetPI.Schedules.csproj" />
     <!-- workspaces: the tests drive real git worktrees, the file tools' guard and the shell's cwd. -->
     <ProjectReference Include="../../plugins/NetPI.Workspaces/NetPI.Workspaces.csproj" />
     <!-- The real model/tool loop, so a workspace switch can be watched across model calls (idea-y0i6gu). -->
     <ProjectReference Include="../../plugins/NetPI.Runtime/NetPI.Runtime.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Files/NetPI.Tools.Files.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Shell/NetPI.Tools.Shell.csproj" />
+    <!-- the windows tool (its UI Automation helper builds into the plugin's agent folder) -->
+    <ProjectReference Include="../../plugins/NetPI.Tools.Windows/NetPI.Tools.Windows.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <!-- the window the windows tool's tests drive: built, not referenced -->
+    <ProjectReference Include="../NetPI.WinTestApp/NetPI.WinTestApp.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" Private="false" />
   </ItemGroup>
 </Project>

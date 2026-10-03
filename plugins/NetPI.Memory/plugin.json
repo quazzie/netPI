@@ -1,0 +1,5 @@
+{
+  "id": "netpi.memory",
+  "name": "Memory",
+  "description": "Semantic search over past chats: memory_search and memory.search (needs the Embeddings plugin and an embedding model)."
+}

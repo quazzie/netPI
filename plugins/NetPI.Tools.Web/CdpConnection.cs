@@ -5,10 +5,25 @@ using System.Text.Json.Serialization;
 
 namespace NetPI.Tools.Web;
 
-/// <summary>A DevTools-protocol connection to a browser endpoint, with flattened sessions for its pages.</summary>
-internal sealed class CdpConnection : IAsyncDisposable
+/// <summary>
+/// A DevTools-protocol endpoint the browser tool drives: a browser over its own WebSocket (<see cref="CdpConnection"/>),
+/// or the user's Chrome through the NetPI extension (<see cref="ExtensionRelay"/>), which speaks the same protocol
+/// through <c>chrome.debugger</c>. Sessions are flattened: a command for a page names the page's session.
+/// </summary>
+internal interface ICdp : IAsyncDisposable
 {
-    private static readonly JsonSerializerOptions Json = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
+    /// <summary>"own" (the agents' browser), "chrome" (the user's Chrome over its DevTools port) or "extension".</summary>
+    string Kind { get; }
+    bool IsOpen { get; }
+    /// <summary>Events: method, params, and the session they belong to (null for the browser's own).</summary>
+    event Action<string, JsonElement, string?>? Event;
+    Task<JsonElement> SendAsync(string method, object? parameters, string? sessionId, CancellationToken ct, int timeoutSeconds = 30);
+}
+
+/// <summary>A DevTools-protocol connection to a browser endpoint, with flattened sessions for its pages.</summary>
+internal sealed class CdpConnection : ICdp
+{
+    internal static readonly JsonSerializerOptions Json = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
     private readonly ClientWebSocket _ws = new();
     private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly SemaphoreSlim _send = new(1, 1);
@@ -16,14 +31,17 @@ internal sealed class CdpConnection : IAsyncDisposable
     private Task? _reader;
     private int _id;
 
-    /// <summary>Events: method, params, and the session they belong to (null for the browser's own).</summary>
+    private CdpConnection(string kind) => Kind = kind;
+
+    public string Kind { get; }
+
     public event Action<string, JsonElement, string?>? Event;
 
     public bool IsOpen => _ws.State == WebSocketState.Open;
 
-    public static async Task<CdpConnection> ConnectAsync(Uri endpoint, CancellationToken ct)
+    public static async Task<CdpConnection> ConnectAsync(Uri endpoint, CancellationToken ct, string kind = "own")
     {
-        var c = new CdpConnection();
+        var c = new CdpConnection(kind);
         c._ws.Options.KeepAliveInterval = TimeSpan.Zero;
         await c._ws.ConnectAsync(endpoint, ct).ConfigureAwait(false);
         c._reader = Task.Run(c.ReadLoopAsync);
@@ -35,12 +53,15 @@ internal sealed class CdpConnection : IAsyncDisposable
         var id = Interlocked.Increment(ref _id);
         var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[id] = tcs;
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(new CdpMessage(id, method, parameters ?? new { }, sessionId), Json);
-        await _send.WaitAsync(ct).ConfigureAwait(false);
-        try { await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false); }
-        finally { _send.Release(); }
-        try { return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds), ct).ConfigureAwait(false); }
-        catch (TimeoutException) { throw new TimeoutException($"{method} got no answer within {timeoutSeconds} s"); }
+        try
+        {
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(new CdpMessage(id, method, parameters ?? new { }, sessionId), Json);
+            await _send.WaitAsync(ct).ConfigureAwait(false);
+            try { await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false); }
+            finally { _send.Release(); }
+            try { return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds), ct).ConfigureAwait(false); }
+            catch (TimeoutException) { throw new TimeoutException($"{method} got no answer within {timeoutSeconds} s"); }
+        }
         finally { _pending.TryRemove(id, out _); }
     }
 

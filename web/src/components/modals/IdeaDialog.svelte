@@ -2,8 +2,10 @@
   import { onMount, untrack } from 'svelte';
   import Modal from './Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
+  import Markdown from '../../lib/kit/Markdown.svelte';
+  import TimeAgo from '../../lib/kit/TimeAgo.svelte';
   import { rpc } from '../../lib/rpc.svelte.js';
-  import { app } from '../../lib/state/app.svelte.js';
+  import { app, openSession, newSession, sendMessage } from '../../lib/state/app.svelte.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import { agentList, ANY } from '../../lib/agents.js';
   import { prepareImage, formatBytes } from '../../lib/images.js';
@@ -157,6 +159,39 @@
     onclose();
   }
 
+  const dirty = $derived(
+    editing &&
+      (title.trim() !== original.title ||
+        summary.trim() !== (original.summary ?? '') ||
+        priority !== original.priority ||
+        status !== original.status ||
+        parseTags(tags).join(',') !== (original.tags ?? []).join(',') ||
+        project !== (original.project?.id ?? 'global') ||
+        images.length !== (original.images ?? []).length),
+  );
+
+  /** Save what was typed (when anything was), then start a new chat in the idea's project on it, and close. */
+  async function startChat() {
+    if (!title.trim() || busy) return;
+    busy = true;
+    error = '';
+    conflict = false;
+    let idea = original;
+    try {
+      if (dirty) idea = await save();
+    } catch (err) {
+      error = err?.message ?? String(err);
+      conflict = /conflict|changed since/i.test(error);
+      busy = false;
+      return;
+    }
+    committed = true;
+    const s = await newSession({ projectId: idea.project?.id ?? null, title: idea.title });
+    if (s) await sendMessage(s.id, `Work on idea ${idea.id} (${idea.title}) — read it, then tell me what you plan to do.`, [], 'auto');
+    busy = false;
+    onclose();
+  }
+
   /** After a conflict: take the idea as it is now into the form (what was typed is replaced, so it can be applied again). */
   async function reload() {
     try {
@@ -203,7 +238,7 @@
   >
     {#if editing}<div class="idnote np-dim np-small">{original.id}</div>{/if}
     <input class="np-input i-title" data-autofocus placeholder="Idea title (one line, on its own)" bind:value={title} />
-    <textarea class="np-input i-summary" rows="4" placeholder="Summary: what, and why (optional)" bind:value={summary}></textarea>
+    <textarea class="np-input i-summary" rows={editing ? 8 : 4} placeholder="Summary: what, and why (optional)" bind:value={summary}></textarea>
 
     <div class="row">
       <div class="np-seg" role="group" aria-label="Priority">
@@ -242,6 +277,26 @@
       </button>
     </div>
 
+    {#if editing && ((original.sections ?? []).length || (original.sessions ?? []).length || (original.commits ?? []).length)}
+      <!-- the rest of the idea, read-only here: sections the agents wrote, and the chats and commits recorded on it -->
+      {#each original.sections ?? [] as sec (sec.id)}
+        <div class="sec">
+          <div class="sh"><span class="kind">{sec.kind}</span>{#if sec.title}<span class="st">{sec.title}</span>{/if}</div>
+          <Markdown text={sec.content || '_empty_'} />
+        </div>
+      {/each}
+      {#if (original.sessions ?? []).length || (original.commits ?? []).length}
+        <div class="ev">
+          {#each original.sessions ?? [] as s (s.sessionId + (s.at ?? ''))}
+            <div class="erow"><Icon name="message" size={11} /><button type="button" class="elink" onclick={() => (cancel(), openSession(s.sessionId))}>{s.title || s.sessionId}</button><TimeAgo time={s.at} /></div>
+          {/each}
+          {#each original.commits ?? [] as c (c.hash)}
+            <div class="erow"><Icon name="branch" size={11} /><code>{c.short}</code><span class="esubj">{c.subject}</span><TimeAgo time={c.at} /></div>
+          {/each}
+        </div>
+      {/if}
+    {/if}
+
     {#if refine}
       <div class="refine">
         <div class="rhead"><Icon name="bot" size={13} /><b>Refine with an agent</b></div>
@@ -268,9 +323,10 @@
       <Icon name="bot" size={13} />Refine with an agent
     </button>
     <span class="grow"></span>
+    {#if editing}<button type="button" class="np-btn np-btn-ghost" disabled={!title.trim() || busy} title="Start a new chat on this idea (saves your changes first)" onclick={startChat}><Icon name="play" size={13} />Start in new chat</button>{/if}
     <button type="button" class="np-btn np-btn-ghost" onclick={cancel}>Cancel</button>
     <button type="submit" form="idea-form" class="np-btn np-btn-primary i-submit" disabled={!title.trim() || busy}>
-      {busy ? 'Saving…' : label} <span class="np-kbd">Ctrl+Enter</span>
+      {busy ? 'Saving…' : label}
     </button>
   {/snippet}
 </Modal>
@@ -383,6 +439,14 @@
     border-radius: var(--radius);
     font-size: var(--fs-sm);
   }
+  .sec { border-left: 2px solid var(--border-strong); padding-left: 10px; }
+  .sh { display: flex; gap: 6px; font-size: var(--fs-xs); color: var(--fg-dim); }
+  .kind { text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  .st { color: var(--fg); font-weight: 600; font-size: var(--fs-sm); }
+  .ev { display: flex; flex-direction: column; gap: 3px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-2); font-size: 11px; }
+  .erow { display: flex; align-items: center; gap: 6px; color: var(--fg-dim); }
+  .esubj { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  .elink { flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .grow {
     flex: 1;
   }

@@ -203,6 +203,14 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
         return page;
     }
 
+    public IReadOnlyList<ChatMessage> GetMessagesAfter(string sessionId, long afterSeq, int limit) =>
+        // A range seek on (session_id, seq), like the page before.
+        db.Query($"""
+            SELECT {MessageColumns} FROM messages
+            WHERE session_id = @sessionId AND seq > @after
+            ORDER BY seq LIMIT @limit
+            """, new { sessionId, after = afterSeq, limit = Math.Max(1, limit) }, ReadMessage);
+
     public (IReadOnlyList<ChatMessage> Rows, long Newest) ReadContext(string sessionId)
     {
         // Read in this order on purpose: the rows first, then the newest seq, so the newest is never older than the rows. A message

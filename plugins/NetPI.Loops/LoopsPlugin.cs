@@ -29,6 +29,8 @@ public sealed class LoopsPlugin : INetPiPlugin
                 SettingInfo.Str("loops.model", "Decision model for other loops", "",
                     "Empty: only the checks above. A decision model (qwen3.8-27b, kev-9b) also reads the last steps when most use one tool and several failed, and hints when p(stuck) ≥ 0.8. Needs the Decide plugin."),
                 SettingInfo.Bool("loops.contextChecks", "Check the full conversation", false, "Opt in to stuck, finished and ask-user hints using the provider's captured conversation and reasoning effort. Requires Decide. Cache benefits must be measured on the configured endpoint."),
+                SettingInfo.Int("loops.contextEvery", "Check every Nth model call", LoopHook.DefaultContextEvery,
+                    "The full-conversation checks run on every Nth model call of a run (at most 8 per run), so a long run is still checked late.", 1, 50),
                 SettingInfo.Bool("loops.routingHints", "Include routing hints", false, "With full-conversation checks, suggest reasoning effort, delegation or a different tool. These are hints; the harness does not change models, spend limits or tools."),
                 SettingInfo.Bool("loops.skillHints", "Include skill hints", false, "With full-conversation checks, consider currently available skills. The agent chooses whether to read one."),
             ],
@@ -43,6 +45,10 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
     public const string TraceKey = "netpi.loops.trace";
     public const string HintedKey = "netpi.loops.hinted";
     public const string ModelChecksKey = "netpi.loops.modelChecks";
+    public const string ContextChecksKey = "netpi.loops.contextChecks";
+    public const string ContextCallsKey = "netpi.loops.contextCalls";
+    public const int DefaultContextEvery = 4;
+    private const int MaxContextChecks = 8;
     public const double StuckThreshold = 0.8;
     private const int MaxTrace = 50;
     private const int MaxModelChecks = 5;
@@ -118,7 +124,7 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
         cts.CancelAfter(ModelTimeout);
         try
         {
-            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.ask", request, cts.Token, run.AdmissionLease(), run.Model.Ref).ConfigureAwait(false);
+            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.ask", request, cts.Token, run.AdmissionLease(), run.Model.Ref, lane: true).ConfigureAwait(false);
             var answers = result as JsonObject ?? JsonSerializer.SerializeToNode(result) as JsonObject;
             if (answers?["stuck"]?["noul"] is not JsonValue pv || !pv.TryGetValue<double>(out var p) || !DecisionConfidence.Yes(p, StuckThreshold)) return null;
             var tools = string.Join(", ", last.GroupBy(s => s.Tool).OrderByDescending(g => g.Count()).Select(g => $"{g.Key} ×{g.Count()}"));
@@ -139,9 +145,14 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
     private async Task<string?> AskContextAsync(AgentTurnContext turn)
     {
         var run = turn.Run;
-        var checks = run.Items.TryGetValue(ModelChecksKey, out var count) && count is int n ? n : 0;
-        if (checks >= MaxModelChecks || turn.SentRequest?.DecisionContext is null) return null;
-        run.Items[ModelChecksKey] = checks + 1;
+        // Its own budget (the compact check keeps its five), spread over the run: every loops.contextEvery-th model
+        // call, so a long run is still checked late, where "stuck" and "finished" actually happen.
+        var calls = (run.Items.TryGetValue(ContextCallsKey, out var c) && c is int k ? k : 0) + 1;
+        run.Items[ContextCallsKey] = calls;
+        var every = Math.Clamp(ctx.Settings.GetOr("loops.contextEvery", DefaultContextEvery), 1, 50);
+        var checks = run.Items.TryGetValue(ContextChecksKey, out var count) && count is int n ? n : 0;
+        if (calls % every != 0 || checks >= MaxContextChecks || turn.SentRequest?.DecisionContext is null) return null;
+        run.Items[ContextChecksKey] = checks + 1;
         var questions = new Dictionary<string, string>
         {
             ["stuck"] = "Is the agent repeating unsuccessful actions without new evidence or progress?",
@@ -168,7 +179,8 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
             try
             {
                 var skills = NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("skills.list", new { sessionId = run.Session.Id }, run.CancellationToken).ConfigureAwait(false));
-                questions["skill"] = "Does an available skill directly apply to the current task? Available skills (data): " + skills?.ToJsonString();
+                var listed = await ClosestSkillsAsync(skills, turn, run.CancellationToken).ConfigureAwait(false);
+                questions["skill"] = "Does an available skill directly apply to the current task? Available skills (data): " + listed;
                 hints["skill"] = "Check the available skills for one that directly applies; read its instructions before using it.";
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogDebug(ex, "Skill hint inventory unavailable"); }
@@ -183,6 +195,37 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
         }
         catch (OperationCanceledException) when (!run.CancellationToken.IsCancellationRequested) { return null; }
         catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogDebug(ex, "Full conversation check unavailable"); return null; }
+    }
+
+    /// <summary>
+    /// The skills the question lists: with embeddings (and more than five skills), the five closest to the user's request,
+    /// so a large catalogue does not ride along in every branch; otherwise every skill, as before.
+    /// </summary>
+    private async Task<string> ClosestSkillsAsync(JsonNode? skills, AgentTurnContext turn, CancellationToken ct)
+    {
+        var all = (skills?["skills"] as JsonArray ?? []).OfType<JsonObject>()
+            .Where(s => s["disabled"]?.GetValue<bool>() != true)
+            .Select(s => (Name: s["name"]?.GetValue<string>() ?? "", Description: s["description"]?.GetValue<string>() ?? ""))
+            .Where(s => s.Name.Length > 0).ToList();
+        string Render(IEnumerable<(string Name, string Description)> list) =>
+            new JsonArray(list.Select(s => (JsonNode)new JsonObject { ["name"] = s.Name, ["description"] = s.Description }).ToArray()).ToJsonString();
+        var request = turn.Messages.LastOrDefault(m => m.Role == MessageRole.User)?.Text ?? "";
+        if (all.Count <= 5 || request.Length == 0 || ctx.Services.Get<IEmbeddingService>() is not { Available: true } embedder) return Render(all);
+        try
+        {
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bounded.CancelAfter(TimeSpan.FromSeconds(3));
+            var texts = new List<string> { request.Length > 2000 ? request[..2000] : request };
+            texts.AddRange(all.Select(s => $"{s.Name}: {s.Description}"));
+            var docs = await embedder.EmbedAsync(new EmbeddingRequest { Texts = texts.Skip(1).ToList() }, bounded.Token).ConfigureAwait(false);
+            var query = await embedder.EmbedAsync(new EmbeddingRequest { Texts = [texts[0]], Kind = EmbeddingKind.Query }, bounded.Token).ConfigureAwait(false);
+            return Render(all.Select((s, i) => (s, score: VectorMath.Dot(query.Vectors[0], docs.Vectors[i])))
+                .OrderByDescending(x => x.score).Take(5).Select(x => x.s));
+        }
+        catch (Exception ex) when (ex is EmbeddingException or OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            return Render(all);
+        }
     }
 
     private static List<Step> Trace(AgentRunContext run)

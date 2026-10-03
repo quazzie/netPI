@@ -241,6 +241,27 @@ public static class ServerTests
             Check.Equal(HttpStatusCode.OK, own.Status);
         });
 
+        r.Add("server: a plugin route mapped open skips the token and origin checks (its handler checks), a plain one keeps them", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot());
+            using var open = server.Kernel.Http.Map("test.open", "hook", ctx => Microsoft.AspNetCore.Http.HttpResponseWritingExtensions.WriteAsync(ctx.Response, "open " + ctx.Request.Query["key"]), open: true);
+            using var plain = server.Kernel.Http.Map("test.open", "private", ctx => Microsoft.AspNetCore.Http.HttpResponseWritingExtensions.WriteAsync(ctx.Response, "private"));
+            using var http = NewHttp();
+            var url = server.BaseUrl + "/api/p/test.open/";
+            // an extension: no token, its own origin
+            var hook = await SendAsync(http, HttpMethod.Get, url + "hook?key=k1", null, q => q.Headers.Add("Origin", "chrome-extension://abcdefghijklmnop"));
+            Check.Equal(HttpStatusCode.OK, hook.Status);
+            Check.Equal("open k1", hook.Body);
+            Check.Equal(HttpStatusCode.Unauthorized, (await SendAsync(http, HttpMethod.Get, url + "private")).Status);
+            var foreign = await SendAsync(http, HttpMethod.Get, url + "private", null, q => { q.Headers.Add(WebServer.TokenHeader, server.Token); q.Headers.Add("Origin", "chrome-extension://abcdefghijklmnop"); });
+            Check.Equal(HttpStatusCode.Forbidden, foreign.Status);
+            var own = await SendAsync(http, HttpMethod.Get, url + "private", null, q => q.Headers.Add(WebServer.TokenHeader, server.Token));
+            Check.Equal(HttpStatusCode.OK, own.Status);
+            Check.Equal("private", own.Body);
+            open.Dispose();
+            Check.Equal(HttpStatusCode.Unauthorized, (await SendAsync(http, HttpMethod.Get, url + "hook")).Status, "gone with its registration: the plain rules again");
+        });
+
         r.Add("server: static files, SPA fallback, cache headers, ETag", async () =>
         {
             await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot());

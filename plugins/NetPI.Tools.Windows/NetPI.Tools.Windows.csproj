@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Aux.Tests" />
+  </ItemGroup>
+  <!-- the UI Automation helper (a Windows exe) lands in this plugin's agent/ folder: built first, not referenced -->
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <ProjectReference Include="$(RepoRoot)src/NetPI.WindowsAgent/NetPI.WindowsAgent.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" Private="false" />
+  </ItemGroup>
+</Project>

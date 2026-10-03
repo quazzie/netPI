@@ -46,7 +46,7 @@ export async function openApp({ url = 'http://127.0.0.1:7431/?token=dev', width 
   page.on('console', (m) => {
     if (m.type() === 'error' || m.type() === 'warning') errors.push(`[${m.type()}] ${m.text()}`);
   });
-  page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}${e.stack ? ` (${(e.stack.split('\n')[1] ?? '').trim()})` : ''}`));
+  page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}\n${e.stack ?? '(no stack)'}`));
   await page.goto(url);
   return { pw, browser, context, page, errors };
 }

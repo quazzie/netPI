@@ -18,8 +18,9 @@ const argVal = (n) => (argv.indexOf(n) >= 0 ? argv[argv.indexOf(n) + 1] : null);
 const OUT = argVal('--out') ? path.resolve(argVal('--out')) : path.join(here, 'screenshots');
 // Sections: each log('name') header below starts one. --only runs just the named sections (a name, or a part of one, case-insensitive):
 // every other section is skipped with its setup, it is not merely left unreported. --list prints the names. A name that matches
-// nothing is an error (exit 2) before anything starts, so a typo cannot be a green empty run.
-const SECTIONS = [...fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').matchAll(/^(?:if \(!EXTERNAL[^\n]*\{\n  )?log\('([^'\n]+)'\);/gm)].map((m) => m[1]);
+// nothing is an error (exit 2) before anything starts, so a typo cannot be a green empty run. The header pattern takes the
+// end of the line as \r?\n, or a section written as `if (…) { log(…)` is invisible to --only on a CRLF checkout (Windows).
+const SECTIONS = [...fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').matchAll(/^(?:if \(!EXTERNAL[^\n]*\{\r?\n  )?log\('([^'\n]+)'\);/gm)].map((m) => m[1]);
 if (argv.includes('--list')) {
   console.log(SECTIONS.join('\n'));
   process.exit(0);
@@ -256,7 +257,15 @@ await page.locator('.scroller').evaluate((el) => (el.scrollTop = 0));
 await page.waitForTimeout(150);
 await shot(page, '03-load-earlier');
 if (hasNewer) {
-  await page.locator('.earlier button', { hasText: 'jump to latest' }).click();
+  // load newer pages forward with afterSeq (idea-t6odez): the window's newest message moves on, nothing is repeated
+  const lastKey = () => page.evaluate(() => [...document.querySelectorAll('.content .item')].at(-1)?.dataset.key ?? null);
+  const keyBefore = await lastKey();
+  await page.locator('.earlier button', { hasText: 'Load newer' }).click();
+  await page.waitForFunction((k) => [...document.querySelectorAll('.content .item')].at(-1)?.dataset.key !== k, keyBefore, { timeout: 5_000 }).catch(() => {});
+  const keys = await page.evaluate(() => [...document.querySelectorAll('.content .item')].map((e) => e.dataset.key));
+  check('load newer pages forward', keys.at(-1) !== keyBefore && new Set(keys).size === keys.length, `${keyBefore} → ${keys.at(-1)}, ${keys.length} items`);
+  const jump = page.locator('.earlier button', { hasText: 'jump to latest' });
+  if (await jump.count()) await jump.click();
   await page.waitForTimeout(400);
 }
 var domCount = await page.locator('.content .item').count();
@@ -1046,7 +1055,7 @@ log('plugin tab: Ideas');
   await dlg.locator('.i-hint').fill('check the Files plugin first');
   await dlg.locator('.i-submit').click();
   await dlg.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
-  const asked = (await rpcCall('ideas.mockRefines')).at(-1);
+  const asked = (await rpcCall('mock.ideaRefines')).at(-1);
   check('ideas: refining starts a chat on the idea, on any agent, with the focus', asked?.id === edited.id && asked.agent === 'any' && asked.hint === 'check the Files plugin first', JSON.stringify(asked));
   await page.waitForTimeout(600);
   check('ideas: the refine chat is on the card under Chats', (await refCard.locator('.ev-link', { hasText: 'Refine idea: Dialog edit target' }).count()) === 1);
@@ -1064,39 +1073,6 @@ log('plugin tab: Ideas');
   if (projectId) await rpcCall('ideas.add', { projectId, idea: { title: 'Added over RPC', tags: ['rpc'] } });
   await page.waitForSelector('.ideas .card:has-text("Added over RPC")', { timeout: 3000 }).catch(() => {});
   check('ideas: refetch on ideas.changed', (await page.locator('.ideas .card', { hasText: 'Added over RPC' }).count()) > 0);
-}
-
-}
-if (want('ideas: recall on the first message (the chip above the composer)')) {
-log('ideas: recall on the first message (the chip above the composer)');
-{
-  await rpcCall('ideas.add', { projectId: 'global', idea: { title: 'Nudge counter reset after a good answer', summary: 'Reset the nudge counter.' } });
-  await page.keyboard.press('Control+t');
-  await page.waitForTimeout(500);
-  const chip = page.locator('[aria-label="Matching idea"]');
-  await ta.fill('hi');
-  await page.waitForTimeout(1400);
-  check('recall: no chip for a short or unrelated first message', (await chip.count()) === 0);
-  await ta.fill('the nudge counter should reset after a good answer from the agent');
-  await chip.waitFor({ timeout: 4000 }).catch(() => {});
-  check('recall: a matching idea shows a chip while the first message is typed', /Nudge counter reset/.test(await chip.innerText().catch(() => '')));
-  await shot(page, '27b-idea-chip');
-  await chip.locator('button', { hasText: 'Add' }).click();
-  // the notice is collapsed (its label shows); the chat's messages hold it with the idea's text
-  await page.waitForSelector('.notice:has-text("Idea from the backlog")', { timeout: 3000 }).catch(() => {});
-  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const msgs = (await rpcCall('sessions.messages', { id: sid }))?.messages ?? [];
-  const note = msgs.find((m) => m.role === 'notice' && m.meta?.kind === 'idea');
-  check(
-    'recall: Add puts the idea into the chat as a notice',
-    (await page.locator('.notice', { hasText: 'Idea from the backlog' }).count()) > 0 && /Nudge counter reset/.test(note?.parts?.[0]?.text ?? ''),
-  );
-  check('recall: the chip goes away after Add', (await chip.count()) === 0);
-  await ta.fill('');
-  await page.locator('.topbar .tab.active .tab-close').click();
-  await page.waitForTimeout(200);
-  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
-  await page.waitForTimeout(300);
 }
 
 }
@@ -1277,10 +1253,21 @@ log('plugin tab: Files');
   await dir('src');
   await dir('lib');
   await ta.fill('');
-  await page.locator('.files .frow .fname', { hasText: /^markdown\.js$/ }).click();
+  const mdName = page.locator('.files .frow .fname', { hasText: /^markdown\.js$/ });
+  const before = (await rpcCall('mock.filesOpened')).length;
+  await mdName.click();
+  await page.waitForTimeout(250);
+  // One click only selects, like the file manager: opening a file runs its program, so it takes a double click.
+  const afterClick = await rpcCall('mock.filesOpened');
+  check('files: one click does not open the file', afterClick.length === before, JSON.stringify(afterClick.slice(-1)));
+  check('files: one click selects the row', (await page.locator('.files .frow[aria-selected="true"]').count()) === 1, String(await page.locator('.files .frow[aria-selected="true"]').count()));
+  await mdName.dblclick();
   await page.waitForTimeout(250);
   const opened = (await rpcCall('mock.filesOpened')).map((p) => p.replaceAll('\\', '/'));
-  check('files: a click opens the file (files.open)', opened.at(-1)?.endsWith('web/src/lib/markdown.js'), opened.at(-1));
+  check('files: a double click opens the file (files.open)', opened.at(-1)?.endsWith('web/src/lib/markdown.js'), opened.at(-1));
+  // files.open cannot see who is calling; user: true is how a deliberate pick asks for the file's default program.
+  const calls = await rpcCall('mock.filesOpenCalls');
+  check('files: the double click says the user picked it (user: true)', calls.at(-1)?.user === true, JSON.stringify(calls.at(-1)));
   check('files: a click inserts nothing', (await ta.inputValue()) === '', await ta.inputValue());
   const mdRow = page.locator('.files .frow', { has: page.locator('.fname', { hasText: /^markdown\.js$/ }) });
   await mdRow.hover();
@@ -1687,6 +1674,85 @@ log('start screen: the project new sessions start in');
   const id3 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   const s3 = id3 ? await rpcCall('sessions.get', { id: id3 }) : null;
   check('the start screen recreates a session in the chosen project', s3?.projectId === idOf('website'), String(s3?.projectId));
+}
+
+}
+if (want('welcome screen: ideas to work on')) {
+log('welcome screen: ideas to work on');
+{
+  // idea-ky14bu: the start screen suggests what is in the backlog, and a click starts that work.
+  const projects = await rpcCall('projects.list');
+  const idOf = (name) => projects.find((p) => p.name === name)?.id;
+  while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
+  await page.waitForSelector('.welcome .target');
+
+  // The target decides which ideas are relevant: point the start screen at the project the seeded backlog belongs to
+  // (the pickers start a session in what you pick, so the target is set the way a fresh window reads it).
+  await page.evaluate((id) => localStorage.setItem('netpi.lastProject', JSON.stringify(id)), idOf('netpi'));
+  await page.reload();
+  await page.waitForSelector('.welcome .target');
+  const rows = page.locator('.welcome .prow');
+  await rows.first().waitFor({ timeout: 4000 }).catch(() => {});
+  const wanted = (await rpcCall('ideas.picks', { projectId: idOf('netpi'), limit: 3 })).picks ?? [];
+  const shown = await rows.allInnerTexts();
+  const wantedTitles = wanted.map((w) => w.title);
+  check('welcome screen: the target is the project the backlog belongs to',
+    (await page.locator('.welcome .target').innerText()).includes('netpi'), await page.locator('.welcome .target').innerText());
+  check('welcome screen: the ideas of the project it targets, at most three, in their order',
+    shown.length > 0 && shown.length === wantedTitles.length && shown.length <= 3 && shown.every((t, i) => t.includes(wantedTitles[i])),
+    `${shown.length} of ${wantedTitles.length}: ${shown.map((t) => t.split('\n')[0]).join(' / ')}`);
+  check('welcome screen: nothing that is being worked on (in-progress, done, parked) is offered',
+    !shown.some((t) => /Cache the model list|Stream compaction summaries|Semantic search/.test(t)), shown.join(' / '));
+  const box = await rows.first().boundingBox();
+  const recentBox = await page.locator('.welcome .recent').boundingBox().catch(() => null);
+  check('welcome screen: the ideas sit above the recent sessions',
+    !!box && (!recentBox || box.y < recentBox.y), recentBox ? `${Math.round(box.y)} vs ${Math.round(recentBox.y)}` : 'no recent sessions');
+  await shot(page, '12c-welcome-ideas');
+
+  // A click starts the work: a chat in the idea's project with the idea in it.
+  const first = wanted[0];
+  await rows.first().click();
+  await page.waitForSelector('.topbar .tab.active');
+  await page.waitForTimeout(400);
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const started = sid ? await rpcCall('sessions.get', { id: sid }) : null;
+  const msgs = sid ? (await rpcCall('sessions.messages', { id: sid })).messages ?? [] : [];
+  const notice = msgs.find((m) => m.meta?.kind === 'idea');
+  check('welcome screen: a click starts a chat on the idea with the idea attached',
+    started?.projectId === idOf('netpi') && notice?.meta?.ideaId === first.id && (await page.locator('.composer').count()) === 1,
+    `${sid} ${started?.projectId} notice ${notice?.meta?.ideaId ?? 'none'}`);
+  check('welcome screen: and titles the chat after the idea', started?.title === first.title, started?.title);
+  await shot(page, '12d-welcome-idea-started');
+
+  // The backlog moves in another window: ideas.changed moves the offer with it.
+  await page.locator('.topbar .tab.active .tab-close').click();
+  await page.waitForSelector('.welcome .target');
+  await rpcCall('ideas.update', { id: first.id, patch: { status: 'done' } });
+  await page.waitForFunction((gone) => ![...document.querySelectorAll('.welcome .prow')].some((r) => r.textContent.includes(gone)), first.title, { timeout: 4000 }).catch(() => {});
+  check('welcome screen: an idea finished elsewhere disappears from the offer',
+    (await page.locator('.welcome .prow', { hasText: first.title }).count()) === 0);
+  await rpcCall('ideas.update', { id: first.id, patch: { status: first.status } });
+
+  // No Ideas plugin (or an older one, without ideas.picks): the start screen is exactly as it was.
+  await rpcCall('mock.capabilities', { missing: ['ideas.picks'] });
+  try {
+    await page.reload();
+    await page.waitForSelector('.welcome .target');
+    await page.waitForTimeout(700);
+    check('welcome screen: without ideas.picks nothing is offered and nothing breaks',
+      (await page.locator('.welcome .prow').count()) === 0 && (await page.locator('.welcome .recent, .keys').count()) > 0);
+    await shot(page, '12e-welcome-no-ideas');
+  } finally {
+    await rpcCall('mock.capabilities', { missing: [] });
+  }
+
+  // the next section works from the "website" session: close everything and recreate it from the start screen
+  while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
+  await page.waitForSelector('.welcome .target');
+  await page.locator('.welcome .target').click();
+  await page.waitForSelector('.popover .item');
+  await page.locator('.popover .item', { hasText: 'website' }).first().click();
+  await page.waitForTimeout(500);
 }
 
 }
@@ -2305,14 +2371,22 @@ log('web tools, todo plan, tools notice, file links');
   await page.locator('.tool', { has: page.locator('.label', { hasText: 'Screenshot' }) }).last().scrollIntoViewIfNeeded();
   await shot(page, '26-web-tools');
 
-  // links to files open with the operating system, not inside the app
+  // links to files open with the operating system, not inside the app — but only after the user says so, because the
+  // path came from the model and whatever program it is associated with will run
   const links = page.locator('.md a.file-link');
   check('file links in the answer are marked', (await links.count()) === 2, String(await links.count()));
   const before = page.url();
+  const openedBefore = (await rpcCall('mock.filesOpened')).length;
   await links.first().click();
+  const ask = page.locator('[role="dialog"][aria-label="Open this file?"]');
+  await ask.waitFor({ timeout: 5000 }).catch(() => {});
+  check('clicking a file link asks before opening it', (await ask.count()) === 1, String(await ask.count()));
+  check('nothing is opened while the question is open', (await rpcCall('mock.filesOpened')).length === openedBefore);
+  await ask.locator('button', { hasText: /^Open$/ }).click();
   await page.waitForTimeout(300);
   const opened = await rpcCall('mock.filesOpened');
-  check('clicking a file link asks the host to open it', opened.some((p) => p.replace(/\\/g, '/').endsWith('web/src/App.svelte')), JSON.stringify(opened));
+  check('a confirmed file link asks the host to open it', opened.some((p) => p.replace(/\\/g, '/').endsWith('web/src/App.svelte')), JSON.stringify(opened));
+  check('the confirmed link opens it as a deliberate pick (user: true)', (await rpcCall('mock.filesOpenCalls')).at(-1)?.user === true, JSON.stringify((await rpcCall('mock.filesOpenCalls')).at(-1)));
   check('the app does not navigate away', page.url() === before && (await page.locator('.composer textarea').count()) === 1);
   check('web links still open in a new window', (await page.locator('.md a[target="_blank"]', { hasText: 'docs' }).count()) === 1);
 

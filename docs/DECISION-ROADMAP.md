@@ -20,7 +20,7 @@ This pass does not revalidate historical performance numbers on the current engi
 | AiGateway `/v1/systemone` bridge | `C:\ai\projects\aiswitcher` (D69; `SystemOne.cs`, `SystemOneBridge.cs`) | deployed. TypeSafe System One for NInfer models → one `/v1/decision`; Kev on the nuc router is forwarded as-is. |
 | One-NInfer guards | AiSwitcher D70 | deployed. The hub finds NInfer by image name and refuses a second start; no second crash restart while one is starting. |
 | NetPI `decide` tool + `decide.ask` RPC | `plugins/NetPI.Decide` | built and deployed. Default model `kev-9b` (nuc, manual switch that also unloads yue2); `qwen3.8-27b` works through the bridge. |
-| nuc decision models | router `quazzie/llama.cpp:kev-router` (kev-9b, kev-4b, exclusive); `laya-tasks` :8010 (`laya-logs`); Ollaya `decide` stack :11435 | running. `laya-tasks` serves **Laya-logs-qwen** as `logs` (0.78 / 0.93 / 0.93 / 0.97, was the Kev-taught 0.53 / 0.89 / 0.84 / 0.91) since 2026-09-26 (1.1), weights in bf16 since 2026-09-27 (1.2 GB instead of 2.7, same answers). Kev-9B does not fit on the 4070 beside `laya-tasks` (OOM on load) and is no longer recommended for any task (`DECISION-MODELS.md`). |
+| nuc decision models | router `quazzie/llama.cpp:kev-router` (kev-9b, kev-4b, exclusive); (`laya-tasks` :8010 and the Ollaya `decide` stack :11435 were removed 2026-10-03: nothing used them; the Laya checkpoints stay in `/home/quazzie/train`) | the router runs. Laya-logs-qwen was served from 2026-09-26 (1.1) until its removal; Kev-9B is no longer recommended for any task (`DECISION-MODELS.md`). |
 | test sets and scripts | `C:\AI\Projects\decisions-lab` (README there); nuc `/home/quazzie/train` | 120 hand-labelled log lines, 852 real commands with Qwen's guard labels, 44 Windows UIA tasks, Mind2Web on the nuc. |
 
 ## Ground rules
@@ -187,7 +187,7 @@ plugin with confirmation for destructive controls, a keyboard or vision fallback
 4.2 Tighter log subsystem categories (subsystem is the weakest question at 0.78).
 4.3 Browser picker: fine-tune Kev-4B as the picker; better element descriptions (the ranker's recall ceiling is
 ~84 % in the top 20); NetPI's own browser traces.
-4.4 Open question for the user: Ollaya's `MAX_LOADED` cap.
+4.4 ~~Open question for the user: Ollaya's `MAX_LOADED` cap.~~ Moot: Ollaya was removed 2026-10-03.
 
 ## Phase 5: housekeeping
 

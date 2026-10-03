@@ -17,6 +17,7 @@
     <Project Path="plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.csproj" />
     <Project Path="plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.csproj" />
     <Project Path="plugins/NetPI.Retry/NetPI.Retry.csproj" />
+    <Project Path="plugins/NetPI.Schedules/NetPI.Schedules.csproj" />
     <Project Path="plugins/NetPI.Skills/NetPI.Skills.csproj" />
     <Project Path="plugins/NetPI.Plan/NetPI.Plan.csproj" />
     <Project Path="plugins/NetPI.Todo/NetPI.Todo.csproj" />
@@ -26,10 +27,13 @@
     <Project Path="plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />
     <Project Path="plugins/NetPI.Tools.Files/NetPI.Tools.Files.csproj" />
     <Project Path="plugins/NetPI.Decide/NetPI.Decide.csproj" />
+    <Project Path="plugins/NetPI.Embeddings/NetPI.Embeddings.csproj" />
+    <Project Path="plugins/NetPI.Memory/NetPI.Memory.csproj" />
     <Project Path="plugins/NetPI.Tools.Media/NetPI.Tools.Media.csproj" />
     <Project Path="plugins/NetPI.Tools.Shell/NetPI.Tools.Shell.csproj" />
     <Project Path="plugins/NetPI.Tools.Ssh/NetPI.Tools.Ssh.csproj" />
     <Project Path="plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj" />
+    <Project Path="plugins/NetPI.Tools.Windows/NetPI.Tools.Windows.csproj" />
     <Project Path="plugins/NetPI.Work/NetPI.Work.csproj" />
     <Project Path="plugins/NetPI.Workspaces/NetPI.Workspaces.csproj" />
   </Folder>
@@ -39,6 +43,7 @@
     <Project Path="src/NetPI.Desktop/NetPI.Desktop.csproj" />
     <Project Path="src/NetPI.Host/NetPI.Host.csproj" />
     <Project Path="src/NetPI.Server/NetPI.Server.csproj" />
+    <Project Path="src/NetPI.WindowsAgent/NetPI.WindowsAgent.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/MockLlm/MockLlm.csproj" />
@@ -49,5 +54,6 @@
     <Project Path="tests/NetPI.Providers.Tests/NetPI.Providers.Tests.csproj" />
     <Project Path="tests/NetPI.Storage.Tests/NetPI.Storage.Tests.csproj" />
     <Project Path="tests/NetPI.Tools.Tests/NetPI.Tools.Tests.csproj" />
+    <Project Path="tests/NetPI.WinTestApp/NetPI.WinTestApp.csproj" />
   </Folder>
 </Solution>

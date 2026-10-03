@@ -31,6 +31,13 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   `tests/MockLlm` (scripted model server), `tests/NetPI.E2E` (end-to-end suite).
 
 ## Build & test
+- **Hunting one failing test? Run that one test, not the suite.** A full sweep (`scripts\test.ps1` with no filter, or
+  `scripts\e2e.ps1` with no selector) takes minutes, holds the machine, and tells you nothing the single test does not.
+  While fixing: `dotnet tests/NetPI.<X>.Tests/bin/Debug/NetPI.<X>.Tests.dll "<test name substring>"`, or
+  `.\scripts\test.ps1 -Suite <X> -Only "<name>"`, or `.\scripts\e2e.ps1 -Only <id>` / `-Failed` (the failure file in
+  `artifacts/e2elogs/<run>/failures/` already holds the evidence: read it instead of running again). The full sweep runs
+  **once**, at the end, as the gate before a merge — never as the loop, never "to see if it still passes", never again
+  after a one-test fix until everything you meant to change is in.
 - **Work in a worktree, not here** (see `C:\AI\Projects\AGENTS.md`): one worktree and branch per agent. It is how you
   avoid another agent's *edits* reaching you and yours reaching them. Several fixes can share that one tree — take them
   one at a time, one commit each, merging each into `master` before the next.
@@ -104,7 +111,9 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 - UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`. The bundles are
   reproducible — Svelte hashes scoped CSS from a path under the repository root, not from where the build ran, and CI
   fails when a fresh build differs from the committed ones — so commit `web/dist` or a plugin's `wwwroot/ui.js` only
-  with the *source* change under `web/src` or `ui/`.
+  with the *source* change under `web/src` or `ui/`. A worktree checks out CRLF here (`core.autocrlf`), and the bundles
+  are byte-compared: build after converting the sources (`web/src`, `plugins/*/ui`, `web/public`) to LF, or every bundle
+  is rewritten with the line-ending noise and new hashes.
 
 ## Inspecting the running app
 - The **`diag` tool** (read-only, one action per method: overview, problems, calls, tools, journal, run, toolsets,

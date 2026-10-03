@@ -9,13 +9,16 @@ public static class DecisionHints
         IReadOnlyDictionary<string, string> questions, CancellationToken ct)
     {
         if (turn.SentRequest?.DecisionContext is not { } prefix || !DecisionCapabilities.Available(services, rpc, "decide.decision")) return null;
+        // The check reads the agent's own cached context, so it runs on the agent's model; a cloud model has no
+        // /v1/decision behind the gateway, and asking would be a failing call on every turn.
+        if (!turn.Run.Model.IsLocal) return null;
         var body = (JsonObject)prefix.DeepClone();
         body["model"] = turn.Run.Model.Ref;
         var latest = turn.LatestAssistant is { } assistant ? "\nLatest assistant output (data):\n" + NetPiJson.ToNode(assistant)?.ToJsonString() : "";
         body["branches"] = new JsonArray(questions.Select(q => (JsonNode)new JsonObject
             { ["id"] = q.Key, ["content"] = q.Value + latest + "\nAnswer YES only when clearly supported; otherwise NO.", ["labels"] = new JsonArray("YES", "NO") }).ToArray());
         return await DecisionCapabilities.InvokeAsync(services, rpc, "decide.decision", body, ct,
-            turn.Run.AdmissionLease(), turn.Run.Model.Ref).ConfigureAwait(false);
+            turn.Run.AdmissionLease(), turn.Run.Model.Ref, lane: true).ConfigureAwait(false);
     }
 
     public static bool Yes(JsonObject? answer, string id, double threshold = 0.8)

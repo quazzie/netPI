@@ -127,6 +127,70 @@ public static class RegistryTests
             Check.Equal(-1, got[5]!.GetValue<int>(), "a number too large for an int stays null, as before");
         });
 
+        r.Add("rpc: a declared method checks its requests before the handler runs, and rpc.list shows the params (idea-yvcy8b)", async () =>
+        {
+            var rpc = new RpcRegistry();
+            var calls = 0;
+            using var _ = rpc.Register(new RpcMethod("m.typed", "typed", ReadOnly: true,
+                [RpcParam.Req("id"), RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("deep", RpcParamType.Boolean), RpcParam.Opt("meta", RpcParamType.Object)]),
+                (req, _) => { calls++; return Task.FromResult<object?>(req.Required("id") + ":" + (req.Int("limit") ?? 0)); });
+
+            async Task<string> Refused(object p)
+            {
+                var ex = await Check.ThrowsAsync<RpcException>(() => rpc.InvokeAsync("m.typed", p));
+                Check.Equal("bad_request", ex.Code);
+                return ex.Message;
+            }
+            Check.Contains(await Refused(new { id = "a", limt = 3 }), "unknown parameter 'limt'", "a mistyped name is named, with what the method takes");
+            Check.Contains(await Refused(new { id = "a", limt = 3 }), "takes id, limit, deep, meta");
+            Check.Contains(await Refused(new { limit = 3 }), "Missing parameter 'id'");
+            Check.Contains(await Refused(new { id = (string?)null }), "Missing parameter 'id'", "null is absent");
+            Check.Contains(await Refused(new { id = "a", limit = "three" }), "'limit' must be an integer");
+            Check.Contains(await Refused(new { id = "a", deep = 1 }), "'deep' must be a boolean");
+            Check.Contains(await Refused(new { id = "a", meta = "x" }), "'meta' must be an object");
+            Check.Contains(await Refused(new { id = new[] { 1 } }), "'id' must be a string");
+            Check.Equal(0, calls, "no refused request reached the handler");
+
+            Check.Equal("a:7", await rpc.InvokeAsync("m.typed", new { id = "a", limit = "7" }), "a quoted integer still fits, as the readers accept it");
+            Check.Equal("b:0", await rpc.InvokeAsync("m.typed", new { id = "b", deep = true, meta = new { k = 1 } }));
+
+            var info = rpc.List().Single(m => m.Method == "m.typed");
+            Check.True(info.ReadOnly);
+            Check.Equal("id,limit,deep,meta", string.Join(",", info.Params!.Select(p => p.Name)));
+            Check.True(info.Params![0].Required && !info.Params[1].Required);
+            Check.Equal(RpcParamType.Integer, info.Params[1].Type);
+
+            // a method registered the older way checks nothing and lists no params
+            using var __ = rpc.Register("m.loose", (req, _) => Task.FromResult<object?>(req.Str("anything")), "loose");
+            Check.Equal("x", await rpc.InvokeAsync("m.loose", new { anything = "x", more = 1 }));
+            Check.Equal(null, rpc.List().Single(m => m.Method == "m.loose").Params);
+        });
+
+        r.Add("rpc: a handler that reads a name it did not declare fails, and a bad declaration is refused at registration", async () =>
+        {
+            var rpc = new RpcRegistry();
+            using var _ = rpc.Register(new RpcMethod("m.drift", Params: [RpcParam.Opt("id")]), (req, _) => Task.FromResult<object?>(req.Str("sessionId")));
+            var ex = await Check.ThrowsAsync<InvalidOperationException>(() => rpc.InvokeAsync("m.drift", new { id = "x" }));
+            Check.Contains(ex.Message, "sessionId", "the drift is named on the first call, not read as nothing");
+
+            using var none = rpc.Register(new RpcMethod("m.none", Params: []), (_, _) => Task.FromResult<object?>(true));
+            Check.Equal(true, await rpc.InvokeAsync("m.none"));
+            Check.Contains((await Check.ThrowsAsync<RpcException>(() => rpc.InvokeAsync("m.none", new { x = 1 }))).Message, "takes none");
+
+            Check.Throws<ArgumentException>(() => rpc.Register(new RpcMethod("m.twice", Params: [RpcParam.Opt("a"), RpcParam.Opt("a")]), (_, _) => Task.FromResult<object?>(null)));
+            Check.Throws<ArgumentException>(() => rpc.Register(new RpcMethod("m.type", Params: [RpcParam.Opt("a", "date")]), (_, _) => Task.FromResult<object?>(null)));
+            Check.False(rpc.Exists("m.twice") || rpc.Exists("m.type"), "a refused declaration registered nothing");
+        });
+
+        r.Add("rpc: every core method declares its parameters (idea-yvcy8b)", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"));
+            var undeclared = server.Kernel.Rpc.List().Where(m => m.PluginId == "host" && m.Params is null).Select(m => m.Method).ToList();
+            Check.True(undeclared.Count == 0, "core methods without a declaration: " + string.Join(", ", undeclared));
+            var ex = await Check.ThrowsAsync<RpcException>(() => server.Kernel.Rpc.InvokeAsync("sessions.get", new { sessionId = "x" }));
+            Check.Contains(ex.Message, "unknown parameter 'sessionId'");
+        });
+
         r.Add("tools: highest priority per name, ties → latest, tools.disabled, tools.changed", async () =>
         {
             var file = Path.Combine(T.TempDir("tools"), "settings.json");
@@ -192,6 +256,10 @@ public static class RegistryTests
             Check.True(http.Match("p", "/files/special/") == h2);
             Check.True(http.Match("p", "other") == h3);
             Check.True(http.Match("q", "files/a") is null);
+            Check.False(http.IsOpen("p", "files/a"), "a route is closed unless mapped open");
+            using var r4 = http.Map("p", "hook", h3, open: true);
+            Check.True(http.IsOpen("p", "/hook"));
+            Check.False(http.IsOpen("p", "files/special"));
             r1.Dispose();
             r1.Dispose();
             Check.True(http.Match("p", "files/a") == h3);

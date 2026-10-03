@@ -19,8 +19,16 @@ namespace NetPI.Ideas;
 /// arbitrary slice of it or obliging the agent to answer. The card flow stays: it is what catches a commit nobody
 /// made in a chat, and a commit the agent closed is no longer open, so it is not offered twice.
 /// </para>
+/// <para>
+/// With embeddings (<paramref name="nearest"/>, idea-61wg9p) a backlog too large to list is no longer silent: the notice
+/// names the open ideas closest in meaning to the commit message, as candidates the agent checks, not as a verdict. Without
+/// them (no embedding model, the server down or slow) the notice is the plain one above.
+/// </para>
 /// </summary>
-public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func<string?, List<JsonObject>> openIdeas) : IAgentHook
+public sealed partial class IdeaCommitNoticeHook(
+    Func<ISettings?> settings,
+    Func<string?, List<JsonObject>> openIdeas,
+    Func<string, string?, CancellationToken, Task<List<IdeaScore>?>>? nearest = null) : IAgentHook
 {
     public const string NoticeKind = "git-commit";
     /// <summary>The run flag set when a commit landed and not yet turned into a notice.</summary>
@@ -62,27 +70,56 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
         if (open.Count == 0) return ValueTask.CompletedTask;
 
         // A commit while another one is still waiting to be announced: one notice, naming both, beats two.
-        run.Items[PendingKey] = Combine(AsPending(run), new Pending(project.Name, Titles(open)));
+        var subject = CommitMessage(IdeaOps.Str(args, "command"), result.Content);
+        run.Items[PendingKey] = Combine(AsPending(run), new Pending(project.Name, Titles(open), subject, project.Id));
         return ValueTask.CompletedTask;
     }
 
     // ------------------------------------------------------------------ the notice
 
-    public ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
+    public async ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
     {
         var run = turn.Run;
-        if (!TakePending(run, out var pending)) return ValueTask.FromResult<TurnDecision?>(null);
-        if (run.CancellationToken.IsCancellationRequested) return ValueTask.FromResult<TurnDecision?>(null);
-        if (!settings().GetOr("ideas.tellAgentOnCommit", true)) return ValueTask.FromResult<TurnDecision?>(null);
+        if (!TakePending(run, out var pending)) return null;
+        if (run.CancellationToken.IsCancellationRequested) return null;
+        if (!settings().GetOr("ideas.tellAgentOnCommit", true)) return null;
 
         // A burst of commits costs one notice: the run was just asked, and the answer to that ask is still ahead of it.
-        if (WithinDebounce(run)) return ValueTask.FromResult<TurnDecision?>(null);
+        if (WithinDebounce(run)) return null;
 
         var count = run.Items.TryGetValue(CountKey, out var v) && v is int n ? n : 0;
-        if (count >= Math.Clamp(settings().GetOr("ideas.commitNoticesPerRun", DefaultMaxPerRun), 0, 10)) return ValueTask.FromResult<TurnDecision?>(null);
+        if (count >= Math.Clamp(settings().GetOr("ideas.commitNoticesPerRun", DefaultMaxPerRun), 0, 10)) return null;
         run.Items[CountKey] = count + 1;
         run.Items[LastNoticeKey] = DateTimeOffset.UtcNow;
-        return ValueTask.FromResult<TurnDecision?>(TurnDecision.Inject(Text(pending), NoticeKind));
+        return TurnDecision.Inject(Text(pending, await NearestAsync(pending, run.CancellationToken).ConfigureAwait(false)), NoticeKind);
+    }
+
+    /// <summary>The open ideas closest to the commit message, when the backlog was too large to list; null otherwise or
+    /// on any failure (the embedding client has its own short timeout, and this one bounds the whole step).</summary>
+    private async Task<List<IdeaScore>?> NearestAsync(Pending pending, CancellationToken ct)
+    {
+        if (nearest is null || pending.Titles.Count > 0 || pending.Subject is not { Length: > 0 } subject) return null;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(TimeSpan.FromSeconds(3));
+        try { return await nearest(subject, pending.ProjectId, budget.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return null; }
+        catch (Exception) when (!ct.IsCancellationRequested) { return null; }
+    }
+
+    /// <summary>The notice with the open ideas nearest the commit named as candidates (when there are any).</summary>
+    public static string Text(Pending pending, IReadOnlyList<IdeaScore>? near)
+    {
+        if (near is not { Count: > 0 } || pending.Titles.Count > 0) return Text(pending);
+        var named = string.Join("; ", near.Select(s =>
+        {
+            var title = IdeaOps.Str(s.Idea["title"]) ?? "";
+            return $"{IdeaOps.Str(s.Idea["id"])} \"{(title.Length > MaxTitleLength ? title[..MaxTitleLength] + "…" : title)}\"";
+        }));
+        return $"A commit just landed in {pending.Project} (the git command you ran succeeded). " +
+               $"The open ideas closest to it in meaning (candidates, possibly none of them is about it): {named}. " +
+               "If this commit finishes or advances one of them, or another open idea of that project, update that idea now with the ideas tool: " +
+               "mark it done, or leave it open and add a short section saying what landed. " +
+               "If none of them is about this commit, say so in one line and do not create an idea for it.";
     }
 
     /// <summary>What the notice says. Kept short: the model has the commit and its result right above it in the transcript.</summary>
@@ -357,7 +394,34 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
     /// <summary>Two commits inside one model call are one notice, naming both projects once.</summary>
     private static Pending Combine(Pending? first, Pending next) =>
         first is null ? next
-        : new Pending(first.Project == next.Project ? first.Project : $"{first.Project}, {next.Project}", [.. first.Titles, .. next.Titles]);
+        : new Pending(first.Project == next.Project ? first.Project : $"{first.Project}, {next.Project}", [.. first.Titles, .. next.Titles],
+            string.Join("\n", new[] { first.Subject, next.Subject }.Where(x => x is { Length: > 0 })) is { Length: > 0 } both ? both : null,
+            first.ProjectId == next.ProjectId ? first.ProjectId : null);
+
+    /// <summary>
+    /// What the commit says, for finding the ideas it is about: the <c>-m</c> messages in the command when there are any,
+    /// else the subject git prints (<c>[branch abc1234] subject</c>) for a commit written with <c>-F</c> or an editor.
+    /// </summary>
+    public static string? CommitMessage(string? command, string? output)
+    {
+        var parts = new List<string>();
+        foreach (Match m in MessageFlag().Matches(command ?? ""))
+        {
+            var text = m.Groups["d"].Success ? m.Groups["d"].Value : m.Groups["s"].Success ? m.Groups["s"].Value : m.Groups["w"].Value;
+            if (text.Trim().Length > 0) parts.Add(text.Trim());
+        }
+        if (parts.Count == 0)
+            foreach (Match m in CommitLine().Matches(output ?? ""))
+                parts.Add(m.Groups["subject"].Value.Trim());
+        var message = string.Join("\n", parts);
+        return message.Length == 0 ? null : message.Length > 1000 ? message[..1000] : message;
+    }
+
+    [GeneratedRegex("""(?:^|\s)(?:-m|--message)(?:=|\s+)(?:"(?<d>(?:[^"\\]|\\.)*)"|'(?<s>[^']*)'|(?<w>[^\s;&|]+))""")]
+    private static partial Regex MessageFlag();
+
+    [GeneratedRegex(@"^\[[^\]\r\n]+\] (?<subject>.+)$", RegexOptions.Multiline)]
+    private static partial Regex CommitLine();
 
     /// <summary>
     /// The open idea titles the notice names: none at all when the backlog is larger than <see cref="MaxNamedIdeas"/>
@@ -383,8 +447,9 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
         try { return JsonNode.Parse(json) as JsonObject; } catch (JsonException) { return null; }
     }
 
-    /// <summary>The project(s) a pending notice is about, with the open ideas it names.</summary>
-    public sealed record Pending(string Project, List<string> Titles);
+    /// <summary>The project(s) a pending notice is about, the open ideas it names, and what the commit said (for the
+    /// nearest ideas when there are too many to name).</summary>
+    public sealed record Pending(string Project, List<string> Titles, string? Subject = null, string? ProjectId = null);
 
     /// <summary>The global options that take a value, so the value is not mistaken for the subcommand.</summary>
     private static readonly HashSet<string> GlobalValueOptions = new(StringComparer.OrdinalIgnoreCase)

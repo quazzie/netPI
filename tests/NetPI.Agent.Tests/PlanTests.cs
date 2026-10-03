@@ -100,6 +100,7 @@ public static class PlanTests
         Check.Contains(Block("ssh"), "no shell");
         Check.Contains(Block("process", readOnlyCall: true), "no shell", "not even a call that only lists processes");
         Check.Contains(Block("browser"), "browser");
+        Check.Contains(Block("windows", readOnlyCall: true), "live windows", "the windows tool is blocked like the browser, even a call that only reads");
         Check.Contains(Block("write"), "read-only");
         Check.Contains(Block("edit"), "describe the change in the plan".Replace("describe", "Describe"));
         Check.Contains(Block("goal_set"), "can change things");
