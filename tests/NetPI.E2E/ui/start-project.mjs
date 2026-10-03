@@ -93,7 +93,14 @@ try {
   // the split button: two halves, the name one carrying the project
   const main = page.locator('.welcome .split .target');
   const more = page.locator('.welcome .split .target-more');
-  check('the project button is a split button (name half + chevron half)', (await main.count()) === 1 && (await more.count()) === 1);
+  // wait for both halves before counting them: a count() takes no time, and a screen still settling answers it wrongly
+  const waited = await Promise.all([
+    main.waitFor({ timeout: 10_000 }).then(() => 'name ok', (e) => `name: ${e.message.split('\n')[0]}`),
+    more.waitFor({ timeout: 10_000 }).then(() => 'chevron ok', (e) => `chevron: ${e.message.split('\n')[0]}`),
+  ]);
+  check('the project button is a split button (name half + chevron half)',
+    waited.every((w) => w.endsWith('ok')) && (await main.count()) === 1 && (await more.count()) === 1,
+    `${await main.count()} name halves, ${await more.count()} chevron halves, visible ${await main.isVisible()}/${await more.isVisible()}, ${waited.join(' · ')}`);
   check('the name half starts a session in the project shown', (await main.getAttribute('title') ?? '').startsWith('Start a session in'),
     await main.getAttribute('title'));
   check('the chevron half picks a project', (await more.getAttribute('title')) === 'Pick another project', await more.getAttribute('title'));
