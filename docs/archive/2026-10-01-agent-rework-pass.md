@@ -1,5 +1,7 @@
 # Agent rework implementation pass
 
+Archived 2026-10-03: completed implementation and validation record. The measurement subsequently completed in idea-0m4hml, with full-context checks kept off by default; pending-measurement wording below describes the original handoff.
+
 This pass implements capacity/delegation, plugin independence, Ideas verification and decision consumers together. Validation follows implementation, as requested. It builds into the worktree's development output; it does not publish, restart the running app or alter live model settings.
 
 ## Behavior

@@ -1,5 +1,7 @@
 # Faster E2E feedback: implementation plan for local agents
 
+Archived 2026-10-03: delivered implementation record and original design. Remaining performance work is in [E2E follow-ups](../plans/2026-10-03-e2e-followups.md). Historical full-merge-gate guidance below is superseded by AGENTS.md and docs/TESTING.md; CI remains local/manual by owner decision.
+
 Status: A and B delivered, C and D partly, on branch `claude/e2e-feedback` (one agent, sequentially; see "Results and amendments"
 below). Date: 2026-09-30. Plan written against master `19c463a`; implemented on `66c5097`.
 
@@ -69,7 +71,7 @@ syntax; a UI section audit; the policy text in `AGENTS.md` ("never run the whole
 | `ui.smoke` "streaming rows shown" | looked at a state that exists ~100 ms | `hold=1500` in the scenario tag; the streaming state is now in `ui-02-streaming.png` every time |
 | UI walkthrough "streaming thinking opens" (failed in 4 of 5 full runs on master, always at the same step) | **not** the short thinking window that AGENTS.md blames. The step pressed Ctrl+T and waited for `.intro`, which is already on screen when the tab you are on is an empty chat: the text was typed into the old tab's composer while the new session was still being created, and Enter then hit the new, empty one. The page sent `sessions.create` and `agents.use` and never `agent.send` (seen in the frames the page and the mock logged) | `newTab()` waits for the tab count to grow (10 call sites); `mock.thinkDelay` is re-landed too, unchanged, but it was not the cause |
 | UI walkthrough "budget" check | read the Work tab's budget line before the tab's 30 s refresh | the section refreshes the tab like a user would, then waits for the text |
-| Aux `ssh_edit: the remote write script…` (fails every time under `scripts/test.ps1`, passes from Git Bash) | Git's `bash.exe` takes the caller's PATH as it is: from PowerShell there is no Git `usrin`, so `stat` is "command not found" | the helper puts the folder of the bash it starts first on PATH |
+| Aux `ssh_edit: the remote write script…` (fails every time under `scripts/test.ps1`, passes from Git Bash) | Git's `bash.exe` takes the caller's PATH as it is: from PowerShell there is no Git `usr\bin`, so `stat` is "command not found" | the helper puts the folder of the bash it starts first on PATH |
 | the runner's own self-test (failed once, right after a full `e2e.ps1` in the same session) | `e2e.ps1` left `NETPI_E2E_RERUN` in the caller's session and the rerun-hint assertion read it | the script restores it; the self-test sets what it needs itself and has a test for the hint |
 
 **How that one was found:** it never failed when its section ran alone, and a prefix run with the sections silenced passed too. So the walkthrough now saves `FAILED.png` and `FAILED.txt` when it dies (page text, toasts that showed, the frames the page sent, the frames and clients the mock saw; `mock.wsLog` is new), and two or three full runs at once reproduced it within minutes.

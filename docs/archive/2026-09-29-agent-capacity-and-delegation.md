@@ -1,5 +1,7 @@
 # Agents: two local slots plus cloud workers
 
+Archived 2026-10-03: implementation A–D is complete. Optional conversation inheritance (E) remains an unselected proposal, not an active implementation task. The later measurement and default-off decision are recorded in idea-0m4hml; the earlier pending-measurement notes below are historical.
+
 Status: A–D implemented and validated; optional E remains deferred. No deployment performed.
 Date: 2026-09-29. Reviewed source baseline: 3ee1c22.
 

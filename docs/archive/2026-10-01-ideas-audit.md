@@ -1,5 +1,7 @@
 # Ideas audit — 2026-10-01
 
+Archived 2026-10-03: completed backlog audit. Counts, statuses and findings below are the dated snapshot, not the current backlog.
+
 Reviewed all 107 records in the initial live backlog: 91 stamped NetPI and 16 external or unbound. Read the active plans and historical completion/consolidation records, traced NetPI implementation claims through source and history, and used the owning unit suites and full E2E gate for the changes made here. Historical completion records were retained unless source contradicted them; this was not a new live reproduction of every old bug.
 
 External model research, NInfer engine work, radio features and remote administration were reviewed as backlog records. Their source/deployment state was not independently verified in this NetPI audit. Their status was preserved and the limitation recorded; no remote cleanup or device control was performed.
