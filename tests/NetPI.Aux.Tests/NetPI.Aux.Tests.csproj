@@ -39,5 +39,11 @@
     <ProjectReference Include="../../plugins/NetPI.Runtime/NetPI.Runtime.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Files/NetPI.Tools.Files.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Shell/NetPI.Tools.Shell.csproj" />
+    <!-- the windows tool (its UI Automation helper builds into the plugin's agent folder) -->
+    <ProjectReference Include="../../plugins/NetPI.Tools.Windows/NetPI.Tools.Windows.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <!-- the window the windows tool's tests drive: built, not referenced -->
+    <ProjectReference Include="../NetPI.WinTestApp/NetPI.WinTestApp.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" Private="false" />
   </ItemGroup>
 </Project>

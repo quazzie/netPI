@@ -45,7 +45,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public const string OnText =
-        "Plan mode is on: the user wants a plan before anything changes. You are read-only. write, edit, the shell (bash, pwsh, ssh, process) and the browser are " +
+        "Plan mode is on: the user wants a plan before anything changes. You are read-only. write, edit, the shell (bash, pwsh, ssh, process), the browser and the windows tool are " +
         "blocked, and so are MCP tools that change things. Explore with read, grep, find and ls, web_search and web_fetch, and MCP tools that only read. " +
         "Ask with ask_user when a decision is the user's. For broad research start subagents with agent_spawn on whichever agent suits the job " +
         "(agent_choices shows what each is for); they are read-only too. When you understand the task, submit the plan with plan_submit " +

@@ -1,0 +1,139 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>NetPI</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1d1f23;
+        --dim: #6b7079;
+        --bg: #fff;
+        --line: #d9dce1;
+        --accent: #3b6fd8;
+        --ok: #2e9e5b;
+        --err: #c8343b;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e6e7ea;
+          --dim: #9aa0aa;
+          --bg: #1e1f23;
+          --line: #3a3d44;
+        }
+      }
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 12px;
+        font: 13px/1.4 system-ui, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--dim);
+      }
+      .dot.on {
+        background: var(--ok);
+      }
+      .tab {
+        padding: 6px 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        margin-bottom: 8px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .tab small {
+        display: block;
+        color: var(--dim);
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      label {
+        display: block;
+        color: var(--dim);
+        margin: 6px 0 3px;
+      }
+      select,
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        font: inherit;
+        color: inherit;
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 4px 6px;
+      }
+      textarea {
+        height: 58px;
+        resize: vertical;
+      }
+      button {
+        font: inherit;
+        padding: 5px 12px;
+        border-radius: 5px;
+        border: 1px solid var(--line);
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      .row {
+        display: flex;
+        gap: 6px;
+        margin-top: 8px;
+        align-items: center;
+      }
+      .msg {
+        color: var(--dim);
+        margin-top: 8px;
+      }
+      .msg.err {
+        color: var(--err);
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <h1><span id="dot" class="dot"></span>NetPI</h1>
+    <div id="off" hidden>
+      <div class="msg">Not connected to NetPI. Start NetPI, then reload this extension (chrome://extensions) if it was started on another port.</div>
+      <div class="row"><button id="retry">Try again</button></div>
+    </div>
+    <div id="on" hidden>
+      <div class="tab"><span id="title"></span><small id="url"></small></div>
+      <div id="sharing" hidden>
+        <div class="msg">Shared with <b id="sharedWith"></b>.</div>
+        <div class="row"><button id="stop">Stop sharing</button></div>
+      </div>
+      <div id="form">
+        <label for="chat">Share this tab with</label>
+        <select id="chat"></select>
+        <label for="text">Message to the agent (optional)</label>
+        <textarea id="text" placeholder="What should it do with this tab?"></textarea>
+        <div class="row"><button id="share" class="primary">Share</button></div>
+      </div>
+    </div>
+    <div id="status" class="msg"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

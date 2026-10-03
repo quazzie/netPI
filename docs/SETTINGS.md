@@ -406,12 +406,14 @@ refuses an `ssh` download into another checkout of the repository.
 | `decide.maxItems` | `500` | most items per `decide` call (1–5000) |
 | `decide.parallel` | `4` | `decide` requests at once (1–16) |
 | `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` and `browser` (found in the usual install folders or on PATH) |
-| `browser.target` | `chrome` | Where a chat's `browser` tab opens: `chrome`, the user's running Chrome (remote debugging allowed at `chrome://inspect/#remote-debugging`), or `own`, the agents' hidden browser. A call can ask for the other with `browser` |
+| `browser.target` | `own` | Where a chat's `browser` tab opens: `own`, the agents' browser (headless; the user sees it, and logs in, in the chat's Browser view), or `chrome`, the user's running Chrome — through the NetPI extension when it is connected, else through remote debugging allowed at `chrome://inspect/#remote-debugging`. A call can ask for the other with `browser` |
 | `browser.chromeUserData` | Chrome's default | The folder holding the user's Chrome `DevToolsActivePort` (`%LOCALAPPDATA%\Google\Chrome\User Data`, `~/Library/Application Support/Google/Chrome`, `~/.config/google-chrome`) |
-| `browser.headless` | `true` | `false`: the agents' browser opens a window (to log in to a site by hand, or to watch). Applies when the browser next starts |
+| `browser.headless` | `true` | `false`: the agents' browser opens a window of its own. The chat's Browser view shows its tab either way. Applies when the browser next starts |
 | `browser.profile` | `default` | A name: logins and cookies are kept in `<home>/browser/<name>`. `temp`: a fresh profile each time the browser starts, deleted when it closes |
-| `browser.idleMinutes` | `10` | The browser closes after this many minutes without a `browser` call (1–1440); the chats' tabs close with it |
-| `browser.maxControls` | `200` | Controls listed per page, the ones nearest the visible part (50–1000); `find` reaches the rest |
+| `browser.idleMinutes` | `10` | The agents' browser closes after this many minutes without a `browser` call and with no Browser view open (1–1440); the chats' tabs close with it. The connection to the user's Chrome over its DevTools port is kept while a chat has a tab there (Chrome asks again for every new connection) |
+| `browser.maxControls` | `200` | Controls listed per page, the ones nearest the visible part (50–5000); `find`, and `snapshot` with `all`, reach the rest |
+| `windows.maxControls` | `300` | Controls listed per window by the `windows` tool, the ones nearest the visible part (50–5000); `find`, and `snapshot` with `all`, reach the rest |
+| `windows.journal` | `true` | Every `windows` step (the action, its arguments, the result) as a JSON line in `<home>/windows/journal-yyyyMMdd.jsonl`: data to train a smaller control picker on |
 
 ## Goals
 

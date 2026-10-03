@@ -22,6 +22,8 @@ IdeasCommitTests.Register(runner);
 IdeasNoticeTests.Register(runner);
 TodoTests.Register(runner);
 WebTests.Register(runner);
+BrowserTests.Register(runner);
+WindowsTests.Register(runner);
 MediaTests.Register(runner);
 DecideTests.Register(runner);
 DecisionReworkTests.Register(runner);

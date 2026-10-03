@@ -1,0 +1,5 @@
+{
+  "id": "netpi.tools.windows",
+  "name": "Windows tools",
+  "description": "windows: read and use the windows of native Windows apps through UI Automation (Windows only)."
+}

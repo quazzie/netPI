@@ -10,8 +10,10 @@ namespace NetPI.Tools.Web;
 /// <summary>
 /// Web tools (category "web"): <c>web_fetch</c> (a page as Markdown/text, paged with offset), <c>web_search</c> (SearXNG
 /// or the Brave Search API), <c>screenshot</c> (a URL through a headless Edge/Chrome, or the NetPI window through the
-/// desktop shell's <c>desktop.capture</c>) and <c>browser</c> (the agents' own browser: a tab per chat, driven over the
-/// DevTools protocol). Light limits only (http/https, timeouts, size caps): agents also have curl.
+/// desktop shell's <c>desktop.capture</c>) and <c>browser</c> (a tab per chat in the agents' own browser or the user's
+/// Chrome, driven over the DevTools protocol). Also the chat's Browser view (a session tab: the tab live, the user's
+/// input back) and the NetPI Chrome extension's endpoint. Light limits only (http/https, timeouts, size caps): agents
+/// also have curl.
 /// </summary>
 [NetPiPlugin("netpi.tools.web", Name = "Web tools", Description = "web_fetch, web_search (SearXNG / Brave), screenshot and browser", Order = 25)]
 public sealed class WebPlugin : INetPiPlugin
@@ -33,12 +35,12 @@ public sealed class WebPlugin : INetPiPlugin
                 SettingInfo.FilePath("web.browserPath", "Browser for screenshots", "Empty: the Edge or Chrome found.", ChromiumProcess.Find(null) ?? "none found (install Edge or Chrome)"),
                 SettingInfo.Str("web.userAgent", "User agent", null, null, WebHttp.UserAgent),
                 SettingInfo.Str("web.search.braveUrl", "Brave API URL", "https://api.search.brave.com/res/v1/web/search"),
-                SettingInfo.Choice("browser.target", "Browser tabs open in", "chrome", ["chrome", "own"], "chrome: the user's running Chrome (allow remote debugging at chrome://inspect/#remote-debugging). own: the agents' hidden browser. A call can ask for the other."),
+                SettingInfo.Choice("browser.target", "Browser tabs open in", "own", ["own", "chrome"], "own: the agents' browser (headless; the user sees it in the chat's Browser view). chrome: the user's Chrome, through the NetPI extension (or remote debugging at chrome://inspect/#remote-debugging). A call can ask for the other."),
                 SettingInfo.Str("browser.chromeUserData", "Chrome user data folder", null, "Where the user's Chrome keeps DevToolsActivePort. Empty: Chrome's default folder.", "default"),
-                SettingInfo.Bool("browser.headless", "Browser without a window", true, "Off: the agents' browser opens a window (to log in to a site by hand, or to watch). Applies when the browser next starts."),
+                SettingInfo.Bool("browser.headless", "Browser without a window", true, "Off: the agents' browser opens a window of its own. The chat's Browser view shows it either way. Applies when the browser next starts."),
                 SettingInfo.Str("browser.profile", "Browser profile", "default", "A name: logins and cookies are kept in <home>/browser/<name>. temp: a fresh profile each time the browser starts.", "default"),
                 SettingInfo.Int("browser.idleMinutes", "Close the browser after", 10, "Minutes without a browser call.", 1, 1440, "min"),
-                SettingInfo.Int("browser.maxControls", "Controls listed per page", 200, "The ones nearest the visible part; find reaches the rest.", 50, 1000),
+                SettingInfo.Int("browser.maxControls", "Controls listed per page", 200, "The ones nearest the visible part; find, and snapshot with all, reach the rest.", 50, 5000),
             ],
         });
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -46,12 +48,31 @@ public sealed class WebPlugin : INetPiPlugin
         var cache = new FetchCache();
         context.Tools.Register(new WebFetchTool(context, http, cache));
         context.Tools.Register(new WebSearchTool(context, http));
-        context.Tools.Register(new ScreenshotTool(context));
         var browser = new BrowserHost(context);
+        context.Tools.Register(new ScreenshotTool(context, browser));
         context.Tools.Register(new BrowserTool(context, browser));
+        new BrowserView(context, browser).Register();
+        context.Ui.AddTab(new UiTabInfo { Id = "browser", Title = "Browser", Panel = UiPanel.Session, Icon = "globe", Order = 10, Module = "ui.js" });
+        context.Rpc.RegisterReadOnly("browser.extension", (_, _) => Task.FromResult<object?>(new
+        {
+            folder = browser.Relay.Folder,
+            connected = browser.Relay.IsOpen,
+            hello = browser.Relay.Hello,
+        }), "The NetPI Chrome extension: where to load it from (chrome://extensions → Load unpacked) and whether it is connected → { folder, connected, hello }");
         context.Events.Subscribe(EventTypes.SessionDeleted, e =>
         {
             if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) _ = browser.CloseTabAsync(id);
+        });
+        // the extension's folder, with the server's address once the server says it (server.json, written when it listens)
+        try { browser.Relay.Install(null); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { context.Logger.LogWarning(ex, "browser: the Chrome extension could not be copied to {Folder}", browser.Relay.Folder); }
+        _ = Task.Run(async () =>
+        {
+            for (var k = 0; k < 600 && !context.Stopping.IsCancellationRequested; k++)
+            {
+                if (ServerUrl(context) is { } url) { try { browser.Relay.Install(url); } catch (IOException) { } return; }
+                try { await Task.Delay(1000, context.Stopping).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
+            }
         });
         // closes the browser when the plugin unloads (Stopping is cancelled first)
         context.Stopping.Register(() =>
@@ -60,6 +81,17 @@ public sealed class WebPlugin : INetPiPlugin
             catch (Exception ex) { context.Logger.LogDebug(ex, "closing the browser failed"); }
         });
         return Task.CompletedTask;
+    }
+
+    /// <summary>This process's server address, from <c>&lt;home&gt;/server.json</c> (null until the server listens).</summary>
+    private static string? ServerUrl(IPluginContext context)
+    {
+        try
+        {
+            var doc = JsonNode.Parse(File.ReadAllText(Path.Combine(context.Paths.Home, "server.json")));
+            return doc?["pid"]?.GetValue<int>() == Environment.ProcessId ? doc["url"]?.GetValue<string>() : null;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or InvalidOperationException or FormatException) { return null; }
     }
 }
 
@@ -108,8 +140,8 @@ internal sealed record WebOptions(
             BrowserHeadless: s.Get("browser.headless", true),
             BrowserProfile: ProfileName(s.Get<string>("browser.profile")),
             BrowserIdleMinutes: Math.Clamp(s.Get("browser.idleMinutes", 10), 1, 1440),
-            BrowserMaxControls: Math.Clamp(s.Get("browser.maxControls", 200), 50, 1000),
-            BrowserTarget: Blank(s.Get<string>("browser.target"))?.ToLowerInvariant() == "own" ? "own" : "chrome",
+            BrowserMaxControls: Math.Clamp(s.Get("browser.maxControls", 200), 50, 5000),
+            BrowserTarget: Blank(s.Get<string>("browser.target"))?.ToLowerInvariant() == "chrome" ? "chrome" : "own",
             BrowserChromeUserData: Blank(s.Get<string>("browser.chromeUserData")));
     }
 

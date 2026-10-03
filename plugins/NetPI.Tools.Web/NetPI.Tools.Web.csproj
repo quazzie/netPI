@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <InternalsVisibleTo Include="NetPI.Aux.Tests" />
+    <!-- The NetPI Chrome extension: copied to <home>/browser/chrome-extension at start, with its config.json -->
+    <Content Include="extension/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
