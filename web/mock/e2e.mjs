@@ -2870,6 +2870,56 @@ log('capability removal and recovery');
   } finally { await rpcCall('mock.capabilities', { missing: [] }); }
 }
 
+// ------------------------------------------------------------------ collapsible session groups: defaults, persistence, search
+if (want('sessions: collapsible groups (defaults, persistence, search)')) {
+log('sessions: collapsible groups (defaults, persistence, search)');
+{
+  // last section on purpose: it reloads the page, so nothing later may depend on the current UI state
+  await openStripTab('left', 'Sessions');
+  const label = (name) => page.locator('.panel.left .list .np-section-label', { hasText: name });
+  const section = (name) => page.locator('.panel.left .list section.np-section', { has: page.locator('.np-section-label', { hasText: name }) });
+  // the collapsed state is a class on the section element itself (a locator only sees its descendants)
+  const collapsed = (name) => page.locator('.panel.left .list section.np-section.np-section-collapsed', { has: page.locator('.np-section-label', { hasText: name }) });
+
+  // a fresh window has no stored state: the defaults show (Today open, the rest closed)
+  check('defaults: Today is open', (await section('Today').locator('.srow').count()) > 0, `rows: ${await section('Today').locator('.srow').count()}`);
+  check('defaults: the older groups are closed',
+    (await collapsed('Earlier').count()) === 1 && (await section('Earlier').locator('.srow').count()) === 0,
+    `Earlier rows: ${await section('Earlier').locator('.srow').count()}`);
+
+  // collapsing an open-by-default group stores the state per key
+  await section('Today').locator('.np-section-toggle').click();
+  check('collapsing hides the rows',
+    (await collapsed('Today').count()) === 1 && (await section('Today').locator('.srow').count()) === 0);
+  const stored = await page.evaluate(() => localStorage.getItem('np.section.sessions.today'));
+  check('the state is stored in np.section.sessions.*', stored === '0', `localStorage: ${stored}`);
+
+  // and it survives a reload
+  await page.reload();
+  await label('Today').waitFor({ timeout: 10_000 });
+  await openStripTab('left', 'Sessions');
+  check('after a reload, the collapsed group is still collapsed', (await collapsed('Today').count()) === 1);
+
+  // a search shows its matches inside closed groups, without touching the stored state
+  const search = page.locator('.panel.left .search-input');
+  await search.fill('Scratch');
+  await page.locator('.srow', { hasText: 'Scratch' }).waitFor({ timeout: 5_000 });
+  check('a match inside a closed group is shown',
+    (await section('Earlier').locator('.srow', { hasText: 'Scratch' }).count()) === 1
+      && (await section('Earlier').locator('.np-section-toggle').count()) === 0);
+  check('the search wrote no state', (await page.evaluate(() => localStorage.getItem('np.section.sessions.earlier'))) === null);
+  await shot(page, '15c-sessions-search');
+  await search.fill('');
+  await page.waitForTimeout(300);
+  check('clearing the search returns the stored state',
+    (await collapsed('Today').count()) === 1 && (await section('Earlier').locator('.srow').count()) === 0);
+  await shot(page, '15c-sessions-groups');
+  // leave the panel the way the user found it
+  await section('Today').locator('.np-section-toggle').click();
+  check('the group opens again on purpose', (await section('Today').locator('.srow').count()) > 0);
+}
+}
+
 // ------------------------------------------------------------------ summary
 // expected noise from the deliberate plugin 500 and the server restart
 const EXPECTED = /favicon|Failed to fetch dynamically imported module|failed to load tab|status of 500|WebSocket connection to|ERR_CONNECTION_REFUSED/;

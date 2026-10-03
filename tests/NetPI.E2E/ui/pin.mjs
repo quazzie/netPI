@@ -79,15 +79,15 @@ try {
   check('session listed in the sessions panel', true);
 
   // no pinned group before anything is pinned
-  check('no Pinned group before pinning', (await page.locator('.list > .glabel', { hasText: 'Pinned' }).count()) === 0);
+  check('no Pinned group before pinning', (await page.locator('.list .np-section-label', { hasText: 'Pinned' }).count()) === 0);
 
   // hover opens the row's actions; the pin button toggles the session
   await row.hover();
   await row.getByRole('button', { name: 'Pin to top' }).click();
-  await page.locator('.list > .glabel', { hasText: 'Pinned' }).first().waitFor({ timeout: 5_000 });
-  const labels = await page.locator('.list > .glabel').allInnerTexts();
+  await page.locator('.list .np-section-label', { hasText: 'Pinned' }).first().waitFor({ timeout: 5_000 });
+  const labels = await page.locator('.list .np-section-label').allTextContents();
   check('a Pinned group tops the list above the recency groups', labels[0].toLowerCase() === 'pinned' && labels[1].toLowerCase() === 'today', labels.join(', '));
-  const pinnedRow = page.locator('.list > .glabel:has-text("Pinned") + .srow');
+  const pinnedRow = page.locator('.list section.np-section', { has: page.locator('.np-section-label', { hasText: 'Pinned' }) }).locator('.srow');
   check('the pinned row leads the list', (await pinnedRow.count()) === 1 && (await pinnedRow.first().innerText()).includes(SESSION));
   check('the pinned row shows the unpin action', (await pinnedRow.getByRole('button', { name: 'Unpin' }).count()) === 1);
   await shot(page, 'ui-pin-01-pinned');
@@ -95,9 +95,9 @@ try {
   // unpin: the group goes away and the row is back in its recency group
   await pinnedRow.first().hover();
   await pinnedRow.first().getByRole('button', { name: 'Unpin' }).click();
-  const gone = await page.locator('.list > .glabel', { hasText: 'Pinned' }).first().waitFor({ state: 'detached', timeout: 5_000 }).then(() => true).catch(() => false);
+  const gone = await page.locator('.list .np-section-label', { hasText: 'Pinned' }).first().waitFor({ state: 'detached', timeout: 5_000 }).then(() => true).catch(() => false);
   check('unpinning removes the Pinned group', gone);
-  const labels2 = await page.locator('.list > .glabel').allInnerTexts();
+  const labels2 = await page.locator('.list .np-section-label').allTextContents();
   check('the row is back in its recency group', labels2[0].toLowerCase() === 'today' && (await page.locator('.srow', { hasText: SESSION }).count()) === 1, labels2.join(', '));
   await shot(page, 'ui-pin-02-unpinned');
 

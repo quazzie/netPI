@@ -518,7 +518,10 @@ tab (Sessions, Projects, Files, Work, Ideas, Diagnostics) is designed for 220px 
 Per-tab narrow layouts:
 
 - **Sessions:** search box and **+** share one row. Line 2 shows the project · message count · `› N`
-  subagents (the word "subagents" only when the panel is ≥ 260px). Subagent rows are one line.
+  subagents (the word "subagents" only when the panel is ≥ 260px). Subagent rows are one line. The groups
+  (Pinned, Today, Yesterday, Previous 7 days, Earlier) are collapsible kit `Section`s: Pinned and Today
+  start open, the rest closed, and each remembers its state per window in `np.section.sessions.<key>`;
+  while a search is active every group is open and no state is written.
 - **Work:** an agent reads its name, slot pips and its switch; line 2 shows the model and a state chip (`2 free`, `full`,
   `off`, `not loaded`). Under it one fixed-height row per instance: a busy one has the chat title (a subagent: its name, a
   `sub` mark and `for <parent chat>`), then the activity and elapsed time; a free one says `free`. A process shows its

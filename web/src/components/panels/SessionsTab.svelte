@@ -3,6 +3,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import IconButton from '../../lib/kit/IconButton.svelte';
   import TimeAgo from '../../lib/kit/TimeAgo.svelte';
+  import Section from '../../lib/kit/Section.svelte';
   import { app, openSession, newSession, updateSession, deleteSession, sessionStatus, loadSessions } from '../../lib/state/app.svelte.js';
   import { confirmDialog, toast } from '../../lib/state/ui.svelte.js';
   import { rpc } from '../../lib/rpc.svelte.js';
@@ -60,6 +61,19 @@
     for (const s of roots) if (!pinnedIds.has(s.id)) map.get(recencyBucket(s.updatedAt, now)).push(s);
     return order.map((label) => ({ label, items: map.get(label) })).filter((g) => g.items.length);
   });
+
+  // a search shows every match: while a query is active all groups render open with no toggle, and the
+  // stored state is left untouched
+  const searching = $derived(q.trim() !== '');
+
+  // per recency group: the storage key and the default open state (a value stored in np.section.sessions.<key>
+  // wins from the first toggle on)
+  const GROUP_META = {
+    Today: { key: 'today', open: true },
+    Yesterday: { key: 'yesterday', open: false },
+    'Previous 7 days': { key: 'week', open: false },
+    Earlier: { key: 'earlier', open: false },
+  };
 
   let searchTimer = 0;
   $effect(() => {
@@ -252,16 +266,27 @@
 
   <div class="list np-scroll">
     {#if pinned.length}
-      <div class="glabel">Pinned</div>
-      {#each pinned as s (s.id)}
-        {@render row(s, 0)}
-      {/each}
+      <Section class="sgroup" title="Pinned" count={pinned.length} collapsible={!searching} flush storageKey="sessions.pinned">
+        {#each pinned as s (s.id)}
+          {@render row(s, 0)}
+        {/each}
+      </Section>
     {/if}
     {#each groups as g (g.label)}
-      <div class="glabel">{g.label}</div>
-      {#each g.items as s (s.id)}
-        {@render row(s, 0)}
-      {/each}
+      {@const meta = GROUP_META[g.label]}
+      <Section
+        class="sgroup"
+        title={g.label}
+        count={g.items.length}
+        collapsible={!searching}
+        flush
+        open={meta.open}
+        storageKey={`sessions.${meta.key}`}
+      >
+        {#each g.items as s (s.id)}
+          {@render row(s, 0)}
+        {/each}
+      </Section>
     {/each}
     {#if !pinned.length && !groups.length}
       <div class="np-empty">
@@ -368,6 +393,11 @@
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--fg-dim);
+  }
+  /* the collapsible groups are the kit's Section: keep the list's own spacing, drop the block's divider */
+  .list :global(.sgroup) {
+    padding-bottom: 4px;
+    border-bottom: 0;
   }
   .srow {
     position: relative;
