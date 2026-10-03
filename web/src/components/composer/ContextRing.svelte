@@ -1,14 +1,19 @@
 <script>
-  import { tokens } from '../../lib/format.js';
+  import { stamp, tokens } from '../../lib/format.js';
   import Icon from '../../lib/kit/Icon.svelte';
   import Popover from '../Popover.svelte';
   import { rpc } from '../../lib/rpc.svelte.js';
+  import { hasRpc, isBusy } from '../../lib/state/app.svelte.js';
   import { openPanelTab } from '../../lib/state/tabs.svelte.js';
+  import { toast } from '../../lib/state/ui.svelte.js';
   /**
    * Context usage ring: used / window tokens. Hover for the one-line reading, press for the breakdown
-   * (what the prompt is made of, from context.preview) and a way into the Diagnostics context view.
+   * (what the prompt is made of, from context.preview), how often this chat was compacted, a way to compact it
+   * now and a way into the Diagnostics context view.
+   *   compactions       the chat's compaction summaries (role summary, meta.kind compaction), oldest first
+   *   historyTruncated  older messages are not loaded, so the count is a lower bound
    */
-  let { used = 0, window: win = 0, sessionId = null } = $props();
+  let { used = 0, window: win = 0, sessionId = null, compactions = [], historyTruncated = false } = $props();
   const R = 7;
   const C = 2 * Math.PI * R;
   const frac = $derived(win ? Math.min(1, Math.max(0, used / win)) : 0);
@@ -41,6 +46,54 @@
   const promptTokens = $derived(preview ? Math.round((preview.systemPrompt?.length ?? 0) / 3.6) : 0);
   const toolChars = $derived((preview?.tools ?? []).reduce((n, t) => n + (t.chars ?? 0) + (t.schemaChars ?? 0), 0));
   const free = $derived(win ? Math.max(0, win - used) : 0);
+
+  // ------------------------------------------------------------------ compactions
+  // Every compaction appends a summary message (meta.kind 'compaction'), so the loaded history says how many ran.
+  // A summary folded into a later one stays in the history (dimmed), so this counts compactions, not summaries
+  // that still count for the model.
+  const count = $derived(compactions.length);
+  const countText = $derived(count === 0 ? (historyTruncated ? '—' : '0') : `${count}${historyTruncated ? '+' : ''}`);
+  const countTitle = $derived(
+    historyTruncated
+      ? 'The older messages of this chat are not loaded, so an earlier compaction can sit outside the window.'
+      : 'How many times older messages of this chat were summarized away.',
+  );
+  const lastCompaction = $derived(compactions.at(-1));
+  /** What the newest compaction did, in the words its own summary carries: "41k → 18k · auto · 14:32". */
+  const lastReading = $derived.by(() => {
+    const m = lastCompaction?.meta;
+    if (!m) return '';
+    const parts = [];
+    if (m.tokensBefore != null && m.tokensAfter != null) parts.push(`${tokens(m.tokensBefore)} → ${tokens(m.tokensAfter)}`);
+    if (m.mode) parts.push(m.mode);
+    const at = lastCompaction?.createdAt ? stamp(lastCompaction.createdAt) : '';
+    if (at) parts.push(at);
+    return parts.join(' · ');
+  });
+
+  // ------------------------------------------------------------------ compact now
+  // Hidden when the Compaction plugin is not loaded, not when compaction.enabled is off: that setting gates the
+  // auto hook only, and a manual compact still runs.
+  const canCompact = $derived(!!sessionId && hasRpc('compaction.run'));
+  const busy = $derived(!!sessionId && isBusy(sessionId)); // the server refuses with `busy` while the agent runs
+  const BUSY_TIP = 'The agent is running in this session. Compaction happens automatically while it runs; wait for it to finish (or abort it) to compact manually.';
+  let compacting = $state(false);
+
+  async function compactNow() {
+    if (!sessionId || compacting) return;
+    compacting = true;
+    try {
+      // the long operations pass their own deadline; the service narrates the run over agent.notice meanwhile
+      const res = await rpc('compaction.run', { sessionId }, { timeout: 300_000 });
+      toast(res ?? 'Compaction finished.', 'info');
+    } catch (e) {
+      // 'busy', 'no_model', a failed summary, or a timeout that may still have compacted on the server: all of
+      // them carry the sentence to read, so the failure is never a silent no-op.
+      toast(e?.message ?? String(e), 'warn');
+    } finally {
+      compacting = false;
+    }
+  }
 
   function openDiagnostics() {
     open = false;
@@ -98,6 +151,11 @@
         {:else}
           <div class="row"><span>Window</span><b class="np-dim">unknown</b></div>
         {/if}
+        <div class="row" title={countTitle}>
+          <span>Compactions</span>
+          <b class="np-mono">{countText}</b>
+        </div>
+        {#if lastReading}<div class="read np-dim tiny">{lastReading}</div>{/if}
       </div>
 
       <div class="sec">
@@ -119,6 +177,17 @@
       </div>
 
       <div class="foot">
+        {#if canCompact}
+          <button
+            class="np-chip link"
+            onclick={compactNow}
+            disabled={compacting || busy}
+            title={busy ? BUSY_TIP : 'Summarize the older messages of this chat now (what /compact does)'}
+          >
+            {#if compacting}<span class="np-spinner"></span>{:else}<Icon name="layers" size={12} />{/if}
+            <span>{compacting ? 'Compacting…' : 'Compact now'}</span>
+          </button>
+        {/if}
         <button class="np-chip link" onclick={openDiagnostics} title="Open Diagnostics → Context (prompt, tools, AGENTS.md, skills)">
           <Icon name="bug" size={12} /><span>Breakdown in Diagnostics</span>
         </button>
@@ -230,6 +299,10 @@
     color: var(--fg);
     font-weight: 500;
   }
+  .read {
+    margin-top: -2px;
+    text-align: right;
+  }
   .sec {
     margin-top: 9px;
     padding-top: 8px;
@@ -264,6 +337,14 @@
     height: 24px;
     padding: 0 8px;
     font-size: var(--fs-xs);
+  }
+  .link[disabled] {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .link[disabled]:hover {
+    border-color: var(--border);
+    color: var(--fg-muted);
   }
   .tiny {
     font-size: 10px;
