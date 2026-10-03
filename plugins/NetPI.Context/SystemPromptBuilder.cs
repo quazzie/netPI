@@ -99,6 +99,9 @@ internal sealed class PromptStore(IPluginContext ctx)
     private readonly ConcurrentDictionary<string, byte> _reset = new(StringComparer.Ordinal);
     public bool WasReset(string sessionId) => _reset.ContainsKey(sessionId);
     private readonly ConcurrentDictionary<string, ToolBaseline> _tools = new(StringComparer.Ordinal);
+    // the name→revision of the tools of the last prompt a session was sent: the per-turn definition-notice diff compares
+    // against it, so an unchanged session does not re-read and re-parse its sent prompts on every model call (idea-l1o09d)
+    private readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, string>> _lastSent = new(StringComparer.Ordinal);
     private IDataCollection _prompts = null!;
     private IDataCollection _baselines = null!;
     private IDataCollection _sent = null!;
@@ -221,16 +224,24 @@ internal sealed class PromptStore(IPluginContext ctx)
         try
         {
             // the version is the highest the session has plus one: read it and write the row in one transaction
-            return ctx.Data.Transaction(() =>
+            var version = ctx.Data.Transaction(() =>
             {
-                var version = NextVersion(sessionId);
-                _sent.Insert(SentKey(sessionId, version), new JsonObject
+                var v = NextVersion(sessionId);
+                _sent.Insert(SentKey(sessionId, v), new JsonObject
                 {
-                    ["sessionId"] = sessionId, ["version"] = version, ["afterSeq"] = afterSeq,
+                    ["sessionId"] = sessionId, ["version"] = v, ["afterSeq"] = afterSeq,
                     ["prompt"] = prompt, ["tools"] = definitions, ["createdAt"] = now,
                 });
-                return version;
+                return v;
             });
+            if (version > 0)
+            {
+                // the last prompt the session was sent, by name and revision: the per-turn definition diff reads it in memory
+                var revisions = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var t in tools) if (t.Revision is { } r) revisions[t.Name] = r;
+                _lastSent[sessionId] = revisions;
+            }
+            return version;
         }
         catch (Exception ex)
         {
@@ -243,6 +254,30 @@ internal sealed class PromptStore(IPluginContext ctx)
     private int NextVersion(string sessionId) =>
         (int)(_sent.Find(new DataQuery().Eq("sessionId", sessionId).Order("version", descending: true).Take(1))
             .Select(d => Number(d.Doc, "version")).FirstOrDefault()) + 1;
+
+    /// <summary>
+    /// The name→revision of the tools of the last prompt a session was sent (see <see cref="RecordSent"/>): kept in memory so
+    /// the per-turn definition-notice diff does not re-read and re-parse <c>context_sent</c> on every model call (idea-l1o09d).
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? LastSentRevisions(string sessionId)
+    {
+        if (_lastSent.TryGetValue(sessionId, out var cached)) return cached;
+        try
+        {
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            var last = _sent.Find(new DataQuery().Eq("sessionId", sessionId).Order("version", descending: true).Take(1)).FirstOrDefault();
+            foreach (var entry in (last?.Doc["tools"] as JsonArray)?.OfType<JsonObject>() ?? [])
+                if (entry["name"] is JsonValue v && v.TryGetValue<string>(out var name)
+                    && entry["revision"] is JsonValue r && r.TryGetValue<string>(out var revision)) map[name] = revision;
+            _lastSent[sessionId] = map;
+            return map;
+        }
+        catch (Exception ex)
+        {
+            ctx.Logger.LogWarning(ex, "Reading the last-sent tool revisions of {Session} failed", sessionId);
+            return null;
+        }
+    }
 
     /// <summary>The prompts the session was sent, oldest first (see <see cref="RecordSent"/>).</summary>
     public List<SentPrompt> Sent(string sessionId)
@@ -339,6 +374,7 @@ internal sealed class PromptStore(IPluginContext ctx)
     {
         Reset(sessionId);
         _reset.TryRemove(sessionId, out _);   // Reset only ever writes it: without this it was the one entry a deleted chat left behind
+        _lastSent.TryRemove(sessionId, out _);
         try { _sent.DeleteWhere(new DataQuery().Eq("sessionId", sessionId)); }
         catch (Exception ex) { ctx.Logger.LogDebug(ex, "Deleting the prompts of {Session} failed", sessionId); }
     }

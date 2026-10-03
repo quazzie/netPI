@@ -10,7 +10,8 @@ namespace NetPI.Runtime;
 //   agent_records  key: the agent id
 //       index fields: sessionId (text), createdAt (text, the ISO timestamp it is written as), status (text)
 //       { id, sessionId, parentAgentId, name, status, task, result, error, model, createdAt, finishedAt,
-//         stats: { info: AgentInfo, instructions: string|null, notifyParent: bool },
+//         stats: { info: the record's AgentInfo (task and result stored once, at the top level),
+//                  instructions: string|null, notifyParent: bool },
 //         queue: [ { mode: "steer"|"queue", input: UserInput } ] }
 
 /// <summary>Persisted agent record (so recent agents survive restarts).</summary>
@@ -35,6 +36,16 @@ internal sealed class AgentStore(IPluginContext ctx)
 
     private static string? Text(JsonObject doc, string field) =>
         doc[field] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    /// <summary>The record's <see cref="AgentInfo"/> as stored: the object minus the fields the record keeps at the top
+    /// level (task and result, the two that can be large), so each is stored once.</summary>
+    private static JsonObject? InfoJson(AgentInfo info)
+    {
+        var doc = JsonSerializer.SerializeToNode(info, NetPiJson.Options)?.AsObject();
+        doc?.Remove("task");
+        doc?.Remove("result");
+        return doc;
+    }
 
     private static DateTimeOffset? Time(JsonObject doc, string field) =>
         Text(doc, field) is { } t && DateTimeOffset.TryParse(t, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at) ? at : null;
@@ -89,7 +100,7 @@ internal sealed class AgentStore(IPluginContext ctx)
                 }).ToArray()),
                 ["stats"] = new JsonObject
                 {
-                    ["info"] = JsonSerializer.SerializeToNode(info, NetPiJson.Options),
+                    ["info"] = InfoJson(info),
                     ["instructions"] = instructions,
                     ["notifyParent"] = notifyParent,
                 },

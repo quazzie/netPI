@@ -10,11 +10,20 @@ namespace NetPI.Agents;
 // usage_calls — one document per model call: reserved when the call starts, settled in place when it ends.
 //   key:   the call id, a decimal string allocated from the "usage_calls" counter in "counters" (never reused;
 //          migrate the old ids, and set the counter to the old maximum)
-//   doc:   { ts, day, sessionId?, rootSessionId?, agentId?, lane?, provider, model, purpose,
+//   doc:   { ts, day, period, sessionId?, rootSessionId?, agentId?, lane?, provider, model, purpose,
 //            inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, costSource }
-//          (the old usage_calls columns one-to-one; costSource: "reserved", "reported", "estimated", "free",
+//          (the old usage_calls columns one-to-one; period = the budget period the call is charged to, the "yyyy-MM-dd"
+//           of the day it started; costSource: "reserved", "reported", "estimated", "free",
 //           "unknown", "rejected", "interrupted-estimate")
 //   index: ts Integer, day Text, sessionId Text, rootSessionId Text, lane Text, costUsd Real, costSource Text
+//
+// period_usage — calls, tokens and cost per (period, lane, provider, model), upserted in every call's transaction and
+//   corrected by its settlement, so the period's per-model view is a read of these documents, not a scan of its calls:
+//   key:   <period>|<laneKey>|<provider>|<model>     (period = the day the budget period starts, "yyyy-MM-dd";
+//          laneKey = the lane lower-cased, "" when the call has no lane)
+//   doc:   { period, lane?, provider, model, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+//            costUsd, unknownCalls }
+//   index: period Text, calls Integer
 //
 // lanes_usage — tokens per (day, provider, model), upserted with every recorded call.
 //   key:   <day>|<provider>|<model>
@@ -65,6 +74,7 @@ internal sealed partial class Ledger
     private IDataCollection? _calls;        // usage_calls: one document per call
     private IDataCollection? _lanesUsage;   // lanes_usage: tokens per day, provider and model
     private IDataCollection? _laneUsage;    // lane_usage: the cost per day and lane (an agent's pool for the day)
+    private IDataCollection? _periodUsage;  // period_usage: calls, tokens and cost per period, lane, provider and model
     private IDataCollection? _counters;     // per-plugin sequences
 
     public sealed class Totals
@@ -107,15 +117,25 @@ internal sealed partial class Ledger
                 .Text("day").Text("provider").Text("model").Integer("budgetTokens"));
             var laneUsage = _ctx.Data.Collection("lane_usage", new CollectionSpec()
                 .Text("day").Text("laneKey").Real("costUsd"));
+            var periodUsage = _ctx.Data.Collection("period_usage", new CollectionSpec()
+                .Text("period").Integer("calls"));
             var counters = _ctx.Data.Collection("counters", new CollectionSpec());
             _calls = calls;
             _lanesUsage = lanesUsage;
             _laneUsage = laneUsage;
+            _periodUsage = periodUsage;
             _counters = counters;
         }
         catch (Exception ex)
         {
             _ctx.Logger.LogWarning(ex, "Usage storage unavailable; paid calls are stopped until it is repaired");
+        }
+        // The roll-up is maintained in every call's transaction; a period it has not caught up on (a store that
+        // pre-dates it, or a changed budget.resetDay) is rebuilt from the calls once, in one transaction.
+        if (_calls is not null && _periodUsage is not null)
+        {
+            try { _ctx.Data.Transaction(CatchUpPeriodUsage); }
+            catch (Exception ex) { _ctx.Logger.LogDebug(ex, "The period usage roll-up could not be caught up"); }
         }
     }
 
@@ -175,6 +195,10 @@ internal sealed partial class Ledger
         if (now < start) start = start.AddMonths(-1);
         return (start, start.AddMonths(1));
     }
+
+    /// <summary>The key of a period in the roll-up: the day it starts, "yyyy-MM-dd".</summary>
+    private static string PeriodKey(DateTime now, int resetDay) =>
+        Period(now, resetDay).Start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
     // ---------------------------------------------------------------- recording
 
@@ -418,41 +442,33 @@ internal sealed partial class Ledger
         };
     }
 
-    /// <summary>This period per model: calls, tokens, cost (and whether some costs are unknown).</summary>
+    /// <summary>This period per model: calls, tokens, cost (and whether some costs are unknown) — the roll-up the
+    /// recorded calls maintain, so the read is one indexed find per period instead of the period's calls.</summary>
     private JsonArray ModelsThisPeriod()
     {
         var arr = new JsonArray();
-        if (_calls is null) return arr;
+        if (_periodUsage is null) return arr;
         try
         {
-            var from = new DateTimeOffset(PeriodStart).ToUnixTimeMilliseconds();
-            // No group-by in the port: the period's calls are grouped in memory (one row per lane, provider and model).
-            var groups = new Dictionary<(string? Lane, string? Provider, string? Model), (long Calls, long In, long Out, long Cr, long Cw, double Cost, long Unknown)>();
-            foreach (var d in _calls.Find(new DataQuery().Ge("ts", from)))
+            var period = PeriodKey(DateTime.Now, Options().ResetDay);
+            foreach (var d in _periodUsage.Find(new DataQuery().Eq("period", period))
+                .OrderByDescending(x => D(x.Doc["costUsd"])).ThenByDescending(x => L(x.Doc["calls"])))
             {
                 var doc = d.Doc;
-                var key = (doc["lane"]?.GetValue<string>(), doc["provider"]?.GetValue<string>(), doc["model"]?.GetValue<string>());
-                var unknown = doc["costSource"]?.GetValue<string>() == "unknown" ? 1L : 0L;
-                if (groups.TryGetValue(key, out var g))
-                    groups[key] = (g.Calls + 1, g.In + L(doc["inputTokens"]), g.Out + L(doc["outputTokens"]), g.Cr + L(doc["cacheReadTokens"]),
-                        g.Cw + L(doc["cacheWriteTokens"]), g.Cost + D(doc["costUsd"]), g.Unknown + unknown);
-                else
-                    groups[key] = (1, L(doc["inputTokens"]), L(doc["outputTokens"]), L(doc["cacheReadTokens"]), L(doc["cacheWriteTokens"]), D(doc["costUsd"]), unknown);
-            }
-            foreach (var (k, agg) in groups.OrderByDescending(x => x.Value.Cost).ThenByDescending(x => x.Value.Calls))
                 arr.Add(new JsonObject
                 {
-                    ["agent"] = k.Lane,
-                    ["provider"] = k.Provider,
-                    ["model"] = k.Model,
-                    ["calls"] = agg.Calls,
-                    ["inputTokens"] = agg.In,
-                    ["outputTokens"] = agg.Out,
-                    ["cacheReadTokens"] = agg.Cr,
-                    ["cacheWriteTokens"] = agg.Cw,
-                    ["costUsd"] = Math.Round(agg.Cost, 6),
-                    ["unknownCost"] = agg.Unknown > 0,
+                    ["agent"] = doc["lane"]?.GetValue<string>(),
+                    ["provider"] = doc["provider"]?.GetValue<string>(),
+                    ["model"] = doc["model"]?.GetValue<string>(),
+                    ["calls"] = L(doc["calls"]),
+                    ["inputTokens"] = L(doc["inputTokens"]),
+                    ["outputTokens"] = L(doc["outputTokens"]),
+                    ["cacheReadTokens"] = L(doc["cacheReadTokens"]),
+                    ["cacheWriteTokens"] = L(doc["cacheWriteTokens"]),
+                    ["costUsd"] = Math.Round(D(doc["costUsd"]), 6),
+                    ["unknownCost"] = L(doc["unknownCalls"]) > 0,
                 });
+            }
         }
         catch (Exception ex) { _ctx.Logger.LogDebug(ex, "Usage per model query failed"); }
         return arr;

@@ -34,6 +34,16 @@ public static class SessionPrompt
         history.Add(new JsonObject { ["afterSeq"] = afterSeq, ["revision"] = revision, ["prompt"] = prompt });
     }
 
+    /// <summary>
+    /// Whether <paramref name="prompt"/> is already the session's recorded prefix for its current revision and the
+    /// last distinct entry of its history: <see cref="RecordSent"/> would change nothing, so the send boundary may skip
+    /// it (and the row rewrite and <c>session.updated</c> it brings).
+    /// </summary>
+    public static bool Recorded(SessionInfo session, string prompt) =>
+        Fallback(session) == prompt
+        && (session.Meta?[HistoryKey] as JsonArray)?.LastOrDefault() is JsonObject last
+        && last["prompt"]?.GetValue<string>() == prompt;
+
     /// <summary>Copy only prefixes used at or before the fork point. Legacy sessions keep their known fallback.</summary>
     public static void Fork(JsonObject meta, long upToSeq)
     {

@@ -123,8 +123,9 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 continue;
 
             // 4. model call
-            if (Ctx.Sessions.GetSession(SessionId) is { } beforeCall && SessionPrompt.Revision(beforeCall) != promptRevision) continue;
-            var call = await CallModelWithRecoveryAsync(turn, model, session, promptRevision, retries, ct).ConfigureAwait(false);
+            var beforeCall = Ctx.Sessions.GetSession(SessionId);
+            if (beforeCall is null || SessionPrompt.Revision(beforeCall) != promptRevision) continue;
+            var call = await CallModelWithRecoveryAsync(turn, model, session, beforeCall, promptRevision, retries, ct).ConfigureAwait(false);
             if (call.Assistant is not { } assistant)
             {
                 retries++;
@@ -272,12 +273,19 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     /// <summary>The call itself, and what its failure means: a model-error hook that asks for a retry hands back no
     /// assistant (the loop runs the turn again), anything else fails the run.</summary>
     private async Task<ModelCallOutcome> CallModelWithRecoveryAsync(AgentTurnContext turn, ModelInfo model, SessionInfo session,
-        long promptRevision, int retries, CancellationToken ct)
+        SessionInfo beforeCall, long promptRevision, int retries, CancellationToken ct)
     {
         try
         {
-            var afterSeq = Ctx.Sessions.GetMessages(SessionId, null, 1).LastOrDefault()?.Seq ?? 0;
-            Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq));
+            // Record the sent prompt only when it is not already recorded for this revision: re-recording would
+            // rewrite the session row and broadcast session.updated with the prompt in its meta on every model call
+            // (idea-l1o09d). The prompt a revision was sent with is stored once, when it first is. Recorded also
+            // covers the built-in prompt builder, which writes the meta without the history entry RecordSent keeps.
+            if (!SessionPrompt.Recorded(beforeCall, turn.SystemPrompt))
+            {
+                var afterSeq = Ctx.Sessions.GetMessages(SessionId, null, 1).LastOrDefault()?.Seq ?? 0;
+                Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq));
+            }
             var (assistant, contextTokens) = await new ModelCall(rt, state, run).RunAsync(turn, model, session, ct).ConfigureAwait(false);
             return new ModelCallOutcome(assistant, contextTokens);
         }

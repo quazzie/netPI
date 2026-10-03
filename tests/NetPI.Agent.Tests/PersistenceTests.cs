@@ -52,6 +52,11 @@ public static class PersistenceTests
         Check.True(subAfter.IsSubagent);
         Check.Equal(1, subAfter.Depth);
         Check.Equal("do it", subAfter.Task);
+        // task and result are stored once, at the top level — the stats copy keeps the rest of the info
+        var rec = Records(h).Get(sub.Id)!;
+        var info = rec["stats"] is JsonObject stats ? stats["info"] as JsonObject : null;
+        Check.True(info is not null && info["task"] is null && info["result"] is null, "task and result are not stored in the stats copy");
+        Check.Equal("sub report", rec["result"]?.GetValue<string>(), "the top level still carries them");
         var mainAfter = rt.GetBySession(s.Id)!;
         Check.Equal(main.Id, mainAfter.Id, "the session keeps its agent");
         Check.Equal(2, mainAfter.Runs);
