@@ -46,6 +46,7 @@ public static class Catalog
         ["ui.pinned-sessions"] = "needs-node",
         ["ui.remove-agent"] = "needs-node",
         ["ui.work-tab"] = "needs-node",
+        ["ui.close-empty-session"] = "needs-node",
     };
 
     public static IReadOnlyCollection<string> ExtraIds => Extra.Keys;

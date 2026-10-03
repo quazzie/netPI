@@ -80,18 +80,10 @@ try {
   const seeded = page.locator('.panel.left .srow', { hasText: SESSION }).first();
   await seeded.waitFor({ timeout: 15_000 });
 
-  // Identity, never a total: this browser starts from the tabs another window left in the host's ui.state, so the row
-  // count moves under the test (another test's chat opens a row too). An empty chat is the row whose title is still the
-  // default -- a chat with a message is auto-titled from it, and a transient one is never announced.
-  const countEmptyRows = () =>
-    page.evaluate(() => [...document.querySelectorAll('.panel.left .srow')]
-      .filter((r) => r.querySelector('span.title')?.textContent.trim() === 'New session').length);
-  const waitEmptyRows = async (want) => {
-    await page.waitForFunction((n) => [...document.querySelectorAll('.panel.left .srow')]
-      .filter((r) => r.querySelector('span.title')?.textContent.trim() === 'New session').length === n, want, { timeout: 10_000 });
-    return true;
-  };
-  const before = await countEmptyRows();
+  // Identity, never a total: this browser starts from the tabs another window left in the host's ui.state, and the other
+  // tests on this server open and close chats of their own, so any count moves under the test. The chat under test is
+  // its row by session id (the tab's data-tab is the session id).
+  const rowOf = (id) => page.locator(`.panel.left .srow[data-session="${id}"]`);
 
   // a new chat: it opens a tab and shows in the list while it is open
   await page.locator('.topbar .new-tab').click();
@@ -99,16 +91,17 @@ try {
   await active.waitFor({ timeout: 15_000 });
   // pin the tab by its session id: once it is closed the next tab becomes active, and a locator on ".active" would
   // follow it and wait forever for the wrong element to go away
-  const mine = page.locator(`.topbar .tab[data-tab="${await active.getAttribute('data-tab')}"]`);
-  await waitEmptyRows(before + 1);
-  check('a new chat is listed while its tab is open', true, `${before} -> ${before + 1} rows`);
+  const sid = await active.getAttribute('data-tab');
+  const mine = page.locator(`.topbar .tab[data-tab="${sid}"]`);
+  await rowOf(sid).waitFor({ timeout: 10_000 });
+  check('a new chat is listed while its tab is open', true, sid);
   await shot(page, 'ui-close-empty-01-open');
 
   // closing it: the tab goes, and with it the row the server would never list again
   await mine.locator('.tab-close').click();
   await mine.waitFor({ state: 'detached', timeout: 10_000 });
-  const gone = await waitEmptyRows(before).catch(() => false);
-  check('closing a chat with no messages takes its row out of the list', gone, `${await countEmptyRows()} rows, want ${before}`);
+  const gone = await rowOf(sid).waitFor({ state: 'detached', timeout: 10_000 }).then(() => true).catch(() => false);
+  check('closing a chat with no messages takes its row out of the list', gone, `${await rowOf(sid).count()} rows for ${sid}, want 0`);
   check('the seeded chat is still listed', (await page.locator('.panel.left .srow', { hasText: SESSION }).count()) === 1);
   await shot(page, 'ui-close-empty-02-closed');
 

@@ -322,6 +322,7 @@ export function mount(el, ctx) {
     onChange(cb: () => void): () => void,        // active session/project changed
     openSession(id: string): void,
     newSession(opts?: { projectId?: string }): Promise<void>,
+    startChat(opts: { text: string, projectId?: string, title?: string }): Promise<void>,   // new chat that starts on `text` at once
     insertText(text: string): void,              // into the composer
     openTab(tabKey: string): void,               // "pluginId/tabId"
     openView(sessionId: string, tabKey: string | null): void, // a session view in a chat (null: its messages again)

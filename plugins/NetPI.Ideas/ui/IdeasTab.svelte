@@ -13,7 +13,6 @@
   let q = $state('');
   let statusFilter = $state('active'); // active | all | <status>
   let tagFilter = $state.raw(new Set());
-  let expanded = $state.raw(new Set());
   let openGroups = $state.raw(new Set()); // collapsed statuses the user opened (parked, done, rejected)
   let dragId = $state(null);
   let dropTarget = $state(null); // { id, after }
@@ -163,11 +162,6 @@
     s.has(t) ? s.delete(t) : s.add(t);
     tagFilter = s;
   }
-  function toggleExpanded(id) {
-    const s = new Set(expanded);
-    s.has(id) ? s.delete(id) : s.add(id);
-    expanded = s;
-  }
   function toggleGroup(status) {
     const s = new Set(openGroups);
     s.has(status) ? s.delete(status) : s.add(status);
@@ -279,16 +273,6 @@
       reorder(ids);
     },
   };
-
-  // ------------------------------------------------------------------ images
-  // Thumbnails are fetched per card when it opens (ideas.image) and kept here, so a backlog of ideas carries no image
-  // bytes and a card that was opened once does not ask again.
-  let imageCache = $state({});
-  async function loadImage(path) {
-    if (imageCache[path]) return;
-    const r = await ctx.rpc('ideas.image', { path }).catch(() => null);
-    if (r?.data) imageCache = { ...imageCache, [path]: `data:${r.mediaType};base64,${r.data}` };
-  }
 
   // A new idea is filed in the host's idea dialog (the one Ctrl+I opens), on the project this tab is showing: the list's own
   // project, or the active chat's when it shows them all. The new card arrives with ideas.changed.
@@ -472,10 +456,6 @@
           {idea}
           {api}
           {ctx}
-          images={imageCache}
-          loadimage={loadImage}
-          open={expanded.has(idea.id)}
-          ontoggle={() => toggleExpanded(idea.id)}
           canUp={placed(idea.id) > 0}
           canDown={placed(idea.id) < order.length - 1}
           dragging={dragId === idea.id}

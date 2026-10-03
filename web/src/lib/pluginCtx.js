@@ -1,7 +1,7 @@
 // The `ctx` object handed to plugin tab modules: mount(el, ctx). See docs/PROTOCOL.md and docs/UI.md.
 import { rpc } from './rpc.svelte.js';
 import { bus } from './bus.js';
-import { app, openSession, newSession, hasRpc } from './state/app.svelte.js';
+import { app, openSession, newSession, sendMessage, hasRpc } from './state/app.svelte.js';
 import { composer, toast, modals, openView, openIdeaDialog } from './state/ui.svelte.js';
 import { openPanelTab } from './state/tabs.svelte.js';
 
@@ -66,6 +66,11 @@ export function createPluginCtx(tab, sessionId = null) {
       },
       newSession: async (opts) => {
         await newSession(opts ?? {});
+      },
+      // A new chat (in opts.projectId's project, if any) that starts at once on `text`.
+      startChat: async (opts) => {
+        const s = await newSession({ projectId: opts?.projectId ?? null, title: opts?.title });
+        if (s) await sendMessage(s.id, String(opts?.text ?? ''), [], 'auto');
       },
       insertText: (text) => {
         if (composer.insertText) composer.insertText(String(text ?? ''));

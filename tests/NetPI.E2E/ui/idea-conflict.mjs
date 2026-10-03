@@ -1,6 +1,6 @@
-// UI test: the Ideas tab saves with the revision the editor was opened on, and an open editor survives a status change.
-// The editor under test is the card's section editor: the idea's own fields are edited in the host's idea dialog (Ctrl+I, the
-// card's pencil), which web/mock/e2e.mjs drives against the mock server, conflict included.
+// UI test: the Ideas tab opens the host's idea dialog on the idea's current revision (the dialog's own save, conflict
+// included, is driven by web/mock/e2e.mjs against the mock server), a one-line status change claims no revision, and the
+// play button starts a chat on the idea.
 //
 // `api.update` fell back to the list's current revision, so `expectedRevision` always matched what the server had and
 // the conflict check could never fire: a save from an editor that had been open while the agent rewrote the idea
@@ -41,6 +41,10 @@ const ideas = [
 const copy = (v) => JSON.parse(JSON.stringify(v));
 window.__updates = [];   // every ideas.update the tab sent
 window.__toasts = [];    // every toast the tab raised
+window.__opened = [];    // every openIdea the tab asked the host for
+window.__started = [];   // every startChat
+window.__opened = [];    // every openIdea the tab asked the host for
+window.__started = [];   // every startChat
 window.__events = {};    // what the tab subscribed to, so the fixture can publish ideas.changed
 window.__idea = (id) => ideas.find((i) => i.id === id);
 // The agent writes the idea in another window: a new revision, then the event every window refetches on.
@@ -78,6 +82,8 @@ const ctx = {
     get activeProject() { return null; },
     onChange: () => () => {},
     insertText: () => {},
+    openIdea: (opts) => window.__opened.push(copy(opts)),
+    startChat: (opts) => window.__started.push(copy(opts)),
     toast: (message, kind) => window.__toasts.push({message, kind: kind ?? 'info'}),
     openSession: () => {},
   },
@@ -113,58 +119,40 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.waitForSelector('.ideas .card', { timeout: 15_000 });
   const card = page.locator('.ideas .card', { hasText: 'Editor under test' });
-  await card.locator('.main').click();
-  await card.locator('.sec-acts button[title="Edit section"]').click();
-  const summary = card.locator('.sed textarea');
-  await summary.fill('my own section text');
-  check('the editor opened', (await card.locator('.sed').count()) === 1);
 
-  // The agent rewrites the idea while the editor is open: the list refetches, the card carries the new revision.
+  // A card is a title and a short summary: the whole idea is in the host's idea dialog, which the card opens on the
+  // idea as the list has it right now (the dialog captures that revision and saves against it).
+  check('a card shows its summary', /the first summary/.test(await card.innerText()));
+  await card.locator('.main').click();
+  const opened = await page.evaluate(() => window.__opened);
+  check('a click opens the idea dialog on the idea', opened.length === 1 && opened[0].idea?.id === 'idea-ed01' && !opened[0].view,
+    JSON.stringify(opened[0] ?? null));
+  check('the dialog is opened on the revision the list had', opened[0]?.idea?.revision === 5, String(opened[0]?.idea?.revision));
+
+  // The agent rewrites the idea: the list refetches, and the next open carries the new revision, not the old one.
   await page.evaluate(() => window.__agentEdit('idea-ed01', 'the agent rewrote this'));
   await page.waitForFunction(() => window.__idea('idea-ed01').revision === 6, null, { timeout: 5_000 });
-  await page.waitForTimeout(300);
+  await card.getByText('the agent rewrote this').waitFor({ timeout: 5_000 });
+  await card.locator('.main').click();
+  const reopened = await page.evaluate(() => window.__opened);
+  check('a second open carries the new revision', reopened[1]?.idea?.revision === 6 && reopened[1]?.idea?.summary === 'the agent rewrote this',
+    JSON.stringify(reopened[1]?.idea?.revision ?? null));
 
-  await card.locator('.sed button', { hasText: 'Save section' }).click();
-  await page.waitForSelector('.conflict', { timeout: 5_000 });
-  const sent = await page.evaluate(() => window.__updates);
-  const first = sent[0] ?? {};
-  check('the save carries the revision the editor was opened on', first.expectedRevision === 5, JSON.stringify(first.expectedRevision ?? null));
-  const toasts = await page.evaluate(() => window.__toasts);
-  check('the refused save says the idea changed somewhere else',
-    toasts.some((t) => /changed somewhere else/i.test(t.message)), toasts.map((t) => t.message).join(' | '));
-  const line = await page.locator('.conflict').innerText();
-  check('the tab names the idea it would not overwrite', /idea-ed01/.test(line), line.replace(/\s+/g, ' ').slice(0, 90));
-  check('what was typed is still in the editor', (await summary.inputValue()) === 'my own section text');
-  const after = await page.evaluate(() => window.__idea('idea-ed01'));
-  check("the agent's change survived the refused save", after.summary === 'the agent rewrote this' && after.revision === 6,
-    `${after.summary} @${after.revision}`);
+  // The play button starts a chat on the idea at once, in the idea's project (none here).
+  await card.locator('button[title="Start a new chat on this idea"]').click();
+  const started = await page.evaluate(() => window.__started);
+  check('the play button starts a chat on the idea', started.length === 1 && /idea-ed01/.test(started[0].text) && started[0].title === 'Editor under test' && started[0].projectId === null,
+    JSON.stringify(started[0] ?? null));
 
-  // A fresh editor, opened on what is there now, saves normally (and the notice goes away).
-  await card.locator('.sed button', { hasText: 'Cancel' }).click();
-  await card.locator('.sec-acts button[title="Edit section"]').click();
-  await card.locator('.sed textarea').fill('my own section text, applied twice');
-  await card.locator('.sed button', { hasText: 'Save section' }).click();
+  // A one-line status change claims no revision (it applies to the idea as it is) and the card moves to its new group.
+  await card.locator('button[title="Status and actions"]').click();
+  await page.locator('.np-menu .np-menu-item', { hasText: 'Status: in-progress' }).click();
   await page.waitForTimeout(500);
-  const second = sent.length > 1 ? sent[1] : (await page.evaluate(() => window.__updates))[1];
-  check('a save from a fresh editor carries the current revision', second?.expectedRevision === 6, JSON.stringify(second?.expectedRevision ?? null));
-  check('the editor closed after the save that committed', (await card.locator('.sed').count()) === 0);
-  check('the conflict notice is gone', (await page.locator('.conflict').count()) === 0);
-
-  // The card is moved to another status group by an action taken while an editor is open: the card itself must move,
-  // not be destroyed and made again, so the editor and its text stay.
-  await card.locator('.sec-acts button[title="Edit section"]').click();
-  await card.locator('.sed textarea').fill('typed, then moved');
-  await card.locator('.status').click();
-  await page.locator('.np-menu .np-menu-item', { hasText: 'in-progress' }).click();
-  await page.waitForTimeout(500);
-  const moved = page.locator('.ideas .card', { hasText: 'Editor under test' });
+  const sentNow = await page.evaluate(() => window.__updates);
+  check('the one-line status change did not claim a revision', sentNow[0]?.expectedRevision === undefined && sentNow[0]?.patch?.status === 'in-progress',
+    JSON.stringify(sentNow[0] ?? null));
   check('the idea moved to the group its new status belongs to',
-    /in-progress/.test(await moved.locator('.status').innerText()), await moved.locator('.status').innerText());
-  check('the open editor came along with the card', (await moved.locator('.sed textarea').inputValue()) === 'typed, then moved',
-    await moved.locator('.sed textarea').inputValue().catch(() => '(no editor)'));
-  const sentAfterMove = await page.evaluate(() => window.__updates);
-  check('the one-line status change did not claim a revision', sentAfterMove[2]?.expectedRevision === undefined,
-    JSON.stringify(sentAfterMove[2] ?? null));
+    (await page.locator('.ghead[data-tone] .gname', { hasText: 'in-progress' }).count()) === 1);
 } catch (e) {
   check('the fixture ran', false, String(e?.message ?? e));
 } finally {
