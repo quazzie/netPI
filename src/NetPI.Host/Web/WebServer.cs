@@ -150,6 +150,13 @@ internal sealed class WebServer : IAsyncDisposable
             await WriteBytesAsync(ctx, 200, Wire.SerializeValue(new { ok = true, name = "netpi", version = HostInfo.Version })).ConfigureAwait(false);
             return;
         }
+        // a plugin route mapped open authenticates its requests itself (IHttpRegistry.Map): an extension cannot hold
+        // this run's token and comes from its own origin
+        if (path.StartsWith("/api/p/", StringComparison.OrdinalIgnoreCase) && IsOpenPluginRoute(path["/api/p/".Length..]))
+        {
+            await PluginHttpAsync(ctx, path["/api/p/".Length..]).ConfigureAwait(false);
+            return;
+        }
         if (!IsAuthorized(ctx))
         {
             await WriteErrorAsync(ctx, 401, "unauthorized", "Missing or invalid token").ConfigureAwait(false);
@@ -214,6 +221,13 @@ internal sealed class WebServer : IAsyncDisposable
         }
         ctx.Response.Headers.CacheControl = "no-store";
         await WriteBytesAsync(ctx, 200, response).ConfigureAwait(false);
+    }
+
+    private bool IsOpenPluginRoute(string rest)
+    {
+        var slash = rest.IndexOf('/');
+        var pluginId = slash < 0 ? rest : rest[..slash];
+        return pluginId.Length > 0 && _k.Http.IsOpen(pluginId, slash < 0 ? "" : rest[(slash + 1)..]);
     }
 
     private async Task PluginHttpAsync(HttpContext ctx, string rest)

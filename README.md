@@ -45,7 +45,7 @@ See [the plan that made it so](docs/plans/2026-10-02-replaceable-parts.md).
 - **Tools as plugins:** `read`, `write`, `edit` (multi-edit, replace-all), `grep`, `find`, `ls` — all CRLF/LF
   agnostic, preserving each file's line endings and BOM — plus `bash` (Git Bash on Windows), `pwsh` and background
   processes; `web_fetch` (pages as Markdown), `web_search` (SearXNG or Brave), `screenshot` (headless Edge/Chrome, or
-  the NetPI window), `browser` (the agent's own browser tab: open, read and act on pages without your mouse or focus), `todo_write` (a checklist shown above the composer), `ask_user` (the agent asks you in the chat,
+  the NetPI window), `browser` (a browser tab per chat — the agents' own browser, or your Chrome through the NetPI extension, where you can also share a tab with a chat — acting on pages without your mouse or focus; you watch it or log in through the chat's Browser view), `windows` (native Windows apps through UI Automation), `todo_write` (a checklist shown above the composer), `ask_user` (the agent asks you in the chat,
   with options to pick, and waits without holding its instance), `show_image` (the agent shows you an image), `decide` (yes/no, pick-one and score questions over one text or every line of a
   file, answered by a local decision model such as Kev on the nuc) and
   `ssh` (scripts and files on the hosts in `~/.ssh/config`, sent through stdin, so nothing needs quoting). Replace

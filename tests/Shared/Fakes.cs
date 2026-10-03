@@ -283,7 +283,15 @@ public sealed class FakeUi(Ownership? owner = null) : IUiRegistry
 
 public sealed class FakeHttp : IHttpRegistry
 {
-    public IDisposable Map(string path, Func<HttpContext, Task> handler) => new Disposer(() => { });
+    /// <summary>What the plugin mapped (path → handler and whether it is open), so a test can serve it.</summary>
+    public ConcurrentDictionary<string, (Func<HttpContext, Task> Handler, bool Open)> Routes { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public IDisposable Map(string path, Func<HttpContext, Task> handler, bool open = false)
+    {
+        var key = path.Trim('/');
+        Routes[key] = (handler, open);
+        return new Disposer(() => Routes.TryRemove(key, out _));
+    }
 }
 
 public sealed class ListLogger : ILogger

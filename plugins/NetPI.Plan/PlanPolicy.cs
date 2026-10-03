@@ -9,14 +9,14 @@ internal sealed record McpToolInfo(string Server, string Name, bool ReadOnly);
 /// <summary>
 /// What a plan-mode chat may call. Nothing may change while the user has not approved a plan: a tool that only reads
 /// passes (<see cref="ToolDefinition.ReadOnly"/>, or a call a tool with actions says only reads), the plan's own tools
-/// and the questions pass, the shell and the browser never do (a read-only shell cannot be told from a writing one;
+/// and the questions pass, the shell, the browser and the windows tool never do (a read-only shell cannot be told from a writing one;
 /// grep, find, ls and read cover exploring), and an MCP tool passes when its server declared it read-only
 /// (<c>readOnlyHint</c>) or it matches <c>plan.mcpAllow</c>.
 /// </summary>
 internal static class PlanPolicy
 {
-    /// <summary>Blocked whatever their flags say: a shell can do anything, the browser acts on live pages.</summary>
-    internal static readonly HashSet<string> Never = new(StringComparer.OrdinalIgnoreCase) { "bash", "pwsh", "ssh", "process", "browser" };
+    /// <summary>Blocked whatever their flags say: a shell can do anything, the browser and the windows tool act on live pages and apps.</summary>
+    internal static readonly HashSet<string> Never = new(StringComparer.OrdinalIgnoreCase) { "bash", "pwsh", "ssh", "process", "browser", "windows" };
 
     /// <summary>Pass without being read-only: they change nothing but the plan, the checklist and the subagents' reports.</summary>
     internal static readonly HashSet<string> Allowed = new(StringComparer.OrdinalIgnoreCase)
@@ -30,9 +30,12 @@ internal static class PlanPolicy
     public static string? Block(string name, ToolDefinition? def, bool readOnlyCall, McpToolInfo? mcp, IReadOnlyList<string> mcpAllow)
     {
         if (Never.Contains(name))
-            return name.Equals("browser", StringComparison.OrdinalIgnoreCase)
-                ? "Plan mode does not drive the browser: it acts on live pages. Use web_fetch or web_search to read, or put the browsing in the plan."
-                : "Plan mode has no shell: nothing runs while you plan. Explore with read, grep, find and ls (web_search and web_fetch for facts outside the repository) and put the commands you want run in the plan's steps.";
+            return name.ToLowerInvariant() switch
+            {
+                "browser" => "Plan mode does not drive the browser: it acts on live pages. Use web_fetch or web_search to read, or put the browsing in the plan.",
+                "windows" => "Plan mode does not drive the user's apps: the windows tool acts on live windows. Put what to do in them in the plan.",
+                _ => "Plan mode has no shell: nothing runs while you plan. Explore with read, grep, find and ls (web_search and web_fetch for facts outside the repository) and put the commands you want run in the plan's steps.",
+            };
         if (name.Equals("plan_enter", StringComparison.OrdinalIgnoreCase)) return "This chat is already in plan mode.";
         if (Allowed.Contains(name)) return null;
         if (name.Equals("mcp_call", StringComparison.OrdinalIgnoreCase))

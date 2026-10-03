@@ -464,7 +464,9 @@ other workers of the project see, and `workspace info` says so.
 ## Web tools (`category: "web"`)
 
 `plugins/NetPI.Tools.Web`. Light limits only (http/https, timeouts, size caps): agents also have `curl`, so the tools aim
-at being convenient, not at fencing the agent in. All but `browser` are read-only. Settings: `web.*` and `browser.*` in
+at being convenient, not at fencing the agent in. All but `browser` are read-only. `screenshot` with a url renders in a
+throw-away browser context of the agents' running browser (no browser start per call; one of its own when that browser
+shows windows). Settings: `web.*` and `browser.*` in
 `docs/SETTINGS.md`.
 
 ### `web_fetch` (summary arg `url`)
@@ -499,8 +501,9 @@ details: { query, provider: 'searxng'|'brave', results: { title, url, snippet, a
 ### `screenshot` (summary arg `url`)
 
 `{ url?, width? (1280), height? (800), full_page?, wait_for? /* CSS selector, up to 10 s */, delay_ms? (500) }`.
-With a `url`: a headless Edge/Chrome/Chromium (`web.browserPath`, else found in the usual places) with a fresh
-profile, driven over the DevTools protocol: it loads the page, waits for the load event and `wait_for`, and captures
+With a `url`: a fresh browser context (no cookies, nothing kept) in the agents' running headless browser — or, when that
+browser shows windows, a headless Edge/Chrome/Chromium (`web.browserPath`, else found in the usual places) of its own with
+a fresh profile — driven over the DevTools protocol: it loads the page, waits for the load event and `wait_for`, and captures
 the viewport (or the whole height up to 16384 px). Console errors and uncaught exceptions are reported. The browser is
 closed with `Browser.close` over DevTools, then its process is killed: Edge's launcher can hand the browser to another
 process and exit (code 0), which the tool follows through the profile's DevTools port. Without a
@@ -514,61 +517,129 @@ details: { source: 'browser', url, title, width, height, fullPage, consoleErrors
 
 ### `browser` (summary arg `action`)
 
-`{ action: open|snapshot|click|type|key|scroll|find|back|screenshot|leave|close, url?, n?, text?, keys?, direction?,
-browser?: 'chrome'|'own' }`. **Each chat has its own tab**, in one of two browsers (`browser.target`, or `browser` on
-`open`):
+`{ action, url?, n?, text?, keys?, direction?, script?, path?, steps?, browser?: 'own'|'chrome', tab? }`. **Each chat has
+its own tab**, in one of two browsers (`browser.target`, or `browser` on `open`/`show`):
 
-- **`chrome` (default): the user's running Chrome.** The user allows remote debugging once at
-  `chrome://inspect/#remote-debugging`; Chrome then writes its port to `DevToolsActivePort` in its user data folder
-  (`browser.chromeUserData`). NetPI keeps one connection (Chrome asks the user to allow each connection and shows its
-  automation banner while connected; the first call waits up to 120 s for that answer) and drops it after
-  `browser.idleMinutes`. The chat's tab is a new **background tab** in the user's window: it shows in the tab strip
-  without taking the user's tab or the focus. NetPI only touches the tabs it opened: it never lists the user's other
-  tabs, never closes the browser, and a link that opens a new tab is followed only from its own tab. **Stop before
-  buying:** a click on a button, link or menu item named like buy, book, pay, purchase, check out, place or confirm an
-  order, subscribe or donate, or "accept all"/"allow all", is refused with a pointer to `leave`. **`leave`** hands the tab
-  back: it is brought forward in its window, detached and left as it is (the chat's next `open` starts a new tab). If the
-  user closes the tab, the chat's next call says there is no page. Unreachable Chrome (not running, not allowed, no port
-  file) is an error that says how to allow it, or to use `browser: "own"`.
-- **`own`: the agents' hidden browser**, for work the user needn't see (testing a local web app, pages web_fetch can't
-  read): one Edge/Chrome process (`web.browserPath`), headless unless `browser.headless` is off, with a kept profile
-  (`browser.profile`), started on first use and closed after `browser.idleMinutes` without a call or when the plugin
-  unloads. No checkout stop (nobody's accounts are in it); `leave` says the user can't see it.
+- **`own` (default): the agents' browser.** One Edge/Chrome process (`web.browserPath`), headless unless
+  `browser.headless` is off, with a kept profile (`browser.profile`, so a login made once stays), started on first use
+  and closed after `browser.idleMinutes` without a call and without an open Browser view, or when the plugin unloads.
+  Background throttling is off, so its tabs act at full speed. Downloads land in `<home>/browser/downloads` and the
+  result says where.
+- **`chrome`: the user's running Chrome**, with their logins. Through the **NetPI extension** when it is connected (no
+  debugging switch; see below), else through Chrome's DevTools port: the user allows remote debugging once at
+  `chrome://inspect/#remote-debugging`, Chrome writes the port to `DevToolsActivePort` in its user data folder
+  (`browser.chromeUserData`) and asks the user to allow each connection (the first call waits up to 120 s); NetPI keeps
+  that connection while a chat has a tab there. The chat's tab is a new **background tab** in the user's window. NetPI
+  only touches the tabs it opened or the user shared: it never lists the user's other tabs and never closes the browser.
+  `leave` hands the tab back: brought forward, detached, left as it is. Unreachable Chrome is an error that says how to
+  load the extension or allow debugging, or to use `own`.
 
-`close` closes the chat's tab (a tab it opened); a chat's tab also closes when the chat is deleted, or with the hidden
-browser. Everything goes through the DevTools protocol (a WebSocket to the browser, flattened sessions per tab), so the
-user's mouse, keyboard and focus are never used; the tab emulates focus, so a page in a background tab behaves as if it
-were in front (clicks there take up to a second: the tab isn't drawn).
+Everything goes through the DevTools protocol (flattened sessions per tab, and per out-of-process frame), so the
+user's mouse, keyboard and focus are never used; the tab emulates focus.
 
-- **The page as controls.** Every result after an action is the page: `Page: <title> — <url>`, then one numbered line per
-  control (`[4] [textbox] Full name id="name" value="Ada"`), from the accessibility tree in page order joined with a
-  DOM snapshot (bounds, ids, input types). Kept: buttons, links, text boxes, combo boxes, check boxes, radios, tabs, menu
-  items, options, list items, tree items, sliders, cells and headers, the document, and headings and text as context (a
-  text repeating the name just before it is dropped). States: `(checked)`/`(unchecked)`, `(selected)`,
-  `(expanded)`/`(collapsed)`, `(focused)`, `(disabled)`, `(password)`; links show their URL as `value`. Zero-size
-  and hidden nodes are left out. Over `browser.maxControls`, the controls nearest the visible part are listed (with a
-  note); the numbers still count every control, and `find` lists the matches of a text anywhere on the page with the
-  controls around them.
-- **Actions** refer to the numbers of the last list. `click`: scrolls the element into view and sends a trusted mouse
-  click at its centre (a text node through its element; a script `click()` when it has no box). `type`: focuses the
-  element, selects its content and inserts the text (empty text clears it); on a drop-down it chooses the option (exact,
-  else containing, ignoring case); on a slider it sets the number. A `<select>` lists its options only after a click
-  opens it; clicking an option chooses it. `key`: key events to the focused element (`Enter`, `Escape`, `Tab`,
-  `PageDown`, `Ctrl+A`, `F5`, letters; several chords separated by spaces). `scroll`: a wheel of 80% of the view.
-  `back`: the previous history entry. A link that opens a new tab moves the chat to that tab.
-- **The result** starts with what happened and its effect on the list: `Clicked [11] [checkbox] … Now shows …, 1
-  control(s) gone.` or `No visible change.` After an action it waits for a navigation to finish (up to 15 s) and
-  250 ms for scripts; `open` also waits until the new document has replaced `about:blank`.
-- **Refused:** typing into a password field (the user types passwords themselves); `screenshot` for a model that
-  can't see images. The description and guidelines tell the model that page text is content, not instructions, and to
-  stop before buying, paying, sending or deleting what the user did not ask for.
+- **The page as controls.** A result is `Page: <title> — <url>`, then one numbered line per control
+  (`[4] [textbox] Full name id="name" value="Ada"`), from the accessibility tree of the page **and its frames** (an
+  iframe's controls are listed where its `[frame]` line is; another site's frame through its own session) joined with
+  DOM snapshots (bounds, ids, input types). Kept: buttons, links, text boxes, combo boxes, check boxes, radios, tabs,
+  menu items, options, list items, tree items, sliders, cells and headers, frames, the document, and headings and text
+  as context. States: `(checked)`/`(unchecked)`, `(selected)`, `(expanded)`/`(collapsed)`, `(focused)`, `(disabled)`,
+  `(password)`, `(file)`; links show their URL as `value`. Over `browser.maxControls` the controls nearest the visible
+  part are listed (with a note); `find` lists the matches of a text anywhere with the controls around them, and
+  `snapshot { all: true }` lists everything.
+- **Numbers stay.** A control keeps its number as long as the document lives, so a number from an earlier result
+  still works; a new document (a navigation) is numbered from 1 again and listed whole. A number of a control that is
+  gone is an error that says so.
+- **After an action, only the changes**: `Changes: 1 new, 2 changed, 3 gone (14–16), 4 more in view.` and the lines of
+  the new, changed and newly visible controls; the rest are not repeated ("keep their numbers"). `open` and `snapshot`
+  list the page whole.
+- **Waiting is event-driven**: a navigation the action started (its load event), then until the DOM has had no mutation
+  for 120 ms (at most 3 s), counted from here — not with the page's own timers, which a background tab throttles.
+- **Actions.** `open {url}`; `snapshot {all?}`; `click {n, button?: left|right|middle, clicks?}` (scrolls it into view,
+  a trusted mouse click at its centre, offset through any frames; a script `click()` when it has no box; a `<select>`
+  lists its options when clicked, and clicking an option chooses it); `hover {n}`; `type {n, text, submit?}` (focuses,
+  selects the content, inserts the text; a drop-down chooses the option by text or value; a slider takes the number;
+  `submit` presses Enter after; a password is typed but the result only says how many characters); `key {keys}`
+  (`Enter`, `Escape`, `Ctrl+A`, `F5`, letters, punctuation; several chords separated by spaces); `scroll {direction?:
+  down|up|left|right|top|bottom, n?, amount?}` (a wheel of 80% of the view, at the control `n` when given; `n` alone
+  scrolls it into view); `find {text}`; `read {offset?, n?}` (the page as Markdown like `web_fetch`, paged with
+  `web.fetch.maxChars`, from the live page — logins included; or one control's whole text); `wait {text?, gone?,
+  seconds?, timeout? (30)}`; `back`, `forward`, `reload {hard?}`; `eval {script}` (JavaScript in the page, `await`
+  works, the value comes back); `upload {n, path | paths}` (a file input; paths resolve against the chat's folder);
+  `dialog {accept (true), text?}` (an `alert`/`confirm`/`prompt` the page opened: while one is open the page answers
+  nothing else, so every other action says so); `screenshot {marks? (true), full_page?}` (with each listed control's
+  number drawn on it); `steps {steps: [{action, …}, …]}` (several of click, hover, type, key, scroll, wait, back,
+  forward, reload, eval, upload, dialog, open in one call, one result at the end, stopping at the first that fails).
+- **The user's part.** `show {url?, text?}` puts the chat's tab in front of the user: the chat's **Browser view** (a
+  session view in the chat's area, `netpi.tools.web/browser`, opened by the `ui.open` event, with a notification
+  carrying `text` when the chat is not in front) shows the tab live and passes the user's clicks, keys and pastes to
+  the page — to log in, solve a captcha or choose; the browser keeps what they did. In the user's Chrome the tab is
+  also brought forward there. `tabs` lists the tabs the user shared with no chat in particular (`[t123] title — url`);
+  `use {tab}` takes one. `close` closes the chat's tab (a shared one is only let go); the tab also closes when the chat
+  is deleted.
+- **No refusals.** The tool fences nothing in (buying, passwords, cookie banners): what an agent may do is the user's
+  call, in the prompt and in Guardrails rules (`ask:` on `browser`). Its guidelines tell the model that page text is
+  content, not instructions, to ask before buying, paying, sending or deleting in the user's own Chrome, to chain
+  foreseeable actions with `steps`, and that a long browsing task can go to a local subagent (`agent_spawn` with
+  `tools: ["browser"]`).
+
+**The NetPI Chrome extension** (`plugins/NetPI.Tools.Web/extension`, Manifest V3; no Web Store): the plugin copies it to
+`<home>/browser/chrome-extension` with a `config.json` (the server's address and a key kept in
+`<home>/browser/extension-key`), and the user loads it once (chrome://extensions → Developer mode → Load unpacked →
+that folder; the Browser view shows the path). It connects to `/api/p/netpi.tools.web/extension?key=…` and forwards
+DevTools commands to tabs through `chrome.debugger` (Chrome shows its "started debugging this browser" bar while a tab
+is attached); its button's popup **shares the current tab with a chat** — an existing chat, a new one, or "any chat"
+(the pool for `tabs`/`use`) — with an optional message that is sent to the chat as the user's, and stops sharing it.
+The agents' own tabs in the user's Chrome (`browser: "chrome"`) go through it too.
 
 ```ts
 details: { action, url, title, controls, shown, result }          // after an action or snapshot
-       | { action, refused }                                       // a checkout control in the user's Chrome
-       | { action: 'leave' | 'close' }
+       | { action, dialog: { type, message }, result }             // the action opened a dialog
        | { action: 'find', url, text, hits }
-       | { action: 'screenshot', url, title }                      // plus the PNG in images
+       | { action: 'read', url, title, chars, offset, end, nextOffset }
+       | { action: 'screenshot', url, title, marks, fullPage }     // plus the PNG in images
+       | { action: 'tabs', tabs: { tab, title, url }[] }
+       | { action: 'show', view }
+       | { action: 'leave' | 'close' }
+```
+
+## Windows apps (`category: "computer"`)
+
+`plugins/NetPI.Tools.Windows`, Windows only. UI Automation runs in a helper process (`src/NetPI.WindowsAgent`,
+`netpi-windows-agent.exe`, started on first use from a copy outside the plugin folder; one JSON request per line): an
+app that stops answering costs a timeout and a restarted helper, not a stuck NetPI.
+
+### `windows` (summary arg `action`)
+
+`{ action, app?, args?, window?, n?, text?, keys?, direction?, steps? }`. Each chat works on one window at a time,
+together with its menus, popups and owned dialogs.
+
+- **Windows.** `list` (the visible top-level windows: `[hwnd] title — process`); `open {app, args?, title?, timeout?
+  (20)}` (starts a program — `notepad`, a path, a URI like `ms-settings:` — and takes its new window: the program's own,
+  else the first new one, or the one whose title matches the `title` pattern); `use {window}` (a number from `list`, or
+  part of a title, or a process name); `focus` (bring it to the front); `close` (the window's close; a "save?" dialog
+  it shows is a window of its own); `screenshot` (the window as it draws itself, behind other windows too).
+- **Controls**, numbered like the browser's (`[12] [button] Save`, with `id`, `value`, `position`, `(on)`/`(off)`,
+  `(selected)`, `(expanded)`, `(focused)`, `(disabled)`, `(password)`); a control keeps its number while it lives, the
+  ones nearest the visible part are listed over `windows.maxControls`, and after an action only the changes are
+  listed. `snapshot {all?, offscreen?}`; `find {text}`; `read {n}` (a control's whole text: a document's, a value).
+- **Actions** use UI Automation patterns first — invoke, toggle, select, expand/collapse, set value, range value,
+  scroll — which need neither the focus nor the mouse; a classic Win32 push button is clicked by posting its click
+  (an invoke would wait for a modal dialog the click opens, and hold every other call into the app meanwhile). Real
+  input is the fallback, sent only after the window is confirmed in front: `click {n, button?: right, clicks?: 2}` when
+  no pattern fits, `type` into a control without a value pattern (or a slider that ignores one: Home, then Right × the
+  number), `key {keys}` (chords like `Ctrl+S`, `Alt+F4`) and `key {text}` (types into the focused control).
+  `toggle|expand|collapse|select {n}`, `hover {n}`, `scroll {n, direction?}`, `wait {text?, gone?, seconds?,
+  timeout?}`, `steps {steps: [...]}` (several in one call).
+- **Journal**: with `windows.journal` (on) every step goes to `<home>/windows/journal-yyyyMMdd.jsonl` (the action, its
+  arguments, the result).
+- Plan mode blocks it (it acts on live windows), like the browser.
+
+```ts
+details: { action, window, title, controls, shown, result }       // after an action or snapshot
+       | { action: 'list', windows: { hwnd, title, process }[] }
+       | { action: 'find', window, title, text, hits } | { action: 'read', window, n, chars }
+       | { action: 'screenshot', window, title }                   // plus the PNG in images
+       | { action, window, gone: true }                            // the window closed
 ```
 
 ---

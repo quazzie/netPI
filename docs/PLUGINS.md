@@ -82,8 +82,13 @@ public sealed class MyPlugin : INetPiPlugin
         // listen to the event bus (agent.status, message.added, tool.end, agents.changed, …)
         ctx.Events.Subscribe("tool.end", e => ctx.Logger.LogInformation("tool finished: {Data}", e.Data));
 
-        // a tab in the right panel, a slash command
+        // a tab in the right panel (narrow), a slash command. UiPanel.Session instead: a view of one chat in the chat's own
+        // (wide) area, switched on from the chat header or by publishing ui.open { sessionId, view: "my.plugin/hello" }
         ctx.Ui.AddTab(new UiTabInfo { Id = "hello", Title = "Hello", Panel = UiPanel.Right, Icon = "sparkle", Order = 50 });
+
+        // an HTTP endpoint at /api/p/my.plugin/hello: the host checks its token and the Origin first. open: true skips
+        // both for a client that cannot hold the per-run token (a browser extension): the handler checks a secret of its own
+        ctx.Http.Map("hello", http => http.Response.WriteAsync("hello"));
         ctx.Ui.AddCommand(new SlashCommandInfo { Name = "hello", Description = "Say hello", Rpc = "my.hello" });
 
         // its settings as controls in the settings dialog (on the page of its group; read them with ctx.Settings)

@@ -166,7 +166,7 @@ Plugin tabs attach to the same bus through `ctx.on`.
 | `app` (`state/app.svelte.js`) | `sessions`/`projects`/`models` (`$state.raw` arrays, replaced on change) plus derived `…ById` maps, `agents`, `context`, `unread`, `openTabs`, `activeId`, `uiTabs`, `commands`. Actions: `openSession`, `newSession`, `closeTab`, `moveTab`, `updateSession`, `setSessionProject`, `sendMessage`, `abortAgent`, `dequeue`, … |
 | `ChatStore` (`state/chat.svelte.js`) | per session: `messages` window, `hasMore`, `hasNewer`, `stream` (StreamState), `live` (callId → LiveTool), `queue`, `notice`, `pendingUser`, `expanded` (UI memory), `draft`, `images`, scroll memory. The 5 most recently used stores stay cached (LRU); a store that is still streaming is never evicted. |
 | `ui` (`state/ui.svelte.js`) | `layout` (width, collapsed and active tab per side), `prefs` (theme, collapse steps, Enter behaviour, expand thinking), `modals`, `toasts`, and the `composer` bridge (`insertText`, `focus`, `setText`). |
-| `tabs` (`state/tabs.svelte.js`) | the side-panel tab registry: core tabs (`registerCoreTab`) plus plugin tabs (`ui.tabs`), sorted by `order`. |
+| `tabs` (`state/tabs.svelte.js`) | the tab registry: core tabs (`registerCoreTab`) plus plugin tabs (`ui.tabs`), sorted by `order`; side-panel tabs (`left`/`right`) and session views (`session`: shown in a chat's area instead of its messages, switched from the chat header, `sessionViews[sessionId]` says which, `openView` / the `ui.open` event open one). |
 
 **Persistence** uses localStorage (read synchronously at startup, every access in try/catch) plus a debounced
 `ui.state.set` as the durable copy. The keys are `netpi.layout`, `netpi.prefs` and `netpi.openTabs`. The UI

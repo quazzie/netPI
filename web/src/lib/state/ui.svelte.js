@@ -44,6 +44,21 @@ function merge(base, v) {
 }
 
 export const layout = $state(merge(defaultLayout, load(LAYOUT_KEY, null)));
+
+/** Which session view each chat shows instead of its messages: sessionId → tab key (absent: the chat itself). A key
+ *  of a view that is not registered shows the messages (ChatView looks the view up). */
+export const sessionViews = $state({});
+
+/** Show a session view (a "session" tab's key) in a chat, or the chat itself again with a null key. */
+export function openView(sessionId, key) {
+  if (!sessionId) return;
+  if (key) sessionViews[sessionId] = key;
+  else delete sessionViews[sessionId];
+}
+
+export function toggleView(sessionId, key) {
+  openView(sessionId, sessionViews[sessionId] === key ? null : key);
+}
 export const prefs = $state(withDefaults(load(PREFS_KEY, {})));
 
 export function saveLayout() {

@@ -10,13 +10,13 @@ namespace NetPI.Host.Registries;
 /// </summary>
 internal sealed class HttpRegistry
 {
-    private sealed record Entry(string PluginId, string Path, bool Prefix, Func<HttpContext, Task> Handler, long Seq);
+    private sealed record Entry(string PluginId, string Path, bool Prefix, Func<HttpContext, Task> Handler, bool Open, long Seq);
 
     private readonly Lock _gate = new();
     private readonly List<Entry> _entries = [];
     private long _seq;
 
-    public IDisposable Map(string pluginId, string path, Func<HttpContext, Task> handler)
+    public IDisposable Map(string pluginId, string path, Func<HttpContext, Task> handler, bool open = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
         ArgumentNullException.ThrowIfNull(handler);
@@ -24,7 +24,7 @@ internal sealed class HttpRegistry
         Entry entry;
         lock (_gate)
         {
-            entry = new Entry(pluginId, normalized, prefix, handler, ++_seq);
+            entry = new Entry(pluginId, normalized, prefix, handler, open, ++_seq);
             _entries.Add(entry);
         }
         return new Registration(() => { lock (_gate) _entries.Remove(entry); });
@@ -36,7 +36,12 @@ internal sealed class HttpRegistry
         get { lock (_gate) return [.. _entries.Select(e => (e.PluginId, e.Path))]; }
     }
 
-    public Func<HttpContext, Task>? Match(string pluginId, string subPath)
+    public Func<HttpContext, Task>? Match(string pluginId, string subPath) => Find(pluginId, subPath)?.Handler;
+
+    /// <summary>Whether the route a request would take is one the plugin authenticates itself (see <c>IHttpRegistry.Map</c>).</summary>
+    public bool IsOpen(string pluginId, string subPath) => Find(pluginId, subPath)?.Open == true;
+
+    private Entry? Find(string pluginId, string subPath)
     {
         var path = subPath.Trim('/');
         Entry? best = null;
@@ -53,7 +58,7 @@ internal sealed class HttpRegistry
                 if (best is null || Score(e) > Score(best) || (Score(e) == Score(best) && e.Seq > best.Seq)) best = e;
             }
         }
-        return best?.Handler;
+        return best;
     }
 
     // Exact routes beat prefix routes of the same length.

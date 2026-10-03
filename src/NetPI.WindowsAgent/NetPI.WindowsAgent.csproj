@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The windows tool's helper (plugins/NetPI.Tools.Windows): UI Automation in a process of its own, JSON lines over
+       stdin/stdout. Out of process because UIA calls can hang on an app that stopped answering (the plugin kills and
+       restarts the helper), and because a collectible plugin load context cannot hold COM objects. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>netpi-windows-agent</AssemblyName>
+    <RootNamespace>NetPI.WindowsAgent</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <OutDir>$(AppOutDir)plugins/NetPI.Tools.Windows/agent/</OutDir>
+  </PropertyGroup>
+</Project>

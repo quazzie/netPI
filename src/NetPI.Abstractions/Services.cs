@@ -116,12 +116,23 @@ public static class RpcRegistryExtensions
 /// <summary>Plugin HTTP endpoints, served under <c>/api/p/{pluginId}/{path}</c>.</summary>
 public interface IHttpRegistry
 {
-    IDisposable Map(string path, Func<HttpContext, Task> handler);
+    /// <summary>
+    /// Serve <paramref name="path"/>. By default the host lets a request through only with its token and from its own
+    /// origin, like every <c>/api</c> call. <paramref name="open"/>: the host checks neither, and the handler
+    /// authenticates the request itself — for a client that cannot hold the host's per-run token or comes from another
+    /// origin (a browser extension with a secret of its own). The server still listens on loopback only.
+    /// </summary>
+    IDisposable Map(string path, Func<HttpContext, Task> handler, bool open = false);
 }
 
 // ---------------------------------------------------------------- UI
 
-public enum UiPanel { Left, Right }
+/// <summary>
+/// Where a plugin tab shows. <see cref="Left"/> and <see cref="Right"/>: the side panels (narrow, 230–320 px).
+/// <see cref="Session"/>: a view of one chat, in the chat's own area (wide), switched on from the chat header or by the
+/// <c>ui.open</c> event; its <c>ctx.sessionId</c> is the chat it shows.
+/// </summary>
+public enum UiPanel { Left, Right, Session }
 
 public sealed class UiTabInfo
 {
