@@ -111,9 +111,12 @@ plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/www
 
 - There is one WebSocket to `/ws`, with `?token=` added when the app has an explicit token. Messages use the
   `{t:'rpc'|'sub'|'ping'}` envelope.
-- Each call gets an id and waits for the reply with the same id, with a 30s timeout. A call made while the
+- Each call gets an id and waits for the reply with the same id, with a 30s timeout by default. A call made while the
   socket is down waits in an outbox. If the socket is not back within 3s, the call goes to
-  `POST /api/rpc/{method}` instead (`http()`, which is also exported). Calls already on the wire when the socket
+  `POST /api/rpc/{method}` instead (`http()`, which is also exported); the timeout keeps running through the
+  switch — the fetch carries an AbortSignal for the time still left, covering the reading of the body — and a
+  call that times out says it may still have completed on the server (check the result before retrying). Calls
+  already on the wire when the socket
   drops reject with `code: 'disconnected'`.
 - **Reconnect:** backoff is 0.4s, 1s, 2s, 4s, 7s, then 10s, with jitter. The client also retries right away on
   `online`, on `visibilitychange`, or when the user clicks the indicator. A ping goes out every 15s, and a

@@ -432,6 +432,12 @@ projects dialog share) and for the three views of the dialog: the counts, the fi
 Node against stubbed state, then the views themselves in a headless browser — rows and counts, the filter narrowing
 the list, both forms, and what a failing rpc leaves on screen instead of a spinner.
 
+`node web/scripts/check-rpc-deadline.mjs` is the unit suite for the RPC client's deadline (`web/src/lib/rpc.svelte.js`):
+the timeout is set when the call is made and is kept through the switch to the HTTP fallback (the fetch continues
+with the time still left in it, as an AbortSignal) and through the reading of the response body; a call with no
+timeout waits for the server, no default is invented for it. The real client source runs in a vm with a controllable
+clock, fake timers and a fetch that never answers, so only a deadline can end a call.
+
 On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
 `/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.
 
