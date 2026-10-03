@@ -410,6 +410,9 @@ path rules use the same canonical function, so a protected path is reached in no
 
 An isolated workspace has no third answer: when git itself cannot say where a path lives (git missing, timed out, or an
 error — not "not a repository", which is an answer), the write is refused and the refusal says what git could not say.
+And it fails closed: a call the guard could not judge at all (git threw, a path it could not resolve) does not run either,
+because a hook that throws is a hook that did not judge — unless the call could not change anything, which the guard never
+judges in the first place.
 A plain "not a repository" still decides the ordinary outside, and a session that is bound but not isolated keeps the
 old behavior: nothing there is guarded by the repository question.
 

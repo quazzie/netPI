@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace NetPI.Workspaces;
 
@@ -17,8 +18,12 @@ namespace NetPI.Workspaces;
 /// accident: another worker's checkout, or the primary one, in an isolated workspace — and, while git cannot answer,
 /// anything it cannot verify: an unverifiable path is not a pass.
 /// </para>
+/// <para>
+/// It fails closed as well: a call it could not judge at all (git threw, a path it cannot resolve) does not run, because
+/// a hook that throws is a hook that did not judge. Only for a call that can change something — see <see cref="Judges"/>.
+/// </para>
 /// </summary>
-internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
+internal sealed class WorkspaceGuard(IPluginContext ctx, IWorkspaceRepoProbe git) : IAgentHook
 {
     /// <summary>The path-like argument each mutating tool uses (the file tools' own list, then the usual names).</summary>
     internal static readonly string[] PathArgs = ["path", "file_path", "filePath", "file", "filename", "fileName", "target"];
@@ -40,9 +45,6 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
 
     public ValueTask<ToolCallDecision?> OnBeforeToolCallAsync(AgentTurnContext turn, ToolCallPart call)
     {
-        var run = turn.Run;
-        var binding = run.Workspace();
-        if (binding is null || !binding.Isolated) return ValueTask.FromResult<ToolCallDecision?>(null);
         // The arguments as the tools read them: a string-encoded root (even a double-encoded one) unwraps to the
         // object the tool will run with, so the guard judges the call that runs - a call it cannot read is a call it
         // would let through, which is how the bypass happened.
@@ -52,41 +54,60 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
         // A write tool's file, or the destination an ssh download writes on this machine (scp writes it where the call says).
         var mutation = MutatingTools.Contains(name);
         var download = mutation ? null : SshDownloadTarget(name, args);
-        if (mutation || download is not null)
+        // What the guard has an opinion about at all: a write, a download that lands on this machine, or a shell
+        // (a shell command can write anything). Everything else it never judges, so it never blocks.
+        var judged = mutation || download is not null || ShellTools.Contains(name);
+        try
         {
-            var target = mutation ? PathArg(args) : download;
-            if (target is not null)
+            var run = turn.Run;
+            var binding = run.Workspace();
+            if (binding is null || !binding.Isolated) return ValueTask.FromResult<ToolCallDecision?>(null);
+            if (mutation || download is not null)
             {
-                var full = turn.Resolve(call, target);
-                var verdict = WorkspacePaths.CheckMutation(binding, full, git);
-                if (verdict is WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable)
-                    return ValueTask.FromResult<ToolCallDecision?>(new ToolCallDecision
-                    {
-                        Block = true,
-                        Reason = WorkspacePaths.Refusal(binding, full, git, verdict),
-                    });
+                var target = mutation ? PathArg(args) : download;
+                if (target is not null)
+                {
+                    var full = turn.Resolve(call, target);
+                    var verdict = WorkspacePaths.CheckMutation(binding, full, git);
+                    if (verdict is WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable)
+                        return ValueTask.FromResult<ToolCallDecision?>(new ToolCallDecision
+                        {
+                            Block = true,
+                            Reason = WorkspacePaths.Refusal(binding, full, git, verdict),
+                        });
+                }
+                return ValueTask.FromResult<ToolCallDecision?>(null);
             }
+
+            if (ShellTools.Contains(name))
+            {
+                var cwd = args.Str(CwdArgs)?.Trim();
+                if (cwd is null) return ValueTask.FromResult<ToolCallDecision?>(null);   // the default cwd is the workspace
+                var full = turn.Resolve(call, cwd);
+                var verdict = WorkspacePaths.CheckMutation(binding, full, git);
+                if (verdict is not (WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable)) return ValueTask.FromResult<ToolCallDecision?>(null);
+                // A shell command may write anything, so this is a judgement call: refuse the obvious accident (running in
+                // another worker's checkout) and say plainly that this is not a sandbox.
+                return ValueTask.FromResult<ToolCallDecision?>(new ToolCallDecision
+                {
+                    Block = true,
+                    Reason = WorkspacePaths.Refusal(binding, full, git, verdict) +
+                        " (This guards where a command runs, not what it does: a shell command that names another path is not inspected.)",
+                });
+            }
+
             return ValueTask.FromResult<ToolCallDecision?>(null);
         }
-
-        if (ShellTools.Contains(name))
+        catch (Exception ex)
         {
-            var cwd = args.Str(CwdArgs)?.Trim();
-            if (cwd is null) return ValueTask.FromResult<ToolCallDecision?>(null);   // the default cwd is the workspace
-            var full = turn.Resolve(call, cwd);
-            var verdict = WorkspacePaths.CheckMutation(binding, full, git);
-            if (verdict is not (WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable)) return ValueTask.FromResult<ToolCallDecision?>(null);
-            // A shell command may write anything, so this is a judgement call: refuse the obvious accident (running in
-            // another worker's checkout) and say plainly that this is not a sandbox.
-            return ValueTask.FromResult<ToolCallDecision?>(new ToolCallDecision
-            {
-                Block = true,
-                Reason = WorkspacePaths.Refusal(binding, full, git, verdict) +
-                    " (This guards where a command runs, not what it does: a shell command that names another path is not inspected.)",
-            });
+            // Failing open would make the guard a way in: the hook pass swallows a throwing hook and judges nothing,
+            // so the call the guard could not check is the call that runs. A call that cannot change anything was
+            // never the guard's business, and a failure there blocks nothing.
+            ctx.Logger.LogWarning(ex, "Workspace guard could not check {Tool}", name);
+            return ValueTask.FromResult<ToolCallDecision?>(judged
+                ? new ToolCallDecision { Block = true, Reason = $"the workspace guard could not check this call ({ex.Message}), so it did not run." }
+                : null);
         }
-
-        return ValueTask.FromResult<ToolCallDecision?>(null);
     }
 
     /// <summary>The tool's own path argument, by its own names first and then the shared ones.</summary>

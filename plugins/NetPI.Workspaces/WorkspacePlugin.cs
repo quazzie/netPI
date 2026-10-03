@@ -39,7 +39,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
         context.Services.Register(provisioner);   // the git-facing half, for diagnostics and tests
         var manager = new WorkspaceManager(context, store, resolver, provisioner, git);
         context.Services.Register<IWorkspaceProvisioner>(manager);
-        context.Services.Register<IAgentHook>(new WorkspaceGuard(git));
+        context.Services.Register<IAgentHook>(new WorkspaceGuard(context, git));
         // Applied before every other hook: a deferred switch has to settle the root before anything reads it.
         context.Services.Register<IAgentHook>(new WorkspaceSwitchApplier(context, resolver));
         context.Tools.Register(new WorkspaceTool(context, resolver));
