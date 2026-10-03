@@ -137,6 +137,62 @@ public static class EventBusTests
             Check.True(bRan >= 1, "b ran (it is the line the flush waited for): " + bRan);
         });
 
+        r.Add("bus: a flush waits for its marker to be queued on a saturated input (full is not closed)", async () =>
+        {
+            const int input = 4;
+            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 2, inputCapacity: input);
+            var started = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            var received = new List<string>();
+            using var _ = bus.Subscribe("t.*", e =>
+            {
+                lock (received) received.Add(e.Type);
+                if (e.Type == "t.one") { started.Set(); release.Wait(5000); }   // hold the line on the first event
+            });
+            bus.Publish("t.one");
+            Check.True(started.Wait(5000), "the subscriber is inside the first event");
+            bus.Publish("t.two");   // queued behind it: the line is full
+
+            // A competing producer keeps the input channel full, so the flush's marker cannot be queued at once.
+            var stop = new ManualResetEventSlim();
+            // the stop check inside the inner loop too: once the bus is gone every publish drops, the backlog never
+            // refills, and the flood would spin on drops forever otherwise
+            var flood = Task.Run(() => { while (!stop.IsSet) while (!stop.IsSet && bus.Backlog < input) bus.Publish("t.flood"); });
+            await WaitFor(() => bus.Backlog == input, "the input saturated");
+
+            var flush = bus.FlushAsync();
+            await Task.Delay(200);   // plenty for a give-up-on-full bug to report the bus as drained
+            Check.False(flush.IsCompleted, "a full input is not a closed bus: the flush waits for its marker to be queued");
+
+            release.Set();
+            await flush.WaitAsync(TimeSpan.FromSeconds(10));
+            stop.Set();
+            await flood;
+            Check.Equal("t.one,t.two", string.Join(",", received.Take(2)), "the events published before the flush were delivered, in order");
+        });
+
+        r.Add("bus: disposing the bus unblocks a flush that is still waiting for its marker", async () =>
+        {
+            const int input = 2;
+            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 1, inputCapacity: input);
+            var inside = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            using var _ = bus.Subscribe("x", e => { inside.Set(); release.Wait(5000); });
+            bus.Publish("x");
+            Check.True(inside.Wait(5000), "the subscriber wedged on its event");
+            var stop = new ManualResetEventSlim();
+            var flood = Task.Run(() => { while (!stop.IsSet) while (!stop.IsSet && bus.Backlog < input) bus.Publish("x"); });
+            await WaitFor(() => bus.Backlog == input, "the input saturated");
+            var flush = bus.FlushAsync();
+            await Task.Delay(100);
+            Check.False(flush.IsCompleted, "the flush waits: its marker cannot pass the wedged line");
+            await bus.DisposeAsync();   // the writer completes: the pending write sees the closed channel, the wedged worker is given up on
+            release.Set();
+            stop.Set();
+            await flood;
+            await flush.WaitAsync(TimeSpan.FromSeconds(10));   // it comes back: a dispose must never leave a flush waiting
+        });
+
         r.Add("bus: disposing a subscription lets its worker finish what was already queued", async () =>
         {
             await using var bus = new EventBus(NullLogger.Instance);
