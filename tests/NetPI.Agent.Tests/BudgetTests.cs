@@ -12,6 +12,7 @@ public static class BudgetTests
         t.Add("budget: a spent monthly budget stops paid calls, not local ones; \"ask\" lets a chat go over and continues it", MonthlyBudget);
         t.Add("agents: agent_choices shows the budget, state, price, spend and note; agent_spawn needs an active agent; an agent's daily cap", AgentsAndCap);
         t.Add("budget: the period starts on budget.resetDay", Period);
+        t.Add("budget: a changed resetDay mid-run re-rolls the current period, without a restart", ResetDayChange);
         t.Add("budget: settings changes refresh usage without a model call, including file reloads", SettingsRefresh);
         t.Add("ledger: the in-flight usage.changed does not outlive the plugin's stop", StopMidNotification);
         t.Add("ledger: the period's per-model view is a roll-up: rebuilt for the calls it missed, corrected by each settlement", PeriodRollup);
@@ -459,5 +460,69 @@ public static class BudgetTests
         Check.Equal("2026-08-15..2026-09-15", P(2026, 9, 10, 15));
         Check.Equal("2026-09-15..2026-10-15", P(2026, 9, 15, 15));
         Check.Equal("2025-12-28..2026-01-28", P(2026, 1, 3, 28));
+    }
+    /// <summary>
+    /// The period's roll-up is keyed by the budget period, and the period is read live: a changed budget.resetDay
+    /// moves the current period's border mid-run, so the period is rebuilt from the calls without a restart, and the
+    /// usage.changed that goes out already knows the new border.
+    /// </summary>
+    private static async Task ResetDayChange()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents);
+        var calls = Calls(h);
+        var rolls = PeriodUsage(h);
+        var oldKey = NetPI.Agents.Ledger.Period(DateTime.Now, 1).Start.ToString("yyyy-MM-dd");
+        var newStart = NetPI.Agents.Ledger.Period(DateTime.Now, 15).Start;
+        var newKey = newStart.ToString("yyyy-MM-dd");
+        Check.Differs(oldKey, newKey, "resetDay 1 and 15 move the period's start");
+
+        // One call recorded during the run under the default resetDay 1: its row, and the roll-up the run wrote.
+        calls.Put("1", new JsonObject
+        {
+            ["ts"] = DateTimeOffset.Now.ToUnixTimeMilliseconds(), ["day"] = NetPI.Agents.Ledger.Today, ["period"] = oldKey,
+            ["provider"] = "cloud", ["model"] = "big", ["purpose"] = "agent", ["sessionId"] = "ses_1", ["rootSessionId"] = "ses_1", ["lane"] = "Alpha",
+            ["inputTokens"] = 100L, ["outputTokens"] = 10L, ["cacheReadTokens"] = 0L, ["cacheWriteTokens"] = 0L,
+            ["costUsd"] = 0.25, ["costSource"] = "reported",
+        });
+        rolls.Put($"{oldKey}|alpha|cloud|big", new JsonObject
+        {
+            ["period"] = oldKey, ["lane"] = "Alpha", ["provider"] = "cloud", ["model"] = "big", ["calls"] = 1L,
+            ["inputTokens"] = 100L, ["outputTokens"] = 10L, ["cacheReadTokens"] = 0L, ["cacheWriteTokens"] = 0L,
+            ["costUsd"] = 0.25, ["unknownCalls"] = 0L,
+        });
+
+        var before = (await h.Rpc.CallAsync("usage.history"))!;
+        Check.Equal(oldKey, (string?)before["current"]);
+        Check.Equal(1L, (long)before["totals"]!["calls"]!);
+
+        // The month now starts on the 15th, while the app runs.
+        h.Settings.Set("budget.resetDay", JsonValue.Create(15));
+        await h.Bus.DrainAsync();
+
+        var status = (await h.Rpc.CallAsync("budget.status"))!;
+        Check.Equal(newKey, (string?)status["periodStart"], "the budget reads the new border");
+        Check.Equal(newStart.AddMonths(1).ToString("yyyy-MM-dd"), (string?)status["periodEnd"]);
+        var ev = FakeBus.Data(h.Bus.OfType("usage.changed")[^1]);
+        Check.Equal(newKey, (string?)ev["periodStart"], "the usage.changed that went out already knows the new period");
+
+        // The period is re-rolled from the calls, not left empty until a restart: the call is in it (today is inside
+        // the current period under either resetDay), and the old period keeps its own row, as after a restart.
+        var after = (await h.Rpc.CallAsync("usage.history"))!;
+        Check.Equal(newKey, (string?)after["current"]);
+        Check.Equal(1L, (long)after["totals"]!["calls"]!, "re-rolled from the calls");
+        Check.Equal(0.25, Math.Round(Num(after["totals"]!["costUsd"]), 6));
+        Check.Equal(1L, (long)after["models"]!.AsArray()[0]!["calls"]!, "the per-model view is re-rolled too");
+        var periods = after["periods"]!.AsArray();
+        var newPeriod = periods.Single(p => (string?)p!["period"] == newKey)!;
+        Check.Equal(1L, (long)newPeriod["calls"]!);
+        Check.Equal(0.25, Math.Round(Num(newPeriod["costUsd"]), 6));
+        Check.True(periods.Any(p => (string?)p!["period"] == oldKey), "the old period keeps its own rows");
+
+        // A whole-file replacement carries no path: its resetDay change re-rolls too.
+        h.Settings.Replace(new JsonObject { ["budget"] = new JsonObject { ["resetDay"] = 1 } });
+        await h.Bus.DrainAsync();
+        var back = (await h.Rpc.CallAsync("usage.history"))!;
+        Check.Equal(oldKey, (string?)back["current"]);
+        Check.Equal(1L, (long)back["totals"]!["calls"]!, "the call counts for the period it is in again");
     }
 }
