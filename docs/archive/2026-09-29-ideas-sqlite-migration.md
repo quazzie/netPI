@@ -1,6 +1,6 @@
 # Ideas: migrate authoritative storage to SQLite
 
-Status: superseded by docs/plans/2026-10-02-replaceable-parts.md (implemented 2026-10-02): plugin data lives in the storage
+Status: superseded by docs/archive/2026-10-02-replaceable-parts.md (implemented 2026-10-02): plugin data lives in the storage
 provider's own collections (`ctx.Data`), not in plugin-owned SQLite tables, and the review bugs this plan cites are fixed
 (0c5c6bb). Kept as the record of the reviewed design; the migration it describes was never executed.
 Date: 2026-09-29. Documentation baseline: 0ff5edc. Post-fix review baseline: 9bcb968.
@@ -124,4 +124,4 @@ SQLite is the only active authoritative store; card resolution is atomic; revisi
 
 ## Dispatch prompt
 
-Read docs/plans/2026-09-29-ideas-sqlite-migration.md and repository instructions. Implement assignment <A/B/C/D> in an isolated worktree, respecting dependencies and owned files. Reuse the post-fix review regressions from b29a868 as acceptance cases. Preserve IDs, ordering, unknown fields and workflow behavior; use real temporary SQLite databases for persistence tests. Coordinate schema/startup/shared-test changes with the parent. Do not deploy or access live data/settings. Return your commit, changed paths, tests/results, migration compatibility notes and unresolved risks.
+Read docs/archive/2026-09-29-ideas-sqlite-migration.md and repository instructions. Implement assignment <A/B/C/D> in an isolated worktree, respecting dependencies and owned files. Reuse the post-fix review regressions from b29a868 as acceptance cases. Preserve IDs, ordering, unknown fields and workflow behavior; use real temporary SQLite databases for persistence tests. Coordinate schema/startup/shared-test changes with the parent. Do not deploy or access live data/settings. Return your commit, changed paths, tests/results, migration compatibility notes and unresolved risks.

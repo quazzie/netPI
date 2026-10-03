@@ -4,7 +4,7 @@ Status: implemented (idea-lk4gm7). Date: 2026-09-30. Source baseline: d7f06c0.
 
 ## The gap
 
-`IdeaCommitCheck` (phase 3 of `docs/plans/2026-09-27-ideas-follow-the-session.md`) watches every project's repository and,
+`IdeaCommitCheck` (phase 3 of `docs/archive/2026-09-27-ideas-follow-the-session.md`) watches every project's repository and,
 for each new commit, asks two model questions: which open idea is it about, and is that idea finished. The answer is a
 **card**, and "the card is an offer, never an action: nothing is marked done without a click". That is the right shape for
 a commit made in a terminal — no conversation is watching it, so somebody has to be asked, and the user is the one who

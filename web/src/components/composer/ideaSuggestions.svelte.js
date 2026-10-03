@@ -1,5 +1,5 @@
 /**
- * The cards a closed chat leaves behind (plugins/NetPI.Ideas, phase 2 of docs/plans/2026-09-27-ideas-follow-the-session.md):
+ * The cards a closed chat leaves behind (plugins/NetPI.Ideas, phase 2 of docs/archive/2026-09-27-ideas-follow-the-session.md):
  * a plan, feature idea or research question that the check found nobody built or wrote down. They wait in
  * ~/.netpi/ideas-pending.json, so they are here after a restart too, and they are shown above the composer of whatever
  * chat is open — the chat they came from is closed, and unscoped events reach every window.

@@ -813,6 +813,8 @@ names or an inline `<svg …>` string.
   Files and Diagnostics tabs offer it only when `window.chrome.webview` exists.
 - **Zoom.** The WebView zooms with Ctrl + wheel and Ctrl + / − / 0; the shell saves the factor in `window.json`
   (with the window placement) and restores it. `desktop.zoom { factor? }` reads or sets it (the Settings dialog).
+  WebView2 resets zoom on navigation, and setting `ZoomFactor` programmatically does not raise `ZoomFactorChanged`:
+  `MainForm.cs` applies the remembered factor after the first navigation, and `desktop.zoom` persists its own changes.
 - **Notifications.** When a chat needs the user, the page posts `{ type: 'notify', sessionId, title, body }`
   (`lib/notify.js`): a top-level chat's run finished or failed (unless it goes on by itself within 1.5 s or its goal
   is active), its goal was completed or is blocked, the budget asks, an agent asks a question (`Asks: …`), a tool call

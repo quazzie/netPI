@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Ideas;
 
 /// <summary>
-/// Save on tab close (phase 2 of docs/plans/2026-09-27-ideas-follow-the-session.md). Closing a session tab is the moment a
+/// Save on tab close (phase 2 of docs/archive/2026-09-27-ideas-follow-the-session.md). Closing a session tab is the moment a
 /// plan gets forgotten, so the check runs then, in the background, and never holds the tab's close:
 /// <list type="number">
 /// <item>which open idea the chat worked on — a pick-one decision over the open ideas at p ≥ <c>ideas.attachThreshold</c>

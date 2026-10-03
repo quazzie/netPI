@@ -42,12 +42,26 @@ Publishing while NetPI runs hot-reloads the changed plugins, which every chat ho
 (`-Publish -NextStart` defers all of it to the next start). The E2E suite runs from a private copy of the build output
 (`artifacts/dev/app`), so it is not affected by (and does not affect) other instances.
 
+## Choose the scope
+
+Verification follows the change, not the fact that it will be merged:
+
+| Change | Verification |
+|---|---|
+| Docs or comments | Review the diff and check changed links; no test suite |
+| Formatting or line endings | Check the diff, checkout policy and affected build output; no full gate |
+| Small plugin UI edit | Build its bundle and check the affected UI behavior or layout |
+| Plugin behavior | Owning unit tests and affected E2E cases (`-Only`, `-Tag` or `-Changed`) |
+| Shared contracts or cross-cutting behavior | Full unit and E2E gates once the changes are ready |
+
+An explicit request can call for wider testing. Otherwise broaden checks only when affected scope or new evidence
+justifies it. A merge alone does not. After a failure, read the evidence and rerun the failing and affected tests.
+
 ## Unit suites
 
-The loop that is fast: **one big run, then only what failed.** `scripts/test.ps1` builds the six suites, runs them
-once, keeps the whole output in `artifacts/testlogs/<timestamp>.txt`, and finishes with the failing test names as a
-ready-to-paste `-Only` command. Re-running that while fixing takes seconds instead of the ~90 s of the full set; the
-full run belongs at the end, before a merge.
+Start with the affected tests. `scripts/test.ps1 -Suite <suite> -Only "<name>"` builds and runs that selection,
+keeps the whole output in `artifacts/testlogs/<timestamp>.txt`, and finishes with failing test names as a
+ready-to-paste `-Only` command. Without selectors it runs all six suites; use that only for the broad scope above.
 
 ```powershell
 .\scripts\test.ps1                                   # build + run all six, print a re-run command for the failures
@@ -233,7 +247,7 @@ does. **Run it by what your change can reach, not as a whole, while you work**: 
 .\scripts\e2e.ps1 -Smoke                          # one representative test per boundary, ~10 s
 .\scripts\e2e.ps1 -Failed                         # what failed and has not passed since, across runs
 .\scripts\e2e.ps1 -List [-Tag x]                  # ids, tags, last duration, name; starts nothing
-.\scripts\e2e.ps1                                 # everything, sharded: the gate before a merge
+.\scripts\e2e.ps1                                 # everything, sharded: shared contracts or cross-cutting changes
 .\scripts\e2e.ps1 -Only <id> -Repeat 20 -Fresh    # how often does it fail? every failure keeps its evidence
 .\scripts\e2e.ps1 -Fresh                          # every test alone on its own server: finds hidden order dependencies
 .\scripts\e2e.ps1 -SelfTest                       # the runner's own tests (selection, scheduling, containment, report); no server

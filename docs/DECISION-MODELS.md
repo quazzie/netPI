@@ -420,7 +420,7 @@ succeed, at 0.2–0.4 s of model time per step, locally. Apps that draw their ow
 fallback. **Not in the background for Chrome:** our pattern actions need no focus, but Chrome brings its window to the
 front when an accessibility action focuses a page element (42 of 52 steps with Chrome kept behind; decisions-lab
 `cu_web.mjs --background`). So a browser in the harness goes through the DevTools protocol instead
-(`docs/plans/2026-09-27-browser.md`), and UIA stays for native apps. Next: a NetPI plugin (`windows.snapshot` / `windows.act`, the
+(`docs/archive/2026-09-27-browser.md`), and UIA stays for native apps. Next: a NetPI plugin (`windows.snapshot` / `windows.act`, the
 loop as a tool, confirmation for destructive controls); a done-check through `/v1/decision` (every variant had one
 false "done"); harder apps (Office, Electron, Settings read-only); record real steps for training (the traces here
 already hold the control list, reply, action and effect per step). Scripts: decisions-lab `uia-agent/`,
