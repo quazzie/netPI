@@ -61,9 +61,23 @@ public static class PluginIndependenceTests
                 Check.Equal(attr.Order, plugin.Order, $"{name}: the registered order differs from the attribute");
 
                 await server.Plugins.SetEnabledAsync(plugin.Id, false).WaitAsync(TimeSpan.FromSeconds(10));
-                Check.False(server.Rpc.List().Any(m => m.PluginId == plugin.Id), "RPC registrations removed");
-                Check.False(server.Kernel.Tools.Registrations.Any(t => t.PluginId == plugin.Id), "tools removed");
-                Check.False(server.Kernel.Ui.Tabs.Any(t => t.PluginId == plugin.Id), "tabs removed");
+
+                // Nothing the plugin registered is left in the kernel, whichever registry it went through: its RPC
+                // methods, tools, tabs, slash commands and HTTP routes are gone, no service it provided survives (the
+                // agent hooks and model middlewares are services), and the bus has as many subscribers as before.
+                var kernel = server.Kernel;
+                var registries = new (string Name, string[] Owners)[]
+                {
+                    ("rpc", kernel.Rpc.List().Select(m => m.PluginId).ToArray()),
+                    ("tools", kernel.Tools.Registrations.Select(t => t.PluginId).ToArray()),
+                    ("tabs", kernel.Ui.Tabs.Select(t => t.PluginId ?? "").ToArray()),
+                    ("commands", kernel.Ui.Commands.Select(c => c.PluginId ?? "").ToArray()),
+                    ("http", kernel.Http.Routes.Select(r => r.PluginId).ToArray()),
+                    ("services", kernel.Services.List().Select(s => s.Owner).ToArray()),
+                    ("event subscriptions", kernel.Bus.Subscriptions.Select(s => s.Owner).ToArray()),
+                };
+                foreach (var (what, owners) in registries)
+                    Check.False(owners.Contains(plugin.Id, StringComparer.Ordinal), $"{name}: {what} registrations removed");
 
                 // Collectible unload, for every plugin: the host's own weak-reference check must report the
                 // stopped plugin's load context collected (something still referencing plugin types would leak it).

@@ -30,6 +30,12 @@ internal sealed class HttpRegistry
         return new Registration(() => { lock (_gate) _entries.Remove(entry); });
     }
 
+    /// <summary>The routes that are registered and who registered them, for diagnostics and for the plugin tests.</summary>
+    public IReadOnlyList<(string PluginId, string Path)> Routes
+    {
+        get { lock (_gate) return [.. _entries.Select(e => (e.PluginId, e.Path))]; }
+    }
+
     public Func<HttpContext, Task>? Match(string pluginId, string subPath)
     {
         var path = subPath.Trim('/');
