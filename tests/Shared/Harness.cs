@@ -112,6 +112,9 @@ public sealed class TestRunner
     /// renamed test. scripts/test.ps1 maps a non-zero exit with no FAIL line to a failure.</summary>
     public const int NoTestSelected = 2;
 
+    /// <summary>What the suite is called in the result file (scripts/test.ps1 groups its report by it).</summary>
+    public string Name { get; init; } = "suite";
+
     /// <summary>Per-test timeout. The suites that start real servers give theirs more room.</summary>
     public int TimeoutSeconds { get; init; } = 60;
 
@@ -124,11 +127,41 @@ public sealed class TestRunner
     public void Add(string name, Func<Task> body) => _tests.Add((name, body));
     public void Add(string name, Action body) => _tests.Add((name, () => { body(); return Task.CompletedTask; }));
 
+    /// <summary>Split a command line into filters and a shard. <c>--shard i/n</c> (1-based, the value may be a
+    /// second argument, as a command line gives it) selects the i-th of n equal parts of the selected tests —
+    /// the clean way to run one suite on several machines.</summary>
+    public static (string[] Filters, (int Index, int Count)? Shard) ParseArgs(string[] args)
+    {
+        string? spec = null;
+        var filters = new List<string>();
+        for (var i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (a == "--shard")
+            {
+                if (i + 1 >= args.Length) continue;
+                i++;
+                spec = args[i];
+            }
+            else if (a.StartsWith("--shard ", StringComparison.Ordinal)) spec = a["--shard ".Length..].Trim();
+            else filters.Add(a);
+        }
+        (int Index, int Count)? shard = null;
+        if (spec is { Length: > 0 } && spec.Split('/') is { Length: 2 } parts
+            && int.TryParse(parts[0], out var index) && int.TryParse(parts[1], out var count)
+            && count > 0 && index >= 1 && index <= count)
+            shard = (index, count);
+        return (filters.ToArray(), shard);
+    }
+
     public async Task<int> RunAsync(string[] filters)
     {
-        var selected = _tests.Where(t => filters.Length == 0 || filters.Any(f => t.Name.Contains(f, StringComparison.OrdinalIgnoreCase))).ToList();
+        var (f, shard) = ParseArgs(filters);
+        var selected = _tests.Where(t => f.Length == 0 || f.Any(x => t.Name.Contains(x, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (shard is { } s) selected = selected.Where((t, i) => i % s.Count == s.Index - 1).ToList();
         int passed = 0, failed = 0, skipped = 0;
         var failures = new List<string>();
+        var results = new List<(string Name, string Result, long Ms)>();
         var total = Stopwatch.StartNew();
         foreach (var (name, body) in selected)
         {
@@ -141,11 +174,13 @@ public sealed class TestRunner
                     throw new AssertException($"test timed out after {TimeoutSeconds}s");
                 await task;
                 passed++;
+                results.Add((name, "passed", sw.ElapsedMilliseconds));
                 Console.WriteLine($"  PASS  {name} ({sw.ElapsedMilliseconds}ms)");
             }
             catch (SkipException ex)
             {
                 skipped++;
+                results.Add((name, "skipped", sw.ElapsedMilliseconds));
                 Console.WriteLine($"  SKIP  {name} ({ex.Message})");
             }
             catch (Exception ex)
@@ -153,6 +188,7 @@ public sealed class TestRunner
                 failed++;
                 var msg = ex is AssertException ? ex.Message : ex.ToString();
                 failures.Add($"{name}: {msg}");
+                results.Add((name, "failed", sw.ElapsedMilliseconds));
                 Console.WriteLine($"  FAIL  {name} ({sw.ElapsedMilliseconds}ms)\n        {msg.Replace("\n", "\n        ")}");
             }
         }
@@ -163,9 +199,27 @@ public sealed class TestRunner
         if (failed > 0)
         {
             Console.WriteLine("Failures:");
-            foreach (var f in failures) Console.WriteLine("  - " + f.Split('\n')[0]);
+            foreach (var fl in failures) Console.WriteLine("  - " + fl.Split('\n')[0]);
         }
+        WriteResult(passed, failed, skipped, selected.Count, total.Elapsed, results);
         return failed > 0 ? 1 : nothing ? NoTestSelected : 0;
+    }
+
+    /// <summary>When NETPI_TEST_RESULT names a file, write the run there as JSON: the one result contract
+    /// scripts/test.ps1 reads instead of scraping console lines (the providers' check-style summary used to
+    /// carry no body time, so the process-gap check was blind to that suite).</summary>
+    private void WriteResult(int passed, int failed, int skipped, int total, TimeSpan elapsed, List<(string Name, string Result, long Ms)> results)
+    {
+        var file = Environment.GetEnvironmentVariable("NETPI_TEST_RESULT");
+        if (file is not { Length: > 0 }) return;
+        File.WriteAllText(file, JsonSerializer.SerializeToElement(new
+        {
+            suite = Name,
+            passed, failed, skipped, total,
+            bodySeconds = Math.Round(elapsed.TotalSeconds, 2),
+            matchedNothing = total == 0,
+            tests = results.Select(r => new { name = r.Name, result = r.Result, ms = r.Ms }),
+        }).GetRawText());
     }
 }
 

@@ -1,7 +1,7 @@
 using NetPI.Tools.Tests;
 
 // Usage: dotnet run --project tests/NetPI.Tools.Tests [-- <name filter>...]
-var runner = new TestRunner { TimeoutSeconds = 90 };
+var runner = new TestRunner { Name = "Tools", TimeoutSeconds = 90 };
 WorkspaceToolTests.Register(runner);
 FileTests.Register(runner);
 ShellTests.Register(runner);

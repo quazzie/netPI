@@ -8,7 +8,7 @@ using NetPI.Storage.Tests;
 //
 //   dotnet build tests/NetPI.Storage.Tests
 //   dotnet tests/NetPI.Storage.Tests/bin/Debug/NetPI.Storage.Tests.dll [name filter...]
-var runner = new TestRunner { TimeoutSeconds = 120 };
+var runner = new TestRunner { Name = "Storage", TimeoutSeconds = 120 };
 SessionTests.Register(runner);
 MessageTests.Register(runner);
 CollectionTests.Register(runner);

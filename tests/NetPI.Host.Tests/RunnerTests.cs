@@ -155,7 +155,8 @@ public static class RunnerTests
     private static void TestScriptHonesty()
     {
         var ps = File.ReadAllText(Path.Combine(T.RepoRoot, "scripts", "test.ps1"));
-        Check.Contains(ps, "'(\\d+) skipped'", "the skip count is read out of the runner's summary");
+        Check.Contains(ps, "ConvertFrom-Json", "the runner's result file is read as data, not scraped");
+        Check.Contains(ps, "$result.skipped", "the skip count comes out of the result file");
         Check.Contains(ps, "Skipped (something was missing", "and printed, so a suite that skips half of itself is visible");
         Check.Contains(ps, "no test matched the filter in any suite", "a filter that matches nothing in one suite is not a failure");
         Check.Contains(ps, "$emptySuites.Count -eq $results.Count", "it fails only when no suite matched anything");
