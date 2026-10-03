@@ -17,16 +17,11 @@ public sealed class AnthropicProvider : IModelProvider
     public const string NoKeyMessage =
         "Anthropic API key is not configured. Set providers.anthropic.apiKey in settings (or the ANTHROPIC_API_KEY environment variable).";
 
-    private sealed record CacheEntry(IReadOnlyList<ModelInfo> Models, string Fingerprint, DateTimeOffset Expires);
-
     private readonly HttpClient _http;
     private readonly Func<JsonObject?> _config;
     private readonly ILogger _log;
-    private readonly IEventBus? _events;
     private readonly string? _dumpDir;
-    private readonly SemaphoreSlim _listLock = new(1, 1);
-    private volatile CacheEntry? _cache;
-    private string? _signature;
+    private readonly ModelListCache _models;
 
     public AnthropicProvider(HttpClient http, Func<JsonObject?> config, ILogger? logger = null, IEventBus? events = null,
         string id = "anthropic", string? logsDir = null)
@@ -35,8 +30,8 @@ public sealed class AnthropicProvider : IModelProvider
         _http = http;
         _config = config;
         _log = logger ?? NullLogger.Instance;
-        _events = events;
         _dumpDir = logsDir is null ? null : Path.Combine(logsDir, "failed-requests");
+        _models = new ModelListCache(id, _log, events);
     }
 
     public string Id { get; }
@@ -52,45 +47,28 @@ public sealed class AnthropicProvider : IModelProvider
     private static string CacheKey(AnthropicOptions o) => !o.Enabled ? "disabled" : o.ApiKey is null ? "nokey" : o.Fingerprint;
 
     /// <summary>True when the model list was fetched before and the settings changed since.</summary>
-    public bool SettingsChangedSinceLastList => _cache is { } c && c.Fingerprint != CacheKey(Options());
+    public bool SettingsChangedSinceLastList => _models.SettingsChanged(CacheKey(Options()));
 
-    public void InvalidateModels() => _cache = null;
+    public void InvalidateModels() => _models.Invalidate();
 
     // ================================================================ models
 
     public async Task<IReadOnlyList<ModelInfo>> ListModelsAsync(bool refresh, CancellationToken ct)
     {
         var o = Options();
-        var key = CacheKey(o);
-        var cache = _cache;
-        if (!refresh && cache is not null && cache.Fingerprint == key && cache.Expires > DateTimeOffset.UtcNow) return cache.Models;
-
-        await _listLock.WaitAsync(ct).ConfigureAwait(false);
-        try
+        var policy = new ModelListCache.Policy
         {
-            cache = _cache;
-            if (!refresh && cache is not null && cache.Fingerprint == key && cache.Expires > DateTimeOffset.UtcNow) return cache.Models;
-
-            IReadOnlyList<ModelInfo> models;
-            var ttl = TimeSpan.FromSeconds(o.ModelsCacheSeconds);
-            if (!o.Enabled || o.ApiKey is null) models = [];
-            else
-            {
-                try { models = await FetchModelsAsync(o, ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch (Exception ex)
-                {
-                    _log.LogWarning("anthropic: cannot list models ({Error}); using the static model list", ex.Message);
-                    var ids = o.FallbackModels.Count > 0 ? o.FallbackModels : [.. ClaudeCapabilities.FallbackModels];
-                    models = ids.Select(id => ClaudeCapabilities.ToModelInfo(Id, id, null)).ToList();
-                    ttl = TimeSpan.FromSeconds(Math.Min(60, o.ModelsCacheSeconds));
-                }
-            }
-            _cache = new CacheEntry(models, key, DateTimeOffset.UtcNow + ttl);
-            PublishIfChanged(models);
-            return models;
-        }
-        finally { _listLock.Release(); }
+            Fingerprint = CacheKey(o),
+            CanFetch = o.Enabled && o.ApiKey is not null,
+            Ttl = TimeSpan.FromSeconds(o.ModelsCacheSeconds),
+            FailureTtl = TimeSpan.FromSeconds(Math.Min(60, o.ModelsCacheSeconds)),
+            Url = o.Root,
+            // A failed call falls back to the static capability table, not to the last list: the models API returns
+            // ids alone, and it is that table which says what a Claude id can do.
+            OnFailure = () => (o.FallbackModels.Count > 0 ? o.FallbackModels : [.. ClaudeCapabilities.FallbackModels])
+                .Select(id => ClaudeCapabilities.ToModelInfo(Id, id, null)).ToList(),
+        };
+        return await _models.ListAsync(refresh, policy, c => FetchModelsAsync(o, c), ct).ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<ModelInfo>> FetchModelsAsync(AnthropicOptions o, CancellationToken ct)
@@ -114,17 +92,6 @@ public sealed class AnthropicProvider : IModelProvider
             list.Add(info);
         }
         return list;
-    }
-
-    private void PublishIfChanged(IReadOnlyList<ModelInfo> models)
-    {
-        var sig = string.Join("\n", models.Select(m => $"{m.Id}|{m.DisplayName}|{m.Status}|{m.ContextWindow}|{m.MaxOutputTokens}"));
-        if (sig == _signature) return;
-        var first = _signature is null;
-        _signature = sig;
-        if (first && models.Count == 0) return;
-        try { _events?.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = Id }); }
-        catch (Exception ex) { _log.LogDebug(ex, "anthropic: publishing models.changed failed"); }
     }
 
     // ================================================================ streaming
@@ -217,6 +184,6 @@ public sealed class AnthropicProvider : IModelProvider
         if (o.ApiKey is not null) req.Headers.TryAddWithoutValidation("x-api-key", o.ApiKey);
         req.Headers.TryAddWithoutValidation("anthropic-version", ApiVersion);
         if (o.Betas.Count > 0) req.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", o.Betas));
-        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, AnthropicOptions.ResolveSecret(v) ?? v);
+        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, Secrets.Resolve(v) ?? v);
     }
 }

@@ -23,19 +23,11 @@ public sealed class OpenRouterProvider : IModelProvider
     public const string NoKeyMessage =
         "OpenRouter API key is not configured. Set providers.openrouter.apiKey in settings (or the OPENROUTER_API_KEY environment variable).";
 
-    private sealed record CacheEntry(IReadOnlyList<ModelInfo> Models, string Fingerprint, DateTimeOffset Expires);
-
     private readonly HttpClient _http;
     private readonly Func<JsonObject?> _config;
     private readonly ILogger _log;
-    private readonly IEventBus? _events;
     private readonly string? _dumpDir;
-    private readonly SemaphoreSlim _listLock = new(1, 1);
-    private volatile CacheEntry? _cache;
-    private IReadOnlyList<ModelInfo>? _lastGood;
-    private string? _lastGoodFingerprint;
-    private string? _signature;
-    private bool _failureLogged;
+    private readonly ModelListCache _models;
 
     public OpenRouterProvider(HttpClient http, Func<JsonObject?> config, ILogger? logger = null, IEventBus? events = null,
         string? logsDir = null, string id = "openrouter")
@@ -44,8 +36,8 @@ public sealed class OpenRouterProvider : IModelProvider
         _http = http;
         _config = config;
         _log = logger ?? NullLogger.Instance;
-        _events = events;
         _dumpDir = logsDir is null ? null : Path.Combine(logsDir, "failed-requests");
+        _models = new ModelListCache(id, _log, events);
     }
 
     public string Id { get; }
@@ -61,55 +53,25 @@ public sealed class OpenRouterProvider : IModelProvider
     private static string CacheKey(OpenRouterOptions o) => !o.Enabled ? "disabled" : o.ApiKey is null ? "nokey" : o.Fingerprint;
 
     /// <summary>True when the model list was fetched before and the settings changed since.</summary>
-    public bool SettingsChangedSinceLastList => _cache is { } c && c.Fingerprint != CacheKey(Options());
+    public bool SettingsChangedSinceLastList => _models.SettingsChanged(CacheKey(Options()));
 
-    public void InvalidateModels() => _cache = null;
+    public void InvalidateModels() => _models.Invalidate();
 
     // ================================================================ models
 
     public async Task<IReadOnlyList<ModelInfo>> ListModelsAsync(bool refresh, CancellationToken ct)
     {
         var o = Options();
-        var key = CacheKey(o);
-        var cache = _cache;
-        if (!refresh && cache is not null && cache.Fingerprint == key && cache.Expires > DateTimeOffset.UtcNow) return cache.Models;
-
-        await _listLock.WaitAsync(ct).ConfigureAwait(false);
-        try
+        var policy = new ModelListCache.Policy
         {
-            cache = _cache;
-            if (!refresh && cache is not null && cache.Fingerprint == key && cache.Expires > DateTimeOffset.UtcNow) return cache.Models;
-
-            IReadOnlyList<ModelInfo> models;
-            var ttl = TimeSpan.FromSeconds(o.ModelsCacheSeconds);
+            Fingerprint = CacheKey(o),
             // Without a key nothing is offered (the catalog itself is public, but every call needs the key).
-            if (!o.Enabled || o.ApiKey is null) models = [];
-            else
-            {
-                try
-                {
-                    models = await FetchModelsAsync(o, ct).ConfigureAwait(false);
-                    _lastGood = models;
-                    _lastGoodFingerprint = key;
-                    if (_failureLogged) _log.LogInformation("openrouter: model list available again ({Count} models)", models.Count);
-                    _failureLogged = false;
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch (Exception ex)
-                {
-                    if (!_failureLogged) _log.LogWarning("openrouter: cannot list models from {Url}: {Error}", o.Root, ex.Message);
-                    _failureLogged = true;
-                    models = _lastGood is { } last && _lastGoodFingerprint == key
-                        ? last.Select(m => { var c = Clone(m); c.Status = "offline"; return c; }).ToList()
-                        : [];
-                    ttl = TimeSpan.FromSeconds(Math.Min(60, o.ModelsCacheSeconds));
-                }
-            }
-            _cache = new CacheEntry(models, key, DateTimeOffset.UtcNow + ttl);
-            PublishIfChanged(models);
-            return models;
-        }
-        finally { _listLock.Release(); }
+            CanFetch = o.Enabled && o.ApiKey is not null,
+            Ttl = TimeSpan.FromSeconds(o.ModelsCacheSeconds),
+            FailureTtl = TimeSpan.FromSeconds(Math.Min(60, o.ModelsCacheSeconds)),
+            Url = o.Root,
+        };
+        return await _models.ListAsync(refresh, policy, c => FetchModelsAsync(o, c), ct).ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<ModelInfo>> FetchModelsAsync(OpenRouterOptions o, CancellationToken ct)
@@ -183,30 +145,6 @@ public sealed class OpenRouterProvider : IModelProvider
         };
 
         static int Rank(string effort) => Array.IndexOf(new[] { "none", "minimal", "low", "medium", "high", "xhigh", "max" }, effort.ToLowerInvariant()) is var i and >= 0 ? i : 99;
-    }
-
-    private static ModelInfo Clone(ModelInfo m) => new()
-    {
-        Provider = m.Provider, Id = m.Id, DisplayName = m.DisplayName, ContextWindow = m.ContextWindow, MaxOutputTokens = m.MaxOutputTokens,
-        Concurrency = m.Concurrency, InputModalities = [.. m.InputModalities],
-        Reasoning = m.Reasoning is null ? null : new ReasoningInfo { Supported = m.Reasoning.Supported, Efforts = [.. m.Reasoning.Efforts], Default = m.Reasoning.Default },
-        Status = m.Status, IsLocal = m.IsLocal, Extra = m.Extra?.DeepClone() as JsonObject,
-    };
-
-    private void PublishIfChanged(IReadOnlyList<ModelInfo> models)
-    {
-        var sb = new StringBuilder();
-        foreach (var m in models)
-            sb.Append(m.Id).Append('|').Append(m.Status).Append('|').Append(m.ContextWindow).Append('|').Append(m.MaxOutputTokens).Append('|')
-              .Append(string.Join(',', m.InputModalities)).Append('|').Append(m.Reasoning is null ? "-" : $"{m.Reasoning.Supported}:{string.Join(',', m.Reasoning.Efforts)}:{m.Reasoning.Default}")
-              .Append('|').Append(m.DisplayName).Append('\n');
-        var sig = sb.ToString();
-        if (sig == _signature) return;
-        var first = _signature is null;
-        _signature = sig;
-        if (first && models.Count == 0) return;
-        try { _events?.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = Id }); }
-        catch (Exception ex) { _log.LogDebug(ex, "openrouter: publishing models.changed failed"); }
     }
 
     // ================================================================ streaming
@@ -348,6 +286,6 @@ public sealed class OpenRouterProvider : IModelProvider
     private static void ApplyHeaders(HttpRequestMessage req, OpenRouterOptions o)
     {
         if (!string.IsNullOrEmpty(o.ApiKey)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", o.ApiKey);
-        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, OpenRouterOptions.ResolveSecret(v) ?? v);
+        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, Secrets.Resolve(v) ?? v);
     }
 }

@@ -1,8 +1,7 @@
+// Compiled into each provider plugin from shared/ProviderKit (plugins do not reference each other): edit it here.
 using System.Text;
 
-// NOTE: mirrored in NetPI.Providers.{AiProxy,OpenRouter} (plugins cannot share code). Keep the copies in sync.
-
-namespace NetPI.Providers.OpenRouter;
+namespace NetPI.Providers.Kit;
 
 /// <summary>
 /// Splits a <em>leading</em> inline <c>&lt;think&gt;…&lt;/think&gt;</c> reasoning block out of streamed content.

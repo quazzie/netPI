@@ -13,8 +13,8 @@
     <ProjectReference Include="../../src/NetPI.Contracts/NetPI.Contracts.csproj" />
     <!-- The real memory storage provider, so the plugin-context fake hands a plugin a real IPluginData. -->
     <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
-    <ProjectReference Include="../../plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.csproj" />
-    <ProjectReference Include="../../plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.csproj" />
-    <ProjectReference Include="../../plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.csproj" Aliases="aiproxy" />
+    <ProjectReference Include="../../plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.csproj" Aliases="anthropic" />
+    <ProjectReference Include="../../plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.csproj" Aliases="openrouter" />
   </ItemGroup>
 </Project>

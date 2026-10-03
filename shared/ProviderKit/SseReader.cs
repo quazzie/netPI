@@ -1,18 +1,18 @@
+// Compiled into each provider plugin from shared/ProviderKit (plugins do not reference each other): edit it here.
 using System.Runtime.CompilerServices;
 using System.Text;
 
-// NOTE: mirrored in NetPI.Providers.{AiProxy,Anthropic,OpenRouter}/Common (plugins cannot share code). Keep the copies in sync.
-namespace NetPI.Providers.OpenRouter;
+namespace NetPI.Providers.Kit;
 
 /// <summary>One server-sent event (<c>event:</c> name, joined <c>data:</c> lines, <c>id:</c>).</summary>
-public readonly record struct SseEvent(string? Event, string Data, string? Id = null)
+internal readonly record struct SseEvent(string? Event, string Data, string? Id = null)
 {
     /// <summary>OpenAI-style end-of-stream sentinel.</summary>
     public bool IsDone => Data == "[DONE]";
 }
 
 /// <summary>Minimal, allocation-light SSE reader (spec-compliant plus a few tolerances for sloppy servers).</summary>
-public static class SseReader
+internal static class SseReader
 {
     public static async IAsyncEnumerable<SseEvent> ReadAsync(Stream stream, [EnumeratorCancellation] CancellationToken ct = default)
     {

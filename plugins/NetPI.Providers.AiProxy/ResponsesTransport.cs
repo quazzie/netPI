@@ -76,7 +76,7 @@ internal static class ResponsesTransport
                 foreach (var (_, img) in group) content.Add(Image(img));
             }
             foreach (var (callId, count) in toolImagesOmitted)
-                content.Add(new JsonObject { ["type"] = "input_text", ["text"] = OpenAiCommon.ToolImagesOmitted(callId, count) });
+                content.Add(new JsonObject { ["type"] = "input_text", ["text"] = ChatMessageBuilder.ToolImagesOmitted(callId, count) });
             input.Add(new JsonObject { ["role"] = "user", ["content"] = content });
             toolImages.Clear();
             toolImagesOmitted.Clear();
@@ -154,7 +154,7 @@ internal static class ResponsesTransport
                             case ImagePart img:
                                 content.Add(allowImages
                                     ? Image(img)
-                                    : new JsonObject { ["type"] = "input_text", ["text"] = OpenAiCommon.ImageOmitted });
+                                    : new JsonObject { ["type"] = "input_text", ["text"] = ChatMessageBuilder.ImageOmitted });
                                 break;
                         }
                     }

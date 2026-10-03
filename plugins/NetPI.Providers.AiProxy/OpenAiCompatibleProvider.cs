@@ -17,21 +17,12 @@ namespace NetPI.Providers.AiProxy;
 /// </summary>
 public sealed class OpenAiCompatibleProvider : IModelProvider
 {
-    private sealed record CacheEntry(IReadOnlyList<ModelInfo> Models, string Fingerprint, DateTimeOffset Expires);
-
     private readonly HttpClient _http;
     private readonly Func<JsonObject?> _config;
     private readonly ProviderDefaults _defaults;
     private readonly ILogger _log;
-    private readonly IEventBus? _events;
     private readonly string? _dumpDir;
-    private readonly SemaphoreSlim _listLock = new(1, 1);
-
-    private volatile CacheEntry? _cache;
-    private IReadOnlyList<ModelInfo>? _lastGood;
-    private string? _lastGoodFingerprint;
-    private string? _signature;
-    private bool _failureLogged;
+    private readonly ModelListCache _models;
     /// <summary>Models whose catalog entry reported input_modalities: id → accepts images.</summary>
     private volatile Dictionary<string, bool> _imageSupport = new(StringComparer.Ordinal);
 
@@ -45,7 +36,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         _config = config;
         _defaults = defaults ?? new ProviderDefaults();
         _log = logger ?? NullLogger.Instance;
-        _events = events;
+        _models = new ModelListCache(id, _log, events);
     }
 
     /// <summary>Provider whose settings object lives at a dotted settings path (e.g. "providers.aiproxy").</summary>
@@ -66,57 +57,30 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
     }
 
     /// <summary>Drop the cached model list (next <see cref="ListModelsAsync"/> refetches).</summary>
-    public void InvalidateModels() => _cache = null;
+    public void InvalidateModels() => _models.Invalidate();
 
     /// <summary>True when the model list was fetched before and the endpoint settings changed since.</summary>
     public bool SettingsChangedSinceLastList
     {
-        get { var c = _cache; var o = Options(); return c is not null && c.Fingerprint != (o.Enabled ? o.Fingerprint : "disabled"); }
+        get { var o = Options(); return _models.SettingsChanged(Key(o)); }
     }
+
+    /// <summary>Identifies the endpoint: its settings change with the base url and the key.</summary>
+    private static string Key(ProviderOptions o) => o.Enabled ? o.Fingerprint : "disabled";
 
     // ================================================================ models
 
     public async Task<IReadOnlyList<ModelInfo>> ListModelsAsync(bool refresh, CancellationToken ct)
     {
         var o = Options();
-        var fp = o.Enabled ? o.Fingerprint : "disabled";
-        var cache = _cache;
-        if (!refresh && cache is not null && cache.Fingerprint == fp && cache.Expires > DateTimeOffset.UtcNow) return cache.Models;
-
-        await _listLock.WaitAsync(ct).ConfigureAwait(false);
-        try
+        var policy = new ModelListCache.Policy
         {
-            cache = _cache;
-            if (!refresh && cache is not null && cache.Fingerprint == fp && cache.Expires > DateTimeOffset.UtcNow) return cache.Models;
-
-            IReadOnlyList<ModelInfo> models;
-            if (!o.Enabled) models = [];
-            else
-            {
-                try
-                {
-                    models = await FetchModelsAsync(o, ct).ConfigureAwait(false);
-                    _lastGood = models;
-                    _lastGoodFingerprint = fp;
-                    if (_failureLogged) _log.LogInformation("{Provider}: model list available again ({Count} models)", Id, models.Count);
-                    _failureLogged = false;
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch (Exception ex)
-                {
-                    if (!_failureLogged) _log.LogWarning("{Provider}: cannot list models from {Url}: {Error}", Id, o.Root, ex.Message);
-                    _failureLogged = true;
-                    models = _lastGood is { } last && _lastGoodFingerprint == fp
-                        ? last.Select(m => { var c = CloneModel(m); c.Status = "offline"; return c; }).ToList()
-                        : [];
-                }
-            }
-
-            _cache = new CacheEntry(models, fp, DateTimeOffset.UtcNow.AddSeconds(Math.Max(0, o.ModelsCacheSeconds)));
-            PublishIfChanged(models);
-            return models;
-        }
-        finally { _listLock.Release(); }
+            Fingerprint = Key(o),
+            CanFetch = o.Enabled,
+            Ttl = TimeSpan.FromSeconds(Math.Max(0, o.ModelsCacheSeconds)),
+            Url = o.Root,
+        };
+        return await _models.ListAsync(refresh, policy, c => FetchModelsAsync(o, c), ct).ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<ModelInfo>> FetchModelsAsync(ProviderOptions o, CancellationToken ct)
@@ -194,33 +158,6 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             IsLocal = o.IsLocal,
             Extra = extra.Count > 0 ? extra : null,
         };
-    }
-
-    internal static ModelInfo CloneModel(ModelInfo m) => new()
-    {
-        Provider = m.Provider, Id = m.Id, DisplayName = m.DisplayName, ContextWindow = m.ContextWindow,
-        MaxOutputTokens = m.MaxOutputTokens, Concurrency = m.Concurrency, InputModalities = [.. m.InputModalities],
-        Reasoning = m.Reasoning is null ? null : new ReasoningInfo { Supported = m.Reasoning.Supported, Efforts = [.. m.Reasoning.Efforts], Default = m.Reasoning.Default },
-        Status = m.Status, IsLocal = m.IsLocal, Extra = m.Extra?.DeepClone() as JsonObject,
-    };
-
-    private void PublishIfChanged(IReadOnlyList<ModelInfo> models)
-    {
-        var sb = new StringBuilder();
-        foreach (var m in models)
-        {
-            sb.Append(m.Id).Append('|').Append(m.Status).Append('|').Append(m.ContextWindow).Append('|').Append(m.MaxOutputTokens)
-              .Append('|').Append(m.Concurrency).Append('|').Append(string.Join(',', m.InputModalities)).Append('|')
-              .Append(m.Reasoning is null ? "-" : $"{m.Reasoning.Supported}:{string.Join(',', m.Reasoning.Efforts)}:{m.Reasoning.Default}")
-              .Append('|').Append(m.DisplayName).Append('\n');
-        }
-        var sig = sb.ToString();
-        if (sig == _signature) return;
-        var first = _signature is null;
-        _signature = sig;
-        if (first && models.Count == 0) return; // nothing -> nothing is not a change
-        try { _events?.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = Id }); }
-        catch (Exception ex) { _log.LogDebug(ex, "{Provider}: publishing models.changed failed", Id); }
     }
 
     // ================================================================ streaming
@@ -347,6 +284,6 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
     private static void ApplyHeaders(HttpRequestMessage req, ProviderOptions o)
     {
         if (!string.IsNullOrEmpty(o.ApiKey)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", o.ApiKey);
-        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, ProviderOptions.ResolveSecret(v) ?? v);
+        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, Secrets.Resolve(v) ?? v);
     }
 }

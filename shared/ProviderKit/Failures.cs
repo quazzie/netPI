@@ -1,8 +1,8 @@
+// Compiled into each provider plugin from shared/ProviderKit (plugins do not reference each other): edit it here.
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
-// NOTE: mirrored in NetPI.Providers.{AiProxy,Anthropic,OpenRouter}/Common (plugins cannot share code). Keep the copies in sync.
-namespace NetPI.Providers.Anthropic;
+namespace NetPI.Providers.Kit;
 
 /// <summary>What one call sent and got back, for error messages and failed-request dumps.</summary>
 internal sealed class CallInfo

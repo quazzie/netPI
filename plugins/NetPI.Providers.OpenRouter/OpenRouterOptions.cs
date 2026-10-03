@@ -59,7 +59,7 @@ internal sealed class OpenRouterOptions
         return new OpenRouterOptions
         {
             BaseUrl = o.Str("baseUrl") is { Length: > 0 } url ? url : DefaultBaseUrl,
-            ApiKey = ResolveSecret(o.Str("apiKey")) ?? ResolveSecret("env:" + KeyEnvironmentVariable),
+            ApiKey = Secrets.Resolve(o.Str("apiKey")) ?? Secrets.Resolve("env:" + KeyEnvironmentVariable),
             Enabled = o.Bool("enabled", true),
             Include = include,
             Models = o.Obj("models"),
@@ -85,16 +85,4 @@ internal sealed class OpenRouterOptions
 
     private static Regex Glob(string pattern) =>
         new("^" + Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    /// <summary>"env:NAME" or "$NAME" reads an environment variable; anything else is the literal secret.</summary>
-    public static string? ResolveSecret(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        value = value.Trim();
-        string? env = value.StartsWith("env:", StringComparison.OrdinalIgnoreCase) ? value[4..]
-            : value.StartsWith('$') && value.Length > 1 ? value[1..] : null;
-        if (env is null) return value;
-        var resolved = Environment.GetEnvironmentVariable(env.Trim());
-        return string.IsNullOrWhiteSpace(resolved) ? null : resolved.Trim();
-    }
 }

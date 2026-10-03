@@ -1,7 +1,7 @@
+// Compiled into each provider plugin from shared/ProviderKit (plugins do not reference each other): edit it here.
 using System.Net;
 
-// NOTE: mirrored in NetPI.Providers.{AiProxy,Anthropic,OpenRouter}/Common (plugins cannot share code). Keep the copies in sync.
-namespace NetPI.Providers.OpenRouter;
+namespace NetPI.Providers.Kit;
 
 internal static class HttpFactory
 {

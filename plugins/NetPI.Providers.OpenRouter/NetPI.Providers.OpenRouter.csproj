@@ -1,1 +1,10 @@
-<Project Sdk="Microsoft.NET.Sdk"></Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <!-- The provider kit is shared SOURCE, not a shared assembly: plugins must not reference each other, and one
+         copy in each collectible load context keeps that true (docs/PLUGINS.md). -->
+    <Compile Include="$(RepoRoot)shared/ProviderKit/*.cs" LinkBase="Kit" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="NetPI.Providers.Kit" />
+  </ItemGroup>
+</Project>
