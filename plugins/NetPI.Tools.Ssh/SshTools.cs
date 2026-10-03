@@ -256,8 +256,6 @@ internal sealed class SshHostsTool(IPluginContext ctx) : SshToolBase(ctx, new Pr
 internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : SshToolBase(ctx, launcher)
 {
     private const string PgidMarker = "__netpi_pgid=";
-    private const int TailLines = 2000; // like bash
-    private const int TailChars = 30 * 1024;
 
     internal override string Name => "run";
     internal override string Summary =>
@@ -316,8 +314,8 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
             _ = KillGroupAsync(o, host, group);
 
         var ssh = r.ExitCode == 255 && !r.Aborted && !r.TimedOut && pgid is null;
-        var output = Resolve(stdout + (r.Stderr.Length > 0 && !ssh ? (stdout.Length > 0 && !stdout.EndsWith('\n') ? "\n" : "") + r.Stderr : ""));
-        var (tail, truncated, total, shown) = Tail(output, ToolResultLimit.Fit(Ctx.Settings, TailChars));
+        var output = ToolOutput.ResolveCarriageReturns(stdout + (r.Stderr.Length > 0 && !ssh ? (stdout.Length > 0 && !stdout.EndsWith('\n') ? "\n" : "") + r.Stderr : ""));
+        var (tail, truncated, total, shown) = ToolOutput.TailLines(output, ToolOutput.ModelMaxLines, ToolResultLimit.Fit(Ctx.Settings, ToolOutput.ModelMaxBytes));
         truncated |= r.Cut;
         var fullOutputPath = truncated && !ssh ? Save(host, output) : null;
         var timedOut = r.TimedOut || r.ExitCode == 124;
@@ -338,12 +336,10 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
 
         var sb = new StringBuilder();
         if (truncated)
-        {
-            sb.Append(r.Cut
-                ? $"[Output truncated: showing the last {shown} lines; only the last {ProcessLauncher.MaxChars / 1024 / 1024} MB of the output were kept."
-                : $"[Output truncated: showing the last {shown} lines of {total}.");
-            sb.Append(fullOutputPath is not null ? $" {(r.Cut ? "Those are" : "Full output")} saved to {fullOutputPath} (use read or grep on it).]\n" : "]\n");
-        }
+            sb.Append(ToolOutput.Note(shown,
+                r.Cut ? $"; only the last {ProcessLauncher.MaxChars / 1024 / 1024} MB of the output were kept" : " of " + total,
+                fullOutputPath,
+                r.Cut ? "Those are" : "Full output")).Append('\n');
         sb.Append(tail.Length > 0 ? tail : "(no output)");
         if (timedOut) sb.Append($"\n[timed out after {timeout}s; the remote process group was ended. Use a longer timeout for long-running work.]");
         else if (r.Aborted) sb.Append("\n[aborted; the remote process group is being ended]");
@@ -376,35 +372,6 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
         }
         catch (IOException) { return null; }
         catch (UnauthorizedAccessException) { return null; }
-    }
-
-    /// <summary>Progress lines: keep what follows the last carriage return of each line.</summary>
-    private static string Resolve(string s)
-    {
-        if (!s.Contains('\r')) return s;
-        var lines = s.Replace("\r\n", "\n").Split('\n');
-        for (var i = 0; i < lines.Length; i++)
-        {
-            var cr = lines[i].LastIndexOf('\r');
-            if (cr >= 0) lines[i] = lines[i][(cr + 1)..];
-        }
-        return string.Join('\n', lines);
-    }
-
-    private static (string Tail, bool Truncated, int Total, int Shown) Tail(string s, int maxChars)
-    {
-        s = s.TrimEnd('\n');
-        var lines = s.Split('\n');
-        if (lines.Length <= TailLines && s.Length <= maxChars) return (s, false, lines.Length, lines.Length);
-        var keep = new List<string>();
-        var size = 0;
-        for (var i = lines.Length - 1; i >= 0 && keep.Count < TailLines && size + lines[i].Length + 1 <= maxChars; i--)
-        {
-            keep.Add(lines[i]);
-            size += lines[i].Length + 1;
-        }
-        keep.Reverse();
-        return (string.Join('\n', keep), true, lines.Length, keep.Count);
     }
 }
 

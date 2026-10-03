@@ -189,13 +189,8 @@ public static class TranscriptSerializer
     }
 
     /// <summary>Keep the head and tail of long text with a marker in between.</summary>
-    public static string Truncate(string s, int max)
-    {
-        if (s.Length <= max) return s;
-        var head = max * 3 / 4;
-        var tail = max - head;
-        return s[..head] + $"\n…[{s.Length - max} chars omitted]…\n" + s[^tail..];
-    }
+    public static string Truncate(string s, int max) =>
+        TextLimit.HeadTail(s, max, 3, (omitted, total) => $"\n…[{omitted} chars omitted]…\n");
 
     /// <summary>Room left in a piece for its part marker (" (part 2/7)").</summary>
     private const int PartTagRoom = 24;

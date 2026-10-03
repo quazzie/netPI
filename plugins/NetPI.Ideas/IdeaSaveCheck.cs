@@ -471,10 +471,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
             }
         }
         var all = string.Join('\n', lines);
-        if (all.Length <= MaxChars) return all;
-        var head = MaxChars * HeadShare / (HeadShare + 1); // the rest is the ending
-        var tail = MaxChars - head;
-        return all[..head].TrimEnd() + "\n\n[... " + (all.Length - MaxChars).ToString("N0") + " characters of the middle of this conversation ...]\n\n" + all[^tail..];
+        return TextLimit.HeadTail(all, MaxChars, HeadShare, (omitted, total) =>
+            $"\n\n[... {omitted:N0} characters of the middle of this conversation ...]\n\n");
     }
 
     private static string Plain(ChatMessage m) => string.Join(' ', m.Parts.OfType<TextPart>().Select(t => t.Text));

@@ -207,32 +207,8 @@ internal static class SshClient
     /// <summary>Run the client and read its answer. Nothing here connects to a host.</summary>
     private static (int Exit, string Err) Run(string exe, string[] args)
     {
-        try
-        {
-            var psi = new ProcessStartInfo(exe)
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            using var process = Process.Start(psi);
-            if (process is null) return (255, "the client did not start");
-            var error = process.StandardError.ReadToEndAsync();
-            _ = process.StandardOutput.ReadToEndAsync();
-            if (!process.WaitForExit((int)ProbeTimeout.TotalMilliseconds)) { TryKill(process); return (255, "the client did not answer"); }
-            return (process.ExitCode, error.GetAwaiter().GetResult());
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException or PlatformNotSupportedException)
-        {
-            return (255, ex.Message); // no client to ask, or one that cannot be started
-        }
-    }
-
-    private static void TryKill(Process process)
-    {
-        try { process.Kill(entireProcessTree: true); } catch { /* it may have exited on its own */ }
+        var r = ChildProcess.RunAsync(exe, args, ProbeTimeout).GetAwaiter().GetResult();
+        return (r.Exit, r.Err);
     }
 }
 

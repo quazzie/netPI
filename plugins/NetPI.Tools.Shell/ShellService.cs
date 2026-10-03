@@ -162,7 +162,7 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         var details = Details(mp, truncated: false, fullOutputPath: null);
         if (!mp.IsRunning)
         {
-            var (tail, truncated, _, _) = OutputFormat.TailLines(OutputFormat.ResolveCarriageReturns(mp.Output.Snapshot()), 200, 16 * 1024);
+            var (tail, truncated, _, _) = ToolOutput.TailLines(ToolOutput.ResolveCarriageReturns(mp.Output.Snapshot()), 200, 16 * 1024);
             var sb = new StringBuilder();
             sb.Append($"Background process {mp.Id} exited immediately with code {mp.ExitCode?.ToString() ?? "?"}.");
             sb.Append(tail.Length > 0 ? "\n" + tail : "\n(no output)");
@@ -174,15 +174,15 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         msg.Append($"Started background process {mp.Id} (pid {mp.Pid}).");
         if (timeout is not null) msg.Append($" It will be killed after {timeout}s.");
         msg.Append($"\nUse process with id \"{mp.Id}\" and action output to read its output, or action kill to stop it.");
-        if (early.Length > 0) msg.Append("\nOutput so far:\n").Append(OutputFormat.ResolveCarriageReturns(early));
+        if (early.Length > 0) msg.Append("\nOutput so far:\n").Append(ToolOutput.ResolveCarriageReturns(early));
         return ToolResult.Ok(msg.ToString(), details);
     }
 
     private ToolResult FormatForeground(ManagedProcess mp, int timeoutSeconds, bool timedOut, bool aborted,
         WorkspaceBinding? workspace = null, bool elsewhere = false)
     {
-        var full = OutputFormat.ResolveCarriageReturns(mp.Output.Snapshot());
-        var (tail, truncated, totalLines, shownLines) = OutputFormat.TailLines(full, OutputFormat.ModelMaxLines, ToolResultLimit.Fit(Settings, OutputFormat.ModelMaxBytes));
+        var full = ToolOutput.ResolveCarriageReturns(mp.Output.Snapshot());
+        var (tail, truncated, totalLines, shownLines) = ToolOutput.TailLines(full, ToolOutput.ModelMaxLines, ToolResultLimit.Fit(Settings, ToolOutput.ModelMaxBytes));
         var complete = mp.Output.Complete;
         truncated |= !complete;
         string? fullPath = null;
@@ -194,8 +194,7 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         if (truncated)
         {
             var total = complete ? $"{totalLines} lines" : PathDisplayBytes(mp.Output.TotalBytes);
-            sb.Append($"[Output truncated: showing the last {shownLines} lines of {total}.");
-            sb.Append(fullPath is not null ? $" Full output saved to {fullPath} (use read or grep on it).]" : "]");
+            sb.Append(ToolOutput.Note(shownLines, " of " + total, fullPath));
             sb.Append('\n');
         }
         sb.Append(tail.Length > 0 ? tail : "(no output)");

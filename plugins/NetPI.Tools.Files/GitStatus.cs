@@ -1,7 +1,3 @@
-using System.ComponentModel;
-using System.Diagnostics;
-using System.Text;
-
 namespace NetPI.Tools.Files;
 
 /// <summary>
@@ -24,7 +20,6 @@ internal static class GitStatus
     /// bound reports <see cref="Result.Truncated"/> and the caller keeps what it has.
     /// </summary>
     public static int StatusMaxChars = 2 * 1024 * 1024;
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
     private const string EmptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"; // a repository without commits
 
     /// <summary>status: modified | added | deleted | renamed | copied | conflict | new (untracked).</summary>
@@ -258,60 +253,9 @@ internal static class GitStatus
     /// </summary>
     private static async Task<(string Text, bool Cut)?> GitAsync(string dir, CancellationToken ct, int maxChars, params string[] args)
     {
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = dir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            StandardOutputEncoding = Encoding.UTF8,
-        };
-        psi.ArgumentList.Add("-c");
-        psi.ArgumentList.Add("core.quotepath=off");
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
-        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
-        Process process;
-        try { process = Process.Start(psi)!; }
-        catch (Win32Exception) { return null; } // no git on PATH
-        using (process)
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(Timeout);
-            try
-            {
-                var output = ReadBoundedAsync(process.StandardOutput, maxChars, timeout.Token);
-                var errors = ReadBoundedAsync(process.StandardError, 0, timeout.Token);
-                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-                await errors.ConfigureAwait(false);
-                return process.ExitCode == 0 ? (await output.ConfigureAwait(false)) : null;
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { }
-                ct.ThrowIfCancellationRequested();
-                return null;
-            }
-        }
-    }
-
-    private static async Task<(string Text, bool Cut)> ReadBoundedAsync(StreamReader reader, int limit, CancellationToken ct)
-    {
-        var text = new StringBuilder();
-        var buffer = new char[4096];
-        var cut = false;
-        int count;
-        while ((count = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false)) > 0)
-        {
-            if (text.Length < limit)
-            {
-                var room = limit - text.Length;
-                text.Append(buffer, 0, Math.Min(count, room));
-                cut |= count > room;
-            }
-            else cut = true;
-        }
-        return (text.ToString(), cut);
+        var r = await GitRunner.RunAsync(dir, ct, maxChars, args).ConfigureAwait(false);
+        if (r.Aborted) throw new OperationCanceledException(ct);
+        if (r.StartError is not null || r.TimedOut || r.ExitCode != 0) return null;
+        return (r.Stdout, r.Cut);
     }
 }

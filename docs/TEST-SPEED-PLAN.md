@@ -68,7 +68,7 @@ The slowest fresh test groups are:
 | Tools Bash/background/process waits | 16.04 s | Shell startup, real one-second timeouts, startup grace, output draining |
 | Host build tests | 3.93 s | Four separate `dotnet msbuild` property evaluations plus PowerShell parsing |
 
-`BrowserTool.cs:573` and `:580` add 150 ms and 250 ms for most actions other than open/snapshot. They are production settling waits exercised repeatedly by the browser test, not solely test sleeps. `ShellService.BackgroundStartupWait` defaults to 500 ms; `ManagedProcess.DrainGrace` defaults to 750 ms. Reducing these globally would change product behavior and needs separate correctness coverage.
+`BrowserTab.cs:196` and `:203` add 150 ms and 250 ms for most actions other than open/snapshot. They are production settling waits exercised repeatedly by the browser test, not solely test sleeps. `ShellService.BackgroundStartupWait` defaults to 500 ms; `ManagedProcess.DrainGrace` defaults to 750 ms. Reducing these globally would change product behavior and needs separate correctness coverage.
 
 Other intentional real-time checks include scheduler queue expiry (~2.08 s), Ideas slot expiry (~2.07 s), two provider connection failures (~2.05 s each), and consumer/stall timing (~1.84 s). These are concentrated costs; hundreds of storage, protocol and transformation assertions already run in milliseconds.
 
@@ -163,7 +163,7 @@ settling waits, the shell timeouts, or any assertion.
 ## Not done, and why
 
 - **Step 5 (replacing waits, fast/integration split)** is untouched. It is a behaviour change to production
-  settling waits (`BrowserTool.cs:573/:580`, `BackgroundStartupWait`, `DrainGrace`) that needs its own correctness
+  settling waits (`BrowserTab.cs:196/:203`, `BackgroundStartupWait`, `DrainGrace`) that needs its own correctness
   coverage, and it is worth little next to what was fixed: Aux is now the longest suite at 27.6 s and most of that
   is real browser launches.
 - **E2E** was not re-run. It needs a published app and Playwright. The contract change is additive

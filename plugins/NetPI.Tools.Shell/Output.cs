@@ -149,7 +149,7 @@ public sealed class OutputCapture : IDisposable
     public string Tail(int lines, int maxChars = 64 * 1024)
     {
         var s = Snapshot();
-        return OutputFormat.TailLines(s, lines, maxChars).Text;
+        return ToolOutput.TailLines(s, lines, maxChars).Text;
     }
 
     /// <summary>Make sure the complete output exists on disk and return its path (spill file, or the in-memory text saved to <paramref name="path"/>).</summary>
@@ -255,63 +255,4 @@ public sealed class OutputThrottle : IDisposable
     }
 }
 
-public static class OutputFormat
-{
-    public const int ModelMaxLines = 2000;
-    public const int ModelMaxBytes = 30 * 1024;
 
-    /// <summary>Normalize line breaks and collapse carriage-return overwrites (progress bars): keep the text after the last \r of each line.</summary>
-    public static string ResolveCarriageReturns(string s)
-    {
-        if (s.IndexOf('\r') < 0) return s;
-        s = s.Replace("\r\n", "\n");
-        if (s.IndexOf('\r') < 0) return s;
-        var lines = s.Split('\n');
-        for (var i = 0; i < lines.Length; i++)
-        {
-            var l = lines[i];
-            var cr = l.TrimEnd('\r').LastIndexOf('\r');
-            lines[i] = cr >= 0 ? l[(cr + 1)..].TrimEnd('\r') : l.TrimEnd('\r');
-        }
-        return string.Join('\n', lines);
-    }
-
-    /// <summary>Last <paramref name="maxLines"/> lines, at most <paramref name="maxBytes"/> UTF-8 bytes.</summary>
-    public static (string Text, bool Truncated, int TotalLines, int ShownLines) TailLines(string s, int maxLines, int maxBytes)
-    {
-        s = s.TrimEnd('\n');
-        if (s.Length == 0) return ("", false, 0, 0);
-        var totalLines = s.AsSpan().Count('\n') + 1;
-        if (totalLines <= maxLines && (s.Length <= maxBytes / 4 || Encoding.UTF8.GetByteCount(s) <= maxBytes))
-            return (s, false, totalLines, totalLines);
-
-        var bytes = 0;
-        var shown = 0;
-        var end = s.Length;
-        var start = s.Length;
-        while (shown < maxLines && start > 0)
-        {
-            var nl = s.LastIndexOf('\n', start - 1);
-            var lineStart = nl + 1;
-            var lineBytes = Encoding.UTF8.GetByteCount(s.AsSpan(lineStart, start - lineStart)) + 1;
-            if (bytes + lineBytes > maxBytes)
-            {
-                if (shown == 0)
-                {
-                    // One giant line: keep its end.
-                    var keep = Math.Min(start - lineStart, maxBytes);
-                    var from = start - keep;
-                    if (from > 0 && char.IsLowSurrogate(s[from])) from++;
-                    return ("…" + s[from..end], true, totalLines, 1);
-                }
-                break;
-            }
-            bytes += lineBytes;
-            shown++;
-            start = nl < 0 ? 0 : nl;
-            if (nl < 0) { start = 0; break; }
-        }
-        var text = s[(start == 0 ? 0 : start + 1)..end];
-        return (text, shown < totalLines, totalLines, shown);
-    }
-}
