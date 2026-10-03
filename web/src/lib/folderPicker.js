@@ -5,10 +5,6 @@ import { modals } from './state/ui.svelte.js';
 
 let seq = 0;
 
-export function hasNativePicker() {
-  return !!window.chrome?.webview;
-}
-
 /** Resolves to the chosen absolute path, or null when cancelled. */
 export function pickFolder({ initial = null, title = 'Choose a folder' } = {}) {
   const wv = window.chrome?.webview;

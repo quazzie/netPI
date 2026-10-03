@@ -176,7 +176,7 @@ Anthropic's prompt cache alike). So nothing that was sent is ever changed; new i
 
 Exceptions by necessity: compaction replaces old messages with a summary when the context is nearly full, tool-call
 repair turns a tool call the model wrote as text into a real call, and a profile switch in a started chat (the user's
-choice) renders the system prompt again (`context.reset`; the next call re-reads the conversation once).
+choice) renders the system prompt again (the chat's prompt revision is invalidated; the next call re-reads the conversation once).
 
 ## Extension points (`src/NetPI.Abstractions` and `src/NetPI.Contracts`)
 

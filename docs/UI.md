@@ -727,7 +727,6 @@ components rather than copies of them.
 | `Collapsible` | `title` or `header` snippet, `bind:open` |
 | `Markdown` | `text`, `highlight` (default `true`) |
 | `Icon` | `name` (host icon set) or an inline `<svg>` string, `size`, `stroke` |
-| `Spinner` | `size` |
 
 The kit also exports the helpers `timeAgo`, `duration`, `tokens`, `usd`, `bytes`, `relPath`, `basename`, `truncate`,
 `stamp`, `renderMarkdown` and `host`, plus:

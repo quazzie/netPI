@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -78,7 +76,7 @@ internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https" or "file"))
             return ToolResult.Error($"Not a URL the screenshot tool can open: {url}");
         var o = WebOptions.Read(ctx.Settings);
-        var exe = HeadlessBrowser.Find(o.BrowserPath);
+        var exe = ChromiumProcess.Find(o.BrowserPath);
         if (exe is null)
             return ToolResult.Error("No Edge, Chrome or Chromium found for screenshots. Install one or set web.browserPath in the settings.");
         var width = Math.Clamp(Args.Int(args, "width") ?? 1280, 320, 3840);
@@ -90,7 +88,7 @@ internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
         var notes = new List<string>();
         try
         {
-            await using var browser = await HeadlessBrowser.LaunchAsync(exe, width, height, ct).ConfigureAwait(false);
+            await using var browser = await ScreenshotPage.LaunchAsync(exe, width, height, ct).ConfigureAwait(false);
             await browser.SendAsync("Page.enable", null, ct).ConfigureAwait(false);
             await browser.SendAsync("Runtime.enable", null, ct).ConfigureAwait(false);
             await browser.SendAsync("Log.enable", null, ct).ConfigureAwait(false);
@@ -150,120 +148,51 @@ internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
     }
 }
 
-/// <summary>A headless Edge/Chrome with a throw-away profile, driven through the DevTools protocol of its first page.</summary>
-internal sealed class HeadlessBrowser : IAsyncDisposable
+/// <summary>
+/// The page a screenshot is taken of: a browser of its own (a throw-away profile, one per call) and its first page,
+/// over the same DevTools connection the browser tool uses.
+/// </summary>
+internal sealed class ScreenshotPage : IAsyncDisposable
 {
-    private readonly Process _process;
-    private readonly string _profile;
-    private readonly ClientWebSocket _ws = new();
-    private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> _pending = new();
+    private readonly ChromiumProcess _process;
+    private CdpConnection? _cdp;
     private volatile TaskCompletionSource _loaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly CancellationTokenSource _stop = new();
-    private readonly SemaphoreSlim _send = new(1, 1);
-    private Task? _reader;
-    private int _id;
-    private int _port;
 
     public ConcurrentQueue<string> ConsoleErrors { get; } = new();
 
-    private HeadlessBrowser(Process process, string profile)
-    {
-        _process = process;
-        _profile = profile;
-    }
+    private ScreenshotPage(ChromiumProcess process) => _process = process;
 
-    public static string? Find(string? configured)
-    {
-        if (!string.IsNullOrEmpty(configured)) return File.Exists(configured) ? configured : null;
-        var candidates = new List<string>();
-        if (OperatingSystem.IsWindows())
-        {
-            foreach (var root in new[] { Environment.GetEnvironmentVariable("ProgramFiles(x86)"), Environment.GetEnvironmentVariable("ProgramFiles"), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) })
-            {
-                if (string.IsNullOrEmpty(root)) continue;
-                candidates.Add(Path.Combine(root, "Microsoft", "Edge", "Application", "msedge.exe"));
-                candidates.Add(Path.Combine(root, "Google", "Chrome", "Application", "chrome.exe"));
-                candidates.Add(Path.Combine(root, "Chromium", "Application", "chrome.exe"));
-            }
-        }
-        else if (OperatingSystem.IsMacOS())
-        {
-            candidates.Add("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
-            candidates.Add("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge");
-            candidates.Add("/Applications/Chromium.app/Contents/MacOS/Chromium");
-        }
-        else
-        {
-            foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-                foreach (var name in new[] { "google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "microsoft-edge-stable" })
-                    candidates.Add(Path.Combine(dir, name));
-        }
-        return candidates.FirstOrDefault(File.Exists);
-    }
-
-    public static async Task<HeadlessBrowser> LaunchAsync(string exe, int width, int height, CancellationToken ct)
+    /// <summary>Start a headless browser for one call and attach to the first page it opened.</summary>
+    public static async Task<ScreenshotPage> LaunchAsync(string exe, int width, int height, CancellationToken ct)
     {
         var profile = Path.Combine(Path.GetTempPath(), "netpi-browser-" + Guid.NewGuid().ToString("N")[..10]);
-        Directory.CreateDirectory(profile);
-        var psi = new ProcessStartInfo(exe)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-        };
-        foreach (var a in new[]
-                 {
-                     "--headless=new", "--disable-features=msWindowTabManagerPublic", "--disable-gpu", "--hide-scrollbars", "--mute-audio", "--no-first-run", "--no-default-browser-check",
-                     "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-component-update",
-                     "--remote-debugging-port=0", $"--user-data-dir={profile}", $"--window-size={width},{height}", "about:blank",
-                 })
-            psi.ArgumentList.Add(a);
-        var process = Process.Start(psi) ?? throw new InvalidOperationException("the browser did not start");
-        process.ErrorDataReceived += (_, _) => { };
-        process.OutputDataReceived += (_, _) => { };
-        process.BeginErrorReadLine();
-        process.BeginOutputReadLine();
-        var browser = new HeadlessBrowser(process, profile);
+        var process = ChromiumProcess.Start(exe, profile, width, height,
+            ["--headless=new", "--disable-features=msWindowTabManagerPublic", "--disable-gpu", "--hide-scrollbars",
+             "--disable-extensions", "--disable-background-networking", "--disable-component-update"], temp: true);
+        var page = new ScreenshotPage(process);
         try
         {
-            await browser.ConnectAsync(ct).ConfigureAwait(false);
-            return browser;
+            await process.WaitForEndpointAsync(ct).ConfigureAwait(false);
+            await page.ConnectAsync(ct).ConfigureAwait(false);
+            return page;
         }
         catch
         {
-            await browser.DisposeAsync().ConfigureAwait(false);
+            await page.DisposeAsync().ConfigureAwait(false);
             throw;
         }
     }
 
+    /// <summary>The page target to drive: the one the browser opened, or a new one when it opened none.</summary>
     private async Task ConnectAsync(CancellationToken ct)
     {
-        // the browser writes its port to DevToolsActivePort in the profile
-        var portFile = Path.Combine(_profile, "DevToolsActivePort");
-        var until = DateTime.UtcNow.AddSeconds(20);
-        int port = 0;
-        while (DateTime.UtcNow < until)
-        {
-            // exit code 0: the launcher handed the browser to another process (Edge can), which still writes the port file
-            if (_process.HasExited && _process.ExitCode != 0) throw new InvalidOperationException($"the browser exited (code {_process.ExitCode})");
-            try
-            {
-                if (File.Exists(portFile) && int.TryParse((await File.ReadAllLinesAsync(portFile, ct).ConfigureAwait(false)).FirstOrDefault(), out port) && port > 0) break;
-            }
-            catch (IOException) { }
-            await Task.Delay(100, ct).ConfigureAwait(false);
-        }
-        if (port <= 0) throw new TimeoutException("the browser did not open its DevTools port");
-        _port = port;
-
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         string? wsUrl = null;
         for (var attempt = 0; attempt < 30 && wsUrl is null; attempt++)
         {
             try
             {
-                var list = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{port}/json/list", ct).ConfigureAwait(false)) as JsonArray;
+                var list = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{_process.Port}/json/list", ct).ConfigureAwait(false)) as JsonArray;
                 wsUrl = list?.FirstOrDefault(t => (string?)t?["type"] == "page")?["webSocketDebuggerUrl"]?.GetValue<string>();
             }
             catch (HttpRequestException) { }
@@ -271,28 +200,17 @@ internal sealed class HeadlessBrowser : IAsyncDisposable
         }
         if (wsUrl is null)
         {
-            using var res = await http.PutAsync($"http://127.0.0.1:{port}/json/new?about:blank", null, ct).ConfigureAwait(false);
+            using var res = await http.PutAsync($"http://127.0.0.1:{_process.Port}/json/new?about:blank", null, ct).ConfigureAwait(false);
             wsUrl = JsonNode.Parse(await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false))?["webSocketDebuggerUrl"]?.GetValue<string>()
                     ?? throw new InvalidOperationException("the browser has no page to drive");
         }
-        _ws.Options.KeepAliveInterval = TimeSpan.Zero;
-        await _ws.ConnectAsync(new Uri(wsUrl), ct).ConfigureAwait(false);
-        _reader = Task.Run(ReadLoopAsync);
+        _cdp = await CdpConnection.ConnectAsync(new Uri(wsUrl), ct).ConfigureAwait(false);
+        _cdp.Event += OnEvent;
     }
 
-    public async Task<JsonElement> SendAsync(string method, object? parameters, CancellationToken ct)
-    {
-        var id = Interlocked.Increment(ref _id);
-        var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pending[id] = tcs;
-        var json = JsonSerializer.Serialize(new { id, method, @params = parameters ?? new { } });
-        await _send.WaitAsync(ct).ConfigureAwait(false);
-        try { await _ws.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, ct).ConfigureAwait(false); }
-        finally { _send.Release(); }
-        try { return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false); }
-        catch (TimeoutException) { throw new TimeoutException($"{method} got no answer within 30 s"); }
-        finally { _pending.TryRemove(id, out _); }
-    }
+    public Task<JsonElement> SendAsync(string method, object? parameters, CancellationToken ct) =>
+        (_cdp ?? throw new InvalidOperationException("the browser page is not connected"))
+            .SendAsync(method, parameters, null, ct);
 
     public async Task<string?> EvaluateStringAsync(string expression, CancellationToken ct)
     {
@@ -313,40 +231,9 @@ internal sealed class HeadlessBrowser : IAsyncDisposable
         catch (TimeoutException) { return false; }
     }
 
-    private async Task ReadLoopAsync()
+    /// <summary>What the page reports about itself: the load, and the console errors the model is told about.</summary>
+    private void OnEvent(string method, JsonElement p, string? sessionId)
     {
-        var buffer = new byte[64 * 1024];
-        using var message = new MemoryStream();
-        try
-        {
-            while (_ws.State == WebSocketState.Open && !_stop.IsCancellationRequested)
-            {
-                var r = await _ws.ReceiveAsync(buffer, _stop.Token).ConfigureAwait(false);
-                if (r.MessageType == WebSocketMessageType.Close) break;
-                message.Write(buffer, 0, r.Count);
-                if (!r.EndOfMessage) continue;
-                Dispatch(message.GetBuffer().AsSpan(0, (int)message.Length));
-                message.SetLength(0);
-            }
-        }
-        catch (Exception) { /* closed */ }
-        foreach (var p in _pending.Values) p.TrySetException(new InvalidOperationException("the browser connection closed"));
-    }
-
-    private void Dispatch(ReadOnlySpan<byte> json)
-    {
-        using var doc = JsonDocument.Parse(json.ToArray());
-        var root = doc.RootElement;
-        if (root.TryGetProperty("id", out var idEl) && idEl.TryGetInt32(out var id))
-        {
-            if (!_pending.TryGetValue(id, out var tcs)) return;
-            if (root.TryGetProperty("error", out var err))
-                tcs.TrySetException(new InvalidOperationException(err.TryGetProperty("message", out var m) ? m.GetString() : err.GetRawText()));
-            else tcs.TrySetResult(root.TryGetProperty("result", out var res) ? res.Clone() : default);
-            return;
-        }
-        var method = root.TryGetProperty("method", out var me) ? me.GetString() : null;
-        var p = root.TryGetProperty("params", out var pe) ? pe : default;
         switch (method)
         {
             case "Page.loadEventFired":
@@ -377,54 +264,11 @@ internal sealed class HeadlessBrowser : IAsyncDisposable
         ConsoleErrors.Enqueue(nl > 0 && nl < line.Length - 1 ? line[..nl] + " …" : line);
     }
 
-    /// <summary>
-    /// Close the browser over DevTools (Browser.close on the browser endpoint): the launcher may have handed it to another
-    /// process, which killing the launcher would leave running.
-    /// </summary>
-    private async Task CloseBrowserAsync()
-    {
-        if (_port <= 0) return;
-        try
-        {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            var url = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{_port}/json/version", cts.Token).ConfigureAwait(false))?["webSocketDebuggerUrl"]?.GetValue<string>();
-            if (url is null) return;
-            using var ws = new ClientWebSocket();
-            await ws.ConnectAsync(new Uri(url), cts.Token).ConfigureAwait(false);
-            await ws.SendAsync(Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"Browser.close\"}"), WebSocketMessageType.Text, true, cts.Token).ConfigureAwait(false);
-            // the browser drops the connection as it exits
-            var buffer = new byte[4096];
-            while (ws.State == WebSocketState.Open)
-                if ((await ws.ReceiveAsync(buffer, cts.Token).ConfigureAwait(false)).MessageType == WebSocketMessageType.Close) break;
-        }
-        catch (Exception) { /* gone already, or it didn't answer: the process kill below is the fallback */ }
-    }
-
     public async ValueTask DisposeAsync()
     {
-        _stop.Cancel();
-        try { if (_ws.State == WebSocketState.Open) await _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
-        catch (Exception) { }
-        _ws.Dispose();
-        await CloseBrowserAsync().ConfigureAwait(false);
-        try
-        {
-            if (!_process.HasExited)
-            {
-                _process.Kill(entireProcessTree: true);
-                await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            }
-        }
-        catch (Exception) { }
-        _process.Dispose();
-        if (_reader is not null) try { await _reader.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); } catch (Exception) { }
-        for (var attempt = 0; attempt < 10 && Directory.Exists(_profile); attempt++)
-        {
-            try { Directory.Delete(_profile, recursive: true); }
-            catch (Exception) { await Task.Delay(200).ConfigureAwait(false); }
-        }
-        _stop.Dispose();
-        _send.Dispose();
+        var cdp = _cdp;
+        _cdp = null;
+        if (cdp is not null) await cdp.DisposeAsync().ConfigureAwait(false);
+        await _process.DisposeAsync().ConfigureAwait(false);
     }
 }

@@ -677,6 +677,8 @@ public static class LoopTests
         var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single()).ToList();
         Check.True(results[0].IsError);
         Check.Contains(results[0].Content, "disk on fire");
+        // the run's own wording, the one tool base classes do not repeat: the shell tools have no wrapper of their own
+        Check.Equal("Tool 'boom' failed: disk on fire", results[0].Content);
         Check.False(results[1].IsError);
         Check.Contains(results[1].Content, "characters not shown");
         Check.True(results[1].Content.StartsWith("aaaa") && results[1].Content.EndsWith("zzzz"), "head and tail kept");
@@ -1099,7 +1101,12 @@ public static class LoopTests
             await h.Rpc.CallAsync("agent.send", new { sessionId = "ses_missing", text = "x" });
             throw new AssertException("expected not_found");
         }
-        catch (RpcException ex) { Check.Equal("not_found", ex.Code); }
+        catch (RpcException ex)
+        {
+            Check.Equal("not_found", ex.Code);
+            // one wording for "that chat is not there", whatever asked for it (ISessionStore.Require)
+            Check.Equal("Session ses_missing not found", ex.Message);
+        }
     }
 
     private static async Task PluginStop()

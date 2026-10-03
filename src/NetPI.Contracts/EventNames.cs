@@ -5,10 +5,6 @@ namespace NetPI;
 /// <summary>Events of the workspace concept (the Workspaces plugin publishes them).</summary>
 public static class WorkspaceEvents
 {
-    public const string Created = "workspace.created";
-    public const string Updated = "workspace.updated";
-    /// <summary>A workspace record was removed: <c>{ id }</c>. The checkout itself is untouched (cleanup is explicit).</summary>
-    public const string Deleted = "workspace.deleted";
     /// <summary>A session was bound to a workspace (or unbound): <c>{ sessionId, workspaceId, cwd, binding }</c>. The binding is
     /// the resolved <see cref="WorkspaceBinding"/> (null when unbound), so a consumer does not have to resolve it again and cannot
     /// end up with a different root than the one the switch announced.</summary>

@@ -13,7 +13,6 @@ export { default as IconButton } from './IconButton.svelte';
 export { default as ConfirmButton } from './ConfirmButton.svelte';
 export { default as Collapsible } from './Collapsible.svelte';
 export { default as Markdown } from './Markdown.svelte';
-export { default as Spinner } from './Spinner.svelte';
 export { default as SearchInput } from './SearchInput.svelte';
 export { default as Segmented } from './Segmented.svelte';
 export { default as Menu } from './Menu.svelte';

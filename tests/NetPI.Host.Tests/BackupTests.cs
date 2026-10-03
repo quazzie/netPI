@@ -99,8 +99,7 @@ public static class BackupTests
             File.WriteAllText(Path.Combine(home, "backups"), "not a directory");
             // compressed cadence: a 300 ms retry base instead of an hour, a 50 ms check instead of a minute
             var plugin = new BackupPlugin(TimeSpan.FromMilliseconds(300), TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(20));
-            var created = new List<DateTimeOffset>();
-            using var _ = kernel.Bus.Subscribe("backup.created", e => { lock (created) created.Add(DateTimeOffset.UtcNow); });
+            var backups = Path.Combine(home, "backups");
             await plugin.StartAsync(ctx, default);
             try
             {
@@ -112,19 +111,24 @@ public static class BackupTests
                 Check.True(f[1].Time - f[0].Time >= TimeSpan.FromMilliseconds(250), "the loop really waited the base, not the check cadence: " + (f[1].Time - f[0].Time));
                 Check.True(f[2].Time - f[1].Time > f[1].Time - f[0].Time, "the wait keeps doubling: " + (f[2].Time - f[1].Time) + " after " + (f[1].Time - f[0].Time));
 
-                // the path is fixed: the in-flight attempt (after the accumulated backoff) succeeds
+                // The path is fixed: the in-flight attempt (after the accumulated backoff) succeeds. The plugin logs it
+                // — its own clock, the one the failures are stamped with — and only then is it out of the folder, which
+                // is what lets the test break it again without racing the backup that is still hashing what it moved.
                 File.Delete(Path.Combine(home, "backups"));
-                Directory.CreateDirectory(Path.Combine(home, "backups"));
-                await WaitFor(() => created.Count >= 1, "the automatic backup to succeed once the path is fixed");
-                var success = created[0];
+                Directory.CreateDirectory(backups);
+                List<LogEntry> successes() => kernel.LogSink.Recent(200).Where(l => l.Category == "plugin:netpi.backup" && l.Message.StartsWith("Automatic backup created")).ToList();
+                await WaitFor(() => successes().Count >= 1, "the automatic backup to succeed once the path is fixed");
+                var success = successes()[^1].Time;
 
                 // broken again: the failure after a success waits the base, not the accumulated backoff
-                Directory.Delete(Path.Combine(home, "backups"), true);
-                File.WriteAllText(Path.Combine(home, "backups"), "not a directory");
+                Directory.Delete(backups, true);
+                File.WriteAllText(backups, "not a directory");
                 var before = failures().Count;
                 await WaitFor(() => failures().Count > before, "the next failure after the success");
-                Check.True(failures()[before].Time - success < TimeSpan.FromMilliseconds(900),
-                    "the backoff was reset by the success (" + (failures()[before].Time - success) + " later, not the accumulated backoff)");
+                var after = failures()[before];
+                Check.Contains(after.Message, "00:00:00.300", "the wait is the retry base again: " + after.Message);
+                Check.True(after.Time - success < TimeSpan.FromMilliseconds(900),
+                    "the backoff was reset by the success (" + (after.Time - success) + " later, not the accumulated backoff)");
             }
             finally { await plugin.StopAsync(default); scope.DisposeAll(); }
         });

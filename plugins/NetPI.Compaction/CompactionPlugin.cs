@@ -45,7 +45,7 @@ public sealed class CompactionPlugin : INetPiPlugin
     internal static async Task<object?> RunAsync(IPluginContext context, CompactionService service, RpcRequest req, CancellationToken ct)
     {
         var sessionId = req.Required("sessionId");
-        var session = context.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"Session {sessionId} not found");
+        var session = context.Sessions.Require(sessionId);
         var agent = context.Services.Get<IAgentRuntime>()?.GetBySession(sessionId);
         if (agent is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })
             throw new RpcException("busy", "The agent is running in this session. Compaction happens automatically while it runs; wait for it to finish (or abort it) to compact manually.");

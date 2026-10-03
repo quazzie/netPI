@@ -121,7 +121,6 @@
   section { padding:9px 0; border-top:1px solid var(--border, #555); }
   .server { flex:1 1 auto; min-width:0; text-align:left; border:0; background:transparent; padding:0 0 8px; display:flex; flex-direction:column; gap:3px; }
   .server span { opacity:.7; }
-  .chosen > .server strong { color:var(--accent, #8ab4ff); }
   details { border-top:1px solid var(--border, #555); padding:8px 0; }
   summary { cursor:pointer; overflow-wrap:anywhere; }
   code { display:block; overflow-wrap:anywhere; }

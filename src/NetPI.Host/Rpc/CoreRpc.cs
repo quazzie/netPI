@@ -115,7 +115,7 @@ internal static class CoreRpc
         a.Add("sessions.fork", "Fork a chat: a new chat with its messages up to a message, the original unchanged: { id, upToSeq? (the last) } → SessionInfo (publishes session.forked)", req =>
         {
             var id = req.Required("id");
-            var from = a.K.Sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
+            var from = a.K.Sessions.Require(id);
             if (from.Kind == "subagent") throw new RpcException("bad_request", "A subagent's chat can't be forked: fork the chat that started it.");
             var last = a.K.Sessions.GetMessages(id, null, 1).LastOrDefault()?.Seq ?? 0;
             var upTo = Math.Clamp(req.Int64("upToSeq") ?? last, 0, last);
@@ -128,7 +128,7 @@ internal static class CoreRpc
         a.Add("sessions.get", "One session: { id } → SessionInfo", req =>
         {
             var id = req.Required("id");
-            return a.K.Sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
+            return a.K.Sessions.Require(id);
         }, readOnly: true);
 
         a.Add("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, pinned?, meta? } → SessionInfo (null clears model/reasoning)", req =>
@@ -157,7 +157,7 @@ internal static class CoreRpc
         a.Add("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq. The page is bounded in messages AND in serialized size: when the page overflows its byte budget it comes back shorter, with hasMore set and ending at an earlier seq, which the client follows with beforeSeq.", req =>
         {
             var id = req.Required("id");
-            if (a.K.Sessions.GetSession(id) is null) throw new RpcException("not_found", $"Session {id} not found");
+            a.K.Sessions.Require(id);
             var limit = Math.Clamp(req.Int("limit") ?? 60, 1, 2000);
             var page = a.K.Sessions.GetMessages(id, req.Int64("beforeSeq"), limit + 1);
             var hasMore = page.Count > limit;

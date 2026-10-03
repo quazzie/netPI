@@ -10,7 +10,7 @@ namespace NetPI.Context;
 /// changes to its tools as "tools" notices.
 /// <para>Settings: <c>context.customPrompt</c> (replaces the identity section), <c>context.appendPrompt</c>.</para>
 /// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, frozen, tools: [{name, description, chars, schemaChars}], estimatedTokens }</c>;
-/// <c>context.reset { sessionId }</c> (a profile switch: the prompt is rendered again at the next call);
+/// <c>context.reset { sessionId }</c> (forgets the prompt and tool baseline, so the next call renders them again);
 /// <c>context.prompts { sessionId }</c> → every prompt the session was sent, with its tools (the chat shows them). Event
 /// <c>context.prompt { sessionId, version, afterSeq }</c> when a session is sent a new prompt; <c>context.toolsets</c> →
 /// its tools now and every change with its cause (a "tools" notice is what told it).</para>
@@ -95,7 +95,7 @@ public sealed class ContextPlugin : INetPiPlugin
 
     internal static async Task<JsonObject> PreviewAsync(IPluginContext ctx, ISystemPromptBuilder fallback, string sessionId, CancellationToken ct)
     {
-        var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
+        var session = ctx.Sessions.Require(sessionId);
         var project = session.ProjectId is null ? null : ctx.Sessions.GetProject(session.ProjectId);
         var cwd = ctx.Sessions.GetCwd(session);
         var modelRef = session.Model ?? ctx.Models.DefaultModelRef;
@@ -146,7 +146,7 @@ public sealed class ContextPlugin : INetPiPlugin
     /// </summary>
     internal static JsonObject PromptsJson(IPluginContext ctx, PromptStore prompts, string sessionId)
     {
-        if (ctx.Sessions.GetSession(sessionId) is null) throw new RpcException("not_found", $"No session {sessionId}");
+        ctx.Sessions.Require(sessionId);
         var list = new JsonArray();
         foreach (var p in prompts.Sent(sessionId))
         {

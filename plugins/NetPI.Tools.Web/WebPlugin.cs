@@ -30,7 +30,7 @@ public sealed class WebPlugin : INetPiPlugin
                 SettingInfo.Int("web.fetch.maxChars", "Characters per page part", 20000, "Longer pages continue with offset.", 1000, 200000),
                 SettingInfo.Int("web.fetch.timeoutSeconds", "Fetch timeout", 30, null, 1, 600, "s"),
                 SettingInfo.Int("web.fetch.maxBytes", "Download limit", 5000000, null, 10000, null, "bytes"),
-                SettingInfo.FilePath("web.browserPath", "Browser for screenshots", "Empty: the Edge or Chrome found.", HeadlessBrowser.Find(null) ?? "none found (install Edge or Chrome)"),
+                SettingInfo.FilePath("web.browserPath", "Browser for screenshots", "Empty: the Edge or Chrome found.", ChromiumProcess.Find(null) ?? "none found (install Edge or Chrome)"),
                 SettingInfo.Str("web.userAgent", "User agent", null, null, WebHttp.UserAgent),
                 SettingInfo.Str("web.search.braveUrl", "Brave API URL", "https://api.search.brave.com/res/v1/web/search"),
                 SettingInfo.Choice("browser.target", "Browser tabs open in", "chrome", ["chrome", "own"], "chrome: the user's running Chrome (allow remote debugging at chrome://inspect/#remote-debugging). own: the agents' hidden browser. A call can ask for the other."),

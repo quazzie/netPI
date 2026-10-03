@@ -965,6 +965,24 @@ public static class SessionStoreTests
             Check.Equal(100, f.Store.ListSessions(new SessionQuery { IncludeUnmaterialized = true }).Count, "99 empty transient + 1 materialized");
         });
 
+        r.Add("sessions: Require is the one answer for a chat that is not there", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo { Title = "here" });
+            Check.Equal(s.Id, f.Store.Require(s.Id).Id, "the chat that is there comes back");
+
+            try
+            {
+                f.Store.Require("ses_missing");
+                throw new AssertException("expected not_found");
+            }
+            catch (RpcException ex)
+            {
+                Check.Equal("not_found", ex.Code);
+                Check.Equal("Session ses_missing not found", ex.Message, "the wording every caller used to write itself");
+            }
+        });
+
         r.Add("host: the home is resolved the same way by server and desktop (option, env var, ~ expansion)", () =>
         {
             var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);

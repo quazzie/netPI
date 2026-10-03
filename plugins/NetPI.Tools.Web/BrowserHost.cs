@@ -1,12 +1,9 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Tools.Web;
-
-internal sealed class BrowserUnavailableException(string message) : Exception(message);
 
 /// <summary>
 /// The browsers behind the tool, one tab per chat:
@@ -26,10 +23,9 @@ internal sealed class BrowserHost : IAsyncDisposable
     private readonly SemaphoreSlim _launch = new(1, 1);
     private readonly ConcurrentDictionary<string, BrowserTab> _tabs = new();
     private readonly Timer _idle;
-    private Process? _process;
+    private ChromiumProcess? _ownProcess;
     private CdpConnection? _own;
     private CdpConnection? _chrome;
-    private string? _tempProfile;
     private DateTime _lastUse = DateTime.UtcNow;
 
     public BrowserHost(IPluginContext ctx)
@@ -132,46 +128,27 @@ internal sealed class BrowserHost : IAsyncDisposable
             if (_own is { IsOpen: true } open) return open;
             await StopOwnAsync().ConfigureAwait(false);
             var o = WebOptions.Read(_ctx.Settings);
-            var exe = HeadlessBrowser.Find(o.BrowserPath)
+            var exe = ChromiumProcess.Find(o.BrowserPath)
                       ?? throw new BrowserUnavailableException("No Edge, Chrome or Chromium found for the hidden browser. Install one or set web.browserPath in the settings.");
-            string profile;
-            if (o.BrowserProfile == "temp") profile = _tempProfile = Path.Combine(_ctx.Paths.TempDir, "browser-" + Guid.NewGuid().ToString("N")[..10]);
-            else profile = Path.Combine(_ctx.Paths.Home, "browser", o.BrowserProfile);
-            Directory.CreateDirectory(profile);
-            var portFile = Path.Combine(profile, "DevToolsActivePort");
-            try { File.Delete(portFile); } catch (IOException) { }
-            var psi = new ProcessStartInfo(exe) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
-            var args = new List<string>
+            var temp = o.BrowserProfile == "temp";
+            var profile = temp ? Path.Combine(_ctx.Paths.TempDir, "browser-" + Guid.NewGuid().ToString("N")[..10]) : Path.Combine(_ctx.Paths.Home, "browser", o.BrowserProfile);
+            // a profile used before still holds the port file of the browser that had it
+            try { File.Delete(Path.Combine(profile, "DevToolsActivePort")); } catch (IOException) { }
+            var flags = new List<string>
             {
-                "--no-first-run", "--no-default-browser-check", "--disable-sync", "--disable-search-engine-choice-screen",
-                "--hide-crash-restore-bubble", "--disable-features=Translate,msWindowTabManagerPublic", "--mute-audio", "--remote-debugging-port=0",
-                $"--user-data-dir={profile}", "--window-size=1280,900", "about:blank",
+                "--disable-search-engine-choice-screen", "--hide-crash-restore-bubble", "--disable-features=Translate,msWindowTabManagerPublic",
             };
-            if (o.BrowserHeadless) args.Insert(0, "--headless=new");
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            var process = Process.Start(psi) ?? throw new BrowserUnavailableException("The browser did not start.");
-            process.ErrorDataReceived += (_, _) => { };
-            process.OutputDataReceived += (_, _) => { };
-            process.BeginErrorReadLine();
-            process.BeginOutputReadLine();
-            _process = process;
-            string? endpoint = null;
-            for (var until = DateTime.UtcNow.AddSeconds(20); endpoint is null && DateTime.UtcNow < until;)
+            if (o.BrowserHeadless) flags.Insert(0, "--headless=new");
+            _ownProcess = ChromiumProcess.Start(exe, profile, 1280, 900, flags, temp);
+            Uri endpoint;
+            try { endpoint = await _ownProcess.WaitForEndpointAsync(ct).ConfigureAwait(false); }
+            catch (TimeoutException)
             {
-                if (process.HasExited && process.ExitCode != 0) throw new BrowserUnavailableException($"The browser exited (code {process.ExitCode}).");
-                try
-                {
-                    if (File.Exists(portFile) && (await File.ReadAllLinesAsync(portFile, ct).ConfigureAwait(false)) is [var port, var wsPath, ..] && int.TryParse(port, out var p) && p > 0)
-                        endpoint = $"ws://127.0.0.1:{p}{wsPath}";
-                }
-                catch (IOException) { }
-                if (endpoint is null) await Task.Delay(100, ct).ConfigureAwait(false);
-            }
-            if (endpoint is null)
-                throw new BrowserUnavailableException(process.HasExited
+                throw new BrowserUnavailableException(_ownProcess.HasExited
                     ? $"The browser profile {profile} is in use by another browser process: close it, or set browser.profile to temp."
                     : "The browser did not open its DevTools port within 20 s.");
-            _own = await CdpConnection.ConnectAsync(new Uri(endpoint), ct).ConfigureAwait(false);
+            }
+            _own = await CdpConnection.ConnectAsync(endpoint, ct).ConfigureAwait(false);
             _own.Event += OnEvent;
             await _own.SendAsync("Target.setDiscoverTargets", new { discover = true }, null, ct).ConfigureAwait(false);
             _ctx.Logger.LogInformation("browser started: {Exe} ({Mode}, profile {Profile})", exe, o.BrowserHeadless ? "headless" : "window", profile);
@@ -206,7 +183,7 @@ internal sealed class BrowserHost : IAsyncDisposable
     private async Task CloseIfIdleAsync()
     {
         var minutes = WebOptions.Read(_ctx.Settings).BrowserIdleMinutes;
-        if ((_process is null && _chrome is null) || DateTime.UtcNow - _lastUse < TimeSpan.FromMinutes(minutes)) return;
+        if ((_ownProcess is null && _chrome is null) || DateTime.UtcNow - _lastUse < TimeSpan.FromMinutes(minutes)) return;
         if (!await _launch.WaitAsync(0).ConfigureAwait(false)) return;
         try
         {
@@ -229,31 +206,9 @@ internal sealed class BrowserHost : IAsyncDisposable
     {
         foreach (var (key, tab) in _tabs) if (!tab.Attached) _tabs.TryRemove(key, out _);
         var cdp = _own; _own = null;
-        if (cdp is not null)
-        {
-            try { await cdp.SendAsync("Browser.close", null, null, CancellationToken.None, timeoutSeconds: 3).ConfigureAwait(false); } catch (Exception) { }
-            await cdp.DisposeAsync().ConfigureAwait(false);
-        }
-        var process = _process; _process = null;
-        if (process is not null)
-        {
-            try
-            {
-                if (!process.WaitForExit(3000)) process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            }
-            catch (Exception) { }
-            process.Dispose();
-        }
-        if (_tempProfile is { } temp)
-        {
-            _tempProfile = null;
-            for (var attempt = 0; attempt < 10 && Directory.Exists(temp); attempt++)
-            {
-                try { Directory.Delete(temp, recursive: true); }
-                catch (Exception) { await Task.Delay(200).ConfigureAwait(false); }
-            }
-        }
+        if (cdp is not null) await cdp.DisposeAsync().ConfigureAwait(false);
+        var process = _ownProcess; _ownProcess = null;
+        if (process is not null) await process.DisposeAsync().ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

@@ -119,6 +119,5 @@ internal static class AgentInfoExtensions
         Children = [.. a.Children],
     };
 
-    public static bool IsTerminal(this AgentStatus s) => s is AgentStatus.Completed or AgentStatus.Failed or AgentStatus.Cancelled;
     public static bool IsBusy(this AgentStatus s) => s is AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded;
 }

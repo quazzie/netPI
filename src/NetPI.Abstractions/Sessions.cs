@@ -180,3 +180,14 @@ public interface ISessionStore
     /// </summary>
     SessionInfo ForkSession(string sessionId, long upToSeq, SessionInfo template);
 }
+
+/// <summary>One way to ask for a session that has to be there, so the answer is worded the same everywhere.</summary>
+public static class SessionStoreExtensions
+{
+    /// <summary>
+    /// The session with that id, or <c>not_found</c>: for the RPCs and services that cannot work without it, so the model
+    /// and the client read one line for "that chat is gone" instead of one per call site.
+    /// </summary>
+    public static SessionInfo Require(this ISessionStore sessions, string id) =>
+        sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
+}

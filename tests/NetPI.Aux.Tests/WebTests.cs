@@ -408,7 +408,7 @@ public static class WebTests
             Check.Equal("Screenshot of the NetPI window (1×1).", window.Content);
             Check.Equal(Png1x1, window.Images![0].Data);
 
-            if (HeadlessBrowser.Find(null) is null)
+            if (ChromiumProcess.Find(null) is null)
             {
                 env.Ctx.Unload();
                 Check.Skip("no Edge/Chrome/Chromium: page screenshots");
@@ -449,7 +449,7 @@ public static class WebTests
             var none = await env.Run("browser", new { action = "snapshot" });
             Check.True(none.IsError);
             Check.Contains(none.Content, "use action open");
-            if (HeadlessBrowser.Find(null) is null)
+            if (ChromiumProcess.Find(null) is null)
             {
                 env.Ctx.Unload();
                 Check.Skip("no Edge/Chrome/Chromium: browser");
@@ -576,7 +576,7 @@ public static class WebTests
             var off = await env.Run("browser", new { action = "open", url = "http://127.0.0.1:1/" });
             Check.True(off.IsError);
             Check.Contains(off.Content, "chrome://inspect/#remote-debugging");
-            var exe = HeadlessBrowser.Find(null);
+            var exe = ChromiumProcess.Find(null);
             if (exe is null)
             {
                 env.Ctx.Unload();
@@ -631,7 +631,7 @@ public static class WebTests
                 env.Ctx.Unload();
                 // the user's browser still runs, with the tab left for the user. The process the test started may
                 // already have exited with code 0: Edge's launcher can hand the browser to another process (the same
-                // convention HeadlessBrowser relies on), and the browser itself is checked alive below through its
+                // convention ChromiumProcess relies on), and the browser itself is checked alive below through its
                 // DevTools port. A non-zero exit is a crashed or closed browser.
                 await Task.Delay(500);
                 Check.False(user.HasExited && user.ExitCode != 0, "the user's browser was closed");

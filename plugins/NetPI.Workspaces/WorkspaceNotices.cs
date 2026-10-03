@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using Microsoft.Extensions.Logging;
 
 namespace NetPI.Workspaces;
 
@@ -27,13 +26,6 @@ internal sealed class WorkspaceNotices(IPluginContext ctx, WorkspaceResolver res
         var run = turn.Run;
         if (!Needed(Last(turn.Messages), run.Workspace(), run.Cwd)) return;
         if (Announce(run.Session.Id)) await turn.ReloadMessagesAsync().ConfigureAwait(false);
-    }
-
-    /// <summary>A binding switch: announce it right away, before the next message is read.</summary>
-    public void OnWorkspaceChanged(string sessionId)
-    {
-        try { Announce(sessionId); }
-        catch (Exception ex) { ctx.Logger.LogWarning(ex, "Workspace notice for {Session} failed", sessionId); }
     }
 
     /// <summary>Appends the notice for a session if its last one does not already describe the current binding.</summary>

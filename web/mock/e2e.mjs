@@ -188,7 +188,6 @@ async function newTab() {
   await page.waitForSelector('.intro');
 }
 const right = page.locator('.panel.right > .body');
-const leftBody = page.locator('.panel.left > .body');
 
 // ------------------------------------------------------------------ long session: render time + pruning
 if (want('long session')) {
@@ -630,7 +629,7 @@ log('sessions: the archived section lists what a newest-first window hides');
   // "Show archived" query shape (the newest 200 active + archived, filtered locally) the old archive was outside
   // the window, so the panel said "Nothing archived".
   const HIDDEN = 'Old archive, hidden by 200 actives';
-  const bulk = await rpcCall('mock.seedMany', { active: 201, archived: 59, title: HIDDEN });
+  await rpcCall('mock.seedMany', { active: 201, archived: 59, title: HIDDEN });
   try {
     // the setup really hides it: the newest-200 window of active + archived holds no archive
     const window = await rpcCall('sessions.list', { includeArchived: true, limit: 200 });

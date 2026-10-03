@@ -18,7 +18,7 @@ internal static class ToolSets
 
     public static JsonObject Build(IPluginContext ctx, ToolNotices notices, PromptStore store, string sessionId)
     {
-        var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
+        var session = ctx.Sessions.Require(sessionId);
         var agent = ctx.Services.Get<IAgentRuntime>()?.GetBySession(sessionId);
         var baseline = store.GetTools(sessionId);
         var (changes, truncated) = Scan(ctx, sessionId);

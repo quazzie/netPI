@@ -73,7 +73,7 @@ internal sealed class ProfileService(IPluginContext ctx)
     public Task<SessionInfo> ApplyAsync(string sessionId, string? profileId, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
+        var session = ctx.Sessions.Require(sessionId);
         if (session.Kind != "chat") throw new RpcException("bad_request", "Subagents don't use profiles: the agent that starts one chooses its tools.");
         var profile = profileId is null ? null : Get(profileId) ?? throw new RpcException("not_found", $"No profile \"{profileId}\"");
         SessionInfo updated;
