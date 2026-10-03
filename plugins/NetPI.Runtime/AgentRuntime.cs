@@ -19,6 +19,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     public const int YieldPriority = 100;
 
     private readonly AgentStore _store;
+    private readonly SubagentPlanner _planner;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, AgentState> _agents = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _bySession = new(StringComparer.Ordinal);
@@ -30,6 +31,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     {
         Ctx = ctx;
         _store = new AgentStore(ctx);
+        _planner = new SubagentPlanner(ctx);
     }
 
     internal IPluginContext Ctx { get; }
@@ -893,80 +895,22 @@ internal sealed class AgentRuntime : IAgentRuntime
             throw new InvalidOperationException($"Maximum subagent depth ({maxDepth}) reached: this agent cannot spawn subagents (setting agents.maxDepth).");
 
         var parentSession = parentInfo is null ? null : Ctx.Sessions.GetSession(parentInfo.SessionId);
-        // an agent the user set up (by its id): the subagent runs on it
-        var anyAgent = string.Equals(request.Agent?.Trim(), SessionAgent.Any, StringComparison.OrdinalIgnoreCase);
-        var agent = anyAgent ? null : SetUpAgent(request.Agent ?? request.Model);
-        string? modelRef;
-        if (anyAgent)
-        {
-            if (!(Ctx.Services.Get<IAgentScheduler>()?.Snapshot().Any(p => p.Configured && p.Available) ?? false))
-                throw new InvalidOperationException("No agent can take work now, so \"any\" has nowhere to go. Choose an agent (agent_choices).");
-            modelRef = null; // the model follows the agent that takes the run
-        }
-        else if (agent is not null)
-        {
-            if (!agent.Available)
-                throw new InvalidOperationException(agent.Disabled
-                    ? $"The agent \"{agent.Key}\" is switched off by the user. Choose another agent (agent_choices)."
-                    : $"The agent \"{agent.Key}\" can't take work now: {agent.Unavailable}. Choose another agent (agent_choices).");
-            modelRef = agent.Model;
-        }
-        else if (!string.IsNullOrWhiteSpace(request.Agent))
-            throw new ArgumentException($"Unknown agent '{request.Agent}'. agent_choices lists the agents.");
-        else
-            modelRef = await ResolveSpawnModelAsync(request.Model, parentSession, ct).ConfigureAwait(false);
-        var parentRef = parentSession is null ? null : await SessionModel.ResolveRefAsync(parentSession, Ctx.Models,
-            Ctx.Settings, Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
-        var parentModel = parentRef is null ? null : await Ctx.Models.FindAsync(parentRef, ct).ConfigureAwait(false);
-        var reasoning = request.Reasoning ?? (string.Equals(modelRef, parentModel?.Ref, StringComparison.OrdinalIgnoreCase) ? parentSession?.Reasoning : null);
-
         var id = Ids.New("agt");
         var n = Interlocked.Increment(ref _spawnCounter);
         var name = string.IsNullOrWhiteSpace(request.Name) ? $"agent-{(parentInfo?.Children.Count ?? n - 1) + 1}" : request.Name.Trim();
 
-        // The child's checkout, decided BEFORE the session exists: an explicitly requested workspace must exist and be
-        // usable, and a writing worker gets its worktree provisioned here, so a failure means no child at all rather
-        // than a runnable child sitting in the parent's checkout. Without the workspace plugin nothing changes.
-        var workspaceBinding = await ProvisionWorkspaceAsync(request, parentSession, id, name, ct).ConfigureAwait(false);
-
-        // The owner chooses a subagent's tools: the ones it names (tools it does not have itself included: a limited
-        // orchestrator can dispatch an agent with other tools), or by default its own (its allowlist, and the tools
-        // switched off for its session stay off).
-        List<string>? allow = request.Tools is { Count: > 0 } t ? [.. t.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim())] : null;
-        var off = allow is null ? SessionTools.Off(parentSession) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (allow is null && parentInfo?.ToolAllowlist is { } parentAllow) allow = [.. parentAllow];
-        var registered = Ctx.Tools.All.Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var canMessage = (allow is null || ToolLists.Names(allow, "agent", registered)) && !ToolLists.Names(off, "agent", registered);
-        var instructions = SubagentInstructions(id, name, parentInfo, request.Instructions, canMessage);
-        var meta = new JsonObject
-        {
-            ["agentId"] = id,
-            ["parentAgentId"] = parentInfo?.Id,
-            ["agentInstructions"] = instructions,
-        };
-        if (off.Count > 0) meta[SessionTools.MetaKey] = new JsonArray([.. off.Order(StringComparer.Ordinal).Select(n => (JsonNode?)n)]);
-        if (anyAgent) meta[SessionAgent.MetaKey] = SessionAgent.Any;
-        else if (agent is not null) meta[SessionAgent.MetaKey] = agent.Key;
-        // The child's checkout is attached to its session like any other binding: the workspace and the folder it runs in.
-        if (workspaceBinding is not null)
-        {
-            meta[SessionWorkspace.MetaKey] = workspaceBinding.WorkspaceId;
-            meta[SessionCwd.MetaKey] = workspaceBinding.Root;
-        }
-        else if (ParentWorkspaceId(parentSession) is { } inherited)
-        {
-            meta[SessionWorkspace.MetaKey] = inherited;
-            if (SessionCwd.Of(parentSession) is { } parentCwd) meta[SessionCwd.MetaKey] = parentCwd;
-        }
+        // Everything the child needs is decided before its session exists (SubagentPlanner): a refused model, workspace or
+        // tool list must not leave a runnable child behind, and the plan itself needs no running agent.
+        var plan = await _planner.PlanAsync(request, parentInfo, parentSession, id, name, ct).ConfigureAwait(false);
         var session = Ctx.Sessions.CreateSession(new SessionInfo
         {
             Title = name,
             Kind = "subagent",
             ParentSessionId = parentSession?.Id ?? parentInfo?.SessionId,
             ProjectId = request.ProjectId ?? parentSession?.ProjectId,
-            Model = modelRef,
-            Reasoning = reasoning,
-            Meta = meta,
+            Model = plan.ModelRef,
+            Reasoning = plan.Reasoning,
+            Meta = plan.Meta,
         });
 
         var state = new AgentState(new AgentInfo
@@ -979,20 +923,20 @@ internal sealed class AgentRuntime : IAgentRuntime
             IsSubagent = true,
             Depth = depth,
             Status = AgentStatus.Idle,
-            Model = modelRef,
+            Model = plan.ModelRef,
             CreatedAt = DateTimeOffset.UtcNow,
             Task = request.Task,
-            ToolAllowlist = allow,
+            ToolAllowlist = plan.ToolAllowlist,
         })
         {
-            Instructions = instructions,
+            Instructions = plan.Instructions,
             NotifyParent = request.NotifyParent,
         };
         // Ownership is the worker's, and the worker is this session (its own, new) — not the agent, and not the slot it
         // runs on. A workspace provisioned for a batch before it started has no owner yet.
-        if (workspaceBinding is not null && string.IsNullOrEmpty(workspaceBinding.OwnerSessionId))
+        if (plan.Workspace is { } workspace && string.IsNullOrEmpty(workspace.OwnerSessionId))
         {
-            Ctx.Services.Get<IWorkspaceStore>()?.UpdateWorkspace(workspaceBinding.WorkspaceId, w =>
+            Ctx.Services.Get<IWorkspaceStore>()?.UpdateWorkspace(workspace.WorkspaceId, w =>
             {
                 w.OwnerSessionId = session.Id;
                 w.OwnerAgentId = id;
@@ -1014,92 +958,6 @@ internal sealed class AgentRuntime : IAgentRuntime
             Source = parentInfo is null ? "system" : "agent:" + parentInfo.Id,
         }, DeliveryMode.Auto).ConfigureAwait(false);
         return Snapshot(state);
-    }
-
-    /// <summary>
-    /// The child's checkout. Null when no workspace plugin is loaded (the child shares its parent's project, as it always
-    /// did); otherwise the provisioner answers, and a refusal is an error that stops the spawn <em>before</em> the child's
-    /// session exists, so a failed provisioning cannot leave a runnable child in the parent's checkout.
-    /// </summary>
-    private async Task<WorkspaceBinding?> ProvisionWorkspaceAsync(SpawnRequest request, SessionInfo? parentSession, string agentId, string name, CancellationToken ct)
-    {
-        var provisioner = Ctx.Services.Get<IWorkspaceProvisioner>();
-        if (provisioner is null) return null;
-        WorkspaceOutcome outcome;
-        try
-        {
-            outcome = await provisioner.ForChildAsync(request, parentSession, agentId, name, ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (WorkspaceUnavailableException ex)
-        {
-            throw new InvalidOperationException(ex.Message);
-        }
-        if (outcome.Error is not null) throw new InvalidOperationException(outcome.Error);
-        return outcome.Binding;
-    }
-
-    /// <summary>
-    /// The parent's workspace, when it can be inherited: the child's own session is a new worker, so it starts where its
-    /// parent works (a reader sees the same tree) unless it was given one. A binding whose workspace record has gone is
-    /// not inherited, so the child falls back to the project path instead of inheriting a broken one.
-    /// </summary>
-    private string? ParentWorkspaceId(SessionInfo? parentSession)
-    {
-        if (SessionWorkspace.Of(parentSession) is not { } id) return null;
-        return Ctx.Services.Get<IWorkspaceStore>()?.GetWorkspace(id) is null ? null : id;
-    }
-
-    private static string SubagentInstructions(string id, string name, AgentInfo? parent, string? extra, bool canMessage)
-    {
-        var boss = parent is null ? "the user" : $"\"{parent.Name}\"";
-        var sb = new StringBuilder();
-        sb.Append($"You are \"{name}\" (agent id {id}), a subagent working for ");
-        sb.Append(parent is null ? "the user" : $"\"{parent.Name}\" (agent id {parent.Id})").Append(".\n");
-        sb.Append("- Your task is in the first user message. Work autonomously with your tools. You cannot ask the user questions: if something is unclear, make a reasonable assumption and mention it in your report.\n");
-        sb.Append("- Stay within the scope of the task.\n");
-        sb.Append($"- Finish with a concise final report: what you did, the results or answer, files you changed, and anything left open. Your last message is returned verbatim to {boss} as your result, so make it self-contained.\n");
-        if (parent is not null && canMessage)
-            sb.Append($"- To tell {boss} something before you finish (for example that you are blocked), use `agent` with action send and to=\"parent\".\n");
-        if (!string.IsNullOrWhiteSpace(extra)) sb.Append('\n').Append(extra.Trim()).Append('\n');
-        return sb.ToString().TrimEnd();
-    }
-
-    /// <summary>An agent the user set up (<c>agents.&lt;id&gt;</c>) by its id, with its state.</summary>
-    private AgentSlots? SetUpAgent(string? id) =>
-        string.IsNullOrWhiteSpace(id) ? null
-            : Ctx.Services.Get<IAgentScheduler>()?.Snapshot().FirstOrDefault(p => p.Configured && string.Equals(p.Key, id.Trim(), StringComparison.OrdinalIgnoreCase));
-
-    private async Task<string?> ResolveSpawnModelAsync(string? requested, SessionInfo? parentSession, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(requested))
-        {
-            var inherited = await SessionModel.ResolveRefAsync(parentSession, Ctx.Models, Ctx.Settings,
-                Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
-            if (inherited is null) return null;
-            return (await Ctx.Models.FindAsync(inherited, ct).ConfigureAwait(false))?.Ref ?? inherited;
-        }
-        requested = requested.Trim();
-        ModelInfo? found = null;
-        try { found = await Ctx.Models.FindAsync(requested, ct).ConfigureAwait(false); } catch (Exception ex) when (ex is not OperationCanceledException) { }
-        if (found is not null) return found.Ref;
-
-        var pool = Ctx.Services.Get<IAgentScheduler>()?.Snapshot()
-            .FirstOrDefault(p => string.Equals(p.Key, requested, StringComparison.OrdinalIgnoreCase));
-        if (pool is { Models.Count: > 0 })
-        {
-            var parentRef = await SessionModel.ResolveRefAsync(parentSession, Ctx.Models, Ctx.Settings,
-                Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
-            if (parentRef is not null && pool.Models.Contains(parentRef, StringComparer.OrdinalIgnoreCase)) return parentRef;
-            var cached = Ctx.Models.Cached;
-            var best = pool.Models
-                .Select(r => cached.FirstOrDefault(m => string.Equals(m.Ref, r, StringComparison.OrdinalIgnoreCase)))
-                .Where(m => m is not null)
-                .OrderBy(m => m!.Status == "loaded" ? 0 : m.Status is "offline" or "stopped" ? 2 : 1)
-                .FirstOrDefault();
-            return best?.Ref ?? pool.Models[0];
-        }
-        throw new ArgumentException($"Unknown agent or model '{requested}'. agent_choices lists the agents.");
     }
 
     public async Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,

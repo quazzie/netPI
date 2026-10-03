@@ -214,6 +214,12 @@ public sealed class TestHost : IAsyncDisposable
         lock (_plugins) return (T)_plugins.First(p => p.Plugin is T).Plugin;
     }
 
+    /// <summary>A loaded plugin's context (its services and settings), for a test that needs them without running the plugin.</summary>
+    public TestPluginContext Ctx(string pluginId)
+    {
+        lock (_plugins) return _plugins.First(p => p.Id == pluginId).Ctx;
+    }
+
     public IAgentRuntime Runtime => Services.Get<IAgentRuntime>() ?? throw new InvalidOperationException("no agent runtime");
     public IAgentScheduler? Scheduler => Services.Get<IAgentScheduler>();
 

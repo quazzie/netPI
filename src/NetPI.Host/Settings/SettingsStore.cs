@@ -408,7 +408,7 @@ internal static class DefaultSettings
     public static JsonObject Create() => new()
     {
         ["tools"] = new JsonObject { ["disabled"] = new JsonArray() },
-        ["plugins"] = new JsonObject { ["disabled"] = new JsonArray(), ["dirs"] = new JsonArray(), ["quiet"] = false },
+        ["plugins"] = new JsonObject { ["disabled"] = new JsonArray(), ["dirs"] = new JsonArray(), ["quiet"] = Rpc.CoreSettings.QuietDefault },
         ["server"] = new JsonObject { ["port"] = 7431, ["devOrigins"] = new JsonArray() },
         ["ui"] = new JsonObject(),
     };
