@@ -6,4 +6,12 @@
   <ItemGroup>
     <InternalsVisibleTo Include="NetPI.Tools.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The git kit is shared SOURCE, not a shared assembly: plugins must not reference each other, and one
+         copy in each collectible load context keeps that true (docs/PLUGINS.md). -->
+    <Compile Include="$(RepoRoot)shared/GitKit/*.cs" LinkBase="GitKit" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="NetPI.GitKit" />
+  </ItemGroup>
 </Project>

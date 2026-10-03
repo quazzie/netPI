@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetPI.GitKit;
 using NetPI.Runtime;
 using NetPI.Tools.Ssh;
 using NetPI.Workspaces;
