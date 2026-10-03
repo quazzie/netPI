@@ -18,21 +18,11 @@ public abstract class ShellToolBase : IAgentTool
 
     internal abstract Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct);
 
-    public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
-    {
-        try
-        {
-            return await RunAsync(context, new ToolArgs(args), ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            return ToolResult.Error($"{Definition.Name} failed: {ex.GetType().Name}: {ex.Message}");
-        }
-    }
+    // No catch of its own: the run turns whatever a tool throws into that tool's error result ("Tool 'bash' failed: …",
+    // logged), so a wrapper here would only say it a second time, in another wording. The file tools keep one because
+    // their I/O errors get their own lines.
+    public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct) =>
+        RunAsync(context, new ToolArgs(args), ct);
 
     internal static string FormatDuration(TimeSpan t) =>
         t.TotalSeconds < 1 ? $"{t.TotalMilliseconds:0}ms"
