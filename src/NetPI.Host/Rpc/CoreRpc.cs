@@ -171,26 +171,8 @@ internal static class CoreRpc
             var id = req.Required("id");
             a.K.Sessions.Require(id);
             var limit = Math.Clamp(req.Int("limit") ?? 60, 1, 2000);
-            var page = a.K.Sessions.GetMessages(id, req.Int64("beforeSeq"), limit + 1);
-            var hasMore = page.Count > limit;
-            if (hasMore) page = page.Skip(1).ToList();
-
-            // A page whose messages carry inline images can far exceed what one client can take in a single message
-            // (~25 images of 1.3 MB in 60 messages is already ~33 MB): keep the NEWEST whole messages while they fit
-            // the budget (a page is what a client views now; the oldest is what it can still page back for with
-            // beforeSeq) and let the first one that would not fit set hasMore.
-            var taken = new List<ChatMessage>(page.Count);
-            var size = 0;
-            for (var i = page.Count - 1; i >= 0; i--)
-            {
-                var m = page[i];
-                var len = Wire.SerializeValue(m).Length;
-                if (taken.Count > 0 && size + len > MaxPageBytes) { hasMore = true; break; }
-                taken.Add(m);
-                size += len;
-            }
-            taken.Reverse();
-            return new { messages = taken, hasMore };
+            var (messages, hasMore) = MessagePage((before, take) => a.K.Sessions.GetMessages(id, before, take), req.Int64("beforeSeq"), limit);
+            return new { messages, hasMore };
         }, readOnly: true);
 
         a.Add("sessions.stats", "Session-service counters: → { contextCache: { hits, reads } } — the cached contexts: a hit is a read served without touching the store, a read went to it", _ =>
@@ -198,6 +180,51 @@ internal static class CoreRpc
             var (hits, reads) = a.K.Sessions.ContextCache;
             return new { contextCache = new { hits, reads } };
         }, readOnly: true);
+    }
+
+    /// <summary>
+    /// The page <c>sessions.messages</c> answers with: the NEWEST whole messages while they fit <see cref="MaxPageBytes"/>,
+    /// ascending, and whether older ones are left (which the client follows with <c>beforeSeq</c>). <paramref name="read"/>
+    /// reads the newest <c>limit</c> messages before a seq, ascending — the session store's page.
+    /// <para>
+    /// A page whose messages carry inline images can far exceed what one client can take in a single message (~25 images of
+    /// 1.3 MB in 60 messages is already ~33 MB), and a message only turns out not to fit once it has been read and measured.
+    /// So the page is read in growing windows, newest first, and stops at the first message that does not fit: 60 screenshots
+    /// hand back the one message the budget takes instead of materializing (and measuring) all 60 to drop 59 — 1.2 GB of
+    /// garbage for a 5 MB answer. The first message is always kept, however big it is: a chat that shows it must not show nothing.
+    /// </para>
+    /// </summary>
+    internal static (List<ChatMessage> Messages, bool HasMore) MessagePage(Func<long?, int, IReadOnlyList<ChatMessage>> read, long? beforeSeq, int limit)
+    {
+        var taken = new List<ChatMessage>(limit);
+        var size = 0;
+        long? before = beforeSeq;
+        var hasMore = false;
+        var more = true;   // a window that came back full has older messages behind it; a short one is the last read
+        for (var window = 1; taken.Count < limit && more;)
+        {
+            var batch = read(before, window);
+            more = batch.Count == window;
+            for (var i = batch.Count - 1; i >= 0 && taken.Count < limit; i--)
+            {
+                var m = batch[i];
+                var len = Wire.SerializeValue(m).Length;
+                if (taken.Count > 0 && size + len > MaxPageBytes) { hasMore = true; more = false; break; }
+                taken.Add(m);
+                size += len;
+            }
+            if (!more) break;
+            // The next window asks for no more messages than the rest of the budget could hold (and grows like the one
+            // before it), so a page of big messages is read one at a time instead of doubling into a window whose
+            // messages are dropped again. taken.Count is at least 1: the window that came back full put a message on it.
+            before = batch[0].Seq;
+            var perMessage = Math.Max(1, size / taken.Count);
+            window = Math.Min(Math.Min(window * 2, 1 + (MaxPageBytes - size) / perMessage), limit + 1 - taken.Count);
+        }
+        // the limit itself cut the page and there are older messages left: the client asks for the next beforeSeq
+        if (taken.Count == limit && more) hasMore = true;
+        taken.Reverse();
+        return (taken, hasMore);
     }
 
     // ------------------------------------------------------------ models
