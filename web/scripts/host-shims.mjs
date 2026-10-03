@@ -92,7 +92,7 @@ if (!runtime)
   );
 if (runtime.version !== '${version}')
   throw new Error(
-    \`Svelte version skew: this tab was built against svelte ${version}, the NetPI UI running it has svelte \${runtime.version}. Rebuild the tab against this NetPI (npm run build:plugins).\`,
+    \`Svelte version skew: this tab was built against svelte ${version}, the host runs svelte \${runtime.version}. Reload the page (the host may have been updated); if it still fails, rebuild the tab (npm run build:plugins).\`,
   );`;
 
   const entries = SVELTE_MODULES.map(({ file, spec, key, from }) => [

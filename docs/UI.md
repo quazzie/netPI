@@ -54,7 +54,8 @@ web/
   index.html  vite.config.js  svelte.config.js
   scripts/build-plugins.mjs    plugin UI bundler
   scripts/host-shims.mjs       writes the shims a plugin bundle builds `svelte` and `@netpi/kit` against
-  scripts/check-host-shims.mjs what has to be true of that boundary (one runtime, a skew that fails visibly)
+  scripts/check-host-shims.mjs what has to be true of that boundary (one runtime, a skew that fails visibly,
+                                     unshimmed svelte imports fail the build)
   src/
     main.js                    styles, token, host services for plugins (__netpiHost), mount
     App.svelte                 shell layout + global shortcuts
@@ -111,9 +112,12 @@ plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/www
 
 - There is one WebSocket to `/ws`, with `?token=` added when the app has an explicit token. Messages use the
   `{t:'rpc'|'sub'|'ping'}` envelope.
-- Each call gets an id and waits for the reply with the same id, with a 30s timeout. A call made while the
+- Each call gets an id and waits for the reply with the same id, with a 30s timeout by default. A call made while the
   socket is down waits in an outbox. If the socket is not back within 3s, the call goes to
-  `POST /api/rpc/{method}` instead (`http()`, which is also exported). Calls already on the wire when the socket
+  `POST /api/rpc/{method}` instead (`http()`, which is also exported); the timeout keeps running through the
+  switch — the fetch carries an AbortSignal for the time still left, covering the reading of the body — and a
+  call that times out says it may still have completed on the server (check the result before retrying). Calls
+  already on the wire when the socket
   drops reject with `code: 'disconnected'`.
 - **Reconnect:** backoff is 0.4s, 1s, 2s, 4s, 7s, then 10s, with jitter. The client also retries right away on
   `online`, on `visibilitychange`, or when the user clicks the indicator. A ping goes out every 15s, and a
@@ -681,12 +685,15 @@ Component CSS is injected at runtime (`css: 'injected'`). `svelte` and `@netpi/k
 the build aliases both to generated shims (`web/scripts/host-shims.mjs`) that read them off `globalThis.__netpiHost`,
 so the page has one reactive system — a `$derived` in a tab that reads `ctx.app.*` tracks it — and a tab bundle
 carries neither (the sample plugin comes to about 16KB). What that costs: a tab bundle is pinned to the host's svelte
-(5.57.1 today), so **a svelte bump means rebuilding the app UI and every plugin tab**; a bundle that meets a host with
+(5.57.1 today), so **a svelte bump means rebuilding the app UI and every plugin tab**. A bundle that meets a host with
 another svelte, or none at all, throws a message naming the cause and the tab shows it with a Retry button instead of
-going blank. Plugin UIs are compiled `runes: true`, like the app: a legacy-mode component would import svelte's
-internal flags module, and those flags are state the page shares. Styling should use the host tokens and `np-*`
-classes, which keep the tab working in both themes. A plugin should not import `.css` files; component `<style>` is
-the way to style it.
+going blank: the version-skew message says which svelte each side runs, and to reload the page first (the host may
+have been updated), rebuilding the tab only if it still fails. A tab importing a svelte entry point that is not shimmed
+(`svelte/motion`, `svelte/store`, …) fails the build with the importing file and the import: such an import would bundle
+a second copy of the runtime, and two runtimes do not share reactivity across the tab's boundary. Plugin UIs are
+compiled `runes: true`, like the app: a legacy-mode component would import svelte's internal flags module, and those
+flags are state the page shares. Styling should use the host tokens and `np-*` classes, which keep the tab working in
+both themes. A plugin should not import `.css` files; component `<style>` is the way to style it.
 
 ### Writing a tab in vanilla JS
 

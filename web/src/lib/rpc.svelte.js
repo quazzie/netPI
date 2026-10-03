@@ -1,7 +1,8 @@
 // WebSocket RPC client for the NetPI host (see docs/PROTOCOL.md).
 //  - one socket at /ws, envelope { t: 'rpc'|'sub'|'ping' } → { t: 'hello'|'res'|'ev'|'pong' }
 //  - id-correlated calls with timeouts; calls made while disconnected wait for the socket and fall back
-//    to HTTP (POST /api/rpc/{method}) if it does not come back quickly
+//    to HTTP (POST /api/rpc/{method}) if it does not come back quickly — the timeout keeps running across
+//    the switch (an AbortSignal on the fetch) and through the reading of the body
 //  - reconnect with exponential backoff; subscriptions are re-sent on every (re)connect
 import { getToken, authHeaders } from './auth.js';
 import { bus } from './bus.js';
@@ -187,20 +188,26 @@ function flushOutbox() {
   }
 }
 
+/** A timed-out call may still be running on the server, so a user who sees this must check the result before retrying. */
+const timeoutError = (m) =>
+  new RpcError('timeout', `${m} timed out; the call may still have completed on the server — check the result before retrying`, m);
+
 /**
  * Call an RPC method. Options: { timeout (ms), http: true to force the HTTP endpoint, fallback: false to
- * never use HTTP }.
+ * never use HTTP }. The deadline is set when the call is made and is kept through the switch to the HTTP
+ * fallback, which continues with the time still left in it. A call with no timeout waits for the server —
+ * the long operations (backups, compactions) pass their own.
  */
 export function rpc(m, p, opts = {}) {
-  if (opts.http) return http(m, p);
+  if (opts.http) return http(m, p, { timeout: opts.timeout });
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT;
   return new Promise((resolve, reject) => {
     const id = nextId++;
     const frame = JSON.stringify({ t: 'rpc', id, m, p: p ?? {} });
-    const entry = { resolve, reject, m, sent: false, timer: 0 };
+    const entry = { resolve, reject, m, sent: false, timer: 0, deadline: Date.now() + timeout };
     entry.timer = setTimeout(() => {
       pending.delete(id);
-      reject(new RpcError('timeout', `${m} timed out`, m));
+      reject(timeoutError(m));
     }, timeout);
     pending.set(id, entry);
     if (ws && ws.readyState === 1) {
@@ -215,41 +222,58 @@ export function rpc(m, p, opts = {}) {
         if (idx < 0 || !pending.has(id)) return;
         outbox.splice(idx, 1);
         pending.delete(id);
-        clearTimeout(entry.timer);
-        http(m, p).then(resolve, reject);
+        // The deadline survives the switch to HTTP: the fetch continues with the time still left in it
+        http(m, p, { deadline: entry.deadline }).then(
+          (r) => { clearTimeout(entry.timer); resolve(r); },
+          (e) => { clearTimeout(entry.timer); reject(e); },
+        );
       }, FALLBACK_AFTER);
     }
     outbox.push(item);
   });
 }
 
-/** HTTP fallback: POST /api/rpc/{method}. */
-export async function http(m, p) {
-  let res;
+/**
+ * HTTP fallback: POST /api/rpc/{method}. `timeout` (its own, for a direct call) or `deadline` (the caller's,
+ * carried over the switch) cuts the request and the reading of the body with an AbortSignal; a call with
+ * neither waits for the server.
+ */
+export async function http(m, p, { timeout, deadline } = {}) {
+  const remaining = deadline != null ? deadline - Date.now() : timeout;
+  const controller = remaining != null ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), remaining) : 0;
   try {
-    res = await fetch(`/api/rpc/${encodeURIComponent(m)}`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(p ?? {}),
-    });
-  } catch (e) {
-    throw new RpcError('network', e?.message || 'Network error', m);
-  }
-  let body = null;
-  const text = await res.text();
-  if (text) {
+    let res;
+    let text;
     try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
+      res = await fetch(`/api/rpc/${encodeURIComponent(m)}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(p ?? {}),
+        signal: controller?.signal,
+      });
+      text = await res.text();
+    } catch (e) {
+      if (controller?.signal.aborted) throw timeoutError(m);
+      throw new RpcError('network', e?.message || 'Network error', m);
     }
+    let body = null;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    if (!res.ok) {
+      const err = body?.error ?? {};
+      throw new RpcError(err.code || `http_${res.status}`, err.message || res.statusText, m);
+    }
+    return body;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  if (!res.ok) {
-    const err = body?.error ?? {};
-    throw new RpcError(err.code || `http_${res.status}`, err.message || res.statusText, m);
-  }
-  return body;
 }
 
 /** Replace the set of sessions whose scoped events we receive. */

@@ -424,13 +424,21 @@ nothing, and nothing running after unmount.
 `@netpi/kit` resolve to generated shims (`web/scripts/host-shims.mjs`) over the host UI's own copies on
 `globalThis.__netpiHost`. It checks that the shims cover every export of svelte's three entry points and of the kit
 index, that a tab compiled against them mounts and renders the host's kit components, that a `$derived` in the tab
-follows host state (what two runtimes cannot do), and that no host, another svelte, or a host missing an export each
-fail with a message saying which.
+follows host state (what two runtimes cannot do), that no host, another svelte, or a host missing an export each
+fail with a message saying which, and that a tab importing a svelte entry point that is not shimmed fails the build
+(the second runtime it would bundle stays out of the page) while a tab on the shimmed entry points, or without svelte
+at all, still builds.
 
 `node web/scripts/check-projects.mjs` is the unit suite for `web/src/lib/projects.js` (what the projects panel and the
 projects dialog share) and for the three views of the dialog: the counts, the filter and order, and the remove flow in
 Node against stubbed state, then the views themselves in a headless browser — rows and counts, the filter narrowing
 the list, both forms, and what a failing rpc leaves on screen instead of a spinner.
+
+`node web/scripts/check-rpc-deadline.mjs` is the unit suite for the RPC client's deadline (`web/src/lib/rpc.svelte.js`):
+the timeout is set when the call is made and is kept through the switch to the HTTP fallback (the fetch continues
+with the time still left in it, as an AbortSignal) and through the reading of the response body; a call with no
+timeout waits for the server, no default is invented for it. The real client source runs in a vm with a controllable
+clock, fake timers and a fetch that never answers, so only a deadline can end a call.
 
 On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
 `/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.
