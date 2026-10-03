@@ -23,6 +23,8 @@ public static class GuardrailsTests
         t.Add("guardrails: second opinion never relaxes a block or write/edit, is off by default, and asks when the model fails", SecondOpinionLimits);
         t.Add("guardrails: the call that runs is the call that is checked: tool-name case, argument aliases and their order, arrays, spaced keys, string-encoded arguments", RunsWhatIsChecked);
         t.Add("guardrails: a redirection, comment, quotes, sudo or a wrapper do not hide a blocked command; a rule that times out blocks", Decorations);
+        t.Add("guardrails: a deliberate wait over the limit is refused in every shell that names one; a short one, a quoted sleep and a bounded timeout are not", SleepForms);
+        t.Add("guardrails: a long wait blocks with the alternatives, or asks and is remembered for the chat", LongWait);
         t.Add("guardrails: an ssh download into a protected path is refused; an upload from it, and a download elsewhere, are not", SshDownload);
     }
 
@@ -114,6 +116,99 @@ public static class GuardrailsTests
         var slow = RuleSet.Parse(["^(([a-z])+.)+[A-Z]([a-z])+$"], [], Home);
         Check.True(Judge(slow, "bash", new { command = new string('a', 45) + "!" }) is { Action: GuardAction.Block }, "a timeout blocks");
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A pattern cannot say "longer than N seconds" (a rule for <c>^sleep\s</c> takes <c>sleep 1</c> with it), so the typed
+    /// rule parses the value and compares it — and only a wait in command position counts, or every quoted example in a
+    /// commit message would be caught.
+    /// </summary>
+    private static Task SleepForms()
+    {
+        Verdict? Bash(string command) => SleepVerdict("bash", new { command });
+        Verdict? Pwsh(string command) => SleepVerdict("pwsh", new { command });
+
+        string[] blocked =
+        [
+            "sleep 300", "SLEEP 300", "sleep 1h", "sleep 1m30s", "sleep 1 2 60", "sleep 300 &", "sleep 300 2>/dev/null",
+            "sudo -n sleep 300", "nohup sleep 300", "sleep 300 # the deploy", "sleep 300.5", "sleep 300 2>&1 || true",
+            "ls && sleep 45", "bash -c \"sleep 300\"", "sh -c 'sleep 5m' && echo done", "timeout 400 sleep 300",
+            "ping -n 300 8.8.8.8", "ping -c 300 1.1.1.1", "cat <<'EOF'\nsleep 300\nEOF",   // a heredoc body is a line of its own once the command is split, so it reads as a command
+        ];
+        foreach (var c in blocked) Check.True(Bash(c) is { Action: GuardAction.Block, Kind: "sleep" }, $"blocked: {c.Replace("\n", "\\n")}");
+
+        string[] fine =
+        [
+            "sleep 2", "sleep 30", "sleep 0.5m", "sleep 500ms", "sleep", "sleep -h", "sleepy 300", "echo \"sleep 300\"",
+            "printf 'sleep 300\\n'", "git commit -m \"sleep 300\"", "grep -rn 'sleep 300' src", "timeout 5 sleep 300",
+            "timeout --preserve-status 20 sleep 60", "ping -n 3 1.1.1.1", "ping 1.1.1.1", "bash -c \"echo sleep 300\"",
+            "bash -c 'ls -la' && echo ok", "ls /sleep 300", "dotnet build",
+        ];
+        foreach (var c in fine) Check.True(Bash(c) is null, $"allowed: {c}");
+
+        string[] pwshBlocked =
+        [
+            "Start-Sleep 300", "Start-Sleep -Seconds 300", "Start-Sleep -s 45", "Start-Sleep -Milliseconds 300000",
+            "Start-Sleep -Timeout 00:05:00", "Start-Sleep -TimeSpan 0:05:00", "Invoke-Sleep -Seconds 300",
+            "Start-Sleep -s 2; Start-Sleep -s 60", "pwsh -NoProfile -Command \"Start-Sleep 300\"",
+        ];
+        foreach (var c in pwshBlocked) Check.True(Pwsh(c) is { Action: GuardAction.Block, Kind: "sleep" }, $"pwsh blocks: {c}");
+
+        string[] pwshFine = ["Start-Sleep 30", "Start-Sleep -Seconds 2", "Start-Sleep -Milliseconds 250", "Write-Host \"sleep 300\"", "Start-Sleep -Seconds abc"];
+        foreach (var c in pwshFine) Check.True(Pwsh(c) is null, $"pwsh allows: {c}");
+
+        // the rule is about the wait a command runs, not about the call: the tool's own timeout is the wait, an ssh copy
+        // runs nothing local, and 0 switches the rule off
+        Check.True(SleepVerdict("bash", new { command = "dotnet build", timeout = 600 }) is null, "the tool's own timeout");
+        Check.True(SleepVerdict("read", new { command = "sleep 300" }) is null, "a tool that runs no command");
+        Check.True(SleepVerdict("ssh", new { action = "run", script = "sleep 300" }) is { Action: GuardAction.Block }, "ssh run is remote, and the same wait");
+        Check.True(SleepVerdict("ssh", new { action = "copy", script = "sleep 300", from = "a", to = "b" }) is { Action: GuardAction.Block }, "an ssh call's script is its command, whatever the action");
+        Check.True(SleepVerdict("bash", new { command = "sleep 300" }, max: 0) is null, "0 is off");
+        Check.True(SleepVerdict("bash", new { command = "sleep 300" }, max: 300) is null, "at the limit");
+        Check.True(SleepVerdict("bash", new { command = "sleep 300" }, ask: true) is { Action: GuardAction.Ask, Rule: "guardrails.maxSleepSeconds" }, "ask instead of block");
+        return Task.CompletedTask;
+    }
+
+    private static Verdict? SleepVerdict(string tool, object args, double max = 30, bool ask = false)
+    {
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(args));
+        return Sleeps.Check(tool, doc.RootElement.Clone(), max, ask);
+    }
+
+    /// <summary>The reason names the alternatives, not just the number; with ask the OK is the session allowance.</summary>
+    private static async Task LongWait()
+    {
+        await using var h = await StartAsync();
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
+            ? Reply.Text("ok")
+            : Reply.Tools(Reply.Call("bash", new { command = "sleep 300" }), Reply.Call("bash", new { command = "dotnet build", timeout = 600 }));
+        await h.SendAsync(s.Id, "wait for the deploy");
+        await h.IdleAsync(s.Id);
+        var results = Results(h, s.Id);
+        Check.True(results[0].IsError);
+        Check.Contains(results[0].Content, "waits 5 minutes, over the 30s allowed");
+        Check.Contains(results[0].Content, "`process wait`");
+        Check.False(results[1].IsError, "the tool's own timeout is not a sleep");
+        Check.Equal(1, ran.Count);
+
+        h.Settings.Set("guardrails.maxSleepAction", JsonValue.Create("ask"));
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tool("bash", new { command = "sleep 300" });
+        await h.SendAsync(s.Id, "sleep a while");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 1, "a long wait asks");
+        var asked = FakeBus.Data(h.Bus.OfType("guard.asked")[0]);
+        Check.Equal("sleep", (string?)asked["kind"]);
+        Check.Equal("guardrails.maxSleepSeconds", (string?)asked["rule"]);
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)asked["approvalId"]!, allow = true, scope = "session" });
+        await h.IdleAsync(s.Id);
+        Check.Equal(2, ran.Count, "allowed: it ran");
+
+        await h.SendAsync(s.Id, "again");
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, h.Bus.OfType("guard.asked").Count, "allowed in this chat: it does not ask twice");
+        Check.Equal(3, ran.Count);
     }
 
     /// <summary>scp writes the destination of a download on this machine, where the call says: it is a write like write and edit.</summary>

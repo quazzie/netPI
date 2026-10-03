@@ -6,7 +6,8 @@ namespace NetPI.Guardrails;
 internal enum GuardAction { Block, Ask }
 
 /// <summary>A rule that matched: what it does, its text as written, and the command part or path it matched.</summary>
-internal sealed record Verdict(GuardAction Action, string Rule, string Kind, string Subject);
+/// <param name="Detail">What the typed sleep rule read off the command (how long it waits); null for the other kinds.</param>
+internal sealed record Verdict(GuardAction Action, string Rule, string Kind, string Subject, string? Detail = null);
 
 /// <summary>
 /// The rules of <c>guardrails.commands</c> and <c>guardrails.paths</c>, one per line: a line starting with <c>ask:</c>
@@ -189,6 +190,22 @@ internal sealed partial class RuleSet
     /// </summary>
     internal static IEnumerable<string> Parts(string command) =>
         Regex.Split(LineContinuation().Replace(command, " "), @"\r?\n|&&|\|\||;|\||(?<![<>])&(?!>)").Select(p => p.Trim()).Where(p => p.Length > 0);
+
+    /// <summary>
+    /// A part with what a shell ignores taken off, quotes kept: a trailing comment, redirections and the wrappers
+    /// (<see cref="Wrapper"/>). A rule that reads the words of a part (<see cref="Sleeps"/>) starts here, where the command
+    /// position is.
+    /// </summary>
+    internal static string Undecorated(string part)
+    {
+        try
+        {
+            var s = TrailingComment().Replace(part, "");
+            s = Redirection().Replace(s, "");
+            return Wrapper().Replace(s, "").Trim();
+        }
+        catch (RegexMatchTimeoutException) { return part; }
+    }
 
     /// <summary>
     /// The ways to read a part: as written, and with what a shell ignores taken off — a trailing comment, redirections,
