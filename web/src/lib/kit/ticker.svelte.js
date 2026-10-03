@@ -1,5 +1,7 @@
 // Shared clocks for relative / elapsed times: one interval for every row that reads one, and none left running once the
 // last of them is gone (a plugin tab bundles its own copy of the kit, and its clocks used to outlive the tab).
+import { onDestroy } from 'svelte';
+
 const clocks = new Map(); // ms → { value: $state, timer, users }
 
 /**
