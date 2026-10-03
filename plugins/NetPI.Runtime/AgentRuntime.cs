@@ -637,7 +637,8 @@ internal sealed class AgentRuntime : IAgentRuntime
             // The agent-result notice the parent gets (and the id a wait needs to drop it from the parent's
             // queue) is decided here, with the run's clearing: a WaitAsync that sees Run gone reads under this
             // same lock, so it must find the id there, or it removes nothing and the parent gets the report
-            // twice (with the wait's result and as the notice).
+            // twice (with the wait's result and as the notice). The other half of the rule is at the queueing:
+            // a result a wait consumed before this runs is not queued at all (NotifyParentAsync).
             if (notify) notice = ParentNotice(final);
             if (notice is not null) s.PendingNotificationId = notice.Id;
             // Input that is still queued starts the next run, unless this run failed without taking any: the run steps that
@@ -703,7 +704,21 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
         try
         {
-            await DeliverAsync(parent, notice, DeliveryMode.Auto).ConfigureAwait(false);
+            // Whether the parent gets the report at all is settled under the child's gate, the gate a wait takes to record
+            // that it took the result instead (<see cref="WaitAsync"/>): the notice is queued here or not at all, because a
+            // queued one cannot be taken back once the parent's next turn has drained it into the conversation — and a wait
+            // that consumed the result a moment earlier already looked, found nothing to drop, and moved on.
+            Task queued;
+            lock (child.Gate)
+            {
+                if (child.ResultConsumed)
+                {
+                    child.PendingNotificationId = null;   // nothing is queued, so there is nothing for a wait to drop
+                    return;
+                }
+                queued = DeliverAsync(parent, notice, DeliveryMode.Auto);
+            }
+            await queued.ConfigureAwait(false);
             // A wait may have consumed the result while this delivery was in flight: its removal of the queued
             // input then ran before the input was queued and found nothing to drop.
             lock (child.Gate)
@@ -998,20 +1013,24 @@ internal sealed class AgentRuntime : IAgentRuntime
         var results = new List<AgentInfo>(targets.Count);
         foreach (var t in targets)
         {
-            string? pending = null;
             AgentInfo snap;
             lock (t.Gate)
             {
                 if (t.Run is null)
                 {
+                    // The result is returned here, so the agent-result notice queued at the caller must not reach it as
+                    // well. Recording it as consumed and dropping the notice are one step under the agent's gate — the
+                    // gate the completion path takes to queue it (NotifyParentAsync) — so a notice queued after this
+                    // cannot slip past: the completion sees the consumed result and sends nothing.
                     t.ResultConsumed = true;
-                    pending = t.PendingNotificationId;
-                    t.PendingNotificationId = null;
+                    if (t.PendingNotificationId is { } pending)
+                    {
+                        t.PendingNotificationId = null;
+                        if (caller is not null) RemoveQueuedInput(caller, pending);
+                    }
                 }
                 snap = t.Info.Clone();
             }
-            // the result is returned here: drop a still-queued agent-result notice so the caller doesn't get it twice
-            if (pending is not null && caller is not null) RemoveQueuedInput(caller, pending);
             results.Add(snap);
         }
         return results;
