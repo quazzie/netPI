@@ -34,6 +34,17 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
         tools.FirstOrDefault(t => t.Definition.Name == name)
         ?? tools.FirstOrDefault(t => string.Equals(t.Definition.Name, name, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// The arguments a tool (or a hook) reads: some models send the object as a JSON <em>string</em>, unwrapped here
+    /// once for every call — the tools and the policy hooks see the same object the runner hands the tool, and the
+    /// stored <c>ToolCallPart.Arguments</c> is never rewritten for it.
+    /// </summary>
+    private static JsonElement ParseArgs(string? arguments)
+    {
+        using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments);
+        return ToolArgs.Unwrap(doc.RootElement.Clone());
+    }
+
     /// <summary>The call only reads: a read-only tool, or a tool with actions that says so for these arguments.</summary>
     private static bool ReadsOnly(IAgentTool? tool, string? arguments)
     {
@@ -160,8 +171,7 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
             else if (tool.Definition.Deferred) prepared.Early = ToolResult.Error("This tool is deferred. Discover its schema and use its invocation gateway.");
             else
             {
-                using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(call.Arguments) ? "{}" : call.Arguments);
-                prepared.Args = doc.RootElement.Clone();
+                prepared.Args = ParseArgs(call.Arguments);
                 if (ToolHelp.Asked(tool.Definition, prepared.Args))
                     prepared.Early = ToolResult.Ok(ToolHelp.Text(tool.Definition));
                 else if (tool is IIndirectAgentTool gateway)
@@ -216,8 +226,7 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
         { prepared.Early = ToolResult.Error("The tool changed or was disabled during policy checks."); return (prepared, changed); }
         try
         {
-            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(effective.Arguments) ? "{}" : effective.Arguments);
-            prepared.Args = doc.RootElement.Clone();
+            prepared.Args = ParseArgs(effective.Arguments);
             if (ToolHelp.Asked(prepared.Tool.Definition, prepared.Args))
                 prepared.Early = ToolResult.Ok(ToolHelp.Text(prepared.Tool.Definition));
         }
