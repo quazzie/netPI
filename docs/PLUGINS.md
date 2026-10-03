@@ -236,6 +236,56 @@ startup, and it has to pass `tests/NetPI.Storage.Tests` — the same scenarios r
 port's contract in executable form. It writes its own SQL inside itself; nothing else in the repository may know its
 engine.
 
+### The event bus: what it guarantees, and what it does not
+
+`ctx.Events` is the only channel between plugins, and between a plugin and the UI (the host fans every `Ui` event out
+to the connected clients). What the bus (`src/NetPI.Host/Events/EventBus.cs`) guarantees:
+
+- **Ordering, per subscriber.** A single dispatcher hands each event, in publish order, to the queue of every matching
+  subscriber, and each subscriber's worker runs its own queue one event at a time, in queue order. The order in which
+  *different* subscribers' handlers run for one event is not a contract.
+- **Best-effort delivery under overload.** Each subscriber has a queue of 2048 events; a subscriber that fills it **drops
+  for itself** (counted, logged at most once per 30 s) and the bus and everyone else keep flowing. A drop is silent in
+  the data: the event simply never reaches that line. The dispatcher's own input (65536 events) is the last-resort
+  ceiling — a drop there, also counted, means the dispatcher is effectively stopped, and the bus says so when its
+  backlog passes 1000.
+- **No wedged subscriber holds the bus.** An async handler runs at most 30 s on its own line before it is let go of:
+  the line moves on to the next event while the handler keeps running in the background (logged as stuck), so later
+  events can overlap it. A sync handler cannot be let go of (it cannot yield): it holds only its own line for as long
+  as it runs. A handler over 250 ms is reported as slow (at most once per 30 s per line). The log lines that name all
+  of this are in `docs/DEBUGGING.md`.
+
+`FlushAsync` (the `events.flush` RPC, which times out after 10 s) is how a test or a shutdown waits for what was
+published: it completes once every live subscriber has processed every event published before the call, and a wedged
+subscriber holds the flush for its own line only.
+
+The consequence for a plugin: **an event is “something happened”, never “the transition”** — and a plugin that cannot
+afford to miss a transition cannot subscribe to one. A state change that must not be lost is written to storage
+(`ctx.Data`) or the session store first, and the event only says “re-read”. And every behavioural reaction to an event
+has to be **idempotent**: your line drops under overload, and reacting to the same change twice (or only late) must
+be harmless, or the reaction belongs in storage, not the bus.
+
+Which of the host's events are display-only — losing them changes no behaviour — is a question of who reacts. The UI
+line is display-only by construction: `loadAll` in `web/src/lib/state/app.svelte.js` re-reads sessions, agents, models,
+tools, asks, plans and the ui registry on every (re)connect, and a chat re-reads its messages from the store (it is
+written to cope with missed events). So the question is the plugins and the kernel, checked against this tree:
+
+- **display-only** (no plugin or kernel reacts behaviourally; the UI re-reads what they mirror): `session.updated`,
+  `message.added` / `message.updated`, the live `stream.*` and `tool.start` / `tool.output` / `tool.end` (the finished
+  message arrives as `message.added`), `session.context`, `ui.changed`, `usage.changed` / `usage.recorded` (the payload
+  is the whole budget snapshot; the budget pill loads `budget.status` on every open).
+- **re-read wakes** (the payload is the whole state and the reactions are idempotent re-reads, so a missed one is
+  healed by the next): `agents.changed` (is `agents.list`; the ideas plugin wakes its verify queues on it),
+  `models.changed` (the catalog invalidates its cache, the scheduler refreshes), `plugins.changed` (registry re-reads).
+- **load-bearing** (losing one is a behaviour change, not a refresh): `session.deleted` (plugins drop their
+  per-session state), `session.created` / `session.forked` / `session.changed` / `session.project` (profiles, fork
+  state, the context's tool notices), `settings.changed` (the kernel and the provider plugins reconfigure),
+  `agent.status` (ideas), `plugins.reloaded` and `mcp.toolsChanged` (the context names the cause in the next “tools”
+  notice).
+
+When you add an event, decide which of the three it is and keep it there: a re-read wake carries the whole state,
+and a load-bearing one gets its reaction written idempotently. None of them carry delivery.
+
 ### What a session carries, and what a fork forgets
 
 **Per-session state:** sessions are not a bounded set — every subagent spawn creates one — so a dictionary keyed by
