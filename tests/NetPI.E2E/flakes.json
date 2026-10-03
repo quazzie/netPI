@@ -20,6 +20,16 @@
       "lastFailure": "20261002-164357-4982",
       "cause": "3 ui check(s) failed: \u2014 responsive",
       "quiet": true
+    },
+    {
+      "id": "ui.start-project",
+      "runs": 99,
+      "failures": 2,
+      "rate": 0.0202,
+      "firstSeen": "20261003-233752-1c67",
+      "lastFailure": "20261003-233827-7563",
+      "cause": "1 ui check(s) failed: \u2014 responsive",
+      "quiet": true
     }
   ]
 }

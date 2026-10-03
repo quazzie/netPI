@@ -93,14 +93,18 @@ try {
   // the split button: two halves, the name one carrying the project
   const main = page.locator('.welcome .split .target');
   const more = page.locator('.welcome .split .target-more');
-  // wait for both halves before counting them: a count() takes no time, and a screen still settling answers it wrongly
-  const waited = await Promise.all([
-    main.waitFor({ timeout: 10_000 }).then(() => 'name ok', (e) => `name: ${e.message.split('\n')[0]}`),
-    more.waitFor({ timeout: 10_000 }).then(() => 'chevron ok', (e) => `chevron: ${e.message.split('\n')[0]}`),
-  ]);
-  check('the project button is a split button (name half + chevron half)',
-    waited.every((w) => w.endsWith('ok')) && (await main.count()) === 1 && (await more.count()) === 1,
-    `${await main.count()} name halves, ${await more.count()} chevron halves, visible ${await main.isVisible()}/${await more.isVisible()}, ${waited.join(' · ')}`);
+  // exactly one of each half, waited for instead of counted on the spot: a count() takes no time, and a locator that
+  // resolves to more than one element throws at once, so a screen still settling failed the check with both halves
+  // already in place (the ledger's first two failures of this test)
+  const halvesOk = await page
+    .waitForFunction(
+      () => document.querySelectorAll('.welcome .split .target').length === 1 && document.querySelectorAll('.welcome .split .target-more').length === 1,
+      undefined,
+      { timeout: 10_000 },
+    )
+    .then(() => true, () => false);
+  check('the project button is a split button (name half + chevron half)', halvesOk,
+    await page.evaluate(() => `${document.querySelectorAll('.welcome .split .target').length} name halves, ${document.querySelectorAll('.welcome .split .target-more').length} chevron halves`));
   check('the name half starts a session in the project shown', (await main.getAttribute('title') ?? '').startsWith('Start a session in'),
     await main.getAttribute('title'));
   check('the chevron half picks a project', (await more.getAttribute('title')) === 'Pick another project', await more.getAttribute('title'));
