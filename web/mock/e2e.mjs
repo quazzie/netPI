@@ -1253,10 +1253,21 @@ log('plugin tab: Files');
   await dir('src');
   await dir('lib');
   await ta.fill('');
-  await page.locator('.files .frow .fname', { hasText: /^markdown\.js$/ }).click();
+  const mdName = page.locator('.files .frow .fname', { hasText: /^markdown\.js$/ });
+  const before = (await rpcCall('mock.filesOpened')).length;
+  await mdName.click();
+  await page.waitForTimeout(250);
+  // One click only selects, like the file manager: opening a file runs its program, so it takes a double click.
+  const afterClick = await rpcCall('mock.filesOpened');
+  check('files: one click does not open the file', afterClick.length === before, JSON.stringify(afterClick.slice(-1)));
+  check('files: one click selects the row', (await page.locator('.files .frow[aria-selected="true"]').count()) === 1, String(await page.locator('.files .frow[aria-selected="true"]').count()));
+  await mdName.dblclick();
   await page.waitForTimeout(250);
   const opened = (await rpcCall('mock.filesOpened')).map((p) => p.replaceAll('\\', '/'));
-  check('files: a click opens the file (files.open)', opened.at(-1)?.endsWith('web/src/lib/markdown.js'), opened.at(-1));
+  check('files: a double click opens the file (files.open)', opened.at(-1)?.endsWith('web/src/lib/markdown.js'), opened.at(-1));
+  // files.open cannot see who is calling; user: true is how a deliberate pick asks for the file's default program.
+  const calls = await rpcCall('mock.filesOpenCalls');
+  check('files: the double click says the user picked it (user: true)', calls.at(-1)?.user === true, JSON.stringify(calls.at(-1)));
   check('files: a click inserts nothing', (await ta.inputValue()) === '', await ta.inputValue());
   const mdRow = page.locator('.files .frow', { has: page.locator('.fname', { hasText: /^markdown\.js$/ }) });
   await mdRow.hover();
@@ -2360,14 +2371,22 @@ log('web tools, todo plan, tools notice, file links');
   await page.locator('.tool', { has: page.locator('.label', { hasText: 'Screenshot' }) }).last().scrollIntoViewIfNeeded();
   await shot(page, '26-web-tools');
 
-  // links to files open with the operating system, not inside the app
+  // links to files open with the operating system, not inside the app — but only after the user says so, because the
+  // path came from the model and whatever program it is associated with will run
   const links = page.locator('.md a.file-link');
   check('file links in the answer are marked', (await links.count()) === 2, String(await links.count()));
   const before = page.url();
+  const openedBefore = (await rpcCall('mock.filesOpened')).length;
   await links.first().click();
+  const ask = page.locator('[role="dialog"][aria-label="Open this file?"]');
+  await ask.waitFor({ timeout: 5000 }).catch(() => {});
+  check('clicking a file link asks before opening it', (await ask.count()) === 1, String(await ask.count()));
+  check('nothing is opened while the question is open', (await rpcCall('mock.filesOpened')).length === openedBefore);
+  await ask.locator('button', { hasText: /^Open$/ }).click();
   await page.waitForTimeout(300);
   const opened = await rpcCall('mock.filesOpened');
-  check('clicking a file link asks the host to open it', opened.some((p) => p.replace(/\\/g, '/').endsWith('web/src/App.svelte')), JSON.stringify(opened));
+  check('a confirmed file link asks the host to open it', opened.some((p) => p.replace(/\\/g, '/').endsWith('web/src/App.svelte')), JSON.stringify(opened));
+  check('the confirmed link opens it as a deliberate pick (user: true)', (await rpcCall('mock.filesOpenCalls')).at(-1)?.user === true, JSON.stringify((await rpcCall('mock.filesOpenCalls')).at(-1)));
   check('the app does not navigate away', page.url() === before && (await page.locator('.composer textarea').count()) === 1);
   check('web links still open in a new window', (await page.locator('.md a[target="_blank"]', { hasText: 'docs' }).count()) === 1);
 
