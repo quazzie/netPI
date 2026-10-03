@@ -45,6 +45,14 @@ node web/mock/fake-openai.mjs [port]  # scripted OpenAI-compatible model server 
   foreground `bash`, usage and an `agent` `wait`, which is enough to exercise every section of the Work tab.
 - In a normal browser, `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab` and `Ctrl+1…9` are taken by the browser. In WebView2 they
   reach the app. The command palette (`Ctrl+K`) and the `+` button do the same things.
+- **The idea dialog** (`web/src/components/modals/IdeaDialog.svelte`) is the one place an idea is filed or edited: the Ideas tab's `+`
+  and a card's pencil, `Ctrl+I` from anywhere (also while typing in the composer; a normal browser may keep it), and `/idea`
+  with no text. A new idea goes to the project the Ideas tab shows, else the active chat's, else none; images attach by
+  button, paste or drop. Editing saves against the revision the dialog opened on: a save after someone else wrote the idea is a
+  conflict ("Load the current version"), never an overwrite. **Refine with an agent** (the footer toggle, or the card's ⋯ menu)
+  saves the idea and then calls `ideas.refine`: a chat in which an agent researches the code and rewrites the idea, with every
+  tool that can change files switched off. Plugin tabs open it through `ctx.app.openIdea(...)`; the card's section editor stays
+  inline.
 
 ## File map
 

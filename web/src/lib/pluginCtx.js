@@ -2,7 +2,7 @@
 import { rpc } from './rpc.svelte.js';
 import { bus } from './bus.js';
 import { app, openSession, newSession, hasRpc } from './state/app.svelte.js';
-import { composer, toast, modals } from './state/ui.svelte.js';
+import { composer, toast, modals, openIdeaDialog } from './state/ui.svelte.js';
 import { openPanelTab } from './state/tabs.svelte.js';
 
 const appListeners = new Set();
@@ -72,6 +72,11 @@ export function createPluginCtx(tab) {
       },
       openTab: (key) => {
         openPanelTab(key);
+      },
+      // The idea dialog (new, or { idea } to edit one; { projectId } says where a new one goes, { refine: true } opens with the
+      // agent task on). The same dialog Ctrl+I opens: the host owns it so it is there whichever tab is showing.
+      openIdea: (opts) => {
+        openIdeaDialog(opts ?? {});
       },
       openSettings: (page, target) => {
         // target (an agent id, say) rides along in the page string: 'agents:<id>' opens that agent's dialog

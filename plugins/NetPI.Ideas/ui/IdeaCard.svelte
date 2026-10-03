@@ -1,7 +1,7 @@
 <script>
   import { Icon, IconButton, Menu, Markdown, TimeAgo, Button, confirm, copyText } from '@netpi/kit';
   import SectionEditor from './SectionEditor.svelte';
-  import { STATUSES, PRIORITIES, STATUS_TONE, KIND_ICON, parseTags } from './model.js';
+  import { STATUSES, STATUS_TONE, KIND_ICON } from './model.js';
 
   let {
     idea,
@@ -9,7 +9,6 @@
     ctx,
     images = {},
     loadimage,
-    ondetachimage,
     open = false,
     ontoggle,
     canUp = false,
@@ -22,15 +21,12 @@
     ondragend,
   } = $props();
 
-  let editing = $state(false);
-  let form = $state({ title: '', summary: '', priority: 'medium', tags: '' });
   let secEdit = $state(null); // section id | 'new'
   // What an open editor was opened on: the revision it had when it opened, and nothing else. The list refetches on
   // every ideas.changed, so the card's own idea is already the newer one — an editor that sent that would silently
   // overwrite whoever wrote it (idea-c3hihl).
   let editRev = $state(null);
   let secRev = $state(null);
-  let busy = $state(false);
 
   const statusItems = $derived(
     STATUSES.map((s) => ({ label: s, checked: idea.status === s, onclick: () => s !== idea.status && api.update(idea.id, { status: s }) })),
@@ -53,25 +49,14 @@
     await api.update(idea.id, { images: kept });
   }
 
-  function startEdit(e) {
+  // Editing (and the agent task) is the host's idea dialog, the one Ctrl+I opens: it captures the revision the idea has
+  // right now, so a save that lands after someone else's change is a conflict, not an overwrite (idea-c3hihl).
+  function edit(e) {
     e?.stopPropagation();
-    form = { title: idea.title, summary: idea.summary ?? '', priority: idea.priority ?? 'medium', tags: (idea.tags ?? []).join(', ') };
-    editRev = idea.revision ?? null;
-    editing = true;
-    if (!open) ontoggle();
+    ctx.app.openIdea({ idea });
   }
-  async function saveEdit(e) {
-    e?.preventDefault();
-    if (!form.title.trim()) return;
-    busy = true;
-    const r = await api.update(idea.id, {
-      title: form.title.trim(),
-      summary: form.summary.trim(),
-      priority: form.priority,
-      tags: parseTags(form.tags),
-    }, editRev);
-    busy = false;
-    if (r) editing = false;
+  function refine() {
+    ctx.app.openIdea({ idea, refine: true });
   }
   async function remove() {
     const id = idea.id; // the card can be gone (list refetched) by the time the dialog resolves
@@ -84,6 +69,7 @@
     if (ok) api.remove(id);
   }
   const moreItems = $derived([
+    { label: 'Refine with an agent…', icon: 'bot', onclick: refine },
     { label: 'Insert the full text', icon: 'file-text', onclick: () => api.toPrompt(idea.id) },
     { divider: true },
     { label: 'Move up', icon: 'chevron-up', disabled: !canUp, onclick: () => api.move(idea.id, -1) },
@@ -181,24 +167,7 @@
           {/each}
         </div>
       {/if}
-      {#if editing}
-        <form class="edit" onsubmit={saveEdit}>
-          <input class="np-input" bind:value={form.title} placeholder="Title" />
-          <textarea class="np-input" rows="3" bind:value={form.summary} placeholder="Summary"></textarea>
-          <div class="erow">
-            <div class="np-seg">
-              {#each PRIORITIES as p (p)}
-                <button type="button" aria-pressed={form.priority === p} onclick={() => (form.priority = p)}>{p}</button>
-              {/each}
-            </div>
-            <input class="np-input" bind:value={form.tags} placeholder="tags, comma separated" />
-          </div>
-          <div class="btns">
-            <Button variant="ghost" size="sm" onclick={() => (editing = false)}>Cancel</Button>
-            <Button variant="primary" size="sm" type="submit" disabled={busy || !form.title.trim()}>Save</Button>
-          </div>
-        </form>
-      {:else if idea.summary}
+      {#if idea.summary}
         <div class="full-summary">{idea.summary}</div>
       {/if}
 
@@ -258,7 +227,7 @@
         <Button variant="primary" size="sm" icon="steer" onclick={() => api.send(idea)} title="Stage a pointer to this idea in the composer — the agent reads the idea itself">Send<span class="to-chat">to chat</span></Button>
         {#if secEdit !== 'new'}<Button size="sm" icon="plus" onclick={() => openSec(null)} title="Add section"><span class="wide">Section</span></Button>{/if}
         <span class="np-grow"></span>
-        {#if !editing}<IconButton icon="pencil" title="Edit title, summary, priority, tags" size="sm" onclick={startEdit} />{/if}
+        <IconButton icon="pencil" title="Edit the idea (title, summary, priority, status, tags, project, images)" size="sm" onclick={edit} />
         <Menu items={moreItems} minWidth={160}>
           {#snippet trigger({ toggle })}<IconButton icon="more" title="More actions" size="sm" onclick={toggle} />{/snippet}
         </Menu>
@@ -297,6 +266,12 @@
     color: var(--accent);
     cursor: pointer;
     text-align: left;
+    /* a chat title can be long ("Refine idea: …"): one line, cut, so the narrow panel never scrolls sideways */
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .ev-link:hover { text-decoration: underline; }
   .hash { font-family: var(--mono); color: var(--text-dim); }
@@ -626,28 +601,5 @@
     font-size: 10px;
     color: var(--fg-dim);
     opacity: 0.8;
-  }
-  .edit {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .erow {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .erow .np-seg button {
-    text-transform: capitalize;
-  }
-  .erow .np-input {
-    flex: 1 1 130px;
-    min-width: 0;
-    height: 26px;
-  }
-  .btns {
-    display: flex;
-    justify-content: flex-end;
-    gap: 6px;
   }
 </style>

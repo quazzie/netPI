@@ -1,8 +1,7 @@
 <script>
   import { onMount } from 'svelte';
-  import { Icon, IconButton, SearchInput, Menu, Empty, Button, prepareImage, useRefresh } from '@netpi/kit';
+  import { Icon, IconButton, SearchInput, Menu, Empty, Button, useRefresh } from '@netpi/kit';
   import IdeaCard from './IdeaCard.svelte';
-  import NewIdea from './NewIdea.svelte';
   import { STATUSES, ACTIVE, STATUS_TONE, matches, GROUP_ORDER, CLOSED_ORDER } from './model.js';
 
   let { ctx } = $props();
@@ -14,7 +13,6 @@
   let q = $state('');
   let statusFilter = $state('active'); // active | all | <status>
   let tagFilter = $state.raw(new Set());
-  let adding = $state(false);
   let expanded = $state.raw(new Set());
   let openGroups = $state.raw(new Set()); // collapsed statuses the user opened (parked, done, rejected)
   let dragId = $state(null);
@@ -262,42 +260,16 @@
   // Thumbnails are fetched per card when it opens (ideas.image) and kept here, so a backlog of ideas carries no image
   // bytes and a card that was opened once does not ask again.
   let imageCache = $state({});
-  async function attachImage(file) {
-    // A failure here must say so: an image that silently does not appear is the worst outcome of all three.
-    try {
-      const { image, note } = await prepareImage(file);   // shrink to what a message can carry, or refuse with a reason
-      if (!image) return { image: null, note };
-      const r = await call('ideas.addImage', { data: image.data, mediaType: image.mediaType, name: image.name });
-      if (!r) return { image: null, note };
-      imageCache = { ...imageCache, [r.path]: `data:${r.mediaType};base64,${image.data}` };
-      return { image: { ...r, url: image.url }, note };
-    } catch (e) {
-      ctx.app.toast(`Could not attach ${file.name || 'the image'}: ${e?.message ?? e}`, 'error');
-      return { image: null, note: null };
-    }
-  }
-  async function detachImage(path) {
-    delete imageCache[path];
-    imageCache = { ...imageCache };
-    try { await call('ideas.removeImage', { path }); } catch { /* the reference is gone from the card either way */ }
-  }
   async function loadImage(path) {
     if (imageCache[path]) return;
     const r = await ctx.rpc('ideas.image', { path }).catch(() => null);
     if (r?.data) imageCache = { ...imageCache, [path]: `data:${r.mediaType};base64,${r.data}` };
   }
 
-  async function add(idea, projectId) {
-    const params = { idea, prepend: true, sessionId: ctx.app.activeSessionId || undefined };
-    if (projectId) params.projectId = projectId; // '' → omitted: the session's project is the default stamp
-    const r = await call('ideas.add', params);
-    if (r) {
-      list = { ...list, exists: true, ideas: [r, ...(list?.ideas ?? [])] };
-      adding = false;
-      // The new card joins the list collapsed, so filing several ideas in a row does not push the previous one out
-      // of view each time (idea-qrp60h). Opening it is one click on the title.
-    }
-    return r;
+  // A new idea is filed in the host's idea dialog (the one Ctrl+I opens), on the project this tab is showing: the list's own
+  // project, or the active chat's when it shows them all. The new card arrives with ideas.changed.
+  function newIdea() {
+    ctx.app.openIdea({ projectId: projectFilter === 'all' ? (activeProjectId ?? 'global') : projectFilter });
   }
 
   async function reorder(ids) {
@@ -380,7 +352,7 @@
     {#if storage}
       <span class="file" title="The ideas backlog lives in the {storage.database} database ({storage.scope}, version {storage.schemaVersion}) - it is not a file you can edit"><Icon name="archive" size={12} /></span>
     {/if}
-    <IconButton icon="plus" title="New idea" size="sm" pressed={adding} onclick={() => (adding = !adding)} />
+    <IconButton icon="plus" title="New idea (Ctrl+I)" size="sm" onclick={newIdea} />
   </div>
 
   <div class="filters np-line">
@@ -411,10 +383,6 @@
         <button class="np-chip" aria-pressed="true" title="Remove this tag filter" onclick={() => toggleTag(t)}>#{t}<Icon name="x" size={10} /></button>
       {/each}
     </div>
-  {/if}
-
-  {#if adding}
-    <NewIdea onadd={add} oncancel={() => (adding = false)} onattach={attachImage} ondetach={detachImage} projects={projects} activeProjectId={activeProjectId ?? ''} />
   {/if}
 
   {#if unsaved.length}
@@ -465,7 +433,7 @@
       <Empty icon="idea">
         <div>No ideas yet in {emptyWhere}.</div>
         <div class="np-dim">Agents add them with the <span class="np-mono">ideas</span> tool; you can use <span class="np-mono">/idea &lt;title&gt;</span> or the + button.</div>
-        {#if !adding}<Button size="sm" icon="plus" onclick={() => (adding = true)}>New idea</Button>{/if}
+        <Button size="sm" icon="plus" onclick={newIdea}>New idea</Button>
       </Empty>
     {:else if !shown.length}
       <Empty icon="search">No ideas match the filters</Empty>
@@ -478,7 +446,6 @@
           {ctx}
           images={imageCache}
           loadimage={loadImage}
-          ondetachimage={detachImage}
           open={expanded.has(idea.id)}
           ontoggle={() => toggleExpanded(idea.id)}
           canUp={placed(idea.id) > 0}

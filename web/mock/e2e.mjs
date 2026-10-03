@@ -867,9 +867,15 @@ log('plugin tab: Ideas');
   // "on top" means first *in its own group*, and every step below names the card instead of taking cards().first():
   // the step above just moved a card into the group that renders above open, which is what made this block rot.
   const cardTitled = (t) => page.locator('.ideas .card', { hasText: t }).first();
-  await page.locator('.ideas .scope button[title="New idea"]').click();
-  await page.locator('.ideas .new input').first().fill('Keyboard shortcuts cheat sheet');
-  await page.locator('.ideas .new input.tags').fill('ui, docs');
+  // Filing is the host's idea dialog (the Ideas tab's "+", Ctrl+I and /idea all open it), on the project the tab shows.
+  const dlg = page.locator('.idea-dialog');
+  const activeProjectId = (await rpcCall('projects.list')).find((p) => p.name === 'netpi')?.id;
+  await page.locator('.ideas .scope button[title^="New idea"]').click();
+  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
+  check('ideas: the New idea button opens the idea dialog', (await dlg.count()) === 1);
+  check('ideas: a new idea goes to the project the tab shows', (await dlg.locator('.i-project').inputValue()) === (activeProjectId ?? 'global'), await dlg.locator('.i-project').inputValue());
+  await dlg.locator('.i-title').fill('Keyboard shortcuts cheat sheet');
+  await dlg.locator('.i-tags').fill('ui, docs');
   // An image attached while filing: pasted, shrunk to fit, stored by the host, and kept on the idea (idea-hai71q).
   const ref = await rpcCall('ideas.addImage', { data: 'aGVsbG8=', mediaType: 'image/png', name: 'tiny.png' });
   check('ideas: the host stores an image and returns a reference', /idea-images\/img-/.test(ref?.path ?? ''), JSON.stringify(ref));
@@ -889,15 +895,17 @@ log('plugin tab: Ideas');
     return canvas.toBlob((blob) => {
       const dt = new DataTransfer();
       dt.items.add(new File([blob], 'shot.png', { type: 'image/png' }));
-      document.querySelector('.ideas .new textarea').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      document.querySelector('.idea-dialog .i-summary').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
     }, 'image/png');
   });
-  const thumb = await page.waitForSelector('.ideas .new .thumbs img', { timeout: 15_000 }).catch(() => null);
+  const thumb = await page.waitForSelector('.idea-dialog .thumbs img', { timeout: 15_000 }).catch(() => null);
   // An attach that refuses says so in the form (a note) or as a toast; both are the diagnosis when this fails.
-  const note = await page.locator('.ideas .new .note').allInnerTexts().catch(() => []);
+  const note = await page.locator('.idea-dialog .note').allInnerTexts().catch(() => []);
   const attachToast = await page.locator('.np-toasts .np-toast, .toasts .toast').allInnerTexts().catch(() => []);
   check('ideas: a pasted image is attached while filing', !!thumb, [...note, ...attachToast].join('; '));
-  await page.locator('.ideas .new button', { hasText: 'Add idea' }).click();
+  await dlg.locator('.i-submit').click();
+  await dlg.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+  check('ideas: the dialog closes once the idea is added', (await dlg.count()) === 0);
   await page.waitForTimeout(600);
   const newCard = cardTitled('Keyboard shortcuts cheat sheet');
   // The first card of the open group, whichever groups happen to sit above it.
@@ -909,7 +917,8 @@ log('plugin tab: Ideas');
   // It joins the list collapsed, so filing several in a row does not push the previous one out of view (idea-qrp60h).
   check('ideas: the new card joins the list collapsed', (await newCard.locator('.main').getAttribute('aria-expanded')) === 'false');
   if ((await newCard.locator('.main').getAttribute('aria-expanded')) !== 'true') await newCard.locator('.main').click();
-  // Open now, so the card's body (and its images) exist.
+  // Open now, so the card's body exists; its thumbnails are fetched from the host as it opens.
+  await newCard.locator('.shots img').first().waitFor({ timeout: 4000 }).catch(() => {});
   check('ideas: the card shows the attached image once open', (await newCard.locator('.shots img').count()) === 1);
   const shotSrc = (await newCard.locator('.shots img').getAttribute('src').catch(() => '')) ?? '';
   check('ideas: the image is fetched back from the host, not kept in the list', shotSrc.startsWith('data:image/'), shotSrc.slice(0, 24));
@@ -951,6 +960,76 @@ log('plugin tab: Ideas');
   await page.locator('.dialog button', { hasText: /^Delete$/ }).click();
   await page.waitForTimeout(500);
   check('ideas: delete with confirm', (await page.locator('.ideas .card', { hasText: 'Keyboard shortcuts cheat sheet' }).count()) === 0);
+  // ---- the idea dialog: Ctrl+I from anywhere, /idea, Escape, editing (with its conflict) and the agent task
+  await ta.click();
+  await page.keyboard.press('Control+i');
+  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
+  check('ideas: Ctrl+I opens the idea dialog from the composer', (await dlg.count()) === 1);
+  check('ideas: the title has the focus', await page.evaluate(() => document.activeElement?.classList.contains('i-title')));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  check('ideas: Escape closes the dialog', (await dlg.count()) === 0);
+  await ta.fill('/idea');
+  await ta.press('Enter'); // accepts the popup entry
+  await page.waitForTimeout(100);
+  if ((await ta.inputValue()).startsWith('/idea')) await ta.press('Enter');
+  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
+  check('ideas: /idea with no text opens the dialog', (await dlg.count()) === 1);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await ta.fill('');
+
+  const edited = await rpcCall('ideas.add', { projectId: activeProjectId ?? 'global', idea: { title: 'Dialog edit target', summary: 'before', tags: ['t1'] } });
+  const edCard = cardTitled('Dialog edit target');
+  await edCard.waitFor({ timeout: 4000 }).catch(() => {});
+  if ((await edCard.locator('.main').getAttribute('aria-expanded')) !== 'true') await edCard.locator('.main').click();
+  await edCard.locator('.actions button[title^="Edit the idea"]').click();
+  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
+  check(
+    'ideas: Edit opens the same dialog, filled in',
+    (await dlg.locator('.i-title').inputValue()) === 'Dialog edit target' && (await dlg.locator('.i-summary').inputValue()) === 'before' && (await dlg.locator('.i-tags').inputValue()) === 't1',
+  );
+  await shot(page, '27c-idea-dialog');
+  // someone else writes the idea while the dialog is open: the save is a conflict, never an overwrite
+  await rpcCall('ideas.update', { id: edited.id, patch: { summary: 'changed elsewhere' } });
+  await dlg.locator('.i-title').fill('Dialog edit target (edited)');
+  await dlg.locator('.i-submit').click();
+  await dlg.locator('[role="alert"]').waitFor({ timeout: 3000 }).catch(() => {});
+  check(
+    'ideas: a save after another writer is a conflict, and the typed text stays',
+    /changed somewhere else/.test(await dlg.locator('[role="alert"]').innerText().catch(() => '')) && (await dlg.locator('.i-title').inputValue()) === 'Dialog edit target (edited)',
+  );
+  await dlg.locator('[role="alert"] button').click();
+  await page.waitForTimeout(300);
+  check('ideas: "Load the current version" shows what the other writer saved', (await dlg.locator('.i-summary').inputValue()) === 'changed elsewhere');
+  await dlg.locator('.i-title').fill('Dialog edit target (edited)');
+  await dlg.locator('.i-status').selectOption('planned');
+  await dlg.locator('.i-submit').click();
+  await dlg.waitFor({ state: 'detached', timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(600);
+  const saved = await rpcCall('ideas.get', { id: edited.id });
+  check(
+    "ideas: the edit is saved (title, status) and the other writer's summary survived",
+    saved.title === 'Dialog edit target (edited)' && saved.status === 'planned' && saved.summary === 'changed elsewhere',
+    JSON.stringify({ title: saved.title, status: saved.status, summary: saved.summary }),
+  );
+
+  // the agent task: from the card's menu, with a focus, on any available agent
+  const refCard = cardTitled('Dialog edit target (edited)');
+  await refCard.waitFor({ timeout: 4000 }).catch(() => {});
+  if ((await refCard.locator('.main').getAttribute('aria-expanded')) !== 'true') await refCard.locator('.main').click();
+  await moreMenu(refCard, 'Refine with an agent');
+  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
+  check('ideas: "Refine with an agent" opens the dialog with the task on', (await dlg.locator('.refine').count()) === 1 && /Save and refine/.test(await dlg.locator('.i-submit').innerText()));
+  await shot(page, '27d-idea-refine');
+  await dlg.locator('.i-hint').fill('check the Files plugin first');
+  await dlg.locator('.i-submit').click();
+  await dlg.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+  const asked = (await rpcCall('ideas.mockRefines')).at(-1);
+  check('ideas: refining starts a chat on the idea, on any agent, with the focus', asked?.id === edited.id && asked.agent === 'any' && asked.hint === 'check the Files plugin first', JSON.stringify(asked));
+  await page.waitForTimeout(600);
+  check('ideas: the refine chat is on the card under Chats', (await refCard.locator('.ev-link', { hasText: 'Refine idea: Dialog edit target' }).count()) === 1);
+
   // tag filter (menu; the selected tag shows as a removable chip) + an external change (ideas.changed) refetches
   await page.locator('.ideas .filters button[title="Filter by tag"]').click();
   await page.locator('.np-menu .np-menu-item', { hasText: '#aiproxy' }).click();

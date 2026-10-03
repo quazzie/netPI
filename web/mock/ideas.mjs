@@ -2,7 +2,7 @@
 // a project property.
 import os from 'node:os';
 import path from 'node:path';
-import { store, pushMessage, text } from './store.mjs';
+import { store, pushMessage, text, mkSession, agentFor } from './store.mjs';
 
 const STATUSES = ['open', 'parked', 'planned', 'in-progress', 'done', 'rejected'];
 const SYN = { 'in progress': 'in-progress', wip: 'in-progress', deferred: 'parked', todo: 'open' };
@@ -27,6 +27,7 @@ export function createIdeas({ publish }) {
   const suggestions = []; // the cards of closed chats (~/.netpi/ideas-pending.json)
   const checked = new Map(); // sessionId → the user-turn count it was last checked at
   const leavePlans = new Map(); // sessionId → the plan its closed tab should leave behind
+  const refines = []; // what ideas.refine was asked, for the walkthrough to look at
 
   const changed = () => setTimeout(() => publish('ideas.changed', { file }), 250);
 
@@ -101,6 +102,7 @@ export function createIdeas({ publish }) {
         createdAt: now(),
         updatedAt: now(),
         createdBy: 'user',
+        revision: 1,
         sections: (sections ?? []).map(section),
         sessionIds: p.sessionId ? [p.sessionId] : [],
       };
@@ -112,6 +114,9 @@ export function createIdeas({ publish }) {
     },
     'ideas.update': (p) => {
       const idea = find(p.id);
+      // like the host: what the editor had when it opened; something else wrote the idea since → a conflict, not an overwrite
+      if (p.expectedRevision != null && (idea.revision ?? 1) !== p.expectedRevision)
+        throw err('conflict', `Idea ${idea.id} changed since you read it (revision ${idea.revision ?? 1}, you had ${p.expectedRevision}). Reload it and apply your change again.`);
       const patch = p.patch ?? {};
       for (const [k, v] of Object.entries(patch)) {
         if (['id', 'createdAt', 'createdBy', 'updatedAt', 'sessionIds'].includes(k)) continue;
@@ -152,6 +157,7 @@ export function createIdeas({ publish }) {
         else idea[k] = v;
       }
       idea.updatedAt = now();
+      idea.revision = (idea.revision ?? 1) + 1;
       if (p.sessionId && !idea.sessionIds.includes(p.sessionId)) idea.sessionIds.push(p.sessionId);
       changed();
       return idea;
@@ -246,6 +252,19 @@ export function createIdeas({ publish }) {
       changed();
       return { noticeId: m.id, ideaId: idea.id };
     },
+    // Task an agent to define an idea better: a chat on the idea's project with the idea attached and the task sent. The mock
+    // runs no agent; it records what it was asked so the walkthrough can check it.
+    'ideas.refine': (p) => {
+      const idea = find(p.id);
+      const s = mkSession({ title: `Refine idea: ${idea.title}`.slice(0, 80), projectId: idea.project?.id ?? null });
+      agentFor(s.id);
+      api['ideas.attach']({ sessionId: s.id, id: idea.id });
+      (idea.sessions ??= []).push({ sessionId: s.id, title: s.title, at: now(), note: 'Refining this idea' });
+      refines.push({ id: idea.id, sessionId: s.id, agent: p.agent ?? 'any', hint: p.hint ?? null });
+      changed();
+      return { sessionId: s.id, title: s.title, agent: p.agent ?? 'any' };
+    },
+    'ideas.mockRefines': () => refines,
     'ideas.quickAdd': (p) => {
       if (!p.args?.trim()) throw err('bad_request', 'Usage: /idea <title>');
       const idea = api['ideas.add']({ sessionId: p.sessionId, idea: { title: p.args.trim() } });

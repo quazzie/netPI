@@ -2,7 +2,7 @@
 import { rpc } from './rpc.svelte.js';
 import { app, newSession, updateSession, abortAgent } from './state/app.svelte.js';
 import { agentList, useAgent } from './agents.js';
-import { modals, toast, composer, promptDialog } from './state/ui.svelte.js';
+import { modals, toast, composer, promptDialog, openIdeaDialog } from './state/ui.svelte.js';
 import { openPanelTab } from './state/tabs.svelte.js';
 import { editGoal } from './goal.js';
 
@@ -91,6 +91,11 @@ export function allCommands() {
 }
 
 async function runServerCommand(c, args, { sessionId }) {
+  // "/idea" with nothing after it opens the idea dialog (with text it files that as the title, as before)
+  if (c.rpc === 'ideas.quickAdd' && !String(args ?? '').trim()) {
+    openIdeaDialog();
+    return;
+  }
   if (c.rpc) {
     try {
       const r = await rpc(c.rpc, { sessionId, args: args ?? '' }, { timeout: 120_000 });
