@@ -148,6 +148,7 @@
   {@const status = sessionStatus(s.id)}
   <div
     class="srow"
+    data-session={s.id}
     class:active={s.id === app.activeId}
     class:archived={s.archived}
     class:child={depth > 0}
