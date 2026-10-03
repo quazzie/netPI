@@ -413,14 +413,4 @@ public static class PluginTests
         if (!res.IsSuccessStatusCode) throw new AssertException($"GET {path} → {(int)res.StatusCode}: {body}");
         return body;
     }
-
-    public static async Task<JsonNode?> PostRpcAsync(NetPiServer server, string method, object? body = null)
-    {
-        using var http = new HttpClient();
-        http.DefaultRequestHeaders.Add(WebServer.TokenHeader, server.Token);
-        using var res = await http.PostAsJsonAsync(server.BaseUrl + "/api/rpc/" + method, body ?? new { });
-        var text = await res.Content.ReadAsStringAsync();
-        if (!res.IsSuccessStatusCode) throw new AssertException($"{method} → {(int)res.StatusCode}: {text}");
-        return JsonNode.Parse(text);
-    }
 }

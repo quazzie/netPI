@@ -310,8 +310,6 @@ public sealed class ProcessRegistry(IEventBus? events = null)
     public IReadOnlyList<ManagedProcess> List() =>
         _all.Values.OrderByDescending(p => p.IsRunning).ThenByDescending(p => p.StartedAt).ToList();
 
-    public int RunningCount => _all.Values.Count(p => p.IsRunning);
-
     internal void Add(ManagedProcess p)
     {
         _all[p.Id] = p;

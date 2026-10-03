@@ -110,16 +110,6 @@ public sealed class WorkspaceManager(
             ?? all.FirstOrDefault(w => WorkspacePaths.Comparer.Equals(WorkspacePaths.Canonical(w.Path), WorkspacePaths.Canonical(idOrNameOrPath)));
     }
 
-    /// <summary>
-    /// The workspaces of a project that belong to one owner: a worker keeps its own checkout across assignments, rather
-    /// than getting a fresh one every time it is asked to work.
-    /// </summary>
-    public WorkspaceInfo? OwnedBy(string projectId, string ownerSessionId, string name) =>
-        store.ListWorkspaces(projectId).FirstOrDefault(w =>
-            string.Equals(w.OwnerSessionId, ownerSessionId, StringComparison.Ordinal) &&
-            string.Equals(w.Name, name, StringComparison.OrdinalIgnoreCase) &&
-            Directory.Exists(w.Path));
-
     /// <summary>Bind a session to a workspace (the only way a session's working directory changes).</summary>
     public void Bind(string sessionId, string? workspaceId) => store.SetSessionWorkspace(sessionId, workspaceId);
 

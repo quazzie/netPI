@@ -12,8 +12,6 @@ namespace NetPI.Workspaces;
 public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
 {
     public static readonly TimeSpan DefaultCache = TimeSpan.FromSeconds(5);
-    /// <summary>The empty tree's hash, for a repository without commits (git's own well-known constant).</summary>
-    public const string EmptyTreeHash = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
     private readonly TimeSpan _cacheFor = cacheFor ?? DefaultCache;
     private readonly Dictionary<string, CacheEntry> _cache = new(WorkspacePaths.Comparer);
@@ -36,29 +34,11 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
     public string? BranchOf(string path) => Ask(path, "rev-parse", "--abbrev-ref", "HEAD");
     public string? HeadOf(string path) => Ask(path, "rev-parse", "HEAD");
 
-    /// <summary>The repository's main checkout (the worktree that holds <c>.git</c>), or the directory itself when it is one.</summary>
-    public string? MainCheckoutOf(string path)
-    {
-        var top = TopLevelOf(path);
-        if (top is null) return null;
-        var gitDir = Run(top, "rev-parse", "--absolute-git-dir");
-        var common = CommonDirOf(top);
-        // In the main checkout the common dir is <root>/.git; in a linked worktree it is <main>/.git as well.
-        return common is null ? top : Path.GetDirectoryName(WorkspacePaths.Canonical(common));
-    }
-
     /// <summary>The top level of the working tree at a directory, or null when it is not in a repository.</summary>
     public string? TopLevelOf(string path) => Ask(path, "rev-parse", "--show-toplevel");
 
     /// <summary>Whether the directory is inside a git repository at all.</summary>
     public bool IsRepository(string path) => TopLevelOf(path) is not null;
-
-    /// <summary>The working tree is clean (no staged, unstaged or untracked changes). False when git cannot answer.</summary>
-    public bool IsClean(string path)
-    {
-        var status = Run(path, "status", "--porcelain");
-        return status is not null && status.Trim().Length == 0;
-    }
 
     /// <summary>Uncommitted changes, a short summary for the cleanup refusal and the UI.</summary>
     public string DescribeChanges(string path)
@@ -68,14 +48,6 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
         var lines = status.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         return string.Join("; ", lines.Take(10).Select(l => l.Length > 3 ? l[3..].Trim() : l.Trim())) +
                (lines.Length > 10 ? $" (+{lines.Length - 10} more)" : "");
-    }
-
-    /// <summary>Commits on a branch that are not on <paramref name="into"/>: what a merge would bring.</summary>
-    public IReadOnlyList<string> CommitsAhead(string path, string branch, string into)
-    {
-        var log = Run(path, "log", "--format=%h %s", $"{into}..{branch}", "--no-color");
-        if (string.IsNullOrWhiteSpace(log)) return [];
-        return [.. log.Split('\n', StringSplitOptions.TrimEntries)];
     }
 
     public async Task<string?> RunAsync(string cwd, CancellationToken ct, params string[] args)
@@ -220,14 +192,6 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
             foreach (var key in _problems.Keys.Where(k => k.EndsWith(" " + dir, StringComparison.OrdinalIgnoreCase)).ToList())
                 _problems.Remove(key);
         }
-    }
-
-    /// <summary>Whether the repository has a commit (so a diff can be taken against it).</summary>
-    public bool HasCommit(string path, string commit)
-    {
-        if (string.IsNullOrWhiteSpace(commit)) return false;
-        var (code, _) = ExecAsync(path, CancellationToken.None, "cat-file", "-e", commit + "^{commit}").GetAwaiter().GetResult();
-        return code == 0;
     }
 
     /// <summary>Every ref that contains a commit: the branches a worker already landed its work on.</summary>
