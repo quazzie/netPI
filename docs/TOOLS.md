@@ -237,6 +237,36 @@ details: { pattern, path, count: number, truncated: boolean }
 details: { path, entries: number, dirs: number, files: number, hidden: number, truncated: boolean }
 ```
 
+### `git` (read-only, summary arg `action`)
+
+`{ action: 'log'|'show'|'diff'|'status'|'blame', … }`
+
+- The git a **plan may run**: plan mode has no shell, and these are the history questions a plan needs answered. The tool
+  is registered read-only (`ToolDefinition.ReadOnly`), so the plan policy lets it through; it is not plan-only.
+- There is **never a free command line**: each action is a fixed set of subcommand and flags built by the tool. Commit
+  names pass through git's own parser, but only hashes, `HEAD`, `HEAD~2`, tags and branch names — the tool rejects
+  anything with a colon, space or shell metacharacter. No `-c`, no `--exec`, no external diff/textconv drivers
+  (`--no-ext-diff`, `--no-color`), no pager.
+- Actions, run in the session's workspace (paths resolved like the file tools' reads, relative or absolute):
+  - `log { n? (default 20, max 100), path? }` — recent commits, newest first: short hash, date, author, subject;
+    `path` limits to the commits that touched a file or directory.
+  - `show { commit, path?, patch? }` — one commit's header and file stat; `patch: true` adds the full diff.
+  - `diff { path?, a?, b?, staged? }` — no args: worktree vs the index; `staged: true`: index vs HEAD; `a`: that commit
+    vs the worktree; `a b`: between two commits.
+  - `status { path? }` — the branch (`## …`) and the uncommitted changes, one line per file (porcelain).
+  - `blame { path, start?, end? }` — who last changed each line of a file, with a line range (both or neither).
+- An answer is kept at most `agent.maxToolResultChars − 400` (the tool's own 30 KB is the bound the runner would cut at,
+  so a cut answer ends with the note `[… the answer stopped at …]` and what to narrow: a path, fewer commits or a
+  line range). git itself is run through the shared runner (10 s deadline over start, read and wait; `GIT_OPTIONAL_LOCKS=0`,
+  no index lock).
+
+```ts
+details: { action: 'log'|'show'|'diff'|'status'|'blame', exitCode: 0, chars: number, truncated: boolean,
+           details: { n?, path?, commit?, patch?, a?, b?, staged?, start?, end? } }
+// failure: an error naming the ending — `not a git repository`, a commit git does not know, the bound, or
+//          `git {action} failed (exit {code}): {git's stderr}`
+```
+
 ### RPC
 
 | method | params | result |

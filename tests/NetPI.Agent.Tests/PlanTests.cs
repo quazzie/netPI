@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using NetPI.Plan;
+using NetPI.Tools.Files;
 
 namespace NetPI.Agent.Tests;
 
@@ -104,6 +105,8 @@ public static class PlanTests
         Check.Contains(Block("goal_set"), "can change things");
         Check.Equal<string?>(null, Block("read", D("read", readOnly: true)));
         Check.Equal<string?>(null, Block("web_fetch", D("web_fetch", readOnly: true)));
+        Check.Equal<string?>(null, Block("git", new GitTool().Definition), "the read-only git tool of the Files plugin");
+        Check.Contains(Block("git", D("git", readOnly: false)), "can change things", "a git that could write is blocked");
         Check.Equal<string?>(null, Block("ask_user"));
         Check.Equal<string?>(null, Block("todo_write"));
         Check.Equal<string?>(null, Block("plan_submit"));
