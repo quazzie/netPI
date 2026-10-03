@@ -26,6 +26,7 @@ BrowserTests.Register(runner);
 WindowsTests.Register(runner);
 MediaTests.Register(runner);
 DecideTests.Register(runner);
+EmbeddingsTests.Register(runner);
 DecisionReworkTests.Register(runner);
 LoopTests.Register(runner);
 SshTests.Register(runner);
