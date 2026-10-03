@@ -1169,6 +1169,10 @@ public static class FileTests
             ToolCheck.Error(await T.Run(git, dir, new { action = "show" }), "commit");
             ToolCheck.Error(await T.Run(git, dir, new { action = "show", commit = "HEAD~1 && rm -rf ." }), "not a commit name");
             ToolCheck.Error(await T.Run(git, dir, new { action = "show", commit = "HEAD:file" }), "not a commit name");
+            // an option is not a commit: --ext-diff after the tool's own --no-ext-diff would run the repository's configured diff program
+            ToolCheck.Error(await T.Run(git, dir, new { action = "show", commit = "--ext-diff" }), "not a commit name");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "diff", a = "-p" }), "not a commit name");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "diff", a = "HEAD", b = "--textconv" }), "not a commit name");
             ToolCheck.Error(await T.Run(git, dir, new { action = "diff", staged = true, a = "HEAD" }), "cannot be combined");
             ToolCheck.Error(await T.Run(git, dir, new { action = "log", path = "nope.txt" }), "not found");
             ToolCheck.Error(await T.Run(git, dir, new { action = "blame" }), "path");

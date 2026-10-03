@@ -162,9 +162,10 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
 
     /// <summary>A commit name this tool will run: a hash, HEAD, HEAD~2, a tag or a branch. Git's own parser takes the
     /// rest — the set here only keeps a value from naming anything but a revision (no colon, no space, nothing a
-    /// shell would read as a command).</summary>
+    /// shell would read as a command, and never a leading dash: a "commit" of <c>--ext-diff</c> would be an option that runs the
+    /// repository's configured diff program, after the <c>--no-ext-diff</c> this tool passes).</summary>
     private static ToolResult? Ref(string value) =>
-        value.Length is >= 1 and <= 120 && value.All(c => char.IsLetterOrDigit(c) || c is '_' or '.' or '/' or '+' or '~' or '-' or '^')
+        value.Length is >= 1 and <= 120 && value[0] != '-' && value.All(c => char.IsLetterOrDigit(c) || c is '_' or '.' or '/' or '+' or '~' or '-' or '^')
             ? null
             : ToolResult.Error($"git: \"{value}\" is not a commit name: this tool runs a hash, HEAD, a tag or a branch (letters, digits and _ . / + ~ - ^ only).");
 
