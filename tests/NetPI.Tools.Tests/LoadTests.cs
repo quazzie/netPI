@@ -21,7 +21,7 @@ public static class LoadTests
 
     public static void Register(TestRunner r)
     {
-        foreach (var (project, expectedTools) in new[] { ("NetPI.Tools.Files", 6), ("NetPI.Tools.Shell", NetPI.Tools.Shell.ShellLocator.FindPwsh(null, out _) is null ? 2 : 3) })
+        foreach (var (project, expectedTools) in new[] { ("NetPI.Tools.Files", 7), ("NetPI.Tools.Shell", NetPI.Tools.Shell.ShellLocator.FindPwsh(null, out _) is null ? 2 : 3) })
         {
             r.Add($"load: {project} starts and stops in a collectible AssemblyLoadContext", async () =>
             {

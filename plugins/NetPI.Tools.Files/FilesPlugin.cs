@@ -3,10 +3,10 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Tools.Files;
 
 /// <summary>
-/// File tools: read, write, edit, grep, find, ls (+ files.search / files.list / files.open / files.git RPC).
+/// File tools: read, write, edit, grep, find, ls, git (read-only) (+ files.search / files.list / files.open / files.git RPC).
 /// Settings: <c>files.newFileEol</c> ("lf" | "crlf" | "auto").
 /// </summary>
-[NetPiPlugin("netpi.tools.files", Name = "File tools", Description = "read, write, edit (CRLF/LF agnostic), grep, find, ls", Order = 20)]
+[NetPiPlugin("netpi.tools.files", Name = "File tools", Description = "read, write, edit (CRLF/LF agnostic), grep, find, ls, git (read-only)", Order = 20)]
 public sealed class FilesPlugin : INetPiPlugin
 {
     private readonly FileIndex _index = new();
@@ -19,6 +19,7 @@ public sealed class FilesPlugin : INetPiPlugin
         new GrepTool(settings),
         new FindTool(settings),
         new LsTool(settings),
+        new GitTool(settings),
     ];
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
