@@ -669,7 +669,9 @@ details: { items: { text, status }[], done, total }
 ### `ask_user`
 
 `plugins/NetPI.Ask`. `{ questions: { question, options?: { label, description? }[], multiple? }[] }` (1 to 4 questions,
-at most 8 options each) asks the user and waits for the answers. The questions appear in the chat below the agent's
+at most 8 options each; a question up to 1000 characters, an option label up to 400 and its description up to 600,
+longer text cut with a `…`) asks the user and waits for the answers. The label is what the user picks, so it carries the
+choice itself and the description what it means — the card wraps both. The questions appear in the chat below the agent's
 message, and the run waits with its instance given back, like `agent` `wait` (`IAgentRuntime.WaitYieldedAsync`): the
 agent shows as yielded, "waiting for your answer", and takes an instance again, ahead of the queue, once answered.
 Lenient: one question at the top level (`question` with `options`), options as plain strings, `text`, `choices`,

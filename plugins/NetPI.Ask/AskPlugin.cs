@@ -164,8 +164,12 @@ internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
     public const int MaxQuestions = 4;
     public const int MaxOptions = 8;
     private const int MaxQuestion = 1000;
-    private const int MaxLabel = 120;
-    private const int MaxDescription = 300;
+    // The card wraps a long label over several lines (AskCard.svelte: .olbl { overflow-wrap: anywhere }), so these
+    // bound the model-facing text and the stored payload, not what fits on screen. They were 120 and 300, which cut a
+    // label that carried the whole meaning of an option; the limits are now stated in the schema, so a model that
+    // writes past them is told rather than silently clipped.
+    private const int MaxLabel = 400;
+    private const int MaxDescription = 600;
 
     public ToolDefinition Definition { get; } = new()
     {
@@ -174,12 +178,16 @@ internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
         Category = "general",
         Description =
             "Ask the user 1–4 questions and wait for the answers: for a decision or information only the user has, not to " +
-            "confirm routine steps. Give the context in your message first.",
+            "confirm routine steps. Give the context in your message first. Keep an option's label to the choice itself " +
+            $"(at most {MaxLabel} characters, shorter is better) and put what it means in its description " +
+            $"(at most {MaxDescription} characters); longer text is cut, so the user could not read the whole option.",
         Help =
             "For a choice between approaches, a preference, a missing detail. Not for confirming routine steps or reporting " +
             "progress. The questions appear right below your message. Offer options (label, and optionally what it means) when " +
-            "the answer is one of a few choices; the user can always answer in their own words instead. multiple: the user may " +
-            "pick several. Call it on its own and act on the answers once they arrive.",
+            "the answer is one of a few choices; the user can always answer in their own words instead. An option's label is " +
+            "what the user picks, so make it the whole choice — what is decided, not a reference like 'option 1' — and put " +
+            "the reasoning, the consequence and anything you would otherwise leave out in its description, which is shown " +
+            "under the label. multiple: the user may pick several. Call it on its own and act on the answers once they arrive.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
@@ -202,8 +210,16 @@ internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
                                     ["type"] = "object",
                                     ["properties"] = new JsonObject
                                     {
-                                        ["label"] = new JsonObject { ["type"] = "string" },
-                                        ["description"] = new JsonObject { ["type"] = "string" },
+                                        ["label"] = new JsonObject
+                                        {
+                                            ["type"] = "string",
+                                            ["description"] = $"The choice itself, at most {MaxLabel} characters; longer is cut.",
+                                        },
+                                        ["description"] = new JsonObject
+                                        {
+                                            ["type"] = "string",
+                                            ["description"] = $"What the option means, why, what follows it; at most {MaxDescription} characters.",
+                                        },
                                     },
                                     ["required"] = new JsonArray("label"),
                                 },
