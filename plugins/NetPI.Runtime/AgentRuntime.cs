@@ -289,27 +289,38 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// <summary>Keep active agents and the most recent <see cref="MaxFinishedInMemory"/> inactive ones.</summary>
     private void Prune()
     {
-        lock (_gate)
+        // Lock order: an agent's gate before the registry's (FindState under a gate takes _gate), so the registry lock is
+        // never held while an agent's gate is taken.
+        List<AgentState> all;
+        lock (_gate) all = [.. _agents.Values];
+        var inactive = new List<(AgentState S, DateTimeOffset At)>();
+        foreach (var s in all)
         {
-            var inactive = new List<(AgentState S, DateTimeOffset At)>();
-            foreach (var s in _agents.Values)
+            lock (s.Gate)
             {
-                lock (s.Gate)
-                {
-                    if (s.Run is not null || s.Steering.Count > 0 || s.FollowUps.Count > 0 || s.ResultWaiters > 0) continue;
-                    inactive.Add((s, s.Info.FinishedAt ?? s.Info.CreatedAt));
-                }
+                if (IsPrunable(s)) inactive.Add((s, s.Info.FinishedAt ?? s.Info.CreatedAt));
             }
-            if (inactive.Count <= MaxFinishedInMemory) return;
-            foreach (var (s, _) in inactive.OrderByDescending(x => x.At).Skip(MaxFinishedInMemory))
+        }
+        if (inactive.Count <= MaxFinishedInMemory) return;
+        foreach (var (s, _) in inactive.OrderByDescending(x => x.At).Skip(MaxFinishedInMemory))
+        {
+            // keep parents of running children (their results must find them)
+            string[] children;
+            lock (s.Gate) children = [.. s.Info.Children];
+            if (children.Any(c => FindState(c) is { } child && child.IsActive)) continue;
+            lock (s.Gate)
             {
-                // keep parents of running children (their results must find them)
-                if (s.Info.Children.Any(c => _agents.TryGetValue(c, out var child) && child.Run is not null)) continue;
-                _agents.Remove(s.Info.Id);
-                if (_bySession.TryGetValue(s.Info.SessionId, out var id) && id == s.Info.Id) _bySession.Remove(s.Info.SessionId);
+                if (!IsPrunable(s)) continue;   // took input since the scan
+                lock (_gate)
+                {
+                    _agents.Remove(s.Info.Id);
+                    if (_bySession.TryGetValue(s.Info.SessionId, out var id) && id == s.Info.Id) _bySession.Remove(s.Info.SessionId);
+                }
             }
         }
     }
+
+    private static bool IsPrunable(AgentState s) => s.Run is null && s.Steering.Count == 0 && s.FollowUps.Count == 0 && s.ResultWaiters == 0;
 
     internal void Save(AgentState s)
     {
@@ -490,18 +501,10 @@ internal sealed class AgentRuntime : IAgentRuntime
         if (_stopping) throw new InvalidOperationException("The agent runtime is stopping.");
         RunState? run = null;
         CancellationTokenSource? sig = null;
-        // An agent-result notice for a report a wait already returned is dropped here; a wait that consumes it later
-        // still wins: the drain re-checks (ClaimNoticeForParent) and drops the notice then, so the parent never gets a
-        // second copy of the report.
-        var noticeChild = input.NoticeKind == "agent-result" && input.Source?.StartsWith("agent:", StringComparison.Ordinal) == true
-            ? input.Source!["agent:".Length..]
-            : null;
-        var deliver = noticeChild is null || !ReportConsumed(noticeChild);
         lock (s.Gate)
         {
             if (s.Run is not null)
             {
-                if (!deliver) return Task.CompletedTask;
                 if (mode == DeliveryMode.Queue) s.FollowUps.Add(input);
                 else
                 {
@@ -512,7 +515,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 }
                 s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
             }
-            else if (deliver)
+            else
             {
                 run = BeginRunLocked(s);
             }
@@ -555,13 +558,6 @@ internal sealed class AgentRuntime : IAgentRuntime
             c.NoticeDrained = true;
             return true;
         }
-    }
-
-    /// <summary>Whether a wait already returned the child's report (read-only: the drop decision is the drain's to make).</summary>
-    private bool ReportConsumed(string childId)
-    {
-        if (FindState(childId) is not { } c) return false;
-        lock (c.Gate) return c.ResultConsumed;
     }
 
     /// <summary>Create and register a run. Caller holds <c>s.Gate</c> and has checked <c>s.Run == null</c>.</summary>
@@ -645,7 +641,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                     info.Error = error?.Message ?? "failed";
                     break;
             }
-            s.ResultConsumed = s.ResultWaiters > 0;
+            s.ResultConsumed = s.ParentWaiters > 0;
             notify = info.IsSubagent && s.NotifyParent && !s.ResultConsumed && !run.Stopping && !_stopping
                      && !s.CancelledByParent && info.ParentAgentId is not null;
             final = info.Clone();
@@ -655,7 +651,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             // queue) is decided here, with the run's clearing: a WaitAsync that sees Run gone reads under this
             // same lock, so it must find the id there, or it removes nothing and the parent gets the report
             // twice (with the wait's result and as the notice). The other half of the rule is at the queueing:
-            // a result a wait consumed before this runs is not queued at all (NotifyParentAsync).
+            // a result a wait consumed before this runs is not queued at all (NotifyParent).
             if (notify) notice = ParentNotice(final);
             if (notice is not null) s.PendingNotificationId = notice.Id;
             // Input that is still queued starts the next run, unless this run failed without taking any: the run steps that
@@ -676,7 +672,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
         catch { }
 
-        if (notice is not null) await NotifyParentAsync(s, final, notice).ConfigureAwait(false);
+        if (notice is not null) NotifyParent(s, final, notice);
         if (next is not null) LaunchRun(s, next);
         Prune();
     }
@@ -711,7 +707,13 @@ internal sealed class AgentRuntime : IAgentRuntime
         };
     }
 
-    private async Task NotifyParentAsync(AgentState child, AgentInfo final, UserInput notice)
+    /// <summary>Whether the input is still waiting in the agent's queue (not yet drained into its transcript).</summary>
+    private static bool IsQueued(AgentState s, string inputId)
+    {
+        lock (s.Gate) return s.Steering.Any(i => i.Id == inputId) || s.FollowUps.Any(i => i.Id == inputId);
+    }
+
+    private void NotifyParent(AgentState child, AgentInfo final, UserInput notice)
     {
         var parent = FindState(final.ParentAgentId);
         if (parent is null)
@@ -724,8 +726,8 @@ internal sealed class AgentRuntime : IAgentRuntime
             // Whether the parent gets the report at all is settled under the child's gate, the gate a wait takes to record
             // that it took the result instead (<see cref="WaitAsync"/>): the notice is queued here or not at all, because a
             // queued one cannot be taken back once the parent's next turn has drained it into the conversation — and a wait
-            // that consumed the result a moment earlier already looked, found nothing to drop, and moved on.
-            Task queued;
+            // that consumed the result a moment earlier already looked, found nothing to drop, and moved on. Lock order:
+            // an agent's gate is taken before the parent's and before the registry's (never the other way round).
             lock (child.Gate)
             {
                 if (child.ResultConsumed)
@@ -733,17 +735,10 @@ internal sealed class AgentRuntime : IAgentRuntime
                     child.PendingNotificationId = null;   // nothing is queued, so there is nothing for a wait to drop
                     return;
                 }
-                queued = DeliverAsync(parent, notice, DeliveryMode.Auto);
-            }
-            await queued.ConfigureAwait(false);
-            // A wait may have consumed the result while this delivery was in flight: its removal of the queued
-            // input then ran before the input was queued and found nothing to drop.
-            var consumed = false;
-            lock (child.Gate)
-            {
-                consumed = child.ResultConsumed;
-                if (consumed)
-                    RemoveQueuedInput(parent, notice.Id);
+                DeliverAsync(parent, notice, DeliveryMode.Auto);
+                // Not in the parent's queue any more: it went straight into the transcript of an idle parent this woke (or its
+                // drain took it already). Either way the parent has the report, so a later "agent wait" must not return it again.
+                if (!IsQueued(parent, notice.Id)) child.NoticeDrained = true;
             }
         }
         catch (Exception ex)
@@ -1009,15 +1004,20 @@ internal sealed class AgentRuntime : IAgentRuntime
         foreach (var id in agentIds)
             if (FindState(id) is { } t && !excluded.Contains(t.Info.Id) && !targets.Contains(t)) targets.Add(t);
 
-        var registered = new List<AgentState>();
+        // Only the parent's wait counts as the parent getting the report: somebody else waiting on a child (an orchestrator on a
+        // grandchild, the UI) must not stop the notice that is the parent's copy.
+        bool IsParentOf(AgentState t) => caller is not null && string.Equals(t.Info.ParentAgentId, caller.Info.Id, StringComparison.Ordinal);
+        var registered = new List<(AgentState T, bool Parent)>();
         var tasks = new List<Task>();
         foreach (var t in targets)
         {
             lock (t.Gate)
             {
                 if (t.Run is null) continue;
+                var parent = IsParentOf(t);
                 t.ResultWaiters++;
-                registered.Add(t);
+                if (parent) t.ParentWaiters++;
+                registered.Add((t, parent));
                 tasks.Add(t.RunDone.Task);
             }
         }
@@ -1028,8 +1028,14 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
         finally
         {
-            foreach (var t in registered)
-                lock (t.Gate) t.ResultWaiters--;
+            foreach (var (t, parent) in registered)
+            {
+                lock (t.Gate)
+                {
+                    t.ResultWaiters--;
+                    if (parent) t.ParentWaiters--;
+                }
+            }
         }
 
         var results = new List<AgentInfo>(targets.Count);
@@ -1038,11 +1044,11 @@ internal sealed class AgentRuntime : IAgentRuntime
             AgentInfo snap;
             lock (t.Gate)
             {
-                if (t.Run is null)
+                if (t.Run is null && IsParentOf(t))
                 {
                     // The result is returned here, so the agent-result notice queued at the caller must not reach it as
                     // well. Recording it as consumed and dropping the notice are one step under the agent's gate — the
-                    // gate the completion path takes to queue it (NotifyParentAsync) — so a notice queued after this
+                    // gate the completion path takes to queue it (NotifyParent) — so a notice queued after this
                     // cannot slip past: the completion sees the consumed result and sends nothing.
                     t.ResultConsumed = true;
                     if (t.PendingNotificationId is { } pending)

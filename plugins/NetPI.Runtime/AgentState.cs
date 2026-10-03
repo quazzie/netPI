@@ -20,8 +20,10 @@ internal sealed class AgentState(AgentInfo info)
     /// <summary>Completed when the current run ends (WaitAsync awaits it).</summary>
     public TaskCompletionSource RunDone { get; set; } = CompletedTcs();
 
-    /// <summary>WaitAsync callers currently waiting on this agent's run. When &gt; 0 at run end, the result counts as delivered.</summary>
+    /// <summary>WaitAsync callers currently waiting on this agent's run (anyone: it keeps the agent in memory).</summary>
     public int ResultWaiters { get; set; }
+    /// <summary>The waiters that are the agent's parent. When &gt; 0 at run end the parent gets the result from the wait, so it is not notified as well.</summary>
+    public int ParentWaiters { get; set; }
     public bool ResultConsumed { get; set; }
     /// <summary>Id of the agent-result input queued at the parent (removed again if a WaitAsync consumes the result first).</summary>
     public string? PendingNotificationId { get; set; }
