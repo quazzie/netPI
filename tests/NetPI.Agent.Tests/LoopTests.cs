@@ -28,6 +28,8 @@ public static class LoopTests
         t.Add("loop: unknown tool and invalid JSON arguments", ToolErrors);
         t.Add("loop: {\"help\": true} on any tool returns its manual and does not run it", ToolHelpCall);
         t.Add("loop: tool exceptions and result truncation", ToolExceptionAndTruncation);
+        t.Add("loop: the result limiter itself: head, tail, the note, and never half a character", ResultLimiterKeepsEnds);
+        t.Add("loop: without a prompt builder the run freezes the prompt it built for itself", FallbackPromptIsFrozen);
         t.Add("loop: model error writes an error notice", ModelError);
         t.Add("loop: missing model writes an error notice", MissingModel);
         t.Add("loop: default model resolved while the catalog is still loading (startup)", DefaultModelWhileCatalogLoads);
@@ -683,6 +685,80 @@ public static class LoopTests
         var m = System.Text.RegularExpressions.Regex.Match(results[1].Content, @"The whole result is in (.+?): read");
         Check.True(m.Success, "the note names the file");
         Check.Equal(new string('a', 3000) + new string('z', 2000), File.ReadAllText(m.Groups[1].Value));
+    }
+
+    /// <summary>The limiter the tool batch calls: what the model sees is the head, the note and the tail, and the
+    /// whole result goes to the file the note names (or it says it could not be saved).</summary>
+    private static void ResultLimiterKeepsEnds()
+    {
+        var content = new string('a', 4000) + new string('b', 1000);
+        string? saved = null;
+        var limited = ResultLimiter.Limit(content, 1000, c => saved = c);
+        Check.Equal(content, saved, "the whole result is written out, not the trimmed one");
+        Check.True(limited.StartsWith(new string('a', 666), StringComparison.Ordinal), $"it starts with the head: {limited[..20]}");
+        Check.True(limited.EndsWith(new string('b', 334), StringComparison.Ordinal), $"and ends with the tail: {limited[^20..]}");
+        Check.Contains(limited, $"[... {4000:N0} of {5000:N0} characters not shown (limit {1000:N0}). The whole result is in ");
+
+        Check.Contains(ResultLimiter.Limit(content, 1000, _ => null), "It could not be saved;");
+
+        // a short result, and no limit at all, are the model's as they are (and cost no file)
+        Check.Equal("short", ResultLimiter.Limit("short", 1000, _ => throw new InvalidOperationException("not saved")));
+        Check.Equal(content, ResultLimiter.Limit(content, 0, _ => throw new InvalidOperationException("not saved")));
+
+        // a pair that would be cut in half is left out of both ends (the head at 666, the tail at the last 334)
+        var emoji = new string('a', 665) + "\U0001F600" + "\U0001F600" + new string('c', 333);
+        var paired = ResultLimiter.Limit(emoji, 1000, _ => null);
+        Check.True(paired.StartsWith(new string('a', 665), StringComparison.Ordinal), "the head stops before the pair");
+        Check.True(paired.EndsWith("\U0001F600" + new string('c', 333), StringComparison.Ordinal), "the tail starts after the pair");
+        Check.Equal(2, paired.Count(char.IsSurrogate), "so no half of a pair is left: the one pair is whole");
+    }
+
+    /// <summary>No ISystemPromptBuilder in the app (the context plugin is not loaded): the run builds the prompt from
+    /// the sections itself, announces the working directory once, and the next turn sends that same prefix.</summary>
+    private static async Task FallbackPromptIsFrozen()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
+        var ctx = new TestPluginContext(h, "prompt-test");
+        var renders = 0;
+        ctx.Services.Register<IPromptSection>(new CountingSection(() => renders++));
+        var session = h.NewSession();
+        var pc = new PromptContext
+        {
+            Session = session,
+            Cwd = h.Workspace,
+            Model = h.Catalog.Cached.Single(m => m.Ref == "fake/local"),
+            Tools = [new ToolDefinition { Name = "echo", Description = "echoes", PromptGuidelines = ["use it sparingly"] }],
+        };
+        var prompt = await FallbackPromptBuilder.BuildAsync(ctx, pc, SessionPrompt.Revision(session), default);
+        Check.Contains(prompt, "You are a coding agent running in NetPI", "the built-in prompt is the identity");
+        Check.Contains(prompt, $"Working directory: {h.Workspace}");
+        Check.Contains(prompt, "Model: fake/local");
+        Check.Contains(prompt, "SECTION", "a registered section is part of it");
+        Check.Contains(prompt, "- use it sparingly", "and the tools' guidelines with it");
+        var notices = h.Messages(session.Id).Where(m => m.Role == MessageRole.Notice).ToList();
+        Check.Equal(1, notices.Count, "the working directory is announced once");
+        Check.Contains(notices[0].Text, $"Working directory: {h.Workspace}");
+
+        // the next turn: the stored prefix, and nothing rendered or announced again
+        var again = h.Sessions.GetSession(session.Id)!;
+        var second = await FallbackPromptBuilder.BuildAsync(ctx, new PromptContext
+        {
+            Session = again, Cwd = pc.Cwd, Model = pc.Model, Tools = pc.Tools,
+        }, SessionPrompt.Revision(again), default);
+        Check.Equal(prompt, second, "the frozen prompt is sent again");
+        Check.Equal(1, renders, "the sections are rendered once");
+        Check.Equal(1, h.Messages(session.Id).Count(m => m.Role == MessageRole.Notice), "and the notice is not repeated");
+    }
+
+    private sealed class CountingSection(Action onRender) : IPromptSection
+    {
+        public string Id => "counted";
+        public int Order => 50;
+        public ValueTask<string?> RenderAsync(PromptContext context, CancellationToken ct)
+        {
+            onRender();
+            return ValueTask.FromResult<string?>("SECTION");
+        }
     }
 
     private static async Task ModelError()
