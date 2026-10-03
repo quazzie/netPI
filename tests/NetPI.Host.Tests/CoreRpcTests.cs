@@ -33,7 +33,7 @@ public static class CoreRpcTests
         ("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq. The page is bounded in messages AND in serialized size: when the page overflows its byte budget it comes back shorter, with hasMore set and ending at an earlier seq, which the client follows with beforeSeq.", true),
         ("sessions.setProject", "Attach/detach a project: { id, projectId: string|null } → SessionInfo (publishes session.project)", false),
         ("sessions.stats", "Session-service counters: → { contextCache: { hits, reads } } — the cached contexts: a hit is a read served without touching the store, a read went to it", true),
-        ("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, pinned?, meta? } → SessionInfo (null clears model/reasoning)", false),
+        ("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, pinned?, meta? } → SessionInfo (null clears model/reasoning; meta is merged key by key and a null value removes a key, so the keys other plugins keep there survive)", false),
         ("services.list", "Registered services (diagnostics)", true),
         ("settings.get", "Settings document → { path, settings }", false),
         ("settings.replace", "Replace the whole document: { settings: object, base?: the document as loaded } → true. With base, a document that changed since the load is a conflict (409) instead of a lost update.", false),

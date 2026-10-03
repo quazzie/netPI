@@ -439,6 +439,17 @@ public static class ServerTests
             Check.Equal("Chat 2", upd["title"]!.GetValue<string>());
             Check.True(upd["model"] is null, "null clears the model");
             Check.Equal("low", upd["reasoning"]!.GetValue<string>());
+            // meta merges key by key (a plugin keeps its keys in it), and a null value removes a key
+            server.Sessions.UpdateSession(sid, s => s.Meta = new JsonObject { ["plugin"] = "keeps this" });
+            var metaSet = (await Call("sessions.update", new { id = sid, meta = new { mine = 1 } }))!;
+            Check.Equal("keeps this", metaSet["meta"]?["plugin"]?.GetValue<string>(), "a key the caller did not send survives");
+            Check.Equal(1, metaSet["meta"]?["mine"]?.GetValue<int>() ?? 0);
+            var metaCut = (await Call("sessions.update", new { id = sid, meta = new Dictionary<string, object?> { ["mine"] = null, ["plugin"] = null } }))!;
+            Check.True(metaCut["meta"] is null, "no keys, no meta");
+            var refused = false;
+            try { await Call("sessions.update", new { id = sid, meta = "wipe" }); }
+            catch (AssertException ex) { refused = ex.Message.Contains("bad_request"); }   // Call turns an error reply into an AssertException
+            Check.True(refused, "a meta that is not an object is refused (bad_request)");
             Check.Equal(0, (await Call("sessions.list", new { projectId = pid }))!.AsArray().Count, "an empty session is transient: not listed");
             server.Sessions.AppendMessage(sid, ChatMessage.UserText("first"));
             Check.Equal(1, (await Call("sessions.list", new { projectId = pid }))!.AsArray().Count, "its first message materializes it");

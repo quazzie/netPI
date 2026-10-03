@@ -131,7 +131,7 @@ internal static class CoreRpc
             return a.K.Sessions.Require(id);
         }, readOnly: true);
 
-        a.Add("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, pinned?, meta? } → SessionInfo (null clears model/reasoning)", req =>
+        a.Add("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, pinned?, meta? } → SessionInfo (null clears model/reasoning; meta is merged key by key and a null value removes a key, so the keys other plugins keep there survive)", req =>
             a.K.Sessions.UpdateSession(req.Required("id"), s =>
             {
                 if (req.Prop("title") is { ValueKind: JsonValueKind.String } t) s.Title = t.GetString()!.Trim();
@@ -139,7 +139,19 @@ internal static class CoreRpc
                 if (req.Prop("reasoning") is { } r) s.Reasoning = r.ValueKind == JsonValueKind.String && r.GetString() is { Length: > 0 } rv ? rv : null;
                 if (req.Bool("archived") is { } a) s.Archived = a;
                 if (req.Bool("pinned") is { } p) s.Pinned = p;
-                if (req.Prop("meta") is { } meta) s.Meta = meta.ValueKind == JsonValueKind.Object ? JsonNode.Parse(meta.GetRawText()) as JsonObject : null;
+                if (req.Prop("meta") is { } meta)
+                {
+                    // Merged, like a project's: workspace, plan, goal and tool-policy state all live in a session's meta, and a
+                    // caller that sets one key must not wipe the keys the plugins own.
+                    if (meta.ValueKind != JsonValueKind.Object) throw new RpcException("bad_request", "meta must be an object: { key: value } merges, { key: null } removes a key.");
+                    s.Meta ??= new JsonObject();
+                    foreach (var property in meta.EnumerateObject())
+                    {
+                        if (property.Value.ValueKind == JsonValueKind.Null) s.Meta.Remove(property.Name);
+                        else s.Meta[property.Name] = JsonNode.Parse(property.Value.GetRawText());
+                    }
+                    if (s.Meta.Count == 0) s.Meta = null;
+                }
             }));
 
         a.Add("sessions.delete", "Delete a session and its subagent sessions: { id } → true", req =>
