@@ -47,11 +47,11 @@ public sealed class ShellPlugin : INetPiPlugin
         // A running process keeps the ownership of the directory it was started in: the workspace plugin refuses to
         // delete a checkout that still has one working in it.
         context.Services.Register<IWorkspaceProcesses>(new WorkspaceProcesses(registry));
-        context.Rpc.Register("processes.list", (_, _) =>
+        context.Rpc.RegisterReadOnly("processes.list", (_, _) =>
             Task.FromResult<object?>(registry.List().Select(p => p.ToInfo()).ToList()),
             "Running and recent shell processes → ProcessInfo[]");
 
-        context.Rpc.Register("processes.output", (req, _) =>
+        context.Rpc.RegisterReadOnly("processes.output", (req, _) =>
         {
             var id = req.Required("id");
             var p = registry.Get(id) ?? throw new RpcException("not_found", $"No process {id}");

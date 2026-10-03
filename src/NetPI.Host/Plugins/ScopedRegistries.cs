@@ -73,9 +73,9 @@ internal sealed class ScopedEventBus(EventBus inner, PluginScope scope) : IEvent
     public void Publish(string type, object? data = null, string? sessionId = null, bool ui = true) =>
         inner.Publish(new BusEvent { Type = type, Data = data, SessionId = sessionId, Ui = ui, Source = scope.PluginId });
 
-    public IDisposable Subscribe(string pattern, Action<BusEvent> handler) => scope.Track(inner.Subscribe(pattern, handler));
+    public IDisposable Subscribe(string pattern, Action<BusEvent> handler) => scope.Track(inner.Subscribe(pattern, scope.PluginId, handler));
 
-    public IDisposable SubscribeAsync(string pattern, Func<BusEvent, ValueTask> handler) => scope.Track(inner.SubscribeAsync(pattern, handler));
+    public IDisposable SubscribeAsync(string pattern, Func<BusEvent, ValueTask> handler) => scope.Track(inner.SubscribeAsync(pattern, scope.PluginId, handler));
 
     public IReadOnlyList<BusEvent> Recent(int max = 200) => inner.Recent(max);
 }

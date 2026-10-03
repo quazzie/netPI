@@ -24,6 +24,27 @@ public static class BackupTests
         BackupIdeasRoundTrip(r);
         BackupIdeaImages(r);
 
+        r.Add("backup: the snapshot views are registered read-only; creating one is not", async () =>
+        {
+            // The read-only paths (scripts/netpi.mjs, the diag tool's rpc action) call only what rpc.list marks
+            // readOnly, so an unmarked view is one no tool can reach (idea-o934y1).
+            var home = T.TempDir("backup-rpc");
+            await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
+            var scope = new PluginScope("netpi.backup", kernel.Log);
+            var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
+            kernel.Settings.Set("backup.enabled", JsonValue.Create(false));
+            var plugin = new BackupPlugin();
+            await plugin.StartAsync(ctx, default);
+            try
+            {
+                var all = kernel.Rpc.List().Where(m => m.PluginId == "netpi.backup").ToArray();
+                // Every method the plugin registers is listed here, split by the flag it has to carry.
+                Check.Equal("backup.list backup.verify", string.Join(" ", all.Where(m => m.ReadOnly).Select(m => m.Method).Order(StringComparer.Ordinal)), "the methods that only read");
+                Check.Equal("backup.create", string.Join(" ", all.Where(m => !m.ReadOnly).Select(m => m.Method).Order(StringComparer.Ordinal)), "the methods that change something");
+            }
+            finally { await plugin.StopAsync(default); scope.DisposeAll(); }
+        });
+
         r.Add("backup: WAL snapshot, retention, corruption check and offline restore", async () =>
         {
             var home = T.TempDir("backup");

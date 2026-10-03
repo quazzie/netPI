@@ -62,7 +62,7 @@ public sealed class RuntimePlugin : INetPiPlugin
             return await runtime.AbortAsync(id).ConfigureAwait(false);
         }, "Abort the current run of a session's agent: { sessionId } → bool");
 
-        context.Rpc.Register("agent.queue", (req, _) =>
+        context.Rpc.RegisterReadOnly("agent.queue", (req, _) =>
             Task.FromResult<object?>(runtime.GetQueue(req.Required("sessionId"))),
             "Pending steering/follow-up inputs: { sessionId } → QueuedInput[]");
 
@@ -70,11 +70,11 @@ public sealed class RuntimePlugin : INetPiPlugin
             Task.FromResult<object?>(runtime.RemoveQueued(req.Required("sessionId"), req.Required("id"))),
             "Remove a pending input: { sessionId, id } → bool");
 
-        context.Rpc.Register("runs.list", (req, _) =>
+        context.Rpc.RegisterReadOnly("runs.list", (req, _) =>
             Task.FromResult<object?>(runtime.List(req.Bool("includeFinished") ?? true)),
             "Agents (active and recent): { includeFinished? } → AgentInfo[]");
 
-        context.Rpc.Register("agent.get", (req, _) =>
+        context.Rpc.RegisterReadOnly("agent.get", (req, _) =>
         {
             var id = req.Str("id");
             var sessionId = req.Str("sessionId");
@@ -82,7 +82,7 @@ public sealed class RuntimePlugin : INetPiPlugin
             return Task.FromResult<object?>(info);
         }, "One agent: { id? , sessionId? } → AgentInfo | null");
 
-        context.Rpc.Register("agent.tools", (req, _) =>
+        context.Rpc.RegisterReadOnly("agent.tools", (req, _) =>
             Task.FromResult<object?>(SessionToolSwitches.Info(context, runtime, req.Required("sessionId"))),
             "A session's tools with their switches: { sessionId } → { sessionId, started, contextTokens, off, tools: { name, label, category, description, readOnly, pluginId, on }[] }");
 

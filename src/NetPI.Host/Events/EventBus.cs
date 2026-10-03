@@ -129,10 +129,30 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
         return Add(new Subscription(pattern, handler, null, _queueCapacity, _log, _slowAfter, _slowEvery));
     }
 
+    /// <summary>Subscribe as a named owner (a plugin, through its scoped bus), so <see cref="Subscriptions"/> can say whose line is whose.</summary>
+    internal IDisposable Subscribe(string pattern, string owner, Action<BusEvent> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return Add(new Subscription(pattern, handler, null, _queueCapacity, _log, _slowAfter, _slowEvery) { Owner = owner });
+    }
+
+    /// <summary>The subscribers and who they are, for diagnostics and for the plugin tests.</summary>
+    internal IReadOnlyList<(string Owner, string Pattern)> Subscriptions
+    {
+        get { lock (_subsLock) return [.. _subs.Select(s => (s.Owner, s.Pattern))]; }
+    }
+
     public IDisposable SubscribeAsync(string pattern, Func<BusEvent, ValueTask> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
         return Add(new Subscription(pattern, null, handler, _queueCapacity, _log, _slowAfter, _slowEvery));
+    }
+
+    /// <summary>Subscribe asynchronously as a named owner (a plugin), as the sync overload does.</summary>
+    internal IDisposable SubscribeAsync(string pattern, string owner, Func<BusEvent, ValueTask> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return Add(new Subscription(pattern, null, handler, _queueCapacity, _log, _slowAfter, _slowEvery) { Owner = owner });
     }
 
     public IReadOnlyList<BusEvent> Recent(int max = 200)
@@ -388,6 +408,8 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
         }
 
         public string Pattern { get; }
+        /// <summary>Who subscribed: the plugin id when a plugin did ("host" for the kernel's own lines).</summary>
+        public string Owner { get; init; } = "host";
         public Action<BusEvent>? Sync { get; }
         public Func<BusEvent, ValueTask>? Async { get; }
         public Channel<object> Queue { get; }

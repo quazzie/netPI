@@ -19,6 +19,7 @@ public static class ContextTests
         t.Add("context: a fork goes on with the prompt the original had at the fork point", ForkPrompt);
         t.Add("context: a fork whose first call races the copy of the fork point's prompts records it once", ForkPromptRace);
         t.Add("context: a fork's first call does not record the prompt its own copy of the fork point already holds", ForkRecordInherited);
+        t.Add("context: an original with two prompt versions at the fork point gives the fork that history once, whichever side of the copy its first call lands", ForkTwoPrompts);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
         t.Add("context: a tools notice says why (plugin reload, the user, a setting) and keeps the cause in meta", ToolChangeCauses);
@@ -519,6 +520,39 @@ public static class ContextTests
         store.Freeze(fork.Id, "ANOTHER PROMPT", 1);
         Check.Equal(2, store.RecordSent(fork.Id, "ANOTHER PROMPT", [], 3), "a new prompt is a new version");
         Check.Equal(2, store.Sent(fork.Id).Count);
+    }
+
+    // The same race with an original that was sent two prompts before the fork point (a profile switch): the copy takes
+    // both rows, and the fork's first call - which goes on with the second one - leaves that history alone.
+    private static async Task ForkTwoPrompts()
+    {
+        await using var h = await TestHost.StartAsync();
+        var store = new PromptStore(new TestPluginContext(h, "probe-fork-two"));
+        store.Initialize();
+        var original = h.NewSession();
+        var tools = new[] { new ToolDefinition { Name = "echo", Description = "e" } };
+        store.RecordSent(original.Id, "PROMPT ONE", tools, 1);
+        store.RecordSent(original.Id, "PROMPT TWO", tools, 3);
+        string Rows(string sessionId) => string.Join(" | ", store.Sent(sessionId).Select(p => $"{p.Version}:{p.Prompt}"));
+        string Text(string sessionId) => string.Join(" | ", store.Sent(sessionId).Select(p => p.Prompt));
+        const string Expected = "PROMPT ONE | PROMPT TWO";
+
+        // The copy lands first: the fork is sent the newest prompt at the fork point, and records nothing new.
+        var copyFirst = h.NewSession();
+        store.Fork(original.Id, copyFirst.Id, 3);
+        store.Freeze(copyFirst.Id, new string("PROMPT TWO".ToCharArray()), 0);   // its first call, the same text, its own instance
+        store.RecordSent(copyFirst.Id, "PROMPT TWO", tools, 4);
+        Check.Equal(Expected, Text(copyFirst.Id), "the copy first: the fork holds the fork point's prompts, in order, once");
+        Check.Equal("1:PROMPT ONE | 2:PROMPT TWO", Rows(copyFirst.Id), "the versions it inherited are the versions they were sent as");
+
+        // The call lands first: it records the prompt it rendered (version 1 of an empty history), and the copy that
+        // follows takes the fork point's rows over it.
+        var callFirst = h.NewSession();
+        store.Freeze(callFirst.Id, new string("PROMPT TWO".ToCharArray()), 0);
+        store.RecordSent(callFirst.Id, "PROMPT TWO", tools, 4);
+        store.Fork(original.Id, callFirst.Id, 3);
+        Check.Equal(Expected, Text(callFirst.Id), "the call first: the fork holds the fork point's prompts, in order, once");
+        Check.Equal("1:PROMPT ONE | 2:PROMPT TWO", Rows(callFirst.Id), "the call's own row did not survive beside the copied ones");
     }
 
     // Every prompt a session is sent is kept with its tools (context.prompts): the first, and one after each context.reset

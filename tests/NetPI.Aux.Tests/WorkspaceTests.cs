@@ -41,6 +41,7 @@ public static class WorkspaceTests
         t.Add("workspaces: a non-ASCII file is named as it is, not octal-escaped, in the probe's answers", NonAsciiNamedAsItIs);
         t.Add("workspaces: a hung git is ended at the deadline, and the timeout is the answer, not a hang", HungGitTimesOut);
         t.Add("workspaces: the guard reads arguments as the tools do: names, order, string-encoded arguments, an ssh download's destination", GuardArguments);
+        t.Add("workspaces: a call the guard could not judge does not run; a read is not judged at all", GuardFailsClosed);
         t.Add("workspaces: ssh copy refuses a download into another checkout of the repository and allows one into the worker's own", SshDownloadRefused);
         t.Add("workspaces: the notice names the checkout, the branch and what a write outside it does", NoticeText);
         t.Add("workspaces: a switch asked for mid-batch is applied at the next model call", DeferredSwitch);
@@ -236,6 +237,64 @@ public static class WorkspaceTests
         Check.True(WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"run","script":"ls","to":"/w/x"}""")) is null, "not a copy");
         Check.True(WorkspaceGuard.SshDownloadTarget("bash", A("""{"action":"copy","direction":"download","to":"/w/x"}""")) is null, "only the ssh tool");
         return Task.CompletedTask;
+    }
+
+    /// <summary>A probe that throws: the git answer the guard needs never arrives, so the call is not judged.
+    /// Failing open would make the guard a way in — the hook pass swallows a throwing hook, so the call the guard could
+    /// not check is the call that runs.</summary>
+    private sealed class ThrowingProbe : IWorkspaceRepoProbe
+    {
+        public const string Problem = "git is not answering";
+        public string? CommonDirOf(string path) => throw new InvalidOperationException(Problem);
+        public string? BranchOf(string path) => throw new InvalidOperationException(Problem);
+        public string? HeadOf(string path) => throw new InvalidOperationException(Problem);
+        public string? ProbeProblem(string path) => Problem;
+    }
+
+    private static Task GuardFailsClosed()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("guard fails closed"); }
+        var w = env.Provision("fail-closed", "ses_fc").Binding!;
+        var session = env.Session("fail-closed", w.WorkspaceId);
+        var guard = new WorkspaceGuard(env.Ctx, new ThrowingProbe());
+
+        // A write aimed outside the worktree is the case the guard exists for: it cannot be judged, so it does not run.
+        var write = Judge(env, guard, w, session, "write", new { path = Path.Combine(env.ProjectPath, "victim.txt"), content = "x" });
+        Check.True(write is { Block: true }, "a write the guard could not judge was allowed");
+        Check.Contains(write?.Reason ?? "", "workspace guard");
+        Check.Contains(write?.Reason ?? "", ThrowingProbe.Problem);
+
+        // A shell command can write anything, so it is judged like a write and refused the same way.
+        var shell = Judge(env, guard, w, session, "bash", new { command = "ls", cwd = env.ProjectPath });
+        Check.True(shell is { Block: true }, "a shell call the guard could not judge was allowed");
+
+        // A read cannot change anything, so the guard never judges it and its failure blocks nothing.
+        var read = Judge(env, guard, w, session, "read", new { path = Path.Combine(env.ProjectPath, "victim.txt") });
+        Check.True(read is null, $"a read was blocked by the guard's own failure: {read?.Reason}");
+
+        // And it says what happened, once, where a failing guard is looked for.
+        Check.True(env.Ctx.Log.Lines.Any(l => l.Contains("Workspace guard could not check")), "the failure was not logged");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>One call's way past the guard hook, for a run bound to a workspace.</summary>
+    private static ToolCallDecision? Judge(Env env, IAgentHook guard, WorkspaceBinding w, SessionInfo session, string tool, object args)
+    {
+        var run = new AgentRunContext
+        {
+            Agent = new AgentInfo { Id = "agt" }, Session = session, Cwd = w.Root, Project = env.Project,
+            Services = env.Ctx.Services, Sessions = env.Ctx.Sessions, Models = env.Ctx.Models, Events = env.Ctx.Events,
+            Model = new ModelInfo { Provider = "p", Id = "m" },
+        };
+        run.SetWorkspace(w);
+        var turn = new AgentTurnContext
+        {
+            Run = run, TurnIndex = 0, SystemPrompt = "", Messages = [], Tools = [], LastContextTokens = 0,
+            ReloadMessagesAsync = () => Task.CompletedTask,
+        };
+        var call = new ToolCallPart { Id = "call_1", Name = tool, Arguments = Json(args).GetRawText() };
+        return guard.OnBeforeToolCallAsync(turn, call).AsTask().GetAwaiter().GetResult();
     }
 
     private sealed class CountingLauncher : ISshLauncher

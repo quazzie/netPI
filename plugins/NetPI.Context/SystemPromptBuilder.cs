@@ -372,8 +372,11 @@ internal sealed class PromptStore(IPluginContext ctx)
         if (tools is not null) FreezeTools(to, tools.Names, tools.SinceSeq);
         try
         {
-            // the prompts sent up to the fork point, with the versions they were sent as: one transaction, and a
-            // version the fork already has is kept
+            // The prompts sent up to the fork point, with the versions they were sent as: one transaction, and the
+            // copy wins a version the fork already has. A row the fork wrote before this ran is its own first call
+            // racing the copy (session.forked is on the bus, the call goes straight on): it went on with the prompt
+            // this session inherited, so it is that prompt written again under the version it happens to land on -
+            // keeping it would leave the fork with one prompt twice and the fork point's first one lost.
             ctx.Data.Transaction(() =>
             {
                 foreach (var row in _sent.Find(new DataQuery().Eq("sessionId", from).Le("afterSeq", upToSeq).Order("version")))
@@ -381,7 +384,7 @@ internal sealed class PromptStore(IPluginContext ctx)
                     var copy = (JsonObject)row.Doc.DeepClone();
                     copy["sessionId"] = to;
                     copy["inherited"] = true;   // sent by the session it was forked from, not by this one
-                    _sent.Insert(SentKey(to, (int)Number(copy, "version")), copy);
+                    _sent.Put(SentKey(to, (int)Number(copy, "version")), copy);
                 }
             });
         }

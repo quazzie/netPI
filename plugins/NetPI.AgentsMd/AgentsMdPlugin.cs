@@ -36,7 +36,7 @@ public sealed class AgentsMdPlugin : INetPiPlugin
         {
             if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) notices.OnProjectChanged(id);
         });
-        context.Rpc.Register("agentsmd.list", (req, _) =>
+        context.Rpc.RegisterReadOnly("agentsmd.list", (req, _) =>
         {
             string cwd;
             var bound = false;
