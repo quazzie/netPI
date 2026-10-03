@@ -15,6 +15,7 @@ public static class BudgetTests
         t.Add("budget: settings changes refresh usage without a model call, including file reloads", SettingsRefresh);
         t.Add("ledger: the in-flight usage.changed does not outlive the plugin's stop", StopMidNotification);
         t.Add("ledger: the period's per-model view is a roll-up: rebuilt for the calls it missed, corrected by each settlement", PeriodRollup);
+        t.Add("usage: history lists every period with its totals, the chosen one per agent and model, and the last days; chats ranks by the chat a call belongs to", UsageHistory);
     }
 
     /// <summary>The ledger's call collection, read by the tests the way the migration tool will (the same declaration the ledger makes).</summary>
@@ -113,6 +114,91 @@ public static class BudgetTests
         Check.Equal(3000, (long)Group((string?)null)!["calls"]!, "the other groups are untouched");
     }
 
+    /// <summary>usage.history reads the roll-ups and the day indexes, usage.chats the period's calls; neither moves what the budget counts.</summary>
+    private static async Task UsageHistory()
+    {
+        await using var h = await TestHost.StartAsync();
+        var (start, _) = NetPI.Agents.Ledger.Period(DateTime.Now, 1);
+        var cur = start.ToString("yyyy-MM-dd");
+        var prev = start.AddMonths(-1).ToString("yyyy-MM-dd");
+        var today = DateTime.Now.ToString("yyyy-MM-dd");
+        var rolls = PeriodUsage(h);
+        void Roll(string period, string? lane, string provider, string model, long calls, long input, long output, double cost, long unknown = 0) =>
+            rolls.Put($"{period}|{lane?.ToLowerInvariant()}|{provider}|{model}", new JsonObject
+            {
+                ["period"] = period, ["lane"] = lane, ["provider"] = provider, ["model"] = model, ["calls"] = calls, ["inputTokens"] = input,
+                ["outputTokens"] = output, ["cacheReadTokens"] = 0L, ["cacheWriteTokens"] = 0L, ["costUsd"] = cost, ["unknownCalls"] = unknown,
+            });
+        Roll(cur, "Alpha", "cloud", "big", 10, 1000, 100, 0.5);
+        Roll(cur, "Beta", "fake", "local", 30, 5000, 500, 0);
+        Roll(cur, null, "cloud", "big", 2, 200, 20, 0.1, unknown: 1);
+        Roll(prev, "Alpha", "cloud", "big", 7, 700, 70, 1.25);
+
+        // today's tokens come from the daily roll-up, today's cost and calls from the calls' day index
+        h.Storage.Plugins.For("netpi.agents").Collection("lanes_usage", new CollectionSpec().Text("day").Text("provider").Text("model").Integer("budgetTokens"))
+            .Put($"{today}|cloud|big", new JsonObject { ["day"] = today, ["provider"] = "cloud", ["model"] = "big", ["inputTokens"] = 1000L, ["outputTokens"] = 100L, ["cacheReadTokens"] = 0L, ["cacheWriteTokens"] = 0L, ["calls"] = 2L, ["budgetTokens"] = 1100L });
+        var a = h.NewSession(title: "chat A");
+        var b = h.NewSession(title: "chat B");
+        var c = h.NewSession(title: "chat C");
+        var calls = Calls(h);
+        var n = 9000;
+        void Call(string? root, double cost) => calls.Put((n++).ToString(), new JsonObject
+        {
+            ["ts"] = DateTimeOffset.Now.ToUnixTimeMilliseconds(), ["day"] = today, ["period"] = cur, ["rootSessionId"] = root, ["sessionId"] = root, ["lane"] = "Alpha",
+            ["provider"] = "cloud", ["model"] = "big", ["purpose"] = "agent", ["inputTokens"] = 100L, ["outputTokens"] = 10L, ["cacheReadTokens"] = 0L,
+            ["cacheWriteTokens"] = 0L, ["costUsd"] = cost, ["costSource"] = "reported",
+        });
+        Call(a.Id, 0.3); Call(a.Id, 0.2); Call(b.Id, 0.4); Call(c.Id, 0.1); Call("ses_gone", 0.05); Call(null, 0.01);
+
+        var all = (await h.Rpc.CallAsync("usage.history"))!;
+        Check.Equal(cur, (string?)all["period"]);
+        Check.Equal(cur, (string?)all["current"]);
+        Check.Equal(42L, (long)all["totals"]!["calls"]!);
+        Check.Equal(0.6, Math.Round(Num(all["totals"]!["costUsd"]), 6));
+        Check.Equal(1L, (long)all["totals"]!["unknownCalls"]!);
+        var periods = all["periods"]!.AsArray();
+        Check.Equal($"{cur},{prev}", string.Join(",", periods.Select(x => (string?)x!["period"])), "newest first");
+        Check.Equal(start.AddMonths(1).ToString("yyyy-MM-dd"), (string?)periods[0]!["end"]);
+        Check.Equal(49L, (long)all["allTime"]!["calls"]!);
+        Check.Equal(1.85, Math.Round(Num(all["allTime"]!["costUsd"]), 6));
+        Check.Equal(prev, (string?)all["allTime"]!["since"]);
+        var agents = all["agents"]!.AsArray();
+        Check.Equal("Alpha,,Beta", string.Join(",", agents.Select(x => (string?)x!["agent"])), "by cost, then tokens; a call without an agent is its own row");
+        Check.Equal(10L, (long)agents[0]!["calls"]!);
+        var models = all["models"]!.AsArray();
+        Check.Equal("cloud/big,fake/local", string.Join(",", models.Select(x => (string?)x!["provider"] + "/" + (string?)x!["model"])), "the same model under two agents is one row");
+        Check.Equal(12L, (long)models[0]!["calls"]!);
+        var days = all["days"]!.AsArray();
+        Check.Equal(30, days.Count);
+        Check.Equal(today, (string?)days[^1]!["day"]);
+        Check.Equal(1.06, Math.Round(Num(days[^1]!["costUsd"]), 6), "today's cost is the calls' sum");
+        Check.Equal(6L, (long)days[^1]!["calls"]!);
+        Check.Equal(1000L, (long)days[^1]!["inputTokens"]!, "its tokens come from the daily roll-up");
+        Check.Equal(0.0, Num(days[0]!["costUsd"]), "a day with no calls is zeros, not missing");
+        Check.Equal(7, (await h.Rpc.CallAsync("usage.history", new { days = 7 }))!["days"]!.AsArray().Count);
+
+        var older = (await h.Rpc.CallAsync("usage.history", new { period = prev }))!;
+        Check.Equal(prev, (string?)older["period"]);
+        Check.Equal(7L, (long)older["totals"]!["calls"]!);
+        Check.Equal(1, older["agents"]!.AsArray().Count);
+        Check.Equal(cur, (string?)older["current"]);
+        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("usage.history", new { period = "2001-01-01" }))).Code);
+
+        var chats = (await h.Rpc.CallAsync("usage.chats", new { period = cur, limit = 2 }))!;
+        var ranked = chats["chats"]!.AsArray();
+        Check.Equal("chat A,chat B", string.Join(",", ranked.Select(x => (string?)x!["title"])), "the chat's own calls add up, most expensive first");
+        Check.Equal(0.5, Math.Round(Num(ranked[0]!["costUsd"]), 6));
+        Check.Equal(2L, (long)ranked[0]!["calls"]!);
+        Check.Equal(4, (int)chats["chatCount"]!, "four chats had calls (one of them is gone)");
+        Check.Equal(1L, (long)chats["noChat"]!["calls"]!);
+        Check.Equal(1.06, Math.Round(Num(chats["totals"]!["costUsd"]), 6));
+        Check.Equal(false, (bool)chats["truncated"]!);
+        var wide = (await h.Rpc.CallAsync("usage.chats", new { period = cur, limit = 10 }))!["chats"]!.AsArray();
+        var gone = wide.Single(x => (string?)x!["sessionId"] == "ses_gone")!;
+        Check.Equal(true, (bool)gone["deleted"]!, "a chat that was deleted still has its cost, and says so");
+        Check.Equal("bad_request", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("usage.chats", new { period = "soon" }))).Code);
+    }
+
     private static async Task SettingsRefresh()
     {
         await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents);

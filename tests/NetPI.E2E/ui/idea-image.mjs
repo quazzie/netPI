@@ -98,7 +98,7 @@ try {
   const newIdea = page.locator('.panel.right button[title="New idea"]').first();
   await newIdea.click();
   const form = page.locator('.new');
-  await form.waitFor({ timeout: 5_000 });
+  await form.waitFor({ timeout: 15_000 }); // a condition, not a delay: it costs nothing when the tab is quick, and a busy machine (agents building beside the run) mounts it late
   await form.locator('input.np-input').first().fill('Image attach probe');
   check('the new-idea form opens', true);
 

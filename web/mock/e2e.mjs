@@ -805,6 +805,38 @@ log('plugin tab: Work');
 }
 
 }
+if (want('plugin tab: Usage')) {
+log('plugin tab: Usage');
+{
+  await openStripTab('right', 'Usage');
+  const u = page.locator('.panel.right .usage');
+  await u.locator('.top .big').waitFor({ timeout: 10_000 }).catch(() => {});
+  check('usage: the period total is the first thing the tab says', ((await u.locator('.top .big').innerText().catch(() => '')) ?? '').trim() === '$0.68');
+  check('usage: the last 30 days are a bar each', (await u.locator('.chart .bar').count()) === 30);
+  check('usage: every agent and model is a row with its cost', (await u.locator('.row', { hasText: 'anthropic' }).count()) >= 2 && (await u.locator('.row', { hasText: 'qwen' }).first().innerText()).includes('free'));
+  const picker = u.locator('.head select');
+  check('usage: the picker lists the periods, the current one first', (await picker.locator('option').count()) === 3 && ((await picker.locator('option').first().innerText()) ?? '').includes('now'));
+  await u.locator('.chat').first().waitFor({ timeout: 10_000 }).catch(() => {});
+  check('usage: the chats that cost most are listed, most expensive first', (await u.locator('.chat').count()) >= 3 && ((await u.locator('.chat .val').first().innerText()) ?? '').includes('$0.31'));
+  await shot(page, '50-usage-tab');
+  // another period: its own total, without the limit and today that only the current period has
+  const before = (await u.locator('.top .big').innerText()).trim();
+  await picker.selectOption({ index: 1 });
+  await page.waitForFunction((b) => document.querySelector('.panel.right .usage .top .big')?.textContent.trim() !== b, before, { timeout: 10_000 }).catch(() => {});
+  const after = (await u.locator('.top .big').innerText()).trim();
+  check('usage: another period shows its own total', after !== before && after.startsWith('$'), `${before} → ${after}`);
+  check('usage: and no "today" line, which belongs to the current period', (await u.locator('.top .figs', { hasText: 'today' }).count()) === 0);
+  await u.locator('.month').first().click(); // the months list chooses the period too: back to the current one
+  await page.waitForFunction((b) => document.querySelector('.panel.right .usage .top .big')?.textContent.trim() === b, before, { timeout: 10_000 }).catch(() => {});
+  check('usage: a month in the list is a click away', ((await u.locator('.top .big').innerText()) ?? '').trim() === before);
+  const title = (await u.locator('.chat .name').first().innerText()).trim();
+  await u.locator('.chat').first().click();
+  await page.waitForTimeout(400);
+  check('usage: a chat in the ranking opens', (await page.locator('.topbar .tab.active').innerText()).includes(title.slice(0, 12)), title);
+  await openStripTab('right', 'Work');
+}
+
+}
 if (want('plugin tab: Ideas')) {
 log('plugin tab: Ideas');
 {

@@ -33,6 +33,7 @@ const WWWROOT = [path.join(REPO, 'web/dist'), path.join(REPO, 'artifacts/app/www
 // Plugin UI bundles the mock serves (built by `npm run build:plugins`); a tab is listed only when its bundle exists.
 const PLUGIN_UIS = [
   { pluginId: 'netpi.work', dir: 'plugins/NetPI.Work/wwwroot', tabs: [{ id: 'work', title: 'Work', panel: 'right', icon: 'work', order: 10 }] },
+  { pluginId: 'netpi.agents', dir: 'plugins/NetPI.Agents/wwwroot', tabs: [{ id: 'usage', title: 'Usage', panel: 'right', icon: 'dollar', order: 12 }] },
   { pluginId: 'netpi.ideas', dir: 'plugins/NetPI.Ideas/wwwroot', tabs: [{ id: 'ideas', title: 'Ideas', panel: 'right', icon: 'idea', order: 20 }] },
   { pluginId: 'netpi.diagnostics', dir: 'plugins/NetPI.Diagnostics/wwwroot', tabs: [{ id: 'diagnostics', title: 'Diagnostics', panel: 'right', icon: 'bug', order: 90 }] },
   { pluginId: 'netpi.tools.files', dir: 'plugins/NetPI.Tools.Files/wwwroot', tabs: [{ id: 'files', title: 'Files', panel: 'left', icon: 'files', order: 30 }] },
@@ -214,6 +215,41 @@ function budgetStatus() {
     periodStart: day(start), periodEnd: day(end), spentUsd: spent, todayUsd: 0.2,
     warning: !!b.monthlyUsd && spent >= (b.monthlyUsd * warnPercent) / 100, exhausted: !!b.monthlyUsd && spent >= b.monthlyUsd,
   };
+}
+
+/** usage.history: three budget periods, the current one's agents and models (MOCK_SPEND), and thirty days of cost (deterministic, so a screenshot is stable). */
+function usageHistory(period) {
+  const b = budgetStatus();
+  const sum = (rows, key) => rows.reduce((a, r) => a + (r[key] ?? 0), 0);
+  const make = (start, end, scale) => ({
+    period: start, end, calls: Math.round(sum(MOCK_SPEND, 'calls') * scale), inputTokens: Math.round(sum(MOCK_SPEND, 'inputTokens') * scale),
+    outputTokens: Math.round(sum(MOCK_SPEND, 'outputTokens') * scale), cacheReadTokens: Math.round(sum(MOCK_SPEND, 'cacheReadTokens') * scale),
+    cacheWriteTokens: 0, costUsd: Math.round(sum(MOCK_SPEND, 'costUsd') * scale * 1e6) / 1e6, unknownCalls: 0,
+  });
+  const prev = (d, n) => { const x = new Date(`${d}T00:00:00Z`); x.setUTCMonth(x.getUTCMonth() - n); return x.toISOString().slice(0, 10); };
+  const periods = [make(b.periodStart, b.periodEnd, 1), make(prev(b.periodStart, 1), b.periodStart, 2.4), make(prev(b.periodStart, 2), prev(b.periodStart, 1), 1.3)];
+  const chosen = period ? periods.find((p) => p.period === period) : periods[0];
+  if (!chosen) throw new RpcError('not_found', `No usage in the period starting ${period}.`);
+  const scale = chosen.costUsd / Math.max(1e-9, periods[0].costUsd);
+  const days = Array.from({ length: 30 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (29 - i));
+    const wave = 0.3 + 0.7 * Math.abs(Math.sin(i * 1.7)); // some days busy, some quiet
+    const cost = i % 6 === 5 ? 0 : Math.round(wave * 0.04 * 1e6) / 1e6;
+    return { day: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`, costUsd: i === 29 ? 0.2 : cost, calls: Math.round(wave * 40), inputTokens: Math.round(wave * 90000), outputTokens: Math.round(wave * 6000), cacheReadTokens: Math.round(wave * 60000), cacheWriteTokens: 0 };
+  });
+  const rows = (list) => list.map((m) => ({ ...m, calls: Math.round(m.calls * scale), inputTokens: Math.round(m.inputTokens * scale), outputTokens: Math.round(m.outputTokens * scale), cacheReadTokens: Math.round(m.cacheReadTokens * scale), costUsd: Math.round(m.costUsd * scale * 1e6) / 1e6, unknownCalls: 0 }));
+  const all = periods.reduce((a, p) => ({ calls: a.calls + p.calls, inputTokens: a.inputTokens + p.inputTokens, outputTokens: a.outputTokens + p.outputTokens, cacheReadTokens: a.cacheReadTokens + p.cacheReadTokens, cacheWriteTokens: 0, costUsd: a.costUsd + p.costUsd, unknownCalls: 0 }), { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 });
+  return {
+    period: chosen.period, current: periods[0].period, end: chosen.end, resetDay: b.resetDay, totals: chosen, allTime: { ...all, since: periods[2].period }, periods,
+    agents: rows(MOCK_SPEND).map(({ provider, model, unknownCost, ...a }) => a), models: rows(MOCK_SPEND).map(({ agent, unknownCost, ...m }) => m), days, budget: b,
+  };
+}
+/** usage.chats: the seeded chats with invented costs, most expensive first. */
+function usageChats(period) {
+  const list = [...store.sessions.values()].filter((x) => x.kind !== 'subagent' && !x.archived).slice(0, 6);
+  const chats = list.map((x, i) => ({ sessionId: x.id, title: x.title, project: x.projectId ? store.projects.get(x.projectId)?.name ?? null : null, deleted: false, calls: 90 - i * 13, inputTokens: 400000 - i * 60000, outputTokens: 30000 - i * 4000, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: Math.max(0, Math.round((0.31 - i * 0.06) * 1e6) / 1e6), unknownCalls: 0 }));
+  const totals = chats.reduce((a, c) => ({ ...a, calls: a.calls + c.calls, costUsd: a.costUsd + c.costUsd }), { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, unknownCalls: 0 });
+  return { period: period ?? budgetStatus().periodStart, chats, chatCount: chats.length + 4, noChat: { calls: 12, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.01, unknownCalls: 0 }, totals, truncated: false };
 }
 
 /** The profiles in the settings (profiles.<id> = { name, prompt, toolsOff }), by name. */
@@ -1034,6 +1070,8 @@ ${agent.plan.markdown(id)}` });
     publish('plugins.changed', {});
     return true;
   },
+  'usage.history': (p = {}) => usageHistory(p.period ?? null),
+  'usage.chats': (p = {}) => usageChats(p.period ?? null),
   'usage.summary': () => ({ ...work.usageSummary(), budget: budgetStatus(), models: MOCK_SPEND }),
   // one seeded chat used a paid model (with a subagent)
   'usage.session': (p) => {
