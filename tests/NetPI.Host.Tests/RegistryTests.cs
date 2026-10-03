@@ -156,7 +156,7 @@ public static class RegistryTests
             Check.Equal("read", string.Join(",", tools.All.Select(t => t.Definition.Name)));
             Check.True(tools.IsDisabled("bash"));
             readLow.Dispose();
-            await Wait.UntilAsync(() => Volatile.Read(ref changed) > 0, "tools.changed");
+            await Wait.Until(() => Volatile.Read(ref changed) > 0, "tools.changed");
         });
 
         r.Add("ui: host fills pluginId/version; latest duplicate wins; version bump", async () =>
@@ -178,7 +178,7 @@ public static class RegistryTests
             Check.Equal("v2", ui.Tabs.Single().Version);
             using var cmd = ui.AddCommand(new SlashCommandInfo { Name = "go", Description = "Go" }, "p.one");
             Check.Equal("p.one", ui.Commands.Single().PluginId);
-            await Wait.UntilAsync(() => Volatile.Read(ref events) > 0, "ui.changed (debounced)");
+            await Wait.Until(() => Volatile.Read(ref events) > 0, "ui.changed (debounced)");
         });
 
         r.Add("http registry: exact vs prefix routes, longest match, dispose", () =>

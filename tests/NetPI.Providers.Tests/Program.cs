@@ -18,7 +18,7 @@ using OrKit = openrouter::NetPI.Providers.Kit;
 Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
 Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null);
 
-var t = new TestRunner(args);
+var t = new NetPI.Providers.Tests.TestRunner(args);
 await using var mock = new MockServer();
 await mock.StartAsync();
 Console.WriteLine($"mock server: {mock.BaseUrl}");
@@ -429,7 +429,9 @@ var apCtx = new FakePluginContext(new JsonObject
 var apPlugin = new AP.AiProxyPlugin();
 await apPlugin.StartAsync(apCtx, CancellationToken.None);
 var aiproxy = apPlugin.Providers[0];
-IReadOnlyList<ModelInfo> catalog = [];
+// The catalog is environment, not a test result: fetched once here, so any test (or any shard of one) can
+// look a model up by id without depending on another test having run first.
+IReadOnlyList<ModelInfo> catalog = await aiproxy.ListModelsAsync(false, CancellationToken.None);
 
 await t.Run("aiproxy: plugin registers aiproxy + valid extra endpoints", () =>
 {
@@ -444,10 +446,10 @@ await t.Run("aiproxy: plugin registers aiproxy + valid extra endpoints", () =>
 
 await t.Run("aiproxy: /v1/models maps every catalog field", async () =>
 {
-    catalog = await aiproxy.ListModelsAsync(false, CancellationToken.None);
-    t.Eq(4, catalog.Count, "model count");
-    t.Check(catalog.All(m => m.Id != "kev-9b"), "a model with an api (systemone decision model) is not a chat model");
-    var gemma = catalog.Single(m => m.Id == "gemma-4");
+    var cat = await aiproxy.ListModelsAsync(false, CancellationToken.None);
+    t.Eq(4, cat.Count, "model count");
+    t.Check(cat.All(m => m.Id != "kev-9b"), "a model with an api (systemone decision model) is not a chat model");
+    var gemma = cat.Single(m => m.Id == "gemma-4");
     t.Eq("aiproxy/gemma-4", gemma.Ref, "ref");
     t.Eq(65536, gemma.ContextWindow, "context_window");
     t.Eq(null, gemma.MaxOutputTokens, "max_output_tokens null");
@@ -457,9 +459,9 @@ await t.Run("aiproxy: /v1/models maps every catalog field", async () =>
     t.Eq("unloaded", gemma.Status, "status");
     t.Check(gemma.IsLocal, "IsLocal");
     t.Eq("llamacpp", gemma.Extra?["owned_by"]?.GetValue<string>(), "owned_by in Extra");
-    var qwen = catalog.Single(m => m.Id == "qwen3.8-27b");
+    var qwen = cat.Single(m => m.Id == "qwen3.8-27b");
     t.Check(qwen.MaxOutputTokens == 16384 && qwen.Concurrency == 2 && qwen.SupportsImages && qwen.Status == "loaded", "qwen3.8");
-    var stopped = catalog.Single(m => m.Id == "qwen38-27b-iq3s");
+    var stopped = cat.Single(m => m.Id == "qwen38-27b-iq3s");
     t.Check(stopped.Reasoning is null && stopped.Concurrency is null && stopped.Status == "stopped" && stopped.ContextWindow == 524288, "reasoning null / stopped");
 });
 

@@ -174,6 +174,7 @@ public static class AgentReworkTests
         var session = h.NewSession("fake/solo");
         await h.Rpc.CallAsync("goal.set", new { sessionId = session.Id, objective = "Keep this goal" });
         await started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        h.Plugin<RuntimePlugin>().Runtime!.StopWait = TimeSpan.FromMilliseconds(300);   // the timeout path is the point; 300 ms exercises it without the 5 s ceiling
         try
         {
             await h.StopPluginAsync("netpi.runtime");

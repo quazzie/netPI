@@ -23,14 +23,12 @@ public static class RunnerTests
         r.Add("tests: test.ps1 counts the skips, fails only when the filter matched nowhere, and names the suites", TestScriptHonesty);
     }
 
-    /// <summary>The five runner sources, and every test source, for the checks that are about all of them.</summary>
+    /// <summary>The runner sources, and every test source, for the checks that are about all of them. The five
+    /// suites share one runner (tests/Shared/Harness.cs); the Providers suite runs its check-style adapter over it.</summary>
     private static readonly string[] RunnerFiles =
     {
+        "Shared/Harness.cs",
         "NetPI.Providers.Tests/TestRunner.cs",
-        "NetPI.Agent.Tests/Harness.cs",
-        "NetPI.Aux.Tests/Harness.cs",
-        "NetPI.Host.Tests/Harness.cs",
-        "NetPI.Tools.Tests/Harness.cs",
     };
 
     private static async Task NothingSelectedIsNotAPass()
@@ -112,7 +110,7 @@ public static class RunnerTests
         Check.Contains(output, "1 passed, 0 failed, 1 skipped, 2 total", "and the summary counts it apart from the passes");
     }
 
-    /// <summary>Same rule in all five runners, and no site left printing a skip by hand (it would pass again).</summary>
+    /// <summary>The same rule in every runner, and no site left printing a skip by hand (it would pass again).</summary>
     private static Task EveryRunnerHasTheSkipRule()
     {
         foreach (var runner in RunnerFiles)
@@ -157,7 +155,8 @@ public static class RunnerTests
     private static void TestScriptHonesty()
     {
         var ps = File.ReadAllText(Path.Combine(T.RepoRoot, "scripts", "test.ps1"));
-        Check.Contains(ps, "'(\\d+) skipped'", "the skip count is read out of the runner's summary");
+        Check.Contains(ps, "ConvertFrom-Json", "the runner's result file is read as data, not scraped");
+        Check.Contains(ps, "$result.skipped", "the skip count comes out of the result file");
         Check.Contains(ps, "Skipped (something was missing", "and printed, so a suite that skips half of itself is visible");
         Check.Contains(ps, "no test matched the filter in any suite", "a filter that matches nothing in one suite is not a failure");
         Check.Contains(ps, "$emptySuites.Count -eq $results.Count", "it fails only when no suite matched anything");

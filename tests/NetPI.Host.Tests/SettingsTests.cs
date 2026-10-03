@@ -93,7 +93,7 @@ public static class SettingsTests
             var doc = JsonNode.Parse(File.ReadAllText(file))!.AsObject();
             doc["ui"]!["theme"] = "light";
             File.WriteAllText(file, "// edited by hand\n" + doc.ToJsonString());
-            await Wait.UntilAsync(() => s.Get<string>("ui.theme") == "light", "external edit reloaded");
+            await Wait.Until(() => s.Get<string>("ui.theme") == "light", "external edit reloaded");
             await bus.FlushAsync();
             lock (events) Check.True(events.Any(e => e.Contains("\"source\":\"file\"")), "settings.changed from file");
 
@@ -103,7 +103,7 @@ public static class SettingsTests
 
             doc["ui"]!["theme"] = "blue";
             File.WriteAllText(file, doc.ToJsonString());
-            await Wait.UntilAsync(() => s.Get<string>("ui.theme") == "blue", "valid JSON picked up again");
+            await Wait.Until(() => s.Get<string>("ui.theme") == "blue", "valid JSON picked up again");
         });
 
         r.Add("settings: concurrent writers on distinct keys all reach the file", () =>

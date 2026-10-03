@@ -150,7 +150,7 @@ public sealed class TestHost : IAsyncDisposable
             TempDir = Root, PluginDirs = [], DefaultWorkspace = Workspace,
         };
         Settings = new FakeSettings(Bus);
-        Tools = new FakeTools(Settings);
+        Tools = new FakeTools(settings: Settings);
         // The host selects a provider by setting; the tests run the memory one (in process, nothing on disk).
         Storage = new NetPI.Host.Storage.Memory.MemoryStorageProvider().Open(new StorageOpenOptions
         {

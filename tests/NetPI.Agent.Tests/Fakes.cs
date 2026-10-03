@@ -7,40 +7,8 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.Agent.Tests;
 
-public sealed class Disposer(Action action) : IDisposable
-{
-    private int _done;
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref _done, 1) == 0) action();
-    }
-}
-
-// ------------------------------------------------------------------ services
-
-public sealed class FakeServices : IServiceRegistry
-{
-    public Action<Type>? Changed { get; set; }
-    private readonly Lock _gate = new();
-    private readonly List<(object Instance, int Priority, long Seq)> _items = [];
-    private long _seq;
-
-    public IDisposable Register<T>(T instance, int priority = 0) where T : class
-    {
-        var entry = (Instance: (object)instance, Priority: priority, Seq: Interlocked.Increment(ref _seq));
-        lock (_gate) _items.Add(entry);
-        Changed?.Invoke(typeof(T));
-        return new Disposer(() => { lock (_gate) _items.Remove(entry); Changed?.Invoke(typeof(T)); });
-    }
-
-    public T? Get<T>() where T : class => GetAll<T>().FirstOrDefault();
-
-    public IReadOnlyList<T> GetAll<T>() where T : class
-    {
-        lock (_gate)
-            return _items.Where(i => i.Instance is T).OrderByDescending(i => i.Priority).ThenByDescending(i => i.Seq).Select(i => (T)i.Instance).ToList();
-    }
-}
+// The Disposer and the recording services/settings/rpc/tools/ui fakes are shared (tests/Shared/Fakes.cs);
+// what stays here is the Agent suite's: the async-dispatch bus and the scripted model plumbing.
 
 // ------------------------------------------------------------------ event bus (async dispatcher like the host)
 
@@ -120,132 +88,6 @@ public sealed class FakeBus : IEventBus, IDisposable
     }
 
     public void Dispose() => _queue.Writer.TryComplete();
-}
-
-// ------------------------------------------------------------------ settings
-
-public sealed class FakeSettings(IEventBus bus) : ISettings
-{
-    private readonly Lock _gate = new();
-    private JsonObject _root = new();
-    public string FilePath => "memory://settings.json";
-    public bool InvalidOnDisk => false;
-    public string? InvalidOnDiskError => null;
-
-    public JsonObject Snapshot()
-    {
-        lock (_gate) return (JsonObject)_root.DeepClone();
-    }
-
-    public JsonNode? GetNode(string path)
-    {
-        lock (_gate)
-        {
-            JsonNode? node = _root;
-            foreach (var seg in path.Split('.'))
-                if (node is not JsonObject o || !o.TryGetPropertyValue(seg, out node)) return null;
-            return node?.DeepClone();
-        }
-    }
-
-    public T? Get<T>(string path, T? defaultValue = default)
-    {
-        var n = GetNode(path);
-        if (n is null) return defaultValue;
-        try { return n.Deserialize<T>(NetPiJson.Options) ?? defaultValue; } catch { return defaultValue; }
-    }
-
-    /// <summary>Set without publishing (test setup before plugins start).</summary>
-    public void SetQuiet(string path, JsonNode? value)
-    {
-        lock (_gate)
-        {
-            var segs = path.Split('.');
-            var o = _root;
-            foreach (var seg in segs[..^1])
-            {
-                if (o[seg] is not JsonObject child) { child = new JsonObject(); o[seg] = child; }
-                o = child;
-            }
-            o[segs[^1]] = value;
-        }
-    }
-
-    public void Set(string path, JsonNode? value)
-    {
-        SetQuiet(path, value);
-        bus.Publish(EventTypes.SettingsChanged, new JsonObject { ["path"] = path });
-    }
-
-    public void Replace(JsonObject root)
-    {
-        lock (_gate) _root = root;
-        bus.Publish(EventTypes.SettingsChanged, new JsonObject());
-    }
-}
-
-// ------------------------------------------------------------------ tools / rpc
-
-public sealed class FakeTools(ISettings settings) : IToolRegistry
-{
-    private readonly Lock _gate = new();
-    private readonly List<(IAgentTool Tool, int Priority, string PluginId)> _items = [];
-
-    public IDisposable Register(IAgentTool tool, int priority = 0) => Register(tool, priority, "test");
-
-    public IDisposable Register(IAgentTool tool, int priority, string pluginId)
-    {
-        var entry = (tool, priority, pluginId);
-        lock (_gate) _items.Add(entry);
-        return new Disposer(() => { lock (_gate) _items.Remove(entry); });
-    }
-
-    public IReadOnlyList<IAgentTool> All
-    {
-        get
-        {
-            var disabled = settings.Get<List<string>>("tools.disabled") ?? [];
-            lock (_gate)
-                return _items.GroupBy(i => i.Tool.Definition.Name)
-                    .Select(g => g.OrderByDescending(i => i.Priority).First().Tool)
-                    .Where(t => !disabled.Contains(t.Definition.Name))
-                    .ToList();
-        }
-    }
-
-    public IAgentTool? Get(string name) => All.FirstOrDefault(t => t.Definition.Name == name);
-
-    public IReadOnlyList<ToolRegistration> Registrations
-    {
-        get { lock (_gate) return _items.Select(i => new ToolRegistration(i.Tool, i.PluginId, i.Priority)).ToList(); }
-    }
-}
-
-public sealed class FakeRpc : IRpcRegistry
-{
-    private readonly ConcurrentDictionary<string, (RpcHandler Handler, string PluginId, bool ReadOnly)> _handlers = new();
-
-    public IDisposable Register(string method, RpcHandler handler, string? description = null) => RegisterFor(method, handler, "test", false);
-    public IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly) => RegisterFor(method, handler, "test", readOnly);
-
-    public IDisposable RegisterFor(string method, RpcHandler handler, string pluginId, bool readOnly = false)
-    {
-        _handlers[method] = (handler, pluginId, readOnly);
-        return new Disposer(() => _handlers.TryRemove(method, out _));
-    }
-
-    public async Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default)
-    {
-        if (!_handlers.TryGetValue(method, out var h)) throw new RpcException("not_found", $"No method {method}");
-        var p = parameters is null ? JsonDocument.Parse("{}").RootElement : NetPiJson.ToElement(parameters);
-        return await h.Handler(new RpcRequest { Method = method, Params = p }, ct);
-    }
-
-    /// <summary>Invoke and return the result as JSON (what the UI would receive).</summary>
-    public async Task<JsonNode?> CallAsync(string method, object? parameters = null) => NetPiJson.ToNode(await InvokeAsync(method, parameters));
-
-    public IReadOnlyList<RpcMethodInfo> List() => _handlers.Select(kv => new RpcMethodInfo(kv.Key, null, kv.Value.PluginId, kv.Value.ReadOnly)).ToList();
-    public bool Exists(string method) => _handlers.ContainsKey(method);
 }
 
 // ------------------------------------------------------------------ models
@@ -477,19 +319,4 @@ public sealed class ConsoleLogger(string category, bool verbose) : ILogger
         if (!IsEnabled(logLevel)) return;
         Console.WriteLine($"    [{category} {logLevel}] {formatter(state, exception)}{(exception is null ? "" : " — " + exception.GetType().Name + ": " + exception.Message)}");
     }
-}
-
-/// <summary>The UI registry of a test host: it keeps the slash commands plugins add (the tabs are not shown anywhere).</summary>
-public sealed class FakeUi : IUiRegistry
-{
-    private readonly List<SlashCommandInfo> _commands = [];
-    public IDisposable AddTab(UiTabInfo tab) => new Remove(() => { });
-    public IDisposable AddCommand(SlashCommandInfo command)
-    {
-        lock (_commands) _commands.Add(command);
-        return new Remove(() => { lock (_commands) _commands.Remove(command); });
-    }
-    public IReadOnlyList<UiTabInfo> Tabs => [];
-    public IReadOnlyList<SlashCommandInfo> Commands { get { lock (_commands) return [.. _commands]; } }
-    private sealed class Remove(Action action) : IDisposable { public void Dispose() => action(); }
 }

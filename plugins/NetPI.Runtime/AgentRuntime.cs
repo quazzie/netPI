@@ -26,6 +26,10 @@ internal sealed class AgentRuntime : IAgentRuntime
     private int _spawnCounter;
     internal string Generation { get; } = Guid.NewGuid().ToString("N");
 
+    /// <summary>How long StopAsync waits for in-flight runs to finish after it cancels them. The production ceiling
+    /// is 5 s; a run that honours cancellation stops far sooner, so tests set this to 300 ms to skip the wait.</summary>
+    internal TimeSpan StopWait { get; set; } = TimeSpan.FromSeconds(5);
+
     public AgentRuntime(IPluginContext ctx)
     {
         Ctx = ctx;
@@ -1381,7 +1385,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
         try
         {
-            await Task.WhenAll(runs.Select(r => r.Task ?? Task.CompletedTask)).WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+            await Task.WhenAll(runs.Select(r => r.Task ?? Task.CompletedTask)).WaitAsync(StopWait, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

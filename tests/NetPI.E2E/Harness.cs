@@ -5,67 +5,9 @@ using System.Text.Json;
 
 namespace NetPI.E2E;
 
-// ------------------------------------------------------------------ mini test framework (NuGet is not available)
-
-public class AssertException(string message) : Exception(message);
-
-public static class Check
-{
-    private static int _total;
-    // the test body that is running in this async flow: with shards several bodies run at once, and each owns its count
-    private static readonly AsyncLocal<int[]?> Scope = new();
-
-    public static int Total => Volatile.Read(ref _total);
-
-    /// <summary>Count this flow's checks into <paramref name="counter"/> (the runner reads it after the body).</summary>
-    public static void Attach(int[] counter) => Scope.Value = counter;
-
-    private static void Count()
-    {
-        Interlocked.Increment(ref _total);
-        if (Scope.Value is { } c) Interlocked.Increment(ref c[0]);
-    }
-
-    public static void True(bool condition, string message = "expected true", [CallerArgumentExpression(nameof(condition))] string? expr = null)
-    {
-        Count();
-        if (!condition) throw new AssertException($"{message} ({expr})");
-    }
-
-    public static void False(bool condition, string message = "expected false", [CallerArgumentExpression(nameof(condition))] string? expr = null)
-    {
-        Count();
-        if (condition) throw new AssertException($"{message} ({expr})");
-    }
-
-    public static void Equal<T>(T expected, T actual, string? message = null)
-    {
-        Count();
-        if (!EqualityComparer<T>.Default.Equals(expected, actual))
-            throw new AssertException($"{message ?? "not equal"}\n      expected: {Show(expected)}\n      actual:   {Show(actual)}");
-    }
-
-    public static void Contains(string? haystack, string needle, string? message = null)
-    {
-        Count();
-        if (haystack is null || !haystack.Contains(needle, StringComparison.Ordinal))
-            throw new AssertException($"{message ?? "substring not found"}: {Show(needle)}\n      in: {Show(haystack)}");
-    }
-
-    public static void NotContains(string? haystack, string needle, string? message = null)
-    {
-        Count();
-        if (haystack is not null && haystack.Contains(needle, StringComparison.Ordinal))
-            throw new AssertException($"{message ?? "unexpected substring"}: {Show(needle)}\n      in: {Show(haystack)}");
-    }
-
-    public static string Show(object? o)
-    {
-        var s = o is JsonElement je ? je.GetRawText() : o?.ToString() ?? "null";
-        s = s.Replace("\r", "\\r").Replace("\n", "\\n");
-        return s.Length > 1200 ? s[..1200] + "…" : s;
-    }
-}
+// The assertions (Check, with its check counter the shards read), the Wait helpers and AssertException are the
+// shared harness, linked from tests/Shared. What remains here is E2E's own: the case registry, the runner that
+// shards and triages against a live server, the routed console and the JsonElement conveniences.
 
 /// <summary>One registered test. <see cref="Id"/> is stable (runs, reports and reruns name it); <see cref="Name"/> is the readable sentence.</summary>
 public sealed record TestCase(string Id, string Name, Func<Task> Body, int TimeoutSeconds, int Order)
@@ -118,31 +60,6 @@ public sealed class RoutedConsole(TextWriter inner) : TextWriter
     public override void WriteLine(string? value) => Write((value ?? "") + "\n");
 
     public override void WriteLine() => Write("\n");
-}
-
-public static class Wait
-{
-    /// <summary>Poll until <paramref name="condition"/> holds (throws on timeout).</summary>
-    public static async Task Until(Func<bool> condition, string what, int timeoutMs = 15_000, int pollMs = 25)
-    {
-        var sw = Stopwatch.StartNew();
-        while (!condition())
-        {
-            if (sw.ElapsedMilliseconds > timeoutMs) throw new AssertException($"timed out after {timeoutMs}ms waiting for: {what}");
-            await Task.Delay(pollMs);
-        }
-    }
-
-    public static async Task<T> UntilAsync<T>(Func<Task<T?>> probe, string what, int timeoutMs = 15_000, int pollMs = 50) where T : class
-    {
-        var sw = Stopwatch.StartNew();
-        while (true)
-        {
-            if (await probe() is { } v) return v;
-            if (sw.ElapsedMilliseconds > timeoutMs) throw new AssertException($"timed out after {timeoutMs}ms waiting for: {what}");
-            await Task.Delay(pollMs);
-        }
-    }
 }
 
 /// <summary>JsonElement conveniences.</summary>

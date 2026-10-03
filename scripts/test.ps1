@@ -13,6 +13,12 @@
   Each suite gets its own temporary root (NETPI_TEST_ROOT), so two invocations of the same suite never
   delete each other's files, and the caller's NETPI_APP_DIR is restored on the way out.
 
+  Each runner writes its run to a result file (NETPI_TEST_RESULT), and this script reads that file, not the
+  console lines: per-test outcomes, the skip count, and the time the runner itself claims. A suite that dies
+  before writing one is a crash, and the run says so. Run a suite directly with the same contract:
+  NETPI_TEST_RESULT=out.json dotnet tests/NetPI.<X>.Tests/bin/Release/NetPI.<X>.Tests.dll, and split one suite
+  across machines with --shard i/n (1-based parts of the selected tests, in registration order).
+
   The summary reports, per suite, the process time next to the time the tests themselves claim. The
   difference is not noise: it is what the runner spent waiting for output that never arrived, which is
   how a surviving child process shows up. Anything over a second is called out.
@@ -37,7 +43,7 @@ param(
     [string]$Config = 'Release',
     [switch]$SkipBuild,
     [switch]$Serial,
-    [ValidateRange(1, 5)][int]$Parallel = 2
+    [ValidateRange(1, 5)][int]$Parallel = 3
 )
 
 $ErrorActionPreference = 'Stop'
@@ -108,9 +114,21 @@ try {
     $parallel = if ($Serial) { 1 } else { [math]::Max(1, [math]::Min($Parallel, $suites.Count)) }
     if ($parallel -gt 1) { Write-Host "running up to $parallel suite processes at once" -ForegroundColor DarkGray }
 
-    # Longest first: with a fixed worker count that keeps the tail from being one long suite.
+    # Longest first: with a fixed worker count that keeps the tail from being one long suite. Order by the
+    # previous run's wall time (the newest run json in artifacts\testlogs) so the queue tracks what actually
+    # took long; when there is no log yet (or a suite is new), fall back to the known relative costs.
+    $prevWall = @{}
+    $runJson = Get-ChildItem -Path $logDir -Filter '*.json' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike '*.result.json' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($runJson) {
+        try {
+            $prev = Get-Content -LiteralPath $runJson.FullName -Raw | ConvertFrom-Json
+            foreach ($su in $prev.suites) { $prevWall[$su.suite] = [double]$su.wallSeconds }
+        } catch { $prevWall = @{} }
+    }
+    $fallback = @{ Tools = 3; Aux = 3; Agent = 2; Host = 2; Storage = 1; Providers = 1 }
     $queue = [System.Collections.Generic.Queue[string]]::new()
-    foreach ($s in ($suites | Sort-Object { $known = @{ Tools = 3; Aux = 3; Agent = 2; Host = 2; Storage = 1; Providers = 1 }[$_] } -Descending)) { $queue.Enqueue($s) }
+    foreach ($s in ($suites | Sort-Object { $prevWall[$s] ?? $fallback[$s] } -Descending)) { $queue.Enqueue($s) }
 
     $running = @{}
     $pending = $suites.Count
@@ -122,24 +140,30 @@ try {
             # created inside this one is a nested repo with different behaviour.
             $env:NETPI_TEST_ROOT = Join-Path ([IO.Path]::GetTempPath()) "netpi-tests-$runId-$s"
             $runRoots += $env:NETPI_TEST_ROOT
+            $resultFile = Join-Path $logDir "$stamp-$s.result.json"
             $sw = [Diagnostics.Stopwatch]::StartNew()
             $job = Start-Job -ScriptBlock {
-                param($dll, $only, $appDir, $testRoot, $root)
+                param($dll, $only, $appDir, $testRoot, $root, $resultFile)
                 # A job starts in the user's profile folder, not where this script was invoked from, so the suite's
                 # relative paths (and the repo it reads) need the repository root set explicitly.
                 Set-Location $root
                 $env:NETPI_APP_DIR = $appDir
                 $env:NETPI_TEST_ROOT = $testRoot
+                # The runner writes its run there (JSON); the script below reads that, not the console lines.
+                $env:NETPI_TEST_RESULT = $resultFile
                 $out = & dotnet $dll @only 2>&1 | ForEach-Object { "$_" }
                 [pscustomobject]@{ Code = $LASTEXITCODE; Out = $out }
-            } -ArgumentList (Join-Path $repoRoot "tests\NetPI.$s.Tests\bin\$Config\NetPI.$s.Tests.dll"), $Only, $env:NETPI_APP_DIR, $env:NETPI_TEST_ROOT, $repoRoot
-            $running[$s] = @{ Job = $job; Sw = $sw }
+            } -ArgumentList (Join-Path $repoRoot "tests\NetPI.$s.Tests\bin\$Config\NetPI.$s.Tests.dll"), $Only, $env:NETPI_APP_DIR, $env:NETPI_TEST_ROOT, $repoRoot, $resultFile
+            # The result file travels with the job: with -Parallel the $resultFile above is already the next
+            # suite's by the time this one finishes, so the post-run block must not read the loop variable.
+            $running[$s] = @{ Job = $job; Sw = $sw; ResultFile = $resultFile }
         }
         $done = @($running.Keys | Where-Object { $running[$_].Job.State -ne 'Running' })
         if ($done.Count -eq 0) { Start-Sleep -Milliseconds 50; continue }
         foreach ($s in $done) {
             $entry = $running[$s]
             $entry.Sw.Stop()
+            $resultFile = $entry.ResultFile
             $out = @(); $code = 0
             try { $r = Receive-Job $entry.Job -ErrorAction Stop; $out = @($r.Out); $code = [int]$r.Code }
             catch { $out = @("the suite process could not be run: $_") }
@@ -149,36 +173,44 @@ try {
             "== NetPI.$s.Tests (exit $code, $([math]::Round($entry.Sw.Elapsed.TotalSeconds, 1))s) ==" | Add-Content $log
             $out | Add-Content $log
 
-            # Two runners, two formats: the console runners print "12 passed, 0 failed, 1 skipped, 59 total in 9.4s",
-            # the providers runner prints "Tests: 12 passed, 0 failed, 1 skipped. Checks: ...".
-            $line = @($out | Where-Object { $_ -match '^\d+ passed, \d+ failed' -or $_ -match '^Tests: ' })[-1]
-            $bodies = if ($line -match 'in (\d+([.,]\d+)?)s') { [double]($Matches[1] -replace ',', '.') } else { $null }
+            # The runner's result file is the authority: per-test outcomes, the skip count, and the time the
+            # runner itself reports — the process-gap column used to be blind to the providers suite, whose
+            # check-style summary line carried no body time. A suite that dies before writing one (a crash,
+            # a killed process) falls through to the exit-code check below.
+            $result = $null
+            if (Test-Path $resultFile) {
+                try { $result = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json } catch { $result = $null }
+            }
             $wall = [math]::Round($entry.Sw.Elapsed.TotalSeconds, 2)
+            if ($result) {
+                $bodies = [double]$result.bodySeconds
+                $skipped = [int]$result.skipped
+                $noMatch = [bool]$result.matchedNothing
+                $failedTests = @($result.tests | Where-Object { $_.result -eq 'failed' } | ForEach-Object { $_.name })
+                $summary = "$([int]$result.passed) passed, $([int]$result.failed) failed, $skipped skipped, $([int]$result.total) total in $bodies s"
+            }
+            else {
+                $bodies = $null; $skipped = 0; $failedTests = @(); $summary = 'no result file (the runner died before reporting)'
+                # A filter that matched nothing is a broken selection, not a pass; without the file the
+                # console line is all there is to tell them apart.
+                $noMatch = @($out | Where-Object { $_ -match 'No test matches the filter' }).Count -gt 0
+            }
             $overhead = if ($null -ne $bodies) { [math]::Round($wall - $bodies, 2) } else { $null }
-            # A test that could not run (no git, no browser, nothing built) is a skip, not a pass and not a failure.
-            $skipped = if ($line -match '(\d+) skipped') { [int]$Matches[1] } else { 0 }
-            # A filter that matched nothing is a broken selection, not a pass. The console runners say
-            # so themselves; a crash before any output would report a zero total too.
-            $noMatch = @($out | Where-Object { $_ -match 'No test matches the filter' }).Count -gt 0
-            if (-not $noMatch -and $line -and $line -match '^\d+ passed, \d+ failed, \d+ skipped, 0 total') { $noMatch = $true }
-
             $results.Add([ordered]@{
                     suite = $s; exitCode = $code; wallSeconds = $wall; reportedBodySeconds = $bodies
                     outsideTestTimersSeconds = $overhead; matchedNothing = $noMatch; skipped = $skipped
-                    summary = if ($line) { $line } else { 'no summary line' }
+                    summary = $summary
                 })
 
-            $failedLines = @($out | Where-Object { $_ -match '^\s*FAIL\s{2}' })
-            foreach ($f in $failedLines) {
-                # "(123ms)" and "(123 ms)" are both used, by different runners.
-                $name = ($f -replace '^\s*FAIL\s{2}', '') -replace '\s*\(\d+\s*m?s\)\s*$', ''
-                $failures.Add([pscustomobject]@{ Suite = $s; Name = $name })
-            }
-            # The exit code is the authority. A suite that exits non-zero without a FAIL line died
-            # part-way through — reporting that as green is how a broken run hides. A run that matched
-            # nothing is already reported above (the runner exits 2 for it), so it is not a crash here.
-            if ($code -ne 0 -and $failedLines.Count -eq 0 -and -not $noMatch) {
+            foreach ($f in $failedTests) { $failures.Add([pscustomobject]@{ Suite = $s; Name = $f }) }
+            # The exit code is the authority. A suite that dies part-way through — reported as green
+            # is how a broken run hides. A run that matched nothing is already reported above
+            # (the runner exits 2 for it), so it is not a crash here.
+            if ($code -ne 0 -and $failedTests.Count -eq 0 -and -not $noMatch) {
                 $failures.Add([pscustomobject]@{ Suite = $s; Name = "(suite process exited $code without reporting a failure - crash?)" })
+            }
+            elseif ($code -eq 0 -and -not $result -and -not $noMatch) {
+                $failures.Add([pscustomobject]@{ Suite = $s; Name = "(suite exited 0 but wrote no result file)" })
             }
         }
     }

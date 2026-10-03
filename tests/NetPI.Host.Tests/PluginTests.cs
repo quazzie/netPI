@@ -28,22 +28,43 @@ public static class SampleBuild
     {
         var project = Path.Combine(T.RepoRoot, "tests", "SamplePlugin", "SamplePlugin.csproj");
         var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host && File.Exists(host) ? host : "dotnet";
-        foreach (var variant in new[] { "v1", "v2", "fail" })
+        var variants = new[] { "v1", "v2", "fail" };
+        // The three variants write disjoint obj/out dirs, so they build at once: the wall time is the slowest
+        // build, not the sum of three sequential `dotnet build` startups.
+        var procs = new Dictionary<string, Process>();
+        var outs = new Dictionary<string, Task<string>>();
+        var errs = new Dictionary<string, Task<string>>();
+        try
         {
-            var psi = new ProcessStartInfo(dotnet)
+            foreach (var variant in variants)
             {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
-            foreach (var a in new[] { "build", project, "-c", Configuration, $"-p:SampleVariant={variant}", "-p:BuildProjectReferences=false", "-nologo", "-v:q", "-clp:ErrorsOnly" })
-                psi.ArgumentList.Add(a);
-            using var p = Process.Start(psi)!;
-            var stdout = p.StandardOutput.ReadToEndAsync();
-            var stderr = p.StandardError.ReadToEndAsync();
-            await p.WaitForExitAsync();
-            if (p.ExitCode != 0) throw new AssertException($"building SamplePlugin ({variant}) failed:\n{await stdout}\n{await stderr}");
-            if (!File.Exists(Path.Combine(Dir(variant), "SamplePlugin.dll"))) throw new AssertException($"SamplePlugin ({variant}) output missing");
+                var psi = new ProcessStartInfo(dotnet)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                };
+                foreach (var a in new[] { "build", project, "-c", Configuration, $"-p:SampleVariant={variant}", "-p:BuildProjectReferences=false", "-nologo", "-v:q", "-clp:ErrorsOnly" })
+                    psi.ArgumentList.Add(a);
+                var p = Process.Start(psi)!;
+                procs[variant] = p;
+                outs[variant] = p.StandardOutput.ReadToEndAsync();
+                errs[variant] = p.StandardError.ReadToEndAsync();
+            }
+            foreach (var variant in variants)
+            {
+                await procs[variant].WaitForExitAsync();
+                if (procs[variant].ExitCode != 0)
+                {
+                    foreach (var other in procs.Values) other.Kill(true);
+                    throw new AssertException($"building SamplePlugin ({variant}) failed:\n{await outs[variant]}\n{await errs[variant]}");
+                }
+                if (!File.Exists(Path.Combine(Dir(variant), "SamplePlugin.dll"))) throw new AssertException($"SamplePlugin ({variant}) output missing");
+            }
+        }
+        finally
+        {
+            foreach (var p in procs.Values) p.Dispose();
         }
     }
 }
@@ -90,7 +111,7 @@ public static class PluginTests
                 File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
 
             // Registrations appear during StartAsync; the state flips to running once StartAsync returned.
-            await Wait.UntilAsync(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running", LoadCount: 2 }, "plugin reloaded", 20_000);
+            await Wait.Until(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running", LoadCount: 2 }, "plugin reloaded", 20_000);
             Check.Equal("v2", await TryValueAsync(server));
             // the swap: the old tool was still registered when the new instance started, so no chat ever saw it missing
             Check.Equal("present", (string?)await server.Rpc.InvokeAsync("sample.overlap"),
@@ -104,7 +125,7 @@ public static class PluginTests
             Check.False(tabVersion == TabVersion(server), "UI version changes on reload");
             Check.Equal(2L, server.Kernel.Storage.Plugins.For("test.sample").Collection("sample_items", new CollectionSpec().Text("variant")).Count());
 
-            await Wait.UntilAsync(() => server.Kernel.Plugins.GetLoadState("test.sample").LastUnloadCollected is not null, "unload check finished", 30_000);
+            await Wait.Until(() => server.Kernel.Plugins.GetLoadState("test.sample").LastUnloadCollected is not null, "unload check finished", 30_000);
             Check.Equal(true, server.Kernel.Plugins.GetLoadState("test.sample").LastUnloadCollected, "host reports the old context collected");
             Check.True(await CollectedAsync(oldContext), "old AssemblyLoadContext was garbage collected");
         });
@@ -122,7 +143,7 @@ public static class PluginTests
                 File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
 
             // the swap failed, the old load was put back: state is running again and the reason is on the plugin
-            await Wait.UntilAsync(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running" } info && info.Error is not null,
+            await Wait.Until(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running" } info && info.Error is not null,
                 "the failed swap was rolled back", 20_000);
             var info = server.Plugins.List().Single(p => p.Id == "test.sample");
             Check.Equal("running", info.State, "still serving");
@@ -145,7 +166,7 @@ public static class PluginTests
             // a build while quiet: the file changes, the running version does not
             foreach (var file in Directory.GetFiles(SampleBuild.Dir("v2")))
                 File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
-            await Wait.UntilAsync(() => server.Plugins.Deferred().Contains("test.sample"), "the reload was deferred", 20_000);
+            await Wait.Until(() => server.Plugins.Deferred().Contains("test.sample"), "the reload was deferred", 20_000);
             Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"), "the running version keeps serving");
             Check.Equal(1, server.Plugins.List().Single(p => p.Id == "test.sample").LoadCount, "nothing was loaded");
             Check.True(ReferenceEquals(oldContext, CurrentContext(server).Target), "the same load context, untouched");
@@ -153,7 +174,7 @@ public static class PluginTests
 
             // switching quiet off applies what piled up
             server.Settings.Set("plugins.quiet", false);
-            await Wait.UntilAsync(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running", LoadCount: 2 },
+            await Wait.Until(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running", LoadCount: 2 },
                 "the deferred reload was applied", 20_000);
             Check.Equal("v2", (string?)await server.Rpc.InvokeAsync("sample.value"));
             Check.Equal(0, server.Plugins.Deferred().Count, "the queue is empty");
@@ -168,8 +189,8 @@ public static class PluginTests
             var uiChanged = 0;
             using var sub = server.Events.Subscribe(EventTypes.UiChanged, _ => Interlocked.Increment(ref uiChanged));
             File.WriteAllText(Path.Combine(pluginDir, "wwwroot", "ui.js"), "export function mount(el) { el.textContent = 'changed'; }");
-            await Wait.UntilAsync(() => TabVersion(server) != before, "tab version bumped");
-            await Wait.UntilAsync(() => Volatile.Read(ref uiChanged) > 0, "ui.changed published");
+            await Wait.Until(() => TabVersion(server) != before, "tab version bumped");
+            await Wait.Until(() => Volatile.Read(ref uiChanged) > 0, "ui.changed published");
             Check.Equal(1, server.Plugins.List().Single(p => p.Id == "test.sample").LoadCount, "not reloaded");
             Check.Contains(await HttpGetAsync(server, "/plugins/test.sample/ui.js", auth: false), "changed");
         });
@@ -190,7 +211,7 @@ public static class PluginTests
             var second = Path.Combine(pluginsRoot, "Zz.Second");
             T.CopyDir(SampleBuild.Dir("v2"), second);
             File.WriteAllText(Path.Combine(second, "plugin.json"), """{ "id": "test.second", "assembly": "SamplePlugin.dll" }""");
-            await Wait.UntilAsync(() => server.Plugins.List().Any(p => p.Directory == PathUtilNormalize(second) && p.State is not ("loading" or "unloaded")),
+            await Wait.Until(() => server.Plugins.List().Any(p => p.Directory == PathUtilNormalize(second) && p.State is not ("loading" or "unloaded")),
                 "new folder discovered and started", 15_000);
             var twin = server.Plugins.List().Single(p => p.Directory == PathUtilNormalize(second));
             // Same attribute id as the failed plugin: it may run (the first one is not running).
@@ -202,7 +223,7 @@ public static class PluginTests
             Check.True(server.Plugins.List().All(p => p.Id != "test.sample" || p.State is "disabled" or "failed"));
             Check.Contains(server.Settings.GetNode("plugins.disabled")!.ToJsonString(), "test.sample");
             await server.Plugins.SetEnabledAsync("test.sample", true);
-            await Wait.UntilAsync(() => server.Rpc.Exists("sample.value"), "re-enabled");
+            await Wait.Until(() => server.Rpc.Exists("sample.value"), "re-enabled");
         });
 
         r.Add("plugins: a plugin whose folder disappears is removed, and says so on the bus (kind: removed)", async () =>
@@ -228,7 +249,7 @@ public static class PluginTests
 
             Check.True(server.Plugins.List().All(p => p.Id != "test.sample"), "the plugin is no longer listed");
             Check.True(server.Kernel.Tools.Get("sample_echo") is null, "and its tools are gone with it");
-            await Wait.UntilAsync(() => { lock (removals) return removals.Count > 0; }, "plugins.reloaded for the removal", 20_000);
+            await Wait.Until(() => { lock (removals) return removals.Count > 0; }, "plugins.reloaded for the removal", 20_000);
             (string Ids, string Kind) first;
             lock (removals) first = removals[0];
             Check.Contains(first.Ids, "test.sample", "the event names the plugin that went away");
@@ -317,7 +338,7 @@ public static class PluginTests
             }
             foreach (var id in new[] { "netpi.tools.files", "netpi.tools.shell", "netpi.providers.aiproxy", "netpi.providers.anthropic" })
             {
-                await Wait.UntilAsync(() => server.Kernel.Plugins.GetLoadState(id).LastUnloadCollected is not null, id + " unload check", 30_000);
+                await Wait.Until(() => server.Kernel.Plugins.GetLoadState(id).LastUnloadCollected is not null, id + " unload check", 30_000);
                 Check.Equal(true, server.Kernel.Plugins.GetLoadState(id).LastUnloadCollected, id + " old context collected");
             }
             Check.True(server.Kernel.Tools.All.Count(t => t.Definition.Name == "read") == 1);

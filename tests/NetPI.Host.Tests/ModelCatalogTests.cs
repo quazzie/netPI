@@ -183,7 +183,7 @@ public static class ModelCatalogTests
             Check.Equal(0, (await catalog.ListAsync()).Count);
             var p1 = new FakeProvider("fake", Model("fake", "a", "unloaded"), Model("fake", "b", "loaded"));
             using var reg1 = services.Register<IModelProvider>(p1);
-            await Wait.UntilAsync(() => Volatile.Read(ref changed) > 0, "models.changed after provider registration");
+            await Wait.Until(() => Volatile.Read(ref changed) > 0, "models.changed after provider registration");
             Check.Equal("fake/a,fake/b", string.Join(",", catalog.Cached.Select(m => m.Ref)));
             var p2 = new FakeProvider("other", Model("other", "org/c"));
             var reg2 = services.Register<IModelProvider>(p2);
@@ -205,7 +205,7 @@ public static class ModelCatalogTests
             p1.Fail = true;
             Check.Equal(3, (await catalog.ListAsync(refresh: true)).Count);
             reg2.Dispose();
-            await Wait.UntilAsync(async () => (await catalog.ListAsync()).Count == 2, "provider removal invalidates");
+            await Wait.Until(async () => (await catalog.ListAsync()).Count == 2, "provider removal invalidates");
         });
 
         r.Add("models: stream normalizes messages and runs middleware lowest Order outermost", async () =>

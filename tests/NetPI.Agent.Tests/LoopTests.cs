@@ -1114,6 +1114,7 @@ public static class LoopTests
             await Wait.Until(() => h.Catalog.Calls == 2, "both running");
             await Wait.Until(() => h.Bus.OfType(EventTypes.StreamDelta).Count(e => ((string?)FakeBus.Data(e)["text"])?.Contains("answer") == true) >= 2, "both streamed");
             var runtime = h.Plugin<RuntimePlugin>().Runtime!;
+            runtime.StopWait = TimeSpan.FromMilliseconds(300);   // a cancelled run stops far sooner than the 5 s ceiling
             await h.StopPluginAsync("netpi.runtime");
             Check.Equal(null, h.Services.Get<IAgentRuntime>());
             var main = runtime.GetBySession(s.Id)!;

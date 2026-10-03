@@ -15,8 +15,8 @@ public static class BuildTests
     public static void Register(TestRunner r)
     {
         r.Add("build: the default output is artifacts/dev/app, never the app folder a running NetPI loads plugins from", DefaultOutput);
-        r.Add("build: installing into artifacts/app is opt-in (-Publish), and build.sh and the UI bundle scripts agree", PublishIsOptIn);
-        r.Add("build: a publish can be pointed at another app folder and takes an install lock", PublishTargetAndLock);
+        r.Add("build: a plain build leaves the app folder alone; -Publish installs into the named app folder (run for real)", PublishIsOptIn);
+        r.Add("build: the install lock is real - one publisher at a time, a held one is waited for, a stale one is taken over (run for real)", PublishTargetAndLock);
         r.Add("build: the one-plugin recipe builds into the folder the host loads plugins from", OnePluginRecipe);
         r.Add("build: a failed install frees the lock, a held one is waited for, a staged plugin is a whole folder", InstallRobustness);
         r.Add("build: the UI bundles are reproducible and CI compares them with the committed ones", BundlesAreReproducible);
@@ -82,16 +82,19 @@ public static class BuildTests
 
     private static async Task DefaultOutput()
     {
-        // what a running NetPI watches and hot-reloads from: never a build's output
-        foreach (var project in new[]
-                 {
-                     "plugins/NetPI.Context/NetPI.Context.csproj",
-                     "plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj",
-                     "src/NetPI.Server/NetPI.Server.csproj",
-                     "tests/NetPI.Aux.Tests/NetPI.Aux.Tests.csproj",   // references plugins: a test build rebuilt them
-                 })
+        // what a running NetPI watches and hot-reloads from: never a build's output. The four OutDir reads are
+        // one parallel round (the MSBuild CLI's -getProperty is single-project, so this is not one process, but the
+        // wall time is the slowest evaluation, not the sum of four sequential ones).
+        var projects = new[]
         {
-            var dir = (await OutDirOf(project))!.Replace('\\', '/');
+            "plugins/NetPI.Context/NetPI.Context.csproj",
+            "plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj",
+            "src/NetPI.Server/NetPI.Server.csproj",
+            "tests/NetPI.Aux.Tests/NetPI.Aux.Tests.csproj",   // references plugins: a test build rebuilt them
+        };
+        var dirs = await Task.WhenAll(projects.Select(async p => (p, (await OutDirOf(p))!.Replace('\\', '/'))));
+        foreach (var (project, dir) in dirs)
+        {
             Check.True(dir.EndsWith('/'), $"{project}: OutDir is a folder ({dir})");
             Check.False(dir.Contains("/artifacts/app/"), $"{project} would write into the app a running NetPI loads plugins from: {dir}");
         }
@@ -100,63 +103,117 @@ public static class BuildTests
         Check.Contains(props, "artifacts/dev/app", "the dev tree is the default output");
     }
 
+    /// <summary>
+    /// Opt-in as behaviour, not as text: a plain build.ps1 (no -Publish) must not create or write the app folder at
+    /// all, and <c>-Publish -AppDir &lt;dir&gt;</c> must install there. Run for real against a throwaway app folder, so
+    /// the app a NetPI actually runs from is never touched. (build.sh and the UI bundle scripts stay opt-in too.)
+    /// </summary>
     private static void PublishIsOptIn()
     {
-        var ps = File.ReadAllText(Path.Combine(T.RepoRoot, "build.ps1"));
-        // the build itself: no -p:AppOutDir back into the app folder, the dev tree is the default
-        var buildLine = ps.Split('\n').FirstOrDefault(l => l.Contains("dotnet build NetPI.slnx")) ?? "";
-        Check.NotContains(buildLine, "artifacts\\app", "the build does not write into artifacts/app");
-        Check.Contains(ps, "[switch] $Publish", "-Publish exists");
-        // the install is the one thing behind it, and it happens after the build
-        Check.Contains(ps, "if ($Publish)", "the install is guarded by -Publish");
-        Check.True(ps.IndexOf("if ($Publish)", StringComparison.Ordinal) > ps.IndexOf("dotnet build NetPI.slnx", StringComparison.Ordinal),
-            "the build comes first, the install after it");
-        Check.Contains(ps, "Get-LiveChats", "a publish says what it will disturb (chats mid-turn)");
-        Check.Contains(ps, "The running app was not touched", "a plain build says so");
-        foreach (var flag in new[] { "-NextStart", "-Pending", "-Discard", "-WaitUntilIdle" })
-            Check.Contains(ps, flag, $"{flag} is documented in the script");
+        var shell = new[] { "pwsh", "powershell" }.FirstOrDefault(Shell.Exists);
+        if (shell is null) Check.Skip("no PowerShell to run build.ps1");
+        var app = T.TempDir("publish-app");
 
+        // plain build: the app folder must not even be created
+        var (code, output) = Shell.RunBuild(shell, app, publish: false, 420_000);
+        Check.Equal(0, code, "plain build.ps1 failed:\n" + output);
+        Check.True(Directory.EnumerateFiles(app, "*", SearchOption.AllDirectories).Count() == 0,
+            "a plain build (no -Publish) wrote into the app folder");
+
+        // -Publish installs into the named app folder
+        (code, output) = Shell.RunBuild(shell, app, publish: true, 420_000);
+        Check.Equal(0, code, "build.ps1 -Publish failed:\n" + output);
+        Check.True(File.Exists(Path.Combine(app, "NetPI.Abstractions.dll")), "-Publish installed the contract assemblies");
+        Check.True(File.Exists(Path.Combine(app, "wwwroot", "index.html")), "-Publish installed the web UI");
+        Check.True(Directory.GetDirectories(Path.Combine(app, "plugins")).Length >= 30, "-Publish installed the plugins");
+        Check.False(File.Exists(Path.Combine(app, ".install.lock")), "the install lock was released after the install");
+
+        // the other installers stay opt-in too
         var sh = File.ReadAllText(Path.Combine(T.RepoRoot, "build.sh"));
         Check.Contains(sh, "--publish", "build.sh installs on request too");
-        Check.Contains(sh, "--next-start", "build.sh can stage for the next start");
         Check.Contains(sh, "DEV=artifacts/dev/app", "build.sh builds into the dev tree");
         Check.False(sh.Split('\n').Any(l => l.StartsWith("rm -rf artifacts/app", StringComparison.Ordinal)),
             "build.sh never empties the app folder outside --publish");
-
-        // the UI bundle scripts: installing into the app folder is opt-in there too
-        foreach (var (file, optIn) in new[]
-                 {
-                     ("web/scripts/sync-dist.mjs", "process.env.NETPI_COPY"),
-                     ("web/scripts/build-plugins.mjs", "process.env.NETPI_COPY"),
-                 })
+        foreach (var file in new[] { "web/scripts/sync-dist.mjs", "web/scripts/build-plugins.mjs" })
         {
             var text = File.ReadAllText(Path.Combine(T.RepoRoot, file.Replace('/', Path.DirectorySeparatorChar)));
-            Check.Contains(text, optIn, $"{file}: the copy into the app folder needs NETPI_COPY");
+            Check.Contains(text, "process.env.NETPI_COPY", $"{file}: the copy into the app folder needs NETPI_COPY");
             Check.Contains(text, "NETPI_NO_COPY", $"{file}: NETPI_NO_COPY still forces it off");
         }
     }
 
-    // Publishing from a worktree must reach the app that is actually running, and two publishers must not interleave.
+    // The install lock, as behaviour on a throwaway app folder: one publisher holds it at a time, a second waits
+    // while it is held, a stale one is taken over, and a failed install frees it for the next publisher.
     private static void PublishTargetAndLock()
     {
+        var shell = new[] { "pwsh", "powershell" }.FirstOrDefault(Shell.Exists);
+        if (shell is null) Check.Skip("no PowerShell to run the install lock");
         var ps = File.ReadAllText(Path.Combine(T.RepoRoot, "build.ps1"));
-        Check.Contains(ps, "[string] $AppDir", "-AppDir names another app folder");
-        Check.Contains(ps, "server.json", "and the running app's own folder is discovered from its server.json");
-        Check.Contains(ps, "$running.appDir", "by the appDir it writes there");
-        Check.Contains(ps, "Enter-InstallLock", "one install at a time");
-        Check.Contains(ps, "$lockFile = Join-Path $app '.install.lock'", "the lock lives in the app folder it guards");
-        Check.Contains(ps, "$installLock.Dispose()", "and is released when the install ends");
-        Check.True(ps.IndexOf("Waiting for", StringComparison.Ordinal) < ps.IndexOf("Enter-InstallLock $lockFile", StringComparison.Ordinal),
-            "-WaitUntilIdle waits before taking the lock, so a patient publisher does not block another one");
+        var lockFn = Slice(ps, "function Enter-InstallLock", "function Get-LiveChats");
+        Check.True(lockFn.Contains("Enter-InstallLock"), "could not extract Enter-InstallLock from build.ps1");
 
-        var sh = File.ReadAllText(Path.Combine(T.RepoRoot, "build.sh"));
-        Check.Contains(sh, "--app-dir", "build.sh can be pointed at another app folder too");
-        Check.Contains(sh, "APP=${APP_DIR:-artifacts/app}", "and defaults to its own");
+        var app = T.TempDir("install-lock");
+        Directory.CreateDirectory(app);
+        var child = Path.Combine(app, "waiter.ps1");
+        var parent = Path.Combine(app, "locktest.ps1");
 
-        // the UI bundle script installs into the same app folder, not a hardcoded one
-        var plugins = File.ReadAllText(Path.Combine(T.RepoRoot, "web/scripts/build-plugins.mjs".Replace('/', Path.DirectorySeparatorChar)));
-        Check.Contains(plugins, "process.env.NETPI_APP_DIR", "build-plugins.mjs honours NETPI_APP_DIR");
-        Check.NotContains(plugins, "path.join(repo, 'artifacts/app/plugins'", "and no longer hardcodes artifacts/app");
+        // the waiter: a second publisher that tries to take the same lock and records when it finally gets it
+        File.WriteAllText(child, lockFn + "\r\n" + @"
+$ErrorActionPreference = 'Stop'
+$lock = Join-Path '@APP@' '.install.lock'
+$fs = Enter-InstallLock $lock
+$fs.Dispose()
+Set-Content -LiteralPath (Join-Path '@APP@' 'acquired.txt') 'ACQUIRED'
+".Replace("@APP@", app));
+
+        File.WriteAllText(parent, lockFn + "\r\n" + @"
+$ErrorActionPreference = 'Stop'
+$app = '@APP@'
+$lock = Join-Path $app '.install.lock'
+$marker = Join-Path $app 'acquired.txt'
+
+# 1. an acquire creates the lock and holds it exclusively
+$fs = Enter-InstallLock $lock
+if (-not (Test-Path -LiteralPath $lock)) { throw 'acquire did not create the lock file' }
+try { [IO.File]::Open($lock, 'Open', 'ReadWrite', 'None').Dispose(); throw 'the lock file is not held exclusively' } catch [IO.IOException] {}
+
+# 2. a second publisher (its own process) must wait, not interleave
+$waiter = Start-Process -FilePath '@SHELL@' -ArgumentList @('-NoProfile','-File','@CHILD@') -PassThru
+Start-Sleep -Seconds 3
+if (Test-Path -LiteralPath $marker) { throw 'the second publisher acquired while the lock was still held' }
+
+# 3. releasing lets the waiter in
+$fs.Dispose()
+Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
+$waiter.WaitForExit(30000) | Out-Null
+if ($waiter.ExitCode -ne 0) { throw ('the waiter failed with exit ' + $waiter.ExitCode) }
+if (-not (Test-Path -LiteralPath $marker)) { throw 'the waiter never acquired after the first publisher released' }
+
+# 4. a stale lock (older than a minute, no live holder) is taken over - fast, not the full two-minute wait
+$stale = Join-Path $app 'stale.lock'
+Set-Content -LiteralPath $stale 'stale'
+(Get-Item -LiteralPath $stale).LastWriteTime = (Get-Date).AddMinutes(-2)
+$t0 = Get-Date
+$fs2 = Enter-InstallLock $stale
+if (((Get-Date) - $t0).TotalSeconds -ge 10) { throw 'taking over a stale lock waited like a live one' }
+$fs2.Dispose(); Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+
+# 5. a failed install frees the lock, so the next publisher does not wait for a publisher that is gone
+$lock2 = Join-Path $app 'fail.lock'
+$held = $null
+try { $held = Enter-InstallLock $lock2; throw 'simulated failed install' } catch {}
+finally { if ($held) { $held.Dispose() }; Remove-Item -LiteralPath $lock2 -Force -ErrorAction SilentlyContinue }
+$t0 = Get-Date
+$fs3 = Enter-InstallLock $lock2
+if (((Get-Date) - $t0).TotalSeconds -ge 5) { throw 'a released lock still made the next publisher wait' }
+$fs3.Dispose(); Remove-Item -LiteralPath $lock2 -Force -ErrorAction SilentlyContinue
+
+Write-Output 'LOCK-OK'
+".Replace("@APP@", app).Replace("@SHELL@", shell).Replace("@CHILD@", child));
+
+        var (code, output) = Shell.RunFile(shell, parent, 120_000);
+        Check.Equal(0, code, "the install-lock behaviour test failed:\n" + output);
+        Check.Contains(output, "LOCK-OK");
     }
 
     /// <summary>
@@ -279,6 +336,51 @@ public static class BuildTests
             var errors = p.StandardError.ReadToEnd() + p.StandardOutput.ReadToEnd();
             p.WaitForExit(30_000);
             return (p.ExitCode, errors.Trim());
+        }
+
+        /// <summary>Run a script file (not an inline command): arguments stay unquoted, and the output is drained while
+        /// the process runs, so a chatty build cannot deadlock the read.</summary>
+        public static (int Code, string Output) RunFile(string shell, string scriptPath, int timeoutMs)
+        {
+            var psi = new ProcessStartInfo(shell)
+            {
+                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+                WorkingDirectory = T.RepoRoot,
+            };
+            psi.ArgumentList.Add("-NoProfile");
+            psi.ArgumentList.Add("-File");
+            psi.ArgumentList.Add(scriptPath);
+            using var p = Process.Start(psi)!;
+            var outTask = p.StandardOutput.ReadToEndAsync();
+            var errTask = p.StandardError.ReadToEndAsync();
+            var exited = p.WaitForExit(timeoutMs);
+            var output = outTask.GetAwaiter().GetResult() + errTask.GetAwaiter().GetResult();
+            if (exited) return (p.ExitCode, output);
+            try { p.Kill(true); } catch { /* already gone */ }
+            return (-1, output + "\n(the script did not finish in time)");
+        }
+
+        /// <summary>Run build.ps1 for real against a throwaway app folder: a plain build, or a publish into it.</summary>
+        public static (int Code, string Output) RunBuild(string shell, string appDir, bool publish, int timeoutMs)
+        {
+            var psi = new ProcessStartInfo(shell)
+            {
+                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+                WorkingDirectory = T.RepoRoot,
+            };
+            foreach (var a in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(T.RepoRoot, "build.ps1"), "-SkipWeb" })
+                psi.ArgumentList.Add(a);
+            if (publish) psi.ArgumentList.Add("-Publish");
+            psi.ArgumentList.Add("-AppDir");
+            psi.ArgumentList.Add(appDir);
+            using var p = Process.Start(psi)!;
+            var outTask = p.StandardOutput.ReadToEndAsync();
+            var errTask = p.StandardError.ReadToEndAsync();
+            var exited = p.WaitForExit(timeoutMs);
+            var output = outTask.GetAwaiter().GetResult() + errTask.GetAwaiter().GetResult();
+            if (exited) return (p.ExitCode, output);
+            try { p.Kill(true); } catch { /* already gone */ }
+            return (-1, output + "\n(the build did not finish in time)");
         }
     }
 }

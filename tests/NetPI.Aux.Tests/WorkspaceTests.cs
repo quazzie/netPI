@@ -75,12 +75,12 @@ public static class WorkspaceTests
             ProjectPath = Path.Combine(Root, "repo");
             Directory.CreateDirectory(ProjectPath);
             Git = new GitProbe(TimeSpan.Zero);
-            GitAvailable = git && Git_(ProjectPath, "init", "-q", "-b", "main");
+            GitAvailable = git && TestGit.Run(ProjectPath, "init", "-q", "-b", "main");
             if (GitAvailable)
             {
                 File.WriteAllText(Path.Combine(ProjectPath, "README.md"), "base\n");
-                Git_(ProjectPath, "add", "-A");
-                Git_(ProjectPath, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+                TestGit.Run(ProjectPath, "add", "-A");
+                TestGit.Run(ProjectPath, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
             }
             Project = Ctx.SessionsFake.CreateProject("Repo", ProjectPath);
             Plugin = new WorkspacePlugin();
@@ -152,38 +152,6 @@ public static class WorkspaceTests
 
     private static JsonElement Json(object o) => JsonSerializer.SerializeToElement(o);
 
-    private static bool Git_(string cwd, params string[] args)
-    {
-        var psi = new System.Diagnostics.ProcessStartInfo("git")
-        { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        try
-        {
-            using var p = System.Diagnostics.Process.Start(psi)!;
-            p.StandardOutput.ReadToEnd();
-            p.StandardError.ReadToEnd();
-            p.WaitForExit();
-            return p.ExitCode == 0;
-        }
-        catch (System.ComponentModel.Win32Exception) { return false; }
-    }
-
-    private static string? GitOut(string cwd, params string[] args)
-    {
-        var psi = new System.Diagnostics.ProcessStartInfo("git")
-        { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        try
-        {
-            using var p = System.Diagnostics.Process.Start(psi)!;
-            var stdout = p.StandardOutput.ReadToEnd();
-            p.StandardError.ReadToEnd();
-            p.WaitForExit();
-            return p.ExitCode == 0 ? stdout.Trim() : null;
-        }
-        catch (System.ComponentModel.Win32Exception) { return null; }
-    }
-
     private static void Skip(string what) => Check.Skip($"no git on PATH: {what} not checked");
 
     // ------------------------------------------------------------------ the tests
@@ -228,9 +196,9 @@ public static class WorkspaceTests
         env.Write(w.Binding!.Root, "only-here.txt", "worker's");
 
         Check.False(File.Exists(Path.Combine(env.ProjectPath, "only-here.txt")), "the worker's file landed in the primary checkout");
-        Check.Equal("", GitOut(env.ProjectPath, "status", "--porcelain") ?? "", "the primary checkout has pending changes");
+        Check.Equal("", TestGit.Out(env.ProjectPath, "status", "--porcelain") ?? "", "the primary checkout has pending changes");
         // The worktree's changes are its own, visible from its own status.
-        Check.Contains(GitOut(w.Binding.Root, "status", "--porcelain") ?? "", "only-here.txt");
+        Check.Contains(TestGit.Out(w.Binding.Root, "status", "--porcelain") ?? "", "only-here.txt");
         return Task.CompletedTask;
     }
 
@@ -356,12 +324,12 @@ public static class WorkspaceTests
         // A second repository, and a workspace bound to it while the session belongs to the first project.
         var otherRoot = Path.Combine(Path.GetDirectoryName(env.Root)!, "other-repo");
         Directory.CreateDirectory(otherRoot);
-        if (!Git_(otherRoot, "init", "-q", "-b", "main")) { Skip("other repository"); }
+        if (!TestGit.Run(otherRoot, "init", "-q", "-b", "main")) { Skip("other repository"); }
         try
         {
             File.WriteAllText(Path.Combine(otherRoot, "x.txt"), "x");
-            Git_(otherRoot, "add", "-A");
-            Git_(otherRoot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+            TestGit.Run(otherRoot, "add", "-A");
+            TestGit.Run(otherRoot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
             var other = env.Ctx.Services.Get<IWorkspaceStore>()!.CreateWorkspace(new WorkspaceInfo { Name = "other", Path = otherRoot, Kind = "attached" });
             var session = env.Session("s", other.Id);
             var ex = Check.Throws<WorkspaceUnavailableException>(() => env.Resolver.CwdOf(session));
@@ -382,13 +350,13 @@ public static class WorkspaceTests
         if (!env.GitAvailable) { Skip("clean start"); }
         // The parent's checkout has an uncommitted change; the worker's worktree must not contain it.
         File.WriteAllText(Path.Combine(env.ProjectPath, "README.md"), "base\nuncommitted parent edit\n");
-        var head = GitOut(env.ProjectPath, "rev-parse", "HEAD");
+        var head = TestGit.Out(env.ProjectPath, "rev-parse", "HEAD");
         var w = env.Provision("clean", "ses_c");
         Check.True(w.Ok, w.Error ?? "");
         Check.Equal(head, w.Binding!.BaseCommit);
-        Check.Equal(head, GitOut(w.Binding.Root, "rev-parse", "HEAD"));
+        Check.Equal(head, TestGit.Out(w.Binding.Root, "rev-parse", "HEAD"));
         Check.Equal("base", File.ReadAllText(Path.Combine(w.Binding.Root, "README.md")).Trim());
-        Check.Equal("", GitOut(w.Binding.Root, "status", "--porcelain") ?? "");
+        Check.Equal("", TestGit.Out(w.Binding.Root, "status", "--porcelain") ?? "");
         return Task.CompletedTask;
     }
 
@@ -437,14 +405,14 @@ public static class WorkspaceTests
 
         // A nested checkout is still a checkout of the same repository: the evidence the guards rely on is unchanged.
         Check.Equal(a.Binding.RepoCommonDir, b.Binding.RepoCommonDir);
-        Check.Contains(GitOut(env.ProjectPath, "worktree", "list") ?? "", "tests");
+        Check.Contains(TestGit.Out(env.ProjectPath, "worktree", "list") ?? "", "tests");
 
         // And the parent's status is clean: the root is excluded locally, so no branch gains an ignore line.
-        Check.Equal("", GitOut(env.ProjectPath, "status", "--porcelain") ?? "", "the project checkout shows pending changes");
+        Check.Equal("", TestGit.Out(env.ProjectPath, "status", "--porcelain") ?? "", "the project checkout shows pending changes");
         var exclude = Path.Combine(WorkspacePaths.Canonical(a.Binding.RepoCommonDir!), "info", "exclude");
         Check.True(File.Exists(exclude), "the local exclude file was not written");
         Check.Contains(File.ReadAllText(exclude), "/" + WorkspaceProvisioner.DefaultWorktreeFolder + "/");
-        Check.True(Git_(env.ProjectPath, "check-ignore", "-q", WorkspaceProvisioner.DefaultWorktreeFolder), "git does not ignore the worktree root");
+        Check.True(TestGit.Run(env.ProjectPath, "check-ignore", "-q", WorkspaceProvisioner.DefaultWorktreeFolder), "git does not ignore the worktree root");
         return Task.CompletedTask;
     }
 
@@ -489,8 +457,8 @@ public static class WorkspaceTests
         foreach (var w in new[] { a.Binding!, b.Binding! })
         {
             env.Write(w.Root, $"{Path.GetFileName(w.Root)}.txt", "work");
-            Git_(w.Root, "add", "-A");
-            Git_(w.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "work");
+            TestGit.Run(w.Root, "add", "-A");
+            TestGit.Run(w.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "work");
         }
 
         // Two integrations at once into the same branch: they must serialize, and both must land.
@@ -503,11 +471,11 @@ public static class WorkspaceTests
             // real conflict, and must say so rather than pretend.
             Check.True(ok, error ?? "");
         }
-        var log = GitOut(env.ProjectPath, "log", "--format=%s") ?? "";
+        var log = TestGit.Out(env.ProjectPath, "log", "--format=%s") ?? "";
         Check.Contains(log, "work");
-        Check.Equal("main", GitOut(env.ProjectPath, "rev-parse", "--abbrev-ref", "HEAD"));
+        Check.Equal("main", TestGit.Out(env.ProjectPath, "rev-parse", "--abbrev-ref", "HEAD"));
         // The lock is per repository and held only for the merge.
-        Check.True(env.Provisioner.IntegrationLock(GitOut(env.ProjectPath, "rev-parse", "--path-format=absolute", "--git-common-dir")!).CurrentCount == 1);
+        Check.True(env.Provisioner.IntegrationLock(TestGit.Out(env.ProjectPath, "rev-parse", "--path-format=absolute", "--git-common-dir")!).CurrentCount == 1);
         return;
     }
 
@@ -529,26 +497,26 @@ public static class WorkspaceTests
 
         // The record's branch is current: the work merges into the project's branch and verifies.
         env.Write(root, "ok.txt", "work");
-        Git_(root, "add", "-A");
-        Git_(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "on the record");
+        TestGit.Run(root, "add", "-A");
+        TestGit.Run(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "on the record");
         var (okFirst, errFirst) = await env.Provisioner.IntegrateAsync(store.GetWorkspace(record.Id)!);
         Check.True(okFirst, errFirst ?? "");
-        Check.Contains(GitOut(env.ProjectPath, "log", "--format=%s") ?? "", "on the record");
+        Check.Contains(TestGit.Out(env.ProjectPath, "log", "--format=%s") ?? "", "on the record");
 
         // The worktree switches branches and commits there: the record is now stale.
-        Check.True(Git_(root, "switch", "-c", "drifted"));
+        Check.True(TestGit.Run(root, "switch", "-c", "drifted"));
         env.Write(root, "drift.txt", "work off the record");
-        Git_(root, "add", "-A");
-        Git_(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "drifted");
+        TestGit.Run(root, "add", "-A");
+        TestGit.Run(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "drifted");
 
         // The refusal names both branches, and the drifted work is not merged and not verified.
         var (ok, err) = await env.Provisioner.IntegrateAsync(store.GetWorkspace(record.Id)!);
         Check.False(ok, "a stale record was integrated");
         Check.Contains(err!, "drifted");
         Check.Contains(err, record.Branch!);
-        var driftedHead = GitOut(root, "rev-parse", "HEAD")!;
+        var driftedHead = TestGit.Out(root, "rev-parse", "HEAD")!;
         Check.False(env.Provisioner.IsAncestor(root, driftedHead, "main"), "the drifted work was merged after all");
-        Check.NotContains(GitOut(env.ProjectPath, "log", "--format=%s") ?? "", "drifted");
+        Check.NotContains(TestGit.Out(env.ProjectPath, "log", "--format=%s") ?? "", "drifted");
 
         // Through the RPC the same refusal comes back, with the answer never claiming a merge that did not include the work.
         var ex = await Check.ThrowsAsync<RpcException>(
@@ -565,7 +533,7 @@ public static class WorkspaceTests
         });
         var (okBare, errBare) = await env.Provisioner.IntegrateAsync(bare);
         Check.True(okBare, errBare ?? "");
-        Check.Contains(GitOut(env.ProjectPath, "log", "--format=%s") ?? "", "drifted");
+        Check.Contains(TestGit.Out(env.ProjectPath, "log", "--format=%s") ?? "", "drifted");
         Check.True(env.Provisioner.IsAncestor(root, driftedHead, "main"), "the work resolved from git is merged and verified");
     }
 
@@ -608,8 +576,8 @@ public static class WorkspaceTests
         // Clean but unmerged: refused, and the worktree survives for the integrator.
         var unmerged = env.Provision("unmerged", "ses_u").Binding!;
         env.Write(unmerged.Root, "work.txt", "work");
-        Git_(unmerged.Root, "add", "-A");
-        Git_(unmerged.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "unmerged work");
+        TestGit.Run(unmerged.Root, "add", "-A");
+        TestGit.Run(unmerged.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "unmerged work");
         var (unmergedOk, unmergedWhy) = env.Provisioner.CanRetire(store.GetWorkspace(unmerged.WorkspaceId)!);
         Check.False(unmergedOk);
         Check.Contains(unmergedWhy!, "not merged or pushed");
@@ -618,8 +586,8 @@ public static class WorkspaceTests
         // Merged and clean: removed, and the record with it.
         var merged = env.Provision("merged", "ses_m").Binding!;
         env.Write(merged.Root, "work.txt", "work");
-        Git_(merged.Root, "add", "-A");
-        Git_(merged.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "merged work");
+        TestGit.Run(merged.Root, "add", "-A");
+        TestGit.Run(merged.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "merged work");
         var mergedRecord = store.GetWorkspace(merged.WorkspaceId)!;
         Check.True((await env.Provisioner.IntegrateAsync(mergedRecord)).Ok);
         var (retired, error) = await env.Provisioner.RetireAsync(store.GetWorkspace(merged.WorkspaceId)!);
@@ -662,8 +630,8 @@ public static class WorkspaceTests
 
         // Clean and merged: the only question left is who is bound.
         env.Write(w.Binding!.Root, "work.txt", "work");
-        Git_(w.Binding.Root, "add", "-A");
-        Git_(w.Binding.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "arch work");
+        TestGit.Run(w.Binding.Root, "add", "-A");
+        TestGit.Run(w.Binding.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "arch work");
         Check.True((await env.Provisioner.IntegrateAsync(record)).Ok);
 
         // Bound and archived: not working in the worktree, so it does not block the retirement.
@@ -906,9 +874,9 @@ public static class WorkspaceTests
         return Task.CompletedTask;
     }
 
-    private static bool GitAvailable() => GitOut(T.TempDir("ws-git"), "--version") is not null;
+    private static bool GitAvailable() => TestGit.Available();
 
-    private static void GitInit(string dir) => Check.True(Git_(dir, "init", "-q", "-b", "main"), "git init");
+    private static void GitInit(string dir) => Check.True(TestGit.Run(dir, "init", "-q", "-b", "main"), "git init");
 
     /// <summary>A probe scripted per path, for the verdict table of <see cref="WorkspacePaths.CheckMutation"/>.</summary>
     private sealed class ScriptedProbe : IWorkspaceRepoProbe
@@ -1146,10 +1114,10 @@ public static class WorkspaceTests
         try
         {
             Directory.CreateDirectory(otherRoot);
-            if (!Git_(otherRoot, "init", "-q", "-b", "main")) { Skip("resolve cache"); }
+            if (!TestGit.Run(otherRoot, "init", "-q", "-b", "main")) { Skip("resolve cache"); }
             File.WriteAllText(Path.Combine(otherRoot, "x.txt"), "x");
-            Git_(otherRoot, "add", "-A");
-            Git_(otherRoot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+            TestGit.Run(otherRoot, "add", "-A");
+            TestGit.Run(otherRoot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
             var projectB = env.Ctx.SessionsFake.CreateProject("Other", otherRoot);
 
             var wA = store.CreateWorkspace(new WorkspaceInfo { Name = "a", Path = env.ProjectPath, ProjectId = env.Project.Id, Kind = "attached" });

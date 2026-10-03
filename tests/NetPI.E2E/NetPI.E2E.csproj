@@ -12,6 +12,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../NetPI.Aux.Tests/McpFixture.cs" Link="McpFixture.cs" />
+    <Compile Include="../Shared/Harness.cs" Link="SharedHarness.cs" />
+    <Compile Include="../Shared/Usings.cs" Link="SharedUsings.cs" />
     <ProjectReference Include="../MockLlm/MockLlm.csproj" />
   </ItemGroup>
 </Project>

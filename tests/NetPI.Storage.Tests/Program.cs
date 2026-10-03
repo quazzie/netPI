@@ -1,4 +1,3 @@
-using NetPI.Host.Tests;
 using NetPI.Storage.Tests;
 
 // The storage conformance suite: the storage port in executable form. Every test here is a scenario the port's
@@ -9,7 +8,7 @@ using NetPI.Storage.Tests;
 //
 //   dotnet build tests/NetPI.Storage.Tests
 //   dotnet tests/NetPI.Storage.Tests/bin/Debug/NetPI.Storage.Tests.dll [name filter...]
-var runner = new TestRunner();
+var runner = new TestRunner { Name = "Storage", TimeoutSeconds = 120 };
 SessionTests.Register(runner);
 MessageTests.Register(runner);
 CollectionTests.Register(runner);

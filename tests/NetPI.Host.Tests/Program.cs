@@ -2,7 +2,7 @@ using NetPI.Host.Tests;
 
 // NetPI host kernel tests. Usage: NetPI.Host.Tests [name filter...]   (NETPI_TEST_LOGS=1 shows host logs)
 if (args.FirstOrDefault() == "--mcp-fixture") return await NetPI.Aux.Tests.McpFixture.RunAsync(args.Skip(1).ToArray());
-var runner = new TestRunner();
+var runner = new TestRunner { Name = "Host", TimeoutSeconds = 120 };
 McpLifecycleTests.Register(runner);
 SqliteTests.Register(runner);
 SettingsTests.Register(runner);

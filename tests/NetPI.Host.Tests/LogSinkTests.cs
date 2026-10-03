@@ -25,7 +25,7 @@ public static class LogSinkTests
             using var sink = new LogSink(dir, console: false);
             sink.Write(Line(1));
             sink.Write(Line(2));
-            await Wait.UntilAsync(() => File.Exists(TodayPath(dir)) && ReadFile(TodayPath(dir)).Contains("line 2"),
+            await Wait.Until(() => File.Exists(TodayPath(dir)) && ReadFile(TodayPath(dir)).Contains("line 2"),
                 "both lines in today's log file");
             var recent = sink.Recent(10);
             Check.Equal("line 1,line 2", string.Join(",", recent.Select(e => e.Message)), "the ring buffer has them, oldest first");
@@ -57,7 +57,7 @@ public static class LogSinkTests
             Check.Equal(101, sink.Recent(200).Count, "every line is still in the ring: the 100 written plus the line that says so");
 
             held.TrySetResult();
-            await Wait.UntilAsync(() => File.Exists(TodayPath(dir)) && ReadFile(TodayPath(dir)).Contains("line 100"),
+            await Wait.Until(() => File.Exists(TodayPath(dir)) && ReadFile(TodayPath(dir)).Contains("line 100"),
                 "the writer catches up once the file answers");
             var written = ReadFile(TodayPath(dir)).Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Length > 0).ToList();
             Check.True(written.Any(l => l.EndsWith("[test] line 100")), "the newest lines are the ones that survive");

@@ -11,9 +11,10 @@
     <RootNamespace>NetPI.Storage.Tests</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <!-- The runner, the assertions and the temp-dir helper are the host suite's, linked rather than copied: a
+    <!-- The runner, the assertions and the temp-dir helper are the shared harness, linked rather than copied: a
          second copy of them would drift, and every suite has to print the line scripts/test.ps1 reads. -->
-    <Compile Include="../NetPI.Host.Tests/Harness.cs" Link="Harness.cs" />
+    <Compile Include="../Shared/Harness.cs" Link="SharedHarness.cs" />
+    <Compile Include="../Shared/Usings.cs" Link="SharedUsings.cs" />
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
     <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
   </ItemGroup>
