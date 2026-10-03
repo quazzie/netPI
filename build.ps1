@@ -51,6 +51,11 @@ Set-Location $PSScriptRoot
 
 function Step($text) { Write-Host "`n== $text" -ForegroundColor Cyan }
 
+# ---- the checkout we build from: its index must be HEAD (a branch moved from another worktree does not update
+# this tree, and a commit there would revert those commits). Advisory, and only in the main checkout.
+. (Join-Path $PSScriptRoot 'scripts\checkout.ps1')
+if (-not ($Pending -or $Discard)) { Write-StaleCheckoutWarning $PSScriptRoot }
+
 # ---- .NET SDK
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw '.NET SDK not found. Install the .NET 10 SDK: https://dotnet.microsoft.com/download/dotnet/10.0'

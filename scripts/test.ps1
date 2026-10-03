@@ -53,6 +53,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $suites = if ($Suite) { $Suite } else { @('Providers', 'Tools', 'Agent', 'Aux', 'Host', 'Storage') }
 $repoRoot = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path
+# The tree these tests run against: its index must be HEAD (see the check). Advisory, and only in the main checkout.
+. (Join-Path $PSScriptRoot 'checkout.ps1')
+Write-StaleCheckoutWarning $repoRoot
 Push-Location $repoRoot
 $previousAppDir = $env:NETPI_APP_DIR
 $previousTestRoot = $env:NETPI_TEST_ROOT
