@@ -36,7 +36,7 @@ so the default applies again). The agents and the budget have their own page; th
 | `plugins.disabled` | `[]` | plugin ids not to load |
 | `plugins.enabled` | `[]` | turn on plugins whose `plugin.json` says `enabled: false` |
 | `plugins.dirs` | `[]` | extra plugin folders (besides `<app>/plugins` and `~/.netpi/plugins`) |
-| `plugins.quiet` | `false` | while on, a plugin reload (a `/reload`, a build that replaced a plugin's files) is recorded and **not applied**: the running version keeps serving, so nothing swaps under a running chat and no in-memory plugin state is lost. Switching it off applies everything that piled up, in plugin start order. `diag.overview` lists what is waiting in `deferred`, and `plugins.reloaded` says `kind: "deferred"`. The one thing a git worktree cannot do: the running app is one process that every session shares |
+| `plugins.quiet` | `false` | while on, a plugin reload (a `/reload`, a build that replaced a plugin's files) is recorded and **not applied**: the running version keeps serving, so nothing swaps under a running chat and no in-memory plugin state is lost. Switching it off applies everything that piled up, in plugin start order. `diag.overview` lists what is waiting in `deferred`, and `plugins.reloaded` says `kind: "deferred"`. The one thing a git worktree cannot do: the running app is one process that every session shares. A switch in **Settings → General** |
 | `tools.disabled` | `[]` | tool names hidden from every chat (e.g. `["pwsh"]`); only in this file: the dialog switches whole plugins, and each chat switches its own tools (the composer's tools button, `meta.toolsOff`) |
 | `logging.level` | `Information` | host log level (`~/.netpi/logs/netpi-YYYYMMDD.log`) |
 
@@ -48,7 +48,7 @@ Two of the keys above are read at **startup only**, so a change to them takes ef
 | key | default | |
 |---|---|---|
 | `storage.provider` | `sqlite` | the storage provider the store is opened with: `sqlite` (`<home>/netpi.db`) or `memory`. Selection fails closed — a provider that is missing or broken stops the startup with a message that says what to do. `memory` runs only when it is asked for, because running after a broken install would lose every chat; `netpi-server --ephemeral` is that switch for a throwaway run or a test. A provider of your own drops in as an implementation of `IStorageProvider` and has to pass `tests/NetPI.Storage.Tests` (docs/PLUGINS.md) |
-| `database.sqlitePath` | – | explicit SQLite **library** to load (default: `winsqlite3.dll` on Windows, `libsqlite3` elsewhere; env `NETPI_SQLITE`); only the `sqlite` provider reads it, and only the `Sqlite3` P/Invoke layer |
+| `database.sqlitePath` | – | explicit SQLite **library** to load (default: `winsqlite3.dll` on Windows, `libsqlite3` elsewhere; env `NETPI_SQLITE`); only the `sqlite` provider reads it, and only the `Sqlite3` P/Invoke layer. A path field in **Settings → General** |
 
 The port is `src/NetPI.Abstractions/StoragePort.cs`: sessions/messages/projects, the core's small key-value store,
 each plugin's own collections of JSON documents (`ctx.Data`), and a snapshot of the whole store. A provider reads its

@@ -175,8 +175,8 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     /// </summary>
     private bool Quiet()
     {
-        try { return _k.Settings.Get("plugins.quiet", false); }
-        catch { return false; }
+        try { return _k.Settings.Get("plugins.quiet", Rpc.CoreSettings.QuietDefault); }
+        catch { return Rpc.CoreSettings.QuietDefault; }
     }
 
     /// <summary>The plugin ids whose reload is waiting for quiet to end, oldest first.</summary>

@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetPI.Host.Events;
+using NetPI.Host.Rpc;
 using NetPI.Host.Settings;
 
 namespace NetPI.Host.Tests;
@@ -33,6 +34,18 @@ public static class SettingsTests
             Check.Equal(0, s.Get<List<string>>("plugins.disabled")!.Count);
             Check.Equal(7431, s.Get<int>("server.port"));
             Check.True(s.GetNode("ui") is JsonObject);
+        });
+
+        r.Add("settings: the core schema declares the keys the host reads, with the defaults it reads them with", () =>
+        {
+            // A key the host reads and the dialog cannot show is a default that drifts: declared once, read from there.
+            var core = CoreSettings.Sections("ws").Single(s => s.Id == "core");
+            SettingInfo Info(string key) => core.Settings.Single(s => s.Key == key);
+            Check.Equal(false, Info("plugins.quiet").Default!.GetValue<bool>(), "the default the dialog shows");
+            Check.Equal("restart", Info("database.sqlitePath").Applies, "the SQLite library is read at startup only");
+            var file = Path.Combine(T.TempDir("settings-schema"), "settings.json");
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            Check.Equal(CoreSettings.QuietDefault, s.Get<bool>("plugins.quiet"), "the first-run document carries the default the host reads with");
         });
 
         r.Add("settings: dotted paths, typed reads, defaults, removal", () =>

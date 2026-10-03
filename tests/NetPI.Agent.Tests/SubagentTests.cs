@@ -28,6 +28,7 @@ public static class SubagentTests
         t.Add("subagents: a batch with a bad entry starts none of them", BatchRefused);
         t.Add("subagents: agent_wait without ids also returns a report that arrived while the parent was busy, once", ReportBeforeWait);
         t.Add("subagents: a wait racing a child's finish still drops the agent-result notice", RacedWaitDropsNotice);
+        t.Add("subagents: a spawn is planned from the request and the parent alone", PlanAlone);
         t.Add("subagents: cancel/send/wait/result are scoped to the caller's own tree (two sessions)", ForeignTreeScope);
     }
 
@@ -161,6 +162,64 @@ public static class SubagentTests
             Check.False(h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"),
                 $"cycle {i}: the report went with the wait's result; the agent-result notice must not also reach the parent");
         }
+    }
+
+    /// <summary>
+    /// The spawn's planning holds no state: what the child runs on, what it may do and where it works is decided from the
+    /// request, the parent (a snapshot and its session) and the services — with no agent running and no child created, and a
+    /// request that cannot work is refused there instead of leaving a child behind.
+    /// </summary>
+    private static async Task PlanAlone()
+    {
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", JsonNode.Parse("""{ "model": "fake/local" }""")));
+        var planner = new SubagentPlanner(h.Ctx("netpi.runtime"));
+        var parentSession = h.NewSession(model: "fake/local");
+        parentSession = h.Sessions.UpdateSession(parentSession.Id, s => s.Reasoning = "high");
+        var parent = new AgentInfo { Id = "agt_boss", SessionId = parentSession.Id, Name = "boss", Depth = 1 };
+
+        var plan = await planner.PlanAsync(new SpawnRequest { Task = "count", Name = "counter", Agent = "a" },
+            parent, parentSession, "agt_child", "counter", CancellationToken.None);
+        Check.Equal("fake/local", plan.ModelRef, "the named agent's model");
+        Check.Equal("high", plan.Reasoning, "the parent's reasoning comes with its model");
+        Check.Equal(null, plan.ToolAllowlist, "no tools asked for and no parent allowlist: the child's own tools");
+        Check.Equal(null, plan.Workspace, "without the workspace plugin the child shares its parent's checkout");
+        Check.Equal("agt_child", (string?)plan.Meta["agentId"]);
+        Check.Equal("agt_boss", (string?)plan.Meta["parentAgentId"]);
+        Check.Equal("a", (string?)plan.Meta[SessionAgent.MetaKey], "the child is bound to the agent it runs on");
+        Check.Equal(plan.Instructions, (string?)plan.Meta["agentInstructions"]);
+        Check.Contains(plan.Instructions, "You are \"counter\" (agent id agt_child), a subagent working for \"boss\" (agent id agt_boss).");
+        Check.Contains(plan.Instructions, "action send and to=\"parent\"", "the child may talk to its parent");
+        Check.Equal(0, h.Sessions.ListSessions(new SessionQuery { IncludeSubagents = true, Limit = 500 }).Count(s => s.Kind == "subagent"),
+            "planning created no child");
+
+        // what the child inherits: the parent's allowlist, and the tools switched off for the parent's session
+        h.Sessions.UpdateSession(parentSession.Id, s => s.Meta = new JsonObject { [SessionTools.MetaKey] = new JsonArray("pwsh") });
+        parentSession = h.Sessions.GetSession(parentSession.Id)!;
+        var limited = new AgentInfo { Id = "agt_boss", SessionId = parentSession.Id, Name = "boss", Depth = 1, ToolAllowlist = ["echo"] };
+        var inherited = await planner.PlanAsync(new SpawnRequest { Task = "read" }, limited, parentSession, "agt_child2", "agent-1", CancellationToken.None);
+        Check.Equal("echo", string.Join(",", inherited.ToolAllowlist!), "the parent's allowlist");
+        Check.Equal("pwsh", string.Join(",", ((JsonArray)inherited.Meta[SessionTools.MetaKey]!).Select(n => (string?)n)!));
+        Check.False(inherited.Instructions.Contains("action send"), "an agent without the agent tool cannot message its parent");
+
+        // tools the request names win over the parent's, and a request that cannot work is refused before any child exists
+        var named = await planner.PlanAsync(new SpawnRequest { Task = "read", Tools = ["echo"] }, limited, parentSession, "agt_child3", "agent-1", CancellationToken.None);
+        Check.Equal("echo", string.Join(",", named.ToolAllowlist!));
+        Check.Equal(null, named.Meta[SessionTools.MetaKey], "named tools: the parent's switched-off tools do not apply");
+        foreach (var (request, expected) in new[]
+        {
+            (new SpawnRequest { Task = "x", Agent = "nope" }, "Unknown agent 'nope'"),
+            (new SpawnRequest { Task = "x", Model = "nope/nothing" }, "Unknown agent or model 'nope/nothing'"),
+        })
+        {
+            try
+            {
+                await planner.PlanAsync(request, parent, parentSession, "agt_child4", "agent-1", CancellationToken.None);
+                throw new AssertException($"expected a refusal: {expected}");
+            }
+            catch (ArgumentException ex) { Check.Contains(ex.Message, expected); }
+        }
+        Check.Equal(0, h.Sessions.ListSessions(new SessionQuery { IncludeSubagents = true, Limit = 500 }).Count(s => s.Kind == "subagent"),
+            "a refused spawn still created a child");
     }
 
     /// <summary>
