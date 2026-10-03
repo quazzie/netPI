@@ -10,9 +10,13 @@
 //   3 a $derived in the tab that reads host state re-renders when the host changes it — what two runtimes cannot do
 //   4 no host, another svelte, or a host missing an export each fail with a message that says which
 //   5 the shims cover every export of svelte's three entry points and of the kit index
+//   6 a tab importing a svelte entry point that is not shimmed fails the build (a second runtime would be bundled);
+//     a tab on the shimmed entry points, without svelte at all, or with its own copy through a path the aliases
+//     do not rewrite, still builds
 //
-// 1-3 run in a headless browser (the shims need a window and a real DOM); 4-5 need only Node.
+// 1-3 run in a headless browser (the shims need a window and a real DOM); 4-6 need only Node.
 import fs from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -75,6 +79,62 @@ check('a host without the exports: the error says to rebuild both', /does not ex
 const noKit = await loadShim('@netpi/kit', undefined);
 check('no host kit: the error says the tab needs the shared kit', /shares its kit components/.test(noKit), noKit.slice(0, 80));
 delete globalThis.__netpiHost;
+
+// 6: the build's guard. An unshimmed `svelte/…` import resolves to node_modules and bundles a second copy of the
+// runtime, so build-plugins fails it with the importing file and the import. A tab that uses the shimmed entry
+// points, or no svelte at all, or brings its own copy through a path the aliases do not rewrite (the deliberate
+// opt-out), still builds. Run for real: build-plugins on fixture tabs under artifacts/.
+const FIXTURES = path.join(root, 'artifacts', 'check-host-shims');
+const buildFixture = async (name, files) => {
+  const ui = path.join(FIXTURES, name, 'ui');
+  for (const [file, body] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(ui, file)), { recursive: true });
+    await fs.writeFile(path.join(ui, file), body);
+  }
+  try {
+    execFileSync(process.execPath, [path.join(root, 'web', 'scripts', 'build-plugins.mjs'), '--only', path.dirname(ui)], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    return { code: 0, out: '' };
+  } catch (e) {
+    return { code: e.status ?? 1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+  }
+};
+{
+  const bad = await buildFixture('svelte-motion', {
+    'main.js': `import { spring } from 'svelte/motion';\nexport const s = spring(0);\n`,
+  });
+  check('a tab importing svelte/motion fails the build', bad.code !== 0);
+  check(
+    'and the failure names the importing file and the import',
+    /main\.js/.test(bad.out) && bad.out.includes("imports 'svelte/motion'"),
+    bad.out.slice(0, 200),
+  );
+  const badComponent = await buildFixture('svelte-motion-component', {
+    'main.js': `import Tab from './Tab.svelte';\nexport const mount = (el) => el.append(Tab);\n`,
+    'Tab.svelte': `<script>\n  import { spring } from 'svelte/motion';\n  export const s = spring(0);\n</script>\n<p>tab</p>\n`,
+  });
+  check(
+    'so does the import in a .svelte component, with the component named',
+    badComponent.code !== 0 && badComponent.out.includes('Tab.svelte'),
+    badComponent.out.slice(0, 200),
+  );
+  const shimmed = await buildFixture('shimmed-only', {
+    'main.js': `import { mount } from 'svelte';\nexport const mountTab = () => mount;\n`,
+  });
+  check('a tab on the shimmed entry points still builds', shimmed.code === 0, shimmed.out.slice(0, 200));
+  const vanilla = await buildFixture('vanilla', {
+    'main.js': `export const mountLog = (el) => { el.textContent = 'vanilla'; };\n`,
+  });
+  check('a tab without svelte at all still builds', vanilla.code === 0, vanilla.out.slice(0, 200));
+  const ownRuntime = await buildFixture('own-runtime', {
+    // a tab that deliberately bundles its own runtime: svelte through a path the aliases do not rewrite
+    'main.js': `import { mount } from '../../../../node_modules/svelte/src/index-client.js';\nexport const mountTab = () => mount;\n`,
+  });
+  check('a tab with its own runtime (the opt-out) still builds', ownRuntime.code === 0, ownRuntime.out.slice(0, 200));
+  await fs.rm(FIXTURES, { recursive: true, force: true });
+}
 
 // the browser part: a component compiled the way build-plugins compiles one (its svelte imports point at the shims,
 // which is what the bundler's alias does), mounted in a page that plays the host UI.

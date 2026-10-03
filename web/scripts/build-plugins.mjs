@@ -4,7 +4,8 @@
 // For every plugins/<P>/ui/main.js (or main.ts) — plus any plugin directories passed as arguments — build ONE
 // ES module with Svelte (component CSS injected into the JS) to plugins/<P>/wwwroot/ui.js. `svelte` and `@netpi/kit`
 // are the host UI's own copies, aliased to the shims that read them off globalThis.__netpiHost (idea-3pbkvg), so a
-// bundle carries no runtime and no kit copy. With --copy (or NETPI_COPY=1) the bundle also goes to
+// bundle carries no runtime and no kit copy. A tab importing another svelte entry point (svelte/motion, …) fails
+// the build — it would bundle a second copy of the runtime. With --copy (or NETPI_COPY=1) the bundle also goes to
 // <app>/plugins/<P>/wwwroot/ui.js, so UI edits hot-reload without a .NET build. <app> is NETPI_APP_DIR, else
 // --app-dir, else artifacts/app: point it at the running app's own folder (server.json's appDir) when building in a worktree.
 //
@@ -108,6 +109,23 @@ for (const dir of dirs) {
       logLevel: 'warn',
       publicDir: false,
       plugins: [
+        // A tab must not import a svelte entry point the host does not shim: an unshimmed `svelte/…` import resolves
+        // to node_modules and bundles a second copy of the runtime, which breaks reactivity across the tab's
+        // boundary. The build fails with the file and the import. A tab that uses no svelte at all — or brings its
+        // own copy through a path the aliases do not rewrite — is not affected.
+        {
+          name: 'netpi-svelte-import-guard',
+          enforce: 'pre',
+          resolveId(source, importer) {
+            if (/^svelte(\/[^'"]+)?$/.test(source) && !hostShims.some((a) => a.find.test(source)))
+              throw new Error(
+                `${importer ? path.relative(repo, importer) : 'the tab entry'} imports '${source}': a plugin tab may
+  only import the svelte entry points the host UI shares (svelte, svelte/internal/client, svelte/reactivity) —
+  anything else bundles a second copy of the Svelte runtime into the tab. Import the shimmed entry points, or write
+  the tab without Svelte.`,
+              );
+          },
+        },
         // runes only, like the app's own svelte.config.js: a legacy-mode component would import svelte's internal
         // flags module, and the flags are state the page shares — a second copy of them is a second runtime's worth
         // of bookkeeping that the tab could not see (and it is a build error to write one, not a silent difference)

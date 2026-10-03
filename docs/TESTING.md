@@ -424,8 +424,10 @@ nothing, and nothing running after unmount.
 `@netpi/kit` resolve to generated shims (`web/scripts/host-shims.mjs`) over the host UI's own copies on
 `globalThis.__netpiHost`. It checks that the shims cover every export of svelte's three entry points and of the kit
 index, that a tab compiled against them mounts and renders the host's kit components, that a `$derived` in the tab
-follows host state (what two runtimes cannot do), and that no host, another svelte, or a host missing an export each
-fail with a message saying which.
+follows host state (what two runtimes cannot do), that no host, another svelte, or a host missing an export each
+fail with a message saying which, and that a tab importing a svelte entry point that is not shimmed fails the build
+(the second runtime it would bundle stays out of the page) while a tab on the shimmed entry points, or without svelte
+at all, still builds.
 
 `node web/scripts/check-projects.mjs` is the unit suite for `web/src/lib/projects.js` (what the projects panel and the
 projects dialog share) and for the three views of the dialog: the counts, the filter and order, and the remove flow in

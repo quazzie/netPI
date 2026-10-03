@@ -54,7 +54,8 @@ web/
   index.html  vite.config.js  svelte.config.js
   scripts/build-plugins.mjs    plugin UI bundler
   scripts/host-shims.mjs       writes the shims a plugin bundle builds `svelte` and `@netpi/kit` against
-  scripts/check-host-shims.mjs what has to be true of that boundary (one runtime, a skew that fails visibly)
+  scripts/check-host-shims.mjs what has to be true of that boundary (one runtime, a skew that fails visibly,
+                                     unshimmed svelte imports fail the build)
   src/
     main.js                    styles, token, host services for plugins (__netpiHost), mount
     App.svelte                 shell layout + global shortcuts
@@ -686,8 +687,10 @@ so the page has one reactive system — a `$derived` in a tab that reads `ctx.ap
 carries neither (the sample plugin comes to about 16KB). What that costs: a tab bundle is pinned to the host's svelte
 (5.57.1 today), so **a svelte bump means rebuilding the app UI and every plugin tab**; a bundle that meets a host with
 another svelte, or none at all, throws a message naming the cause and the tab shows it with a Retry button instead of
-going blank. Plugin UIs are compiled `runes: true`, like the app: a legacy-mode component would import svelte's
-internal flags module, and those flags are state the page shares. Styling should use the host tokens and `np-*`
+going blank. A tab importing a svelte entry point that is not shimmed (`svelte/motion`, `svelte/store`, …) fails the
+build with the importing file and the import: such an import would bundle a second copy of the runtime, and two
+runtimes do not share reactivity across the tab's boundary. Plugin UIs are compiled `runes: true`, like the app:
+a legacy-mode component would import svelte's internal flags module, and those flags are state the page shares. Styling should use the host tokens and `np-*`
 classes, which keep the tab working in both themes. A plugin should not import `.css` files; component `<style>` is
 the way to style it.
 
