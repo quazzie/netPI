@@ -1,142 +1,42 @@
 # AGENTS.md — working on NetPI
 
-NetPI is a .NET 10 agent harness: a small host kernel (`src/NetPI.Host`) plus hot-reloadable plugins (`plugins/*`)
-and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for details.
+NetPI is a .NET 10 agent harness with hot-reloadable plugins and a Svelte 5 UI. Start with [README.md](README.md); current state and decisions are in [docs/HANDOFF.md](docs/HANDOFF.md).
 
-## Layout
-- `src/NetPI.Abstractions` — contracts shared by host and plugins: interfaces and plain data, no policy. Change them
-  whenever the design calls for it: NetPI runs on one machine and nothing outside this repository depends on them, so
-  there are **no compatibility shims, deprecated paths, mirrors or forwarders**. A contract change updates every plugin,
-  test and doc in the same change; rebuild all plugins. Existing local data that a change strands is migrated for the
-  owner's setup by a one-off script (see `docs/archive/2026-10-02-replaceable-parts.md`), never by product code.
-- `src/NetPI.Contracts` — the vocabularies built on those: agent slots/scheduler, workspaces, decisions, resource
-  leases, deferred tools, the plugins' event names. The **Host project must not reference it**, so the compiler enforces
-  the small core; a plugin that speaks none of them needs only Abstractions.
-- `src/NetPI.Host` — kernel: plugin manager, event bus, registries, settings, session service, model catalog, Kestrel/WebSocket
-  server, and **storage as a port**: `src/NetPI.Abstractions/StoragePort.cs` (`IStorageProvider` chosen by the
-  `storage.provider` setting, default `sqlite`; `--ephemeral` = the `memory` provider) with the two built-in providers in
-  `src/NetPI.Host/Storage/{Sqlite,Memory}` — the only code that writes SQL (`Sqlite3` is a P/Invoke over the OS library,
-  no NuGet). A plugin keeps its data in `ctx.Data` (`IPluginData`: named collections of JSON documents with declared
-  index fields), never in SQL, and a new provider must pass `tests/NetPI.Storage.Tests`. `src/NetPI.Server` = headless
-  exe, `src/NetPI.Desktop` = WinForms + WebView2 shell (Windows only).
-- `plugins/<Name>` — one plugin per folder; minimal csproj, conventions in `plugins/Directory.Build.props`. Plugins
-  never reference each other: they talk through services (`ctx.Services`), RPC (`ctx.Rpc`) and events (`ctx.Events`).
-- `plugins/<Name>/ui` — optional Svelte tab (built to `wwwroot/ui.js` by `npm run build:plugins`, committed).
-- `shared/` — source that several plugins compile in, not a shared assembly (plugins never reference each other):
-  each csproj lists it with `<Compile Include="$(RepoRoot)shared/<Kit>/*.cs" LinkBase="…" />`. `shared/ProviderKit/`
-  is the three provider plugins' common code (SSE reader, JSON accessors, error mapping, message assembler, secrets,
-  the Chat Completions parser and message builder, the model-list cache).
-- `web/` — the app UI (built to `web/dist`, committed; copied into the build output's `wwwroot` by the server build).
-- `tests/` — console test runners (no test framework; NuGet packages other than WebView2 are not used),
-  `tests/MockLlm` (scripted model server), `tests/NetPI.E2E` (end-to-end suite).
+## Layout and architecture
 
-## Build & test
-- **Verification is proportional to the change, including before a merge.** Docs, comments, formatting and line
-  endings need the relevant link/diff/checkout or reproducible-build checks, not test suites. A small plugin UI edit
-  needs its bundle build and a focused UI check; a plugin behavior change needs its owning tests and affected E2E
-  cases. Use full gates for shared contract changes, cross-cutting behavior, or an explicit user request. A merge
-  alone never justifies a full run. Broaden checks only when the affected scope or new evidence calls for it.
-- **Hunting one failing test? Run that one test, not the suite.** A full sweep (`scripts\test.ps1` with no filter, or
-  `scripts\e2e.ps1` with no selector) takes minutes, holds the machine, and tells you nothing the single test does not.
-  While fixing: `dotnet tests/NetPI.<X>.Tests/bin/Debug/NetPI.<X>.Tests.dll "<test name substring>"`, or
-  `.\scripts\test.ps1 -Suite <X> -Only "<name>"`, or `.\scripts\e2e.ps1 -Only <id>` / `-Failed` (the failure file in
-  `artifacts/e2elogs/<run>/failures/` already holds the evidence: read it instead of running again). When the scope
-  warrants a full sweep, run it once; after a fix, rerun the failures and affected tests, not the whole set.
-- **Work in a worktree, not here** (see `C:\AI\Projects\AGENTS.md`): one worktree and branch per agent. It is how you
-  avoid another agent's *edits* reaching you and yours reaching them. Several fixes can share that one tree — take them
-  one at a time, one commit each, merging each into `master` before the next.
-- **A build never touches the running app.** `AppOutDir` (`Directory.Build.props`) is `artifacts/dev/app`, so a plain
-  `dotnet build` of a plugin — or of a test project that references one — lands there, and a running NetPI (which loads
-  its plugins from `artifacts/app`) sees nothing: no chat loses a tool because someone ran the tests. Installing into
-  `artifacts\app` is a separate, deliberate step (`-Publish` below). A worktree has its own `artifacts/` besides.
-- Windows: `.\build.ps1` (add `-Test` for the unit suites); from cmd `build` (`build.cmd`, same options).
-  Linux/macOS: `./build.sh [--test]`.
-- Installing into the app folder (the app a NetPI runs from) is deliberate, never a side effect of testing. The
-  folder is the running app's own (`<home>\server.json` says where it is, which is not this repository's `artifacts\app`
-  when you build in a worktree), or `-AppDir <dir>` to name one. One install at a time: `.install.lock` in the app
-  folder, so two publishers cannot interleave.
-  - `.\build.ps1 -Publish` — build, then install. A reload is a **swap** (the new version starts while the old one
-    still serves), so no chat loses a tool; the script still says which plugins and how many chats are mid-turn, and
-    `-WaitUntilIdle` waits for them instead.
-  - `.\build.ps1 -Publish -NextStart` — the running NetPI gets nothing: everything waits in the app folder's
-    `.pending` for its next start, which installs it. Host files it replaces go into `.old` (a running exe or DLL
-    can be renamed, not overwritten), so the next start runs the new host; after a contract change the plugins wait
-    too, because the running NetPI would load them onto its old contracts. It prints what needs it.
-  - `.\build.ps1 -Pending` — what a restart would bring. `.\build.ps1 -Discard` — drop the staged build.
-  - `.\build.ps1 -Run` — publish and start the desktop app. `./build.sh` takes `--publish`, `--next-start`,
-    `--pending`, `--discard`, `--app-dir`.
-  - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=<app>/ -p:BuildProjectReferences=false`.
-    `AppOutDir` is the **app folder**, not the plugin's: a plugin's `OutDir` is `$(AppOutDir)plugins/<Name>/`, the
-    folder the host loads it from.
-- **A change is not done until the running app has it.** Merging into `master` and building land in `artifacts/dev/app` only;
-  the running NetPI loads from the app folder, and a restart consumes `.pending` — not `master`. Before telling the user a
-  change is done (or "you'll see it after a restart"), install it: `.\build.ps1 -Publish` (plugins hot-swap immediately),
-  `-Publish -NextStart` (nothing moves under a live chat; the next start applies it), or the one-plugin dll copy above.
-  If you cannot install it (no access to the app folder, or the user should choose when the host restarts), say so in the
-  report and name the exact command. "It'll come in on your next restart" with nothing staged in `.pending` is false:
-  that restart just restarts.
-- **A publish from a worktree swaps plugins like any other.** The same sources build the same bytes from any checkout (the
-  build maps its paths to `/_/`), so the contract DLLs hash-match the installed ones unless a contract really changed, and then
-  `-Publish` hot-swaps the plugins of **whatever branch you built**, merged or not, into the owner's running app. Merge into
-  `master` first (the app should run what `master` has), and use `-NextStart` when the owner is in the middle of something.
-  When a contract changed, the plugins wait in `.pending` for the next start instead.
-- **Want nothing to move under a running chat?** Set `plugins.quiet` (Settings or settings.json). Reloads are then
-  recorded and not applied — the running versions keep serving, nothing swaps, no state is lost — and switching it off
-  applies everything that piled up. This is the one thing a worktree cannot do: the running app is a single process
-  that every session shares.
-- Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
-  Agent, Aux, Host, Storage (the storage port's conformance suite; a provider joins in its `Providers.All`).
-  End-to-end (real server, mock model): `.\scripts\e2e.ps1` (below; `docs/TESTING.md`).
-- **The test loop: select the affected tests, then only the failures.** `.\scripts\test.ps1` builds the selected suites once
-  (one generated solution), runs them (2 processes at once by default; `-Parallel 3` for three, `-Serial` for one),
-  keeps the log and timings in `artifacts/testlogs`, and prints the failing names as a paste-ready `-Only` command.
-  Re-run those while fixing; merging does not require a wider run. `-Suite Aux`, `-Only "settings:"` (substring,
-  OR-ed), `-SkipBuild`. Never re-run the whole set to check one fix. The summary shows each suite's process time
-  next to its own reported test time: a gap there means the runner waited on output that never arrived.
-- **End-to-end: pick what your change can reach; never the whole suite while you work.** `.\scripts\e2e.ps1 -Changed` runs
-  the tests your changed files can affect (`tests/NetPI.E2E/areas.json` maps them); `-Only <id|substring>`, `-Tag <area>`,
-  `-Smoke`, `-Failed` (what failed and has not passed since, across runs) and `-List` pick by hand. One test is ~2 s, one
-  edited plugin plus its tests ~9 s, the smoke set ~10 s, and it builds only the projects whose sources changed. The whole
-  suite is for shared contract changes or cross-cutting behavior, not every merge: run it once, not as a
-  loop. A run lists *every* failure at once, each with its evidence in `artifacts/e2elogs/<run>/failures/<id>.txt` (the
-  server log, the mock model's requests and the client events since that test began): read that instead of running again
-  to see what happened, fix, then `-Failed`. A changed E2E runner is checked with `.\scripts\e2e.ps1 -SelfTest`.
-- **A test that fails sometimes is a bug, not weather.** Fix the test or the code it exercises, in the same piece of work that
-  met it: a race in a test is usually the test observing a state the mock holds for milliseconds (the UI mock streams
-  thinking in ~84 ms at `MOCK_SPEED=1` and ~28 ms at 3, so a `waitForSelector` on a live row can miss the whole window —
-  give the mock a knob that holds the state, as `mock.procTailDelay` and `mock.filesDelay` do). Never write "re-run and see",
-  never leave a red check explained as pre-existing in a report, and never merge on a run that only went green on the second
-  try. If a test cannot be fixed where you are, say so and fix it before you finish the piece. Measure instead of retrying:
-  `.\scripts\e2e.ps1 -Only <id> -Repeat 20 -Fresh` runs it on 20 fresh servers (the rate, and the evidence of every failure),
-  and `-Fresh` alone runs every test on a server of its own, which finds a hidden order dependency (a test that only passes
-  after another has run, or that asserts a server-wide total). Do not tell a subagent to retry either: hand it the failure
-  file and this rule. The mocks have knobs that hold a state for a test to observe: `hold=<ms>` in a MockLlm scenario tag,
-  `mock.thinkDelay` / `mock.procTailDelay` / `mock.filesDelay` in the UI mock.
-- UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`. The bundles are
-  reproducible — Svelte hashes scoped CSS from a path under the repository root, not from where the build ran, and CI
-  fails when a fresh build differs from the committed ones — so commit `web/dist` or a plugin's `wwwroot/ui.js` only
-  with the *source* change under `web/src` or `ui/`. .gitattributes keeps UI sources (`web/src`, `plugins/*/ui`, `web/public`) at LF in every checkout, so no manual line-ending conversion is needed.
+- `src/NetPI.Abstractions`: interfaces and plain data, no policy. `src/NetPI.Contracts`: plugin vocabularies (agents, workspaces, decisions, leases).
+- `src/NetPI.Host`: small kernel (plugins, events, registries, settings, sessions, models, web server, storage). It references only Abstractions, never Contracts or plugin-owned types; check architectural changes with `node scripts/core-size.mjs`.
+- `src/NetPI.Server`: headless executable. `src/NetPI.Desktop`: Windows WinForms/WebView2 shell.
+- `plugins/<Name>`: one plugin per folder; conventions in `plugins/Directory.Build.props`. Plugins never reference each other; use services, RPC and events. `shared/<Kit>` is compiled-in source, not a shared assembly.
+- `web/`: app UI → committed `web/dist`. `plugins/<Name>/ui`: optional Svelte tab → committed `wwwroot/ui.js`. `tests/`: console runners, MockLlm and E2E; no test framework. No NuGet dependencies except WebView2.
+- Storage is a port (`Abstractions/StoragePort.cs`); only `Host/Storage/Sqlite` writes SQL. Plugins use `ctx.Data` JSON collections. A new provider must pass `NetPI.Storage.Tests`.
+- No compatibility shims, deprecated paths, mirrors or forwarders. Contract changes update every consumer, test and doc together; rebuild all plugins. Stranded local data gets a one-off owner migration, never product migration code.
 
-## Inspecting the running app
-- The **`diag` tool** (read-only, one action per method: overview, problems, calls, tools, journal, run, toolsets,
-  messages, logs, settings, failures) — start with `diag { "action": "overview" }`. It is how an agent reads the
-  harness; `node scripts/netpi.mjs` is the same surface from outside. See `docs/DEBUGGING.md`.
+## Working and shipping
 
-## Conventions
-- Keep the core small; new behaviour goes into a plugin. `node scripts/core-size.mjs` checks it (the Host references
-  only Abstractions, and neither `src/NetPI.Host` nor Abstractions names a plugin-owned type). Register everything
-  through `IPluginContext` so hot reload can remove it; resolve other plugins' services per use.
-- **A session's working directory is a workspace, not its project.** `plugins/NetPI.Workspaces` owns them and registers
-  the one resolver (`IWorkspaceResolver`); ask it instead of `Sessions.GetCwd` when you need a session's root, its branch
-  or its owner, and never fall back to the project path for a session that is bound to one. Adding a tool that writes
-  files or runs a shell? The rule is `WorkspacePaths.CheckMutation` (native tools) and the `workspace` guard hook.
-- Several agents work in this repo at once; the git rules are in `C:\AI\Projects\AGENTS.md`.
-- Don't cache plugin-defined types in host-wide JSON options or `object` containers (blocks unloading) — see
-  `docs/PLUGINS.md`.
-- Tool results: model-facing text in `Content`, UI data in `Details` (document new shapes in `docs/TOOLS.md`).
-- A tool that appears or disappears mid-chat is announced by the context plugin, and the notice names the cause
-  (`plugins/NetPI.Context/ToolChanges.cs`, evidence in `plugins.reloaded` and `session.changed`): anything that can make a tool go away
-  (enable/disable, settings) should say so on the bus, or the cause falls back to `unknown`.
-- WebView2 quirk (desktop zoom): a navigation resets the zoom to 100% and a programmatic `ZoomFactor` set does not raise `ZoomFactorChanged` — the remembered factor is therefore applied after the first navigation, and `desktop.zoom` persists itself (see `MainForm.cs`).
-- New RPC methods / events: document them in `docs/PROTOCOL.md`; new settings in `docs/SETTINGS.md`.
-- Add or update a test in the owning suite for every behaviour change.
+- Follow `C:\AI\Projects\AGENTS.md`: work in your own `.worktrees/<agent>` and branch, never the main checkout. Reuse that tree, one commit per piece; merge each into `master` before the next. Stage explicit paths only.
+- Check other worktrees first; preserve others' edits. Merge from the main checkout, verify ancestry, then remove your merged worktree and branch. Ask before deleting work you do not own.
+- **A build never touches the running app.** `.\build.ps1` (`build` from cmd), `./build.sh`, and `dotnet build` write to `artifacts/dev/app`.
+- **Merge before publishing.** A worktree publish installs that branch into the same live app everyone shares; worktrees isolate files, not the running process.
+- **App changes are not done until installed.** Default: `.\build.ps1 -Publish`. Plugin reloads swap versions without losing tools. Use `-Publish -NextStart` when the owner is mid-turn or asks to defer; contracts may require staging until restart. Docs-only changes need no build or publish.
+- Publishing targets the running app's directory from `<home>/server.json`, or explicit `-AppDir`; a worktree's dev output is not the live app. A restart consumes `.pending`, not Git: never promise a restart will apply something you have not staged. If install is blocked, report the exact command still needed.
+- `-Pending` shows staged changes; `plugins.quiet` holds reloads until switched off. Do not stop the owner's app without asking. Recipes, install locking and other switches: `Get-Help .\build.ps1 -Full`, [docs/HANDOFF.md](docs/HANDOFF.md), [docs/DEBUGGING.md](docs/DEBUGGING.md).
+- UI: `npm ci` once, then `npm run build` (app + plugin tabs); `npm run dev` / `npm run mock` for development. Commit bundles with their source changes only. `.gitattributes` keeps UI sources at LF; no manual conversion.
+
+## Verification: match the change
+
+- Docs/comments: review the diff and links. Formatting/line endings: relevant checkout/build-output checks. **No test suites for these changes.**
+- Small plugin UI edit: build its bundle and check the affected UI. Plugin behavior: add/update owning tests and run the affected cases. A merge alone never requires a full gate.
+- Full unit/E2E gates are for shared contracts, cross-cutting behavior or an explicit request. Run once when ready; broaden checks only for changed scope or new evidence.
+- Unit selection: `.\scripts\test.ps1 -Suite <X> -Only "<name>"`. E2E: `.\scripts\e2e.ps1 -Only <id>`, `-Changed`, or `-Failed`. Read saved failure evidence in `artifacts/e2elogs/<run>/failures/`; after a fix rerun affected/failing tests, not everything. Runner changes: `-SelfTest`.
+- A flaky test is a bug: diagnose and fix it in the same work; never accept a green retry or dismiss a failure as pre-existing. Measure with `-Only <id> -Repeat 20 -Fresh`, and use mock hold controls for transient states. If blocked, report it; do not merge with an unresolved failure.
+- Suite commands, mock controls, logs and debugging: [docs/TESTING.md](docs/TESTING.md).
+
+## Plugin and tool rules
+
+- New behavior belongs in a plugin. Register through `IPluginContext` for hot-reload cleanup; resolve other plugins' services per use. Never cache plugin-defined types in host-wide JSON options or object containers: that prevents unloading. See [docs/PLUGINS.md](docs/PLUGINS.md).
+- A session's working directory is its **workspace**, not its project. Ask `IWorkspaceResolver` for root, branch or owner; never fall back to the project for a bound session. File-writing/shell tools must use `WorkspacePaths.CheckMutation` and the `workspace` guard hook.
+- Tool results: model text in `Content`, UI data in `Details`. Document new shapes in [docs/TOOLS.md](docs/TOOLS.md), RPC/events in [docs/PROTOCOL.md](docs/PROTOCOL.md), settings in [docs/SETTINGS.md](docs/SETTINGS.md).
+- Changes that can remove tools (plugin enable/disable, settings) must announce their cause on the bus; Context turns it into a chat notice. See `plugins/NetPI.Context/ToolChanges.cs`.
+- Inspect the live app read-only: start with `diag { "action": "overview" }`; outside NetPI use `node scripts/netpi.mjs`. See [docs/DEBUGGING.md](docs/DEBUGGING.md).
+- UI and desktop details: [docs/UI.md](docs/UI.md). Keep current docs accurate; move completed plans to `docs/archive/` and update their references.
