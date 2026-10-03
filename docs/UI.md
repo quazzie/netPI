@@ -53,6 +53,8 @@ package.json                   root scripts, single node_modules (plugin sources
 web/
   index.html  vite.config.js  svelte.config.js
   scripts/build-plugins.mjs    plugin UI bundler
+  scripts/host-shims.mjs       writes the shims a plugin bundle builds `svelte` and `@netpi/kit` against
+  scripts/check-host-shims.mjs what has to be true of that boundary (one runtime, a skew that fails visibly)
   src/
     main.js                    styles, token, host services for plugins (__netpiHost), mount
     App.svelte                 shell layout + global shortcuts
@@ -80,6 +82,7 @@ web/
       TopBar.svelte  BudgetPill.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
       ModelMenu.svelte (the searchable model list)  ModelSelect.svelte (a model field that opens it)
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
+      (the projects panel and the projects dialog share lib/projects.js: counts, filter/order, remove)
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
                ToolRow, NoticeRow, PromptRow, SentBlock, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
@@ -180,9 +183,13 @@ the + tab all start in the project shown. The project button in the composer bar
 a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
 
 **Projects dialog** (`ProjectsModal`, opened with `openProjects({ view, id?, sessionId?, select? })`). One dialog with
-three views: `list` (filter, new session, edit, remove), `new` (folder with Browse…, name, create-folder) and `edit`
-(name and folder, the project's sessions, the instruction files for its folder from `agentsmd.list { projectId }`,
-its skills and their problems from `skills.list { projectId }`, remove). The pickers' footer opens it (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
+three views, each a component (`ProjectsListView`, `ProjectsNewView`, `ProjectsEditView`) and the dialog itself holding
+what they share — which view is open, the form behind the footers, and create/save/remove: `list` (filter, new session,
+edit, remove), `new` (folder with Browse…, name, create-folder) and `edit` (name and folder, the project's sessions, the
+instruction files for its folder from `agentsmd.list { projectId }`, its skills and their problems from
+`skills.list { projectId }`, remove). The Projects tab lists the same projects with the same code: the counts, the
+filter and order, and the remove flow (with its confirm) are `lib/projects.js`, so the panel and the dialog cannot
+drift apart. The pickers' footer opens the dialog (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
 row click, the edit button) and the command palette. A project created from a picker is attached to that session, or
 in select mode becomes the project new sessions start in. Dialogs can stack (a confirm or the folder picker over the
 projects dialog): `Modal` keeps a stack, and Esc closes only the top one. While a dialog is open it owns the keyboard:
@@ -505,8 +512,9 @@ Per-tab narrow layouts:
 
 ### Built-in plugin tabs
 
-Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle
-sizes (minified; Svelte runtime and kit included): Work 88KB, Ideas 90KB, Diagnostics 99KB, Files 67KB.
+Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle sizes
+(minified, Svelte and the kit shared with the host rather than copied in): Work 48KB, Ideas 57KB, Diagnostics 61KB,
+Files 28KB, Mcp 16KB.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,
 Finished), each with a count. The open or closed state of each section is remembered (`storageKey`,
@@ -669,9 +677,16 @@ export const mount = createTab(WorkTab);   // createTab unmounts, and forwards o
 through `createTab` and keeps its own `onMount`. `web/scripts/check-tab-lifecycle.mjs` checks what the helper promises.
 
 `npm run build:plugins` builds every `plugins/*/ui/main.{js,ts}` into **one** minified ES module.
-Component CSS is injected at runtime (`css: 'injected'`), and `svelte` and `@netpi/kit` are bundled in: the
-sample plugin comes to about 61KB. Styling should use the host tokens and `np-*` classes, which keep the tab
-working in both themes. A plugin should not import `.css` files; component `<style>` is the way to style it.
+Component CSS is injected at runtime (`css: 'injected'`). `svelte` and `@netpi/kit` are **the host UI's own copies**:
+the build aliases both to generated shims (`web/scripts/host-shims.mjs`) that read them off `globalThis.__netpiHost`,
+so the page has one reactive system — a `$derived` in a tab that reads `ctx.app.*` tracks it — and a tab bundle
+carries neither (the sample plugin comes to about 16KB). What that costs: a tab bundle is pinned to the host's svelte
+(5.57.1 today), so **a svelte bump means rebuilding the app UI and every plugin tab**; a bundle that meets a host with
+another svelte, or none at all, throws a message naming the cause and the tab shows it with a Retry button instead of
+going blank. Plugin UIs are compiled `runes: true`, like the app: a legacy-mode component would import svelte's
+internal flags module, and those flags are state the page shares. Styling should use the host tokens and `np-*`
+classes, which keep the tab working in both themes. A plugin should not import `.css` files; component `<style>` is
+the way to style it.
 
 ### Writing a tab in vanilla JS
 
@@ -690,7 +705,9 @@ The sample plugin (`web/mock/sample-plugin/ui/main.js`) has one tab of each kind
 
 ### `@netpi/kit`
 
-Import from `@netpi/kit`. The build aliases it to `web/src/lib/kit/index.js`, and the host uses the same files.
+Import from `@netpi/kit`. The host app uses the same modules (`web/src/lib/kit/index.js`) and exports them on
+`globalThis.__netpiHost.kit`; a plugin bundle's `@netpi/kit` is a shim over that, so a tab renders the host's own
+components rather than copies of them.
 
 | component | props |
 |---|---|
@@ -722,8 +739,9 @@ The kit also exports the helpers `timeAgo`, `duration`, `tokens`, `usd`, `bytes`
 - `clockNow()` and `secondNow()`: shared reactive clocks (30s and 1s) for relative times.
 
 `Markdown`, `Icon`, `confirm` and `copyText` call **host services** on `globalThis.__netpiHost`, which the host
-sets in `main.js`: `renderMarkdown`, `highlight`, `icon`, `confirm` and `copyText`. Plugin bundles therefore do
-not include marked, DOMPurify, highlight.js or the icon set, and they share the host's caches.
+sets in `main.js`: `renderMarkdown`, `highlight`, `icon`, `confirm` and `copyText`. So do `svelte` and the kit itself
+(`__netpiHost.svelte` and `__netpiHost.kit`). Plugin bundles therefore do not include marked, DOMPurify,
+highlight.js, the icon set, a Svelte runtime or a kit copy, and they share the host's caches and reactive system.
 
 Icon names: `sessions folder folder-open plus x chevron-* arrow-* stop image paperclip at slash settings search
 terminal file file-text file-plus files pencil rename brain list-tree bot copy check alert alert-circle info

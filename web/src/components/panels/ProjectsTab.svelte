@@ -1,45 +1,21 @@
 <script>
   import Icon from '../../lib/kit/Icon.svelte';
   import IconButton from '../../lib/kit/IconButton.svelte';
-  import { app, newSession, setSessionProject, deleteProject } from '../../lib/state/app.svelte.js';
-  import { confirmDialog, toast, openProjects, prefs, toggleFavorite } from '../../lib/state/ui.svelte.js';
+  import { app, newSession, setSessionProject } from '../../lib/state/app.svelte.js';
+  import { toast, openProjects, prefs, toggleFavorite } from '../../lib/state/ui.svelte.js';
+  import { projectCounts, matchingProjects, removeProject } from '../../lib/projects.js';
 
   let { visible = true } = $props();
 
   let q = $state('');
 
-  const counts = $derived.by(() => {
-    const m = new Map();
-    for (const s of app.sessions) if (s.projectId && !s.archived && !s.parentSessionId) m.set(s.projectId, (m.get(s.projectId) ?? 0) + 1);
-    return m;
-  });
-
-  const list = $derived.by(() => {
-    const query = q.trim().toLowerCase();
-    const arr = query
-      ? app.projects.filter((p) => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query))
-      : app.projects.slice();
-    return arr.sort((a, b) => (Date.parse(b.lastUsedAt ?? b.updatedAt) || 0) - (Date.parse(a.lastUsedAt ?? a.updatedAt) || 0));
-  });
+  // the counts, the filter and the remove flow are the ones the projects dialog uses (lib/projects.js)
+  const counts = $derived(projectCounts(app.sessions));
+  const list = $derived(matchingProjects(app.projects, q));
 
   // creating and editing happen in the projects dialog
   const add = () => openProjects({ view: 'new' });
   const edit = (p) => openProjects({ view: 'edit', id: p.id });
-
-  async function remove(p) {
-    const ok = await confirmDialog({
-      title: 'Remove project?',
-      message: `“${p.name}” will be removed from NetPI. Files in ${p.path} are not touched; its sessions are kept.`,
-      confirmLabel: 'Remove',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await deleteProject(p.id);
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  }
 
   async function attach(p) {
     if (!app.activeId) return toast('No active session', 'warn');
@@ -89,7 +65,7 @@
             onclick={() => attach(p)}
           />
           <IconButton icon="pencil" size="sm" title="Edit" onclick={() => edit(p)} />
-          <IconButton icon="trash" size="sm" title="Remove" onclick={() => remove(p)} />
+          <IconButton icon="trash" size="sm" title="Remove" onclick={() => removeProject(p)} />
         </div>
       </div>
     {:else}

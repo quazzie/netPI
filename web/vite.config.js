@@ -4,10 +4,14 @@
 import { defineConfig, loadEnv } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const webDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(webDir, '..');
+// The svelte the app is built with, in the bundle: a plugin tab bundle is built against it and refuses to open against
+// a UI built with another one (web/scripts/host-shims.mjs writes that check into every tab bundle).
+const svelteVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'node_modules/svelte/package.json'), 'utf8')).version;
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, webDir, ['VITE_', 'NETPI_']);
@@ -26,6 +30,7 @@ export default defineConfig(({ mode }) => {
     // first paint, and it is a file rather than an inline <script> so a CSP without 'unsafe-inline' allows it.
     publicDir: 'public',
     plugins: [svelte()],
+    define: { __SVELTE_VERSION__: JSON.stringify(svelteVersion) },
     resolve: {
       alias: { '@netpi/kit': path.join(webDir, 'src/lib/kit/index.js') },
     },
