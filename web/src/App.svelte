@@ -8,9 +8,9 @@
   import Welcome from './components/Welcome.svelte';
   import Toasts from './components/Toasts.svelte';
   import Modals from './components/modals/Modals.svelte';
-  import { app, startApp, activate, closeTab, cycleTab, newSession, abortAgent, isBusy, goneSessions } from './lib/state/app.svelte.js';
+  import { app, startApp, activate, closeTab, cycleTab, newSession, abortAgent, isBusy, goneSessions, hasRpc } from './lib/state/app.svelte.js';
   import { getChat } from './lib/state/chat.svelte.js';
-  import { modals, togglePanel, applyTheme } from './lib/state/ui.svelte.js';
+  import { modals, togglePanel, applyTheme, openIdeaDialog } from './lib/state/ui.svelte.js';
   import { registerCoreTab } from './lib/state/tabs.svelte.js';
   import { notifyAppChange } from './lib/pluginCtx.js';
 
@@ -51,7 +51,8 @@
       modals.prompt ||
       modals.lightbox ||
       modals.projectPicker ||
-      modals.projects
+      modals.projects ||
+      modals.idea
     );
   }
 
@@ -99,6 +100,12 @@
     } else if (k === 'k' && !e.shiftKey && !e.altKey) {
       e.preventDefault();
       modals.palette = !modals.palette;
+    } else if (k === 'i' && !e.shiftKey && !e.altKey) {
+      // a new idea, from anywhere (also while typing in the composer): the dialog is the fast way to file one
+      if (hasRpc('ideas.add')) {
+        e.preventDefault();
+        openIdeaDialog();
+      }
     } else if (e.key === ',') {
       e.preventDefault();
       modals.settings = true;

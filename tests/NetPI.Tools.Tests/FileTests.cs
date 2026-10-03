@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetPI.GitKit;
 using NetPI.Tools.Files;
 
 namespace NetPI.Tools.Tests;
@@ -773,7 +774,7 @@ public static class FileTests
             using var ctx = new FakePluginContext(dir);
             var plugin = new FilesPlugin();
             await plugin.StartAsync(ctx, CancellationToken.None);
-            Check.Equal("read,write,edit,grep,find,ls", string.Join(",", ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
+            Check.Equal("read,write,edit,grep,find,ls,git", string.Join(",", ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
 
             var hits = (List<FileIndex.SearchHit>)(await ctx.RpcFake.InvokeAsync("files.search", new { query = "app" }))!;
             Check.Equal("src/app.cs", hits[0].Rel);
@@ -1078,9 +1079,139 @@ public static class FileTests
                 Check.True(d.Label is { Length: > 0 }, d.Name);
                 Check.Equal("files", d.Category);
                 Check.True(d.PromptGuidelines is not null, d.Name); // guidelines are deduplicated across tools; some have none
-                Check.Equal(d.Name is "read" or "grep" or "find" or "ls", d.ReadOnly, d.Name);
+                Check.Equal(d.Name is "read" or "grep" or "find" or "ls" or "git", d.ReadOnly, d.Name);
                 Check.True(d.Parameters["properties"] is not null, d.Name);
             }
+        });
+
+        // ------------------------------------------------ git (read-only)
+
+        r.Add("git: log, show, diff, status and blame answer from the workspace's real git", async () =>
+        {
+            var dir = T.TempDir("gittool");
+            if (!await TestGit.RunAsync(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
+            await TestGit.RunAsync(dir, "config", "user.email", "test@example.com");
+            await TestGit.RunAsync(dir, "config", "user.name", "Test");
+            T.WriteText(dir, "a.txt", "one\ntwo\n");
+            T.WriteText(dir, "lib/b.txt", "x\n");
+            await TestGit.RunAsync(dir, "add", "-A");
+            await TestGit.RunAsync(dir, "commit", "-q", "-m", "first");
+            T.WriteText(dir, "a.txt", "one\nTWO\nthree\n");
+            await TestGit.RunAsync(dir, "commit", "-q", "-a", "-m", "change a");
+            T.WriteText(dir, "a.txt", "one\nTWO\nthree\nFOUR\n");
+            await TestGit.RunAsync(dir, "add", "a.txt"); // staged
+            T.WriteText(dir, "lib/b.txt", "x\ny\n"); // unstaged
+
+            var git = new GitTool();
+            var log = await T.Run(git, dir, new { action = "log", n = 5 });
+            ToolCheck.Ok(log);
+            Check.Contains(log.Content, "Test change a");
+            Check.True(log.Content.IndexOf("change a") < log.Content.IndexOf("first"), "newest first");
+
+            var onlyB = await T.Run(git, dir, new { action = "log", path = "lib/b.txt" });
+            ToolCheck.Ok(onlyB);
+            Check.Contains(onlyB.Content, "first");
+            Check.True(!onlyB.Content.Contains("change a"), "the path limits the commits");
+
+            var show = await T.Run(git, dir, new { action = "show", commit = "HEAD" });
+            ToolCheck.Ok(show);
+            Check.Contains(show.Content, "change a");
+            Check.Contains(show.Content, "a.txt");
+            var patch = await T.Run(git, dir, new { action = "show", commit = "HEAD", patch = true });
+            ToolCheck.Ok(patch);
+            Check.Contains(patch.Content, "+TWO");
+            var showB = await T.Run(git, dir, new { action = "show", commit = "HEAD", path = "lib/b.txt" });
+            ToolCheck.Ok(showB);
+            Check.True(!showB.Content.Contains("a.txt"), "the path keeps only that file's change");
+
+            var unstaged = await T.Run(git, dir, new { action = "diff" });
+            ToolCheck.Ok(unstaged);
+            Check.Contains(unstaged.Content, "b.txt");
+            Check.True(!unstaged.Content.Contains("FOUR"), "no args: the unstaged changes");
+            var staged = await T.Run(git, dir, new { action = "diff", staged = true });
+            ToolCheck.Ok(staged);
+            Check.Contains(staged.Content, "FOUR");
+            Check.True(!staged.Content.Contains("b.txt"), "staged: the index against HEAD");
+            var between = await T.Run(git, dir, new { action = "diff", a = "HEAD~1", b = "HEAD" });
+            ToolCheck.Ok(between);
+            Check.Contains(between.Content, "TWO");
+            Check.True(!between.Content.Contains("FOUR"), "a b: between the two commits, not the worktree");
+
+            var status = await T.Run(git, dir, new { action = "status" });
+            ToolCheck.Ok(status);
+            Check.Contains(status.Content, "## main");
+            Check.Contains(status.Content, "a.txt");
+            Check.Contains(status.Content, "lib/b.txt");
+
+            var blame = await T.Run(git, dir, new { action = "blame", path = "a.txt", start = 1, end = 2 });
+            ToolCheck.Ok(blame);
+            Check.Contains(blame.Content, "Test");
+            Check.Contains(blame.Content, "TWO");
+            Check.True(!blame.Content.Contains("FOUR"), "the range is what is blamed");
+
+            Check.Equal("diff", T.Str(T.D(staged), "action"));
+            Check.False(T.D(staged).GetProperty("truncated").GetBoolean());
+
+            var nowhere = await T.Run(git, T.TempDir("gitnowhere"), new { action = "status" });
+            ToolCheck.Error(nowhere, "not a git repository");
+        });
+
+        r.Add("git: there is no free command line: refs are names, paths are checked, the actions are closed", async () =>
+        {
+            var git = new GitTool();
+            var dir = T.TempDir("gitdeny");
+            T.WriteText(dir, "x.txt", "1\n2\n");
+            Directory.CreateDirectory(Path.Combine(dir, "adir"));
+            Check.True(git.Definition.ReadOnly, "the tool is registered read-only, so plan mode's policy lets it through");
+
+            ToolCheck.Error(await T.Run(git, dir, new { }), "action");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "fetch" }), "Unknown action");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "show" }), "commit");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "show", commit = "HEAD~1 && rm -rf ." }), "not a commit name");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "show", commit = "HEAD:file" }), "not a commit name");
+            // an option is not a commit: --ext-diff after the tool's own --no-ext-diff would run the repository's configured diff program
+            ToolCheck.Error(await T.Run(git, dir, new { action = "show", commit = "--ext-diff" }), "not a commit name");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "diff", a = "-p" }), "not a commit name");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "diff", a = "HEAD", b = "--textconv" }), "not a commit name");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "diff", staged = true, a = "HEAD" }), "cannot be combined");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "log", path = "nope.txt" }), "not found");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "blame" }), "path");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "blame", path = "nope.txt" }), "not found");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "blame", path = "adir" }), "is a directory");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "blame", path = "x.txt", start = 5 }), "given together");
+            ToolCheck.Error(await T.Run(git, dir, new { action = "blame", path = "x.txt", start = 10, end = 5 }), "is before start");
+        });
+
+        r.Add("git: an answer over the tool result limit is cut, with the note that says what to narrow", async () =>
+        {
+            var settings = new FakeSettings();
+            settings.SetQuiet("agent.maxToolResultChars", 2000);
+            var git = new GitTool(settings);
+            var cwd = T.TempDir("gitcap");
+            var fake = T.TempDir("gitfake");
+            string exe;
+            if (OperatingSystem.IsWindows())
+            {
+                exe = Path.Combine(fake, "git.cmd");
+                File.WriteAllText(exe, "@for /L %%i in (1,1,400) do @echo a very long line of git output to push the answer past its bound %%i\r\nexit /b 0\r\n");
+            }
+            else
+            {
+                exe = Path.Combine(fake, "git");
+                File.WriteAllText(exe, "#!/bin/sh\nfor i in $(seq 400); do echo \"a very long line of git output to push the answer past its bound $i\"; done\n");
+                File.SetUnixFileMode(exe, UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+            }
+            var oldExe = GitRunner.Executable;
+            try
+            {
+                GitRunner.Executable = exe;
+                var res = await T.Run(git, cwd, new { action = "status" });
+                ToolCheck.Ok(res);
+                Check.True(res.Content.Length < 2000, $"the answer fits the limit, not the {res.Content.Length} characters git produced");
+                Check.Contains(res.Content, "stopped at");
+                Check.True(T.D(res).GetProperty("truncated").GetBoolean());
+            }
+            finally { GitRunner.Executable = oldExe; }
         });
     }
 

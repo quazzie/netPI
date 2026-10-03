@@ -94,13 +94,13 @@ try {
   await page.waitForTimeout(800);
   check('the Ideas tab opens', (await page.locator('.panel.right > .body .pane').count()) > 0);
 
-  // the new-idea form
-  const newIdea = page.locator('.panel.right button[title="New idea"]').first();
+  // the new-idea dialog (the host's, the one Ctrl+I opens)
+  const newIdea = page.locator('.panel.right button[title^="New idea"]').first();
   await newIdea.click();
-  const form = page.locator('.new');
+  const form = page.locator('.idea-dialog');
   await form.waitFor({ timeout: 15_000 }); // a condition, not a delay: it costs nothing when the tab is quick, and a busy machine (agents building beside the run) mounts it late
-  await form.locator('input.np-input').first().fill('Image attach probe');
-  check('the new-idea form opens', true);
+  await form.locator('.i-title').fill('Image attach probe');
+  check('the new-idea dialog opens', true);
 
   // 1. a working attach: the thumbnail appears (the file was stored by the server)
   const fileA = path.join(OUT, 'idea-img-a.png');
@@ -110,12 +110,12 @@ try {
   const fileInput = form.locator('input[type="file"]');
   await fileInput.setInputFiles([fileA]);
   const thumb = await page
-    .waitForSelector('.new .thumbs figure img', { timeout: 20_000 })
+    .waitForSelector('.idea-dialog .thumbs figure img', { timeout: 20_000 })
     .catch(() => null);
   check('the first image attaches', !!thumb);
 
   // 2. make the next attach fail in the client, inside prepareImage's read of the file: the catch in attachImage
-  //    must toast the error and recover. Before the fix that catch called an undefined `toast` — a ReferenceError
+  //    must toast the error and recover (the dialog's addFiles, since the form moved there). Before the fix that catch called an undefined `toast` — a ReferenceError
   //    that left the Image button stuck on "Attaching…" (idea-r7j411). A failed ideas.addImage RPC would not reach
   //    it: the call() wrapper swallows RPC errors and returns null.
   await page.evaluate(() => {
@@ -140,7 +140,7 @@ try {
   const recovered = await page
     .waitForFunction(
       () => {
-        const b = document.querySelector('.new .row button[title*="Attach"]');
+        const b = document.querySelector('.idea-dialog .row button[title*="Attach"]');
         return !!b && !b.disabled && !/Attaching/.test(b.textContent || '');
       },
       null,

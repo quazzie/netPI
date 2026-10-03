@@ -58,6 +58,7 @@ public sealed class IdeasPlugin : INetPiPlugin
         rpc.Register(context.Rpc);
         RegisterVerifyUpdate(context, repo);
         new IdeaRecall(context, repo, locator).Register(context.Rpc);
+        new IdeaRefine(context, repo).Register(context.Rpc);
         // What a verification the model was too busy to judge waits for (idea-ujife1): a bounded number of proposals,
         // retried when foreground work settles, so a busy model strands neither the check nor its claim.
         var queue = context.Track(new IdeaVerifyQueue(context));

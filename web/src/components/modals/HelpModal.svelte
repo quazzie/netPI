@@ -12,6 +12,7 @@
     ['Ctrl+B', 'Toggle left panel'],
     ['Ctrl+Alt+B', 'Toggle right panel'],
     ['Ctrl+K', 'Command palette'],
+    ['Ctrl+I', 'New idea (also /idea with no text)'],
     ['Ctrl+,', 'Settings'],
     [prefs.enterSends ? 'Enter' : 'Ctrl+Enter', 'Send (steer while the agent runs)'],
     ['Alt+Enter', 'Queue for after the current run'],

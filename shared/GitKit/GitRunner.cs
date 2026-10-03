@@ -1,9 +1,9 @@
+// Compiled into NetPI.Tools.Files and NetPI.Workspaces from shared/GitKit (plugins do not reference each other): edit it here.
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 
-// NOTE: mirrored in plugins/NetPI.Tools.Files and plugins/NetPI.Workspaces (plugins cannot share code). Keep the copies in sync.
-namespace NetPI.Workspaces;
+namespace NetPI.GitKit;
 
 /// <summary>
 /// Starting git: the one shape Files (files.git, files.commits) and Workspaces (the probes, provisioning) use for it —

@@ -153,7 +153,14 @@ public sealed class AgentsPlugin : INetPiPlugin
             var path = (NetPiJson.ToNode(e.Data) as JsonObject)?["path"]?.GetValue<string>();
             // A file reload or settings.replace has no path: its budget may have changed too.
             if (string.IsNullOrEmpty(path) || path == "budget" || path.StartsWith("budget.", StringComparison.Ordinal))
+            {
+                // A changed budget.resetDay moved the current period's border: the period's roll-up is keyed by the
+                // period, so rebuild it from the calls (the same transaction the start does) before the status
+                // goes out, or the Usage tab shows the old period's calls in the new one until a restart.
+                if (string.IsNullOrEmpty(path) || path is "budget" or "budget.resetDay")
+                    usage.RebuildPeriodUsage();
                 context.Events.Publish("usage.changed", usage.BudgetStatus());
+            }
         });
         // model states (loaded, unloaded, offline) switch local agents on and off
         context.Events.Subscribe(EventTypes.ModelsChanged, _ => scheduler.Refresh());

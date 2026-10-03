@@ -127,7 +127,16 @@ export const modals = $state({
   lightbox: null, // { src }
   projectPicker: null, // { sessionId, anchor } attaches a project; { select: true, anchor } starts a session in the one picked
   projects: null, // { view: 'list' | 'new' | 'edit', id?, sessionId?, select? }
+  idea: null, // { mode: 'add' | 'edit', idea?, projectId?, refine? }
 });
+
+/**
+ * The idea dialog: file a new idea ({ projectId? }: where it goes, 'global' for none, default the active chat's project) or
+ * edit one ({ idea }, as the Ideas tab has it, with its revision). { refine: true } opens with the agent task switched on.
+ */
+export function openIdeaDialog(opts = {}) {
+  modals.idea = { mode: opts.idea ? 'edit' : 'add', ...opts };
+}
 
 /**
  * The projects dialog: view 'list' (all projects), 'new' or 'edit' (project `id`). A project created from a picker is
