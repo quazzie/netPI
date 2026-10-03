@@ -185,7 +185,6 @@ public sealed class BackupPlugin : INetPiPlugin
                 foreach (var file in Directory.EnumerateFiles(path)) File.Delete(file);
                 Directory.Delete(path);
             }
-            ctx.Events.Publish("backup.created", new JsonObject { ["id"] = id, ["path"] = destination });
             manifest["path"] = destination;
             return manifest;
         }

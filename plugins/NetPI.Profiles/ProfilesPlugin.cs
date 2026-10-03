@@ -7,9 +7,9 @@ namespace NetPI.Profiles;
 /// <c>profiles.defaultProfile</c>). A new chat gets its project's default profile (<c>project.meta.profile</c>, or
 /// <c>"none"</c>) or else the global default. Applying a profile sets the chat's <c>meta.profile</c>, <c>meta.identity</c>
 /// (the opening of its system prompt, rendered by the context plugin) and <c>meta.toolsOff</c> (its tool switches).
-/// Before the first message that is free; in a started chat the context plugin renders the prompt again at the next
-/// model call (<c>context.reset</c>: one full re-read) and a <c>profile</c> notice tells the model. Subagents do not get
-/// profiles: their owner chooses their tools.
+/// Before the first message that is free; in a started chat the profile switch invalidates the chat's prompt revision, so
+/// the prompt is rendered again at the next model call (one full re-read; no <c>context.reset</c> call is needed) and a
+/// <c>profile</c> notice tells the model. Subagents do not get profiles: their owner chooses their tools.
 /// <para>RPC: <c>profiles.list</c>, <c>profiles.apply { sessionId, profile }</c>.</para>
 /// </summary>
 [NetPiPlugin("netpi.profiles", Name = "Profiles", Description = "Named instructions and tools for chats, with a default per project", Order = 45)]

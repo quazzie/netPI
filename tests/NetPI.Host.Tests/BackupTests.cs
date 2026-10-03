@@ -19,6 +19,11 @@ public static class BackupTests
         }
     }
 
+    /// <summary>When the newest snapshot in the folder was created, or default when there is none.</summary>
+    private static DateTimeOffset NewestSnapshot(string backups) => Directory.Exists(backups)
+        ? Directory.GetDirectories(backups).Select(d => (DateTimeOffset?)new DirectoryInfo(d).CreationTime).Max() ?? default
+        : default;
+
     public static void Register(TestRunner r)
     {
         BackupIdeasRoundTrip(r);
@@ -99,8 +104,8 @@ public static class BackupTests
             File.WriteAllText(Path.Combine(home, "backups"), "not a directory");
             // compressed cadence: a 300 ms retry base instead of an hour, a 50 ms check instead of a minute
             var plugin = new BackupPlugin(TimeSpan.FromMilliseconds(300), TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(20));
-            var created = new List<DateTimeOffset>();
-            using var _ = kernel.Bus.Subscribe("backup.created", e => { lock (created) created.Add(DateTimeOffset.UtcNow); });
+            var backups = Path.Combine(home, "backups");
+            DateTimeOffset created = default;
             await plugin.StartAsync(ctx, default);
             try
             {
@@ -112,11 +117,13 @@ public static class BackupTests
                 Check.True(f[1].Time - f[0].Time >= TimeSpan.FromMilliseconds(250), "the loop really waited the base, not the check cadence: " + (f[1].Time - f[0].Time));
                 Check.True(f[2].Time - f[1].Time > f[1].Time - f[0].Time, "the wait keeps doubling: " + (f[2].Time - f[1].Time) + " after " + (f[1].Time - f[0].Time));
 
-                // the path is fixed: the in-flight attempt (after the accumulated backoff) succeeds
+                // the path is fixed: the in-flight attempt (after the accumulated backoff) succeeds. A snapshot on disk is
+                // the success (nothing announced it), stamped like the log entries it is compared with.
                 File.Delete(Path.Combine(home, "backups"));
-                Directory.CreateDirectory(Path.Combine(home, "backups"));
-                await WaitFor(() => created.Count >= 1, "the automatic backup to succeed once the path is fixed");
-                var success = created[0];
+                Directory.CreateDirectory(backups);
+                await WaitFor(() => { if (created == default) created = NewestSnapshot(backups); return created != default; },
+                    "the automatic backup to succeed once the path is fixed");
+                var success = created;
 
                 // broken again: the failure after a success waits the base, not the accumulated backoff
                 Directory.Delete(Path.Combine(home, "backups"), true);

@@ -57,14 +57,13 @@ internal sealed class WorkspaceStore : IWorkspaceStore
         };
         if (w.ProjectId is not null && _ctx.Sessions.GetProject(w.ProjectId) is null) throw new KeyNotFoundException($"Project {w.ProjectId} not found");
         if (!_items.Insert(w.Id, Write(w))) throw new InvalidOperationException($"Workspace {w.Id} already exists");
-        _ctx.Events.Publish(WorkspaceEvents.Created, new { workspace = w });
         return w;
     }
 
     public WorkspaceInfo UpdateWorkspace(string id, Action<WorkspaceInfo> mutate)
     {
         ArgumentNullException.ThrowIfNull(mutate);
-        var w = _ctx.Data.Transaction(() =>
+        return _ctx.Data.Transaction(() =>
         {
             var current = GetWorkspace(id) ?? throw new KeyNotFoundException($"Workspace {id} not found");
             mutate(current);
@@ -73,8 +72,6 @@ internal sealed class WorkspaceStore : IWorkspaceStore
             _items.Put(id, Write(current));
             return current;
         });
-        _ctx.Events.Publish(WorkspaceEvents.Updated, new { workspace = w });
-        return w;
     }
 
     /// <summary>
@@ -85,7 +82,6 @@ internal sealed class WorkspaceStore : IWorkspaceStore
     {
         if (!_items.Delete(id)) return false;
         var bound = BoundSessions(id, includeArchived: true);
-        _ctx.Events.Publish(WorkspaceEvents.Deleted, new { id });
         foreach (var sessionId in bound)
         {
             SessionInfo session;

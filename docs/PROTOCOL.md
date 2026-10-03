@@ -154,7 +154,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `runs.list` | netpi.runtime | `{ includeFinished? }` → `AgentInfo[]` |
 | `agent.get` | netpi.runtime | `{ id? , sessionId? }` → `AgentInfo\|null` |
 | `profiles.list` | netpi.profiles | → `{ defaultProfile, profiles: { id, name, prompt, toolsOff }[] }` |
-| `profiles.apply` | netpi.profiles | `{ sessionId, profile: string\|null }` → `SessionInfo`: sets the chat's `meta.profile`, `meta.identity` and `meta.toolsOff` from the profile; in a started chat the system prompt is rendered again at the next model call (`context.reset`, one full re-read) and a `profile` notice is appended. Chats only |
+| `profiles.apply` | netpi.profiles | `{ sessionId, profile: string\|null }` → `SessionInfo`: sets the chat's `meta.profile`, `meta.identity` and `meta.toolsOff` from the profile; in a started chat the prompt revision is invalidated (`meta.promptRevision`), so the next model call renders the system prompt again (one full re-read, without a `context.reset` call) and a `profile` notice is appended. Chats only |
 | `context.reset` | netpi.context | `{ sessionId }` → `true`: forget the session's frozen system prompt and tool baseline; the next model call renders them again |
 | `agent.tools` | netpi.runtime | `{ sessionId }` → `{ sessionId, started, contextTokens, off: string[], tools: { name, label, category, description, readOnly, pluginId, on }[] }`: the tools the session's agent can have, each with its switch |
 | `agent.setTools` | netpi.runtime | `{ sessionId, off?: string[], on?: string[] }` → like `agent.tools`: switches tools off (or back on) for one session (`meta.toolsOff`); a started chat gets the change at its next model call, with a `tools` notice (the model re-reads the conversation once); subagents start with their parent's list |
@@ -241,8 +241,6 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `session.project` | no | `{ sessionId, projectId, cwd }` – attached to another project or detached |
 | `session.changed` | no | `{ sessionId, keys: string[] }` – the session's **meta** changed: the keys whose value is not what it was (added, changed, removed, sorted). A rewrite with the same value, and a field outside `meta` (title, model, project…), fire nothing. The key names are contract, not the plugin that writes them: `profile` (`SessionProfile.MetaKey`, the profiles plugin), `toolsOff` (`SessionTools.MetaKey`, `agent.setTools`), `identity` (`SessionIdentity.MetaKey`, a profile's prompt), `workspaceId` and `cwd` (`SessionWorkspace.MetaKey`, `SessionCwd.MetaKey`, the Workspaces plugin). It is the real signal for "the user switched this chat's profile", so a plugin can react to the change instead of looking for a notice kind or for message order (idea-m7vmue) |
 | `session.workspace` | no | `{ sessionId, workspaceId, cwd, binding }` – a session was bound to a workspace, or unbound (`workspaceId` and `binding` null), and its `meta.workspaceId`/`meta.cwd` were written with it. Published by the Workspaces plugin. `binding` is the resolved `WorkspaceBinding`, so a consumer does not resolve it again and cannot end up with a different root than the switch announced |
-| `workspace.created` / `workspace.updated` | no | `{ workspace }` – a workspace record was created, or rewritten (Workspaces plugin) |
-| `workspace.deleted` | no | `{ id }` – the record was removed (its sessions fall back to their project, with a `session.workspace` each); the checkout itself is untouched, cleanup is explicit (Workspaces plugin) |
 | `project.created` / `project.updated` | no | `{ project }` |
 | `project.deleted` | no | `{ id }` |
 | `message.added` / `message.updated` | yes | `{ sessionId, message: ChatMessage }` |
@@ -328,7 +326,7 @@ height (for a footer at the bottom), give the tab's root `flex: 1 0 auto`; `min-
 | `backup.create` | `{}` | Creates and verifies a manual snapshot; returns its manifest and path. Allow a long RPC timeout for large databases. |
 | `backup.verify` | `{ id }` | Checks the manifest version and both file hashes; returns the manifest or an error. |
 
-`backup.created { id, path }` is published after a completed snapshot. Restore is offline through
+Restore is offline through
 `scripts/restore-backup.mjs`, into a new home only. See [BACKUPS.md](BACKUPS.md).
 
 Approval compatibility: `guard.answer` now requires the unique `approvalId` from `guard.pending` or `guard.asked`.

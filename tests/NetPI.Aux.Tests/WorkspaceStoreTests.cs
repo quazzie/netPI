@@ -60,12 +60,12 @@ public static class WorkspaceStoreTests
 
     public static void Register(TestRunner r)
     {
-        r.Add("workspaces: a record round-trips, is listed per project, and creating one announces it", () =>
+        r.Add("workspaces: a record round-trips, is listed per project, and only the binding is announced", () =>
         {
             using var f = new Fixture();
             var w = f.Workspace("tests");
             Check.True(w.Id.StartsWith("wsp_"));
-            Check.Equal(1, f.EventsOf(WorkspaceEvents.Created).Count, "creating one announces workspace.created");
+            Check.Equal(0, f.EventsOf(WorkspaceEvents.SessionBound).Count, "creating a record says nothing: only a binding is announced");
             var stored = f.Store.GetWorkspace(w.Id)!;
             Check.Equal("tests", stored.Name);
             Check.Equal("worktree", stored.Kind);
@@ -86,12 +86,8 @@ public static class WorkspaceStoreTests
             f.Workspace("other", projectId: "");   // no project at all
             Check.Equal(1, f.Store.ListWorkspaces(f.Project.Id).Count, "a projectless workspace is not one of the project's");
             Check.Equal(2, f.Store.ListWorkspaces().Count);
-
-            Check.Equal(2, f.EventsOf(WorkspaceEvents.Created).Count, "and creating a second one announces it too");
-            Check.Equal(1, f.EventsOf(WorkspaceEvents.Updated).Count, "while updating one announces workspace.updated");
             Check.True(f.Store.DeleteWorkspace(w.Id), "the record is removed");
             Check.False(f.Store.DeleteWorkspace(w.Id), "deleting it again is not an error, it is already gone");
-            Check.Equal(1, f.EventsOf(WorkspaceEvents.Deleted).Count);
         });
 
         r.Add("workspaces: a record of a project that does not exist is refused", () =>
@@ -101,7 +97,6 @@ public static class WorkspaceStoreTests
                 f.Store.CreateWorkspace(new WorkspaceInfo { Name = "x", Path = Path.Combine(f.Dir, "x"), ProjectId = "prj_nope" }));
             Check.Contains(ex.Message, "prj_nope");
             Check.Equal(0, f.Store.ListWorkspaces().Count, "and nothing was written");
-            Check.Equal(0, f.EventsOf(WorkspaceEvents.Created).Count, "nor announced");
         });
 
         r.Add("workspaces: binding a session writes the meta, and unbinding takes it away", () =>
@@ -229,7 +224,6 @@ public static class WorkspaceStoreTests
             Check.True(announced.All(e => !NetPiJson.ToNode(e.Data)!.AsObject().ContainsKey("workspaceId")),
                 "each is told the session is unbound, with the project folder it works in again");
             Check.True(announced.All(e => NetPiJson.ToNode(e.Data)!["cwd"]!.Str() == f.Project.Path), "and which one that is");
-            Check.Equal(1, f.EventsOf(WorkspaceEvents.Deleted).Count, "the deletion is announced once");
 
             // Another workspace's binding stands, not even mentioned.
             Check.Equal(other.Id, SessionWorkspace.Of(f.Sessions.GetSession(kept.Id)!));
