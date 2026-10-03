@@ -77,6 +77,13 @@ jobs:
           $new = git status --porcelain -- web/dist "plugins/*/wwwroot"
           if ($new) { Write-Error "fresh bundle files that are not committed:`n$new" }
 
+      # A tab bundle is built against shims that read svelte and the kit off the host page (web/scripts/host-shims.mjs),
+      # so the page has one reactive system. That boundary fails silently in the ways the suite checks — a `$derived` in a
+      # tab that no longer follows host state, a svelte entry point a tab may not import, an export the host does not
+      # have — and none of that changes a byte of the bundles the step above compares.
+      - name: The host-shim boundary a plugin tab is built against
+        run: node web/scripts/check-host-shims.mjs
+
       - name: Run the mock e2e
         run: npm run e2e
 
