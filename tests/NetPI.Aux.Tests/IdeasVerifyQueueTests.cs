@@ -102,6 +102,34 @@ public static class IdeasVerifyQueueTests
             ctx.Unload();
         });
 
+        r.Add("ideas verify queue: an attempt that says not now spends no try, and is bounded on its own", async () =>
+        {
+            var ctx = new FakePluginContext();
+            ctx.SettingsFake.Set("ideas.verifyRetrySeconds", 1);
+            var work = new IdeaWork(ctx); ctx.ServicesFake.Register<IBackgroundWork>(work);
+            var queue = new IdeaVerifyQueue(ctx) { PostponeStep = TimeSpan.FromMilliseconds(20), MaxPostponed = 6 };
+            // not now, not now, then the model is busy twice and answers: the two busy attempts are the only tries spent
+            var script = new Queue<IdeaVerifyQueue.Outcome>([IdeaVerifyQueue.Outcome.Later, IdeaVerifyQueue.Outcome.Later,
+                IdeaVerifyQueue.Outcome.Again("busy"), IdeaVerifyQueue.Outcome.Again("busy"), IdeaVerifyQueue.Outcome.Done()]);
+            var attempts = 0;
+            string? given = null;
+            queue.Defer("save:s2:r1", null, null, _ => { Interlocked.Increment(ref attempts); lock (script) return Task.FromResult(script.Dequeue()); }, "the chat was busy", why => given = why);
+            await Until(() => Volatile.Read(ref attempts) == 5 && queue.Pending == 0, 20000);
+            Check.Equal(5, attempts, "two put off, two busy, one done: a put-off attempt is not a try");
+            Check.Equal(null, given, "it finished: nothing is handed back");
+
+            // a chat that never stops working: handed back after MaxPostponed, not polled for ever
+            var never = 0;
+            queue.Defer("save:s3:r1", null, null, _ => { Interlocked.Increment(ref never); return Task.FromResult(IdeaVerifyQueue.Outcome.Later); }, "the chat is busy", why => given = why);
+            await Until(() => queue.Pending == 0, 20000);
+            Check.Equal(6, never, "MaxPostponed attempts, then no more");
+            Check.Contains(given, "put off 6 times", "and the caller is told why it is retryable again");
+            await Task.Delay(150);
+            Check.Equal(6, never, "nothing is left to wake for");
+            queue.Dispose();
+            ctx.Unload();
+        });
+
         r.Add("ideas verify queue: queued chats cost nothing, and their settling starts the wait", async () =>
         {
             var ctx = new FakePluginContext();

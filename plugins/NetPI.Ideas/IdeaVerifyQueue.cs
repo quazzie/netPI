@@ -35,7 +35,9 @@ public sealed class IdeaVerifyQueue : IDisposable
     public const int DefaultRetrySeconds = 30;
     private const int MaxBackoffSeconds = 600;
     /// <summary>How long the queue looks again after an attempt said "not now" (the run or the project is busy).</summary>
-    private static readonly TimeSpan PostponeStep = TimeSpan.FromSeconds(15);
+    internal TimeSpan PostponeStep { get; set; } = TimeSpan.FromSeconds(15);
+    /// <summary>How often a proposal may be told "not now" before it is handed back: a chat that never stops working must not hold the check's claim and a queue place for ever.</summary>
+    internal int MaxPostponed { get; set; } = 120;
     private const string Purpose = "Deferred verification";
 
     /// <summary>What one attempt of a deferred proposal says.</summary>
@@ -61,6 +63,8 @@ public sealed class IdeaVerifyQueue : IDisposable
         public Action<string>? GiveUp { get; } = giveUp;
         public string Reason { get; set; } = reason;
         public int Tries { get; set; }
+        /// <summary>The attempts that said "not now": they spend no try, and are counted apart so they are bounded too.</summary>
+        public int Postponed { get; set; }
         public DateTimeOffset Due { get; set; }
         public string? WorkId { get; set; }
     }
@@ -200,7 +204,14 @@ public sealed class IdeaVerifyQueue : IDisposable
         }
         if (outcome.NotYet)
         {
-            // Nothing was asked and nothing charged: the proposal is looked at again shortly, and the reason says so.
+            // Nothing was asked and nothing charged: the attempt does not count against the tries, only against its own bound.
+            job.Tries--;
+            if (++job.Postponed >= MaxPostponed)
+            {
+                Drop(job, $"{job.Reason} — it was put off {job.Postponed} times and the chat stayed busy");
+                return;
+            }
+            // the proposal is looked at again shortly, and the reason says so.
             job.Due = DateTimeOffset.UtcNow + PostponeStep;
             work?.Set(job.WorkId!, "waiting", $"{job.Reason}; nothing asked yet, looked at again in about {PostponeStep.TotalSeconds:0} s");
             return;
