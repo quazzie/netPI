@@ -192,6 +192,10 @@ public static class RegistryTests
             Check.True(http.Match("p", "/files/special/") == h2);
             Check.True(http.Match("p", "other") == h3);
             Check.True(http.Match("q", "files/a") is null);
+            Check.False(http.IsOpen("p", "files/a"), "a route is closed unless mapped open");
+            using var r4 = http.Map("p", "hook", h3, open: true);
+            Check.True(http.IsOpen("p", "/hook"));
+            Check.False(http.IsOpen("p", "files/special"));
             r1.Dispose();
             r1.Dispose();
             Check.True(http.Match("p", "files/a") == h3);

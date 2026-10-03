@@ -2,7 +2,7 @@
 import { rpc } from './rpc.svelte.js';
 import { bus } from './bus.js';
 import { app, openSession, newSession, hasRpc } from './state/app.svelte.js';
-import { composer, toast, modals } from './state/ui.svelte.js';
+import { composer, toast, modals, openView } from './state/ui.svelte.js';
 import { openPanelTab } from './state/tabs.svelte.js';
 
 const appListeners = new Set();
@@ -21,12 +21,12 @@ export function notifyAppChange() {
 const plain = (v) => (v == null ? null : JSON.parse(JSON.stringify(v)));
 
 /**
- * Create a ctx for one mounted tab. Everything registered through it (event handlers, onChange
+ * Create a ctx for one mounted tab. A session view (panel "session") also gets the chat it shows: ctx.sessionId. Everything registered through it (event handlers, onChange
  * listeners) is released by dispose() when the tab unmounts or reloads, even if the plugin forgets.
  * Registering after that releases it at once and hands back a no-op, so a handler that arrives from
  * a pending await (an onMount that crossed one) cannot outlive the tab it was registered for.
  */
-export function createPluginCtx(tab) {
+export function createPluginCtx(tab, sessionId = null) {
   const disposers = new Set();
   let disposed = false;
   const track = (off) => {
@@ -43,6 +43,7 @@ export function createPluginCtx(tab) {
   const ctx = {
     pluginId: tab.pluginId,
     tabId: tab.id,
+    sessionId,
     rpc: (method, params) => rpc(method, params ?? {}),
     hasRpc,
     on: (pattern, handler) => track(bus.on(pattern, handler)),
@@ -72,6 +73,10 @@ export function createPluginCtx(tab) {
       },
       openTab: (key) => {
         openPanelTab(key);
+      },
+      /** Show a session view in a chat (null key: the chat's messages again). */
+      openView: (sid, key) => {
+        openView(sid, key);
       },
       openSettings: (page, target) => {
         // target (an agent id, say) rides along in the page string: 'agents:<id>' opens that agent's dialog

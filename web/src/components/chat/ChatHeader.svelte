@@ -1,6 +1,8 @@
 <script>
   import Icon from '../../lib/kit/Icon.svelte';
   import { app, updateSession, openSession } from '../../lib/state/app.svelte.js';
+  import { tabs } from '../../lib/state/tabs.svelte.js';
+  import { sessionViews, toggleView } from '../../lib/state/ui.svelte.js';
 
   let { session } = $props();
 
@@ -59,6 +61,21 @@
     {/if}
 
     <span class="spacer"></span>
+
+    <!-- session views (plugin tabs with panel "session"): shown instead of the messages, the composer stays -->
+    {#each tabs.session as v (v.key)}
+      <button
+        class="view-btn"
+        class:on={sessionViews[session.id] === v.key}
+        title={sessionViews[session.id] === v.key ? `Back to the chat` : `Show ${v.title}`}
+        aria-pressed={sessionViews[session.id] === v.key}
+        data-view={v.key}
+        onclick={() => toggleView(session.id, v.key)}
+      >
+        {#if v.icon && !v.icon.trim().startsWith('<')}<Icon name={v.icon} size={13} />{/if}
+        <span>{v.title}</span>
+      </button>
+    {/each}
 
     <!-- while the agent works, the status line above the composer says so (RunStatus); here only how a run ended badly -->
     {#if agent && (agent.status === 'failed' || agent.status === 'cancelled')}
@@ -146,6 +163,28 @@
   }
   .spacer {
     flex: 1;
+  }
+  .view-btn {
+    align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--fg-dim);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+  }
+  .view-btn:hover {
+    color: var(--fg);
+    background: var(--bg-2);
+  }
+  .view-btn.on {
+    color: var(--fg);
+    border-color: var(--accent-line);
+    background: var(--bg-2);
   }
   .status {
     display: flex;

@@ -6,8 +6,9 @@
   /**
    * Hosts one plugin tab: lazy-imports /plugins/{pluginId}/{module}?v={version}, calls mount(el, ctx)
    * (or module[export]), forwards onShow/onHide, and remounts when the tab's version changes (hot reload).
+   * sessionId: the chat a session view shows (ctx.sessionId).
    */
-  let { tab, visible = true } = $props();
+  let { tab, visible = true, sessionId = null } = $props();
 
   let host = $state();
   let phase = $state('loading'); // loading | ready | error
@@ -54,7 +55,7 @@
       const target = document.createElement('div');
       target.className = 'plugin-root';
       host.replaceChildren(target);
-      const c = createPluginCtx(tab);
+      const c = createPluginCtx(tab, sessionId);
       dispose = c.dispose;
       const h = await fn(target, c.ctx);
       if (my !== token) {
@@ -89,7 +90,7 @@
   // (re)mount whenever the module identity changes (ui.tabs refetches recreate the tab object)
   let mountedSig = null;
   $effect(() => {
-    const sig = `${tab.pluginId}|${tab.module}|${tab.export ?? ''}|${tab.version ?? ''}`;
+    const sig = `${tab.pluginId}|${tab.module}|${tab.export ?? ''}|${tab.version ?? ''}|${sessionId ?? ''}`;
     if (sig === mountedSig) return;
     mountedSig = sig;
     untrack(mountTab);

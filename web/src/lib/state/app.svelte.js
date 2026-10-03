@@ -5,7 +5,7 @@ import { rpc, subscribe, onOpen, connect } from '../rpc.svelte.js';
 import { bus } from '../bus.js';
 import { load, save, persist, fetchRemote } from '../persist.js';
 import { getChat, peekChat, dropChat, allChats } from './chat.svelte.js';
-import { toast, syncUiStateFromHost, composer } from './ui.svelte.js';
+import { toast, syncUiStateFromHost, composer, openView } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
@@ -811,6 +811,17 @@ function onEvent(d, env) {
       planEvent(type, d);
       if (type === 'plan.changed') planNotification(d);
       else if (type === 'plan.enter.asked') notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Suggests plan mode${d.reason ? `: ${firstLine(d.reason)}` : ''}`);
+      break;
+    case 'ui.open':
+      // a plugin shows the user one of its session views in a chat (e.g. the agent's browser): there now, and a
+      // notification when the chat is not the one in front
+      if (d?.sessionId) {
+        openView(d.sessionId, d.view ?? null);
+        if (d.view && d.sessionId !== app.activeId) {
+          const s = app.sessionsById.get(d.sessionId);
+          if (s?.kind !== 'subagent') notifyAbout(d.sessionId, s, firstLine(d.text || 'Wants to show you something'));
+        }
+      }
       break;
     case 'ideas.suggested':
       suggestions.event(d);

@@ -130,5 +130,5 @@ internal sealed class ScopedUiRegistry(UiRegistry inner, PluginScope scope, Func
 
 internal sealed class ScopedHttpRegistry(HttpRegistry inner, PluginScope scope) : IHttpRegistry
 {
-    public IDisposable Map(string path, Func<HttpContext, Task> handler) => scope.Track(inner.Map(scope.PluginId, path, handler));
+    public IDisposable Map(string path, Func<HttpContext, Task> handler, bool open = false) => scope.Track(inner.Map(scope.PluginId, path, handler, open));
 }

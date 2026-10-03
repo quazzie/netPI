@@ -1,5 +1,6 @@
-// Side panel tab registry. Core tabs (Sessions, Projects) and plugin tabs (ui.tabs) share one list;
-// a tab's key is "<pluginId>/<tabId>" ("core/sessions" for the built-ins).
+// Tab registry. Core tabs (Sessions, Projects) and plugin tabs (ui.tabs) share one list; a tab's key is
+// "<pluginId>/<tabId>" ("core/sessions" for the built-ins). Side panel tabs sit left or right; a "session" tab is a
+// view of one chat, shown in the chat's own area (the chat header switches to it, the `ui.open` event opens it).
 import { app } from './app.svelte.js';
 import { layout, saveLayout } from './ui.svelte.js';
 
@@ -8,7 +9,9 @@ const byOrder = (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.title.localeC
 function normPanel(p) {
   if (p === 0) return 'left';
   if (p === 1) return 'right';
-  return String(p ?? 'right').toLowerCase() === 'left' ? 'left' : 'right';
+  if (p === 2) return 'session';
+  const v = String(p ?? 'right').toLowerCase();
+  return v === 'left' || v === 'session' ? v : 'right';
 }
 
 class TabRegistry {
@@ -26,6 +29,7 @@ class TabRegistry {
   all = $derived([...this.core, ...this.plugin]);
   left = $derived(this.all.filter((t) => t.panel === 'left').sort(byOrder));
   right = $derived(this.all.filter((t) => t.panel === 'right').sort(byOrder));
+  session = $derived(this.all.filter((t) => t.panel === 'session').sort(byOrder));
 }
 
 export const tabs = new TabRegistry();
