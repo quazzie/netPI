@@ -9,7 +9,7 @@ public static class ShellLocator
     /// </summary>
     public static string? FindBash(ISettings? settings)
     {
-        var configured = settings.SafeGet<string?>("shell.bashPath", null);
+        var configured = settings.GetOr<string?>("shell.bashPath", null);
         if (!string.IsNullOrWhiteSpace(configured))
         {
             var p = Environment.ExpandEnvironmentVariables(configured.Trim().Trim('"'));
@@ -81,7 +81,7 @@ public static class ShellLocator
     public static string? FindPwsh(ISettings? settings, out bool legacy)
     {
         legacy = false;
-        var configured = settings.SafeGet<string?>("shell.pwshPath", null);
+        var configured = settings.GetOr<string?>("shell.pwshPath", null);
         if (!string.IsNullOrWhiteSpace(configured))
         {
             var p = Environment.ExpandEnvironmentVariables(configured.Trim().Trim('"'));

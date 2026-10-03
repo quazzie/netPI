@@ -118,16 +118,16 @@ public static class ShellTests
         {
             var settings = new FakeSettings();
             var (svc, _, _) = NewService(settings);
-            Check.Equal<int?>(120, svc.ResolveTimeout(new NetPI.Tools.Shell.ToolArgs(T.Args(new { })), false));
-            Check.Equal<int?>(null, svc.ResolveTimeout(new NetPI.Tools.Shell.ToolArgs(T.Args(new { })), true));
-            Check.Equal<int?>(30, svc.ResolveTimeout(new NetPI.Tools.Shell.ToolArgs(T.Args(new { timeout = "30" })), false));
-            Check.Equal<int?>(1800, svc.ResolveTimeout(new NetPI.Tools.Shell.ToolArgs(T.Args(new { timeout = 120000 })), false)); // seconds, clamped to the max — not a millisecond heuristic
-            Check.Equal<int?>(1800, svc.ResolveTimeout(new NetPI.Tools.Shell.ToolArgs(T.Args(new { timeout = 7200 })), false)); // a 2 h request is clamped, not read as 7.2 s
-            Check.Equal<int?>(5, svc.ResolveTimeout(new NetPI.Tools.Shell.ToolArgs(T.Args(new { timeout_ms = 4500 })), false));
-            Check.Equal<int?>(1800, svc.ResolveTimeout(new NetPI.Tools.Shell.ToolArgs(T.Args(new { timeout = 3000 })), false));
-            Check.Equal<int?>(1, svc.ResolveTimeout(new NetPI.Tools.Shell.ToolArgs(T.Args(new { timeout = 0.2 })), false)); // under 1 s clamps to 1 s
+            Check.Equal<int?>(120, svc.ResolveTimeout(new ToolArgs(T.Args(new { })), false));
+            Check.Equal<int?>(null, svc.ResolveTimeout(new ToolArgs(T.Args(new { })), true));
+            Check.Equal<int?>(30, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout = "30" })), false));
+            Check.Equal<int?>(1800, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout = 120000 })), false)); // seconds, clamped to the max — not a millisecond heuristic
+            Check.Equal<int?>(1800, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout = 7200 })), false)); // a 2 h request is clamped, not read as 7.2 s
+            Check.Equal<int?>(5, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout_ms = 4500 })), false));
+            Check.Equal<int?>(1800, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout = 3000 })), false));
+            Check.Equal<int?>(1, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout = 0.2 })), false)); // under 1 s clamps to 1 s
             settings.Set("shell.timeoutSeconds", 7);
-            Check.Equal<int?>(7, svc.ResolveTimeout(new NetPI.Tools.Shell.ToolArgs(T.Args(new { })), false));
+            Check.Equal<int?>(7, svc.ResolveTimeout(new ToolArgs(T.Args(new { })), false));
         });
 
         r.Add("bash: foreground output, stderr merged, exit code, cwd, live streaming", async () =>

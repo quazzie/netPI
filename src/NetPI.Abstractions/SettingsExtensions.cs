@@ -15,7 +15,8 @@ public static class SettingsExtensions
     public static T GetOr<T>(this ISettings? settings, string path, T fallback = default)
     {
         if (settings is null) return fallback;
-        return settings.Get(path, fallback) ?? fallback;
+        var value = settings.Get(path, fallback);
+        return value is null ? fallback : value;
     }
 
     /// <summary>An int setting: a number (a fraction is truncated), or its string form; else <paramref name="fallback"/>.</summary>
