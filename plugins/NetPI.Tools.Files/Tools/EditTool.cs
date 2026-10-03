@@ -27,15 +27,15 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
             "Several edits are applied in order and atomically: if any edit fails, nothing is written. Include enough surrounding " +
             "lines in oldText to be unique; an empty newText deletes. oldText/newText/replaceAll at the top level are a shorthand " +
             "for one edit. Line endings (CRLF/LF) do not matter: matching ignores them and the file keeps its original style and BOM.",
-        Parameters = Schema.Object(
-            ("path", Schema.Str(""), true),
-            ("edits", Schema.Array("Applied in order", Schema.Object(
-                ("oldText", Schema.Str(""), true),
-                ("newText", Schema.Str(""), true),
-                ("replaceAll", Schema.Bool(""), false))), false),
-            ("oldText", Schema.Str("One edit"), false),
-            ("newText", Schema.Str(""), false),
-            ("replaceAll", Schema.Bool(""), false)),
+        Parameters = ToolSchema.Object(
+            ("path", ToolSchema.Str(""), true),
+            ("edits", ToolSchema.Array("Applied in order", ToolSchema.Object(
+                ("oldText", ToolSchema.Str(""), true),
+                ("newText", ToolSchema.Str(""), true),
+                ("replaceAll", ToolSchema.Bool(""), false))), false),
+            ("oldText", ToolSchema.Str("One edit"), false),
+            ("newText", ToolSchema.Str(""), false),
+            ("replaceAll", ToolSchema.Bool(""), false)),
         PromptGuidelines = [UseFileTools, ChangeFiles],
     };
 
