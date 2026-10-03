@@ -74,6 +74,11 @@ const noHost = await loadShim('svelte', undefined);
 check('no host UI: the error says the tab needs the shared runtime', /shares its Svelte runtime/.test(noHost), noHost.slice(0, 80));
 const skew = await loadShim('svelte', { svelte: { version: '0.0.1' } });
 check('another svelte: the error names both versions', skew.includes(`svelte ${version}`) && skew.includes('0.0.1'), skew.slice(0, 120));
+check(
+  'and says to reload the page first (the host may have been updated), then rebuild if it still fails',
+  /Reload the page/.test(skew) && /may have been updated/.test(skew) && /if it still fails, rebuild the tab/.test(skew),
+  skew.slice(0, 200),
+);
 const trimmed = await loadShim('svelte/internal/client', { svelte: { version, client: {} } });
 check('a host without the exports: the error says to rebuild both', /does not export every export/.test(trimmed), trimmed.slice(0, 80));
 const noKit = await loadShim('@netpi/kit', undefined);
