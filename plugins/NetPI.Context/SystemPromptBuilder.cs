@@ -10,8 +10,10 @@ using Microsoft.Extensions.Logging;
 //   context_tools    key: session id                     index fields: (none)
 //       { tools: string[], sinceSeq: int }
 //   context_sent     key: "<sessionId>:<version>"        index fields: sessionId (text), version (int), afterSeq (int)
-//       { sessionId: string, version: int, afterSeq: int, prompt: string, createdAt: string,
+//       { sessionId: string, version: int, afterSeq: int, prompt: string, createdAt: string, inherited: true,
 //         tools: [{ name: string, description: string, parameters: object, revision: string }] }
+//     `inherited` is set only on the rows a fork copied from the session it was forked from (they were sent by that one),
+//     so a fork's own first call does not record the same prompt beside them.
 
 namespace NetPI.Context;
 
@@ -226,6 +228,11 @@ internal sealed class PromptStore(IPluginContext ctx)
             // the version is the highest the session has plus one: read it and write the row in one transaction
             var version = ctx.Data.Transaction(() =>
             {
+                // A fork goes on with the prompt it inherited, which the rows it copied already hold. Its own first call
+                // renders that same text as its own instance, so it cannot tell it is the one it inherited (Freeze keeps
+                // the copy's instance) and records it as a prompt the fork was sent: without this the fork's history has
+                // that prompt twice, and every later fork of it inherits both.
+                if (NewestSent(sessionId) is { Inherited: true } inherited && inherited.Prompt == prompt) return inherited.Version;
                 var v = NextVersion(sessionId);
                 _sent.Insert(SentKey(sessionId, v), new JsonObject
                 {
@@ -251,9 +258,17 @@ internal sealed class PromptStore(IPluginContext ctx)
     }
 
     /// <summary>The version the next prompt a session is sent gets: one past the highest it already has.</summary>
-    private int NextVersion(string sessionId) =>
-        (int)(_sent.Find(new DataQuery().Eq("sessionId", sessionId).Order("version", descending: true).Take(1))
-            .Select(d => Number(d.Doc, "version")).FirstOrDefault()) + 1;
+    private int NextVersion(string sessionId) => (NewestSent(sessionId)?.Version ?? 0) + 1;
+
+    /// <summary>The newest row a session was sent, or null when it has been sent none.</summary>
+    private SentRow? NewestSent(string sessionId)
+    {
+        var doc = _sent.Find(new DataQuery().Eq("sessionId", sessionId).Order("version", descending: true).Take(1)).FirstOrDefault()?.Doc;
+        return doc is null ? null : new SentRow((int)Number(doc, "version"), Text(doc, "prompt") ?? "", doc["inherited"]?.GetValue<bool>() ?? false);
+    }
+
+    /// <summary>One row of <c>context_sent</c>: which version it is, the prompt it holds and whether a fork copied it.</summary>
+    private sealed record SentRow(int Version, string Prompt, bool Inherited);
 
     /// <summary>
     /// The name→revision of the tools of the last prompt a session was sent (see <see cref="RecordSent"/>): kept in memory so
@@ -362,6 +377,7 @@ internal sealed class PromptStore(IPluginContext ctx)
                 {
                     var copy = (JsonObject)row.Doc.DeepClone();
                     copy["sessionId"] = to;
+                    copy["inherited"] = true;   // sent by the session it was forked from, not by this one
                     _sent.Insert(SentKey(to, (int)Number(copy, "version")), copy);
                 }
             });

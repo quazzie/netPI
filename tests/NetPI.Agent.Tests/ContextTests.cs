@@ -17,6 +17,8 @@ public static class ContextTests
         t.Add("context: the sent prompt is recorded in the session row once; a later identical call rewrites nothing", PromptRecordedOnce);
         t.Add("context: a changed tool schema revision arrives as a definition notice (the last-sent map is cached, read cold)", ToolRevisionNotices);
         t.Add("context: a fork goes on with the prompt the original had at the fork point", ForkPrompt);
+        t.Add("context: a fork whose first call races the copy of the fork point's prompts records it once", ForkPromptRace);
+        t.Add("context: a fork's first call does not record the prompt its own copy of the fork point already holds", ForkRecordInherited);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
         t.Add("context: a tools notice says why (plugin reload, the user, a setting) and keeps the cause in meta", ToolChangeCauses);
@@ -468,6 +470,54 @@ public static class ContextTests
         var late = Fork(h.Messages(s.Id).Last().Seq);
         await Turn(h, late.Id, "later fork");
         Check.Equal(p2, h.Catalog.Requests.Last().SystemPrompt, "a fork after the switch has the second prompt");
+    }
+
+    // A fork's first model call races the copy of the fork point's prompts (session.forked runs on the bus, the call goes
+    // straight on): whichever lands first, the fork was sent the prompt it inherited, so it has that prompt once — not
+    // the call's own copy beside the copied one.
+    private static async Task ForkPromptRace()
+    {
+        await using var h = await TestHost.StartAsync();
+        for (var i = 0; i < 12; i++)
+        {
+            var s = h.NewSession();
+            await Turn(h, s.Id, "hi " + i);
+            var p1 = h.Catalog.Requests.Last().SystemPrompt;
+            var fork = h.Fork(s.Id, h.Messages(s.Id).Last().Seq);
+            await Turn(h, fork.Id, "in the fork " + i);
+            Check.Equal(p1, h.Catalog.Requests.Last().SystemPrompt, $"cycle {i}: the fork goes on with the inherited prompt");
+            await h.Bus.DrainAsync();
+            var prompts = (JsonArray)(await h.Rpc.CallAsync("context.prompts", new { sessionId = fork.Id }))!["prompts"]!;
+            Check.Equal(1, prompts.Count, $"cycle {i}: the inherited prompt is the fork's own history, once");
+            Check.Equal(p1, (string?)prompts[0]!["systemPrompt"]);
+        }
+    }
+
+    // The interleaving a fork's first call loses to nothing: the copy of the fork point's prompts (session.forked) lands
+    // first and stores the inherited prompt as the fork's own, so the call's Freeze keeps that instance, cannot tell its
+    // text is the same one, and records it as a prompt the fork was sent. The fork then holds it twice.
+    private static async Task ForkRecordInherited()
+    {
+        await using var h = await TestHost.StartAsync();
+        var store = new PromptStore(new TestPluginContext(h, "probe-fork"));
+        store.Initialize();
+        var original = h.NewSession();
+        var fork = h.NewSession();
+        store.Freeze(original.Id, "THE PROMPT", 0);
+        store.RecordSent(original.Id, "THE PROMPT", [new ToolDefinition { Name = "echo", Description = "e" }], 1);
+
+        store.Fork(original.Id, fork.Id, 1);                       // session.forked: the fork point's prompt is copied
+        Check.Equal(1, store.Sent(fork.Id).Count, "the fork holds the prompt it inherited");
+        store.Freeze(fork.Id, new string("THE PROMPT".ToCharArray()), 0);   // its first call, the same text, its own instance
+        var version = store.RecordSent(fork.Id, "THE PROMPT", [new ToolDefinition { Name = "echo", Description = "e" }], 2);
+        Check.Equal(1, store.Sent(fork.Id).Count, "and does not record it a second time");
+        Check.Equal(1, version, "the prompt it went on with is the one it inherited");
+
+        // a prompt the fork was not sent before is recorded as usual
+        store.Reset(fork.Id);
+        store.Freeze(fork.Id, "ANOTHER PROMPT", 1);
+        Check.Equal(2, store.RecordSent(fork.Id, "ANOTHER PROMPT", [], 3), "a new prompt is a new version");
+        Check.Equal(2, store.Sent(fork.Id).Count);
     }
 
     // Every prompt a session is sent is kept with its tools (context.prompts): the first, and one after each context.reset
