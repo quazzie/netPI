@@ -20,6 +20,9 @@ namespace NetPI.Ideas;
 /// </summary>
 internal sealed class IdeaDecider(IPluginContext ctx)
 {
+    /// <summary>The model the idea checks were measured on (the default of <c>ideas.model</c>).</summary>
+    public const string DefaultModel = "qwen3.8-27b";
+
     private readonly IdeaAdmission _admission = new(ctx);
 
     /// <summary>Why a decision did not answer, in the ways a caller has to tell apart.</summary>
@@ -58,7 +61,7 @@ internal sealed class IdeaDecider(IPluginContext ctx)
         deadline.CancelAfter(timeout);
         try
         {
-            var name = ctx.Settings.GetOr("ideas.model", IdeaRecall.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaRecall.DefaultModel;
+            var name = ctx.Settings.GetOr("ideas.model", IdeaDecider.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaDecider.DefaultModel;
             var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
             // The decision runs on the same backend as the chats, so it takes a slot like everything else.
             var admission = await _admission.EnterAsync(model, purpose, sessionId, projectId, ct, wait, decision: true).ConfigureAwait(false);

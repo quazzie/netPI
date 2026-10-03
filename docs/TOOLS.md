@@ -886,20 +886,22 @@ models through NInfer's `POST /v1/decision` (the answer letters' probabilities r
 generated; at most 26 options per choice question). It needs no extra memory and was the more accurate model in the
 2026-09-26 tests (`DECISION-MODELS.md`), but it shares NInfer's two slots with the agents.
 
-`{ questions, text?, items?: string[], file?, min_confidence? /* 0.5 */, model? }`. `questions` is `id → question`:
+`{ questions, text?, items?: string[], file?, min_confidence? /* 0.8 */, model? }`. `questions` is `id → question`:
 `{ type: "yes_no", question }`, `{ type: "choice", question, options: { label: description } | label[] }` (2–255) or
 `{ type: "score", question, levels: string[] /* lowest first, 2–10 */ }`; a bare string is a yes/no question (the
 schema asks for real questions: "A human needs to act." scored 0.62 where "Does a human need to act?" scored 0.95). They are
 sent as TypeSafe's `noul` / `choice` / `score` with `instructions` and `criteria`. Every item (the `text`, each of
 `items`, each non-empty line of `file`; at most `decide.maxItems`, 500) is one request with every question, up to
-`decide.parallel` (4) at a time. Confidence: the model's for choice/score, `|p − 0.5| × 2` for yes/no; an item with an
-answer under `min_confidence` is unsure. The model gets the counts per question (and the mean score), then every item
+`decide.parallel` (4) at a time; an item identical to an earlier one, and with embeddings one at or above `decide.groupSimilarity`
+(0.985 cosine), shares that item's answer instead of its own request (`sameAs`, and `[3] (= [1])` in the text). Confidence: the
+probability of the answer given — p(yes) or p(no) for yes/no, the choice's probability (else its confidence), a score's
+confidence; an item is unsure when an answer is under `min_confidence` or within 0.15 of the runner-up. The model gets the counts per question (and the mean score), then every item
 when there are at most 40, else only the unsure ones (up to 40). If some items fail the rest are still reported, with
 the first error.
 
 ```ts
 details: { model, file?, questions /* as sent */, count, unsure, ms,
-  items: { index /* 1-based */, text /* ≤ 300 chars */, answers: { [id]: { answer, confidence } }, unsure, ms }[],
+  items: { index /* 1-based */, text /* ≤ 300 chars */, answers: { [id]: { answer, confidence } }, unsure, ms, sameAs? /* the 1-based item whose answer it shares */ }[],
   usage? /* { promptTokens, cachedTokens, completionTokens, cacheHitRate } — what the server reported; null when it reported none */ }
 ```
 

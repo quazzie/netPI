@@ -67,7 +67,7 @@ public sealed class IdeasPlugin : INetPiPlugin
         var rpc = new IdeasRpc(repo, locator, events, snapshots, context.Paths.Home);
         rpc.Register(context.Rpc);
         RegisterVerifyUpdate(context, repo);
-        new IdeaRecall(context, repo, locator, vectors, outcomes).Register(context.Rpc);
+        new IdeaAttach(context, repo).Register(context.Rpc);
         new IdeaRefine(context, repo).Register(context.Rpc);
         // What a verification the model was too busy to judge waits for (idea-ujife1): a bounded number of proposals,
         // retried when foreground work settles, so a busy model strands neither the check nor its claim.
@@ -87,10 +87,6 @@ public sealed class IdeasPlugin : INetPiPlugin
             [
                 SettingInfo.Str("ideas.fileName", "Legacy ideas file name", "ideas.json",
                     "The name the ideas file had before the backlog moved into the store. It is reported by ideas.list and ideas.changed so an older UI still has a hint. The backlog is not written there any more."),
-                SettingInfo.Bool("ideas.recall", "Suggest a matching idea", true,
-                    "While the first message of a chat is typed, a decision looks for the open idea it continues and offers to add it to the chat (needs the Decide plugin)."),
-                SettingInfo.Number("ideas.recallThreshold", "Suggestion threshold", IdeaRecall.DefaultThreshold,
-                    "The decision's probability an idea needs before it is suggested. 0.8 gave no false suggestion on 56 unrelated messages (docs/DECISION-MODELS.md).", 0.3, 0.99),
                 SettingInfo.Bool("ideas.saveCheck", "Offer unsaved plans when a chat closes", true,
                     "When a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down. A new plan gets a card to save or discard; work on an open idea is attached to it instead."),
                 SettingInfo.Bool("ideas.verify", "Verify automatic proposals", true, "A read-only low-priority worker verifies proposals before they are shown or applied. Disabling this stops automatic proposals."),
@@ -100,7 +96,7 @@ public sealed class IdeasPlugin : INetPiPlugin
                 SettingInfo.Bool("ideas.applyVerifiedUpdates", "Apply verified completion updates", false, "Mark an idea done after independent verification without a click, only if its revision is unchanged and its project is idle. Off (the default): you get a card. The done question offered 4 of 5 finished ideas in its measurement; ideas.decisions shows how it does in use."),
                 SettingInfo.Number("ideas.attachThreshold", "Attach threshold", IdeaSaveCheck.DefaultAttachThreshold,
                     "The probability a closed chat has to be about an open idea before the chat is attached to it. 0.8 was right on 5 of 6 (docs/DECISION-MODELS.md).", 0.3, 0.99),
-                SettingInfo.Str("ideas.model", "Model for the idea checks", IdeaRecall.DefaultModel,
+                SettingInfo.Str("ideas.model", "Model for the idea checks", IdeaDecider.DefaultModel,
                     "The decision model (through the Decide plugin's server) and the model that drafts the save check. qwen3.8-27b, the NInfer chat model, was measured."),
                 SettingInfo.Bool("ideas.allowPaidModel", "Let the automatic checks use a paid model", false,
                     "Off: a check that would run on a cloud model is skipped, because an invoice for a background check is never what you meant. On: the same model as above, local or not."),
@@ -137,7 +133,7 @@ public sealed class IdeasPlugin : INetPiPlugin
         {
             ["summary"] = outcomes.Summary(),
             ["rows"] = new JsonArray(outcomes.List(request.Str("site"), request.Str("result"), request.Int("limit") ?? 50).Select(r => (JsonNode)r).ToArray()),
-        }), "What the idea checks decided and what came of it: { site? (recall|attach|link|done|notice|save), result?, limit? (50) } → { summary: { site: { result: count } }, rows: [{ site, result, at, ideaId?, p?, runnerUp?, none?, threshold?, score?, text?, … }] } (newest first)");
+        }), "What the idea checks decided and what came of it: { site? (attach|link|done|notice|save), result?, limit? (50) } → { summary: { site: { result: count } }, rows: [{ site, result, at, ideaId?, p?, runnerUp?, none?, threshold?, score?, text?, … }] } (newest first)");
         context.Rpc.RegisterReadOnly("ideas.similar", async (request, token) =>
         {
             var limit = Math.Clamp(request.Int("limit") ?? 5, 1, 50);

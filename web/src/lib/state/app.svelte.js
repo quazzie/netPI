@@ -11,7 +11,6 @@ import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
 import { loadAsks, askEvent, pendingIn, approvalIn, pruneSession } from './asks.svelte.js';
 import { loadPlans, planEvent, planWaiting, prunePlans } from './plans.svelte.js';
-import { recall } from '../../components/composer/ideaRecall.svelte.js';
 import { suggestions } from '../../components/composer/ideaSuggestions.svelte.js';
 import { welcomeIdeas } from './welcomeIdeas.svelte.js';
 import { formatBytes, payloadBytes, sendBudget } from '../images.js';
@@ -513,7 +512,6 @@ function removeSessionLocal(id) {
   dropChat(id);
   // drop the per-session bookkeeping that would otherwise keep an entry for this chat forever
   saidJustNow.delete(id);
-  recall.prune(id);
   pruneSession(id);
   prunePlans(id);
   app.agents.delete(id); // its last run state (agent.status), a subagent's included

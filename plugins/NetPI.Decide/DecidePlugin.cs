@@ -28,6 +28,8 @@ public sealed class DecidePlugin : INetPiPlugin
                 SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16),
                 SettingInfo.Str("decide.bulkModel", "Bulk decision model", "", "Explicit model for multi-item work; empty keeps the caller's choice. Does not load models."),
                 SettingInfo.Int("decide.bulkThreshold", "Items before bulk routing", 8, null, 2, 5000),
+                SettingInfo.Number("decide.groupSimilarity", "Share answers between near-identical items", DecideTool.DefaultGroupSimilarity,
+                    "With embeddings, decide items at or above this cosine share one decision (a log line that differs only in a timestamp). Identical items always do. 0: only identical ones. Kept high: lines that differ in an error code must stay apart.", 0, 1),
                 SettingInfo.Bool("decide.lane", "Short checks on the decision lane", true,
                     "A single short check (the guard's second opinion, the idea checks, loop hints) on a local model does not take an agent slot: NInfer answers decisions on its own lane ahead of agent work. Off: every decision waits for a slot like a chat. The decide tool always takes slots."),
             ],

@@ -29,6 +29,27 @@
   let showUnsaved = $state(false);
   let busy = $state(null);
   let conflict = $state.raw(null); // { id, message } for the idea an update was refused for
+  // Meaning search (≈): with embeddings on the server, the search box can rank ideas by meaning (ideas.similar)
+  // instead of requiring every word. Off by default; the toggle only shows when the server has embeddings.
+  let canMeaning = $state(false);
+  let byMeaning = $state(false);
+  let meaning = $state.raw(null); // Map id -> score for the current query, or null
+  let meaningTimer = null;
+  let meaningSeq = 0;
+  $effect(() => {
+    const text = q.trim();
+    const on = byMeaning;
+    clearTimeout(meaningTimer);
+    if (!on || !text) { meaning = null; return; }
+    const seq = ++meaningSeq;
+    meaningTimer = setTimeout(async () => {
+      try {
+        const r = await ctx.rpc('ideas.similar', { text, limit: 30, status: 'all' });
+        if (seq === meaningSeq) meaning = r?.available ? new Map((r.ideas ?? []).map((i) => [i.id, i.score])) : null;
+      } catch { if (seq === meaningSeq) meaning = null; }
+    }, 300);
+    return () => clearTimeout(meaningTimer);
+  });
 
   async function loadUnsaved() {
     try {
@@ -61,6 +82,7 @@
     try {
       [list, projects] = await Promise.all([ctx.rpc('ideas.list', {}), ctx.rpc('projects.list', {}).catch(() => [])]);
       error = '';
+      ctx.rpc('ideas.capabilities', {}).then((c) => (canMeaning = !!c?.embeddings)).catch(() => (canMeaning = false));
     } catch (e) {
       error = e?.message ?? String(e);
       list = null;
@@ -120,15 +142,17 @@
     for (const i of ideas) for (const t of i.tags ?? []) m.set(t, (m.get(t) ?? 0) + 1);
     return [...m].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t, n]) => ({ t, n }));
   });
-  const shown = $derived(
-    ideas.filter(
+  const shown = $derived.by(() => {
+    const scoped = ideas.filter(
       (i) =>
         (projectFilter === 'all' || (projectFilter === 'global' ? !effProject(i) : effProject(i) === projectFilter)) &&
         (statusFilter === 'all' || (statusFilter === 'active' ? ACTIVE.has(i.status) : i.status === statusFilter)) &&
-        (!tagFilter.size || (i.tags ?? []).some((t) => tagFilter.has(t))) &&
-        matches(i, q.trim()),
-    ),
-  );
+        (!tagFilter.size || (i.tags ?? []).some((t) => tagFilter.has(t))),
+    );
+    // ≈: the ideas the server ranked by meaning, best first (within the same filters); otherwise every word must match.
+    if (byMeaning && meaning) return scoped.filter((i) => meaning.has(i.id)).sort((a, b) => meaning.get(b.id) - meaning.get(a.id));
+    return scoped.filter((i) => matches(i, q.trim()));
+  });
   const statusLabel = $derived(statusFilter === 'active' ? 'Active' : statusFilter === 'all' ? 'All' : statusFilter);
   const projectLabel = $derived(
     projectFilter === 'all' ? 'All projects' : projectFilter === 'global' ? 'Global' : (projects.find((p) => p.id === projectFilter)?.name ?? projectFilter),
@@ -356,7 +380,11 @@
   </div>
 
   <div class="filters np-line">
-    <SearchInput bind:value={q} placeholder="Search ideas" class="np-grow" />
+    <SearchInput bind:value={q} placeholder={byMeaning ? 'Search by meaning' : 'Search ideas'} class="np-grow" />
+    {#if canMeaning}
+      <button class="np-chip fchip meaning" aria-pressed={byMeaning} onclick={() => (byMeaning = !byMeaning)}
+        title={byMeaning ? 'Searching by meaning (embeddings): click for word search' : 'Search by meaning instead of words (embeddings)'}>≈</button>
+    {/if}
     <Menu items={statusItems} minWidth={170}>
       {#snippet trigger({ toggle, open })}
         <button class="np-chip fchip" aria-pressed={statusFilter !== 'active'} aria-expanded={open} onclick={toggle} title="Status filter">

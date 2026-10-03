@@ -96,7 +96,7 @@ web/
                ToolRow, NoticeRow, PromptRow, SentBlock, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
       composer/ Composer, ProfilePicker, ProjectPicker, AgentPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing,
-                QueueChips, GoalStrip, TodoStrip, IdeaChip, RunStatus
+                QueueChips, GoalStrip, TodoStrip, RunStatus
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
                SettingInfo), SettingsRow, AgentsEditor + AgentDialog, BudgetView, ProfilesEditor + ProfileDialog,
@@ -251,12 +251,6 @@ into locals first, because after the parent clears the modal state or the row re
      shell opens them in the default browser).
    - **Plan strip.** `TodoStrip` (in the composer dock) shows the session's `meta.todo` while any item is open:
      `done/total` and the current item, expanding to the checklist.
-   - **Idea chip.** `IdeaChip` (in the composer dock, after the plan strip) looks for the open idea the first message
-     continues: `ideas.recall` about 1 s after typing pauses (12 characters or more, again when the text changed by
-     20), and once more on the sent text of a chat this window saw empty (opening an old chat never asks). A match
-     shows one line: the idea's title, **Add** (`ideas.attach`: the idea joins the chat as an `idea` notice) and ✕.
-     Added or dismissed, that chat is not asked again; the state is per chat in `composer/ideaRecall.svelte.js`.
-     The send never waits for it.
    - **Idea cards.** `IdeaCards` (in the composer dock) shows the offers `ideas.suggestions` returns, for the window
      rather than a chat — the chat a plan came from is closed. Two kinds: a **plan a closed chat left unsaved** (title,
      summary, **Save** / **Edit** / **Discard**) and an **idea a commit may have finished** ("may be done", the idea's

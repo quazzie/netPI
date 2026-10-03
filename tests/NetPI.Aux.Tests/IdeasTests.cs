@@ -963,61 +963,6 @@ public static class IdeasTests
             return (env, mine, global, other);
         }
 
-        r.Add("ideas: recall asks one decision over the open ideas of the chat's project and the global ones; a clear match is returned", async () =>
-        {
-            var (env, mine, global, _) = await RecallEnv();
-            var seen = FakeDecision(env, _ => new() { ["A"] = 0.91, ["B"] = 0.04, ["C"] = 0.05 });
-            var res = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = "the nudge plugin keeps nudging after a good answer" });
-            Check.Equal("model", res["reason"].Str());
-            Check.Equal(mine, res["match"]!["id"].Str());
-            Check.Equal("Nudge reset", res["match"]!["title"].Str());
-
-            var asked = seen.Single();
-            Check.Equal("qwen3.8-27b", asked["model"].Str());
-            var system = asked["messages"]![0]!["content"].Str()!;
-            Check.Contains(system, "A) [Demo] Nudge reset — Reset the nudge counter");
-            Check.Contains(system, "B) [global] Calm ideas tab");
-            Check.Contains(system, "C) none of these");
-            Check.False(system.Contains("Other project idea"), "another project's idea is not offered");
-            Check.False(system.Contains("Finished one"), "a done idea is not offered");
-            Check.Equal("A|B|C", string.Join("|", asked["branches"]![0]!["labels"]!.AsArray().Select(x => x.Str())));
-            Check.Contains(asked["branches"]![0]!["content"].Str()!, "the nudge plugin keeps nudging");
-        });
-
-        r.Add("ideas: recall stays quiet below the threshold, when none wins, for short text, when off and without the Decide plugin", async () =>
-        {
-            var (env, _, _, _) = await RecallEnv();
-            async Task<string?> Reason(string text) =>
-                (await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = text }))["reason"].Str();
-
-            Check.Equal("unavailable", await Reason("something long enough to ask about"));
-            var probs = new Dictionary<string, double> { ["A"] = 0.7, ["B"] = 0.1, ["C"] = 0.2 };
-            FakeDecision(env, _ => probs);
-            Check.Equal("none", await Reason("something long enough to ask about"));
-            probs = new() { ["A"] = 0.45, ["B"] = 0.0, ["C"] = 0.55 };
-            env.Ctx.SettingsFake.Set("ideas.recallThreshold", JsonValue.Create(0.4));
-            Check.Equal("none", await Reason("something long enough to ask about"));
-            Check.Equal("short", await Reason("hi"));
-            env.Ctx.SettingsFake.Set("ideas.recall", JsonValue.Create(false));
-            Check.Equal("off", await Reason("something long enough to ask about"));
-        });
-
-        r.Add("ideas: recall matches an idea id in the text without a model; a failing decision is an error, not an exception", async () =>
-        {
-            var (env, mine, _, other) = await RecallEnv();
-            var seen = FakeDecision(env, _ => throw new RpcException("http_500", "qwen3.8-27b: HTTP 500 (request gw-1)"));
-            var byId = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = $"check {mine} please" });
-            Check.Equal("id", byId["reason"].Str());
-            Check.Equal(mine, byId["match"]!["id"].Str());
-            Check.Equal(0, seen.Count);
-
-            // Another project's id is not a match here; the decision is asked, and its failure is reported.
-            var failed = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = $"look at {other} in the other project" });
-            Check.Equal("error", failed["reason"].Str());
-            Check.Contains(failed["error"].Str()!, "request gw-1");
-            Check.True(failed["match"] is null);
-        });
-
         r.Add("ideas: attach adds the idea to the chat as a notice and records the session on the idea", async () =>
         {
             var (env, mine, _, _) = await RecallEnv();

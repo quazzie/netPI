@@ -122,7 +122,8 @@ public static class DecideTests
             Check.Contains(res.Content, "level: info 2, error 1");
             Check.Contains(res.Content, "act: yes 2, no 1");
             Check.Contains(res.Content, "(mean score 1.50)");
-            Check.Contains(res.Content, "[2] level=error 0.90 · act=yes 0.94");
+            Check.Contains(res.Content, "[2] level=error 0.90 · act=yes 0.97");   // p(yes), not the distance from 0.5
+            Check.Contains(res.Content, "[1] level=info 0.90 · act=no 0.96");     // p(no) = 1 − 0.04
             Check.Contains(res.Content, "[3] ? level=info 0.20");
             var d = NetPiJson.ToElement(res.Details);
             Check.Equal(1, d.GetProperty("unsure").GetInt32());
@@ -134,6 +135,32 @@ public static class DecideTests
             Check.Equal(12000, usage.GetProperty("cachedTokens").GetInt32());
             Check.Equal(9, usage.GetProperty("completionTokens").GetInt32());
             Check.Equal(0.9766, usage.GetProperty("cacheHitRate").GetDouble(), "12000 of 12288 prompt tokens came from its cache");
+        });
+
+        r.Add("decide: a repeated item is decided once; with embeddings a near-identical one shares the answer too", async () =>
+        {
+            foreach (var withEmbeddings in new[] { false, true })
+            {
+                var seen = new List<JsonObject>();
+                await using var kev = await FakeKev(seen);
+                var env = new Env();
+                if (withEmbeddings) env.Ctx.ServicesFake.Register<IEmbeddingService>(new EmbeddingsTests.BagOfWords());
+                await env.StartAsync(kev.Url);
+                // Line 3 repeats line 1; line 4 is line 2 with other punctuation (the same words: cosine 1 to a bag of words).
+                var res = await env.Run(new
+                {
+                    items = new[] { "ERR disk full on /data", "INF backup started", "ERR disk full on /data", "INF: backup started." },
+                    questions = new { act = new { type = "yes_no", question = "Does a human need to act?" } },
+                });
+                Check.False(res.IsError, res.Content);
+                Check.Equal(withEmbeddings ? 2 : 3, seen.Count, "decisions asked");
+                Check.Contains(res.Content, "4 items × 1 question");
+                Check.Contains(res.Content, withEmbeddings ? "(2 decided; 2 repeat an earlier item and share its answer)" : "(3 decided; 1 repeat");
+                Check.Contains(res.Content, "[3] (= [1]) act=yes 0.97");
+                var items = NetPiJson.ToElement(res.Details).GetProperty("items");
+                Check.Equal(1, items[2].GetProperty("sameAs").GetInt32());
+                if (withEmbeddings) Check.Equal(2, items[3].GetProperty("sameAs").GetInt32());
+            }
         });
 
         r.Add("decide: errors keep the gateway's code and request id, with a hint for an unloaded model; bad questions are refused", async () =>

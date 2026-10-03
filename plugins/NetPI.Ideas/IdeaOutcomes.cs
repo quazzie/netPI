@@ -5,11 +5,11 @@ namespace NetPI.Ideas;
 
 /// <summary>
 /// What every idea check decided, and what the user did with it: the <c>decisions</c> collection. Until now an answer
-/// lived only in the moment (a chip, a card, a link) and the probabilities were thrown away, so whether the measured
-/// accuracy held in daily use could not be told. Each row is one decision: the site (<c>recall</c>, <c>attach</c>,
+/// lived only in the moment (a card, a link, a notice) and the probabilities were thrown away, so whether the measured
+/// accuracy held in daily use could not be told. Each row is one decision: the site (<c>attach</c>,
 /// <c>link</c>, <c>done</c>, <c>notice</c>, <c>save</c>), its result, the idea it chose (or none), the probabilities
-/// or similarity behind it, and a short clip of what was judged. The user's side lands here too (<c>recall</c> chips
-/// that were added) or already lives in <c>resolutions</c> (the cards). Kept to the newest <see cref="Keep"/> rows.
+/// or similarity behind it, and a short clip of what was judged. The user's side of the cards lives in
+/// <c>resolutions</c>. Kept to the newest <see cref="Keep"/> rows.
 /// </summary>
 public sealed class IdeaOutcomes(IPluginData data, ILogger? log = null)
 {

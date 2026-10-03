@@ -18,8 +18,9 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         Description = "Ask a fast local decision model yes/no, choice or score questions about a text, many items or every line of a file; each answer has a probability.",
         Help =
             "It never writes text. Give one `text`, a list of `items`, or a `file` (every non-empty line is an item, e.g. a " +
-            "log). Every item gets every question; items the model is unsure about (below min_confidence, 0–1, default 0.5) " +
-            "are listed so you can check them yourself. Good for sorting logs, triaging issues, labelling many lines or files, " +
+            "log). Every item gets every question; items the model is unsure about (the answer's probability below min_confidence, " +
+            "0–1, default 0.8, or too close to the runner-up) are listed so you can check them yourself. Identical items, and " +
+            "with embeddings near-identical ones, are decided once and share the answer (the result says which). Good for sorting logs, triaging issues, labelling many lines or files, " +
             "and quick checks. Weak at counting, dates, maths and multi-step reasoning.\n" +
             "questions: id → { \"type\": \"yes_no\", \"question\": \"…\" } | { \"type\": \"choice\", \"question\": \"…\", " +
             "\"options\": { \"label\": \"what it means\", … } } | { \"type\": \"score\", \"question\": \"…\", \"levels\": " +
@@ -76,17 +77,20 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         var dropped = Math.Max(0, items.Count - max);
         if (dropped > 0) items = items.Take(max).ToList();
 
-        var minConf = a.TryGet(out var mc, "min_confidence") && mc.ValueKind == JsonValueKind.Number ? Math.Clamp(mc.GetDouble(), 0, 1) : 0.5;
+        var minConf = a.TryGet(out var mc, "min_confidence") && mc.ValueKind == JsonValueKind.Number ? Math.Clamp(mc.GetDouble(), 0, 1) : DefaultMinConfidence;
         var model = a.TryGet(out var me, "model") && me.ValueKind == JsonValueKind.String ? me.GetString() : null;
         if (string.IsNullOrWhiteSpace(model) && items.Count >= Math.Max(2, ctx.Settings.Get("decide.bulkThreshold", 8)))
             model = ctx.Settings.Get("decide.bulkModel", "") is { Length: > 0 } bulk ? bulk : null;
 
         var results = new DecisionAnswer?[items.Count];
+        // One decision per distinct item: a repeated line is asked once, and with embeddings a near-identical one too.
+        var started = DateTime.UtcNow;
+        var leader = await GroupAsync(items, ct).ConfigureAwait(false);
         using var gate = new SemaphoreSlim(Math.Clamp(ctx.Settings.Get("decide.parallel", 4), 1, 16));
         DecisionException? failure = null;
-        var started = DateTime.UtcNow;
         var tasks = items.Select(async (text, i) =>
         {
+            if (leader[i] != i) return;
             await gate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
@@ -103,9 +107,51 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         });
         await Task.WhenAll(tasks).ConfigureAwait(false);
         if (failure is not null && results.All(r => r is null)) return ToolResult.Error(failure.Message);
+        for (var i = 0; i < items.Count; i++)
+            if (leader[i] != i) results[i] = results[leader[i]];
 
         var ms = (DateTime.UtcNow - started).TotalMilliseconds;
-        return Summarize(questions, items, results, minConf, ms, dropped, file, failure);
+        return Summarize(questions, items, results, minConf, ms, dropped, file, failure, leader);
+    }
+
+    /// <summary>Default <c>min_confidence</c>: the answer's probability, as the other decision sites read it (0.8).</summary>
+    public const double DefaultMinConfidence = 0.8;
+    /// <summary>Cosine at which two items count as the same (<c>decide.groupSimilarity</c>): a line that differs only in a
+    /// timestamp or an id. Kept high on purpose — two lines that differ in an error code must stay apart.</summary>
+    public const double DefaultGroupSimilarity = 0.985;
+
+    /// <summary>
+    /// For each item, the index of the item whose decision it shares (itself when it is decided on its own): identical
+    /// texts always, and with embeddings (setting <c>decide.groupSimilarity</c> above 0) texts at or above that cosine.
+    /// Any embedding failure leaves the exact grouping.
+    /// </summary>
+    internal async Task<int[]> GroupAsync(List<string> items, CancellationToken ct)
+    {
+        var leader = new int[items.Count];
+        var firstOf = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < items.Count; i++)
+        {
+            var key = items[i].Trim();
+            leader[i] = firstOf.TryGetValue(key, out var j) ? j : i;
+            if (leader[i] == i) firstOf[key] = i;
+        }
+        var threshold = Math.Clamp(ctx.Settings.Get("decide.groupSimilarity", DefaultGroupSimilarity), 0, 1);
+        var distinct = Enumerable.Range(0, items.Count).Where(i => leader[i] == i).ToList();
+        if (threshold <= 0 || distinct.Count < 2 || ctx.Services.Get<IEmbeddingService>() is not { Available: true } embedder) return leader;
+        try
+        {
+            var vectors = (await embedder.EmbedAsync(new EmbeddingRequest { Texts = distinct.Select(i => items[i]).ToList(), Background = true }, ct).ConfigureAwait(false)).Vectors;
+            var leaders = new List<int>();   // positions in distinct
+            for (var k = 0; k < distinct.Count; k++)
+            {
+                var match = leaders.FirstOrDefault(l => VectorMath.Dot(vectors[k], vectors[l]) >= threshold, -1);
+                if (match < 0) { leaders.Add(k); continue; }
+                leader[distinct[k]] = distinct[match];
+            }
+            for (var i = 0; i < items.Count; i++) leader[i] = leader[leader[i]];   // an exact copy follows its text's leader
+        }
+        catch (EmbeddingException) { }
+        return leader;
     }
 
     /// <summary>The tool's friendly question shape (yes_no/question/options/levels) → TypeSafe's (noul/instructions/criteria).</summary>
@@ -162,12 +208,14 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
     }
 
     private static ToolResult Summarize(JsonObject questions, List<string> items, DecisionAnswer?[] results, double minConf, double ms,
-        int dropped, string? file, DecisionException? failure)
+        int dropped, string? file, DecisionException? failure, int[]? leader = null)
     {
         var model = results.FirstOrDefault(r => r is not null)?.Model ?? "?";
         var done = results.Count(r => r is not null);
+        var shared = leader is null ? 0 : Enumerable.Range(0, items.Count).Count(i => leader[i] != i && results[i] is not null);
         var sb = new StringBuilder();
         sb.Append(Inv($"{model}: {done} item{(done == 1 ? "" : "s")} × {questions.Count} question{(questions.Count == 1 ? "" : "s")} in {ms / 1000:0.0} s"));
+        if (shared > 0) sb.Append(Inv($" ({done - shared} decided; {shared} repeat an earlier item and share its answer)"));
         if (dropped > 0) sb.Append($" ({dropped} more skipped: setting decide.maxItems)");
         if (failure is not null) sb.Append($". {items.Count - done} failed: {failure.Message}");
         sb.AppendLine();
@@ -184,16 +232,17 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
             foreach (var (qid, qdef) in questions)
             {
                 var a = r.Answers[qid] as JsonObject;
-                var (label, conf) = Read(qdef!["type"]!.GetValue<string>(), a);
+                var (label, conf, runnerUp) = Read(qdef!["type"]!.GetValue<string>(), a);
                 cells[qid] = new { answer = label, confidence = Math.Round(conf, 3) };
-                if (!DecisionConfidence.Clear(conf, 1 - conf, minConf)) isUnsure = true;
+                if (!DecisionConfidence.Clear(conf, runnerUp, minConf)) isUnsure = true;
                 var c = counts[qid];
                 c[label] = c.GetValueOrDefault(label) + 1;
                 if (a?["score"] is JsonValue sv && sv.TryGetValue<double>(out var s))
                     scoreSums[qid] = (scoreSums.GetValueOrDefault(qid).Sum + s, scoreSums.GetValueOrDefault(qid).N + 1);
             }
             if (isUnsure) unsure.Add(i);
-            rows.Add(new { index = i + 1, text = Clip(items[i], 300), answers = cells, unsure = isUnsure, ms = Math.Round(r.Ms) });
+            rows.Add(new { index = i + 1, text = Clip(items[i], 300), answers = cells, unsure = isUnsure, ms = Math.Round(r.Ms),
+                sameAs = leader is not null && leader[i] != i ? leader[i] + 1 : (int?)null });
         }
 
         foreach (var (qid, c) in counts)
@@ -213,10 +262,11 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
                 var r = results[i]!;
                 var parts = questions.Select(q =>
                 {
-                    var (label, conf) = Read(q.Value!["type"]!.GetValue<string>(), r.Answers[q.Key] as JsonObject);
+                    var (label, conf, _) = Read(q.Value!["type"]!.GetValue<string>(), r.Answers[q.Key] as JsonObject);
                     return Inv($"{q.Key}={label} {conf:0.00}");
                 });
-                sb.AppendLine($"[{i + 1}]{(unsure.Contains(i) ? " ?" : "")} {string.Join(" · ", parts)} | {Clip(items[i], 120)}");
+                var same = leader is not null && leader[i] != i ? $" (= [{leader[i] + 1}])" : "";
+                sb.AppendLine($"[{i + 1}]{(unsure.Contains(i) ? " ?" : "")}{same} {string.Join(" · ", parts)} | {Clip(items[i], 120)}");
             }
         }
         else if (items.Count > ListAll) sb.AppendLine(Inv($"\nNo unsure answers (all ≥ {minConf:0.##})."));
@@ -249,22 +299,33 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         };
     }
 
-    /// <summary>An answer's label and confidence: choice/score use the model's confidence; yes/no uses the distance from 0.5.</summary>
-    internal static (string Label, double Confidence) Read(string type, JsonObject? a)
+    /// <summary>
+    /// An answer's label, the probability of that label, and the runner-up's: yes/no reads p(yes) (so "no 0.96" is
+    /// p(no) = 0.96, not a distance from 0.5); a choice reads its probabilities when the server sent them (the real
+    /// runner-up), else 1 − confidence; a score has only its confidence.
+    /// </summary>
+    internal static (string Label, double Confidence, double RunnerUp) Read(string type, JsonObject? a)
     {
-        if (a is null) return ("?", 0);
+        if (a is null) return ("?", 0, 1);
         if (type == "noul")
         {
             var p = a["noul"] is JsonValue v && v.TryGetValue<double>(out var d) ? d : 0.5;
-            return (p >= 0.5 ? "yes" : "no", Math.Abs(p - 0.5) * 2);
+            return p >= 0.5 ? ("yes", p, 1 - p) : ("no", 1 - p, p);
         }
         var conf = a["confidence"] is JsonValue cv && cv.TryGetValue<double>(out var c) ? c : 0;
         if (type == "score")
         {
             var s = a["score"] is JsonValue sv && sv.TryGetValue<double>(out var x) ? x : 0;
-            return (s.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture), conf);
+            return (s.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture), conf, 1 - conf);
         }
-        return (a["choice"]?.GetValue<string>() ?? "?", conf);
+        var choice = a["choice"]?.GetValue<string>() ?? "?";
+        if (a["probabilities"] is JsonObject probs && probs.Count > 1)
+        {
+            var ordered = probs.Select(kv => kv.Value is JsonValue pv && pv.TryGetValue<double>(out var pd) ? pd : 0).OrderByDescending(x => x).ToList();
+            var mine = probs[choice] is JsonValue mv && mv.TryGetValue<double>(out var md) ? md : conf;
+            return (choice, mine, ordered.Count > 1 ? (Math.Abs(ordered[0] - mine) < 1e-9 ? ordered[1] : ordered[0]) : 1 - mine);
+        }
+        return (choice, conf, 1 - conf);
     }
 
     private static string Inv(FormattableString s) => s.ToString(System.Globalization.CultureInfo.InvariantCulture);

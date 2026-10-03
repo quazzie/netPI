@@ -21,7 +21,7 @@ public static class DecisionReworkTests
         r.Add("decision rework: verifier is read-only, takes low-priority admission and reports rejection", async () =>
         {
             var ctx = new FakePluginContext(T.TempDir("verifier"));
-            ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "fake", Id = IdeaRecall.DefaultModel, IsLocal = true });
+            ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "fake", Id = IdeaDecider.DefaultModel, IsLocal = true });
             var scheduler = new FakeAgentScheduler();
             ctx.ServicesFake.Register<IAgentScheduler>(scheduler);
             var work = new IdeaWork(ctx); ctx.ServicesFake.Register<IBackgroundWork>(work);
@@ -48,7 +48,7 @@ public static class DecisionReworkTests
         r.Add("decision rework: verifier keeps capacity until cancellation is acknowledged then restarts", async () =>
         {
             var ctx = new FakePluginContext();
-            ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "fake", Id = IdeaRecall.DefaultModel, IsLocal = true });
+            ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "fake", Id = IdeaDecider.DefaultModel, IsLocal = true });
             var scheduler = new YieldScheduler(); ctx.ServicesFake.Register<IAgentScheduler>(scheduler);
             var work = new IdeaWork(ctx); ctx.ServicesFake.Register<IBackgroundWork>(work);
             var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -93,7 +93,7 @@ public static class DecisionReworkTests
     {
         public bool Queued; public int Released;
         public string Resolve(ModelInfo model) => model.Ref;
-        public IReadOnlyList<AgentSlots> Snapshot() => [new AgentSlots { Model = "fake/" + IdeaRecall.DefaultModel,
+        public IReadOnlyList<AgentSlots> Snapshot() => [new AgentSlots { Model = "fake/" + IdeaDecider.DefaultModel,
             Waiters = Queued ? [new SlotHolder { Priority = 0 }] : [] }];
         public ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct) => ValueTask.FromResult<IAgentSlot>(new Lease(this, request));
         public bool TryAcquire(AgentSlotRequest request, out IAgentSlot? slot) { slot = new Lease(this, request); return true; }

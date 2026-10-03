@@ -509,38 +509,6 @@ public static class IdeasCheckTests
             Check.Equal(null, IdeaSaveCheck.EffortFor(new ModelInfo { Provider = "p", Id = "m" }), "no reasoning at all");
         });
 
-        r.Add("ideas check: ideas past the 51st are still eligible for recall", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
-            for (var i = 0; i < 60; i++)
-                await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = $"Filler idea number {i}" } });
-            var last = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject
-            {
-                ["title"] = "Rework the transcript indexer",
-                ["summary"] = "The transcript indexer is slow on long sessions.",
-            } }))["id"].Str()!;
-            env.Decide(body =>
-            {
-                // The model answers for the option whose title is the one we want (the options are in the system prompt).
-                var options = body["messages"]![0]!["content"]!.Str();
-                var letter = options.Split('\n')
-                    .FirstOrDefault(l => l.Contains("Rework the transcript indexer", StringComparison.Ordinal))?[..1];
-                Check.True(letter is { Length: 1 }, "the idea past the 51st was offered to the model");
-                // A decision weighs every label it is offered (a partial answer is not an answer), so answer them all.
-                var probs = body["branches"]![0]!["labels"]!.AsArray()
-                    .Select(l => l.Str()!)
-                    .ToDictionary(l => l, l => l == letter ? 0.91 : 0.09 / 50);
-                return probs;
-            });
-
-            var res = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = "the transcript indexer is slow, can we rework it" });
-            Check.Equal("model", res["reason"].Str(), "it is found: " + res.ToJsonString());
-            Check.Equal(last, res["match"]!["id"].Str());
-            env.Ctx.Unload();
-        });
-
         r.Add("ideas check: background model work waits for a slot, and work that does not get one is dropped, not run anyway", async () =>
         {
             var env = new Env();

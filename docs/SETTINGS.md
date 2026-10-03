@@ -333,8 +333,6 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `shell.pwshAlways` | `false` | offer `pwsh` even when no PowerShell was found |
 | `shell.timeoutSeconds` | `120` | default per command (max 1800) |
 | `ideas.fileName` | `ideas.json` | the name the ideas file had before the backlog moved into the store. Nothing reads or writes it any more; an export is written under it when a path is given, and `ideas.list` reports it so an older UI still has a hint (docs/PLUGIN-IDEAS.md) |
-| `ideas.recall` | `true` | while the first message of a chat is typed, a decision looks for the open idea it continues and the composer offers to add it (needs the Decide plugin) |
-| `ideas.recallThreshold` | `0.8` | the probability an idea needs before it is offered (0.3–0.99); 0.8 gave no false offer on 56 unrelated messages (docs/DECISION-MODELS.md, "Ideas recall") |
 | `ideas.saveCheck` | `true` | when a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down; a new plan gets a card to save or discard, work on an open idea is attached to that idea instead |
 | `ideas.attachThreshold` | `0.8` | the probability a closed chat has to be about an open idea before it is attached to it (0.3–0.99); 0.8 was right on 5 of 6 |
 | `ideas.model` | `qwen3.8-27b` | the decision model of the idea checks (asked through the Decide plugin's server) and the model that drafts the save check |
@@ -412,6 +410,7 @@ refuses an `ssh` download into another checkout of the repository.
 | `decide.model` | `qwen3.8-27b` | decision model `decide` asks: `qwen3.8-27b` on NInfer (through AiGateway's System One bridge; the best without training, no extra memory, shares the 5090 with the agents), `laya-logs` for the four log questions on the nuc, or `kev-9b`/`kev-4b` on the nuc (load it from AiHub first; it takes the whole 4070). See docs/DECISION-MODELS.md |
 | `decide.maxItems` | `500` | most items per `decide` call (1–5000) |
 | `decide.parallel` | `4` | `decide` requests at once (1–16) |
+| `decide.groupSimilarity` | `0.985` | with embeddings, `decide` items at or above this cosine share one decision (a log line that differs only in a timestamp); identical items always do; 0 = only identical ones. Kept high on purpose: lines that differ in an error code must stay apart |
 | `decide.lane` | `true` | a single short check on a local model (the guard's second opinion, the idea checks, loop and todo hints) does not take an agent slot: NInfer answers decisions on its own lane ahead of agent work (decisions first). Off: every decision waits for a slot like a chat. The `decide` tool's batches always take slots |
 | `embed.baseUrl` | – | an OpenAI-compatible `POST /v1/embeddings` server for the Embeddings plugin; empty = `providers.aiproxy.baseUrl`. The owner's: `http://192.168.1.3:8012` (the nuc's `embed-tasks`) |
 | `embed.model` | – | the embedding model; **empty switches embeddings off** (every consumer then behaves as without them). `bge-base-en-v1.5` was measured (decisions-lab `nuc-plan.md`) |

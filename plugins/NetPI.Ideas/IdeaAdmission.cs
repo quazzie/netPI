@@ -10,7 +10,7 @@ namespace NetPI.Ideas;
 /// instead of through the decision plugin's own semaphore, which only counts the decision plugin's callers.
 /// <para>
 /// Admission is a <b>bound</b>, not a courtesy: work that cannot get a slot is <b>dropped</b> with a reason, never run
-/// without one. Running it anyway is what made a sweep, a save check and a recall able to put three calls on a
+/// without one. Running it anyway is what made a sweep and a save check able to put several calls on a
 /// two-slot model — exactly what admission exists to prevent. The work is not lost: the save check's mark stays
 /// retryable (the next close of that conversation runs it again) and the commit sweep's cursor does not move past a
 /// commit it did not read (the next sweep tries it again).
@@ -25,11 +25,6 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
 {
     /// <summary>How long a background check waits for a slot before it is dropped (seconds, <c>ideas.checkWaitSeconds</c>).</summary>
     public const int DefaultWaitSeconds = 30;
-    /// <summary>
-    /// The recall answers a keystroke, so it waits briefly and then simply does not suggest. It is the one interactive
-    /// caller, and a long wait there would be a spinner in the composer, not a card.
-    /// </summary>
-    public static readonly TimeSpan InteractiveWait = TimeSpan.FromSeconds(2);
     /// <summary>Background work queues behind the chats, never in front of them.</summary>
     public const int Priority = -10;
     public const string AgentId = "ideas";
@@ -76,7 +71,7 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
             return Admission.Skip(reason);
         }
         // A short decision on a local model goes on the server's decision lane (decide.lane): it does not queue behind
-        // the chats' slots, so the recall answers while two agents work and the sweep is not dropped for a full model.
+        // the chats' slots, so a check answers while two agents work and the sweep is not dropped for a full model.
         if (decision && model.IsLocal && ctx.Settings.GetOr("decide.lane", true))
         {
             if (workId is not null) work!.Set(workId, "running", "decision lane");

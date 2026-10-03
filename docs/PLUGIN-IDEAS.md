@@ -10,7 +10,7 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
   `plugins/NetPI.Ideas/wwwroot/ui.js` (source in `plugins/NetPI.Ideas/ui/`) and is served at `/plugins/netpi.ideas/ui.js`.
 - Slash command: `{ name: "idea", argsHint: "<title>", rpc: "ideas.quickAdd" }`.
 - Settings: `ideas.fileName` (default `"ideas.json"`; the name the JSON backlog had — kept so an older UI still has
-  a hint, read and written by nothing), `ideas.recall`, `ideas.recallThreshold`,
+  a hint, read and written by nothing),
   `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`, `ideas.allowPaidModel`, `ideas.checkWaitSeconds`,
   `ideas.verifyRetrySeconds`,
   `ideas.closeOnCommit`,
@@ -309,16 +309,12 @@ with `ideas.get`, so the text is not spent twice (once in the prompt, once in th
 `{ sessionId, args }` → `string` toast, for example `"Idea added (project NetPI): Cache model list (idea-k3x9q2)"` or
 `"Idea added (global backlog): …"`. An empty `args` gives `bad_request` with `"Usage: /idea <title>"`.
 
-### `ideas.recall` (the chip above the composer)
+### `ideas.recall` (removed 2026-10-03)
 
-`{ sessionId, text }` → `{ match: { id, title, p } | null, reason, error?, ms }`: which open idea the first message of a
-chat continues (docs/plans/2026-09-27-ideas-follow-the-session.md). An idea id in the text is the match (`reason:
-"id"`, `p: 1`). Otherwise one decision through `decide.decision` (setting `ideas.model`, default `qwen3.8-27b`) over the
-open ideas (not done or rejected) of the session's project and the global ones: title and summary as lettered options
-plus "none", the list as the system prompt so repeated checks reuse NInfer's cache. A match needs p ≥
-`ideas.recallThreshold` (0.8) and to beat "none" (`reason: "model"`). Otherwise `reason` is `none`, `short` (under 12
-characters), `off` (`ideas.recall` is false), `unavailable` (no Decide plugin) or `error` (the decision failed or took
-over 10 s; `error` holds the message, and the server log has it too).
+The composer's idea chip (which open idea the first message of a chat continues, one decision per typing pause) is
+gone, with its settings `ideas.recall` and `ideas.recallThreshold`: it found 3 of 6 real matches in its measurement,
+cost a 5090 decision on every pause, and offered an idea to chats that already had it (a refine chat). The agent
+finds ideas itself (the `ideas` tool's meaning search, `memory_search`); `ideas.attach` stays for the tab and refine.
 
 ### `ideas.attach`
 

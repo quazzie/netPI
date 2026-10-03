@@ -218,7 +218,7 @@ waiting to be labelled, with the answer the model gave and the probability attac
 
 | site | state | options | asked since |
 |---|---|---|---|
-| `ideas.recall` | the first message being typed, the open ideas of the chat's project | the ideas + "none" | 2026-09-27 |
+| `ideas.recall` (removed 2026-10-03) | the first message being typed, the open ideas of the chat's project | the ideas + "none" | 2026-09-27 |
 | `ideas.closed` attach | a closed chat's digest | the open ideas + "none" | 2026-09-28 |
 | commit check link | a commit's subject and author | the open ideas + "none" | 2026-09-28 |
 | commit check done | an idea's full text and its linked commits | `DONE` / `MORE` | 2026-09-28 |
@@ -514,7 +514,7 @@ still open. The yue2 taskbar idea (v9dg6g), which the commits seem to finish, st
 
   | site | threshold | compares against |
   |---|---|---|
-  | `ideas.recall` (which idea the first message continues) | `ideas.recallThreshold` 0.8 | `none` |
+  | `ideas.recall` (which idea the first message continues; removed 2026-10-03) | `ideas.recallThreshold` 0.8 | `none` |
   | `ideas.closed` attach (which idea the chat worked on) | `ideas.attachThreshold` 0.8 | `none` |
   | commit check link (which idea the commit works on) | `ideas.linkThreshold` 0.7 | `none`, and *every* option above the threshold is linked |
   | commit check done (is the idea finished) | `ideas.doneThreshold` 0.8 | `MORE` |

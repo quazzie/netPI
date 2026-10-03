@@ -422,7 +422,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
     {
         var model = await ResolveModelAsync(ct).ConfigureAwait(false);
         // Not a silent "no card": the check did not run, so the mark says why and the next close tries again.
-        if (model is null) throw new InvalidOperationException($"model {ctx.Settings.GetOr("ideas.model", IdeaRecall.DefaultModel)} is not in the catalog");
+        if (model is null) throw new InvalidOperationException($"model {ctx.Settings.GetOr("ideas.model", IdeaDecider.DefaultModel)} is not in the catalog");
         var maxOut = Math.Clamp(model.MaxOutputTokens is > 0 and var m ? Math.Min(m, 1024) : 1024, 256, 4096);
         var request = new ModelRequest
         {
@@ -577,7 +577,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
     /// </summary>
     private async Task<ModelInfo?> ResolveModelAsync(CancellationToken ct)
     {
-        var name = ctx.Settings.GetOr("ideas.model", IdeaRecall.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaRecall.DefaultModel;
+        var name = ctx.Settings.GetOr("ideas.model", IdeaDecider.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaDecider.DefaultModel;
         var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
         if (model is null)
             ctx.Logger.LogWarning("Ideas: the save check cannot run: model {Model} is not in the catalog (it is not replaced by another one).", name);

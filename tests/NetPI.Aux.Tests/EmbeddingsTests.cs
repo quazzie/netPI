@@ -373,20 +373,6 @@ public static class EmbeddingsTests
             Check.True(await vectors.RankAsync(text, open.Take(10).ToList(), CancellationToken.None) is null, "51 or fewer: nothing to rank");
         });
 
-        r.Add("ideas embeddings: ideas.decisions records the recall chips that were added", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var session = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s" });
-            var id = await env.AddIdea("Radio buffer top-up", "Songs per batch should refill when raised.");
-            await env.Ctx.Rpc.InvokeAsync("ideas.attach", new JsonObject { ["sessionId"] = session.Id, ["id"] = id });
-            var log = (JsonObject)NetPiJson.ToNode(await env.Ctx.Rpc.InvokeAsync("ideas.decisions", new JsonObject { ["site"] = "recall" }))!;
-            Check.Equal(1, log["summary"]!["recall"]!["added"]!.GetValue<int>());
-            var row = log["rows"]![0]!;
-            Check.Equal(id, row["ideaId"]!.GetValue<string>());
-            Check.Equal("user", row["via"]!.GetValue<string>());
-        });
-
         r.Add("memory: a chat is embedded in pieces (start, summaries, end kept); search finds the chat by meaning, not the current one", async () =>
         {
             var ctx = new FakePluginContext(T.TempDir("memory"));
