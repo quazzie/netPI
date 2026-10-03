@@ -80,10 +80,12 @@ public sealed class FakeSettings(IEventBus? bus = null, JsonObject? root = null)
         bus?.Publish(EventTypes.SettingsChanged, new JsonObject { ["path"] = path });
     }
 
-    public void Replace(JsonObject root)
+    public SettingsReplace Replace(JsonObject root, JsonObject? baseDocument = null)
     {
+        if (baseDocument is not null && !JsonNode.DeepEquals(_root, baseDocument)) return SettingsReplace.Conflict;
         _root = root;
         bus?.Publish(EventTypes.SettingsChanged, new JsonObject());
+        return SettingsReplace.Saved;
     }
 }
 

@@ -154,6 +154,60 @@ public static class SettingsTests
             Check.True(JsonNode.DeepEquals(s.Snapshot(), JsonNode.Parse(File.ReadAllText(file))), "memory == disk");
         });
 
+        r.Add("settings: two concurrent replaces on the same base: exactly one is accepted, the other conflicts", async () =>
+        {
+            var file = Path.Combine(T.TempDir("settings"), "settings.json");
+            File.WriteAllText(file, """{ "keep": 1 }""");
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            var base_ = s.Snapshot();
+            var mine = new JsonObject { ["keep"] = 1, ["owner"] = "first" };
+            var yours = new JsonObject { ["keep"] = 1, ["owner"] = "second" };
+
+            // The two calls meet at a barrier before the store call, so they really overlap at the writer gate.
+            using var barrier = new Barrier(2);
+            SettingsReplace Call(JsonObject doc) { barrier.SignalAndWait(10_000); return s.Replace(doc, base_); }
+            var t1 = Task.Run(() => Call(mine));
+            var t2 = Task.Run(() => Call(yours));
+            var r1 = await t1;
+            var r2 = await t2;
+            Check.Equal(1, (r1 == SettingsReplace.Saved ? 1 : 0) + (r2 == SettingsReplace.Saved ? 1 : 0), "exactly one replacement was accepted");
+            Check.Equal(1, (r1 == SettingsReplace.Conflict ? 1 : 0) + (r2 == SettingsReplace.Conflict ? 1 : 0), "and the other got the conflict, like a sequential retry would");
+            var owner = s.Get<string>("owner");
+            Check.True(owner is "first" or "second", "the winner's document is live: " + owner);
+            var onDisk = JsonNode.Parse(File.ReadAllText(file))!;
+            Check.Equal(owner, onDisk["owner"]!.GetValue<string>(), "and it is on disk");
+            Check.Equal(SettingsReplace.Conflict, s.Replace(r1 == SettingsReplace.Saved ? yours : mine, base_), "a retry on the same stale base still conflicts");
+        });
+
+        r.Add("settings: a replace racing a single-key set: the set is never lost, and the replace either wins or conflicts", async () =>
+        {
+            var file = Path.Combine(T.TempDir("settings"), "settings.json");
+            File.WriteAllText(file, """{ "orig": 1 }""");
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            var base_ = s.Snapshot();
+            var replacement = new JsonObject { ["replaced"] = true };
+            using var barrier = new Barrier(2);
+            var replaceT = Task.Run(() => { barrier.SignalAndWait(10_000); return s.Replace(replacement, base_); });
+            var setT = Task.Run(() => { barrier.SignalAndWait(10_000); s.Set("raced", JsonValue.Create(42)); });
+            var result = await replaceT;
+            await setT;
+
+            Check.Equal(42, s.Get<int>("raced", -1), "the single-key write is never lost, whoever wins the gate first");
+            var onDisk = JsonNode.Parse(File.ReadAllText(file))!;
+            Check.Equal(42, onDisk["raced"]!.GetValue<int>(), "and it is on disk");
+            if (result == SettingsReplace.Saved)
+            {
+                Check.Equal(true, onDisk["replaced"]!.GetValue<bool>(), "the replacement is live");
+                Check.True(onDisk["orig"] is null, "and it really replaced the document");
+            }
+            else
+            {
+                Check.Equal(1, onDisk["orig"]!.GetValue<int>(), "the document is what the set changed, not a half-applied replacement");
+                Check.True(onDisk["replaced"] is null, "the conflicting replacement changed nothing");
+                Check.Equal(SettingsReplace.Conflict, s.Replace(new JsonObject { ["x"] = 1 }, base_), "and a retry on the same stale base still conflicts");
+            }
+        });
+
         r.Add("settings: a reload of the file never undoes a write made while it was reading", async () =>
         {
             var file = Path.Combine(T.TempDir("settings"), "settings.json");
