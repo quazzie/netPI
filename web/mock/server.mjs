@@ -101,6 +101,7 @@ const RPC_DOCS = {
   'logs.recent': 'Recent log entries: { max? } → { time, level, category, message, exception? }[]',
 };
 const filesOpened = [];
+const filesOpenCalls = []; // { path, user } per files.open call: the flag says the user picked the file on purpose
 const msgLoads = new Map(); // e2e test helper: sessions.messages calls per session — a fresh call means the chat store was rebuilt (evicted and reopened)
 
 const SYSTEM_PROMPT = (project, session) => `You are a coding agent running in NetPI, an agent harness on the user's own machine. Work through the tools you have: act rather than describe, check the results and verify your work when practical. Ask only when a request is genuinely ambiguous or an action would be destructive. Be concise, and end with a short summary of what you did or found.
@@ -802,9 +803,11 @@ const handlers = {
     const pr = s?.projectId ? store.projects.get(s.projectId) : null;
     const full = path.isAbsolute(rel) ? rel : path.join(pr?.path ?? REPO, rel.replace(/:\d+(:\d+)?$/, ''));
     filesOpened.push(full);
+    filesOpenCalls.push({ path: full, user: !!p.user });
     return { path: full, action: 'open' };
   },
   'mock.filesOpened': () => filesOpened,
+  'mock.filesOpenCalls': () => filesOpenCalls,
   // test helper: the chat whose user turns contain this phrase leaves the given plan when its tab is closed
   'mock.closeLeavesPlan': (p = {}) => ideas.closeLeavesPlan(need(p, 'phrase'), p.title),
   // test helper: offer the commit check's card for the idea whose title contains this phrase
