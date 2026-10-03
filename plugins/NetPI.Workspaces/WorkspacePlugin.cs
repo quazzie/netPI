@@ -160,13 +160,13 @@ public sealed class WorkspacePlugin : INetPiPlugin
             return Task.FromResult<object?>(Describe(outcome.Binding!));
         }, "Attach an existing checkout as a workspace: { path, projectId?, name?, ownerSessionId? } → WorkspaceInfo (a checkout of another repository than the project is refused)");
 
-        ctx.Rpc.Register("workspaces.delete", (req, _) =>
+        ctx.Rpc.Register("workspaces.delete", async (req, ct) =>
         {
             var id = req.Required("id");
             var workspace = store.GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
-            var (ok, error) = provisioner.RetireAsync(workspace, busy).GetAwaiter().GetResult();
+            var (ok, error) = await provisioner.RetireAsync(workspace, busy, ct).ConfigureAwait(false);
             if (!ok) throw new RpcException("workspace_busy", error!);
-            return Task.FromResult<object?>(new { id, removed = true });
+            return (object?)new { id, removed = true };
         }, "Remove a managed workspace whose work is merged or durable and that nothing is using: { id } → { id, removed } " +
            "(an attached or dirty or unmerged worktree is refused, never deleted)");
 
