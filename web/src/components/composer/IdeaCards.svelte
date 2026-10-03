@@ -1,7 +1,7 @@
 <script>
   /**
    * The cards a closed chat leaves behind, and the ones a commit may have finished (plugins/NetPI.Ideas, phases 2 and 3
-   * of docs/plans/2026-09-27-ideas-follow-the-session.md). One card per offer, above the composer of whatever chat is
+   * of docs/archive/2026-09-27-ideas-follow-the-session.md). One card per offer, above the composer of whatever chat is
    * open: the chat a plan came from is closed, and the events are unscoped. An offer, never an action — nothing reaches
    * the backlog, and nothing is marked done, without a click.
    */

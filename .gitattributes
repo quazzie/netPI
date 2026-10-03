@@ -4,6 +4,10 @@
 *.sh text eol=lf
 *.png binary
 *.ico binary
+# UI source must build identically on Windows and Unix without manual conversion.
+web/src/** text=auto eol=lf
+web/public/** text=auto eol=lf
+plugins/*/ui/** text=auto eol=lf
 # Generated bundles: the build writes these byte-for-byte (LF). Git must not rewrite their line
 # endings or every build leaves them "modified" with an empty diff (CRLF checkout form vs LF build form).
 web/dist/** binary

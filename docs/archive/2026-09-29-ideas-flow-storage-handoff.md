@@ -10,7 +10,7 @@ Scope: the Ideas plugin and its UI, persistence, backup and background-work inte
 
 Make an idea reliable from capture through discussion, implementation and completion: no lost cards, skipped work or misleading UI state. Preserve project scoping and the existing agent tool while repairing failure paths.
 
-Read repository and parent AGENTS.md first, then docs/PLUGIN-IDEAS.md, docs/SETTINGS.md, docs/PROTOCOL.md, docs/TOOLS.md, docs/PLUGINS.md and docs/TESTING.md. Historical intent is in docs/plans/2026-09-27-ideas-follow-the-session.md. The findings below come from source review, not newly executed reproductions; add regression tests before fixing each one and recheck against current HEAD.
+Read repository and parent AGENTS.md first, then docs/PLUGIN-IDEAS.md, docs/SETTINGS.md, docs/PROTOCOL.md, docs/TOOLS.md, docs/PLUGINS.md and docs/TESTING.md. Historical intent is in docs/archive/2026-09-27-ideas-follow-the-session.md. The findings below come from source review, not newly executed reproductions; add regression tests before fixing each one and recheck against current HEAD.
 
 - One branch/worktree per assignment; explicitly stage only owned files. No dependencies between plugin assemblies. Contracts change additively; rebuild every plugin if abstractions change.
 - Tests/builds use artifacts/dev/app. Do not publish, restart the app, alter live settings/backlog, or run test decisions on the user's occupied GPU.

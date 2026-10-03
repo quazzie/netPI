@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Ideas;
 
 /// <summary>
-/// Close on commit (phase 3 of docs/plans/2026-09-27-ideas-follow-the-session.md). An idea is finished by a commit, and
+/// Close on commit (phase 3 of docs/archive/2026-09-27-ideas-follow-the-session.md). An idea is finished by a commit, and
 /// nobody notices: the backlog keeps saying "open" about work that is already in the history. So each project with a git
 /// repository is watched, and every new commit is read twice over — measured, in the order that measured best
 /// (docs/DECISION-MODELS.md, "Ideas: … close on commit"):

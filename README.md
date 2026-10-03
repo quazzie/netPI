@@ -10,7 +10,7 @@ models, tools, the context contracts, the loop's contract, and **storage as a re
 top of those — agents and slots, the budget ledger, workspaces, resource leases, decisions — is a plugin, and the
 kernel knows none of it; `node scripts/core-size.mjs` checks that mechanically. A plugin stores its own data through
 that port (`ctx.Data`), so a second storage provider is a class that implements it and passes the conformance suite.
-See [the plan that made it so](docs/plans/2026-10-02-replaceable-parts.md).
+See [the plan that made it so](docs/archive/2026-10-02-replaceable-parts.md).
 
 ![netPI running three subagents on a local model that serves two at once](docs/images/netpi-subagents.png)
 

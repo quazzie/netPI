@@ -8,7 +8,7 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   whenever the design calls for it: NetPI runs on one machine and nothing outside this repository depends on them, so
   there are **no compatibility shims, deprecated paths, mirrors or forwarders**. A contract change updates every plugin,
   test and doc in the same change; rebuild all plugins. Existing local data that a change strands is migrated for the
-  owner's setup by a one-off script (see `docs/plans/2026-10-02-replaceable-parts.md`), never by product code.
+  owner's setup by a one-off script (see `docs/archive/2026-10-02-replaceable-parts.md`), never by product code.
 - `src/NetPI.Contracts` — the vocabularies built on those: agent slots/scheduler, workspaces, decisions, resource
   leases, deferred tools, the plugins' event names. The **Host project must not reference it**, so the compiler enforces
   the small core; a plugin that speaks none of them needs only Abstractions.
@@ -111,9 +111,7 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 - UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`. The bundles are
   reproducible — Svelte hashes scoped CSS from a path under the repository root, not from where the build ran, and CI
   fails when a fresh build differs from the committed ones — so commit `web/dist` or a plugin's `wwwroot/ui.js` only
-  with the *source* change under `web/src` or `ui/`. A worktree checks out CRLF here (`core.autocrlf`), and the bundles
-  are byte-compared: build after converting the sources (`web/src`, `plugins/*/ui`, `web/public`) to LF, or every bundle
-  is rewritten with the line-ending noise and new hashes.
+  with the *source* change under `web/src` or `ui/`. .gitattributes keeps UI sources (`web/src`, `plugins/*/ui`, `web/public`) at LF in every checkout, so no manual line-ending conversion is needed.
 
 ## Inspecting the running app
 - The **`diag` tool** (read-only, one action per method: overview, problems, calls, tools, journal, run, toolsets,
