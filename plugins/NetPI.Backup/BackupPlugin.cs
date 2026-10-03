@@ -33,9 +33,9 @@ public sealed class BackupPlugin : INetPiPlugin
                 SettingInfo.Int("backup.keepCount", "Automatic backups to keep", 7, "Manual backups are kept until you remove them.", 1, 365),
             ],
         });
-        ctx.Rpc.Register("backup.list", (_, _) => Task.FromResult<object?>(List(ctx.Paths.Home)), "Available verified-format snapshots → { id, path, createdAt, automatic }[]");
+        ctx.Rpc.RegisterReadOnly("backup.list", (_, _) => Task.FromResult<object?>(List(ctx.Paths.Home)), "Available verified-format snapshots → { id, path, createdAt, automatic }[]");
         ctx.Rpc.Register("backup.create", async (_, token) => await CreateAsync(ctx, false, token), "Create a database and settings snapshot → { id, path, createdAt, automatic }");
-        ctx.Rpc.Register("backup.verify", (r, _) => Task.FromResult<object?>(Verify(ctx.Paths.Home, r.Required("id"))), "Verify all checksums: { id } → snapshot manifest");
+        ctx.Rpc.RegisterReadOnly("backup.verify", (r, _) => Task.FromResult<object?>(Verify(ctx.Paths.Home, r.Required("id"))), "Verify all checksums: { id } → snapshot manifest");
         _stop = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
         _worker = RunAsync(ctx, _stop.Token);
         return Task.CompletedTask;

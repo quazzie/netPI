@@ -25,7 +25,7 @@ public sealed class ProfilesPlugin : INetPiPlugin
             if (e.As<JsonObject>()?["session"]?["id"]?.GetValue<string>() is { Length: > 0 } id) profiles.EnsureDefault(id);
         });
 
-        context.Rpc.Register("profiles.list", (_, _) => Task.FromResult<object?>(profiles.ListJson()),
+        context.Rpc.RegisterReadOnly("profiles.list", (_, _) => Task.FromResult<object?>(profiles.ListJson()),
             "The profiles: → { defaultProfile, profiles: { id, name, prompt, toolsOff }[] }");
         context.Rpc.Register("profiles.apply", async (req, token) =>
         {

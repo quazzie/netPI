@@ -35,7 +35,7 @@ public sealed class SkillsPlugin : INetPiPlugin
         var loader = new SkillLoader(context, _userHome);
         context.Services.Register<IAgentHook>(new SkillNotices(context, loader));
         context.Tools.Register(new SkillTool(loader, context));
-        context.Rpc.Register("skills.list", (req, _) =>
+        context.Rpc.RegisterReadOnly("skills.list", (req, _) =>
         {
             string cwd;
             if (req.Str("projectId") is { Length: > 0 } projectId)

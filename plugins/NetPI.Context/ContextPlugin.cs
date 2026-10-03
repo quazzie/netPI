@@ -68,7 +68,7 @@ public sealed class ContextPlugin : INetPiPlugin
                 prompts.Fork(from, to, d["upToSeq"]?.GetValue<long>() ?? 0);
         });
 
-        context.Rpc.Register("context.preview", async (req, token) =>
+        context.Rpc.RegisterReadOnly("context.preview", async (req, token) =>
         {
             var sessionId = req.Required("sessionId");
             return await PreviewAsync(context, builder, sessionId, token).ConfigureAwait(false);
@@ -83,11 +83,11 @@ public sealed class ContextPlugin : INetPiPlugin
             return Task.FromResult<object?>(true);
         }, "Forget a session's frozen system prompt and tool baseline; its next model call renders them again: { sessionId } → true");
 
-        context.Rpc.Register("context.prompts", (req, _) =>
+        context.Rpc.RegisterReadOnly("context.prompts", (req, _) =>
             Task.FromResult<object?>(PromptsJson(context, prompts, req.Required("sessionId"))),
             "The system prompts a session was sent, with their tools: { sessionId } → { prompts: [{ version, afterSeq, createdAt, systemPrompt, tools: [{ name, description, parameters? }] }] }");
 
-        context.Rpc.Register("context.toolsets", (req, _) =>
+        context.Rpc.RegisterReadOnly("context.toolsets", (req, _) =>
             Task.FromResult<object?>(ToolSets.Build(context, toolNotices, prompts, req.Required("sessionId"))),
             "A session's tools now and every change since its first model call, with the cause: { sessionId } → { sessionId, tools, baseline: { tools, sinceSeq } | null, changes: [{ seq, time, added, removed, cause: plugin-reload|profile|user|settings|unknown, plugins, text }], reloads: [{ ids, time, kind }] }");
         return Task.CompletedTask;

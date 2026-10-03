@@ -53,7 +53,7 @@ public sealed class GuardrailsPlugin : INetPiPlugin
         });
         var approvals = _approvals = new Approvals(context);
         context.Services.Register<IAgentHook>(new GuardHook(context, approvals, new SecondOpinion(context)));
-        context.Rpc.Register("guard.pending", (req, _) => Task.FromResult<object?>(approvals.List(req.Str("sessionId"))),
+        context.Rpc.RegisterReadOnly("guard.pending", (req, _) => Task.FromResult<object?>(approvals.List(req.Str("sessionId"))),
             "Tool calls waiting for the user's OK (guardrails ask rules): { sessionId? } → { approvalId, sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }[]");
         context.Rpc.Register("guard.answer", (req, _) => Task.FromResult<object?>(approvals.Answer(req.Required("approvalId"), req.Bool("allow") ?? false,
                 forSession: string.Equals(req.Str("scope"), "session", StringComparison.OrdinalIgnoreCase))),
