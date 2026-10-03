@@ -320,6 +320,13 @@ Plugin UIs render inside the host DOM and should style themselves with the host 
 The mount element (`.plugin-root`) is a flex column at least as tall as the panel, and the panel scrolls it. To fill the
 height (for a footer at the bottom), give the tab's root `flex: 1 0 auto`; `min-height: 100%` does not resolve there.
 
+A bundle built by `build-plugins` shares the host UI's Svelte and its `@netpi/kit` (both are shims over
+`globalThis.__netpiHost.svelte` / `.kit`, set in the host's `main.js`), so it carries no runtime of its own and its
+components are the host's. Consequences: a bundle is pinned to the svelte it was built against and refuses to load
+against a host running another one, and a svelte bump means rebuilding the UI and every plugin tab. Both failures
+throw a message naming the cause, which the tab shows with a Retry button. A tab that does not use Svelte at all, or
+one that bundles its own runtime, is unaffected.
+
 ## Backups (netpi.backup)
 
 | RPC | Parameters | Result |

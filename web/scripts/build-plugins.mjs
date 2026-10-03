@@ -2,10 +2,11 @@
 // Builds plugin UI bundles.
 //
 // For every plugins/<P>/ui/main.js (or main.ts) — plus any plugin directories passed as arguments — build ONE
-// ES module with Svelte (component CSS injected into the JS, everything incl. svelte and @netpi/kit bundled)
-// to plugins/<P>/wwwroot/ui.js. With --copy (or NETPI_COPY=1) the bundle also goes to <app>/plugins/<P>/wwwroot/ui.js,
-// so UI edits hot-reload without a .NET build. <app> is NETPI_APP_DIR, else --app-dir, else artifacts/app: point it at
-// the running app's own folder (server.json's appDir) when building in a worktree.
+// ES module with Svelte (component CSS injected into the JS) to plugins/<P>/wwwroot/ui.js. `svelte` and `@netpi/kit`
+// are the host UI's own copies, aliased to the shims that read them off globalThis.__netpiHost (idea-3pbkvg), so a
+// bundle carries no runtime and no kit copy. With --copy (or NETPI_COPY=1) the bundle also goes to
+// <app>/plugins/<P>/wwwroot/ui.js, so UI edits hot-reload without a .NET build. <app> is NETPI_APP_DIR, else
+// --app-dir, else artifacts/app: point it at the running app's own folder (server.json's appDir) when building in a worktree.
 //
 //   node web/scripts/build-plugins.mjs                     all plugins/*/ui
 //   node web/scripts/build-plugins.mjs web/mock/sample-plugin   … plus extra plugin dirs
@@ -19,9 +20,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { writeHostShims } from './host-shims.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const kit = path.join(repo, 'web/src/lib/kit/index.js');
+// `svelte` and `@netpi/kit` resolve to the host UI's own copies, which the shims read off globalThis.__netpiHost
+// (web/scripts/host-shims.mjs): one reactive system for the page, and about half the bytes per tab.
+const { aliases: hostShims } = writeHostShims();
 // Svelte hashes scoped CSS from a component's path relative to its rootDir (process.cwd() by default), so a build run
 // from another directory rewrote every plugin bundle for that alone. The repository root is the one root every
 // checkout shares, and it is what web/svelte.config.js uses for the app UI (idea-f6v1ex).
@@ -104,11 +108,18 @@ for (const dir of dirs) {
       logLevel: 'warn',
       publicDir: false,
       plugins: [
-        svelte({ configFile: false, emitCss: false, compilerOptions: { css: 'injected', rootDir: repo } }),
+        // runes only, like the app's own svelte.config.js: a legacy-mode component would import svelte's internal
+        // flags module, and the flags are state the page shares — a second copy of them is a second runtime's worth
+        // of bookkeeping that the tab could not see (and it is a build error to write one, not a silent difference)
+        svelte({
+          configFile: false,
+          emitCss: false,
+          compilerOptions: { css: 'injected', rootDir: repo, runes: true },
+        }),
         copyToArtifacts(dir),
       ],
       resolve: {
-        alias: { '@netpi/kit': kit },
+        alias: hostShims,
         dedupe: ['svelte'],
       },
       define: { 'process.env.NODE_ENV': JSON.stringify(watch ? 'development' : 'production') },

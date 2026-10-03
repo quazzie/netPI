@@ -418,6 +418,13 @@ the whole answer renders (exit 1 if it does not), and prints the per-tick cost o
 `ctx`, and checks one load on mount, events coalesced, a poll that never stacks a second load, a hidden tab that loads
 nothing, and nothing running after unmount.
 
+`node web/scripts/check-host-shims.mjs` is the unit suite for what a plugin tab bundle is built against: `svelte` and
+`@netpi/kit` resolve to generated shims (`web/scripts/host-shims.mjs`) over the host UI's own copies on
+`globalThis.__netpiHost`. It checks that the shims cover every export of svelte's three entry points and of the kit
+index, that a tab compiled against them mounts and renders the host's kit components, that a `$derived` in the tab
+follows host state (what two runtimes cannot do), and that no host, another svelte, or a host missing an export each
+fail with a message saying which.
+
 On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
 `/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.
 
