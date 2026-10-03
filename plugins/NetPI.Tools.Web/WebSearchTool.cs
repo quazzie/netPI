@@ -41,12 +41,12 @@ internal sealed partial class WebSearchTool(IPluginContext ctx, HttpClient http)
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        args = Args.Unwrap(args);
-        var query = Args.Str(args, "query", "q", "search", "text")?.Trim();
+        var a = new ToolArgs(args);
+        var query = a.Str("query", "q", "search", "text")?.Trim();
         if (string.IsNullOrEmpty(query)) return ToolResult.Error("web_search needs a query.");
         var o = WebOptions.Read(ctx.Settings);
-        var count = Math.Clamp(Args.Int(args, "count", "limit", "n", "max_results") ?? o.SearchCount, 1, 20);
-        var recency = (Args.Str(args, "recency", "freshness", "time_range") ?? "").Trim().ToLowerInvariant() switch
+        var count = Math.Clamp(a.Int("count", "limit", "n", "max_results") ?? o.SearchCount, 1, 20);
+        var recency = (a.Str("recency", "freshness", "time_range") ?? "").Trim().ToLowerInvariant() switch
         {
             "day" or "d" or "24h" or "pd" => "day",
             "week" or "w" or "pw" => "week",

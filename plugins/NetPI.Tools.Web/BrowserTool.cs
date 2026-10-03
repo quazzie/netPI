@@ -58,8 +58,8 @@ internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host) : IAgent
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        args = Args.Unwrap(args);
-        var action = (Args.Str(args, "action", "verb", "command") ?? "").Trim().ToLowerInvariant();
+        var a = new ToolArgs(args);
+        var action = (a.Str("action", "verb", "command") ?? "").Trim().ToLowerInvariant();
         if (action is "navigate" or "goto" or "go") action = "open";
         if (action is "press") action = "key";
         if (action is "handover" or "hand_over" or "done") action = "leave";
@@ -78,7 +78,7 @@ internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host) : IAgent
         var o = WebOptions.Read(ctx.Settings);
         try
         {
-            var where = (Args.Str(args, "browser", "target", "where")?.Trim().ToLowerInvariant()) switch
+            var where = (a.Str("browser", "target", "where")?.Trim().ToLowerInvariant()) switch
             {
                 "own" or "hidden" or "headless" or "agent" => "own",
                 "chrome" or "mine" or "user" => "chrome",
@@ -86,7 +86,7 @@ internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host) : IAgent
             };
             var tab = await host.TabAsync(context.SessionId, create: action == "open", where, ct).ConfigureAwait(false);
             if (tab is null) return ToolResult.Error("No page is open in this chat's browser tab: use action open with a url first.");
-            return await tab.RunAsync(action, args, o.BrowserMaxControls, ct).ConfigureAwait(false);
+            return await tab.RunAsync(action, a.Raw, o.BrowserMaxControls, ct).ConfigureAwait(false);
         }
         catch (BrowserUnavailableException ex) { return ToolResult.Error(ex.Message); }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
