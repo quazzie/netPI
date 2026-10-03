@@ -6,6 +6,34 @@ namespace NetPI.Aux.Tests;
 
 public static class IdeasTests
 {
+    private sealed class StubTool(string name, bool readOnly) : IAgentTool
+    {
+        public ToolDefinition Definition { get; } = new() { Name = name, Description = name, ReadOnly = readOnly };
+        public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct) => Task.FromResult(ToolResult.Ok("ok"));
+    }
+
+    /// <summary>An agent runtime that only records what it was asked to run (or refuses).</summary>
+    private sealed class RecordingRuntime : IAgentRuntime
+    {
+        public List<(string SessionId, UserInput Input)> Sent { get; } = [];
+        public bool Fail { get; init; }
+        public IReadOnlyList<AgentInfo> List(bool includeFinished = true) => [];
+        public AgentInfo? Get(string agentId) => null;
+        public AgentInfo? GetBySession(string sessionId) => null;
+        public Task<AgentInfo> SendAsync(string sessionId, UserInput input, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default)
+        {
+            if (Fail) throw new InvalidOperationException("the runtime is stopping");
+            Sent.Add((sessionId, input));
+            return Task.FromResult(new AgentInfo { Id = "agt_t", SessionId = sessionId, Status = AgentStatus.Running });
+        }
+        public Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true, TimeSpan? timeout = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<bool> AbortAsync(string agentOrSessionId) => Task.FromResult(false);
+        public Task<bool> MessageAsync(string fromAgentId, string toAgentId, string text, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => Task.FromResult(false);
+        public IReadOnlyList<QueuedInput> GetQueue(string sessionId) => [];
+        public bool RemoveQueued(string sessionId, string inputId) => false;
+    }
+
     private sealed class Env
     {
         public FakePluginContext Ctx { get; }
@@ -73,6 +101,68 @@ public static class IdeasTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("ideas.refine: a chat on the idea's project with the idea attached, an agent chosen, the writing tools off and the task sent", async () =>
+        {
+            var env = new Env();
+            var runtime = new RecordingRuntime();
+            env.Ctx.ServicesFake.Register<IAgentRuntime>(runtime);
+            var used = new List<JsonObject>();
+            env.Ctx.RpcFake.Register("agents.use", (req, _) =>
+            {
+                used.Add(new JsonObject { ["sessionId"] = req.Str("sessionId"), ["agent"] = req.Str("agent") });
+                return Task.FromResult<object?>(true);
+            }, "test");
+            foreach (var (name, readOnly) in new[] { ("read", true), ("grep", true), ("write", false), ("bash", false), ("agent_spawn", false), ("ask_user", false), ("todo_write", false) })
+                env.Ctx.ToolsFake.Register(new StubTool(name, readOnly));
+            await env.StartAsync();   // registers the ideas tool, which writes and has to stay on
+            var idea = await env.Rpc("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Make the thing faster", ["summary"] = "it is slow" }, ["projectId"] = env.Project.Id });
+            var id = idea["id"]!.GetValue<string>();
+
+            var started = await env.Rpc("ideas.refine", new JsonObject { ["id"] = id, ["hint"] = "look at the cache first" });
+            var sessionId = started["sessionId"].Str();
+            var session = env.Ctx.SessionsFake.GetSession(sessionId)!;
+            Check.Equal("Refine idea: Make the thing faster", session.Title);
+            Check.Equal(env.Project.Id, session.ProjectId, "the chat is on the idea's project");
+            var off = ((JsonArray)session.Meta![SessionTools.MetaKey]!).Select(n => n!.GetValue<string>()).ToList();
+            Check.Equal("agent_spawn,bash,write", string.Join(",", off.Order(StringComparer.Ordinal)), "what can change something is off");
+            Check.True(!off.Contains("ideas") && !off.Contains("ask_user") && !off.Contains("todo_write") && !off.Contains("read") && !off.Contains("grep"), "the ideas tool, the questions and the reading tools stay on");
+            Check.Equal("any", used.Single()["agent"].Str(), "any available agent by default");
+            Check.Equal(sessionId, used.Single()["sessionId"].Str());
+
+            var sent = runtime.Sent.Single();
+            Check.Equal(sessionId, sent.SessionId);
+            Check.Contains(sent.Input.Text, $"`{id}`");
+            Check.Contains(sent.Input.Text, "look at the cache first", "the owner's hint reaches the agent");
+            Check.Contains(sent.Input.Text, "Do not change any files");
+            Check.True(env.Ctx.SessionsFake.GetMessages(sessionId).Any(m => m.Meta?["ideaId"]?.GetValue<string>() == id), "the idea is in the chat as a notice");
+            Check.Contains(env.Repo.Find(id)!.Doc["sessionIds"]?.ToJsonString() ?? "", sessionId, "and the chat is recorded on the idea");
+            Check.True(IdeaOps.WorkedOnWith(env.Repo.Find(id)!.Doc, sessionId), "and listed on its card under Chats");
+
+            // another agent by name
+            await env.Rpc("ideas.refine", new JsonObject { ["id"] = id, ["agent"] = "qwen" });
+            Check.Equal("qwen", used[^1]["agent"].Str());
+
+            // an idea that is not there, and a runtime that is not there
+            try { await env.Rpc("ideas.refine", new JsonObject { ["id"] = "idea-nope00" }); throw new AssertException("expected not_found"); }
+            catch (RpcException ex) { Check.Equal("not_found", ex.Code); }
+        });
+
+        r.Add("ideas.refine: a task that cannot start leaves no chat behind, and no runtime is an error", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.Rpc("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "No runtime yet" } });
+            try { await env.Rpc("ideas.refine", new JsonObject { ["id"] = idea["id"].Str() }); throw new AssertException("expected unavailable"); }
+            catch (RpcException ex) { Check.Equal("unavailable", ex.Code); }
+
+            var runtime = new RecordingRuntime { Fail = true };
+            env.Ctx.ServicesFake.Register<IAgentRuntime>(runtime);
+            var before = env.Ctx.SessionsFake.ListSessions(new SessionQuery { Limit = 100 }).Count;
+            try { await env.Rpc("ideas.refine", new JsonObject { ["id"] = idea["id"].Str() }); throw new AssertException("expected the send to fail"); }
+            catch (InvalidOperationException) { }
+            Check.Equal(before, env.Ctx.SessionsFake.ListSessions(new SessionQuery { Limit = 100 }).Count, "the chat it created is gone again");
+        });
+
         r.Add("ideas: verified updates apply without a card and preserve concurrent edits", async () =>
         {
             var env = new Env(); await env.StartAsync();
