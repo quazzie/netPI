@@ -61,10 +61,12 @@ node scripts/netpi.mjs diag.journal '{"sessionId":"ses_abc","limit":300}'
 node scripts/netpi.mjs methods diag.                  # every method with what it does (W = changes something)
 ```
 
-Options: `--home <dir>`, `--compact`, and `--write` for methods that change something (they are refused without it, so
-looking around never changes the app). Which methods those are is not a guess: the host marks each registration
-`readOnly` and `rpc.list` reports it, so a rename can neither make a method writable nor block a read (the name rule
-below is only the fallback for a server older than that flag). Exit codes: 0 ok, 1 the call failed, 2 NetPI isn't running there.
+Options: `--home <dir>`, `--compact`, `--timeout <seconds>`, `--params-file <file|->` (the parameters as a JSON file, or `-` for
+standard input: a long prompt or an image needs no shell quoting and no command-line length limit), and `--write` for methods
+that change something (they are refused without it, so looking around never changes the app). Which methods those are is not a
+guess: the host marks each registration `readOnly` and `rpc.list` reports it, so a rename can neither make a method writable nor
+block a read; a method the host does not mark needs `--write`. An option the script does not know, or a `--timeout` that is not
+a number, is an error, not a parameter. Exit codes: 0 ok, 1 the call failed, 2 NetPI isn't running there.
 
 Without Node: `curl -s -X POST -H "X-NetPI-Token: $TOKEN" -d '{}' $URL/api/rpc/diag.overview`.
 
