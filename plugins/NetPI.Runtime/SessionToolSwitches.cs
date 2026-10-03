@@ -13,7 +13,7 @@ internal static class SessionToolSwitches
     /// <summary>The tools the session's agent can have, each with its switch.</summary>
     public static JsonObject Info(IPluginContext ctx, AgentRuntime runtime, string sessionId)
     {
-        var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
+        var session = ctx.Sessions.Require(sessionId);
         var off = SessionTools.Off(session);
         var plugins = new Dictionary<IAgentTool, string>(ReferenceEqualityComparer.Instance);
         try { foreach (var r in ctx.Tools.Registrations) plugins.TryAdd(r.Tool, r.PluginId); } catch { }
@@ -49,8 +49,8 @@ internal static class SessionToolSwitches
     /// <summary>Switch tools off (<paramref name="off"/>) or back on (<paramref name="on"/>) for one session.</summary>
     public static JsonObject Set(IPluginContext ctx, AgentRuntime runtime, string sessionId, IReadOnlyList<string> off, IReadOnlyList<string> on)
     {
-        if (ctx.Sessions.GetSession(sessionId) is null) throw new RpcException("not_found", $"No session {sessionId}");
-        var registered = runtime.ToolsFor(runtime.GetBySession(sessionId), ctx.Sessions.GetSession(sessionId), includeOff: true)
+        var session = ctx.Sessions.Require(sessionId);
+        var registered = runtime.ToolsFor(runtime.GetBySession(sessionId), session, includeOff: true)
             .Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         ctx.Sessions.UpdateSession(sessionId, s =>
         {

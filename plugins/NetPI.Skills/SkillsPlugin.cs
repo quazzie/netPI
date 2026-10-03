@@ -43,7 +43,7 @@ public sealed class SkillsPlugin : INetPiPlugin
             else
             {
                 var sessionId = req.Required("sessionId");
-                var session = context.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
+                var session = context.Sessions.Require(sessionId);
                 // The session's workspace root when it has one, so the list is the skills that apply where it works.
                 var resolver = context.Services.Get<IWorkspaceResolver>();
                 cwd = SessionWorkspace.Of(session) is not null && resolver is not null ? resolver.CwdOf(session) : context.Sessions.GetCwd(session);

@@ -94,7 +94,7 @@ public sealed class AgentsPlugin : INetPiPlugin
         context.Rpc.Register("agents.use", (r, _) =>
         {
             var sid = r.Required("sessionId");
-            if (context.Sessions.GetSession(sid) is null) throw new RpcException("not_found", $"Session {sid} not found");
+            context.Sessions.Require(sid);
             var id = r.Str("agent");
             if (string.IsNullOrWhiteSpace(id))
                 return Task.FromResult<object?>(context.Sessions.UpdateSession(sid, s => s.Meta?.Remove(SessionAgent.MetaKey)));
@@ -131,7 +131,7 @@ public sealed class AgentsPlugin : INetPiPlugin
         context.Rpc.Register("budget.allow", async (r, token) =>
         {
             var sid = r.Required("sessionId");
-            if (context.Sessions.GetSession(sid) is null) throw new RpcException("not_found", $"Session {sid} not found");
+            context.Sessions.Require(sid);
             usage.Allow(sid);
             // continue the chat that stopped at the budget
             var rt = context.Services.Get<IAgentRuntime>();

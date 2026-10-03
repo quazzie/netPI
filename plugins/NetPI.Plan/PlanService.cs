@@ -59,7 +59,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
 
     public SessionInfo Enter(string sessionId)
     {
-        var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"Session {sessionId} not found");
+        var session = ctx.Sessions.Require(sessionId);
         if (session.Kind == "subagent") throw new RpcException("bad_request", "A subagent's chat has no plan mode: start it in the chat that spawned it.");
         if (PlanMode.Active(session)) return session;
         session = PlanMode.Set(ctx.Sessions, sessionId, PlanMode.Planning);
@@ -70,7 +70,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
     /// <summary>Leaves plan mode (the user's /plan off or the card's Cancel): the plan being decided, if any, is cancelled.</summary>
     public async Task<bool> ExitAsync(string sessionId)
     {
-        var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"Session {sessionId} not found");
+        var session = ctx.Sessions.Require(sessionId);
         if (!PlanMode.Active(session)) return false;
         await _gate.WaitAsync().ConfigureAwait(false);
         JsonObject? doc = null;
@@ -317,7 +317,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                 case "approve":
                     {
                         Require(status, PlanStore.Awaiting, "approved");
-                        var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"Session {sessionId} not found");
+                        var session = ctx.Sessions.Require(sessionId);
                         var body = PlanStore.Body(doc);
                         var ideaId = await SaveIdeaAsync(doc, "planned", ct).ConfigureAwait(false);
                         store.Put(doc); // the idea is remembered even if what follows fails: a retry follows it instead of saving another

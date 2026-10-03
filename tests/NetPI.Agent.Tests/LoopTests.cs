@@ -1099,7 +1099,12 @@ public static class LoopTests
             await h.Rpc.CallAsync("agent.send", new { sessionId = "ses_missing", text = "x" });
             throw new AssertException("expected not_found");
         }
-        catch (RpcException ex) { Check.Equal("not_found", ex.Code); }
+        catch (RpcException ex)
+        {
+            Check.Equal("not_found", ex.Code);
+            // one wording for "that chat is not there", whatever asked for it (ISessionStore.Require)
+            Check.Equal("Session ses_missing not found", ex.Message);
+        }
     }
 
     private static async Task PluginStop()

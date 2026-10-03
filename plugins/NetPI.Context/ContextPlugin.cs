@@ -95,7 +95,7 @@ public sealed class ContextPlugin : INetPiPlugin
 
     internal static async Task<JsonObject> PreviewAsync(IPluginContext ctx, ISystemPromptBuilder fallback, string sessionId, CancellationToken ct)
     {
-        var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
+        var session = ctx.Sessions.Require(sessionId);
         var project = session.ProjectId is null ? null : ctx.Sessions.GetProject(session.ProjectId);
         var cwd = ctx.Sessions.GetCwd(session);
         var modelRef = session.Model ?? ctx.Models.DefaultModelRef;
@@ -146,7 +146,7 @@ public sealed class ContextPlugin : INetPiPlugin
     /// </summary>
     internal static JsonObject PromptsJson(IPluginContext ctx, PromptStore prompts, string sessionId)
     {
-        if (ctx.Sessions.GetSession(sessionId) is null) throw new RpcException("not_found", $"No session {sessionId}");
+        ctx.Sessions.Require(sessionId);
         var list = new JsonArray();
         foreach (var p in prompts.Sent(sessionId))
         {

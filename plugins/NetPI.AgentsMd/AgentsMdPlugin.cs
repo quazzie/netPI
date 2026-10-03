@@ -45,7 +45,7 @@ public sealed class AgentsMdPlugin : INetPiPlugin
             else
             {
                 var sessionId = req.Required("sessionId");
-                var session = context.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
+                var session = context.Sessions.Require(sessionId);
                 cwd = AgentsMdLoader.WorkspaceRoot(context, session);
                 bound = context.Services.Get<IWorkspaceResolver>()?.ResolveLenient(session) is { Isolated: true };
             }

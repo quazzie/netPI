@@ -456,7 +456,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
                  : r.Str("sessionId") is { } sid ? runtime.GetBySession(sid)
                  : throw new RpcException("bad_request", "Pass sessionId or agentId.");
         var sessionId = info?.SessionId ?? r.Str("sessionId") ?? throw new RpcException("not_found", "No such run.");
-        var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"Session {sessionId} not found");
+        var session = ctx.Sessions.Require(sessionId);
         var slots = ctx.Services.Get<IAgentScheduler>()?.Snapshot() ?? [];
         var o = new JsonObject
         {

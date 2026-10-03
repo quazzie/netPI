@@ -41,7 +41,7 @@ public sealed class RuntimePlugin : INetPiPlugin
         context.Rpc.Register("agent.send", async (req, token) =>
         {
             var sessionId = req.Required("sessionId");
-            if (context.Sessions.GetSession(sessionId) is null) throw new RpcException("not_found", $"No session {sessionId}");
+            context.Sessions.Require(sessionId);
             var text = req.Str("text") ?? "";
             var images = ParseImages(req.Prop("images"));
             if (string.IsNullOrWhiteSpace(text) && images is null) throw new RpcException("bad_request", "Empty message");

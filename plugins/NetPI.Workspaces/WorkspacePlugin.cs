@@ -197,7 +197,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
     }
 
     private static SessionInfo Session(IPluginContext ctx, string? sessionId) =>
-        sessionId is { Length: > 0 } ? ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}") : null!;
+        sessionId is { Length: > 0 } ? ctx.Sessions.Require(sessionId) : null!;
 
     /// <summary>The root an RPC should work on: an explicit cwd, else the session's workspace root, else its project path.</summary>
     internal static string Root(IPluginContext ctx, WorkspaceResolver resolver, string? sessionId, string? cwd)
