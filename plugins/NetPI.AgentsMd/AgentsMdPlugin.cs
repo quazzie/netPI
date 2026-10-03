@@ -98,20 +98,6 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
 
     internal static StringComparer PathComparer => WorkspacePaths.Comparer;
 
-    private List<string> Setting(string path, IReadOnlyList<string> fallback)
-    {
-        try
-        {
-            var node = ctx.Settings.GetNode(path);
-            if (node is JsonArray a)
-                return a.Select(x => x is JsonValue v && v.TryGetValue<string>(out var s) ? s : null)
-                    .Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s!.Trim()).ToList();
-            if (node is JsonValue jv && jv.TryGetValue<string>(out var one) && !string.IsNullOrWhiteSpace(one)) return [one.Trim()];
-        }
-        catch { }
-        return [.. fallback];
-    }
-
     /// <summary>Instruction files in prompt order: global, root → cwd, extra.</summary>
     public List<InstructionFile> Discover(string cwd) => Discover(cwd, stopAtRepoRoot: false);
 
@@ -144,7 +130,7 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
 
         Add(Path.Combine(ctx.Paths.Home, "AGENTS.md"), "global");
 
-        var names = Setting("agentsMd.fileNames", DefaultFileNames);
+        var names = ctx.Settings.GetStrings("agentsMd.fileNames", DefaultFileNames);
         var chain = new List<string>();
         try
         {
@@ -167,7 +153,7 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
         chain.Reverse(); // root → leaf
         foreach (var p in chain) Add(p, "project");
 
-        foreach (var extra in Setting("agentsMd.extraFiles", []))
+        foreach (var extra in ctx.Settings.GetStrings("agentsMd.extraFiles", []))
         {
             var path = extra.StartsWith("~/", StringComparison.Ordinal) || extra.StartsWith("~\\", StringComparison.Ordinal)
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), extra[2..])

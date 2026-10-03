@@ -46,7 +46,7 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
     {
         var run = turn.Run;
         if (run.CancellationToken.IsCancellationRequested) return ValueTask.CompletedTask;
-        if (!Get("ideas.tellAgentOnCommit", true)) return ValueTask.CompletedTask;
+        if (!settings().GetOr("ideas.tellAgentOnCommit", true)) return ValueTask.CompletedTask;
         // Nothing to update without the tool, and nothing to say without a project: ideas are stamped with one.
         if (!turn.Tools.Any(t => t.Name == "ideas")) return ValueTask.CompletedTask;
         if (run.Project is not { } project) return ValueTask.CompletedTask;
@@ -73,13 +73,13 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
         var run = turn.Run;
         if (!TakePending(run, out var pending)) return ValueTask.FromResult<TurnDecision?>(null);
         if (run.CancellationToken.IsCancellationRequested) return ValueTask.FromResult<TurnDecision?>(null);
-        if (!Get("ideas.tellAgentOnCommit", true)) return ValueTask.FromResult<TurnDecision?>(null);
+        if (!settings().GetOr("ideas.tellAgentOnCommit", true)) return ValueTask.FromResult<TurnDecision?>(null);
 
         // A burst of commits costs one notice: the run was just asked, and the answer to that ask is still ahead of it.
         if (WithinDebounce(run)) return ValueTask.FromResult<TurnDecision?>(null);
 
         var count = run.Items.TryGetValue(CountKey, out var v) && v is int n ? n : 0;
-        if (count >= Math.Clamp(Get("ideas.commitNoticesPerRun", DefaultMaxPerRun), 0, 10)) return ValueTask.FromResult<TurnDecision?>(null);
+        if (count >= Math.Clamp(settings().GetOr("ideas.commitNoticesPerRun", DefaultMaxPerRun), 0, 10)) return ValueTask.FromResult<TurnDecision?>(null);
         run.Items[CountKey] = count + 1;
         run.Items[LastNoticeKey] = DateTimeOffset.UtcNow;
         return ValueTask.FromResult<TurnDecision?>(TurnDecision.Inject(Text(pending), NoticeKind));
@@ -103,7 +103,7 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
     /// <summary>The run got a notice less than <c>ideas.commitNoticeDebounceSec</c> ago (0 = never).</summary>
     private bool WithinDebounce(AgentRunContext run)
     {
-        var window = Math.Clamp(Get("ideas.commitNoticeDebounceSec", DefaultDebounceSec), 0, 3600);
+        var window = Math.Clamp(settings().GetOr("ideas.commitNoticeDebounceSec", DefaultDebounceSec), 0, 3600);
         if (window <= 0) return false;
         if (!run.Items.TryGetValue(LastNoticeKey, out var v) || v is not DateTimeOffset last) return false;
         return DateTimeOffset.UtcNow - last < TimeSpan.FromSeconds(window);
@@ -381,13 +381,6 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
         try { return JsonNode.Parse(json) as JsonObject; } catch (JsonException) { return null; }
-    }
-
-    private T Get<T>(string path, T fallback)
-    {
-        var s = settings();
-        if (s is null) return fallback;
-        try { return s.Get(path, fallback) ?? fallback; } catch { return fallback; }
     }
 
     /// <summary>The project(s) a pending notice is about, with the open ideas it names.</summary>

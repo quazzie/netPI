@@ -49,21 +49,6 @@ internal sealed partial class SkillLoader(IPluginContext ctx, string? userHome =
     [GeneratedRegex("^[a-z0-9]+(-[a-z0-9]+)*$")]
     private static partial Regex NameRx();
 
-    private List<string> Setting(string key)
-    {
-        try
-        {
-            return ctx.Settings.GetNode(key) switch
-            {
-                JsonArray a => a.Select(x => x is JsonValue v && v.TryGetValue<string>(out var s) ? s.Trim() : null)
-                    .Where(s => !string.IsNullOrEmpty(s)).Select(s => s!).ToList(),
-                JsonValue v when v.TryGetValue<string>(out var one) && !string.IsNullOrWhiteSpace(one) => [one.Trim()],
-                _ => [],
-            };
-        }
-        catch { return []; }
-    }
-
     /// <summary>The folders searched, in precedence order, with their scope (project | extra | global).</summary>
     public List<(string Dir, string Scope)> Roots(string cwd)
     {
@@ -97,7 +82,7 @@ internal sealed partial class SkillLoader(IPluginContext ctx, string? userHome =
             ctx.Logger.LogDebug(ex, "Skill folders above {Cwd} not searched", cwd);
         }
 
-        foreach (var p in Setting("skills.paths"))
+        foreach (var p in ctx.Settings.GetStrings("skills.paths"))
         {
             var path = p.StartsWith("~/", StringComparison.Ordinal) || p.StartsWith("~\\", StringComparison.Ordinal) ? System.IO.Path.Combine(home, p[2..])
                 : p == "~" ? home
@@ -113,7 +98,7 @@ internal sealed partial class SkillLoader(IPluginContext ctx, string? userHome =
 
     public SkillSet Discover(string cwd)
     {
-        var disabled = new HashSet<string>(Setting("skills.disabled"), StringComparer.OrdinalIgnoreCase);
+        var disabled = new HashSet<string>(ctx.Settings.GetStrings("skills.disabled"), StringComparer.OrdinalIgnoreCase);
         var skills = new List<Skill>();
         var problems = new List<SkillProblem>();
         var byName = new Dictionary<string, Skill>(StringComparer.OrdinalIgnoreCase);

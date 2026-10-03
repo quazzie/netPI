@@ -43,9 +43,9 @@ internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
     {
         if (context.Model?.InputModalities is { Count: > 0 } mods && !mods.Contains("image"))
             return ToolResult.Error($"The current model ({context.Model.Id}) can't see images, so a screenshot would not help it. Use a vision model for visual checks.");
-        args = Args.Unwrap(args);
-        var url = Args.Str(args, "url", "href", "page")?.Trim();
-        return string.IsNullOrEmpty(url) ? await AppWindowAsync(ct).ConfigureAwait(false) : await PageAsync(url, args, ct).ConfigureAwait(false);
+        var a = new ToolArgs(args);
+        var url = a.Str("url", "href", "page")?.Trim();
+        return string.IsNullOrEmpty(url) ? await AppWindowAsync(ct).ConfigureAwait(false) : await PageAsync(url, a.Raw, ct).ConfigureAwait(false);
     }
 
     private async Task<ToolResult> AppWindowAsync(CancellationToken ct)
@@ -79,11 +79,12 @@ internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
         var exe = ChromiumProcess.Find(o.BrowserPath);
         if (exe is null)
             return ToolResult.Error("No Edge, Chrome or Chromium found for screenshots. Install one or set web.browserPath in the settings.");
-        var width = Math.Clamp(Args.Int(args, "width") ?? 1280, 320, 3840);
-        var height = Math.Clamp(Args.Int(args, "height") ?? 800, 240, 2160);
-        var fullPage = Args.Bool(args, "full_page", "fullpage", "full") ?? false;
-        var waitFor = Args.Str(args, "wait_for", "selector", "waitFor")?.Trim();
-        var delay = Math.Clamp(Args.Int(args, "delay_ms", "delay", "wait_ms") ?? 500, 0, 10_000);
+        var a = new ToolArgs(args);
+        var width = Math.Clamp(a.Int("width") ?? 1280, 320, 3840);
+        var height = Math.Clamp(a.Int("height") ?? 800, 240, 2160);
+        var fullPage = a.Bool("full_page", "fullpage", "full") ?? false;
+        var waitFor = a.Str("wait_for", "selector", "waitFor")?.Trim();
+        var delay = Math.Clamp(a.Int("delay_ms", "delay", "wait_ms") ?? 500, 0, 10_000);
 
         var notes = new List<string>();
         try

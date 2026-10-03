@@ -84,5 +84,5 @@ public abstract class FileToolBase(ISettings? settings) : IAgentTool
 
     /// <summary>EOL for new files from settings (files.newFileEol: lf | crlf | auto).</summary>
     protected EolStyle NewFileEol() =>
-        TextCodec.ParseEol(Settings.SafeGet("files.newFileEol", "lf")) ?? EolStyle.Lf;
+        TextCodec.ParseEol(Settings.GetOr("files.newFileEol", "lf")) ?? EolStyle.Lf;
 }

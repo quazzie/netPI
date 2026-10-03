@@ -307,15 +307,11 @@ public sealed class IdeasTool(IdeasRepository repo, IdeasLocator locator) : IAge
         return Task.FromResult(ToolResult.Ok(text, Details(idea)));
     }
 
-    /// <summary>Arguments as a JsonObject (a JSON string holding the object is unwrapped).</summary>
+    /// <summary>Arguments as a JsonObject (a JSON string holding the object is unwrapped by the shared reader).</summary>
     public static JsonObject Args(JsonElement args)
     {
-        if (args.ValueKind == JsonValueKind.Object) return JsonObject.Create(args.Clone()) ?? [];
-        if (args.ValueKind == JsonValueKind.String)
-        {
-            try { if (JsonNode.Parse(args.GetString() ?? "") is JsonObject o) return o; } catch (JsonException) { }
-        }
-        return [];
+        var e = ToolArgs.Unwrap(args);
+        return e.ValueKind == JsonValueKind.Object ? JsonObject.Create(e.Clone()) ?? [] : [];
     }
 
     private static string RequireId(JsonObject args) =>

@@ -93,7 +93,7 @@ internal sealed record WebOptions(
     public static WebOptions Read(ISettings s)
     {
         var searx = Blank(s.Get<string>("web.search.searxngUrl"));
-        var brave = Secret(s.Get<string>("web.search.braveApiKey")) ?? Blank(Environment.GetEnvironmentVariable("BRAVE_API_KEY"));
+        var brave = s.GetSecret("web.search.braveApiKey") ?? Blank(Environment.GetEnvironmentVariable("BRAVE_API_KEY"));
         return new WebOptions(
             FetchMaxChars: Math.Clamp(s.Get("web.fetch.maxChars", 20_000), 1_000, 200_000),
             FetchTimeoutSeconds: Math.Clamp(s.Get("web.fetch.timeoutSeconds", 30), 3, 300),
@@ -118,63 +118,4 @@ internal sealed record WebOptions(
     /// <summary>A profile folder name (letters, digits, '-', '_'), or "temp"; anything else is "default".</summary>
     private static string ProfileName(string? v) => Blank(v) is { } n && Regex.IsMatch(n, "^[A-Za-z0-9_-]{1,40}$") ? n.ToLowerInvariant() : "default";
 
-    /// <summary>A value or <c>env:NAME</c> / <c>$NAME</c> (an environment variable).</summary>
-    private static string? Secret(string? v)
-    {
-        v = Blank(v);
-        if (v is null) return null;
-        if (v.StartsWith("env:", StringComparison.OrdinalIgnoreCase)) return Blank(Environment.GetEnvironmentVariable(v[4..]));
-        if (v.StartsWith('$')) return Blank(Environment.GetEnvironmentVariable(v[1..]));
-        return v;
-    }
-
-}
-
-/// <summary>Lenient argument access: names match ignoring case, '_' and '-'; numbers/bools may be strings.</summary>
-internal static class Args
-{
-    private static string Norm(string s) => s.Replace("_", "").Replace("-", "").ToLowerInvariant();
-
-    public static JsonElement Unwrap(JsonElement args)
-    {
-        if (args.ValueKind != JsonValueKind.String) return args;
-        try
-        {
-            using var doc = JsonDocument.Parse(args.GetString() ?? "{}");
-            return doc.RootElement.Clone();
-        }
-        catch (JsonException) { return args; }
-    }
-
-    public static JsonElement? Get(JsonElement args, params string[] names)
-    {
-        if (args.ValueKind != JsonValueKind.Object) return null;
-        foreach (var name in names)
-            foreach (var p in args.EnumerateObject())
-                if (Norm(p.Name) == Norm(name) && p.Value.ValueKind != JsonValueKind.Null) return p.Value;
-        return null;
-    }
-
-    public static string? Str(JsonElement args, params string[] names) => Get(args, names) switch
-    {
-        { ValueKind: JsonValueKind.String } v => v.GetString(),
-        { ValueKind: JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False } v => v.GetRawText(),
-        _ => null,
-    };
-
-    public static int? Int(JsonElement args, params string[] names) => Get(args, names) switch
-    {
-        { ValueKind: JsonValueKind.Number } v when v.TryGetDouble(out var d) => (int)Math.Clamp(d, int.MinValue, int.MaxValue),
-        { ValueKind: JsonValueKind.String } v when int.TryParse(v.GetString(), out var i) => i,
-        _ => null,
-    };
-
-    public static bool? Bool(JsonElement args, params string[] names) => Get(args, names) switch
-    {
-        { ValueKind: JsonValueKind.True } => true,
-        { ValueKind: JsonValueKind.False } => false,
-        { ValueKind: JsonValueKind.String } v when bool.TryParse(v.GetString(), out var b) => b,
-        { ValueKind: JsonValueKind.Number } v => v.GetDouble() != 0,
-        _ => null,
-    };
 }

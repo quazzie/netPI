@@ -48,7 +48,7 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var action = Str(args, "action") ?? "info";
+        var action = new ToolArgs(args).Str("action")?.Trim() ?? "info";
         var session = ctx.Services.Get<ISessionStore>()?.GetSession(context.SessionId);
         return Task.FromResult(action switch
         {
@@ -118,7 +118,7 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
 
     private ToolResult Switch(ToolContext context, JsonElement args, SessionInfo? session)
     {
-        var id = Str(args, "id", "workspaceId", "workspace", "name");
+        var id = new ToolArgs(args).Str("id", "workspaceId", "workspace", "name")?.Trim();
         if (session is null) return ToolResult.Error("This session no longer exists.");
         if (id is null or "")
         {
@@ -157,15 +157,4 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
     {
         workspaceId = w.Id, name = w.Name, path = w.Path, branch = w.Branch, kind = w.Kind, isolated = w.Kind == "worktree",
     };
-
-    private static string? Str(JsonElement args, params string[] names)
-    {
-        foreach (var n in names)
-            if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String)
-            {
-                var s = v.GetString();
-                if (!string.IsNullOrWhiteSpace(s)) return s.Trim();
-            }
-        return null;
-    }
 }

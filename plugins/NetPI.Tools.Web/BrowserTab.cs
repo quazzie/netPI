@@ -115,11 +115,12 @@ internal sealed class BrowserTab
         try
         {
             var before = _controls;
+            var a = new ToolArgs(args);
             string result;
             switch (action)
             {
                 case "open":
-                    var url = Args.Str(args, "url", "href", "page")?.Trim();
+                    var url = a.Str("url", "href", "page")?.Trim();
                     if (string.IsNullOrEmpty(url)) return ToolResult.Error("open needs a url.");
                     if (!url.Contains("://", StringComparison.Ordinal))
                         url = (url.StartsWith("localhost", StringComparison.OrdinalIgnoreCase) || url.StartsWith("127.", StringComparison.Ordinal) ? "http://" : "https://") + url;
@@ -140,14 +141,14 @@ internal sealed class BrowserTab
                     before = [];
                     break;
                 case "find":
-                    var text = Args.Str(args, "text", "query", "q")?.Trim();
+                    var text = a.Str("text", "query", "q")?.Trim();
                     if (string.IsNullOrEmpty(text)) return ToolResult.Error("find needs a text.");
                     await WaitLoadAsync(ct).ConfigureAwait(false);
                     var page = await SnapshotAsync(ct).ConfigureAwait(false);
                     return AxSnapshot.Found(page, text);
                 case "click":
                 case "type":
-                    var n = Args.Int(args, "n", "number", "index", "i", "ref", "element");
+                    var n = a.Int("n", "number", "index", "i", "ref", "element");
                     if (n is null || n < 1 || n > _controls.Count)
                         return ToolResult.Error(_controls.Count == 0 ? "Take a snapshot first: numbers refer to the last list of controls." : $"No control {n?.ToString(CultureInfo.InvariantCulture) ?? "given"}: the numbers are 1..{_controls.Count} from the last list.");
                     var c = _controls[n.Value - 1];
@@ -156,17 +157,17 @@ internal sealed class BrowserTab
                             new { action, refused = c.Text });
                     result = action == "click"
                         ? await ClickAsync(c, ct).ConfigureAwait(false)
-                        : await TypeAsync(c, Args.Str(args, "text", "value") ?? "", ct).ConfigureAwait(false);
+                        : await TypeAsync(c, a.Str("text", "value") ?? "", ct).ConfigureAwait(false);
                     result = $"{result} [{n}] {c.Text}";
                     break;
                 case "key":
-                    var keys = Args.Str(args, "keys", "key", "text")?.Trim();
+                    var keys = a.Str("keys", "key", "text")?.Trim();
                     if (string.IsNullOrEmpty(keys)) return ToolResult.Error("key needs keys, e.g. Enter or Ctrl+A.");
                     await KeysAsync(keys, ct).ConfigureAwait(false);
                     result = $"Pressed {keys}.";
                     break;
                 case "scroll":
-                    var up = (Args.Str(args, "direction", "dir") ?? "down").StartsWith("up", StringComparison.OrdinalIgnoreCase);
+                    var up = (a.Str("direction", "dir") ?? "down").StartsWith("up", StringComparison.OrdinalIgnoreCase);
                     var vp = (await Send("Page.getLayoutMetrics", null, ct).ConfigureAwait(false)).GetProperty("cssVisualViewport");
                     var (w, h) = (vp.GetProperty("clientWidth").GetDouble(), vp.GetProperty("clientHeight").GetDouble());
                     await Send("Input.dispatchMouseEvent", new { type = "mouseWheel", x = w / 2, y = h / 2, deltaX = 0, deltaY = (up ? -0.8 : 0.8) * h }, ct).ConfigureAwait(false);

@@ -85,24 +85,24 @@ internal sealed record PlanBody(
     {
         plan = null!;
         error = "";
-        args = Args.Unwrap(args);
-        var title = Args.Clip(Args.Str(args, "title", "name"), 120);
-        var summary = Args.Clip(Args.Str(args, "summary", "overview", "description", "goal"), 1500) ?? "";
+        var a = new ToolArgs(args);
+        var title = Clip(a.Str("title", "name"), 120);
+        var summary = Clip(a.Str("summary", "overview", "description", "goal"), 1500) ?? "";
         var steps = new List<PlanStep>();
-        foreach (var e in Args.Items(args, "steps", "plan", "tasks"))
+        foreach (var e in a.List("steps", "plan", "tasks") ?? [])
         {
-            var text = e.ValueKind == JsonValueKind.String ? Args.Clip(e.GetString(), 400) : Args.Clip(Args.Str(e, "text", "step", "title", "task", "name"), 400);
+            var text = e.ValueKind == JsonValueKind.String ? Clip(e.GetString(), 400) : Clip(new ToolArgs(e).Str("text", "step", "title", "task", "name"), 400);
             if (text is null) continue;
-            var detail = e.ValueKind == JsonValueKind.Object ? Args.Clip(Args.Str(e, "detail", "details", "description", "notes"), 1200) : null;
+            var detail = e.ValueKind == JsonValueKind.Object ? Clip(new ToolArgs(e).Str("detail", "details", "description", "notes"), 1200) : null;
             steps.Add(new PlanStep(text, detail));
             if (steps.Count == MaxSteps) break;
         }
         var files = new List<PlanFile>();
-        foreach (var e in Args.Items(args, "files", "paths"))
+        foreach (var e in a.List("files", "paths") ?? [])
         {
-            var path = e.ValueKind == JsonValueKind.String ? Args.Clip(e.GetString(), 300) : Args.Clip(Args.Str(e, "path", "file", "name"), 300);
+            var path = e.ValueKind == JsonValueKind.String ? Clip(e.GetString(), 300) : Clip(new ToolArgs(e).Str("path", "file", "name"), 300);
             if (path is null) continue;
-            files.Add(new PlanFile(path, e.ValueKind == JsonValueKind.Object ? Args.Clip(Args.Str(e, "note", "notes", "what", "change", "description"), 300) : null));
+            files.Add(new PlanFile(path, e.ValueKind == JsonValueKind.Object ? Clip(new ToolArgs(e).Str("note", "notes", "what", "change", "description"), 300) : null));
             if (files.Count == MaxFiles) break;
         }
         if (steps.Count == 0)
@@ -110,61 +110,22 @@ internal sealed record PlanBody(
             error = "plan_submit needs \"steps\": an array of { \"text\", \"detail\"? } (the plan, in order), with a \"title\" and a \"summary\".";
             return false;
         }
-        title ??= Args.Clip(summary.Split('\n')[0], 80) ?? Args.Clip(steps[0].Text, 80)!;
-        plan = new PlanBody(title, summary, steps, files, Args.Strings(args, "risks", "risk"), Args.Strings(args, "tests", "testing", "verification"),
-            Args.Strings(args, "openQuestions", "questions", "open_questions"));
+        title ??= Clip(summary.Split('\n')[0], 80) ?? Clip(steps[0].Text, 80)!;
+        plan = new PlanBody(title, summary, steps, files, Strings(a, "risks", "risk"), Strings(a, "tests", "testing", "verification"),
+            Strings(a, "openQuestions", "questions", "open_questions"));
         return true;
     }
-}
 
-/// <summary>Argument reading shared by the plan tools: names match case-insensitively without _ and -.</summary>
-internal static class Args
-{
-    public static JsonElement Unwrap(JsonElement e)
-    {
-        if (e.ValueKind != JsonValueKind.String) return e;
-        try
-        {
-            using var doc = JsonDocument.Parse(e.GetString() ?? "{}");
-            return doc.RootElement.Clone();
-        }
-        catch (JsonException) { return e; }
-    }
-
-    private static string Norm(string s) => s.Replace("_", "").Replace("-", "").ToLowerInvariant();
-
-    public static JsonElement? Get(JsonElement e, params string[] names)
-    {
-        if (e.ValueKind != JsonValueKind.Object) return null;
-        foreach (var name in names)
-            foreach (var p in e.EnumerateObject())
-                if (Norm(p.Name) == Norm(name) && p.Value.ValueKind != JsonValueKind.Null) return p.Value;
-        return null;
-    }
-
-    public static string? Str(JsonElement e, params string[] names) => Get(e, names) is { ValueKind: JsonValueKind.String } v ? v.GetString() : null;
-
-    public static string? Clip(string? s, int max)
+    /// <summary>The text, trimmed and cut to <paramref name="max"/>; blank is no value.</summary>
+    internal static string? Clip(string? s, int max)
     {
         s = s?.Trim();
         if (string.IsNullOrEmpty(s)) return null;
         return s.Length > max ? s[..max] + "…" : s;
     }
 
-    /// <summary>The elements of an array argument (a JSON string holding one is unwrapped; one object or string counts as a list of one).</summary>
-    public static List<JsonElement> Items(JsonElement args, params string[] names)
-    {
-        var found = Get(args, names);
-        if (found is { ValueKind: JsonValueKind.String } s && Unwrap(s) is { ValueKind: JsonValueKind.Array } parsed) found = parsed;
-        return found switch
-        {
-            { ValueKind: JsonValueKind.Array } a => [.. a.EnumerateArray()],
-            { ValueKind: JsonValueKind.String or JsonValueKind.Object } one => [one],
-            _ => [],
-        };
-    }
-
-    public static List<string> Strings(JsonElement args, params string[] names) => [.. Items(args, names)
-        .Select(e => e.ValueKind == JsonValueKind.String ? Clip(e.GetString(), 400) : Clip(Str(e, "text", "description", "name"), 400))
+    /// <summary>A list argument as trimmed strings of at most 400 (one string or object counts as a list of one).</summary>
+    internal static List<string> Strings(ToolArgs a, params string[] names) => [.. (a.List(names) ?? [])
+        .Select(e => e.ValueKind == JsonValueKind.String ? Clip(e.GetString(), 400) : Clip(new ToolArgs(e).Str("text", "description", "name"), 400))
         .OfType<string>().Take(PlanBody.MaxList)];
 }

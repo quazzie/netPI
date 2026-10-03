@@ -34,10 +34,7 @@ public static class GuardrailsTests
     private static Verdict? Judge(RuleSet rules, string tool, object args) => JudgeJson(rules, tool, JsonSerializer.Serialize(args));
 
     private static Verdict? JudgeJson(RuleSet rules, string tool, string json)
-    {
-        using var doc = JsonDocument.Parse(json);
-        return rules.Check(tool, doc.RootElement.Clone(), p => p);
-    }
+        => rules.Check(tool, ToolArgs.Parse(json), p => p);
 
     /// <summary>The guard must judge the call the tool will run: the runner finds the tool ignoring case and the tools read
     /// their arguments by alias order, so the guard does the same, or a call can say one thing to it and another to the tool.</summary>
@@ -63,6 +60,8 @@ public static class GuardrailsTests
         Check.True(Judge(rules, "bash", new { command = "ls", cmd = "rm -rf /" }) is null, "ls runs, so ls is what is judged");
         // a string-encoded arguments object is unwrapped by the tools
         Check.True(JudgeJson(rules, "bash", JsonSerializer.Serialize(JsonSerializer.Serialize(new { command = "rm -rf /" }))) is { Action: GuardAction.Block }, "string-encoded arguments");
+        // a double-encoded one too: the guard that cannot read the root lets the write through, and the tool runs it
+        Check.True(JudgeJson(rules, "write", JsonSerializer.Serialize(JsonSerializer.Serialize(JsonSerializer.Serialize(new { path = key, content = "x" })))) is { Action: GuardAction.Block, Kind: "path" }, "a double-encoded write is judged, not let through");
 
         // ssh run reads script first, then command, cmd, code
         foreach (var name in (string[])["script", "command", "cmd", "code"])
@@ -171,10 +170,7 @@ public static class GuardrailsTests
     }
 
     private static Verdict? SleepVerdict(string tool, object args, double max = 30, bool ask = false)
-    {
-        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(args));
-        return Sleeps.Check(tool, doc.RootElement.Clone(), max, ask);
-    }
+        => Sleeps.Check(tool, ToolArgs.Parse(JsonSerializer.Serialize(args)), max, ask);
 
     /// <summary>The reason names the alternatives, not just the number; with ask the OK is the session allowance.</summary>
     private static async Task LongWait()
@@ -761,8 +757,8 @@ public static class GuardrailsTests
         Check.Equal(0, rules.Problems.Count, string.Join("; ", rules.Problems));
         Verdict? Bash(string command)
         {
-            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(new { command }));
-            return rules.Check("bash", doc.RootElement.Clone(), p => p);
+            var args = ToolArgs.Parse(JsonSerializer.Serialize(new { command }));
+            return rules.Check("bash", args, p => p);
         }
 
         string[] blocked =
@@ -801,8 +797,7 @@ public static class GuardrailsTests
         var mixed = RuleSet.Parse(["ask: ^git", "block: push --force", "# a comment", "(unclosed"], [], home);
         Check.Equal(1, mixed.Problems.Count);
         Check.Equal(2, mixed.Count);
-        using (var doc = JsonDocument.Parse("""{"command":"git push --force"}"""))
-            Check.True(mixed.Check("bash", doc.RootElement.Clone(), p => p) is { Action: GuardAction.Block }, "block beats ask");
+        Check.True(mixed.Check("bash", ToolArgs.Parse("""{"command":"git push --force"}"""), p => p) is { Action: GuardAction.Block }, "block beats ask");
         Check.Equal("a|b|c|d|e 2>&1", string.Join("|", RuleSet.Parts("a && b || c; d | e 2>&1")));
         return Task.CompletedTask;
     }

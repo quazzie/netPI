@@ -58,7 +58,7 @@ internal sealed class AnthropicOptions
         return new AnthropicOptions
         {
             BaseUrl = o.Str("baseUrl") is { Length: > 0 } url ? url : DefaultBaseUrl,
-            ApiKey = Secrets.Resolve(o.Str("apiKey")) ?? Secrets.Resolve("env:ANTHROPIC_API_KEY"),
+            ApiKey = SettingsExtensions.ResolveSecret(o.Str("apiKey")) ?? SettingsExtensions.ResolveSecret("env:ANTHROPIC_API_KEY"),
             Thinking = o.Str("thinking")?.Trim().ToLowerInvariant() switch
             {
                 "adaptive" => ThinkingMode.Adaptive,

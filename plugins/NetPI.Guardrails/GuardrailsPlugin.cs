@@ -200,13 +200,10 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             var rules = Rules();
             var maxSleep = MaxSleep();
             if (rules.Count == 0 && maxSleep <= 0) return null;
-            JsonElement args;
-            try
-            {
-                using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(call.Arguments) ? "{}" : call.Arguments);
-                args = doc.RootElement.Clone();
-            }
-            catch (JsonException) { return null; } // the tool refuses invalid JSON itself: nothing runs
+            // The arguments as the tools read them (NetPI.ToolArgs): a string-encoded root - a double-encoded one
+            // included - unwraps to the object the tool will run with, so the guard judges the call that runs.
+            // Unreadable arguments read no properties: the tool refuses invalid JSON itself, so nothing runs.
+            var args = ToolArgs.Parse(call.Arguments);
             var run = turn.Run;
             // The typed sleep rule: no regular expression can say "longer than N seconds". It is one verdict beside the
             // rules', never instead of them: `sleep 60; rm -rf ~` is blocked by the rule whatever the sleep says, and a sleep
@@ -233,7 +230,7 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
     }
 
     /// <summary>One verdict: a block, a clearance (allowed for the chat, or a harmless second opinion), or the user's answer. Null: the call may go on.</summary>
-    private async ValueTask<ToolCallDecision?> JudgeAsync(AgentRunContext run, ToolCallPart call, JsonElement args, Verdict verdict, CancellationToken ct)
+    private async ValueTask<ToolCallDecision?> JudgeAsync(AgentRunContext run, ToolCallPart call, ToolArgs args, Verdict verdict, CancellationToken ct)
     {
         if (verdict.Action == GuardAction.Block) return Block(Why(verdict) + " Nothing ran. If it is really needed, tell the user what and why: they can do it themselves or change the rule.");
         // The user allowed this ask rule for the rest of the chat (guard.answer scope "session").

@@ -66,11 +66,11 @@ public sealed class ShellTool : ShellToolBase
     internal override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct) =>
         _service.RunAsync(_shell, ctx, args, ct);
 
-    private static System.Text.Json.Nodes.JsonObject Parameters(string commandHelp) => Schema.Object(
-        ("command", Schema.Str(commandHelp), true),
-        ("timeout", Schema.Int($"Seconds (default {ShellService.DefaultTimeoutSeconds}, max {ShellService.MaxTimeoutSeconds}; timeout_ms takes milliseconds)"), false),
-        ("background", Schema.Bool("Returns a process id at once"), false),
-        ("cwd", Schema.Str(""), false));
+    private static System.Text.Json.Nodes.JsonObject Parameters(string commandHelp) => ToolSchema.Object(
+        ("command", ToolSchema.Str(commandHelp), true),
+        ("timeout", ToolSchema.Int($"Seconds (default {ShellService.DefaultTimeoutSeconds}, max {ShellService.MaxTimeoutSeconds}; timeout_ms takes milliseconds)"), false),
+        ("background", ToolSchema.Bool("Returns a process id at once"), false),
+        ("cwd", ToolSchema.Str(""), false));
 
     private static readonly string ShellHelp =
         $"stdout and stderr are merged; the output's tail is returned, with a note of the exit code when it is not 0. timeout: " +
@@ -146,12 +146,12 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
             "long, and its last lines, which is what tells slow from hung. Use it for a job you backgrounded and now need the " +
             "result of; for a command of a known duration one blocking bash/pwsh call with a matching timeout is faster. " +
             "kill: ends the process and all of its child processes. ids (proc_…) come from bash/pwsh with background=true, or from list.",
-        Parameters = Schema.Object(
-            ("action", Schema.Str("", "list", "output", "wait", "kill"), true),
-            ("id", Schema.Str(""), false),
-            ("all", Schema.Bool("list only: every session's processes, not just this session's (read-only)"), false),
-            ("timeout", Schema.Int($"Seconds to block (default {DefaultWaitSeconds}, max {MaxWaitSeconds}); wait only"), false),
-            ("tail", Schema.Int(""), false)),
+        Parameters = ToolSchema.Object(
+            ("action", ToolSchema.Str("", "list", "output", "wait", "kill"), true),
+            ("id", ToolSchema.Str(""), false),
+            ("all", ToolSchema.Bool("list only: every session's processes, not just this session's (read-only)"), false),
+            ("timeout", ToolSchema.Int($"Seconds to block (default {DefaultWaitSeconds}, max {MaxWaitSeconds}); wait only"), false),
+            ("tail", ToolSchema.Int(""), false)),
         PromptGuidelines = [BackgroundProcesses],
     };
 

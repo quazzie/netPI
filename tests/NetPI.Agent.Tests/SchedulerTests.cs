@@ -579,9 +579,12 @@ public static class SchedulerTests
 
         // both agents are full: the third run is in nobody's queue, because it has not picked an agent
         await h.SendAsync(s3.Id, "go");
-        await Wait.Until(() => h.Runtime.GetBySession(s3.Id)!.Status == AgentStatus.Queued, "the third run waits");
-        Check.Equal(1, h.Scheduler!.Unassigned().Count, "it waits for any agent on its model");
-        Check.Equal(0, h.Scheduler.Snapshot().Sum(p => p.Queued));
+        await Wait.Until(() =>
+        {
+            var a3 = h.Runtime.GetBySession(s3.Id)!;
+            return a3.Status == AgentStatus.Queued && h.Scheduler!.Unassigned().Count == 1
+                   && h.Scheduler.Snapshot().Sum(p => p.Queued) == 0 && a3.Agent is null;
+        }, "the third run waits, unassigned for any agent on its model");
         Check.Equal(null, h.Runtime.GetBySession(s3.Id)!.Agent);
 
         // b frees up first: the run goes to b, not to a (the agent a freshly queued chat used to be given while both were full)

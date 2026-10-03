@@ -203,34 +203,35 @@ public static class WorkspaceTests
     }
 
     /// <summary>The hook judges the path the tool will use: names match as the tools match them, the first name the tool
-    /// tries wins, a string-encoded arguments object is unwrapped, and an ssh download's destination counts as a write.</summary>
+    /// tries wins, a string-encoded arguments object is unwrapped - a double-encoded one too, the old reader stopped at the
+    /// first string level and saw no arguments - and an ssh download's destination counts as a write.</summary>
     private static Task GuardArguments()
     {
-        static JsonObject O(string json) => (JsonObject)JsonNode.Parse(json)!;
+        static ToolArgs A(string json) => ToolArgs.Parse(json);
+        static ToolArgs AObj(object args) => ToolArgs.Parse(JsonSerializer.Serialize(args));
 
         // the arguments object sent as a JSON string, as some models do: the tools unwrap it, so the guard must
-        var wrapped = WorkspaceGuard.Arguments(JsonSerializer.Serialize("""{"path":"a.txt","content":"x"}"""));
-        Check.True(wrapped is not null, "a string-encoded arguments object is unwrapped");
-        Check.Equal("a.txt", WorkspaceGuard.PathArg(wrapped!));
-        Check.True(WorkspaceGuard.Arguments("\"not json\"") is null, "a string that is not an object is not arguments");
-        Check.True(WorkspaceGuard.Arguments("{broken") is null);
+        Check.Equal("a.txt", WorkspaceGuard.PathArg(A(JsonSerializer.Serialize("""{"path":"a.txt","content":"x"}"""))), "a string-encoded arguments object is unwrapped");
+        Check.Equal("a.txt", WorkspaceGuard.PathArg(A(JsonSerializer.Serialize(JsonSerializer.Serialize(JsonSerializer.Serialize(new { path = "a.txt", content = "x" }))))), "a double-encoded arguments object is unwrapped");
+        Check.True(WorkspaceGuard.PathArg(A("\"not json\"")) is null, "a string that is not an object is not arguments");
+        Check.True(WorkspaceGuard.PathArg(A("{broken")) is null);
 
         foreach (var key in (string[])["path", "Path", "PATH", "file_path", "filePath", "File-Path", "FILE PATH", "file", "filename", "fileName", "target"])
-            Check.Equal("x.txt", WorkspaceGuard.PathArg(new JsonObject { [key] = "x.txt" }), $"read from '{key}'");
-        Check.Equal("p", WorkspaceGuard.PathArg(O("""{"target":"t","path":"p"}""")), "path comes before target whatever order they were written in");
-        Check.True(WorkspaceGuard.PathArg(O("""{"path":"","file":"f"}""")) is null, "a blank first name is the tool's refusal, not a reason to look at the next");
-        Check.Equal("a\nb", WorkspaceGuard.PathArg(O("""{"path":["a","b"]}""")), "an array is its lines, as the tools join it");
+            Check.Equal("x.txt", WorkspaceGuard.PathArg(AObj(new Dictionary<string, string> { [key] = "x.txt" })), $"read from '{key}'");
+        Check.Equal("p", WorkspaceGuard.PathArg(A("""{"target":"t","path":"p"}""")), "path comes before target whatever order they were written in");
+        Check.True(WorkspaceGuard.PathArg(A("""{"path":"","file":"f"}""")) is null, "a blank first name is the tool's refusal, not a reason to look at the next");
+        Check.Equal("a\nb", WorkspaceGuard.PathArg(A("""{"path":["a","b"]}""")), "an array is its lines, as the tools join it");
 
-        Check.Equal("/w", WorkspaceGuard.Str(O("""{"Working-Directory":"/w"}"""), WorkspaceGuard.CwdArgs));
-        Check.Equal("a", WorkspaceGuard.Str(O("""{"dir":"b","cwd":"a"}"""), WorkspaceGuard.CwdArgs), "cwd comes before dir");
+        Check.Equal("/w", A("""{"Working-Directory":"/w"}""").Str(WorkspaceGuard.CwdArgs));
+        Check.Equal("a", A("""{"dir":"b","cwd":"a"}""").Str(WorkspaceGuard.CwdArgs), "cwd comes before dir");
 
         // ssh: copy in the download direction writes `to` on this machine; nothing else does
-        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", O("""{"action":"copy","direction":"download","to":"/w/x"}""")));
-        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("SSH", O("""{"action":"download","destination":"/w/x"}""")), "the action says the direction; name case");
-        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", O("""{"action":"scp","mode":"download","dest":"/w/x"}""")));
-        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", O("""{"action":"copy","direction":"upload","from":"/w/x","to":"/remote"}""")) is null, "an upload only reads");
-        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", O("""{"action":"run","script":"ls","to":"/w/x"}""")) is null, "not a copy");
-        Check.True(WorkspaceGuard.SshDownloadTarget("bash", O("""{"action":"copy","direction":"download","to":"/w/x"}""")) is null, "only the ssh tool");
+        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"download","to":"/w/x"}""")));
+        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("SSH", A("""{"action":"download","destination":"/w/x"}""")), "the action says the direction; name case");
+        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"scp","mode":"download","dest":"/w/x"}""")));
+        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"upload","from":"/w/x","to":"/remote"}""")) is null, "an upload only reads");
+        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"run","script":"ls","to":"/w/x"}""")) is null, "not a copy");
+        Check.True(WorkspaceGuard.SshDownloadTarget("bash", A("""{"action":"copy","direction":"download","to":"/w/x"}""")) is null, "only the ssh tool");
         return Task.CompletedTask;
     }
 

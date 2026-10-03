@@ -27,10 +27,10 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
             $"at most {MaxLines} lines (and about {MaxBytes / 1024}KB) per call; a longer file ends with the offset to continue. " +
             "offset is 1-based; negative values count from the end. Images (png, jpg, gif, webp) are returned as images when " +
             "the model supports them.",
-        Parameters = Schema.Object(
-            ("path", Schema.Str(""), true),
-            ("offset", Schema.Int("1-based; negative from the end"), false),
-            ("limit", Schema.Int(""), false)),
+        Parameters = ToolSchema.Object(
+            ("path", ToolSchema.Str(""), true),
+            ("offset", ToolSchema.Int("1-based; negative from the end"), false),
+            ("limit", ToolSchema.Int(""), false)),
         PromptGuidelines = [UseFileTools],
     };
 

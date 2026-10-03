@@ -88,5 +88,5 @@ internal sealed class PlanEnterTool(PlanService service) : IAgentTool
     };
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct) =>
-        service.OfferAsync(context, Args.Clip(Args.Str(Args.Unwrap(args), "reason", "why"), 400), ct);
+        service.OfferAsync(context, PlanBody.Clip(new ToolArgs(args).Str("reason", "why"), 400), ct);
 }

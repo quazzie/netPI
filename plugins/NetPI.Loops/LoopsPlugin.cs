@@ -64,8 +64,8 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
     public async ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
     {
         var run = turn.Run;
-        if (!Get("loops.enabled", true) || run.CancellationToken.IsCancellationRequested) return null;
-        if (Get("loops.contextChecks", false) && Hinted(run).Count < Math.Clamp(Get("loops.maxHintsPerRun", 3), 0, 20))
+        if (!ctx.Settings.GetOr("loops.enabled", true) || run.CancellationToken.IsCancellationRequested) return null;
+        if (ctx.Settings.GetOr("loops.contextChecks", false) && Hinted(run).Count < Math.Clamp(ctx.Settings.GetOr("loops.maxHintsPerRun", 3), 0, 20))
         {
             var hint = await AskContextAsync(turn).ConfigureAwait(false);
             if (hint is not null && Hinted(run).Add(hint)) return TurnDecision.Inject(hint, "decision-hint");
@@ -73,15 +73,15 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
         var calls = assistant.ToolCalls.ToList();
         if (calls.Count == 0) return null;
         var hinted = Hinted(run);
-        if (hinted.Count >= Math.Clamp(Get("loops.maxHintsPerRun", 3), 0, 20)) return null;
+        if (hinted.Count >= Math.Clamp(ctx.Settings.GetOr("loops.maxHintsPerRun", 3), 0, 20)) return null;
 
         List<Step> history;
         var trace = Trace(run);
         lock (trace) history = [.. trace];
         var pending = calls.Select(c => (c.Name, Step.NormalizeArgs(c.Arguments))).ToList();
 
-        var finding = LoopDetector.Check(history, pending, Math.Clamp(Get("loops.repeats", 3), 2, 10));
-        if (finding is null && Get("loops.model", "") is { Length: > 0 } model && LoopDetector.Suspicious(history))
+        var finding = LoopDetector.Check(history, pending, Math.Clamp(ctx.Settings.GetOr("loops.repeats", 3), 2, 10));
+        if (finding is null && ctx.Settings.GetOr("loops.model", "") is { Length: > 0 } model && LoopDetector.Suspicious(history))
             finding = await AskModelAsync(run, turn, history, model.Trim()).ConfigureAwait(false);
         if (finding is null || !hinted.Add(finding.Signature)) return null;
 
@@ -154,7 +154,7 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
             ["finished"] = "Check the requested outcome and validation; the work may be ready to report as complete.",
             ["ask_user"] = "Check whether one specific missing decision blocks progress; ask only if it is required.",
         };
-        if (Get("loops.routingHints", false))
+        if (ctx.Settings.GetOr("loops.routingHints", false))
         {
             questions["effort"] = "Would deeper reasoning on this task materially help with an unresolved complex problem?";
             questions["delegation"] = "Is there a clearly independent, authorized task that could benefit from a separate worker with a self-contained brief?";
@@ -163,7 +163,7 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
             hints["delegation"] = "Consider an independent worker only if delegation is authorized and available capacity permits it.";
             hints["tool"] = "Consider a different available tool for the missing evidence.";
         }
-        if (Get("loops.skillHints", false) && ctx.Rpc.Exists("skills.list"))
+        if (ctx.Settings.GetOr("loops.skillHints", false) && ctx.Rpc.Exists("skills.list"))
         {
             try
             {
@@ -205,11 +205,5 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
             run.Items[HintedKey] = hinted;
             return hinted;
         }
-    }
-
-    private T Get<T>(string path, T fallback)
-    {
-        try { return ctx.Settings.Get(path, fallback) ?? fallback; }
-        catch { return fallback; }
     }
 }

@@ -39,12 +39,15 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
             if (prompts.Get(sessionId) is { } copied) return copied;
         }
         var rendered = SessionPrompt.Fallback(context.Session) ?? await RenderAsync(context, ct).ConfigureAwait(false);
-        if (ctx.Sessions.GetSession(sessionId) is { } current && SessionPrompt.Revision(current) != capturedRevision)
+        var current = ctx.Sessions.GetSession(sessionId);
+        if (current is not null && SessionPrompt.Revision(current) != capturedRevision)
             throw new InvalidOperationException("The session identity changed while its prompt was rendered; render the current revision.");
         var stored = prompts.Freeze(sessionId, rendered, capturedRevision);
-        if (ReferenceEquals(stored, rendered))
+        if (ReferenceEquals(stored, rendered) && (current is null || !SessionPrompt.Recorded(current, rendered)))
         {
-            // this call sends a new prompt: keep it with the tools it goes with, for the chat to show (context.prompts)
+            // this call sends a new prompt: keep it with the tools it goes with, for the chat to show (context.prompts).
+            // A fork is an exception: its fork point's prompt is already recorded in its history (and the session.forked
+            // copy keeps the same row in the store), so recording it again would show the same prompt twice.
             long afterSeq = 0;
             try { afterSeq = ctx.Sessions.GetMessages(sessionId, null, 1) is [.., var last] ? last.Seq : 0; } catch { }
             var version = prompts.RecordSent(sessionId, rendered, context.Tools, afterSeq);

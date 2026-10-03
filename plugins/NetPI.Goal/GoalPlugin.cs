@@ -141,8 +141,8 @@ internal sealed class GoalUpdateTool(Goals goals) : IAgentTool
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        args = Args.Unwrap(args);
-        var status = Args.Str(args, "status", "state")?.Trim().ToLowerInvariant() switch
+        var a = new ToolArgs(args);
+        var status = a.Str("status", "state")?.Trim().ToLowerInvariant() switch
         {
             "complete" or "completed" or "done" or "achieved" => Goal.Complete,
             "blocked" or "stuck" => Goal.Blocked,
@@ -150,7 +150,7 @@ internal sealed class GoalUpdateTool(Goals goals) : IAgentTool
             _ => null,
         };
         if (status is null) return Task.FromResult(ToolResult.Error("goal_update needs status: complete, blocked or paused."));
-        var summary = Args.Str(args, "summary", "reason", "message", "note")?.Trim();
+        var summary = a.Str("summary", "reason", "message", "note")?.Trim();
         if (string.IsNullOrEmpty(summary))
             return Task.FromResult(ToolResult.Error(status == Goal.Complete
                 ? "goal_update needs a summary: what was done and how it was checked."
@@ -200,8 +200,8 @@ internal sealed class GoalSetTool(Goals goals) : IAgentTool
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        args = Args.Unwrap(args);
-        var objective = Args.Str(args, "objective", "goal", "text", "description");
+        var a = new ToolArgs(args);
+        var objective = a.Str("objective", "goal", "text", "description");
         try
         {
             var g = goals.Set(context.SessionId, objective, 0, byModel: true);
@@ -214,31 +214,5 @@ internal sealed class GoalSetTool(Goals goals) : IAgentTool
         {
             return Task.FromResult(ToolResult.Error($"Session {context.SessionId} not found."));
         }
-    }
-}
-
-/// <summary>Lenient argument access: names match ignoring case, '_' and '-'; arguments sent as a JSON string are unwrapped.</summary>
-internal static class Args
-{
-    private static string Norm(string s) => s.Replace("_", "").Replace("-", "").ToLowerInvariant();
-
-    public static JsonElement Unwrap(JsonElement e)
-    {
-        if (e.ValueKind != JsonValueKind.String) return e;
-        try
-        {
-            using var doc = JsonDocument.Parse(e.GetString() ?? "{}");
-            return doc.RootElement.Clone();
-        }
-        catch (JsonException) { return e; }
-    }
-
-    public static string? Str(JsonElement e, params string[] names)
-    {
-        if (e.ValueKind != JsonValueKind.Object) return null;
-        foreach (var name in names)
-            foreach (var p in e.EnumerateObject())
-                if (Norm(p.Name) == Norm(name) && p.Value.ValueKind == JsonValueKind.String) return p.Value.GetString();
-        return null;
     }
 }

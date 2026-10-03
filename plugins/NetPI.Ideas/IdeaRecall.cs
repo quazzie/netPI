@@ -37,12 +37,6 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
             "Add an idea to a chat: { sessionId, id } → { noticeId } — a notice (kind \"idea\") with the idea's title, summary and sections; the session is recorded on the idea");
     }
 
-    private T Setting<T>(string key, T fallback)
-    {
-        try { return ctx.Settings.Get(key, fallback) ?? fallback; }
-        catch { return fallback; }
-    }
-
     public async Task<object?> Recall(RpcRequest req, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
@@ -54,7 +48,7 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
             if (error is not null) o["error"] = error;
             return o;
         }
-        if (!Setting("ideas.recall", true)) return Result("off");
+        if (!ctx.Settings.GetOr("ideas.recall", true)) return Result("off");
         var project = locator.ProjectOfSession(sessionId);
         var open = await OpenIdeasAsync(project?.Id, ct).ConfigureAwait(false);
 
@@ -91,7 +85,7 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
         // The answer is read the same way the other checks read it: only letters we offered count, "none" is not an idea.
         var pick = IdeaMatch.Pick(probs, IdeaMatch.Names(labels));
         if (pick is null) return Result("error", error: "the decision returned no usable probabilities");
-        var threshold = Math.Clamp(Setting("ideas.recallThreshold", DefaultThreshold), 0.3, 0.99);
+        var threshold = Math.Clamp(ctx.Settings.GetOr("ideas.recallThreshold", DefaultThreshold), 0.3, 0.99);
         return pick.Clear(threshold)
             ? Result("model", MatchOf(window[pick.Index], pick.P))
             : Result("none");

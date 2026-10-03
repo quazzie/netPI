@@ -79,7 +79,7 @@ internal sealed class ProviderOptions
         return new ProviderOptions
         {
             BaseUrl = o.Str("baseUrl") is { Length: > 0 } url ? url : d.BaseUrl,
-            ApiKey = Secrets.Resolve(o.Str("apiKey")),
+            ApiKey = SettingsExtensions.ResolveSecret(o.Str("apiKey")),
             Transport = ParseTransport(o.Str("transport")) ?? d.Transport,
             ReplayReasoning = BoolOrNull(o, "replayReasoning"),
             DumpFailedRequests = o.Bool("dumpFailedRequests", true),

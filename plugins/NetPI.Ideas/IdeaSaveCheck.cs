@@ -95,7 +95,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
     public async Task<object?> Closed(RpcRequest req, CancellationToken ct)
     {
         var sessionId = req.Required("sessionId");
-        if (!Setting("ideas.saveCheck", true)) return Result("off");
+        if (!ctx.Settings.GetOr("ideas.saveCheck", true)) return Result("off");
         var session = ctx.Sessions.GetSession(sessionId);
         if (session is null) return Result("no_session");
         if (session.Kind == "subagent") return Result("subagent");
@@ -351,7 +351,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
             if (best.P > 0.5 || pick.None >= best.P) break; // decided (or nothing in this window): no further windows
         }
         if (best is null || bestWindow is null) return;
-        if (!best.Clear(Math.Clamp(Setting("ideas.attachThreshold", DefaultAttachThreshold), 0.3, 0.99))) return;
+        if (!best.Clear(Math.Clamp(ctx.Settings.GetOr("ideas.attachThreshold", DefaultAttachThreshold), 0.3, 0.99))) return;
         if (IdeaOps.Str(bestWindow[best.Index]["id"]) is not { Length: > 0 } chosenId) return;
         RecordAsync(chosenId, session, ct);
     }
@@ -389,7 +389,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
     {
         var model = await ResolveModelAsync(ct).ConfigureAwait(false);
         // Not a silent "no card": the check did not run, so the mark says why and the next close tries again.
-        if (model is null) throw new InvalidOperationException($"model {Setting("ideas.model", IdeaRecall.DefaultModel)} is not in the catalog");
+        if (model is null) throw new InvalidOperationException($"model {ctx.Settings.GetOr("ideas.model", IdeaRecall.DefaultModel)} is not in the catalog");
         var maxOut = Math.Clamp(model.MaxOutputTokens is > 0 and var m ? Math.Min(m, 1024) : 1024, 256, 4096);
         var request = new ModelRequest
         {
@@ -544,7 +544,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
     /// </summary>
     private async Task<ModelInfo?> ResolveModelAsync(CancellationToken ct)
     {
-        var name = Setting("ideas.model", IdeaRecall.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaRecall.DefaultModel;
+        var name = ctx.Settings.GetOr("ideas.model", IdeaRecall.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaRecall.DefaultModel;
         var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
         if (model is null)
             ctx.Logger.LogWarning("Ideas: the save check cannot run: model {Model} is not in the catalog (it is not replaced by another one).", name);
@@ -564,12 +564,6 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
             if (r.Efforts.Any(e => string.Equals(e, wanted, StringComparison.OrdinalIgnoreCase)))
                 return r.Efforts.First(e => string.Equals(e, wanted, StringComparison.OrdinalIgnoreCase));
         return null;
-    }
-
-    private T Setting<T>(string key, T fallback)
-    {
-        try { return ctx.Settings.Get(key, fallback) ?? fallback; }
-        catch { return fallback; }
     }
 
     private static JsonObject Result(string reason) => new() { ["checked"] = reason is "started" or "already", ["reason"] = reason };

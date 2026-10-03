@@ -116,7 +116,7 @@ internal sealed partial class RuleSet
     }
 
     /// <summary>The first rule the call breaks, a blocking rule before an asking one; null when it may run.</summary>
-    public Verdict? Check(string tool, JsonElement args, Func<string, string> resolve)
+    public Verdict? Check(string tool, ToolArgs args, Func<string, string> resolve)
     {
         Verdict? ask = null;
         bool Note(Verdict v)
@@ -126,7 +126,7 @@ internal sealed partial class RuleSet
             return false;
         }
 
-        if (CommandTools.Contains(tool) && Arg(args, CommandNames(tool)) is { Length: > 0 } command)
+        if (CommandTools.Contains(tool) && args.Str(CommandNames(tool)) is { Length: > 0 } command)
         {
             foreach (var part in Parts(command))
             {
@@ -155,32 +155,32 @@ internal sealed partial class RuleSet
     }
 
     /// <summary>The command a bash, pwsh or ssh (run) call runs (null for other tools or without one).</summary>
-    internal static string? CommandOf(string tool, JsonElement args) =>
-        CommandTools.Contains(tool) ? Arg(args, CommandNames(tool)) : null;
+    internal static string? CommandOf(string tool, ToolArgs args) =>
+        CommandTools.Contains(tool) ? args.Str(CommandNames(tool)) : null;
 
     /// <summary>The host an ssh call runs on, when it names one.</summary>
-    internal static string? HostOf(JsonElement args) => Arg(args, "host", "server", "alias");
+    internal static string? HostOf(ToolArgs args) => args.Str("host", "server", "alias");
 
     /// <summary>The local path a call writes: the file of write and edit, the destination of an ssh download (scp writes it).</summary>
-    internal static string? LocalWriteTarget(string tool, JsonElement args)
+    internal static string? LocalWriteTarget(string tool, ToolArgs args)
     {
-        if (WriteTools.Contains(tool)) return Arg(args, WritePathNames);
-        return IsSshDownload(tool, args) ? Arg(args, SshDownloadTargetNames)?.Trim() : null;
+        if (WriteTools.Contains(tool)) return args.Str(WritePathNames);
+        return IsSshDownload(tool, args) ? args.Str(SshDownloadTargetNames)?.Trim() : null;
     }
 
     /// <summary>
     /// Whether an ssh call is a download, routed as the ssh tool routes it: the action is <c>copy</c> (or scp, upload,
     /// download), and the direction is the <c>direction</c> argument, or the action itself when that says upload/download.
     /// </summary>
-    internal static bool IsSshDownload(string tool, JsonElement args)
+    internal static bool IsSshDownload(string tool, ToolArgs args)
     {
         if (!tool.Equals("ssh", StringComparison.OrdinalIgnoreCase)) return false;
-        var action = Arg(args, "action", "verb", "command")?.Trim().ToLowerInvariant();
-        if (action is null && Arg(args, "script") is not null) action = "run";
+        var action = args.Str("action", "verb", "command")?.Trim().ToLowerInvariant();
+        if (action is null && args.Has("script")) action = "run";
         if (action is not ("copy" or "scp" or "upload" or "download")) return false;
-        var direction = Arg(args, "direction", "mode")?.Trim().ToLowerInvariant();
-        if (direction is null && Arg(args, "action")?.Trim().ToLowerInvariant() is "upload" or "download")
-            direction = Arg(args, "action")!.Trim().ToLowerInvariant();
+        var direction = args.Str("direction", "mode")?.Trim().ToLowerInvariant();
+        if (direction is null && args.Str("action")?.Trim().ToLowerInvariant() is "upload" or "download")
+            direction = args.Str("action")!.Trim().ToLowerInvariant();
         return direction == "download";
     }
 
@@ -307,50 +307,5 @@ internal sealed partial class RuleSet
         }
         return [.. list.Distinct(StringComparer.OrdinalIgnoreCase)];
     }
-
-    /// <summary>
-    /// An argument as the tools read it (Tools.Shell and Tools.Files <c>ToolArgs.Str</c>): names match ignoring case,
-    /// <c>_</c>, <c>-</c> and spaces; the <em>first of <paramref name="names"/> that is present</em> wins — the order the tool
-    /// tries them, not the order the model wrote them; a string is itself, a number or boolean its JSON text, an array its
-    /// elements joined by new lines; a string-encoded arguments object is unwrapped once.
-    /// </summary>
-    private static string? Arg(JsonElement args, params string[] names)
-    {
-        args = Unwrap(args);
-        if (args.ValueKind != JsonValueKind.Object) return null;
-        var props = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        foreach (var p in args.EnumerateObject()) props.TryAdd(Key(p.Name), p.Value);   // the first spelling of a name, as the tools
-        foreach (var name in names)
-            if (props.TryGetValue(Key(name), out var value) && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
-                return Text(value);
-        return null;
-    }
-
-    /// <summary>Some models send the arguments object as a JSON string; the tools unwrap it, so the guard must see through it.</summary>
-    private static JsonElement Unwrap(JsonElement args)
-    {
-        if (args.ValueKind != JsonValueKind.String) return args;
-        try
-        {
-            using var doc = JsonDocument.Parse(args.GetString() ?? "{}");
-            return doc.RootElement.Clone();
-        }
-        catch (JsonException) { return args; }
-    }
-
-    private static string Key(string name)
-    {
-        Span<char> buf = stackalloc char[name.Length];
-        var n = 0;
-        foreach (var c in name)
-            if (c != '_' && c != '-' && c != ' ') buf[n++] = char.ToLowerInvariant(c);
-        return new string(buf[..n]);
-    }
-
-    private static string Text(JsonElement value) => value.ValueKind switch
-    {
-        JsonValueKind.String => value.GetString() ?? "",
-        JsonValueKind.Array => string.Join("\n", value.EnumerateArray().Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : e.GetRawText())),
-        _ => value.GetRawText(),
-    };
 }
+

@@ -58,7 +58,7 @@ internal sealed class IdeaDecider(IPluginContext ctx)
         deadline.CancelAfter(timeout);
         try
         {
-            var name = Setting("ideas.model", IdeaRecall.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaRecall.DefaultModel;
+            var name = ctx.Settings.GetOr("ideas.model", IdeaRecall.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaRecall.DefaultModel;
             var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
             // The decision runs on the same backend as the chats, so it takes a slot like everything else.
             var admission = await _admission.EnterAsync(model, purpose, sessionId, projectId, ct, wait).ConfigureAwait(false);
@@ -94,11 +94,5 @@ internal sealed class IdeaDecider(IPluginContext ctx)
             ctx.Logger.LogWarning("Ideas: {Purpose} failed: {Message}", purpose, ex.Message);
             return Answer.Fail(ex.Message);
         }
-    }
-
-    private T Setting<T>(string key, T fallback)
-    {
-        try { return ctx.Settings.Get(key, fallback) ?? fallback; }
-        catch { return fallback; }
     }
 }

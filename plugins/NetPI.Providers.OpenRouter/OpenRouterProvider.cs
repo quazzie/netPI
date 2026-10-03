@@ -286,6 +286,6 @@ public sealed class OpenRouterProvider : IModelProvider
     private static void ApplyHeaders(HttpRequestMessage req, OpenRouterOptions o)
     {
         if (!string.IsNullOrEmpty(o.ApiKey)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", o.ApiKey);
-        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, Secrets.Resolve(v) ?? v);
+        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, SettingsExtensions.ResolveSecret(v) ?? v);
     }
 }

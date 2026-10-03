@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace NetPI.Workspaces;
 
@@ -44,8 +43,10 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
         var run = turn.Run;
         var binding = run.Workspace();
         if (binding is null || !binding.Isolated) return ValueTask.FromResult<ToolCallDecision?>(null);
-        var args = Arguments(call.Arguments);
-        if (args is null) return ValueTask.FromResult<ToolCallDecision?>(null);
+        // The arguments as the tools read them: a string-encoded root (even a double-encoded one) unwraps to the
+        // object the tool will run with, so the guard judges the call that runs - a call it cannot read is a call it
+        // would let through, which is how the bypass happened.
+        var args = ToolArgs.Parse(call.Arguments);
         var name = call.Name;
 
         // A write tool's file, or the destination an ssh download writes on this machine (scp writes it where the call says).
@@ -70,7 +71,7 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
 
         if (ShellTools.Contains(name))
         {
-            var cwd = Str(args, CwdArgs);
+            var cwd = args.Str(CwdArgs)?.Trim();
             if (cwd is null) return ValueTask.FromResult<ToolCallDecision?>(null);   // the default cwd is the workspace
             var full = turn.Resolve(call, cwd);
             var verdict = WorkspacePaths.CheckMutation(binding, full, git);
@@ -89,47 +90,7 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
     }
 
     /// <summary>The tool's own path argument, by its own names first and then the shared ones.</summary>
-    internal static string? PathArg(JsonObject args) => Str(args, PathArgs);
-
-    /// <summary>
-    /// An argument as the tools read it: names match ignoring case, <c>_</c>, <c>-</c> and spaces, and the first of
-    /// <paramref name="names"/> that is present wins (a blank value is no value, as the tool then refuses it). The guard has
-    /// to judge the path the tool will use, so <c>{"Path": ...}</c> and <c>{"file-path": ...}</c> count like <c>path</c>.
-    /// </summary>
-    internal static string? Str(JsonObject args, params string[] names)
-    {
-        var props = new Dictionary<string, JsonNode?>(StringComparer.Ordinal);
-        foreach (var (key, value) in args) props.TryAdd(Key(key), value);
-        foreach (var name in names)
-            if (props.TryGetValue(Key(name), out var node) && node is not null)
-                return Text(node)?.Trim() is { Length: > 0 } s ? s : null;
-        return null;
-    }
-
-    private static string Key(string name) => name.Replace("_", "").Replace("-", "").Replace(" ", "").ToLowerInvariant();
-
-    private static string? Text(JsonNode node) => node switch
-    {
-        JsonValue v when v.TryGetValue<string>(out var s) => s,
-        JsonArray a => string.Join("\n", a.Select(e => e is JsonValue ev && ev.TryGetValue<string>(out var es) ? es : e?.ToJsonString())),
-        _ => node.ToJsonString(),
-    };
-
-    /// <summary>
-    /// The arguments object. Some models send it as a JSON <em>string</em>; the tools unwrap that, so the guard must too, or
-    /// a call it cannot read is a call it lets through.
-    /// </summary>
-    internal static JsonObject? Arguments(string json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return null;
-        try
-        {
-            var node = JsonNode.Parse(json);
-            if (node is JsonValue v && v.TryGetValue<string>(out var inner)) node = JsonNode.Parse(inner);
-            return node as JsonObject;
-        }
-        catch (JsonException) { return null; }
-    }
+    internal static string? PathArg(ToolArgs args) => args.Str(PathArgs)?.Trim() is { Length: > 0 } s ? s : null;
 
     /// <summary>
     /// The local path an ssh download writes, routed as the ssh tool routes it: the action is <c>copy</c> (or scp, upload,
@@ -137,15 +98,15 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
     /// Null for any other call. (The guardrails plugin keeps its own copy of this rule for its protected paths: plugins do
     /// not share code.)
     /// </summary>
-    internal static string? SshDownloadTarget(string tool, JsonObject args)
+    internal static string? SshDownloadTarget(string tool, ToolArgs args)
     {
         if (!tool.Equals("ssh", StringComparison.OrdinalIgnoreCase)) return null;
-        var action = Str(args, "action", "verb", "command")?.ToLowerInvariant();
-        if (action is null && Str(args, "script") is not null) action = "run";
+        var action = args.Str("action", "verb", "command")?.Trim().ToLowerInvariant();
+        if (action is null && args.Has("script")) action = "run";
         if (action is not ("copy" or "scp" or "upload" or "download")) return null;
-        var direction = Str(args, "direction", "mode")?.ToLowerInvariant();
-        if (direction is null && Str(args, "action")?.ToLowerInvariant() is "upload" or "download") direction = Str(args, "action")!.ToLowerInvariant();
-        return direction == "download" ? Str(args, "to", "destination", "dest", "target") : null;
+        var direction = args.Str("direction", "mode")?.Trim().ToLowerInvariant();
+        if (direction is null && args.Str("action")?.Trim().ToLowerInvariant() is "upload" or "download") direction = args.Str("action")!.Trim().ToLowerInvariant();
+        return direction == "download" ? args.Str("to", "destination", "dest", "target")?.Trim() : null;
     }
 
     /// <summary>Resolve a path argument the way the tool will: relative to the call's own cwd.</summary>

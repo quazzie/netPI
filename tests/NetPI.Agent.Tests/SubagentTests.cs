@@ -84,11 +84,12 @@ public static class SubagentTests
     }
 
     /// <summary>
-    /// The child ends on its own thread and the parent's wait lands right on its finish: the wait's read of the
-    /// finished child must see the id of the agent-result notice — recorded together with the run's clearing, not
-    /// after the store save that follows it — so the notice is dropped and the parent gets the report with the
-    /// wait's result, not twice. Each raced wait is fired the moment the finished status flips, so it lands inside
-    /// the child's end path racing its notification path.
+    /// The child ends right as the parent's own wait starts, so the wait's read of the finished child lands on the
+    /// completion boundary: it must see the id of the agent-result notice — recorded together with the run's
+    /// clearing, not after the store save that follows it — so the notice is dropped and the parent gets the report
+    /// with the wait's result, not twice. The parent waits in its own run (the only way a parent waits in the
+    /// product: an in-run agent_wait), and the transcript's drain — the only other way the report reaches the parent
+    /// — takes the notice only if no wait has returned the report yet.
     /// </summary>
     private static async Task RacedWaitDropsNotice()
     {
@@ -96,69 +97,30 @@ public static class SubagentTests
         for (var i = 0; i < 10; i++)
         {
             var childGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var parentGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var report = "REPORT " + i;
-            var gotReport = false;
             h.Catalog.Handler = (r, ct) =>
             {
                 if (IsChild(r))
                     return Reply.Text(report, c => childGate.Task.WaitAsync(c));
                 var tools = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
-                return tools.Count == 0
-                    ? Reply.Tool("agent_spawn", new { task = "job " + i, name = "worker", background = true })
-                    : Reply.Text("parent done " + i, c => parentGate.Task.WaitAsync(c));
+                if (tools.Count == 0)
+                    return Reply.Tool("agent_spawn", new { task = "job " + i, name = "worker", background = true });
+                if (!tools.Contains("agent"))
+                {
+                    // The child ends right as the parent's wait starts: the wait's read of the finished child lands
+                    // on the completion boundary, racing the child's own notification path.
+                    childGate.TrySetResult();
+                    return Reply.Tool("agent", new { action = "wait" });
+                }
+                return Reply.Text("parent done " + i);
             };
             var parent = h.NewSession();
             await h.SendAsync(parent.Id, "go " + i);
-            var parentId = h.Runtime.GetBySession(parent.Id)!.Id;
-            string childId;
-            await Wait.Until(() => h.Runtime.GetBySession(parent.Id) is { } p && p.Children.Count == 1, "child spawned");
-            childId = h.Runtime.GetBySession(parent.Id)!.Children.Single();
-
-            // Waits that land right on the child's finish (the exact moment a parent's agent_wait call can land):
-            // each spinner fires the moment the finished status flips, plus one fired by the status event. All of
-            // them race the child's own notification path.
-            void FireRacedWait()
-            {
-                try
-                {
-                    var r = h.Runtime.WaitAsync(parentId, [childId], yieldSlot: false, null, CancellationToken.None).GetAwaiter().GetResult();
-                    if (r[0].Status == AgentStatus.Completed && r[0].Result == report)
-                        lock (h) gotReport = true;
-                }
-                catch { }
-            }
-            var polls = new List<Task>(4);
-            for (var w = 0; w < 4; w++)
-                polls.Add(Task.Run(() =>
-                {
-                    while (true)
-                    {
-                        var st = h.Runtime.Get(childId)?.Status;
-                        if (st is AgentStatus.Completed or AgentStatus.Failed or AgentStatus.Cancelled)
-                        {
-                            FireRacedWait();
-                            return;
-                        }
-                        Thread.SpinWait(4);
-                    }
-                }));
-            var sub = h.Bus.SubscribeAsync(EventTypes.AgentStatus, evt =>
-            {
-                var a = FakeBus.Data(evt)["agent"];
-                if ((string?)a!["id"] == childId && (string?)a!["status"] == "completed")
-                    FireRacedWait();
-                return ValueTask.CompletedTask;
-            });
-            childGate.SetResult();
-            await Task.WhenAll(polls);
-            await h.StatusAsync(childId, AgentStatus.Completed);
-            parentGate.SetResult();
             await h.IdleAsync(parent.Id, 15_000);
-            sub.Dispose();
-            bool got;
-            lock (h) got = gotReport;
-            Check.True(got, $"cycle {i}: the racing wait got the report");
+            // The wait's result carries the report — it is the parent's only copy of it.
+            var wait = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Single(x => x.Name == "agent");
+            Check.Contains(wait.Content, report, $"cycle {i}: the racing wait got the report");
+            // ...and the agent-result notice did not also reach the parent.
             Check.False(h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"),
                 $"cycle {i}: the report went with the wait's result; the agent-result notice must not also reach the parent");
         }
