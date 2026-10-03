@@ -590,6 +590,12 @@ public static class SessionStoreTests
                 f.Store.AppendMessage(s.Id, ChatMessage.UserText("m" + i));
             }
 
+            // The test's premise is that the archive is older than any newest-first window. That must hold by
+            // timestamp, not by luck: the actives above can share the archive's millisecond, and a tie falls to the
+            // random part of the ids, which would sort the archive into the window.
+            f.Db.Execute("UPDATE sessions SET updated_at = @at WHERE id = @id",
+                new { at = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeMilliseconds(), id = hidden.Id });
+
             Check.Equal(201, f.Store.ListSessions(new SessionQuery { Limit = 5000 }).Count, "the default query sees active sessions only");
             Check.True(f.Store.ListSessions(new SessionQuery { Limit = 5000 }).All(s => s.Id != hidden.Id));
 
