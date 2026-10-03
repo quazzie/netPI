@@ -42,7 +42,7 @@ public static class SampleBuild
                 {
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
-                    UseShellExecute = false,
+                    UseShellExecute = false, CreateNoWindow = true,
                 };
                 foreach (var a in new[] { "build", project, "-c", Configuration, $"-p:SampleVariant={variant}", "-p:BuildProjectReferences=false", "-nologo", "-v:q", "-clp:ErrorsOnly" })
                     psi.ArgumentList.Add(a);

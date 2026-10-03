@@ -368,7 +368,7 @@ public static class TestGit
         var psi = new ProcessStartInfo("git")
         {
             WorkingDirectory = cwd,
-            UseShellExecute = false,
+            UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };

@@ -60,7 +60,7 @@ public static class RunnerTests
         var dll = System.Reflection.Assembly.GetEntryAssembly()?.Location;
         Check.True(dll is not null && File.Exists(dll), $"the suite dll is next to the runner: {dll}");
         var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host && File.Exists(host) ? host : "dotnet";
-        var psi = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        var psi = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         psi.ArgumentList.Add(dll!);
         psi.ArgumentList.Add(NoSuchTest);
         using var p = Process.Start(psi) ?? throw new AssertException("the suite dll did not start");

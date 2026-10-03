@@ -426,7 +426,7 @@ public sealed class Orchestrator
         {
             string Git(params string[] a)
             {
-                var psi = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, WorkingDirectory = Env.FindRepoRoot() };
+                var psi = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Env.FindRepoRoot() };
                 foreach (var x in a) psi.ArgumentList.Add(x);
                 using var p = Process.Start(psi)!;
                 var o = p.StandardOutput.ReadToEnd().Trim();

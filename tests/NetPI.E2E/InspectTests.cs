@@ -122,7 +122,7 @@ public static class InspectTests
 
     private static async Task<(int Code, string Output, string Error)> NodeAsync(Env env, params string[] args)
     {
-        var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "scripts", "netpi.mjs"));
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var proc = Process.Start(psi)!;

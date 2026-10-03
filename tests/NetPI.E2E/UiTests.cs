@@ -11,7 +11,7 @@ public static class UiTests
     {
         r.Add("ui.mcp-panel", "ui: MCP catalog controls fit narrow panels and failed saves retain edits", async () =>
         {
-            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
             psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "mcp-smoke.mjs"));
             using var proc = Process.Start(psi)!;
             var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
@@ -24,7 +24,7 @@ public static class UiTests
         {
             // No server needed: the script mounts the committed plugin bundle itself (the one that ships) with a stub
             // ctx, then unmounts it the way PluginTabHost does — a plugin load bumps UiVersion and remounts the tab.
-            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
             psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "files-mount.mjs"));
             using var proc = Process.Start(psi)!;
             var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
@@ -46,7 +46,7 @@ public static class UiTests
         {
             // No server needed: the script mounts the committed plugin bundle itself with a stub ctx whose
             // ideas.update enforces the same expectedRevision rule as the host.
-            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
             psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "idea-conflict.mjs"));
             using var proc = Process.Start(psi)!;
             var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
@@ -73,7 +73,7 @@ public static class UiTests
             await SeedIdeas(env, p.S("id")!, s.S("id")!);
             var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "smoke.mjs");
             var outDir = env.ScreenshotDir;
-            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
             foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--session", "UI smoke", "--out", outDir })
                 psi.ArgumentList.Add(a);
             using var proc = Process.Start(psi)!;
@@ -103,7 +103,7 @@ public static class UiTests
             await env.Run(s.S("id")!, "hello [s:echo]");
             var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "idea-image.mjs");
             var outDir = env.ScreenshotDir;
-            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
             foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--session", "Idea image", "--out", outDir })
                 psi.ArgumentList.Add(a);
             using var proc = Process.Start(psi)!;
@@ -137,7 +137,7 @@ public static class UiTests
             await env.Run(n.S("id")!, "hi [s:echo]");
             var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "pin.mjs");
             var outDir = env.ScreenshotDir;
-            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
             foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--session", $"Pin me {stamp}", "--out", outDir })
                 psi.ArgumentList.Add(a);
             using var proc = Process.Start(psi)!;
@@ -168,7 +168,7 @@ public static class UiTests
             {
                 var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "remove-agent.mjs");
                 var outDir = env.ScreenshotDir;
-                var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+                var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
                 foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--agent", agent, "--out", outDir })
                     psi.ArgumentList.Add(a);
                 using var proc = Process.Start(psi)!;
@@ -204,7 +204,7 @@ public static class UiTests
             {
                 var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "work-tab.mjs");
                 var outDir = env.ScreenshotDir;
-                var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+                var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
                 foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--agent", agent, "--out", outDir })
                     psi.ArgumentList.Add(a);
                 using var proc = Process.Start(psi)!;

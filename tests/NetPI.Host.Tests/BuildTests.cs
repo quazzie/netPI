@@ -22,6 +22,32 @@ public static class BuildTests
         r.Add("build: the UI bundles are reproducible and CI compares them with the committed ones", BundlesAreReproducible);
         r.Add("build: the build scripts parse (a text check cannot see a PowerShell syntax error)", ScriptsParse);
         r.Add("build: every plugin project is in the solution, so a bare build sees it too", SolutionHasEveryPlugin);
+        r.Add("tests: a process a test starts gets no console window of its own", TestProcessesHaveNoWindow);
+    }
+
+    /// <summary>
+    /// A console program started from a process that has no console (the desktop app runs agents' test runs, so does any
+    /// service) opens a window of its own unless the start says otherwise: the run that exercises the install lock then shows
+    /// "Another publish is installing" in windows on the owner's screen. Every <c>ProcessStartInfo</c> in the tests that does
+    /// not hand the process to the shell sets <c>CreateNoWindow</c>.
+    /// </summary>
+    private static void TestProcessesHaveNoWindow()
+    {
+        var offenders = new List<string>();
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(T.RepoRoot, "tests"), "*.cs", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(T.RepoRoot, file).Replace('\\', '/');
+            if (rel.Contains("/obj/") || rel.Contains("/bin/")) continue;
+            var lines = File.ReadAllLines(file);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (!lines[i].Contains("new ProcessStartInfo(") && !lines[i].Contains("new System.Diagnostics.ProcessStartInfo(")) continue;
+                var window = string.Join("\n", lines.Skip(i).Take(14));
+                if (window.Contains("UseShellExecute = true") || window.Contains("CreateNoWindow")) continue;
+                offenders.Add($"{rel}:{i + 1}");
+            }
+        }
+        Check.Equal(0, offenders.Count, "these start a process without CreateNoWindow = true: " + string.Join(", ", offenders));
     }
 
     /// <summary>
@@ -69,7 +95,7 @@ public static class BuildTests
         var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host && File.Exists(host) ? host : "dotnet";
         var psi = new ProcessStartInfo(dotnet)
         {
-            RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+            RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
             WorkingDirectory = T.RepoRoot,
         };
         foreach (var a in new[] { "msbuild", project, $"-getProperty:{property}", "-nologo" }.Concat(extraArgs)) psi.ArgumentList.Add(a);
@@ -321,7 +347,7 @@ Write-Output 'LOCK-OK'
     {
         public static bool Exists(string name)
         {
-            var psi = new ProcessStartInfo(name, "-NoProfile -Command exit 0") { UseShellExecute = false, RedirectStandardError = true };
+            var psi = new ProcessStartInfo(name, "-NoProfile -Command exit 0") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
             try { using var p = Process.Start(psi)!; p.WaitForExit(10_000); return p.ExitCode == 0; }
             catch { return false; }
         }
@@ -330,7 +356,7 @@ Write-Output 'LOCK-OK'
         {
             var psi = new ProcessStartInfo(shell, $"-NoProfile -Command \"{script.Replace("\"", "`\"")}\"")
             {
-                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
             };
             using var p = Process.Start(psi)!;
             var errors = p.StandardError.ReadToEnd() + p.StandardOutput.ReadToEnd();
@@ -344,7 +370,7 @@ Write-Output 'LOCK-OK'
         {
             var psi = new ProcessStartInfo(shell)
             {
-                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
                 WorkingDirectory = T.RepoRoot,
             };
             psi.ArgumentList.Add("-NoProfile");
@@ -365,7 +391,7 @@ Write-Output 'LOCK-OK'
         {
             var psi = new ProcessStartInfo(shell)
             {
-                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
                 WorkingDirectory = T.RepoRoot,
             };
             foreach (var a in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(T.RepoRoot, "build.ps1"), "-SkipWeb" })

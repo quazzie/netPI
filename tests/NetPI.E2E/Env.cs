@@ -185,7 +185,7 @@ public sealed class Env : IAsyncDisposable
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            UseShellExecute = false,
+            UseShellExecute = false, CreateNoWindow = true,
             WorkingDirectory = Root,
         };
         foreach (var a in new[] { Path.Combine(AppDir, "netpi-server.dll"), "--port", Options.Port.ToString(), "--home", Home, "--token", Token })
