@@ -139,35 +139,6 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     // ---------------------------------------------------------------- settings
 
-    internal int IntSetting(string path, int fallback)
-    {
-        try
-        {
-            if (Ctx.Settings.GetNode(path) is JsonValue v)
-            {
-                if (v.TryGetValue<int>(out var i)) return i;
-                if (v.TryGetValue<double>(out var d)) return (int)d;
-                if (v.TryGetValue<string>(out var s) && int.TryParse(s, out i)) return i;
-            }
-        }
-        catch { }
-        return fallback;
-    }
-
-    internal bool BoolSetting(string path, bool fallback)
-    {
-        try
-        {
-            if (Ctx.Settings.GetNode(path) is JsonValue v)
-            {
-                if (v.TryGetValue<bool>(out var b)) return b;
-                if (v.TryGetValue<string>(out var s) && bool.TryParse(s, out b)) return b;
-            }
-        }
-        catch { }
-        return fallback;
-    }
-
     internal IReadOnlyList<IAgentHook> Hooks()
     {
         try { return Ctx.Services.GetAll<IAgentHook>().OrderBy(h => h.Order).ToList(); }
@@ -206,7 +177,17 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     internal AgentInfo Snapshot(AgentState s)
     {
-        lock (s.Gate) return s.Info.Clone();
+        lock (s.Gate)
+        {
+            var a = s.Info.Clone();
+            // The report is unseen from the child's finish until it is gone from the child's state: a wait took it
+            // (ResultConsumed) or the parent's transcript took the notice (NoticeDrained). While it is in flight
+            // (PendingNotificationId set, notice not yet in the parent's queue) it is unseen even though the queue
+            // scan sees nothing yet.
+            a.UnseenReport = a.Status.IsTerminal() && a.IsSubagent
+                             && !s.ResultConsumed && !s.NoticeDrained && s.PendingNotificationId is not null;
+            return a;
+        }
     }
 
     public IReadOnlyList<AgentInfo> List(bool includeFinished = true)
@@ -503,10 +484,18 @@ internal sealed class AgentRuntime : IAgentRuntime
         if (_stopping) throw new InvalidOperationException("The agent runtime is stopping.");
         RunState? run = null;
         CancellationTokenSource? sig = null;
+        // An agent-result notice for a report a wait already returned is dropped here; a wait that consumes it later
+        // still wins: the drain re-checks (ClaimNoticeForParent) and drops the notice then, so the parent never gets a
+        // second copy of the report.
+        var noticeChild = input.NoticeKind == "agent-result" && input.Source?.StartsWith("agent:", StringComparison.Ordinal) == true
+            ? input.Source!["agent:".Length..]
+            : null;
+        var deliver = noticeChild is null || !ReportConsumed(noticeChild);
         lock (s.Gate)
         {
             if (s.Run is not null)
             {
+                if (!deliver) return Task.CompletedTask;
                 if (mode == DeliveryMode.Queue) s.FollowUps.Add(input);
                 else
                 {
@@ -517,7 +506,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 }
                 s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
             }
-            else
+            else if (deliver)
             {
                 run = BeginRunLocked(s);
             }
@@ -546,6 +535,29 @@ internal sealed class AgentRuntime : IAgentRuntime
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// The parent's transcript is about to take a subagent's agent-result notice: claim it — or <c>false</c> when a
+    /// wait already returned the report (<c>ResultConsumed</c>), in which case the notice must be dropped, not
+    /// persisted: the report reaches the parent with the wait's result, and the transcript would be a second copy.
+    /// </summary>
+    internal bool ClaimNoticeForParent(string childId)
+    {
+        if (FindState(childId) is not { } c) return true;
+        lock (c.Gate)
+        {
+            if (c.ResultConsumed) return false;
+            c.NoticeDrained = true;
+            return true;
+        }
+    }
+
+    /// <summary>Whether a wait already returned the child's report (read-only: the drop decision is the drain's to make).</summary>
+    private bool ReportConsumed(string childId)
+    {
+        if (FindState(childId) is not { } c) return false;
+        lock (c.Gate) return c.ResultConsumed;
+    }
+
     /// <summary>Create and register a run. Caller holds <c>s.Gate</c> and has checked <c>s.Run == null</c>.</summary>
     private static RunState BeginRunLocked(AgentState s)
     {
@@ -555,6 +567,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         s.ResultConsumed = false;
         s.CancelledByParent = false;
         s.PendingNotificationId = null;
+        s.NoticeDrained = false;
         if (s.SteerSignal.IsCancellationRequested) s.SteerSignal = new CancellationTokenSource();
         // A run started for leftover follow-ups delivers the first one right away.
         if (s.Steering.Count == 0 && s.FollowUps.Count > 0)
@@ -704,8 +717,13 @@ internal sealed class AgentRuntime : IAgentRuntime
             await DeliverAsync(parent, notice, DeliveryMode.Auto).ConfigureAwait(false);
             // A wait may have consumed the result while this delivery was in flight: its removal of the queued
             // input then ran before the input was queued and found nothing to drop.
+            var consumed = false;
             lock (child.Gate)
-                if (child.ResultConsumed) RemoveQueuedInput(parent, notice.Id);
+            {
+                consumed = child.ResultConsumed;
+                if (consumed)
+                    RemoveQueuedInput(parent, notice.Id);
+            }
         }
         catch (Exception ex)
         {
@@ -1153,7 +1171,8 @@ internal sealed class AgentRuntime : IAgentRuntime
                 snap = t.Info.Clone();
             }
             // the result is returned here: drop a still-queued agent-result notice so the caller doesn't get it twice
-            if (pending is not null && caller is not null) RemoveQueuedInput(caller, pending);
+            if (pending is not null && caller is not null)
+                RemoveQueuedInput(caller, pending);
             results.Add(snap);
         }
         return results;

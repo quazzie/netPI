@@ -67,10 +67,10 @@ internal sealed class ShowImageTool(IPluginContext ctx, HttpClient http) : IAgen
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        args = Unwrap(args);
-        var source = Str(args, "source", "path", "url", "file", "src", "image")?.Trim().Trim('"');
+        var a = new ToolArgs(args);
+        var source = a.Str("source", "path", "url", "file", "src", "image")?.Trim().Trim('"');
         if (string.IsNullOrEmpty(source)) return ToolResult.Error("show_image needs a source: a file path, an http(s) URL or a data: URL.");
-        var caption = Str(args, "caption", "title", "alt", "description")?.Trim();
+        var caption = a.Str("caption", "title", "alt", "description")?.Trim();
         if (caption is { Length: > 300 }) caption = caption[..300] + "…";
         var max = Math.Clamp(ctx.Settings.Get("media.maxBytes", DefaultMaxBytes), 100_000, 100_000_000);
 
@@ -192,26 +192,5 @@ internal sealed class ShowImageTool(IPluginContext ctx, HttpClient http) : IAgen
         var type = parts[0].Length > 0 ? parts[0] : null;
         var base64 = parts.Skip(1).Any(p => p.Equals("base64", StringComparison.OrdinalIgnoreCase));
         return (base64 ? Convert.FromBase64String(payload) : Encoding.UTF8.GetBytes(Uri.UnescapeDataString(payload)), type);
-    }
-
-    private static JsonElement Unwrap(JsonElement e)
-    {
-        if (e.ValueKind != JsonValueKind.String) return e;
-        try
-        {
-            using var doc = JsonDocument.Parse(e.GetString() ?? "{}");
-            return doc.RootElement.Clone();
-        }
-        catch (JsonException) { return e; }
-    }
-
-    private static string? Str(JsonElement e, params string[] names)
-    {
-        if (e.ValueKind != JsonValueKind.Object) return null;
-        static string Norm(string s) => s.Replace("_", "").Replace("-", "").ToLowerInvariant();
-        foreach (var name in names)
-            foreach (var p in e.EnumerateObject())
-                if (Norm(p.Name) == Norm(name) && p.Value.ValueKind == JsonValueKind.String) return p.Value.GetString();
-        return null;
     }
 }

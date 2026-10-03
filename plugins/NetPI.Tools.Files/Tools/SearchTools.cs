@@ -20,16 +20,16 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
             "(matches per file); maxResults caps lines or files (default 200). multiline lets the pattern span lines (\\n in the " +
             "pattern; (?s) makes . match newlines). Output: `path:line: text` (context lines use `path-line- text`). " +
             "Line endings never matter: `$` matches at the end of each line in CRLF and LF files.",
-        Parameters = Schema.Object(
-            ("pattern", Schema.Str("Regex (or text with literal=true)"), true),
-            ("path", Schema.Str("Default: working directory"), false),
-            ("glob", Schema.Str("e.g. \"*.cs\", \"!**/*.test.ts\""), false),
-            ("ignoreCase", Schema.Bool(""), false),
-            ("literal", Schema.Bool(""), false),
-            ("context", Schema.Int("Lines around each match"), false),
-            ("maxResults", Schema.Int("Default 200"), false),
-            ("outputMode", Schema.Str("", "content", "files", "count"), false),
-            ("multiline", Schema.Bool(""), false)),
+        Parameters = ToolSchema.Object(
+            ("pattern", ToolSchema.Str("Regex (or text with literal=true)"), true),
+            ("path", ToolSchema.Str("Default: working directory"), false),
+            ("glob", ToolSchema.Str("e.g. \"*.cs\", \"!**/*.test.ts\""), false),
+            ("ignoreCase", ToolSchema.Bool(""), false),
+            ("literal", ToolSchema.Bool(""), false),
+            ("context", ToolSchema.Int("Lines around each match"), false),
+            ("maxResults", ToolSchema.Int("Default 200"), false),
+            ("outputMode", ToolSchema.Str("", "content", "files", "count"), false),
+            ("multiline", ToolSchema.Bool(""), false)),
         PromptGuidelines = [UseFileTools],
     };
 
@@ -128,10 +128,10 @@ public sealed class FindTool(ISettings? settings = null) : FileToolBase(settings
         Help =
             "Globs: `*`, `**`, `?`, `{a,b}`, `[abc]`, e.g. \"src/**/test_*.py\", \"*.{json,yaml}\". A pattern without '/' matches " +
             "file names at any depth; the pattern is relative to path. Directories are shown with a trailing '/'.",
-        Parameters = Schema.Object(
-            ("pattern", Schema.Str(""), true),
-            ("path", Schema.Str("Default: working directory"), false),
-            ("maxResults", Schema.Int($"Default {DefaultMax}"), false)),
+        Parameters = ToolSchema.Object(
+            ("pattern", ToolSchema.Str(""), true),
+            ("path", ToolSchema.Str("Default: working directory"), false),
+            ("maxResults", ToolSchema.Int($"Default {DefaultMax}"), false)),
         PromptGuidelines = [UseFileTools],
     };
 
@@ -199,9 +199,9 @@ public sealed class LsTool(ISettings? settings = null) : FileToolBase(settings)
         SummaryArg = "path",
         Description = "List a directory: subdirectories, then files with sizes.",
         Help = "Subdirectories first (with a trailing '/'), then files with their sizes. Entries ignored by .gitignore and build/dependency folders (.git, node_modules, bin…) are hidden unless all=true.",
-        Parameters = Schema.Object(
-            ("path", Schema.Str("Default: working directory"), false),
-            ("all", Schema.Bool("Also ignored entries"), false)),
+        Parameters = ToolSchema.Object(
+            ("path", ToolSchema.Str("Default: working directory"), false),
+            ("all", ToolSchema.Bool("Also ignored entries"), false)),
         PromptGuidelines = [UseFileTools],
     };
 

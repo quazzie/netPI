@@ -462,7 +462,8 @@ public static class ContextTests
         Check.Equal(p1, sent.SystemPrompt, "the prompt of the fork point, not a new render (which would end AFTER THE SWITCH)");
         Check.True(sent.Messages.Any(m => m.Text == "again"), "with the conversation up to the fork point");
         var prompts = (JsonArray)(await h.Rpc.CallAsync("context.prompts", new { sessionId = early.Id }))!["prompts"]!;
-        Check.Equal(1, prompts.Count, "the prompts sent up to the fork point are its history");
+        Check.Equal(1, prompts.Count,
+            $"the prompts sent up to the fork point are its history (got {prompts.Count}: {string.Join(", ", prompts.Select(p => (string?)p!["systemPrompt"] is var t && t == p1 ? "p1" : t == p2 ? "p2" : "other"))})");
         Check.Equal(p1, (string?)prompts[0]!["systemPrompt"]);
 
         var late = Fork(h.Messages(s.Id).Last().Seq);

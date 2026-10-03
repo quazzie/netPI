@@ -169,9 +169,12 @@ internal sealed class TodoWriteTool(IPluginContext ctx) : IAgentTool
     {
         items = [];
         error = "";
-        args = Unwrap(args);
-        var arr = args.ValueKind == JsonValueKind.Array ? args : Get(args, "items", "todos", "tasks", "list", "todo");
-        if (arr is { ValueKind: JsonValueKind.String } s) arr = Unwrap(s);
+        var a = new ToolArgs(args);
+        JsonElement arr;
+        if (a.Raw.ValueKind == JsonValueKind.Array) arr = a.Raw;
+        else if (a.TryGet(out var itemsEl, "items", "todos", "tasks", "list", "todo"))
+            arr = itemsEl.ValueKind == JsonValueKind.String ? ToolArgs.Unwrap(itemsEl) : itemsEl;
+        else arr = default;
         if (arr is not { ValueKind: JsonValueKind.Array } list)
         {
             error = "todo_write needs \"items\": an array of { \"text\", \"status\" } (status: pending, in_progress or done).";
@@ -184,9 +187,10 @@ internal sealed class TodoWriteTool(IPluginContext ctx) : IAgentTool
             if (e.ValueKind == JsonValueKind.String) text = e.GetString();
             else if (e.ValueKind == JsonValueKind.Object)
             {
-                text = Str(e, "text", "content", "title", "task", "description", "name");
-                status = Str(e, "status", "state");
-                if (status is null && Get(e, "done", "completed") is { ValueKind: JsonValueKind.True }) status = "done";
+                var ea = new ToolArgs(e);
+                text = ea.Str("text", "content", "title", "task", "description", "name");
+                status = ea.Str("status", "state");
+                if (status is null && ea.Bool("done", "completed") == true) status = "done";
             }
             else continue;
             text = text?.Trim();
@@ -204,28 +208,4 @@ internal sealed class TodoWriteTool(IPluginContext ctx) : IAgentTool
         "in_progress" or "inprogress" or "active" or "doing" or "current" or "started" or "working" => "in_progress",
         _ => "pending",
     };
-
-    private static JsonElement Unwrap(JsonElement e)
-    {
-        if (e.ValueKind != JsonValueKind.String) return e;
-        try
-        {
-            using var doc = JsonDocument.Parse(e.GetString() ?? "{}");
-            return doc.RootElement.Clone();
-        }
-        catch (JsonException) { return e; }
-    }
-
-    private static string Norm(string s) => s.Replace("_", "").Replace("-", "").ToLowerInvariant();
-
-    private static JsonElement? Get(JsonElement e, params string[] names)
-    {
-        if (e.ValueKind != JsonValueKind.Object) return null;
-        foreach (var name in names)
-            foreach (var p in e.EnumerateObject())
-                if (Norm(p.Name) == Norm(name) && p.Value.ValueKind != JsonValueKind.Null) return p.Value;
-        return null;
-    }
-
-    private static string? Str(JsonElement e, params string[] names) => Get(e, names) is { ValueKind: JsonValueKind.String } v ? v.GetString() : null;
 }

@@ -82,13 +82,13 @@ public static class WorkspaceToolTests
             var ctx = T.Ctx(binding.Root, binding);
             Directory.CreateDirectory(binding.Root);
 
-            var here = await service.RunAsync("bash", ctx, new NetPI.Tools.Shell.ToolArgs(JsonSerializer.SerializeToElement(new { command = "pwd" })), CancellationToken.None);
+            var here = await service.RunAsync("bash", ctx, new ToolArgs(JsonSerializer.SerializeToElement(new { command = "pwd" })), CancellationToken.None);
             Check.False(here.IsError, here.Content);
             Check.Equal(binding.Root, T.D(here).Str("cwd"));
             Check.Equal("wsp_1", T.D(here).Str("workspaceId"));
 
             var elsewhere = await service.RunAsync("bash", ctx,
-                new NetPI.Tools.Shell.ToolArgs(JsonSerializer.SerializeToElement(new { command = "pwd", cwd = env.Project })), CancellationToken.None);
+                new ToolArgs(JsonSerializer.SerializeToElement(new { command = "pwd", cwd = env.Project })), CancellationToken.None);
             Check.False(elsewhere.IsError, elsewhere.Content);
             Check.Equal(env.Project, T.D(elsewhere).Str("cwd"));
             Check.Contains(elsewhere.Content, "not in this session's workspace");

@@ -15,9 +15,9 @@ public sealed class WriteTool(ISettings? settings = null) : FileToolBase(setting
         SummaryArg = "path",
         Description = "Create a file or overwrite it completely.",
         Help = "Parent directories are created. An existing file keeps its line-ending style (CRLF/LF) and BOM; new files use the configured default.",
-        Parameters = Schema.Object(
-            ("path", Schema.Str(""), true),
-            ("content", Schema.Str(""), true)),
+        Parameters = ToolSchema.Object(
+            ("path", ToolSchema.Str(""), true),
+            ("content", ToolSchema.Str(""), true)),
         PromptGuidelines = [UseFileTools, ChangeFiles],
     };
 

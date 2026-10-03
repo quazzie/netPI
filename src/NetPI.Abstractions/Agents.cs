@@ -42,6 +42,11 @@ public sealed class AgentInfo
     public string? Task { get; set; }
     /// <summary>Final answer of a completed subagent (its last assistant text).</summary>
     public string? Result { get; set; }
+    /// <summary>
+    /// A finished subagent whose report the parent has not seen yet (not consumed by a wait, not in the parent's
+    /// transcript, and not already returned by a wait): an agent wait without ids returns it.
+    /// </summary>
+    public bool UnseenReport { get; set; }
     public string? Error { get; set; }
     public List<string>? ToolAllowlist { get; set; }
     public List<string> Children { get; set; } = [];

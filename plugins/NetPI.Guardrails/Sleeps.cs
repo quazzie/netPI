@@ -25,7 +25,7 @@ internal static class Sleeps
 
     /// <summary>The verdict for a command that waits longer than <paramref name="maxSeconds"/> (0 switches the rule off),
     /// null when it may run.</summary>
-    public static Verdict? Check(string tool, JsonElement args, double maxSeconds, bool ask)
+    public static Verdict? Check(string tool, ToolArgs args, double maxSeconds, bool ask)
     {
         if (maxSeconds <= 0 || RuleSet.CommandOf(tool, args) is not { Length: > 0 } command) return null;
         foreach (var part in RuleSet.Parts(command))

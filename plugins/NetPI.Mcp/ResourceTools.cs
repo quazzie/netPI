@@ -24,9 +24,10 @@ internal sealed class McpResourceTool(IPluginContext ctx, ServerManager manager)
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var uri = args.TryGetProperty("uri", out var u) ? u.GetString()?.Trim() : null;
+        var a = new ToolArgs(args);
+        var uri = a.Str("uri")?.Trim();
         if (string.IsNullOrWhiteSpace(uri) || uri.Length > 2048) return Task.FromResult(ToolResult.Error("uri must be an exact resource uri from mcp_search (1–2048 characters)."));
-        var server = args.TryGetProperty("server", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+        var server = a.Str("server");
         var resource = manager.FindResource(uri, server)
             ?? throw new McpException("MCP resource " + uri + " is not advertised by " + (server ?? "any connected server")
                 + ". Find it with mcp_search first; only listed resources can be read.");

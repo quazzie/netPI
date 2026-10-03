@@ -44,9 +44,9 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         if (secs is null)
         {
             if (background) return null;
-            secs = Settings.SafeGet("shell.timeoutSeconds", DefaultTimeoutSeconds);
+            secs = Settings.GetInt("shell.timeoutSeconds", DefaultTimeoutSeconds);
         }
-        if (secs <= 0) return background ? null : Settings.SafeGet("shell.timeoutSeconds", DefaultTimeoutSeconds);
+        if (secs <= 0) return background ? null : Settings.GetInt("shell.timeoutSeconds", DefaultTimeoutSeconds);
         return (int)Math.Clamp(Math.Ceiling(secs.Value), 1, MaxTimeoutSeconds);
     }
 

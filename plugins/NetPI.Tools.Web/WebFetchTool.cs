@@ -107,20 +107,20 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        args = Args.Unwrap(args);
-        var raw = Args.Str(args, "url", "href", "link")?.Trim();
+        var a = new ToolArgs(args);
+        var raw = a.Str("url", "href", "link")?.Trim();
         if (string.IsNullOrEmpty(raw)) return ToolResult.Error("web_fetch needs a url.");
         if (!raw.Contains("://", StringComparison.Ordinal)) raw = "https://" + raw;
         if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
             return ToolResult.Error($"Not an http(s) URL: {raw}");
-        var format = (Args.Str(args, "format") ?? "markdown").Trim().ToLowerInvariant() switch
+        var format = (a.Str("format") ?? "markdown").Trim().ToLowerInvariant() switch
         {
             "text" or "plain" or "txt" => "text",
             "html" or "raw" or "source" => "html",
             _ => "markdown",
         };
-        var offset = Math.Max(0, Args.Int(args, "offset", "start") ?? 0);
-        var refresh = Args.Bool(args, "refresh") ?? false;
+        var offset = Math.Max(0, a.Int("offset", "start") ?? 0);
+        var refresh = a.Bool("refresh") ?? false;
         var o = WebOptions.Read(ctx.Settings);
 
         var key = format + " " + uri;

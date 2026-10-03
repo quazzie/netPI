@@ -148,11 +148,7 @@ public static class ToolResultLimit
     public const int Default = 20_000;
 
     /// <summary>The limit in characters (0 or less: none).</summary>
-    public static int Get(ISettings? settings)
-    {
-        try { return settings?.Get(Setting, Default) ?? Default; }
-        catch { return Default; }
-    }
+    public static int Get(ISettings? settings) => settings.GetInt(Setting, Default);
 
     /// <summary>A tool's own cap, kept under the limit with room for its notes.</summary>
     public static int Fit(ISettings? settings, int own, int room = 1000)

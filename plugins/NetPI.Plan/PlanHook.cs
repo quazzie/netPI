@@ -43,7 +43,7 @@ internal sealed class PlanHook(IPluginContext ctx) : IAgentHook
             var args = Parse(call.Arguments);
             var readOnlyCall = tool is IReadOnlyCalls rc && args is { } a && rc.IsReadOnly(a);
             McpToolInfo? mcp = null;
-            var allow = List("plan.mcpAllow");
+            var allow = ctx.Settings.GetStrings("plan.mcpAllow");
             if (tool?.Definition is { Category: "mcp", ReadOnly: false } def && !PlanPolicy.McpGateways.Contains(def.Name))
                 mcp = await McpInfoAsync(def.Name, run.CancellationToken).ConfigureAwait(false);
             if (PlanPolicy.Block(call.Name, tool?.Definition, readOnlyCall, mcp, allow) is { } reason) return new ToolCallDecision { Block = true, Reason = reason };
@@ -92,10 +92,6 @@ internal sealed class PlanHook(IPluginContext ctx) : IAgentHook
         }
         catch (RpcException) { return null; } // the tool went away: not known, so not allowed
     }
-
-    private List<string> List(string key) => ctx.Settings.GetNode(key) is System.Text.Json.Nodes.JsonArray list
-        ? [.. list.Select(n => n is System.Text.Json.Nodes.JsonValue v && v.TryGetValue<string>(out var s) ? s : null).OfType<string>()]
-        : [];
 
     private static JsonElement? Parse(string? arguments)
     {

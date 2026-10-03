@@ -51,12 +51,8 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        if (args.ValueKind == JsonValueKind.String)
-        {
-            try { using var doc = JsonDocument.Parse(args.GetString() ?? "{}"); args = doc.RootElement.Clone(); }
-            catch (JsonException) { }
-        }
-        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty("questions", out var qEl))
+        var a = new ToolArgs(args);
+        if (!a.TryGet(out var qEl, "questions"))
             return ToolResult.Error("decide needs questions: { id: { type: yes_no|choice|score, question, options|levels } }.");
 
         JsonObject questions;
@@ -66,10 +62,10 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         var max = Math.Clamp(ctx.Settings.Get("decide.maxItems", 500), 1, 5000);
         List<string> items = [];
         string? file = null;
-        if (args.TryGetProperty("items", out var it) && it.ValueKind == JsonValueKind.Array)
+        if (a.TryGet(out var it, "items") && it.ValueKind == JsonValueKind.Array)
             items.AddRange(it.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() ?? "" : x.GetRawText()));
-        if (args.TryGetProperty("text", out var tx) && tx.ValueKind == JsonValueKind.String) items.Insert(0, tx.GetString() ?? "");
-        if (args.TryGetProperty("file", out var fe) && fe.ValueKind == JsonValueKind.String && fe.GetString() is { Length: > 0 } f)
+        if (a.TryGet(out var tx, "text") && tx.ValueKind == JsonValueKind.String) items.Insert(0, tx.GetString() ?? "");
+        if (a.TryGet(out var fe, "file") && fe.ValueKind == JsonValueKind.String && fe.GetString() is { Length: > 0 } f)
         {
             file = context.ResolvePath(f);
             if (!File.Exists(file)) return ToolResult.Error($"No such file: {file}");
@@ -80,8 +76,8 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         var dropped = Math.Max(0, items.Count - max);
         if (dropped > 0) items = items.Take(max).ToList();
 
-        var minConf = args.TryGetProperty("min_confidence", out var mc) && mc.ValueKind == JsonValueKind.Number ? Math.Clamp(mc.GetDouble(), 0, 1) : 0.5;
-        var model = args.TryGetProperty("model", out var me) && me.ValueKind == JsonValueKind.String ? me.GetString() : null;
+        var minConf = a.TryGet(out var mc, "min_confidence") && mc.ValueKind == JsonValueKind.Number ? Math.Clamp(mc.GetDouble(), 0, 1) : 0.5;
+        var model = a.TryGet(out var me, "model") && me.ValueKind == JsonValueKind.String ? me.GetString() : null;
         if (string.IsNullOrWhiteSpace(model) && items.Count >= Math.Max(2, ctx.Settings.Get("decide.bulkThreshold", 8)))
             model = ctx.Settings.Get("decide.bulkModel", "") is { Length: > 0 } bulk ? bulk : null;
 
@@ -279,9 +275,8 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         return s.Length > n ? s[..n] + "…" : s;
     }
 
-    private static string? Str(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    private static string? Str(JsonElement e, string name) => new ToolArgs(e).Str(name);
 
     private static JsonElement? Prop(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined) ? v : null;
+        new ToolArgs(e).TryGet(out var v, name) ? v : null;
 }

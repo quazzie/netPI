@@ -59,7 +59,7 @@ internal sealed class OpenRouterOptions
         return new OpenRouterOptions
         {
             BaseUrl = o.Str("baseUrl") is { Length: > 0 } url ? url : DefaultBaseUrl,
-            ApiKey = Secrets.Resolve(o.Str("apiKey")) ?? Secrets.Resolve("env:" + KeyEnvironmentVariable),
+            ApiKey = SettingsExtensions.ResolveSecret(o.Str("apiKey")) ?? SettingsExtensions.ResolveSecret("env:" + KeyEnvironmentVariable),
             Enabled = o.Bool("enabled", true),
             Include = include,
             Models = o.Obj("models"),

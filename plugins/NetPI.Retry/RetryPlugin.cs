@@ -49,26 +49,19 @@ public sealed class RetryOptions
 
     public static RetryOptions From(ISettings? s)
     {
-        var firstEvent = s is null ? TimeSpan.FromSeconds(600) : Seconds(Get(s, "retry.firstEventTimeoutSeconds", 600.0));
-        var maxTotal = s is null ? TimeSpan.FromSeconds(300) : Seconds(Get(s, "retry.maxTotalSeconds", 300.0));
         return new RetryOptions
         {
-            Enabled = s is null ? true : Get(s, "retry.enabled", true),
-            MaxAttempts = s is null ? 6 : Math.Clamp(Get(s, "retry.maxAttempts", 6), 1, 100),
-            BaseDelay = TimeSpan.FromMilliseconds(s is null ? 1000 : Math.Max(0, Get(s, "retry.baseDelayMs", 1000.0))),
-            MaxDelay = TimeSpan.FromMilliseconds(s is null ? 30_000 : Math.Max(0, Get(s, "retry.maxDelayMs", 30_000.0))),
-            FirstEventTimeout = firstEvent,
-            StallTimeout = s is null ? TimeSpan.FromSeconds(180) : Seconds(Get(s, "retry.stallTimeoutSeconds", 180.0)),
+            Enabled = s.GetOr("retry.enabled", true),
+            MaxAttempts = Math.Clamp(s.GetOr("retry.maxAttempts", 6), 1, 100),
+            BaseDelay = TimeSpan.FromMilliseconds(Math.Max(0, s.GetOr("retry.baseDelayMs", 1000.0))),
+            MaxDelay = TimeSpan.FromMilliseconds(Math.Max(0, s.GetOr("retry.maxDelayMs", 30_000.0))),
+            FirstEventTimeout = Seconds(s.GetOr("retry.firstEventTimeoutSeconds", 600.0)),
+            StallTimeout = Seconds(s.GetOr("retry.stallTimeoutSeconds", 180.0)),
             // the budget is the waiting between attempts, not the time an attempt ran or stalled, so it is taken as set (idea-ohk2bz)
-            MaxTotal = maxTotal,
+            MaxTotal = Seconds(s.GetOr("retry.maxTotalSeconds", 300.0)),
         };
     }
 
     /// <summary>0 or negative disables the timeout.</summary>
     private static TimeSpan Seconds(double v) => v <= 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromSeconds(Math.Min(v, 86_400));
-
-    private static T Get<T>(ISettings s, string path, T fallback)
-    {
-        try { return s.Get(path, fallback) ?? fallback; } catch { return fallback; }
-    }
 }

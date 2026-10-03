@@ -23,7 +23,7 @@ internal abstract class AgentToolBase(IPluginContext plugin)
         if (runtime is null) return ToolResult.Error("The agent runtime is not available (the netpi.runtime plugin is not loaded).");
         try
         {
-            return await RunAsync(runtime, context, ToolArgs.Unwrap(args), ct).ConfigureAwait(false);
+            return await RunAsync(runtime, context, args, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -60,6 +60,32 @@ internal abstract class AgentToolBase(IPluginContext plugin)
     }
 
     protected static string Status(AgentStatus s) => JsonNamingPolicy.CamelCase.ConvertName(s.ToString());
+
+    /// <summary>A list of names: an array (its string entries), or one string naming several (comma, ';', space or line separated).
+    /// The reader does not split what it cannot parse as JSON, so the tool keeps that leniency for its own name lists.</summary>
+    protected static List<string>? NameList(ToolArgs args, params string[] names)
+    {
+        if (!args.TryGet(out var v, names)) return null;
+        if (v.ValueKind == JsonValueKind.String)
+        {
+            var s = v.GetString()?.Trim() ?? "";
+            if (s.StartsWith('[') || s.StartsWith('{'))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(s);
+                    v = doc.RootElement.Clone();
+                }
+                catch (JsonException) { }
+            }
+            if (v.ValueKind == JsonValueKind.String)
+                return s.Split([',', ' ', ';', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        }
+        if (v.ValueKind == JsonValueKind.Array)
+            return v.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!.Trim())
+                .Where(x => x.Length > 0).ToList();
+        return null;
+    }
 
     protected static JsonObject Details(AgentInfo a) => new()
     {
@@ -226,8 +252,9 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
         // one subagent (the arguments themselves) or several (subagents); all are checked before any starts
-        var batch = ToolArgs.Get(args, "subagents", "agents", "tasks") is { ValueKind: JsonValueKind.Array } list
-            ? list.EnumerateArray().Select(ToolArgs.Unwrap).ToList()
+        var root = new ToolArgs(args);
+        var batch = root.TryGet(out var sub, "subagents", "agents", "tasks") && sub.ValueKind == JsonValueKind.Array
+            ? sub.EnumerateArray().ToList()
             : null;
         if (batch is { Count: 0 }) return ToolResult.Error("subagents is empty: give each subagent a task.");
         var items = batch ?? [args];
@@ -237,7 +264,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         {
             var (request, error) = Prepare(items[i], agents, context);
             if (error is not null)
-                return ToolResult.Error(batch is null ? error : $"subagents[{i}]{(ToolArgs.Str(items[i], "name") is { } n ? $" ({n})" : "")}: {error}\nNone of them was started.");
+                return ToolResult.Error(batch is null ? error : $"subagents[{i}]{(new ToolArgs(items[i]).Str("name") is { } n ? $" ({n})" : "")}: {error}\nNone of them was started.");
             requests.Add(request!);
         }
 
@@ -250,10 +277,10 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         foreach (var request in requests) started.Add(await runtime.SpawnAsync(request, ct).ConfigureAwait(false));
 
         // waiting is the default; background is the explicit choice (an older "wait": false means background too)
-        var background = ToolArgs.Bool(args, "background") ?? (ToolArgs.Bool(args, "wait") is { } w ? !w : false);
+        var background = root.Bool("background") ?? (root.Bool("wait") is { } w ? !w : false);
         if (!background)
         {
-            var timeout = ToolArgs.Num(args, "timeoutSeconds", "timeout") is { } t && t > 0 ? TimeSpan.FromSeconds(t) : (TimeSpan?)null;
+            var timeout = root.Double("timeoutSeconds", "timeout") is { } t && t > 0 ? TimeSpan.FromSeconds(t) : (TimeSpan?)null;
             var results = await runtime.WaitAsync(context.AgentId, [.. started.Select(a => a.Id)], yieldSlot: true, timeout, ct).ConfigureAwait(false);
             if (batch is null)
             {
@@ -295,13 +322,14 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     /// <summary>One subagent's request, or why it can't start.</summary>
     private (SpawnRequest? Request, string? Error) Prepare(JsonElement item, List<AgentSlots> agents, ToolContext context)
     {
-        var task = ToolArgs.Str(item, "task", "prompt", "description", "message");
+        var itemArgs = new ToolArgs(item);
+        var task = itemArgs.Str("task", "prompt", "description", "message");
         if (string.IsNullOrWhiteSpace(task)) return (null, "Missing 'task': describe the subagent's task completely.");
-        var (workspace, isolated) = WorkspaceArgs(item);
+        var (workspace, isolated) = WorkspaceArgs(itemArgs);
 
         // the agents the user set up are the menu: one of them is required (an active one); without any, a model ref or your model
-        var agentArg = ToolArgs.Str(item, "agent");
-        var modelArg = ToolArgs.Str(item, "model");
+        var agentArg = itemArgs.Str("agent");
+        var modelArg = itemArgs.Str("model");
         string? spawnAgent = null, spawnModel;
         if (agents.Count > 0 && string.Equals(agentArg?.Trim(), SessionAgent.Any, StringComparison.OrdinalIgnoreCase))
         {
@@ -330,7 +358,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         else spawnModel = agentArg ?? modelArg;
 
         // the caller may not see the tools it hands out (a limited orchestrator): unknown names get the list
-        var tools = ToolArgs.List(item, "tools", "allowedTools");
+        var tools = NameList(itemArgs, "tools", "allowedTools");
         if (tools is { Count: > 0 })
         {
             var all = Plugin.Tools.All;
@@ -345,11 +373,11 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         var spawn = new SpawnRequest
         {
             Task = task,
-            Name = ToolArgs.Str(item, "name"),
+            Name = itemArgs.Str("name"),
             Agent = spawnAgent,
             Model = spawnModel,
             Tools = tools,
-            Instructions = ToolArgs.Str(item, "instructions", "systemPrompt"),
+            Instructions = itemArgs.Str("instructions", "systemPrompt"),
             ParentAgentId = context.AgentId,
         };
         if (workspace is not null || isolated) spawn.Features.Set(new SpawnWorkspace(workspace, isolated));
@@ -357,10 +385,10 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     }
 
     /// <summary>The workspace arguments of one subagent: a name/id to share, or a request for its own checkout.</summary>
-    private static (string? Workspace, bool Isolated) WorkspaceArgs(JsonElement item)
+    private static (string? Workspace, bool Isolated) WorkspaceArgs(ToolArgs item)
     {
-        var named = ToolArgs.Str(item, "workspace", "workspaceId", "workspaceName");
-        var isolated = ToolArgs.Bool(item, "isolated", "ownWorktree", "own_worktree") ?? false;
+        var named = item.Str("workspace", "workspaceId", "workspaceName");
+        var isolated = item.Bool("isolated", "ownWorktree", "own_worktree") ?? false;
         if (named is { Length: > 0 } n && !string.Equals(n, "new", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(n, "own", StringComparison.OrdinalIgnoreCase) && !string.Equals(n, "isolated", StringComparison.OrdinalIgnoreCase))
             return (n.Trim(), isolated);
@@ -484,10 +512,10 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
 
     internal static string? ActionOf(JsonElement args)
     {
-        args = ToolArgs.Unwrap(args);
-        var a = ToolArgs.Str(args, "action", "verb", "command")?.Trim().ToLowerInvariant();
-        if (a is null && ToolArgs.Str(args, "message") is not null) a = "send";
-        return a switch { "message" or "tell" => "send", "status" or "report" => "result", "stop" or "abort" => "cancel", _ => a };
+        var a = new ToolArgs(args);
+        var action = a.Str("action", "verb", "command")?.Trim().ToLowerInvariant();
+        if (action is null && a.Str("message") is not null) action = "send";
+        return action switch { "message" or "tell" => "send", "status" or "report" => "result", "stop" or "abort" => "cancel", _ => action };
     }
 
     public bool IsReadOnly(JsonElement args) => ActionOf(args) is { } a && _actions.TryGetValue(a, out var t) && t.ReadOnly;
@@ -511,7 +539,8 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var requested = ToolArgs.List(args, "ids", "agents", "agentIds") ?? ToolArgs.List(args, "id", "agentId", "agent");
+        var root = new ToolArgs(args);
+        var requested = NameList(root, "ids", "agents", "agentIds") ?? NameList(root, "id", "agentId", "agent");
         var ids = new List<string>();
         var problems = new List<string>();
         if (requested is { Count: > 0 })
@@ -524,13 +553,14 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
         }
         else
         {
-            // the running ones, and the finished ones whose report waits in your queue unseen (it comes back here instead)
+            // the running ones, the finished ones whose report still waits unseen (in the queue, or in flight between the
+            // child's finish and the notice reaching the parent), and it comes back here instead
             var unseen = runtime.GetQueue(context.SessionId)
                 .Where(q => q.Source.StartsWith("agent:", StringComparison.Ordinal) && q.Text.StartsWith("<agent-result", StringComparison.Ordinal))
                 .Select(q => q.Source["agent:".Length..])
                 .ToHashSet(StringComparer.Ordinal);
             ids = runtime.List(true)
-                .Where(a => a.ParentAgentId == context.AgentId && (IsBusy(a.Status) || unseen.Contains(a.Id)))
+                .Where(a => a.ParentAgentId == context.AgentId && (IsBusy(a.Status) || a.UnseenReport || unseen.Contains(a.Id)))
                 .Select(a => a.Id)
                 .ToList();
             if (ids.Count == 0)
@@ -543,7 +573,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
         }
         if (ids.Count == 0) return ToolResult.Error($"Unknown or out-of-reach agent(s): {string.Join(", ", problems)}. Use agent with action list to see your subagents.");
 
-        var seconds = ToolArgs.Num(args, "timeoutSeconds", "timeout") is { } t && t > 0 ? t : 3600;
+        var seconds = root.Double("timeoutSeconds", "timeout") is { } t && t > 0 ? t : 3600;
         var results = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct).ConfigureAwait(false);
 
         var sb = new StringBuilder();
@@ -569,8 +599,9 @@ internal sealed class AgentSendTool(IPluginContext plugin) : AgentToolBase(plugi
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var to = ToolArgs.Str(args, "to", "agent", "agentId", "id");
-        var message = ToolArgs.Str(args, "message", "text", "content");
+        var a = new ToolArgs(args);
+        var to = a.Str("to", "agent", "agentId", "id");
+        var message = a.Str("message", "text", "content");
         if (string.IsNullOrWhiteSpace(to)) return ToolResult.Error("Missing 'to': \"parent\" or an agent id.");
         if (string.IsNullOrWhiteSpace(message)) return ToolResult.Error("Missing 'message'.");
 
@@ -591,7 +622,7 @@ internal sealed class AgentSendTool(IPluginContext plugin) : AgentToolBase(plugi
         }
         if (target.Id == context.AgentId) return ToolResult.Error("You cannot message yourself.");
 
-        var mode = ToolArgs.Str(args, "mode")?.Trim().ToLowerInvariant() == "queue" ? DeliveryMode.Queue : DeliveryMode.Steer;
+        var mode = a.Str("mode")?.Trim().ToLowerInvariant() == "queue" ? DeliveryMode.Queue : DeliveryMode.Steer;
         var ok = await runtime.MessageAsync(context.AgentId, target.Id, message, mode, ct).ConfigureAwait(false);
         if (!ok) return ToolResult.Error($"Could not deliver the message to {target.Name} ({target.Id}).");
         var now = runtime.Get(target.Id) ?? target;
@@ -609,7 +640,7 @@ internal sealed class AgentListTool(IPluginContext plugin) : AgentToolBase(plugi
 
     protected override Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var all = ToolArgs.Bool(args, "all") == true;
+        var all = new ToolArgs(args).Bool("all") == true;
         var agents = runtime.List(true).Where(a => all || a.ParentAgentId == context.AgentId).Take(50).ToList();
         if (agents.Count == 0)
             return Task.FromResult(ToolResult.Ok(all ? "No agents." : "You have no subagents. Use agent_spawn to start one.", new JsonObject { ["agents"] = new JsonArray() }));
@@ -643,7 +674,7 @@ internal sealed class AgentResultTool(IPluginContext plugin) : AgentToolBase(plu
 
     protected override Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var id = ToolArgs.Str(args, "id", "agentId", "agent", "name");
+        var id = new ToolArgs(args).Str("id", "agentId", "agent", "name");
         if (string.IsNullOrWhiteSpace(id)) return Task.FromResult(ToolResult.Error("Missing 'id'."));
         var a = Resolve(runtime, context.AgentId, id, out var refusal);
         if (a is null) return Task.FromResult(ToolResult.Error(refusal is null
@@ -665,7 +696,7 @@ internal sealed class AgentCancelTool(IPluginContext plugin) : AgentToolBase(plu
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var id = ToolArgs.Str(args, "id", "agentId", "agent", "name");
+        var id = new ToolArgs(args).Str("id", "agentId", "agent", "name");
         if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("Missing 'id'.");
         var a = Resolve(runtime, context.AgentId, id, out var refusal);
         if (a is null)

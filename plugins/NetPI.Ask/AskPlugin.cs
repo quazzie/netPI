@@ -299,13 +299,19 @@ internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
     {
         questions = [];
         error = "";
-        args = Unwrap(args);
-        var list = args.ValueKind == JsonValueKind.Array ? args : Get(args, "questions");
-        if (list is { ValueKind: JsonValueKind.String } s) list = Unwrap(s);
+        var a = new ToolArgs(args);
         var items = new List<JsonElement>();
-        if (list is { ValueKind: JsonValueKind.Array } arr) items.AddRange(arr.EnumerateArray());
-        else if (list is { ValueKind: JsonValueKind.Object } one) items.Add(one);
-        else if (Get(args, "question") is not null) items.Add(args); // one question at the top level
+        if (a.Raw.ValueKind == JsonValueKind.Array)
+            items.AddRange(a.Raw.EnumerateArray());
+        else if (a.TryGet(out var list, "questions"))
+        {
+            if (list.ValueKind == JsonValueKind.String) list = ToolArgs.Unwrap(list);
+            if (list.ValueKind == JsonValueKind.Array) items.AddRange(list.EnumerateArray());
+            else if (list.ValueKind == JsonValueKind.Object) items.Add(list);
+            else if (a.Has("question")) items.Add(a.Raw); // one question at the top level ("questions" was not a list)
+        }
+        else if (a.Has("question"))
+            items.Add(a.Raw); // one question at the top level
         foreach (var q in items)
         {
             if (Question(q) is { } parsed) questions.Add(parsed);
@@ -332,22 +338,25 @@ internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
         if (q.ValueKind == JsonValueKind.String) text = q.GetString();
         else if (q.ValueKind == JsonValueKind.Object)
         {
-            text = Str(q, "question", "text", "prompt", "title");
-            var opts = Get(q, "options", "choices", "answers");
-            if (opts is { ValueKind: JsonValueKind.String } os) opts = Unwrap(os);
-            if (opts is { ValueKind: JsonValueKind.Array } oa)
+            var a = new ToolArgs(q);
+            text = a.Str("question", "text", "prompt", "title");
+            if (a.TryGet(out var opts, "options", "choices", "answers"))
             {
-                foreach (var o in oa.EnumerateArray())
+                if (opts.ValueKind == JsonValueKind.String) opts = ToolArgs.Unwrap(opts);
+                if (opts.ValueKind == JsonValueKind.Array)
                 {
-                    var label = o.ValueKind == JsonValueKind.String ? o.GetString() : o.ValueKind == JsonValueKind.Object ? Str(o, "label", "text", "value", "title", "name") : null;
-                    label = Clip(label, MaxLabel);
-                    if (label is null || options.Any(x => x.Label == label)) continue;
-                    var description = o.ValueKind == JsonValueKind.Object ? Clip(Str(o, "description", "detail", "details", "hint"), MaxDescription) : null;
-                    options.Add(new AskOption(label, description));
-                    if (options.Count == MaxOptions) break;
+                    foreach (var o in opts.EnumerateArray())
+                    {
+                        var label = o.ValueKind == JsonValueKind.String ? o.GetString() : o.ValueKind == JsonValueKind.Object ? new ToolArgs(o).Str("label", "text", "value", "title", "name") : null;
+                        label = Clip(label, MaxLabel);
+                        if (label is null || options.Any(x => x.Label == label)) continue;
+                        var description = o.ValueKind == JsonValueKind.Object ? Clip(new ToolArgs(o).Str("description", "detail", "details", "hint"), MaxDescription) : null;
+                        options.Add(new AskOption(label, description));
+                        if (options.Count == MaxOptions) break;
+                    }
                 }
             }
-            multiple = Get(q, "multiple", "multiSelect", "multi_select", "allowMultiple") is { ValueKind: JsonValueKind.True };
+            multiple = a.Bool("multiple", "multiSelect", "multi_select", "allowMultiple") == true;
         }
         else return null;
         text = Clip(text, MaxQuestion);
@@ -360,28 +369,4 @@ internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
         if (string.IsNullOrEmpty(s)) return null;
         return s.Length > max ? s[..max] + "…" : s;
     }
-
-    private static JsonElement Unwrap(JsonElement e)
-    {
-        if (e.ValueKind != JsonValueKind.String) return e;
-        try
-        {
-            using var doc = JsonDocument.Parse(e.GetString() ?? "{}");
-            return doc.RootElement.Clone();
-        }
-        catch (JsonException) { return e; }
-    }
-
-    private static string Norm(string s) => s.Replace("_", "").Replace("-", "").ToLowerInvariant();
-
-    private static JsonElement? Get(JsonElement e, params string[] names)
-    {
-        if (e.ValueKind != JsonValueKind.Object) return null;
-        foreach (var name in names)
-            foreach (var p in e.EnumerateObject())
-                if (Norm(p.Name) == Norm(name) && p.Value.ValueKind != JsonValueKind.Null) return p.Value;
-        return null;
-    }
-
-    private static string? Str(JsonElement e, params string[] names) => Get(e, names) is { ValueKind: JsonValueKind.String } v ? v.GetString() : null;
 }

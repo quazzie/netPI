@@ -45,7 +45,7 @@ public sealed partial class NudgeHook(Func<ISettings?> settings) : IAgentHook
     {
         var run = turn.Run;
         var s = settings();
-        if (!Get(s, "nudge.enabled", true) || run.CancellationToken.IsCancellationRequested)
+        if (!s.GetOr("nudge.enabled", true) || run.CancellationToken.IsCancellationRequested)
             return ValueTask.FromResult<TurnDecision?>(null);
 
         var reason = Classify(assistant, run.ToolCallCount);
@@ -57,7 +57,7 @@ public sealed partial class NudgeHook(Func<ISettings?> settings) : IAgentHook
             return ValueTask.FromResult<TurnDecision?>(null);
         }
 
-        var max = Get(s, "nudge.maxPerRun", 3);
+        var max = s.GetOr("nudge.maxPerRun", 3);
         var count = run.Items.TryGetValue(CountKey, out var v) && v is int n ? n : 0;
         if (count >= max) return ValueTask.FromResult<TurnDecision?>(null);
         run.Items[CountKey] = count + 1;
@@ -120,9 +120,4 @@ public sealed partial class NudgeHook(Func<ISettings?> settings) : IAgentHook
     [GeneratedRegex(@"\b(let me(?!\s+know)|now let me|i['’]ll|i will|next,? i['’]ll|let['’]s|now i['’]ll|i['’]m going to|i am going to)\b[^.!?\n]{0,160}(?::|…|\.\.\.)?\s*$", RegexOptions.IgnoreCase)]
     private static partial Regex AnnounceRegex();
 
-    private static T Get<T>(ISettings? s, string path, T fallback)
-    {
-        if (s is null) return fallback;
-        try { return s.Get(path, fallback) ?? fallback; } catch { return fallback; }
-    }
 }

@@ -2,37 +2,70 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace NetPI.Tools.Files;
+namespace NetPI;
 
 /// <summary>
-/// Lenient access to tool arguments. Names are matched ignoring case, '_' and '-'
-/// (so <c>file_path</c>, <c>filePath</c> and <c>FilePath</c> are the same), numbers may arrive as strings,
-/// booleans as "true"/"yes"/1, and a double-encoded JSON string object is unwrapped.
+/// Lenient access to tool arguments: the one reader every tool, hook and guard shares. Names are matched ignoring
+/// case, '_' and '-' (so <c>file_path</c>, <c>filePath</c> and <c>FilePath</c> are the same), numbers may arrive as
+/// strings, booleans as "true"/"yes"/1, and a string-encoded arguments object is unwrapped until it is one - the
+/// runner unwraps it for the tools, and this keeps the same result for what a hook or a test builds by hand, a
+/// double-encoded root included.
 /// </summary>
 public readonly struct ToolArgs
 {
     private readonly Dictionary<string, JsonElement> _props;
 
+    /// <summary>The arguments root after unwrapping: an object with the properties to read, or whatever was sent.</summary>
     public JsonElement Raw { get; }
 
     public ToolArgs(JsonElement args)
     {
         _props = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        if (args.ValueKind == JsonValueKind.String)
-        {
-            // Some models send the arguments object as a JSON string.
-            try
-            {
-                using var doc = JsonDocument.Parse(args.GetString() ?? "{}");
-                args = doc.RootElement.Clone();
-            }
-            catch (JsonException) { }
-        }
-        Raw = args;
-        if (args.ValueKind != JsonValueKind.Object) return;
-        foreach (var p in args.EnumerateObject())
+        Raw = Unwrap(args);
+        if (Raw.ValueKind != JsonValueKind.Object) return;
+        foreach (var p in Raw.EnumerateObject())
             _props.TryAdd(Key(p.Name), p.Value);
     }
+
+    /// <summary>
+    /// The arguments object a call was sent with, when some models send it as a JSON <em>string</em>: the same element
+    /// when it is not a string (or the string does not parse), otherwise the parsed one - repeated while the result is
+    /// a string again, so a double-encoded root reads the same here as through the runner plus a tool's own reader.
+    /// Never throws.
+    /// </summary>
+    public static JsonElement Unwrap(JsonElement args)
+    {
+        while (args.ValueKind == JsonValueKind.String)
+        {
+            var s = args.GetString();
+            if (s is null) break;
+            try
+            {
+                using var doc = JsonDocument.Parse(s);
+                args = doc.RootElement.Clone();
+            }
+            catch (JsonException) { break; }
+        }
+        return args;
+    }
+
+    /// <summary>
+    /// Tool arguments from the raw JSON string of a <see cref="ToolCallPart"/> — the hooks' view of a call: an empty
+    /// string is an empty object, and input that does not parse reads no properties (a call that cannot be read
+    /// cannot be judged, and the tool will fail it anyway).
+    /// </summary>
+    public static ToolArgs Parse(string? arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments)) return new ToolArgs(EmptyObject);
+        try
+        {
+            using var doc = JsonDocument.Parse(arguments);
+            return new ToolArgs(doc.RootElement.Clone());
+        }
+        catch (JsonException) { return new ToolArgs(default); }
+    }
+
+    private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement;
 
     private static string Key(string name)
     {
@@ -132,7 +165,7 @@ public readonly struct ToolArgs
 }
 
 /// <summary>Tiny JSON-schema builder for tool parameter definitions.</summary>
-public static class Schema
+public static class ToolSchema
 {
     public static JsonObject Object(params (string Name, JsonObject Schema, bool Required)[] props)
     {
@@ -165,116 +198,5 @@ public static class Schema
         var o = new JsonObject { ["type"] = type };
         if (!string.IsNullOrEmpty(description)) o["description"] = description;
         return o;
-    }
-}
-
-internal static class SettingsExtensions
-{
-    /// <summary>Settings read that never throws (wrong types in settings.json fall back to the default).</summary>
-    public static T SafeGet<T>(this ISettings? settings, string path, T defaultValue)
-    {
-        if (settings is null) return defaultValue;
-        try
-        {
-            var node = settings.GetNode(path);
-            if (node is null) return defaultValue;
-            if (node is JsonValue v)
-            {
-                if (v.TryGetValue<T>(out var t)) return t;
-                // "120" for an int setting, 120 for a string setting...
-                var s = v.ToString();
-                if (typeof(T) == typeof(string)) return (T)(object)s;
-                if (typeof(T) == typeof(int) && int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)) return (T)(object)i;
-                if (typeof(T) == typeof(double) && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)) return (T)(object)d;
-                if (typeof(T) == typeof(bool) && bool.TryParse(s, out var b)) return (T)(object)b;
-            }
-            return settings.Get(path, defaultValue) ?? defaultValue;
-        }
-        catch
-        {
-            return defaultValue;
-        }
-    }
-}
-
-/// <summary>Path formatting helpers shared by the tools.</summary>
-public static class PathDisplay
-{
-    public static readonly StringComparison PathComparison = WorkspacePaths.Comparison;
-
-    /// <summary>Path relative to <paramref name="baseDir"/> with forward slashes, or the absolute path when outside of it.</summary>
-    public static string Relative(string baseDir, string fullPath)
-    {
-        try
-        {
-            var rel = Path.GetRelativePath(baseDir, fullPath);
-            if (rel == ".") return ".";
-            if (rel.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(rel)) return fullPath.Replace('\\', '/');
-            return rel.Replace('\\', '/');
-        }
-        catch
-        {
-            return fullPath.Replace('\\', '/');
-        }
-    }
-
-    public static string FormatSize(long bytes) => bytes switch
-    {
-        < 1024 => $"{bytes} B",
-        < 1024 * 1024 => $"{bytes / 1024.0:0.#} KB".Replace(',', '.'),
-        < 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024):0.#} MB".Replace(',', '.'),
-        _ => $"{bytes / (1024.0 * 1024 * 1024):0.##} GB".Replace(',', '.'),
-    };
-
-    /// <summary>A short "did you mean" hint for a missing path (same directory, similar names).</summary>
-    public static string? Suggest(string missingPath)
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(missingPath);
-            var name = Path.GetFileName(missingPath);
-            if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(name)) return null;
-            if (!Directory.Exists(dir))
-                return $"The directory {dir} does not exist either.";
-            var candidates = new DirectoryInfo(dir).EnumerateFileSystemInfos("*", new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = 0 })
-                .Take(5000)
-                .Select(f => (f.Name, Score: Similarity(name, f.Name)))
-                .Where(x => x.Score >= 0.5)
-                .OrderByDescending(x => x.Score)
-                .Take(3)
-                .Select(x => x.Name)
-                .ToList();
-            return candidates.Count > 0 ? "Did you mean: " + string.Join(", ", candidates.Select(c => Path.Combine(dir, c))) + "?" : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static double Similarity(string a, string b)
-    {
-        if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase)) return 1;
-        a = a.ToLowerInvariant();
-        b = b.ToLowerInvariant();
-        if (Path.GetFileNameWithoutExtension(a) == Path.GetFileNameWithoutExtension(b)) return 0.9;
-        var d = Levenshtein(a, b);
-        return 1.0 - (double)d / Math.Max(a.Length, b.Length);
-    }
-
-    private static int Levenshtein(string a, string b)
-    {
-        if (a.Length > 200 || b.Length > 200) return Math.Max(a.Length, b.Length);
-        var prev = new int[b.Length + 1];
-        var cur = new int[b.Length + 1];
-        for (var j = 0; j <= b.Length; j++) prev[j] = j;
-        for (var i = 1; i <= a.Length; i++)
-        {
-            cur[0] = i;
-            for (var j = 1; j <= b.Length; j++)
-                cur[j] = Math.Min(Math.Min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
-            (prev, cur) = (cur, prev);
-        }
-        return prev[b.Length];
     }
 }
