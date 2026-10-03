@@ -8,8 +8,8 @@
   import { conn, rpc } from '../lib/rpc.svelte.js';
 
   const recent = $derived(app.sessions.filter((s) => !s.archived && !s.parentSessionId).slice(0, 6));
-  // the project last worked in: shown as a hint on the project button, which opens the picker — picking a
-  // project starts a session in it (the + button and Ctrl+T always start without one)
+  // the project last worked in: the split button starts a session in it, its chevron picks another one (the + button
+  // and Ctrl+T always start without a project)
   const target = $derived(app.lastProjectId ? (app.projectsById.get(app.lastProjectId) ?? null) : null);
   let targetEl = $state();
   // Ideas to work on, above the recent sessions (idea-ky14bu): the plugin ranks them, this screen only shows them.
@@ -18,6 +18,13 @@
 
   function pickTarget() {
     modals.projectPicker = modals.projectPicker ? null : { select: true, anchor: targetEl };
+  }
+
+  /** The project half of the split button: start in the project shown, without one when there is none. */
+  function startInTarget() {
+    // the chevron's picker hangs on this screen: it goes with it, or it would sit over the chat it just started
+    modals.projectPicker = null;
+    return newSession({ projectId: target?.id ?? null });
   }
 
   const projectName = (p) => (p.projectId ? (app.projectsById.get(p.projectId)?.name ?? p.projectName ?? p.projectId) : '');
@@ -71,17 +78,26 @@
             <Icon name="plus" size={15} /> New session <span class="np-kbd">Ctrl+T</span>
           </button>
           <span class="in">or</span>
-          <button
-            class="np-btn big target"
-            bind:this={targetEl}
-            onclick={pickTarget}
-            aria-haspopup="dialog"
-            title="Start a session in the project picked here"
-          >
-            <Icon name="folder" size={14} />
-            <span class="np-ellipsis">{target?.name ?? 'No project'}</span>
-            <Icon name="chevron-down" size={12} />
-          </button>
+          <!-- split button: the name starts in that project, the chevron picks another one -->
+          <div class="split" bind:this={targetEl}>
+            <button
+              class="np-btn big target"
+              onclick={startInTarget}
+              title={target ? `Start a session in ${target.name}` : 'Start a session in the default workspace'}
+            >
+              <Icon name="folder" size={14} />
+              <span class="np-ellipsis">{target?.name ?? 'No project'}</span>
+            </button>
+            <button
+              class="np-btn big target-more"
+              onclick={pickTarget}
+              aria-haspopup="dialog"
+              aria-label="Pick another project"
+              title="Pick another project"
+            >
+              <Icon name="chevron-down" size={12} />
+            </button>
+          </div>
         </div>
         <div class="where np-mono" title={target?.path ?? app.info?.defaultWorkspace ?? ''}>
           <bdi>{target?.path ?? app.info?.defaultWorkspace ?? 'the default workspace'}</bdi>
@@ -185,8 +201,25 @@
   .in {
     color: var(--fg-dim);
   }
-  .target {
+  /* split button: two halves of one button, the seam between them only a hairline */
+  .split {
+    display: flex;
     max-width: 260px;
+  }
+  .split .target {
+    min-width: 0;
+    max-width: 100%;
+    border-right-width: 0;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .split .target-more {
+    flex: none;
+    width: 30px;
+    padding: 0;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    box-shadow: inset 1px 0 0 var(--border-strong);
   }
   .where {
     max-width: 100%;

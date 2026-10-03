@@ -225,6 +225,38 @@ public static class UiTests
             Env.Log($"screenshots: {outDir}");
         }, 120);
 
+        r.Add("ui.start-project", "ui: the start screen's project button is a split button — its name starts a session in that project, its chevron picks another one", async () =>
+        {
+            // Unique per run: a shared server (shards, -Repeat) keeps projects between runs, so the button's label and the
+            // picker's rows would race a fixed project name.
+            var stamp = Guid.NewGuid().ToString("N")[..6];
+            var name = $"e2e-split-{stamp}";
+            var p = await env.NewProject(name);
+            var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "start-project.mjs");
+            var outDir = env.ScreenshotDir;
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--project", name, "--out", outDir })
+                psi.ArgumentList.Add(a);
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            try { await proc.WaitForExitAsync(cts.Token); }
+            catch (OperationCanceledException) { if (!proc.HasExited) proc.Kill(true); throw new AssertException("ui start-project timed out"); }
+            var output = await stdout;
+            var err = await stderr;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+            Check.True(json is not null, "start-project output: " + output + err);
+            using var doc = JsonDocument.Parse(json!);
+            var failed = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failed.Count == 0, $"{failed.Count} ui check(s) failed:\n      " + string.Join("\n      ", failed)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+            Check.Equal(0, proc.ExitCode, "start-project exit code; stderr: " + err);
+            Check.True(p.S("path") is not null, "the project has a folder");
+            Env.Log($"screenshots: {outDir}");
+        }, 150);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id

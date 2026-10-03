@@ -185,12 +185,12 @@ menu — one entry per starred project, a new session in it (idea-xzsy6z; they u
 took the space of the tab bar). The chevron only appears when there is at least one favorite; starring happens in the
 Projects tab (`prefs.favorites`).
 
-**New sessions and projects.** `newSession({ projectId? })` uses the explicit `projectId` (`null` means no
-project). Without one, it uses the active session's project; with no session open, it uses the project last
-worked in (`app.lastProjectId`: the last active session's project, or the one last chosen in a picker). The start
-screen shows that project as "New session in [project ▾]" with its folder underneath; its chip opens `ProjectPicker`
-in select mode (`{ select: true }`), which only changes `lastProjectId` and creates nothing, so the button, Ctrl+T and
-the + tab all start in the project shown. The project button in the composer bar (after the profile picker) and
+**New sessions and projects.** `newSession({ projectId? })` takes the explicit `projectId` (`null`/absent = no
+project): a new session never inherits one, so Ctrl+T, the + tab and the start screen's "New session" always start
+unattached. The start screen's project button is a split button: the name half starts a session in the project shown
+(its folder underneath is the hint), the chevron opens `ProjectPicker` in select mode (`{ select: true }`), which
+starts a session in the project picked and remembers it as `app.lastProjectId` (the project last worked in, read from
+`netpi.lastProject`) — "No project" starts unattached. The project button in the composer bar (after the profile picker) and
 `/project` open `ProjectPicker` for a session, which calls `sessions.setProject`; the context plugin then appends
 a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
 
