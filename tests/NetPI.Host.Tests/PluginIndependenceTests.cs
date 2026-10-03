@@ -1,4 +1,7 @@
+using System.Reflection;
+using System.Runtime.Loader;
 using System.Xml.Linq;
+using NetPI;
 
 namespace NetPI.Host.Tests;
 
@@ -34,7 +37,7 @@ public static class PluginIndependenceTests
         foreach (var project in projects)
         {
             var name = Path.GetFileNameWithoutExtension(project);
-            r.Add($"plugins independence: {name} starts and stops with no peers", async () =>
+            r.Add($"plugins independence: {name} starts and stops with no peers, [NetPiPlugin] matches, context collects", async () =>
             {
                 var app = Environment.GetEnvironmentVariable("NETPI_APP_DIR") ?? Path.Combine(T.RepoRoot, "artifacts", "dev", "app");
                 var built = Path.Combine(app, "plugins", name);
@@ -44,11 +47,37 @@ public static class PluginIndependenceTests
                 await using var server = await PluginTests.StartAsync(root).WaitAsync(TimeSpan.FromSeconds(10));
                 var plugin = server.Plugins.List().Single();
                 Check.Equal("running", plugin.State, plugin.Error);
+
+                // The host read the plugin's identity from its [NetPiPlugin] attribute; the registered values must
+                // be exactly what the attribute says. (Order: no plugin.json sets one, so the attribute's stands.)
+                var attr = PluginAttribute(server, plugin.Id, name);
+                Check.Equal(attr.Id, plugin.Id, $"{name}: the registered id differs from the attribute");
+                if (attr.Name is { } n) Check.Equal(n, plugin.Name, $"{name}: the registered name differs from the attribute");
+                Check.Equal(attr.Order, plugin.Order, $"{name}: the registered order differs from the attribute");
+
                 await server.Plugins.SetEnabledAsync(plugin.Id, false).WaitAsync(TimeSpan.FromSeconds(10));
                 Check.False(server.Rpc.List().Any(m => m.PluginId == plugin.Id), "RPC registrations removed");
                 Check.False(server.Kernel.Tools.Registrations.Any(t => t.PluginId == plugin.Id), "tools removed");
                 Check.False(server.Kernel.Ui.Tabs.Any(t => t.PluginId == plugin.Id), "tabs removed");
+
+                // Collectible unload, for every plugin: the host's own weak-reference check must report the
+                // stopped plugin's load context collected (something still referencing plugin types would leak it).
+                await Wait.Until(() => server.Kernel.Plugins.GetLoadState(plugin.Id).LastUnloadCollected == true,
+                    $"{name}: the load context was collected on stop", 30_000);
             });
         }
+    }
+
+    /// <summary>The plugin class's [NetPiPlugin] attribute, read from the assembly the host loaded into the
+    /// plugin's own (collectible) load context.</summary>
+    private static NetPiPluginAttribute PluginAttribute(NetPiServer server, string pluginId, string assemblyName)
+    {
+        var alc = server.Kernel.Plugins.GetLoadState(pluginId).Current?.Target as AssemblyLoadContext
+            ?? throw new AssertException($"{assemblyName}: no load context to read the attribute from");
+        var asm = alc.Assemblies.FirstOrDefault(a => a.GetName().Name == assemblyName)
+            ?? throw new AssertException($"{assemblyName}: the plugin assembly is not in its load context");
+        var type = asm.GetTypes().SingleOrDefault(t => t.IsPublic && !t.IsAbstract && typeof(INetPiPlugin).IsAssignableFrom(t))
+            ?? throw new AssertException($"{assemblyName}: no plugin class found");
+        return type.GetCustomAttribute<NetPiPluginAttribute>() ?? throw new AssertException($"{assemblyName}: missing [NetPiPlugin]");
     }
 }

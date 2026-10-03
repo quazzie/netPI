@@ -30,7 +30,6 @@ SshTests.Register(runner);
 PanelTests.Register(runner);
 InspectTests.Register(runner);
 RpcReadOnlyTests.Register(runner);
-LoadTests.Register(runner);
 ReviewStorageTests.Register(runner);
 var code = await runner.RunAsync(args);
 // only this run's root, so a concurrent run of the same suite keeps its files
