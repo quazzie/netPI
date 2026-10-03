@@ -1344,7 +1344,8 @@ log('plan mode: the pill, the plan card and its decisions');
   await page
     .waitForFunction(() => [...document.querySelectorAll('.content')].some((c) => c.offsetParent && c.textContent.includes('Carry out this approved plan')), null, { timeout: 15_000 })
     .catch(() => {});
-  check('plan: the new chat starts from the plan', (await page.locator('.content:visible').innerText()).includes('Re-subscribe to the open chats'));
+  const first = page.locator('.item[data-kind="user"]', { hasText: 'Carry out this approved plan' }).last();
+  check('plan: the new chat starts from the plan', (await first.count()) === 1 && (await first.innerText()).includes('Re-subscribe to the open chats'));
   await shot(page, '49-plan-new-chat');
   await settled();
   // leave the seeded state as it was: the plan chat is not archived and the new one is gone
@@ -1613,6 +1614,9 @@ log('projects dialog');
   check('the chip shows the new project', /mock/.test(await page.locator('.composer button[aria-label="Project"]').innerText()));
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForTimeout(300);
+  // keep the later project sections on the seeded state: this one's path holds the repository's name, so a later
+  // picker that looks for "netpi" in the project list would find it first
+  if (created) await rpcCall('projects.delete', { id: created.id });
 }
 
 }
@@ -2610,7 +2614,7 @@ log('deleting a chat leaves nothing of it behind');
   await ta.press('Enter');
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 20_000 }).catch(() => {});
   const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const mine = page.locator('.srow', { hasText: 'A short chat that will be deleted.' }).first();
+  const mine = page.locator('.srow', { hasText: 'A short chat that will be deleted' }).first(); // the title is the message without its final period
   await mine.focus();
   await page.keyboard.press('Delete');
   await page.locator('.dialog button', { hasText: /^Delete$/ }).click();

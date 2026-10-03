@@ -2,6 +2,7 @@
   "about": "Which E2E tests a changed file can affect: scripts/e2e.ps1 -Changed reads this. A file gets the union of the tags (and ids) of every rule whose path is a prefix of it; 'ignore' rules are for files no E2E test can see. A file that matches nothing is treated as a risk and runs the smoke set. 'all' means a contract changed: run the full gate. RunnerSelfTests checks that every tag exists and that every plugin folder has a rule, so a new plugin has to say what covers it.",
   "rules": [
     { "path": "src/NetPI.Abstractions/", "all": true },
+    { "path": "src/NetPI.Contracts/", "all": true },
     { "path": "src/NetPI.Host/", "tags": ["smoke", "lifecycle", "server", "sessions", "settings", "plugins", "startup", "profiles"] },
     { "path": "src/NetPI.Server/", "tags": ["smoke"] },
     { "path": "src/NetPI.Desktop/", "ignore": true },

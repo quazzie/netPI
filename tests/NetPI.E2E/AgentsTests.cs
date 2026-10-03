@@ -261,9 +261,16 @@ public static class AgentsTests
             Check.Equal("after approval\n", File.ReadAllText(Path.Combine(dir, "plan-e2e.txt")).ReplaceLineEndings("\n"), "after the approval the write ran");
 
             var idea = (await env.Rpc("ideas.list", new { })).Arr("ideas").Single(i => i.S("title") == "Add the file");
-            Check.Equal("planned", idea.S("status"));
-            Check.Equal("plan", idea.Arr("sections").First().S("kind"));
-            Check.Contains(idea.Arr("tags").First().GetString(), "plan");
+            try
+            {
+                Check.Equal("planned", idea.S("status"));
+                Check.Equal("plan", idea.Arr("sections").First().S("kind"));
+                Check.Contains(idea.Arr("tags").First().GetString(), "plan");
+            }
+            finally
+            {
+                await env.Rpc("ideas.delete", new { id = idea.S("id") }); // the backlog is the server's, and another test counts what is in it
+            }
             var meta = (await env.Rpc("sessions.get", new { id = sid })).P("meta");
             Check.Equal("approved", meta.P("planMode").S("state"));
             Check.Equal(2, meta.Arr("todo").Count(), "the plan's steps are the todo list");
