@@ -978,6 +978,25 @@ log('plugin tab: Ideas');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
   await ta.fill('');
+  // What the tab shows is where a new idea goes (idea-jizg2e): pick "Global" on the tab, and the dialog files under no project;
+  // pick the project again and it is the project's.
+  const pickScope = async (label) => {
+    await page.locator('.ideas .scope button[title="Project filter"]').click();
+    await page.locator('.np-menu .np-menu-item', { hasText: label }).first().click();
+    await page.waitForTimeout(200);
+  };
+  await pickScope('Global (unbound)');
+  await page.locator('.ideas .scope button[title^="New idea"]').click();
+  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
+  check('ideas: with the tab on Global a new idea is filed under no project', (await dlg.locator('.i-project').inputValue()) === 'global', await dlg.locator('.i-project').inputValue());
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await pickScope('This project');
+  await page.locator('.ideas .scope button[title^="New idea"]').click();
+  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
+  check('ideas: with the tab on the active project a new idea goes to it', (await dlg.locator('.i-project').inputValue()) === (activeProjectId ?? 'global'), await dlg.locator('.i-project').inputValue());
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
 
   const edited = await rpcCall('ideas.add', { projectId: activeProjectId ?? 'global', idea: { title: 'Dialog edit target', summary: 'before', tags: ['t1'] } });
   const edCard = cardTitled('Dialog edit target');
