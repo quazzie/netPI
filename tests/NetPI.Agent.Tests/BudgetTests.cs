@@ -231,7 +231,7 @@ public static class BudgetTests
         Check.True(status["dailyUsd"] is null);
 
         // A whole-file reload/replacement carries no path: budget changes must still reach an already open tab.
-        status = await Changed(() => h.Settings.Replace(JsonNode.Parse("""{ "budget": { "monthlyUsd": 75, "dailyUsd": 7 } }""")!.AsObject()));
+        status = await Changed(() => { h.Settings.Replace(JsonNode.Parse("""{ "budget": { "monthlyUsd": 75, "dailyUsd": 7 } }""")!.AsObject()); });
         Check.Equal(75.0, Num(status["monthlyUsd"]));
         Check.Equal(7.0, Num(status["dailyUsd"]));
         Check.Equal(0, h.Catalog.Calls, "no model activity was needed to publish any refresh");

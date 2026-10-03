@@ -156,14 +156,16 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     {
         var marker = new FlushMarker();
         lock (_flushLock) _flushes.Add(marker);
-        bool wrote = false;
+        var closing = false;
         try
         {
-            await _queue.Writer.WaitToWriteAsync().ConfigureAwait(false);   // the input is only full while the dispatcher is behind
-            wrote = _queue.Writer.TryWrite(marker);
+            // A full input only means the dispatcher is behind: keep writing until the marker is actually queued. A
+            // single TryWrite after WaitToWriteAsync would lose its slot to a competing producer and report a bus
+            // as "drained" that still holds what was published before the flush.
+            await _queue.Writer.WriteAsync(marker).ConfigureAwait(false);
         }
-        catch (ChannelClosedException) { }
-        if (!wrote) marker.Done.TrySetResult();   // the bus is going away: nothing is left to wait for
+        catch (ChannelClosedException) { closing = true; }   // the bus is going away: nothing is left to wait for
+        if (closing) marker.Done.TrySetResult();
         _ = marker.Done.Task.ContinueWith(_ => { lock (_flushLock) _flushes.Remove(marker); },
             TaskContinuationOptions.ExecuteSynchronously);
         await marker.Done.Task.ConfigureAwait(false);   // done when every live line has passed the marker

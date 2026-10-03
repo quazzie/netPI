@@ -171,7 +171,7 @@ internal sealed class SettingsStore : ISettings, IDisposable
         OnChanged(path);
     }
 
-    public void Replace(JsonObject root)
+    public SettingsReplace Replace(JsonObject root, JsonObject? baseDocument = null)
     {
         ArgumentNullException.ThrowIfNull(root);
         var clone = (JsonObject)root.DeepClone();
@@ -183,7 +183,10 @@ internal sealed class SettingsStore : ISettings, IDisposable
             lock (_gate)
             {
                 ThrowIfFileBroken();
-                if (JsonNode.DeepEquals(_root, clone)) return;
+                // The compare and the replace share this one section: a write that lands in between changes the
+                // document, and the second caller gets a conflict instead of silently removing the first one's change.
+                if (baseDocument is not null && !JsonNode.DeepEquals(_root, baseDocument)) return SettingsReplace.Conflict;
+                if (JsonNode.DeepEquals(_root, clone)) return SettingsReplace.Saved;
                 previous = _root;
                 previousText = _lastText;
                 _root = clone;
@@ -198,6 +201,7 @@ internal sealed class SettingsStore : ISettings, IDisposable
             }
         }
         OnChanged(null);
+        return SettingsReplace.Saved;
     }
 
     // ------------------------------------------------------------------ internals

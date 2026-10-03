@@ -65,5 +65,5 @@ public sealed class EmptySettings : ISettings
     public JsonNode? GetNode(string path) => null;
     public T? Get<T>(string path, T? defaultValue = default) => defaultValue;
     public void Set(string path, JsonNode? value) { }
-    public void Replace(JsonObject root) { }
+    public SettingsReplace Replace(JsonObject root, JsonObject? baseDocument = null) => SettingsReplace.Saved;
 }

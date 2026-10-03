@@ -278,10 +278,12 @@ internal static class CoreRpc
         {
             if (req.Prop("settings") is not { ValueKind: JsonValueKind.Object } s)
                 throw new RpcException("bad_request", "'settings' must be a JSON object");
-            if (req.Prop("base") is { ValueKind: JsonValueKind.Object } baseDoc &&
-                !JsonNode.DeepEquals(a.K.Settings.Snapshot(), JsonNode.Parse(baseDoc.GetRawText())))
+            // The compare and the replace are one store call under its writer lock: two saves that race on the same
+            // base cannot both pass the compare, so the later one gets the conflict instead of a silent lost update.
+            // base may hold credentials: it is compared in the store and is not logged or echoed here.
+            var baseDoc = req.Prop("base") is { ValueKind: JsonValueKind.Object } b ? (JsonObject)JsonNode.Parse(b.GetRawText())! : null;
+            if (a.K.Settings.Replace((JsonObject)JsonNode.Parse(s.GetRawText())!, baseDoc) is not SettingsReplace.Saved)
                 throw new RpcException("conflict", "The settings changed after you loaded them; reload and save again");
-            a.K.Settings.Replace((JsonObject)JsonNode.Parse(s.GetRawText())!);
             return true;
         });
 
