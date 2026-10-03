@@ -58,7 +58,12 @@ public sealed class BackupPlugin : INetPiPlugin
                     {
                         var latest = List(ctx.Paths.Home).Select(n => DateTimeOffset.Parse(n!["createdAt"]!.GetValue<string>())).DefaultIfEmpty(DateTimeOffset.MinValue).Max();
                         if (DateTimeOffset.UtcNow - latest >= TimeSpan.FromHours(Math.Clamp(ctx.Settings.Get("backup.intervalHours", 24), 1, 720)))
-                            await CreateAsync(ctx, true, ct);
+                        {
+                            // the success is logged like the failure in the catch below: when an automatic backup last ran
+                            // is otherwise invisible, and the backoff test needs to know the attempt it waits for is over.
+                            var made = await CreateAsync(ctx, true, ct).ConfigureAwait(false);
+                            ctx.Logger.LogInformation("Automatic backup created ({Snapshot})", made["id"]!.GetValue<string>());
+                        }
                     }
                     backoff = TimeSpan.Zero;   // it came back: the regular cadence is back
                 }
