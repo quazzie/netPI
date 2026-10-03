@@ -23,7 +23,7 @@ public sealed class DecidePlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Str("decide.baseUrl", "Server URL", "", "Empty: the AiProxy/AiGateway server (providers.aiproxy.baseUrl)."),
-                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. laya-logs: the four log questions on the nuc. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070)."),
+                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070)."),
                 SettingInfo.Int("decide.maxItems", "Most items per call", 500, null, 1, 5000),
                 SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16),
                 SettingInfo.Str("decide.bulkModel", "Bulk decision model", "", "Explicit model for multi-item work; empty keeps the caller's choice. Does not load models."),

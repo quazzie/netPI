@@ -416,7 +416,7 @@ refuses an `ssh` download into another checkout of the repository.
 | `web.search.count` | `8` | results per search (max 20) |
 | `media.maxBytes` | `10000000` | largest image `show_image` shows |
 | `decide.baseUrl` | – | server for `decide` (`POST /v1/systemone`); empty = `providers.aiproxy.baseUrl` |
-| `decide.model` | `qwen3.8-27b` | decision model `decide` asks: `qwen3.8-27b` on NInfer (through AiGateway's System One bridge; the best without training, no extra memory, shares the 5090 with the agents), `laya-logs` for the four log questions on the nuc, or `kev-9b`/`kev-4b` on the nuc (load it from AiHub first; it takes the whole 4070). See docs/DECISION-MODELS.md |
+| `decide.model` | `qwen3.8-27b` | decision model `decide` asks: `qwen3.8-27b` on NInfer (through AiGateway's System One bridge; the best without training, no extra memory, shares the 5090 with the agents), or `kev-9b`/`kev-4b` on the nuc (load it from AiHub first; it takes the whole 4070). See docs/DECISION-MODELS.md |
 | `decide.maxItems` | `500` | most items per `decide` call (1–5000) |
 | `decide.parallel` | `4` | `decide` requests at once (1–16) |
 | `decide.groupSimilarity` | `0.985` | with embeddings, `decide` items at or above this cosine share one decision (a log line that differs only in a timestamp); identical items always do; 0 = only identical ones. Kept high on purpose: lines that differ in an error code must stay apart |
