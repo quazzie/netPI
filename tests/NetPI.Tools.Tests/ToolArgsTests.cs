@@ -27,6 +27,9 @@ public static class ToolArgsTests
             Check.False(new ToolArgs(El("\"{bad\"")).Has("a"), "an unparseable string reads nothing");
             Check.Equal(JsonValueKind.String, new ToolArgs(El("\"{bad\"")).Raw.ValueKind);
             Check.Equal(JsonValueKind.Array, new ToolArgs(El("[1,2]")).Raw.ValueKind, "a non-object root keeps its kind in Raw");
+            // a double-encoded root unwraps level by level, until it is no longer a string
+            var doubleEncoded = JsonSerializer.Serialize("\"{\\\"a\\\":1}\"");
+            Check.Equal("1", new ToolArgs(El(doubleEncoded)).Str("a"), "a double-encoded root is unwrapped");
         });
 
         r.Add("args: names match ignoring case, '_', '-' and spaces", () =>
@@ -98,6 +101,7 @@ public static class ToolArgsTests
             Check.False(ToolArgs.Parse(null).Has("a"));
             Check.Equal("1", ToolArgs.Parse("{\"a\":1}").Str("a"));
             Check.Equal("1", ToolArgs.Parse("\"{\\\"a\\\":1}\"").Str("a"), "a string-encoded object is unwrapped");
+            Check.Equal("1", ToolArgs.Parse(JsonSerializer.Serialize("\"{\\\"a\\\":1}\"")).Str("a"), "a double-encoded root is unwrapped, as the tool sees it");
             Check.Equal(JsonValueKind.Undefined, ToolArgs.Parse("{bad").Raw.ValueKind, "input that does not parse reads nothing (and never throws)");
             Check.False(ToolArgs.Parse("{bad").Has("a"));
         });

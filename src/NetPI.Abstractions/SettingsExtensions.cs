@@ -12,7 +12,7 @@ public static class SettingsExtensions
 {
     /// <summary>A settings read that never throws (the store already turns a wrong type into its default): missing or
     /// unreadable is <paramref name="fallback"/>.</summary>
-    public static T GetOr<T>(this ISettings? settings, string path, T fallback = default)
+    public static T GetOr<T>(this ISettings? settings, string path, T fallback)
     {
         if (settings is null) return fallback;
         var value = settings.Get(path, fallback);

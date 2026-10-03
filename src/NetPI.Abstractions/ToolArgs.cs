@@ -7,8 +7,9 @@ namespace NetPI;
 /// <summary>
 /// Lenient access to tool arguments: the one reader every tool, hook and guard shares. Names are matched ignoring
 /// case, '_' and '-' (so <c>file_path</c>, <c>filePath</c> and <c>FilePath</c> are the same), numbers may arrive as
-/// strings, booleans as "true"/"yes"/1, and a double-encoded JSON string object is unwrapped — the runner unwraps it
-/// for the tools once, and this keeps the same result for what a hook or a test builds by hand.
+/// strings, booleans as "true"/"yes"/1, and a string-encoded arguments object is unwrapped until it is one - the
+/// runner unwraps it for the tools, and this keeps the same result for what a hook or a test builds by hand, a
+/// double-encoded root included.
 /// </summary>
 public readonly struct ToolArgs
 {
@@ -28,18 +29,22 @@ public readonly struct ToolArgs
 
     /// <summary>
     /// The arguments object a call was sent with, when some models send it as a JSON <em>string</em>: the same element
-    /// when it is not a string (or the string does not parse), otherwise the parsed one. Never throws.
+    /// when it is not a string (or the string does not parse), otherwise the parsed one - repeated while the result is
+    /// a string again, so a double-encoded root reads the same here as through the runner plus a tool's own reader.
+    /// Never throws.
     /// </summary>
     public static JsonElement Unwrap(JsonElement args)
     {
-        if (args.ValueKind == JsonValueKind.String)
+        while (args.ValueKind == JsonValueKind.String)
         {
+            var s = args.GetString();
+            if (s is null) break;
             try
             {
-                using var doc = JsonDocument.Parse(args.GetString() ?? "{}");
+                using var doc = JsonDocument.Parse(s);
                 args = doc.RootElement.Clone();
             }
-            catch (JsonException) { }
+            catch (JsonException) { break; }
         }
         return args;
     }
