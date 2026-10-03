@@ -519,8 +519,20 @@ internal static class Win
     public static string Title(IntPtr h) { var s = new StringBuilder(512); GetWindowText(h, s, 512); return s.ToString(); }
     private static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
     public static string Class(IntPtr h) => Cls(h);
-    /// <summary>BM_CLICK, posted: the button clicks itself without the caller waiting for what the click does.</summary>
-    public static void PostClick(IntPtr h) => PostMessage(h, 0x00F5, IntPtr.Zero, IntPtr.Zero);
+    [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr h);
+    [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr h);
+
+    /// <summary>
+    /// The button's click, posted: its parent gets the WM_COMMAND / BN_CLICKED a click sends (a dialog acts on it, WinForms
+    /// reflects it to the button), so nobody waits for what the click does and the window needs no activation (a posted
+    /// BM_CLICK can be dropped by a window that is not active). A button without a parent gets BM_CLICK.
+    /// </summary>
+    public static void PostClick(IntPtr h)
+    {
+        var parent = GetParent(h);
+        if (parent == IntPtr.Zero) { PostMessage(h, 0x00F5 /* BM_CLICK */, IntPtr.Zero, IntPtr.Zero); return; }
+        PostMessage(parent, 0x0111 /* WM_COMMAND */, (IntPtr)(GetDlgCtrlID(h) & 0xFFFF /* BN_CLICKED = 0 in the high word */), h);
+    }
     public static IntPtr Owner(IntPtr h) => GetWindow(h, 4 /* GW_OWNER */);
     public static void PostClose(IntPtr h) => PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero);
 

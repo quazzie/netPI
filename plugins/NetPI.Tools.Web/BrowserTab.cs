@@ -111,6 +111,18 @@ internal sealed class BrowserTab
         try { await Send("Target.setAutoAttach", new { autoAttach = true, waitForDebuggerOnStart = false, flatten = true }, ct).ConfigureAwait(false); }
         catch (Exception ex) when (ex is InvalidOperationException or TimeoutException) { }
         _mainFrame = (await Send("Page.getFrameTree", null, ct).ConfigureAwait(false)).GetProperty("frameTree").GetProperty("frame").GetProperty("id").GetString();
+        // a tab taken while it loads (a shared tab, a tab a link opened): its start went by before we listened
+        // — or one still on its first, blank document while its page is on the way
+        const string loaded = "document.readyState === 'complete' && !(location.href === 'about:blank' && TARGET !== 'about:blank') ? 'yes' : 'no'";
+        var target = (await InfoAsync(ct).ConfigureAwait(false)).Url;
+        var probe = loaded.Replace("TARGET", JsonSerializer.Serialize(target.Length == 0 ? "about:blank" : target), StringComparison.Ordinal);
+        if (await EvalAsync(probe, ct).ConfigureAwait(false) == "no")
+        {
+            if (_stopped.Task.IsCompleted) _stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _loading = true;
+            // the load may have finished between the question and now: ask again, so the wait cannot hang on it
+            if (await EvalAsync("document.readyState === 'complete' && location.href !== 'about:blank' ? 'yes' : 'no'", ct).ConfigureAwait(false) == "yes") { _loading = false; _stopped.TrySetResult(); }
+        }
         _docVersion++;
         if (Volatile.Read(ref _viewers) > 0) await StartScreencastCoreAsync(ct).ConfigureAwait(false);
         Changed?.Invoke();

@@ -24,7 +24,7 @@ public static class WindowsTests
 
     public static void Register(TestRunner r)
     {
-        r.Add("windows: open a window; numbered controls; type, click, toggle, slider through patterns; changes only; steps, find, read, a modal dialog, screenshot, use, close, journal", async () =>
+        r.Add("windows: open a window; numbered controls; type, click, toggle through patterns; changes only; steps, find, read, an owned dialog, screenshot, use, close, journal", async () =>
         {
             if (!OperatingSystem.IsWindows()) Check.Skip("Windows only");
             var agentExe = Built("artifacts/dev/app/plugins/NetPI.Tools.Windows/agent/netpi-windows-agent.exe");
@@ -75,7 +75,9 @@ public static class WindowsTests
                 Check.Contains(toggled.Content, $"[{agree}] [checkbox] I agree (on)");
                 Check.Contains(toggled.Content, "Agreed");
 
-                Check.Contains((await Do(new { action = "type", n = volume, text = "7" })).Content, "Volume 7");
+                // the slider is listed; setting it here would take the keyboard (a track bar ignores UIA's set value, so
+                // the tool falls back to Home/Right keys with the window in front), which a test on the owner's desktop must not do
+                Check.Contains(w.Content, $"[{volume}] [slider] Volume");
 
                 var steps = await Do(new { action = "steps", steps = new object[] { new { action = "type", n = name, text = "Bob" }, new { action = "click", n = add } } });
                 Check.Contains(steps.Content, "[listitem] Bob");
@@ -86,8 +88,8 @@ public static class WindowsTests
                 var status = N(found, "Added Bob");
                 Check.Equal("Added Bob", (await Do(new { action = "read", n = status })).Content.Split('\n')[1]);
 
-                // a modal dialog: the button's invoke waits for it, the tool does not; the dialog joins the window's controls
-                var ask = await Run(new { action = "click", n = N(w, @"^\[button\] Ask") });
+                // a window the click opens (owned by the test window) joins its controls; its buttons are clicked by a posted click
+                var ask = await Do(new { action = "click", n = N(w, @"^\[button\] Ask") });
                 Check.Contains(ask.Content, "[button] Yes");
                 var yes = await Do(new { action = "click", n = N(ask, @"^\[button\] Yes") });
                 Check.Contains(yes.Content, "Proceeding");

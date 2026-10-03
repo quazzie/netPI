@@ -310,12 +310,20 @@ internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAge
     private async Task<ToolResult> SnapshotAsync(ChatWindow win, string result, string action, CancellationToken ct,
         bool full = false, bool all = false, bool offscreen = false, bool error = false)
     {
-        // the app updates its tree a moment after a pattern call
-        if (!full) await Task.Delay(150, ct).ConfigureAwait(false);
         var max = all ? int.MaxValue : Math.Clamp(ctx.Settings.Get("windows.maxControls", 300), 50, 5000);
         string title;
         List<Item> items;
-        try { (title, items) = await ReadWindowAsync(win, offscreen, ct).ConfigureAwait(false); }
+        try
+        {
+            // the app updates its tree a moment after a pattern call or a posted click: read again until something
+            // changed (about a second at most), so the result shows what the action did
+            (title, items) = await ReadWindowAsync(win, offscreen, ct).ConfigureAwait(false);
+            for (var k = 0; !full && k < 8 && Same(win.Last, items); k++)
+            {
+                await Task.Delay(125, ct).ConfigureAwait(false);
+                (title, items) = await ReadWindowAsync(win, offscreen, ct).ConfigureAwait(false);
+            }
+        }
         catch (InvalidOperationException ex) when (ex.Message.Contains("the window is gone", StringComparison.Ordinal))
         {
             return ToolResult.Error($"{result}\nThe window is gone (closed). List the windows to find a dialog it left, or open the program again.".TrimStart(),
@@ -363,6 +371,10 @@ internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAge
         var content = sb.ToString().TrimEnd();
         return new ToolResult { Content = content, IsError = error, Details = new { action, window = win.Hwnd, title, controls = items.Count, shown = shown.Count, result } };
     }
+
+    private static bool Same(List<Item> a, List<Item> b) =>
+        a.Count == b.Count && a.Zip(b).All(p => p.First.N == p.Second.N
+            && p.First.Text.Replace(" (focused)", "", StringComparison.Ordinal) == p.Second.Text.Replace(" (focused)", "", StringComparison.Ordinal));
 
     private static List<Item> Nearest(List<Item> items, int max) =>
         items.Count <= max ? items : [.. items.Select((x, k) => (x, k)).OrderBy(p => p.x.Dist).ThenBy(p => p.k).Take(max).OrderBy(p => p.k).Select(p => p.x)];
