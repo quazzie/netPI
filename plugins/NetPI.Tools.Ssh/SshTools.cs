@@ -98,10 +98,10 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
     /// <summary>The action of a call ("run" when a script is given without one).</summary>
     internal static string? ActionOf(JsonElement args)
     {
-        args = A.Unwrap(args);
-        var a = A.Str(args, "action", "verb", "command")?.Trim().ToLowerInvariant();
-        if (a is null && A.Str(args, "script") is not null) a = "run";
-        return a switch { "exec" or "execute" => "run", "list" => "hosts", "cat" => "read", "scp" or "upload" or "download" => "copy", _ => a };
+        var a = new ToolArgs(args);
+        var action = a.Str("action", "verb", "command")?.Trim().ToLowerInvariant();
+        if (action is null && a.Str("script") is not null) action = "run";
+        return action switch { "exec" or "execute" => "run", "list" => "hosts", "cat" => "read", "scp" or "upload" or "download" => "copy", _ => action };
     }
 
     public bool IsReadOnly(JsonElement args) => ActionOf(args) is { } a && _actions.TryGetValue(a, out var t) && t.ReadOnly;
@@ -112,11 +112,11 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
         if (action is null || !_actions.TryGetValue(action, out var tool))
             return Task.FromResult(ToolResult.Error($"{(action is null ? "Give an action" : $"Unknown action \"{action}\"")}: hosts, run, read, write, edit or copy."));
         // "action": "upload" (or "download") is copy in that direction
-        var raw = A.Unwrap(args);
-        if (A.Str(raw, "action")?.Trim().ToLowerInvariant() is "upload" or "download" && A.Str(raw, "direction") is null)
+        var a = new ToolArgs(args);
+        if (a.Str("action")?.Trim().ToLowerInvariant() is "upload" or "download" && a.Str("direction") is null)
         {
-            var o = JsonNode.Parse(raw.GetRawText())!.AsObject();
-            o["direction"] = A.Str(raw, "action")!.Trim().ToLowerInvariant();
+            var o = JsonNode.Parse(a.Raw.GetRawText())!.AsObject();
+            o["direction"] = a.Str("action")!.Trim().ToLowerInvariant();
             args = JsonSerializer.SerializeToElement(o);
         }
         return tool.ExecuteAsync(context, args, ct);
@@ -160,7 +160,7 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        args = A.Unwrap(args);
+        var a = new ToolArgs(args);
         // The control socket's directory must exist before ssh uses it (ssh will not make parent folders);
         // when it cannot be made the call runs without multiplexing rather than failing.
         var controlDir = Path.Combine(ctx.Paths.Home, "ssh");
@@ -183,7 +183,7 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
         SshHost? host = null;
         if (this is not SshHostsTool)
         {
-            var name = A.Str(args, "host", "server", "alias")?.Trim();
+            var name = a.Str("host", "server", "alias")?.Trim();
             var hosts = SshConfig.Read(o.Config);
             if (string.IsNullOrEmpty(name))
                 return ToolResult.Error($"ssh needs a host: one of {Names(hosts)}.");
@@ -193,7 +193,7 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
                     ? $"No hosts: {o.Config} has no Host entries. Add the host there first."
                     : $"Unknown host \"{name}\". The hosts are the aliases in {o.Config}: {Names(hosts)}.");
         }
-        try { return await RunAsync(context, args, o, host!, ct).ConfigureAwait(false); }
+        try { return await RunAsync(context, a.Raw, o, host!, ct).ConfigureAwait(false); }
         catch (System.ComponentModel.Win32Exception ex)
         {
             return ToolResult.Error($"Could not start {o.Ssh}: {ex.Message}. Install OpenSSH or set ssh.path in the settings.");
@@ -266,10 +266,11 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
-        var script = A.Str(args, "script", "command", "cmd", "code");
+        var a = new ToolArgs(args);
+        var script = a.Str("script", "command", "cmd", "code");
         if (string.IsNullOrWhiteSpace(script)) return ToolResult.Error("ssh_run needs a script.");
-        var cwd = A.Str(args, "cwd", "dir", "directory", "workdir");
-        var timeout = Math.Clamp(A.Int(args, "timeout", "timeout_seconds") ?? o.Timeout, 1, 1800);
+        var cwd = a.Str("cwd", "dir", "directory", "workdir");
+        var timeout = Math.Clamp(a.Int("timeout", "timeout_seconds") ?? o.Timeout, 1, 1800);
 
         // The remote login shell only sees this fixed line: it saves stdin (the script) to a temp file and runs it in its
         // own session (setsid) under timeout, which ends the whole process group; the first output line is its PGID.
@@ -407,10 +408,11 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
-        var path = A.Str(args, "path", "file", "file_path")?.Trim();
+        var a = new ToolArgs(args);
+        var path = a.Str("path", "file", "file_path")?.Trim();
         if (string.IsNullOrEmpty(path)) return ToolResult.Error("ssh_read needs a path.");
-        var cwd = A.Str(args, "cwd");
-        var offsetArg = A.Int(args, "offset", "start_line", "line") ?? 1;
+        var cwd = a.Str("cwd");
+        var offsetArg = a.Int("offset", "start_line", "line") ?? 1;
         // A negative offset counts from the end of the file, which the first 8 MB (the default capture) does not reach;
         // fetch the tail instead, so "from the end" means the file's end, not the window's end.
         var file = await Fetch(o, host, path, cwd, hash: false, tail: offsetArg < 0, ct).ConfigureAwait(false);
@@ -428,7 +430,7 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
             return ToolResult.Error(file.Cut
                 ? $"offset {offset} is beyond the {(offsetArg < 0 ? "last" : "first")} {MaxReadBytes / 1024 / 1024} MB of {Where(host, path)}, which is all ssh_read can see. The file is {file.Size / 1024 / 1024} MB; read a further window with ssh_run (tail, sed -n)."
                 : $"offset {offset} is past the end of the file: {Where(host, path)} has {total} lines.");
-        var limit = Math.Clamp(A.Int(args, "limit", "lines", "count") ?? MaxLines, 1, MaxLines);
+        var limit = Math.Clamp(a.Int("limit", "lines", "count") ?? MaxLines, 1, MaxLines);
         var sb = new StringBuilder();
         var taken = 0;
         string? lineNote = null;
@@ -530,11 +532,12 @@ internal sealed class SshWriteTool(IPluginContext ctx, ISshLauncher launcher) : 
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
-        var path = A.Str(args, "path", "file", "file_path")?.Trim();
+        var a = new ToolArgs(args);
+        var path = a.Str("path", "file", "file_path")?.Trim();
         if (string.IsNullOrEmpty(path)) return ToolResult.Error("ssh_write needs a path.");
-        var content = A.Str(args, "content", "text", "data");
+        var content = a.Str("content", "text", "data");
         if (content is null) return ToolResult.Error("ssh_write needs content (an empty string empties the file).");
-        var append = A.Bool(args, "append") ?? false;
+        var append = a.Bool("append") ?? false;
         var bytes = Encoding.UTF8.GetBytes(content);
         if (bytes.Length > MaxWriteBytes)
             return ToolResult.Error($"The content is {Size(bytes.Length)}; ssh_write streams at most {Size(MaxWriteBytes)} per call, so a transfer that stops short cannot leave a half-written file behind. " +
@@ -543,9 +546,9 @@ internal sealed class SshWriteTool(IPluginContext ctx, ISshLauncher launcher) : 
         // target's mode copied over, 644 for a new file), like ssh_edit: an interruption before the rename leaves the old
         // content exactly as it was — the target is never truncated. append streams straight in: cat >> cannot shorten it.
         var remote = append
-            ? Sh.Cd(A.Str(args, "cwd")) +
+            ? Sh.Cd(a.Str("cwd")) +
               $"p={Sh.Path(path)}; mkdir -p -- \"$(dirname -- \"$p\")\" && cat >>\"$p\""
-            : Sh.Cd(A.Str(args, "cwd")) +
+            : Sh.Cd(a.Str("cwd")) +
               $"p={Sh.Path(path)}; if [ -e \"$p\" ]; then echo existed; fi; " +
               "mkdir -p -- \"$(dirname -- \"$p\")\" || exit 4; " +
               "t=$(mktemp -- \"${p}.netpi.XXXXXX\") || exit 5; " +
@@ -577,11 +580,12 @@ internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : S
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
-        var path = A.Str(args, "path", "file", "file_path")?.Trim();
+        var a = new ToolArgs(args);
+        var path = a.Str("path", "file", "file_path")?.Trim();
         if (string.IsNullOrEmpty(path)) return ToolResult.Error("ssh_edit needs a path.");
         var edits = Edits(args);
         if (edits.Count == 0) return ToolResult.Error("ssh_edit needs edits: [{ \"oldText\", \"newText\" }].");
-        var cwd = A.Str(args, "cwd");
+        var cwd = a.Str("cwd");
 
         var reader = new SshReadTool(Ctx, Launcher);
         var file = await reader.Fetch(o, host, path, cwd, hash: true, tail: false, ct).ConfigureAwait(false);
@@ -634,15 +638,19 @@ internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : S
 
     private static List<TextEdit> Edits(JsonElement args)
     {
+        var a = new ToolArgs(args);
         var list = new List<TextEdit>();
-        var replaceAllTop = A.Bool(args, "replace_all", "replaceAll") ?? false;
-        if (A.Get(args, "edits", "changes") is { ValueKind: JsonValueKind.Array } arr)
+        var replaceAllTop = a.Bool("replace_all", "replaceAll") ?? false;
+        if (a.TryGet(out var arr, "edits", "changes") && arr.ValueKind == JsonValueKind.Array)
         {
             foreach (var e in arr.EnumerateArray())
-                if (A.Str(e, "oldText", "old_text", "old", "search") is { } old && A.Str(e, "newText", "new_text", "new", "replace") is { } neu)
-                    list.Add(new TextEdit(old, neu, A.Bool(e, "replace_all", "replaceAll") ?? replaceAllTop));
+            {
+                var ea = new ToolArgs(e);
+                if (ea.Str("oldText", "old_text", "old", "search") is { } old && ea.Str("newText", "new_text", "new", "replace") is { } neu)
+                    list.Add(new TextEdit(old, neu, ea.Bool("replace_all", "replaceAll") ?? replaceAllTop));
+            }
         }
-        else if (A.Str(args, "oldText", "old_text", "old") is { } old && A.Str(args, "newText", "new_text", "new") is { } neu)
+        else if (a.Str("oldText", "old_text", "old") is { } old && a.Str("newText", "new_text", "new") is { } neu)
             list.Add(new TextEdit(old, neu, replaceAllTop));
         return list;
     }
@@ -660,12 +668,13 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
-        var direction = (A.Str(args, "direction", "mode") ?? "").Trim().ToLowerInvariant();
-        var from = A.Str(args, "from", "source", "src")?.Trim();
-        var to = A.Str(args, "to", "destination", "dest", "target")?.Trim();
+        var a = new ToolArgs(args);
+        var direction = (a.Str("direction", "mode") ?? "").Trim().ToLowerInvariant();
+        var from = a.Str("from", "source", "src")?.Trim();
+        var to = a.Str("to", "destination", "dest", "target")?.Trim();
         if (direction is not ("upload" or "download")) return ToolResult.Error("ssh_copy needs direction: upload or download.");
         if (string.IsNullOrEmpty(from) || string.IsNullOrEmpty(to)) return ToolResult.Error("ssh_copy needs from and to.");
-        var recursive = A.Bool(args, "recursive", "r") ?? false;
+        var recursive = a.Bool("recursive", "r") ?? false;
 
         // scp reads "C:\x" as host "C": run it in the local folder and pass a relative name
         string local, workDir, localArg;
@@ -708,55 +717,4 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
         try { return new DirectoryInfo(dir).EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length); }
         catch (Exception) { return 0; }
     }
-}
-
-// ---------------------------------------------------------------------------------------------------------------- args
-
-/// <summary>Lenient argument access: names match ignoring case, '_' and '-'; numbers/bools may be strings.</summary>
-internal static class A
-{
-    private static string Norm(string s) => s.Replace("_", "").Replace("-", "").ToLowerInvariant();
-
-    public static JsonElement Unwrap(JsonElement args)
-    {
-        if (args.ValueKind != JsonValueKind.String) return args;
-        try
-        {
-            using var doc = JsonDocument.Parse(args.GetString() ?? "{}");
-            return doc.RootElement.Clone();
-        }
-        catch (JsonException) { return args; }
-    }
-
-    public static JsonElement? Get(JsonElement args, params string[] names)
-    {
-        if (args.ValueKind != JsonValueKind.Object) return null;
-        foreach (var name in names)
-            foreach (var p in args.EnumerateObject())
-                if (Norm(p.Name) == Norm(name) && p.Value.ValueKind != JsonValueKind.Null) return p.Value;
-        return null;
-    }
-
-    public static string? Str(JsonElement args, params string[] names) => Get(args, names) switch
-    {
-        { ValueKind: JsonValueKind.String } v => v.GetString(),
-        { ValueKind: JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False } v => v.GetRawText(),
-        _ => null,
-    };
-
-    public static int? Int(JsonElement args, params string[] names) => Get(args, names) switch
-    {
-        { ValueKind: JsonValueKind.Number } v when v.TryGetDouble(out var d) => (int)Math.Clamp(d, int.MinValue, int.MaxValue),
-        { ValueKind: JsonValueKind.String } v when int.TryParse(v.GetString(), out var i) => i,
-        _ => null,
-    };
-
-    public static bool? Bool(JsonElement args, params string[] names) => Get(args, names) switch
-    {
-        { ValueKind: JsonValueKind.True } => true,
-        { ValueKind: JsonValueKind.False } => false,
-        { ValueKind: JsonValueKind.String } v when bool.TryParse(v.GetString(), out var b) => b,
-        { ValueKind: JsonValueKind.Number } v => v.GetDouble() != 0,
-        _ => null,
-    };
 }
