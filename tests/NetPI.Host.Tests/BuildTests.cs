@@ -29,7 +29,7 @@ public static class BuildTests
     /// A console program started from a process that has no console (the desktop app runs agents' test runs, so does any
     /// service) opens a window of its own unless the start says otherwise: the run that exercises the install lock then shows
     /// "Another publish is installing" in windows on the owner's screen. Every <c>ProcessStartInfo</c> in the tests that does
-    /// not hand the process to the shell sets <c>CreateNoWindow</c>.
+    /// not hand the process to the shell sets <c>CreateNoWindow</c>, and a <c>Start-Process</c> in a script a test writes is hidden.
     /// </summary>
     private static void TestProcessesHaveNoWindow()
     {
@@ -41,6 +41,8 @@ public static class BuildTests
             var lines = File.ReadAllLines(file);
             for (var i = 0; i < lines.Length; i++)
             {
+                // a PowerShell script a test writes: Start-Process opens a window of its own unless it is told not to
+                if (System.Text.RegularExpressions.Regex.IsMatch(lines[i], @"^\s*(\$\w+\s*=\s*)?Start-Process\b") && !lines[i].Contains("-WindowStyle Hidden") && !lines[i].Contains("-NoNewWindow")) offenders.Add($"{rel}:{i + 1} (Start-Process)");
                 if (!lines[i].Contains("new ProcessStartInfo(") && !lines[i].Contains("new System.Diagnostics.ProcessStartInfo(")) continue;
                 var window = string.Join("\n", lines.Skip(i).Take(14));
                 if (window.Contains("UseShellExecute = true") || window.Contains("CreateNoWindow")) continue;
@@ -204,7 +206,7 @@ if (-not (Test-Path -LiteralPath $lock)) { throw 'acquire did not create the loc
 try { [IO.File]::Open($lock, 'Open', 'ReadWrite', 'None').Dispose(); throw 'the lock file is not held exclusively' } catch [IO.IOException] {}
 
 # 2. a second publisher (its own process) must wait, not interleave
-$waiter = Start-Process -FilePath '@SHELL@' -ArgumentList @('-NoProfile','-File','@CHILD@') -PassThru
+$waiter = Start-Process -FilePath '@SHELL@' -ArgumentList @('-NoProfile','-File','@CHILD@') -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 3
 if (Test-Path -LiteralPath $marker) { throw 'the second publisher acquired while the lock was still held' }
 
