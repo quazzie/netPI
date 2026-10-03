@@ -3,10 +3,11 @@
   import { secondNow } from './ticker.svelte.js';
   /** Live elapsed time since `since` (until `until` when given). */
   let { since, until = undefined, class: cls = '' } = $props();
+  const now = secondNow();
   const ms = $derived.by(() => {
     const a = since ? Date.parse(since) : NaN;
     if (!Number.isFinite(a)) return null;
-    const b = until ? Date.parse(until) : secondNow();
+    const b = until ? Date.parse(until) : now();
     return Math.max(0, b - a);
   });
 </script>

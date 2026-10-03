@@ -409,6 +409,15 @@ Chromium build is not downloaded (`npx playwright-core install chromium`) the te
 Chrome and print `browser: msedge`. Use `--no-ui` without Playwright. It can also run on its own against any server:
 `node tests/NetPI.E2E/ui/smoke.mjs --url http://127.0.0.1:7431 --token <token> --session "<title>"`.
 
+The browser is also what measures the chat's markdown: `node web/scripts/bench-stream.mjs` streams a long answer through
+both render strategies in a headless browser, checks that splitting the answer at `web/src/lib/live.js` renders exactly what
+the whole answer renders (exit 1 if it does not), and prints the per-tick cost of each.
+
+`node web/scripts/check-tab-lifecycle.mjs` is the unit suite for the plugin tab lifecycle (`web/src/lib/kit/tab.js`,
+`refresh.svelte.js`): it compiles both the way the build compiles them, drives them in a headless browser with a fake
+`ctx`, and checks one load on mount, events coalesced, a poll that never stacks a second load, a hidden tab that loads
+nothing, and nothing running after unmount.
+
 On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
 `/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.
 

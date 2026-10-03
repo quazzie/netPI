@@ -586,10 +586,11 @@ set, uptime, threads, framework; the full details are in its tooltip). A segment
 - **RPC:** methods grouped by prefix with the owning plugin; clicking copies the name.
 - **Events:** the snapshot's recent events, then live events from `ctx.on('*')`, batched per animation frame and
   capped at 1000. Controls: type or session filter (`agent.*` prefixes work), hide `stream.delta`,
-  `tool.output` and `process.output` (on by default), pause and clear. Clicking a row shows its payload (live
+  `tool.output` and `process.output` (on by default: what arrives while they are hidden is counted, not kept — kept,
+  they fill the 1000 rows in seconds), pause and clear. Clicking a row shows its payload (live
   events) or fetches it with `diag.event { seq }`.
-- **Logs:** `logs.recent { max: 400 }`, polled every 3s while visible, newest first, with a level filter
-  (All, Info+, Warn, Error, with counts). Exceptions expand.
+- **Logs:** `logs.recent { max: 400 }`, polled every 3s while visible (one poll at a time), newest first, with a level
+  filter (All, Info+, Warn, Error, with counts). Exceptions expand; a row keeps its expansion across polls.
 - **Ideas:** the background idea checks the Ideas plugin runs (the save check, recall, the verifier, the commit sweep)
   — `ideas.work`, updated by `ideas.workChanged` and polled every 30s while visible: purpose and status with a
   state dot, the reason or model under it. The last 10, newest first; the server keeps the last 40.
@@ -625,30 +626,26 @@ Layout: `plugins/<P>/ui/main.js` (or `main.ts`) plus components. The bundle is b
 
 ```js
 // plugins/NetPI.Work/ui/main.js
-import { mount as svelteMount, unmount } from 'svelte';
+import { createTab } from '@netpi/kit';
 import WorkTab from './WorkTab.svelte';
 
-export function mount(el, ctx) {
-  const view = svelteMount(WorkTab, { target: el, props: { ctx } });
-  return { unmount: () => unmount(view), onShow: () => view.refresh?.() };
-}
+export const mount = createTab(WorkTab);   // createTab unmounts, and forwards onShow/onHide to setVisible
 ```
 
 ```svelte
 <!-- WorkTab.svelte -->
 <script>
-  import { onMount } from 'svelte';
-  import { Section, StatusDot, TimeAgo, Empty } from '@netpi/kit';
+  import { Section, StatusDot, TimeAgo, Empty, useRefresh } from '@netpi/kit';
   let { ctx } = $props();
   let agents = $state([]);
-  export async function refresh() { agents = await ctx.rpc('runs.list', {}); }
-  onMount(() => {
-    refresh();
-    return ctx.on('agent.status', ({ agent }) => {
-      const i = agents.findIndex((a) => a.id === agent.id);
-      i >= 0 ? (agents[i] = agent) : agents.unshift(agent);
-    });
-  });
+  // one refresh loop: loads on mount, on the events that change it, coalesced, one request in flight, and nothing
+  // while the tab is hidden but a note to load when it is shown again (pollMs adds a safety-net poll)
+  // svelte-ignore state_referenced_locally
+  const tab = useRefresh(ctx, { load: async () => (agents = await ctx.rpc('runs.list', {})), events: ['agent.status'] });
+  export function setVisible(v) {
+    tab.setVisible(v);
+  }
+  ctx.app.onChange(() => tab.schedule());   // something outside the events changed the view
 </script>
 
 <Section title="Agents">
@@ -659,6 +656,10 @@ export function mount(el, ctx) {
   {:else}<Empty icon="bot">No agents</Empty>{/each}
 </Section>
 ```
+
+`createTab` and `useRefresh` are in the kit (`web/src/lib/kit/tab.js`, `refresh.svelte.js`); a tab that needs neither
+(the Ideas tab's suggestions, the Files tab's tree, which follows the workspace rather than a poll) still mounts
+through `createTab` and keeps its own `onMount`. `web/scripts/check-tab-lifecycle.mjs` checks what the helper promises.
 
 `npm run build:plugins` builds every `plugins/*/ui/main.{js,ts}` into **one** minified ES module.
 Component CSS is injected at runtime (`css: 'injected'`), and `svelte` and `@netpi/kit` are bundled in: the

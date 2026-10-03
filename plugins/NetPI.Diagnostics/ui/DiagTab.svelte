@@ -1,6 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
-  import { Segmented, IconButton, Empty, duration } from '@netpi/kit';
+  import { Segmented, IconButton, Empty, duration, useRefresh } from '@netpi/kit';
   import PluginsView from './PluginsView.svelte';
   import ToolsView from './ToolsView.svelte';
   import RpcView from './RpcView.svelte';
@@ -15,8 +14,6 @@
   let snap = $state.raw(null);
   let error = $state('');
   let loading = $state(false);
-  let visible = $state(true);
-  let dirty = false;
   let view = $state(load('view', 'plugins'));
   // what looks wrong (diag.problems), polled while the tab is visible
   let problems = $state.raw([]);
@@ -44,20 +41,7 @@
       error = e?.message ?? String(e);
     } finally {
       loading = false;
-      dirty = false;
     }
-  }
-
-  export function setVisible(v) {
-    visible = v;
-    if (v && dirty) refresh();
-  }
-
-  let timer = 0;
-  function soon() {
-    if (!visible) return void (dirty = true);
-    clearTimeout(timer);
-    timer = setTimeout(refresh, 300);
   }
 
   async function loadProblems() {
@@ -68,17 +52,18 @@
     }
   }
 
-  onMount(() => {
-    refresh();
-    loadProblems();
-    const poll = setInterval(() => visible && loadProblems(), 5000);
-    const offs = [ctx.on('plugins.changed', soon), ctx.on('ui.changed', soon), ctx.on('tools.changed', soon)];
-    return () => {
-      offs.forEach((o) => o());
-      clearTimeout(timer);
-      clearInterval(poll);
-    };
-  });
+  // The snapshot follows what can change it; the problems line is polled on its own, one request in flight at a time.
+  // svelte-ignore state_referenced_locally
+  const tab = useRefresh(ctx, { load: refresh, events: ['plugins.changed', 'ui.changed', 'tools.changed'] });
+  // svelte-ignore state_referenced_locally
+  const probs = useRefresh(ctx, { load: loadProblems, pollMs: 5000 });
+  const visible = $derived(tab.visible);
+
+  /** Called by main.js (onShow / onHide): what lands while the tab is hidden only marks it stale. */
+  export function setVisible(v) {
+    tab.setVisible(v);
+    probs.setVisible(v);
+  }
 
   const part = (x) => (x && !Array.isArray(x) && x.error ? null : x);
   const plugins = $derived(part(snap?.plugins) ?? null);
@@ -149,7 +134,7 @@
     {#if !snap && error}
       <Empty icon="alert">Diagnostics unavailable: {error}</Empty>
     {:else if view === 'plugins'}
-      <PluginsView {plugins} {ctx} onchanged={soon} error={snap?.plugins?.error} />
+      <PluginsView {plugins} {ctx} onchanged={tab.schedule} error={snap?.plugins?.error} />
     {:else if view === 'tools'}
       <ToolsView {tools} error={snap?.tools?.error} />
     {:else if view === 'rpc'}

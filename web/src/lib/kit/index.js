@@ -23,4 +23,7 @@ export { timeAgo, duration, tokens, usd, bytes, relPath, basename, truncate, sta
 // politely, and say what happened. Browser-only (canvas), which is fine — the kit is UI.
 export { prepareImage, imageBudget, sendBudget, payloadBytes, formatBytes } from '../images.js';
 export { host, renderMarkdown, confirm, copyText, desktop } from './host.js';
+// The plugin tab lifecycle: createTab(Component) is what a main.js exports, useRefresh is the load/poll loop behind it.
+export { createTab } from './tab.js';
+export { useRefresh } from './refresh.svelte.js';
 export { clockNow, secondNow } from './ticker.svelte.js';

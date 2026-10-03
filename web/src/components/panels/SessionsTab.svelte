@@ -108,6 +108,7 @@
     editValue = s.title || '';
   }
   async function commitRename(s) {
+    if (editing !== s.id) return; // Enter (or Escape, which blurs it away) already ended this rename
     const v = editValue.trim();
     editing = null;
     if (v && v !== s.title) await updateSession(s.id, { title: v });

@@ -125,6 +125,7 @@ export function openProjects(opts = {}) {
 
 export function confirmDialog({ title = 'Are you sure?', message = '', confirmLabel = 'Confirm', danger = false } = {}) {
   return new Promise((resolve) => {
+    modals.confirm?.resolve?.(false); // the open one is gone for good: say no rather than leave its caller waiting forever
     modals.confirm = { title, message, confirmLabel, danger, resolve };
   });
 }
@@ -132,6 +133,7 @@ export function confirmDialog({ title = 'Are you sure?', message = '', confirmLa
 /** A text prompt; resolves with the text, or null when cancelled. multiline: a text box (Ctrl+Enter confirms). */
 export function promptDialog({ title, label = '', value = '', placeholder = '', multiline = false, confirmLabel = 'OK', hint = '' }) {
   return new Promise((resolve) => {
+    modals.prompt?.resolve?.(null); // as above: a replaced prompt is cancelled, not orphaned
     modals.prompt = { title, label, value, placeholder, multiline, confirmLabel, hint, resolve };
   });
 }
