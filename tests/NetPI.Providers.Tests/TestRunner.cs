@@ -1,22 +1,17 @@
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 
 namespace NetPI.Providers.Tests;
 
-/// <summary>A test that could not run here (no git, no browser, nothing built): a skip ends the test, is counted
-/// apart from the passes and prints a SKIP line scripts/test.ps1 counts. Not a pass, and not a failure either: it
-/// says what was missing (idea-r4e8rf).</summary>
-internal sealed class SkipException(string reason) : Exception(reason);
-
-/// <summary>Tiny assertion/test harness (no test framework available offline). Filters select tests whose name contains
-/// any of them (case-insensitive), like the other suites.</summary>
+// The check-style runner: a failing Check does not throw, so one test collects every failure it has, and the
+// summary counts checks as well as tests. The shared harness (tests/Shared/Harness.cs) owns what this shares
+// with the other suites — the skip outcome, the value rendering and the exit-code contract; its call sites
+// (t.Check / t.Eq / t.Skip, 350+ of them) are the runner's own API and stay put.
 internal sealed class TestRunner(string[] filters)
 {
-    /// <summary>Exit code when the filter selected no test at all: a broken selection, not a pass (idea-jw74xi). The
-    /// documented direct run is <c>dotnet &lt;suite&gt;.dll [filter]</c>, and it must not report green for a typo or a
-    /// renamed test. scripts/test.ps1 maps a non-zero exit with no FAIL line to a failure.</summary>
-    public const int NoTestSelected = 2;
+    /// <summary>The shared exit-code contract: a filter that selects no test at all is a broken selection, not a
+    /// pass (idea-jw74xi). scripts/test.ps1 maps a non-zero exit with no failure to a crash.</summary>
+    public const int NoTestSelected = NetPI.TestShared.TestRunner.NoTestSelected;
 
     private int _passedChecks, _failedChecks, _passedTests, _failedTests, _skippedTests, _unselectedTests;
     private readonly List<string> _failures = [];
@@ -32,14 +27,13 @@ internal sealed class TestRunner(string[] filters)
     }
 
     public void Eq<T>(T expected, T actual, string what, [CallerLineNumber] int line = 0) =>
-        Check(EqualityComparer<T>.Default.Equals(expected, actual), $"{what}: expected <{Show(expected)}> got <{Show(actual)}>", line);
+        Check(EqualityComparer<T>.Default.Equals(expected, actual),
+            $"{what}: expected <{NetPI.TestShared.Check.Show(expected)}> got <{NetPI.TestShared.Check.Show(actual)}>", line);
 
     /// <summary>End the test as skipped, with the reason it could not run. The summary counts it apart from the
     /// passes, so a skipped test is never read as a green one (idea-r4e8rf).</summary>
     [DoesNotReturn]
     public void Skip(string reason) => throw new SkipException(reason);
-
-    private static string Show<T>(T v) => v is null ? "null" : v.ToString()!.Replace("\n", "\\n");
 
     public async Task Run(string name, Func<Task> body)
     {
@@ -50,7 +44,7 @@ internal sealed class TestRunner(string[] filters)
         }
         _current = name;
         var before = _failedChecks;
-        var sw = Stopwatch.StartNew();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             await body().WaitAsync(TimeSpan.FromSeconds(30));

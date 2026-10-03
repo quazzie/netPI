@@ -66,7 +66,7 @@ public static class FileTests
             var dir = T.TempDir("edit");
             var f = T.WriteText(dir, "a.cs", "class A\r\n{\r\n    int x = 1;\r\n    int y = 2;\r\n}\r\n");
             var res = await T.Run(Edit, dir, new { path = "a.cs", oldText = "    int x = 1;\n    int y = 2;", newText = "    int x = 10;\n    int y = 20;\n    int z = 30;" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             var raw = T.ReadRaw(f);
             Check.Equal("class A\r\n{\r\n    int x = 10;\r\n    int y = 20;\r\n    int z = 30;\r\n}\r\n", raw);
             var d = T.D(res);
@@ -80,7 +80,7 @@ public static class FileTests
             var dir = T.TempDir("edit");
             var f = T.WriteText(dir, "a.txt", "one\ntwo\nthree\n");
             var res = await T.Run(Edit, dir, new { path = "a.txt", oldText = "one\r\ntwo", newText = "uno\r\ndos" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal("uno\ndos\nthree\n", T.ReadRaw(f));
         });
 
@@ -89,7 +89,7 @@ public static class FileTests
             var dir = T.TempDir("edit");
             var f = T.WriteText(dir, "m.txt", "a\r\nb\r\nc\nd\r\n");
             var res = await T.Run(Edit, dir, new { path = "m.txt", oldText = "c\nd", newText = "C\nD" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal("a\r\nb\r\nC\r\nD\r\n", T.ReadRaw(f));
             Check.Contains(res.Content, "mixed line endings");
         });
@@ -98,7 +98,7 @@ public static class FileTests
         {
             var dir = T.TempDir("edit");
             var f = T.WriteText(dir, "b.txt", "hello\r\nworld\r\n", bom: true);
-            Check.Ok(await T.Run(Edit, dir, new { path = "b.txt", oldText = "world", newText = "there" }));
+            ToolCheck.Ok(await T.Run(Edit, dir, new { path = "b.txt", oldText = "world", newText = "there" }));
             var bytes = File.ReadAllBytes(f);
             Check.Equal("EF-BB-BF", BitConverter.ToString(bytes, 0, 3));
             Check.Equal("hello\r\nthere\r\n", Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3));
@@ -114,12 +114,12 @@ public static class FileTests
             var before = File.ReadAllBytes(f);
             // An edit that introduces a character beyond U+00FF refuses, keeping every byte.
             var res = await T.Run(Edit, dir, new { path = "latin.txt", oldText = "end", newText = "end — done" });
-            Check.Error(res, "re-encode");
+            ToolCheck.Error(res, "re-encode");
             Check.Contains(res.Content, "U+2014");
             Check.Contains(res.Content, "write tool");
             Check.Equal(BitConverter.ToString(before), BitConverter.ToString(File.ReadAllBytes(f)), "the file keeps every byte");
             // An edit that stays within Latin-1 is applied with every unchanged byte intact.
-            Check.Ok(await T.Run(Edit, dir, new { path = "latin.txt", oldText = "end", newText = "fin" }));
+            ToolCheck.Ok(await T.Run(Edit, dir, new { path = "latin.txt", oldText = "end", newText = "fin" }));
             Check.Equal("63-61-66-E9-0A-66-69-6E-0A", BitConverter.ToString(File.ReadAllBytes(f)));
         });
 
@@ -137,7 +137,7 @@ public static class FileTests
                     new { oldText = "ALPHA\nbeta", newText = "ALPHA\nBETA" }, // depends on the first edit
                 },
             });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal("ALPHA\nBETA\ngamma\n", T.ReadRaw(f));
             Check.Equal(2, T.D(res).Int("edits"));
         });
@@ -152,7 +152,7 @@ public static class FileTests
                 path = "s.txt",
                 edits = new object[] { new { oldText = "alpha", newText = "ALPHA" }, new { oldText = "delta", newText = "DELTA" } },
             });
-            Check.Error(res, "Edit 2 of 2 failed");
+            ToolCheck.Error(res, "Edit 2 of 2 failed");
             Check.Contains(res.Content, "not changed");
             Check.Equal(original, T.ReadRaw(f));
         });
@@ -162,11 +162,11 @@ public static class FileTests
             var dir = T.TempDir("edit");
             var f = T.WriteText(dir, "d.txt", "x = 1\nfoo()\ny = 2\nz = 3\nfoo()\n");
             var res = await T.Run(Edit, dir, new { path = "d.txt", oldText = "foo()", newText = "bar()" });
-            Check.Error(res, "matches 2 locations");
+            ToolCheck.Error(res, "matches 2 locations");
             Check.Contains(res.Content, "lines 2, 5");
             Check.Contains(res.Content, "replaceAll");
             res = await T.Run(Edit, dir, new { path = "d.txt", oldText = "foo()", newText = "bar()", replaceAll = true });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal("x = 1\nbar()\ny = 2\nz = 3\nbar()\n", T.ReadRaw(f));
             Check.Contains(res.Content, "replaced 2 occurrences");
         });
@@ -175,9 +175,9 @@ public static class FileTests
         {
             var dir = T.TempDir("edit");
             var f = T.WriteText(dir, "a.txt", "a a a\n");
-            Check.Ok(await T.Run(Edit, dir, new { file_path = "a.txt", old_string = "a", new_string = "b", replace_all = "true" }));
+            ToolCheck.Ok(await T.Run(Edit, dir, new { file_path = "a.txt", old_string = "a", new_string = "b", replace_all = "true" }));
             Check.Equal("b b b\n", T.ReadRaw(f));
-            Check.Ok(await T.Run(Edit, dir, "{\"filePath\":\"a.txt\",\"edits\":\"[{\\\"oldText\\\":\\\"b b b\\\",\\\"newText\\\":\\\"c\\\"}]\"}"));
+            ToolCheck.Ok(await T.Run(Edit, dir, "{\"filePath\":\"a.txt\",\"edits\":\"[{\\\"oldText\\\":\\\"b b b\\\",\\\"newText\\\":\\\"c\\\"}]\"}"));
             Check.Equal("c\n", T.ReadRaw(f));
         });
 
@@ -186,7 +186,7 @@ public static class FileTests
             var dir = T.TempDir("edit");
             var f = T.WriteText(dir, "t.py", "def f():   \n    return 1  \n\nprint(f())\n");
             var res = await T.Run(Edit, dir, new { path = "t.py", oldText = "def f():\n    return 1", newText = "def f():\n    return 2" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal("def f():\n    return 2\n\nprint(f())\n", T.ReadRaw(f));
             var fz = T.D(res).GetProperty("fuzzy")[0];
             Check.Equal("trailing-whitespace", fz.Str("strategy"));
@@ -198,7 +198,7 @@ public static class FileTests
             var dir = T.TempDir("edit");
             var f = T.WriteText(dir, "u.md", "Title\nHe said “hello” — it’s fine.\nEnd\n");
             var res = await T.Run(Edit, dir, new { path = "u.md", oldText = "He said \"hello\" - it's fine.", newText = "He said goodbye." });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal("Title\nHe said goodbye.\nEnd\n", T.ReadRaw(f));
             Check.Equal("unicode", T.D(res).GetProperty("fuzzy")[0].Str("strategy"));
         });
@@ -209,14 +209,14 @@ public static class FileTests
             var f = T.WriteText(dir, "i.cs", "class C\n{\n        void M()\n        {\n            Run();\n        }\n}\n");
             // Model dropped the base indentation.
             var res = await T.Run(Edit, dir, new { path = "i.cs", oldText = "void M()\n{\n    Run();\n}", newText = "void M()\n{\n    Run();\n    Stop();\n}" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal("class C\n{\n        void M()\n        {\n            Run();\n            Stop();\n        }\n}\n", T.ReadRaw(f));
             Check.Equal("indentation", T.D(res).GetProperty("fuzzy")[0].Str("strategy"));
 
             // Tabs in the file, spaces in oldText.
             var g = T.WriteText(dir, "tab.go", "func main() {\n\tif ok {\n\t\tgo()\n\t}\n}\n");
             res = await T.Run(Edit, dir, new { path = "tab.go", oldText = "    if ok {\n        go()\n    }", newText = "    if ok {\n        go()\n        done()\n    }" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal("func main() {\n\tif ok {\n\t\tgo()\n\t\tdone()\n\t}\n}\n", T.ReadRaw(g));
 
             // Unit-level: a new, deeper level converts spaces to the file's tabs.
@@ -228,22 +228,22 @@ public static class FileTests
         {
             var dir = T.TempDir("edit");
             T.WriteText(dir, "e.txt", "public void Start()\n{\n}\n");
-            Check.Error(await T.Run(Edit, dir, new { path = "e.txt", oldText = "", newText = "x" }), "oldText is empty");
-            Check.Error(await T.Run(Edit, dir, new { path = "e.txt", oldText = "{", newText = "{" }), "identical");
+            ToolCheck.Error(await T.Run(Edit, dir, new { path = "e.txt", oldText = "", newText = "x" }), "oldText is empty");
+            ToolCheck.Error(await T.Run(Edit, dir, new { path = "e.txt", oldText = "{", newText = "{" }), "identical");
             var nf = await T.Run(Edit, dir, new { path = "e.txt", oldText = "public void Stop()", newText = "x" });
-            Check.Error(nf, "not found");
+            ToolCheck.Error(nf, "not found");
             Check.Contains(nf.Content, "most similar line is 1: `public void Start()`");
-            Check.Error(await T.Run(Edit, dir, new { path = "missing.txt", oldText = "a", newText = "b" }), "write tool");
+            ToolCheck.Error(await T.Run(Edit, dir, new { path = "missing.txt", oldText = "a", newText = "b" }), "write tool");
             T.WriteBytes(dir, "bin.dat", [1, 2, 0, 4]);
-            Check.Error(await T.Run(Edit, dir, new { path = "bin.dat", oldText = "a", newText = "b" }), "binary");
-            Check.Error(await T.Run(Edit, dir, new { path = "e.txt" }), "Missing edits");
+            ToolCheck.Error(await T.Run(Edit, dir, new { path = "bin.dat", oldText = "a", newText = "b" }), "binary");
+            ToolCheck.Error(await T.Run(Edit, dir, new { path = "e.txt" }), "Missing edits");
         });
 
         r.Add("edit: empty file + empty oldText acts as write", async () =>
         {
             var dir = T.TempDir("edit");
             var f = T.WriteText(dir, "empty.txt", "");
-            Check.Ok(await T.Run(Edit, dir, new { path = "empty.txt", oldText = "", newText = "first line\n" }));
+            ToolCheck.Ok(await T.Run(Edit, dir, new { path = "empty.txt", oldText = "", newText = "first line\n" }));
             Check.Equal("first line\n", T.ReadRaw(f));
         });
 
@@ -253,7 +253,7 @@ public static class FileTests
             var lines = Enumerable.Range(1, 20).Select(i => $"line {i}").ToList();
             T.WriteText(dir, "n.txt", string.Join("\n", lines) + "\n");
             var res = await T.Run(Edit, dir, new { path = "n.txt", oldText = "line 10\n", newText = "line ten\n" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             var diff = T.D(res).Str("diff");
             Check.Contains(diff, "--- a/n.txt\n+++ b/n.txt\n@@ -7,7 +7,7 @@\n line 7\n line 8\n line 9\n-line 10\n+line ten\n line 11\n line 12\n line 13\n");
             Check.Equal(10, T.D(res).Int("firstChangedLine"));
@@ -264,18 +264,18 @@ public static class FileTests
         {
             var dir = T.TempDir("write");
             var res = await T.Run(Write, dir, new { path = "sub/deep/new.txt", content = "a\r\nb\n" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal("a\nb\n", T.ReadRaw(Path.Combine(dir, "sub/deep/new.txt")));
             var d = T.D(res);
             Check.True(d.Bool("created")); Check.Equal(2, d.Int("lines")); Check.Equal(4, d.Int("bytes")); Check.False(d.Has("diff"));
 
             var settings = new FakeSettings();
             settings.Set("files.newFileEol", "crlf");
-            Check.Ok(await T.Run(new WriteTool(settings), dir, new { path = "crlf.txt", content = "a\nb\n" }));
+            ToolCheck.Ok(await T.Run(new WriteTool(settings), dir, new { path = "crlf.txt", content = "a\nb\n" }));
             Check.Equal("a\r\nb\r\n", T.ReadRaw(Path.Combine(dir, "crlf.txt")));
 
             settings.Set("files.newFileEol", "auto");
-            Check.Ok(await T.Run(new WriteTool(settings), dir, new { path = "auto.txt", content = "a\nb\n" }));
+            ToolCheck.Ok(await T.Run(new WriteTool(settings), dir, new { path = "auto.txt", content = "a\nb\n" }));
             Check.Equal(OperatingSystem.IsWindows() ? "a\r\nb\r\n" : "a\nb\n", T.ReadRaw(Path.Combine(dir, "auto.txt")));
         });
 
@@ -284,7 +284,7 @@ public static class FileTests
             var dir = T.TempDir("write");
             var f = T.WriteText(dir, "x.txt", "one\r\ntwo\r\n", bom: true);
             var res = await T.Run(Write, dir, new { path = "x.txt", content = "one\n2\nthree\n" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             var bytes = File.ReadAllBytes(f);
             Check.Equal("EF-BB-BF", BitConverter.ToString(bytes, 0, 3));
             Check.Equal("one\r\n2\r\nthree\r\n", Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3));
@@ -301,12 +301,12 @@ public static class FileTests
             var dir = T.TempDir("write");
             var f = T.WriteText(dir, "run.sh", "#!/bin/sh\necho hi\n");
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(f, (UnixFileMode)Convert.ToInt32("755", 8));
-            Check.Ok(await T.Run(Write, dir, new { path = "run.sh", content = "#!/bin/sh\necho bye\n" }));
+            ToolCheck.Ok(await T.Run(Write, dir, new { path = "run.sh", content = "#!/bin/sh\necho bye\n" }));
             Check.Equal(1, Directory.GetFiles(dir).Length, "no temp files left");
             if (!OperatingSystem.IsWindows()) Check.True((File.GetUnixFileMode(f) & UnixFileMode.UserExecute) != 0, "executable bit kept");
-            Check.Error(await T.Run(Write, dir, new { path = "x.txt" }), "content");
-            Check.Error(await T.Run(Write, dir, new { content = "x" }), "path");
-            Check.Error(await T.Run(Write, dir, new { path = ".", content = "x" }), "directory");
+            ToolCheck.Error(await T.Run(Write, dir, new { path = "x.txt" }), "content");
+            ToolCheck.Error(await T.Run(Write, dir, new { content = "x" }), "path");
+            ToolCheck.Error(await T.Run(Write, dir, new { path = ".", content = "x" }), "directory");
         });
 
         // ------------------------------------------------ read
@@ -315,7 +315,7 @@ public static class FileTests
             var dir = T.TempDir("read");
             T.WriteText(dir, "big.txt", string.Join("\r\n", Enumerable.Range(1, 5230).Select(i => $"row {i}")) + "\r\n");
             var res = await T.Run(Read, dir, new { path = "big.txt" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Contains(res.Content, "[Showing lines 1-2000 of 5230. Use offset=2001 to continue.]");
             Check.NotContains(res.Content, "\r");
             Check.True(res.Content.StartsWith("row 1\nrow 2\n"), "no line number prefixes");
@@ -333,7 +333,7 @@ public static class FileTests
             res = await T.Run(Read, dir, new { path = "big.txt", offset = -2 });
             Check.Equal("row 5229\nrow 5230", res.Content);
 
-            Check.Error(await T.Run(Read, dir, new { path = "big.txt", offset = 6000 }), "past the end");
+            ToolCheck.Error(await T.Run(Read, dir, new { path = "big.txt", offset = 6000 }), "past the end");
         });
 
         r.Add("read: a huge file is paged without reading it to the end", async () =>
@@ -351,7 +351,7 @@ public static class FileTests
                 // A page in the middle: the count is not known (it would take reading the rest of the file), and the
                 // note says more lines follow because one extra line proved it.
                 var res = await T.Run(Read, dir, new { path = "huge.txt", offset = 100, limit = 5 });
-                Check.Ok(res);
+                ToolCheck.Ok(res);
                 Check.Equal("row 100\nrow 101\nrow 102\nrow 103\nrow 104", res.Content.Split("\n\n[Showing")[0]);
                 Check.Contains(res.Content, "[Showing lines 100-104; more lines follow. Use offset=105 to continue.]");
                 var d = T.D(res);
@@ -387,7 +387,7 @@ public static class FileTests
 
                 // Past the end is still an error, with the count the pass found. A negative offset past the start is not
                 // an error and never was: it clamps to line 1.
-                Check.Error(await T.Run(Read, dir, new { path = "huge.txt", offset = 500 }), "past the end");
+                ToolCheck.Error(await T.Run(Read, dir, new { path = "huge.txt", offset = 500 }), "past the end");
             }
             finally { ReadTool.StreamingThresholdBytes = was; }
         });
@@ -474,22 +474,22 @@ public static class FileTests
         {
             var dir = T.TempDir("read");
             Directory.CreateDirectory(Path.Combine(dir, "sub"));
-            Check.Error(await T.Run(Read, dir, new { path = "sub" }), "ls");
+            ToolCheck.Error(await T.Run(Read, dir, new { path = "sub" }), "ls");
             T.WriteText(dir, "Program.cs", "x");
-            Check.Error(await T.Run(Read, dir, new { path = "Progam.cs" }), "Did you mean");
+            ToolCheck.Error(await T.Run(Read, dir, new { path = "Progam.cs" }), "Did you mean");
             T.WriteBytes(dir, "blob.bin", [0x7F, 0x45, 0x4C, 0x46, 0, 0, 1]);
-            Check.Error(await T.Run(Read, dir, new { path = "blob.bin" }), "binary");
+            ToolCheck.Error(await T.Run(Read, dir, new { path = "blob.bin" }), "binary");
 
             byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
             T.WriteBytes(dir, "pic.png", png);
             var vision = new ModelInfo { Provider = "p", Id = "m", InputModalities = ["text", "image"] };
             var res = await T.Run(Read, dir, new { path = "pic.png" }, vision);
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Equal(1, res.Images!.Count);
             Check.Equal("image/png", res.Images[0].MediaType);
             Check.Equal(Convert.ToBase64String(png), res.Images[0].Data);
             res = await T.Run(Read, dir, new { path = "pic.png" }, new ModelInfo { Provider = "p", Id = "t" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.True(res.Images is null);
             Check.Contains(res.Content, "cannot view images");
 
@@ -497,7 +497,7 @@ public static class FileTests
             // later one (it stays in the history), so read refuses it here and says what the limit is (idea-begg3v).
             T.WriteBytes(dir, "huge.png", new byte[ModelMessages.MaxImageBytes + 1]);
             res = await T.Run(Read, dir, new { path = "huge.png" }, vision);
-            Check.Error(res, "too large to attach");
+            ToolCheck.Error(res, "too large to attach");
             Check.Contains(res.Content, PathDisplay.FormatSize(ModelMessages.MaxImageBytes));
         });
 
@@ -580,7 +580,7 @@ public static class FileTests
             var dir = MakeTree();
             var grep = new GrepTool();
             var res = await T.Run(grep, dir, new { pattern = "TODO" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Contains(res.Content, "src/app.cs:3:     // TODO: fix");
             Check.Contains(res.Content, "src/crlf.txt:2: TODO crlf");
             Check.NotContains(res.Content, "node_modules");
@@ -597,7 +597,7 @@ public static class FileTests
             Check.Equal(1, d.Int("matches")); Check.Equal(1, d.Int("files"));
 
             res = await T.Run(grep, dir, new { pattern = "nothing-here-xyz" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Contains(res.Content, "No matches");
         });
 
@@ -710,7 +710,7 @@ public static class FileTests
             var dir = MakeTree();
             var ls = new LsTool();
             var res = await T.Run(ls, dir, new { });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             var lines = res.Content.Split('\n');
             Check.Equal(".github/", lines[0]);
             Check.Contains(res.Content, "src/");
@@ -745,7 +745,7 @@ public static class FileTests
 
             // ls: shows the cap, names the total, flags truncation — without materialising the rest
             var res = await T.Run(new LsTool(), dir, new { });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Contains(res.Content, "[Showing 1000 of 1200 entries", res.Content);
             var d = T.D(res);
             Check.Equal(1200, d.Int("entries"), "entries is the total, not the materialised count");
@@ -879,7 +879,7 @@ public static class FileTests
         r.Add("rpc: files.commits — the history newest first, only what came after a hash, null outside a repository", async () =>
         {
             var dir = T.TempDir("commits");
-            if (!await Git(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
+            if (!await TestGit.RunAsync(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
             using var ctx = new FakePluginContext(dir);
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
             async Task<JsonArray?> Commits(object? p)
@@ -888,13 +888,13 @@ public static class FileTests
                 return r?["commits"] as JsonArray;
             }
 
-            await Git(dir, "config", "user.email", "test@example.com");
-            await Git(dir, "config", "user.name", "Test");
+            await TestGit.RunAsync(dir, "config", "user.email", "test@example.com");
+            await TestGit.RunAsync(dir, "config", "user.name", "Test");
             Check.Equal(0, (await Commits(new { cwd = dir }))?.Count, "a repository without commits answers with none (not null: it is a repository)");
 
             await File.WriteAllTextAsync(Path.Combine(dir, "a.txt"), "one");
-            await Git(dir, "add", "-A");
-            await Git(dir, "commit", "-q", "-m", "first: the nudge counter");
+            await TestGit.RunAsync(dir, "add", "-A");
+            await TestGit.RunAsync(dir, "commit", "-q", "-m", "first: the nudge counter");
             var first = (JsonArray)(await Commits(new { cwd = dir }))!;
             Check.Equal(1, first.Count);
             Check.Equal("first: the nudge counter", first[0]!["subject"]!.GetValue<string>());
@@ -903,8 +903,8 @@ public static class FileTests
             Check.Equal("Test", first[0]!["author"]!.GetValue<string>());
 
             await File.WriteAllTextAsync(Path.Combine(dir, "b.txt"), "two");
-            await Git(dir, "add", "-A");
-            await Git(dir, "commit", "-q", "-m", "second (idea-c7xyem)");
+            await TestGit.RunAsync(dir, "add", "-A");
+            await TestGit.RunAsync(dir, "commit", "-q", "-m", "second (idea-c7xyem)");
             var both = (JsonArray)(await Commits(new { cwd = dir }))!;
             Check.Equal(2, both.Count, "newest first");
             Check.Equal("second (idea-c7xyem)", both[0]!["subject"]!.GetValue<string>());
@@ -924,32 +924,20 @@ public static class FileTests
             Check.True(gone["gitDir"]!.GetValue<string>().Length > 0, "the git directory is answered, so a worktree can be watched");
             Check.Equal(null, await Commits(new { cwd = T.TempDir("nogit") }), "outside a repository: null");
 
-            static async Task<bool> Git(string cwd, params string[] args)
-            {
-                var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-                foreach (var a in args) psi.ArgumentList.Add(a);
-                try
-                {
-                    using var p = System.Diagnostics.Process.Start(psi)!;
-                    await p.WaitForExitAsync();
-                    return p.ExitCode == 0;
-                }
-                catch (System.ComponentModel.Win32Exception) { return false; }
-            }
         });
 
         r.Add("rpc: files.commits — with the git directories the caller already knows, only the git log runs", async () =>
         {
             var dir = T.TempDir("commits-known");
-            if (!await Git(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
-            await Git(dir, "config", "user.email", "test@example.com");
-            await Git(dir, "config", "user.name", "Test");
+            if (!await TestGit.RunAsync(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
+            await TestGit.RunAsync(dir, "config", "user.email", "test@example.com");
+            await TestGit.RunAsync(dir, "config", "user.name", "Test");
             await File.WriteAllTextAsync(Path.Combine(dir, "a.txt"), "one");
-            await Git(dir, "add", "-A");
-            await Git(dir, "commit", "-q", "-m", "first");
+            await TestGit.RunAsync(dir, "add", "-A");
+            await TestGit.RunAsync(dir, "commit", "-q", "-m", "first");
             await File.WriteAllTextAsync(Path.Combine(dir, "b.txt"), "two");
-            await Git(dir, "add", "-A");
-            await Git(dir, "commit", "-q", "-m", "second");
+            await TestGit.RunAsync(dir, "add", "-A");
+            await TestGit.RunAsync(dir, "commit", "-q", "-m", "second");
 
             using var ctx = new FakePluginContext(dir);
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
@@ -992,34 +980,22 @@ public static class FileTests
             Check.Equal(full["gitDir"]!.GetValue<string>(), gone["gitDir"]!.GetValue<string>(), "the vanished directory is re-resolved");
             Check.Equal(2, ((JsonArray)gone["commits"]!).Count);
 
-            static async Task<bool> Git(string cwd, params string[] args)
-            {
-                var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-                foreach (var a in args) psi.ArgumentList.Add(a);
-                try
-                {
-                    using var p = System.Diagnostics.Process.Start(psi)!;
-                    await p.WaitForExitAsync();
-                    return p.ExitCode == 0;
-                }
-                catch (System.ComponentModel.Win32Exception) { return false; }
-            }
         });
 
         r.Add("rpc: files.git — branch and the changes since the last commit, staged or not, new files counted", async () =>
         {
             var dir = T.TempDir("git");
-            if (!await Git(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
-            await Git(dir, "config", "user.email", "test@example.com");
-            await Git(dir, "config", "user.name", "Test");
+            if (!await TestGit.RunAsync(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
+            await TestGit.RunAsync(dir, "config", "user.email", "test@example.com");
+            await TestGit.RunAsync(dir, "config", "user.name", "Test");
             T.WriteText(dir, "a.txt", "1\n2\n3\n");
             T.WriteText(dir, "b.txt", "keep\n");
             T.WriteText(dir, "old name.txt", "x\ny\n");
-            await Git(dir, "add", "-A");
-            await Git(dir, "commit", "-q", "-m", "first");
+            await TestGit.RunAsync(dir, "add", "-A");
+            await TestGit.RunAsync(dir, "commit", "-q", "-m", "first");
             T.WriteText(dir, "a.txt", "1\nchanged\n3\n4\n"); // +2 −1, not staged
             File.Delete(Path.Combine(dir, "b.txt")); // −1
-            await Git(dir, "mv", "old name.txt", "new name.txt"); // staged rename
+            await TestGit.RunAsync(dir, "mv", "old name.txt", "new name.txt"); // staged rename
             T.WriteText(dir, "sub/fresh.md", "one\ntwo\nthree"); // new: 3 lines
             File.WriteAllBytes(Path.Combine(dir, "bin.dat"), [0, 1, 2]); // new, binary: no lines
 
@@ -1040,18 +1016,6 @@ public static class FileTests
 
             Check.True(await ctx.RpcFake.InvokeAsync("files.git", new { cwd = T.TempDir("nogit") }) is null, "not a repository");
 
-            static async Task<bool> Git(string cwd, params string[] args)
-            {
-                var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-                foreach (var a in args) psi.ArgumentList.Add(a);
-                try
-                {
-                    using var p = System.Diagnostics.Process.Start(psi)!;
-                    await p.WaitForExitAsync();
-                    return p.ExitCode == 0;
-                }
-                catch (System.ComponentModel.Win32Exception) { return false; }
-            }
         });
 
         r.Add("rpc: files.git — a large tree: the status read is bounded, the files array is capped, and the counting runs off the parse path", async () =>
@@ -1079,12 +1043,12 @@ public static class FileTests
             Check.Equal("kept.txt", half.Files[0].Rel);
 
             // 3) End to end: a real repository, and the bound set below the real status read's size.
-            if (!await Git(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
-            await Git(dir, "config", "user.email", "test@example.com");
-            await Git(dir, "config", "user.name", "Test");
+            if (!await TestGit.RunAsync(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
+            await TestGit.RunAsync(dir, "config", "user.email", "test@example.com");
+            await TestGit.RunAsync(dir, "config", "user.name", "Test");
             T.WriteText(dir, "a.txt", "1\n2\n3\n");
-            await Git(dir, "add", "-A");
-            await Git(dir, "commit", "-q", "-m", "first");
+            await TestGit.RunAsync(dir, "add", "-A");
+            await TestGit.RunAsync(dir, "commit", "-q", "-m", "first");
             T.WriteText(dir, "big.txt", string.Concat(Enumerable.Repeat("line\n", 200)));
             using var ctx = new FakePluginContext(dir);
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
@@ -1104,18 +1068,6 @@ public static class FileTests
             }
             finally { GitStatus.StatusMaxChars = old; }
 
-            static async Task<bool> Git(string cwd, params string[] args)
-            {
-                var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-                foreach (var a in args) psi.ArgumentList.Add(a);
-                try
-                {
-                    using var p = System.Diagnostics.Process.Start(psi)!;
-                    await p.WaitForExitAsync();
-                    return p.ExitCode == 0;
-                }
-                catch (System.ComponentModel.Win32Exception) { return false; }
-            }
         });
 
         r.Add("tool definitions: labels, categories, read-only flags, guidelines", () =>

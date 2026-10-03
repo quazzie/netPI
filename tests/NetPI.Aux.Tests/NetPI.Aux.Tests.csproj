@@ -10,6 +10,8 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../Shared/Harness.cs" Link="SharedHarness.cs" />
+    <Compile Include="../Shared/Usings.cs" Link="SharedUsings.cs" />
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
     <!-- The contracts the plugins share (workspace bindings, event names): reached through the plugins, but the test
          runner has to load the assembly itself, so it is a reference here too. -->

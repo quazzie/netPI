@@ -19,6 +19,8 @@
     <ProjectReference Include="../../src/NetPI.Contracts/NetPI.Contracts.csproj" />
     <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
     <Compile Include="../NetPI.Aux.Tests/McpFixture.cs" Link="McpFixture.cs" />
+    <Compile Include="../Shared/Harness.cs" Link="SharedHarness.cs" />
+    <Compile Include="../Shared/Usings.cs" Link="SharedUsings.cs" />
     <ProjectReference Include="../../plugins/NetPI.Mcp/NetPI.Mcp.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Agents/NetPI.Agents.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Ask/NetPI.Ask.csproj" />

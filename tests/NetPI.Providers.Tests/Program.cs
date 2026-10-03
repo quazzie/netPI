@@ -18,7 +18,7 @@ using OrKit = openrouter::NetPI.Providers.Kit;
 Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
 Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null);
 
-var t = new TestRunner(args);
+var t = new NetPI.Providers.Tests.TestRunner(args);
 await using var mock = new MockServer();
 await mock.StartAsync();
 Console.WriteLine($"mock server: {mock.BaseUrl}");

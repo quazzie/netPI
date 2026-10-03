@@ -864,7 +864,7 @@ public static class SessionStoreTests
             await f.Bus.FlushAsync();
             lock (f.Events) f.Events.Clear();
             // Stamps have millisecond resolution: let the clock pass the session's own, so a bump is observable at all.
-            await Wait.UntilAsync(() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > before.ToUnixTimeMilliseconds(), "the clock to pass the session's stamp");
+            await Wait.Until(() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > before.ToUnixTimeMilliseconds(), "the clock to pass the session's stamp");
 
             f.Store.DeleteProject(p.Id);
 

@@ -10,6 +10,8 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../Shared/Harness.cs" Link="SharedHarness.cs" />
+    <Compile Include="../Shared/Usings.cs" Link="SharedUsings.cs" />
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
     <ProjectReference Include="../../src/NetPI.Contracts/NetPI.Contracts.csproj" />
     <!-- The real storage provider and the real session service, so the harness fake is built over the kernel's own code. -->

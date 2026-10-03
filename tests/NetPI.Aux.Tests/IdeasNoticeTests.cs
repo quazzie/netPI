@@ -423,19 +423,19 @@ public static class IdeasNoticeTests
         {
             Ctx = new FakePluginContext();
             Main = T.TempDir("notice-main");
-            GitAvailable = Git(Main, "init", "-q", "-b", "main");
+            GitAvailable = TestGit.Run(Main, "init", "-q", "-b", "main");
             if (GitAvailable)
             {
                 File.WriteAllText(Path.Combine(Main, "a.txt"), "a");
-                Git(Main, "add", "-A");
-                Git(Main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+                TestGit.Run(Main, "add", "-A");
+                TestGit.Run(Main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
                 // A linked worktree: a sibling checkout of the same repository (HEAD, detached — the branch state is
                 // irrelevant to the identity the checks care about).
                 Worktree = T.TempDir("notice-wt");
-                Git(Main, "worktree", "add", "-q", Worktree, "HEAD");
+                TestGit.Run(Main, "worktree", "add", "-q", Worktree, "HEAD");
                 Directory.CreateDirectory(Path.Combine(Worktree, "sub"));
                 Unrelated = T.TempDir("notice-other");
-                Git(Unrelated, "init", "-q", "-b", "main");
+                TestGit.Run(Unrelated, "init", "-q", "-b", "main");
             }
             Project = Ctx.SessionsFake.CreateProject("Repo", Main);
             Session = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s", ProjectId = Project.Id });
@@ -454,7 +454,7 @@ public static class IdeasNoticeTests
         }
 
         /// <summary>The repository's common dir as git reports it: the identity the worktree shares with Main.</summary>
-        public string CommonDir => GitOut(Main, "rev-parse", "--path-format=absolute", "--git-common-dir")!;
+        public string CommonDir => TestGit.Out(Main, "rev-parse", "--path-format=absolute", "--git-common-dir")!;
 
         public void Dispose()
         {
@@ -471,42 +471,10 @@ public static class IdeasNoticeTests
     /// <summary>The probe the workspaces plugin registers, here answered by real git in the temporary repositories.</summary>
     private sealed class RealGitProbe : IWorkspaceRepoProbe
     {
-        public string? CommonDirOf(string path) => GitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+        public string? CommonDirOf(string path) => TestGit.Out(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
         public string? BranchOf(string path) => null;
         public string? HeadOf(string path) => null;
         public string? ProbeProblem(string path) => null;   // real git answered: "not a repository" is an answer
-    }
-
-    private static bool Git(string cwd, params string[] args)
-    {
-        var psi = new System.Diagnostics.ProcessStartInfo("git")
-        { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        try
-        {
-            using var p = System.Diagnostics.Process.Start(psi)!;
-            p.StandardOutput.ReadToEnd();
-            p.StandardError.ReadToEnd();
-            p.WaitForExit();
-            return p.ExitCode == 0;
-        }
-        catch (System.ComponentModel.Win32Exception) { return false; }
-    }
-
-    private static string? GitOut(string cwd, params string[] args)
-    {
-        var psi = new System.Diagnostics.ProcessStartInfo("git")
-        { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        try
-        {
-            using var p = System.Diagnostics.Process.Start(psi)!;
-            var stdout = p.StandardOutput.ReadToEnd();
-            p.StandardError.ReadToEnd();
-            p.WaitForExit();
-            return p.ExitCode == 0 ? stdout.Trim() : null;
-        }
-        catch (System.ComponentModel.Win32Exception) { return null; }
     }
 
     /// <summary>The same path with one letter's case flipped: on Windows the same path, on Linux a different, absent one.</summary>

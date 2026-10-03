@@ -291,9 +291,9 @@ public static class IdeasTests
         {
             var env = new Env();
             // A real repository, so the watcher watches a real reflog.
-            if (!await Git(env.ProjectDir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
-            await Git(env.ProjectDir, "config", "user.email", "test@example.com");
-            await Git(env.ProjectDir, "config", "user.name", "Test");
+            if (!await TestGit.RunAsync(env.ProjectDir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
+            await TestGit.RunAsync(env.ProjectDir, "config", "user.email", "test@example.com");
+            await TestGit.RunAsync(env.ProjectDir, "config", "user.name", "Test");
             var calls = 0;
             env.Ctx.RpcFake.Register("files.commits", (req, _) =>
             {
@@ -301,8 +301,8 @@ public static class IdeasTests
                 Interlocked.Increment(ref calls);
                 var cwd = req.Str("cwd") ?? env.ProjectDir;
                 var since = req.Str("since");
-                var log = GitOut(cwd, "log", $"--max-count={req.Int("limit") ?? 20}",
-                    $"--format=%H%h%an%aI%s", since is { Length: > 0 } ? $"{since}..HEAD" : "HEAD");
+                var log = TestGit.Out(cwd, "log", $"--max-count={req.Int("limit") ?? 20}",
+                    $"--format=%H%h%an%aI%s", since is { Length: > 0 } ? $"{since}..HEAD" : "HEAD") ?? "";
                 var commits = new JsonArray();
                 foreach (var line in log.Split('\n', StringSplitOptions.RemoveEmptyEntries))
                 {
@@ -339,8 +339,8 @@ public static class IdeasTests
 
             // a commit that only advances the idea: recorded, no offer
             await File.WriteAllTextAsync(Path.Combine(env.ProjectDir, "nudge.txt"), "one");
-            await Git(env.ProjectDir, "add", "-A");
-            await Git(env.ProjectDir, "commit", "-q", "-m", "nudge: first step of the reset");
+            await TestGit.RunAsync(env.ProjectDir, "add", "-A");
+            await TestGit.RunAsync(env.ProjectDir, "commit", "-q", "-m", "nudge: first step of the reset");
             await Until(() => (IdeaAt(env, nudge)["commits"] as JsonArray)?.Count > 0,
                 "the commit lands on the idea: " + string.Join(" | ", env.Ctx.Log.Lines.Reverse().Take(8).Select(l => l.ToString())), 6000);
             var linked = ((JsonArray)IdeaAt(env, nudge)["commits"]!)[0]!;
@@ -356,8 +356,8 @@ public static class IdeasTests
             // the commit that finishes it: the card, once
             finished = true;
             await File.WriteAllTextAsync(Path.Combine(env.ProjectDir, "nudge.txt"), "two");
-            await Git(env.ProjectDir, "add", "-A");
-            await Git(env.ProjectDir, "commit", "-q", "-m", "nudge: reset the counter after a good answer");
+            await TestGit.RunAsync(env.ProjectDir, "add", "-A");
+            await TestGit.RunAsync(env.ProjectDir, "commit", "-q", "-m", "nudge: reset the counter after a good answer");
             var cards = await WaitForSuggestions(env, 1, 8000);
             var card = cards[0]!;
             Check.Equal("done", card["kind"]!.Str());
@@ -378,8 +378,8 @@ public static class IdeasTests
             asked.Clear();
             var calm = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Ideas tab titles only" } }))["id"].Str()!;
             await File.WriteAllTextAsync(Path.Combine(env.ProjectDir, "tab.txt"), "x");
-            await Git(env.ProjectDir, "add", "-A");
-            await Git(env.ProjectDir, "commit", "-q", "-m", $"the calm tab ({calm})");
+            await TestGit.RunAsync(env.ProjectDir, "add", "-A");
+            await TestGit.RunAsync(env.ProjectDir, "commit", "-q", "-m", $"the calm tab ({calm})");
             await Until(() => (IdeaAt(env, calm)["commits"] as JsonArray)?.Count > 0, "the named idea is linked", 6000);
             // No pick-one over the open ideas was asked: the message named it. (The done question still is - it is a
             // different decision, and it is the one that decides whether to offer anything.)
@@ -410,31 +410,6 @@ public static class IdeasTests
                 await Task.Delay(25);
             }
             throw new AssertException($"timed out waiting for: {what}");
-        }
-
-        static async Task<bool> Git(string cwd, params string[] args)
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            try
-            {
-                using var p = System.Diagnostics.Process.Start(psi)!;
-                await p.WaitForExitAsync();
-                return p.ExitCode == 0;
-            }
-            catch (System.ComponentModel.Win32Exception) { return false; }
-        }
-
-        static string GitOut(string cwd, params string[] args)
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            try
-            {
-                using var p = System.Diagnostics.Process.Start(psi)!;
-                return p.StandardOutput.ReadToEnd();
-            }
-            catch (System.ComponentModel.Win32Exception) { return ""; }
         }
 
         r.Add("ideas: the ideas tool round trip (stamps the session's project; deleting is the user's)", async () =>

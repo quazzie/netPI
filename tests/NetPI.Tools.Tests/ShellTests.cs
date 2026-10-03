@@ -138,7 +138,7 @@ public static class ShellTests
             var chunks = new List<string>();
             var ctx = T.Ctx(dir, output: c => { lock (chunks) chunks.Add(c); });
             var res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "echo out; echo err >&2; pwd; echo ünïcödé ✓" , cwd = "sub" }), default);
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             // stderr is merged into stdout at the source: exact ordering.
             Check.True(res.Content.StartsWith("out\nerr\n"), Check.Show(res.Content));
             Check.True(res.Content.Replace('\\', '/').EndsWith("/sub\nünïcödé ✓"), Check.Show(res.Content));
@@ -157,8 +157,8 @@ public static class ShellTests
             res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "true" }), default);
             Check.Equal("(no output)", res.Content);
 
-            Check.Error(await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "ls", cwd = "nope" }), default), "does not exist");
-            Check.Error(await Bash(svc).ExecuteAsync(ctx, T.Args(new { }), default), "command");
+            ToolCheck.Error(await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "ls", cwd = "nope" }), default), "does not exist");
+            ToolCheck.Error(await Bash(svc).ExecuteAsync(ctx, T.Args(new { }), default), "command");
 
             // Foreground runs are recorded and published.
             Check.True(registry.List().Count >= 3);
@@ -182,7 +182,7 @@ public static class ShellTests
             var res = await T.Run(Bash(svc), dir, new { command = "sleep 60 & echo started; sleep 60; echo never", timeout = 1 });
             sw.Stop();
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(8), $"returned after {sw.Elapsed}");
-            Check.Error(res, "[timed out after 1s");
+            ToolCheck.Error(res, "[timed out after 1s");
             Check.Contains(res.Content, "started");
             Check.NotContains(res.Content, "never");
             var d = T.D(res);
@@ -205,7 +205,7 @@ public static class ShellTests
             var sw = Stopwatch.StartNew();
             var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30 & sleep 30" }), cts.Token);
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(8));
-            Check.Error(res, "[aborted");
+            ToolCheck.Error(res, "[aborted");
             Check.True(T.D(res).Bool("outputEof"), "captured output reached EOF after the abort");
         });
 
@@ -217,7 +217,7 @@ public static class ShellTests
             using var cts = new CancellationTokenSource();
             cts.Cancel();
             var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "echo ran > ran.txt" }), cts.Token);
-            Check.Error(res, "[aborted before the command started");
+            ToolCheck.Error(res, "[aborted before the command started");
             await Task.Delay(200);
             Check.False(File.Exists(Path.Combine(dir, "ran.txt")), "the command did not run");
         });
@@ -263,7 +263,7 @@ public static class ShellTests
                 // process kill reaches the surviving tree (the old code answered "not running" here).
                 var id = p.Id;
                 var kill = await T.Run(new ProcessTool(registry), dir, new { action = "kill", id });
-                Check.Ok(kill);
+                ToolCheck.Ok(kill);
                 Check.Contains(kill.Content, "Killed");
                 Check.True(T.D(kill).Bool("killed"));
                 Check.Equal("killed", p.Status, "the status reflects the kill");
@@ -292,7 +292,7 @@ public static class ShellTests
         {
             var (svc, _, _) = NewService();
             var res = await T.Run(Bash(svc), T.TempDir("bash"), new { command = "seq 1 5000" });
-            Check.Ok(res);
+            ToolCheck.Ok(res);
             Check.Contains(res.Content, "[Output truncated: showing the last");
             Check.True(res.Content.EndsWith("\n5000"), "tail kept");
             Check.NotContains(res.Content, "\n1\n2\n");
@@ -376,7 +376,7 @@ public static class ShellTests
                 // Deliberately emit after the old 900 ms observation window.
                 var res = await T.Run(Bash(svc), dir, new { command = "sleep 1.2; for i in 1 2 3; do echo tick $i; sleep 0.2; done; sleep 30 & wait", background = true });
                 Check.True(sw.Elapsed < TimeSpan.FromSeconds(3), "returns immediately");
-                Check.Ok(res);
+                ToolCheck.Ok(res);
                 var d = T.D(res);
                 var id = d.Str("processId");
                 Check.Contains(res.Content, $"Started background process {id}");
@@ -399,7 +399,7 @@ public static class ShellTests
                 Check.True(bus.OfType(ProcessEvents.Output).Count > 0, "process.output events for background processes");
 
                 var kill = await T.Run(new ProcessTool(registry), dir, new { action = "kill", id });
-                Check.Ok(kill);
+                ToolCheck.Ok(kill);
                 Check.Contains(kill.Content, "Killed");
                 var p = registry.Get(id)!;
                 Check.Equal("killed", p.Status);
@@ -410,7 +410,7 @@ public static class ShellTests
                 Check.True(started.Process.Background);
                 var exited = bus.OfType(ProcessEvents.Exited).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
                 Check.Equal("killed", exited.Process.Status);
-                Check.Error(await T.Run(new ProcessTool(registry), dir, new { action = "output", id = "proc_nope" }), "No process");
+                ToolCheck.Error(await T.Run(new ProcessTool(registry), dir, new { action = "output", id = "proc_nope" }), "No process");
             }
             finally
             {
@@ -441,7 +441,7 @@ public static class ShellTests
                 async Task<string> Bg(string sessionId, string tag)
                 {
                     var res = await bash.ExecuteAsync(Ctx(sessionId), T.Args(new { command = $"echo job-{tag}; sleep 30", background = true }), default);
-                    Check.Ok(res);
+                    ToolCheck.Ok(res);
                     return T.D(res).Str("processId");
                 }
                 var idA = await Bg("ses_a", "a");
@@ -456,7 +456,7 @@ public static class ShellTests
                     // list: the caller's own and its subagents' jobs (both levels); none of another chat's —
                     // not even that chat's subagents'.
                     var list = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "list" }), default);
-                    Check.Ok(list);
+                    ToolCheck.Ok(list);
                     Check.Contains(list.Content, idA);
                     Check.Contains(list.Content, idSub);
                     Check.Contains(list.Content, idSub2);
@@ -465,30 +465,30 @@ public static class ShellTests
 
                     // list all:true is read-only and shows every session's, with the session on each line.
                     var all = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "list", all = true }), default);
-                    Check.Ok(all);
+                    ToolCheck.Ok(all);
                     Check.Contains(all.Content, idA);
                     Check.Contains(all.Content, idB);
                     Check.Contains(all.Content, "[ses_a]");
                     Check.Contains(all.Content, "[ses_b]");
 
                     // output and wait on another chat's job are refused, and it is left running.
-                    Check.Error(await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "output", id = idB }), default), "another session");
-                    Check.Error(await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "wait", id = idB, timeout = 1 }), default), "another session");
+                    ToolCheck.Error(await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "output", id = idB }), default), "another session");
+                    ToolCheck.Error(await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "wait", id = idB, timeout = 1 }), default), "another session");
                     Check.Equal("running", registry.Get(idB)!.Status, "the foreign job was left running");
 
                     // own and subagent jobs still work.
                     var outSub = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "output", id = idSub }), default);
-                    Check.Ok(outSub);
+                    ToolCheck.Ok(outSub);
                     Check.Contains(outSub.Content, "job-sub");
                     var waitSub2 = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "wait", id = idSub2, timeout = 1 }), default);
-                    Check.Ok(waitSub2);
+                    ToolCheck.Ok(waitSub2);
                     Check.Equal("running", T.D(waitSub2).Str("status"), "a subagent's subagent's job is waitable");
 
                     // kill is refused for the foreign job and works on its own.
-                    Check.Error(await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "kill", id = idB }), default), "another session");
+                    ToolCheck.Error(await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "kill", id = idB }), default), "another session");
                     Check.Equal("running", registry.Get(idB)!.Status, "the foreign job was left running after a refused kill");
                     var killA = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "kill", id = idA }), default);
-                    Check.Ok(killA);
+                    ToolCheck.Ok(killA);
                     Check.Equal("killed", registry.Get(idA)!.Status);
                 }
                 finally
@@ -510,7 +510,7 @@ public static class ShellTests
             var sw = Stopwatch.StartNew();
             var w = await T.Run(tool, dir, new { action = "wait", id, timeout = 60 });
             sw.Stop();
-            Check.Ok(w);
+            ToolCheck.Ok(w);
             // The acceptance rule: it comes back when the job does, not at the end of the timeout window.
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(20), $"returned in {sw.ElapsedMilliseconds} ms, not after the 60 s timeout");
             var d = T.D(w);
@@ -528,11 +528,11 @@ public static class ShellTests
             Check.Equal("exited", T.D(again).Str("status"));
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"a finished job returns at once ({sw.ElapsedMilliseconds} ms)");
 
-            Check.Error(await T.Run(tool, dir, new { action = "wait", id = "proc_nope" }), "No process with id proc_nope");
-            Check.Error(await T.Run(tool, dir, new { action = "wait" }), "Missing required argument 'id'");
+            ToolCheck.Error(await T.Run(tool, dir, new { action = "wait", id = "proc_nope" }), "No process with id proc_nope");
+            ToolCheck.Error(await T.Run(tool, dir, new { action = "wait" }), "Missing required argument 'id'");
             // A silly timeout clamps instead of failing: 0 means a second, not "no wait at all".
             var clamped = await T.Run(tool, dir, new { action = "wait", id, timeout = 0 });
-            Check.Ok(clamped);
+            ToolCheck.Ok(clamped);
             Check.Equal("exited", T.D(clamped).Str("status"));
         });
 
@@ -547,7 +547,7 @@ public static class ShellTests
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
                 var w = await T.Run(tool, dir, new { action = "wait", id, timeout = 30 }, ct: cts.Token);
-                Check.Ok(w);
+                ToolCheck.Ok(w);
                 Check.Contains(w.Content, "cancelled", "says the wait was cancelled");
                 Check.NotContains(w.Content, "Still running after", "does not claim the timeout ran out");
                 Check.True(T.D(w).Bool("cancelled"));
@@ -570,7 +570,7 @@ public static class ShellTests
             var sw = Stopwatch.StartNew();
             var w = await T.Run(tool, dir, new { action = "wait", id, timeout = 1 });
             sw.Stop();
-            Check.Ok(w);
+            ToolCheck.Ok(w);
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(8), $"waited the timeout and no longer ({sw.ElapsedMilliseconds} ms)");
             var d = T.D(w);
             Check.Equal("running", d.Str("status"));
@@ -600,8 +600,8 @@ public static class ShellTests
             Check.True(tool.IsReadOnly(T.Args(new { action = "wait", id = "proc_x" })), "wait changes nothing");
             Check.True(tool.IsReadOnly(T.Args(new { action = "list" })));
             Check.False(tool.IsReadOnly(T.Args(new { action = "kill", id = "proc_x" })));
-            Check.Error(await T.Run(tool, dir, new { action = "snooze" }), "use list, output, wait or kill");
-            Check.Error(await T.Run(tool, dir, new { action = "await", id = "proc_nope" }), "No process with id");
+            ToolCheck.Error(await T.Run(tool, dir, new { action = "snooze" }), "use list, output, wait or kill");
+            ToolCheck.Error(await T.Run(tool, dir, new { action = "await", id = "proc_nope" }), "No process with id");
             Check.Contains(tool.Definition.Parameters!.ToJsonString(), "wait");
             Check.Contains(tool.Definition.Parameters!.ToJsonString(), "timeout");
             // The description carries the policy, not just the mechanics: background-then-wait must not become the default.
@@ -660,7 +660,7 @@ public static class ShellTests
             var res = await T.Run(pwsh, T.TempDir("pwsh"), new { command = "Write-Output 'hi ✓'; cmd_that_does_not_exist_xyz 2>$null; exit 3" });
             if (found is null)
             {
-                Check.Error(res, "PowerShell was not found");
+                ToolCheck.Error(res, "PowerShell was not found");
                 Console.WriteLine("        (pwsh not installed: absence path verified)");
             }
             else

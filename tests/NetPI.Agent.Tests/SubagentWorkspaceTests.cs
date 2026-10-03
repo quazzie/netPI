@@ -199,11 +199,11 @@ public static class SubagentWorkspaceTests
         {
             RepoPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "netpi-agent-tests", "ws-repo-" + Ids.Short(8));
             Directory.CreateDirectory(RepoPath);
-            Available = Git(RepoPath, "init", "-q", "-b", "main");
+            Available = TestGit.Run(RepoPath, "init", "-q", "-b", "main");
             if (!Available) return;
             File.WriteAllText(Path.Combine(RepoPath, "README.md"), "base\n");
-            Git(RepoPath, "add", "-A");
-            Git(RepoPath, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+            TestGit.Run(RepoPath, "add", "-A");
+            TestGit.Run(RepoPath, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
         }
 
         /// <summary>Register the checkout as a project of the host's session store (the tests' sessions belong to it).</summary>
@@ -212,37 +212,6 @@ public static class SubagentWorkspaceTests
             if (!Available) return;
             var project = h.Sessions.CreateProject("ws-repo", RepoPath);
             Id = project.Id;
-        }
-
-        /// <summary>What the workspace plugin would do for a writing worker: a worktree and a branch of the project's repository.</summary>
-        private static bool Git(string cwd, params string[] args)
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            try
-            {
-                using var p = System.Diagnostics.Process.Start(psi)!;
-                p.StandardOutput.ReadToEnd();
-                p.StandardError.ReadToEnd();
-                p.WaitForExit();
-                return p.ExitCode == 0;
-            }
-            catch (System.ComponentModel.Win32Exception) { return false; }
-        }
-
-        private static string? GitOut(string cwd, params string[] args)
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            try
-            {
-                using var p = System.Diagnostics.Process.Start(psi)!;
-                var stdout = p.StandardOutput.ReadToEnd();
-                p.StandardError.ReadToEnd();
-                p.WaitForExit();
-                return p.ExitCode == 0 ? stdout.Trim() : null;
-            }
-            catch (System.ComponentModel.Win32Exception) { return null; }
         }
 
         public void Dispose()
