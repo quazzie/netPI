@@ -211,10 +211,6 @@ where a chat runs, the profile who it is.
   positive catalog concurrency, otherwise `models.localSlots` (1, clamped to at least 1), per local model;
   `models.cloudSlots` (4) per
   cloud provider. The same slots serve model calls without an agent (a `compaction.model` on another model).
-- **Upgrade:** settings from before agents (lanes) move once: the lanes you set up (`lanes.<id>`, `capacity` →
-  `instances`) become agents, plus one for `defaultModel` when none runs it; `lanes.localDefaultCapacity` →
-  `models.localSlots`, `lanes.cloudDefaultCapacity` → `models.cloudSlots`, `lanes.budgets` → `budget.providers`; then
-  `lanes` is removed.
 - **`cost`:** also accepts `cacheRead` and `cacheWrite`; the defaults are 10 % and 125 % of the input price.
 - `budget.providers.<provider>.dailyTokens` (older: tokens per day per provider) is still read.
 

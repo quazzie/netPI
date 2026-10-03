@@ -7,8 +7,7 @@ namespace NetPI.Agents;
 /// Agents (<see cref="IAgentScheduler"/>), the ledger of every model call with its cost, and the budget.
 /// <para>Settings: <c>agents.&lt;id&gt;</c> <c>{ model, instances, use, disabled, budget: { limitUsd }, cost: { input, output } }</c>,
 /// <c>budget.*</c>; <c>models.localSlots</c> (1) and <c>models.cloudSlots</c> (4) for model calls
-/// without an agent; still read: <c>budget.providers.&lt;provider&gt;.dailyTokens</c>. The lanes of earlier versions become agents on the first
-/// start (<see cref="AgentUpgrade"/>).</para>
+/// without an agent; still read: <c>budget.providers.&lt;provider&gt;.dailyTokens</c>.</para>
 /// <para>RPC: <c>agents.list</c>, <c>agents.use</c>, <c>agents.setEnabled</c>, <c>usage.summary</c>, <c>usage.history</c>, <c>usage.chats</c>, <c>usage.session</c>,
 /// <c>budget.status</c>, <c>budget.allow</c>. Events: <c>agents.changed { agents }</c>, <c>usage.changed</c> (the budget
 /// status). For agents that delegate: the <c>agent_choices</c> tool and an "Agents" system prompt section.</para>
@@ -58,12 +57,6 @@ public sealed class AgentsPlugin : INetPiPlugin
             ],
         });
         // the agents themselves (agents.<id>) have their own editor in the settings (Agents & budget)
-        try
-        {
-            var upgraded = AgentUpgrade.Run(context.Settings);
-            if (upgraded.Count > 0) context.Logger.LogInformation("Lanes became agents: {Agents}", string.Join(", ", upgraded));
-        }
-        catch (Exception ex) { context.Logger.LogWarning(ex, "Turning the lanes into agents failed"); }
 
         // The registry of what runs on shared model resources outlives a reload of this plugin: a new generation adopts the registered
         // instance (it is a plain class in the shared contracts) so the count carries across the swap, and points it at its own bus.

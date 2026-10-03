@@ -12,7 +12,6 @@ public static class SchedulerTests
         t.Add("agents: agents on one local model share its slots; the choice for a chat; switched off refuses at once", SharedModelSlots);
         t.Add("agents: a removed agent takes no new work, and its running calls still count on the shared model", AgentRemoved);
         t.Add("agents: chats run on their agent (taken, agents.use, agents.setEnabled); an inactive agent stops the chat at once", ChatsOnAgents);
-        t.Add("agents: the lanes of earlier versions become agents, once", Upgrade);
         t.Add("scheduler: priority, FIFO, cancellation, idempotent release", PriorityAndCancel);
         t.Add("agents: more instances wake waiters; instances follow the catalog", CapacityIncrease);
         t.Add("scheduler: agents.changed is debounced, and only sent on changes", Debounce);
@@ -273,26 +272,6 @@ public static class SchedulerTests
         // an unknown agent is refused
         try { await h.Rpc.CallAsync("agents.use", new { sessionId = s4.Id, agent = "nope" }); throw new AssertException("expected not_found"); }
         catch (RpcException ex) { Check.Equal("not_found", ex.Code); }
-    }
-
-    private static async Task Upgrade()
-    {
-        await using var h = await TestHost.StartAsync(x =>
-        {
-            x.Settings.SetQuiet("defaultModel", "fake/solo");
-            x.Settings.SetQuiet("lanes.pools", new JsonObject());
-            x.Settings.SetQuiet("models.cloudSlots", 4);
-            x.Settings.SetQuiet("lanes.Fast One", J("""{ "model": "fake/local", "capacity": 2, "use": "Quick.", "budget": { "limitUsd": 1 } }"""));
-            x.Settings.SetQuiet("agents.maxDepth", 2);
-        }, plugins: TestHost.Plugins.Agents);
-        var agents = (JsonObject)h.Settings.GetNode("agents")!;
-        Check.Equal("fast-one,maxDepth,solo", string.Join(",", agents.Select(kv => kv.Key).Order(StringComparer.Ordinal)));
-        Check.Equal("""{"model":"fake/local","instances":2,"use":"Quick.","budget":{"limitUsd":1}}""", agents["fast-one"]!.ToJsonString());
-        Check.Equal("""{"model":"fake/solo"}""", agents["solo"]!.ToJsonString(), "an agent for the default model");
-        Check.Equal(null, h.Settings.GetNode("lanes"), "the lanes are gone");
-        Check.Equal(4, h.Settings.Get<int>("models.cloudSlots"), "lanes.cloudDefaultCapacity moved");
-        Check.Equal("fast-one|solo", string.Join("|", h.Scheduler!.Snapshot().Select(p => p.Key)));
-        Check.Equal(0, AgentUpgrade.Run(h.Settings).Count, "nothing to do the next time");
     }
 
     private static async Task PriorityAndCancel()
