@@ -139,35 +139,6 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     // ---------------------------------------------------------------- settings
 
-    internal int IntSetting(string path, int fallback)
-    {
-        try
-        {
-            if (Ctx.Settings.GetNode(path) is JsonValue v)
-            {
-                if (v.TryGetValue<int>(out var i)) return i;
-                if (v.TryGetValue<double>(out var d)) return (int)d;
-                if (v.TryGetValue<string>(out var s) && int.TryParse(s, out i)) return i;
-            }
-        }
-        catch { }
-        return fallback;
-    }
-
-    internal bool BoolSetting(string path, bool fallback)
-    {
-        try
-        {
-            if (Ctx.Settings.GetNode(path) is JsonValue v)
-            {
-                if (v.TryGetValue<bool>(out var b)) return b;
-                if (v.TryGetValue<string>(out var s) && bool.TryParse(s, out b)) return b;
-            }
-        }
-        catch { }
-        return fallback;
-    }
-
     internal IReadOnlyList<IAgentHook> Hooks()
     {
         try { return Ctx.Services.GetAll<IAgentHook>().OrderBy(h => h.Order).ToList(); }

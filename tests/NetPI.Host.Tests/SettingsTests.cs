@@ -242,5 +242,65 @@ public static class SettingsTests
             s.Set("ui.theme", JsonValue.Create("blue"));   // writes work again once it parses
             Check.Equal("blue", JsonNode.Parse(File.ReadAllText(file))!["ui"]!["theme"]!.GetValue<string>());
         });
+
+        r.Add("settings: the shared readers the plugins read through - GetOr, GetInt, GetBool, GetStrings, GetSecret", () =>
+        {
+            var file = Path.Combine(T.TempDir("settings"), "settings.json");
+            File.WriteAllText(file, """
+                {
+                  "int": 120,
+                  "frac": 120.5,
+                  "strInt": "120",
+                  "badInt": "twelve",
+                  "bool": true,
+                  "strBool": "false",
+                  "badBool": "off",
+                  "list": [" a ", "b", 7, null, "", "c"],
+                  "one": "solo",
+                  "badList": 5,
+                  "envSecret": "env:NETPI_SETTINGS_TEST_SECRET",
+                  "dollarSecret": "$NETPI_SETTINGS_TEST_SECRET",
+                  "literalSecret": "plain",
+                  "bareDollar": "$"
+                }
+                """);
+            using var s = new SettingsStore(file, NullLogger.Instance);
+
+            Check.Equal(1, s.GetOr("missing", 1));
+            Check.Equal(1, ((ISettings?)null).GetOr("missing", 1), "no settings: the fallback");
+            Check.Equal(1, s.GetOr("badBool", 1), "a wrong type is the fallback, not an exception");
+
+            Check.Equal(120, s.GetInt("int", -1));
+            Check.Equal(120, s.GetInt("frac", -1), "a fraction truncates");
+            Check.Equal(120, s.GetInt("strInt", -1), "an int as its string form");
+            Check.Equal(-1, s.GetInt("badInt", -1));
+            Check.Equal(-1, s.GetInt("missing", -1));
+            Check.Equal(-1, ((ISettings?)null).GetInt("int", -1));
+
+            Check.True(s.GetBool("bool", false));
+            Check.False(s.GetBool("strBool", true), "\"false\" as its string form");
+            Check.False(s.GetBool("badBool", false), "a string the parser does not know is the fallback");
+
+            var list = s.GetStrings("list");
+            Check.Equal("a|b|c", string.Join("|", list), "trimmed, the non-string and blank entries dropped");
+            Check.Equal("solo", string.Join("|", s.GetStrings("one")), "one string is a list of one");
+            Check.Equal(0, s.GetStrings("badList").Count, "a wrong type is an empty list");
+            Check.Equal("f", string.Join("|", s.GetStrings("missing", ["f"])));
+
+            Environment.SetEnvironmentVariable("NETPI_SETTINGS_TEST_SECRET", "env-value");
+            try
+            {
+                Check.Equal("env-value", s.GetSecret("envSecret"));
+                Check.Equal("env-value", s.GetSecret("dollarSecret"), "the $ form reads the same variable");
+                Check.Equal("plain", s.GetSecret("literalSecret"), "a plain value is a literal");
+                Check.Equal("$", s.GetSecret("bareDollar"), "a bare $ is a literal, not a broken reference");
+                Check.Equal(null, s.GetSecret("missing"));
+                Check.Equal("fb", s.GetSecret("missing", "fb"));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("NETPI_SETTINGS_TEST_SECRET", null);
+            }
+        });
     }
 }

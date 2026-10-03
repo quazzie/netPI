@@ -61,7 +61,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
     private async Task LoopAsync(CancellationToken ct)
     {
-        var maxTurns = Math.Max(1, rt.IntSetting("agent.maxTurns", 200));
+        var maxTurns = Math.Max(1, rt.Ctx.Settings.GetInt("agent.maxTurns", 200));
         var turnIndex = 0;
         var retries = 0;
 

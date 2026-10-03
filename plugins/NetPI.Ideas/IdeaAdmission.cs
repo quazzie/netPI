@@ -144,14 +144,9 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
         }
     }
 
-    private int WaitSeconds() => Setting("ideas.checkWaitSeconds", DefaultWaitSeconds);
+    private int WaitSeconds() => ctx.Settings.GetOr("ideas.checkWaitSeconds", DefaultWaitSeconds);
 
-    private bool PaidIsAllowed() => Setting("ideas.allowPaidModel", false);
-
-    private T Setting<T>(string path, T fallback)
-    {
-        try { return ctx.Settings.Get(path, fallback) ?? fallback; } catch { return fallback; }
-    }
+    private bool PaidIsAllowed() => ctx.Settings.GetOr("ideas.allowPaidModel", false);
 
     private sealed class Leased(IDisposable lease, IPluginContext ctx, string purpose, string key, Stopwatch sw, IBackgroundWork? work, string? workId) : IDisposable
     {

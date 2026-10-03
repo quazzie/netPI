@@ -65,7 +65,7 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
         var started = new HashSet<string>(StringComparer.Ordinal);
         var argsChanged = false;
         var parallel = calls.Count > 1
-                       && rt.BoolSetting("agent.parallelReadOnlyTools", true)
+                       && rt.Ctx.Settings.GetBool("agent.parallelReadOnlyTools", true)
                        && calls.All(c => ReadsOnly(FindTool(tools, c.Name), c.Arguments));
         try
         {
@@ -297,7 +297,7 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
     /// start and end with the path, to read the rest in parts or search it instead of losing it.
     /// </summary>
     private string LimitResult(string content, ToolCallPart call) =>
-        ResultLimiter.Limit(content, rt.IntSetting(ToolResultLimit.Setting, ToolResultLimit.Default),
+        ResultLimiter.Limit(content, rt.Ctx.Settings.GetInt(ToolResultLimit.Setting, ToolResultLimit.Default),
             c => rt.SaveToolResult(SessionId, call, c));
 
     private async Task FinishAsync(AgentTurnContext turn, PreparedCall p, ToolResultPart result, HashSet<string> done, CancellationToken ct)

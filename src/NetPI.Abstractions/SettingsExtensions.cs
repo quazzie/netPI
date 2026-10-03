@@ -36,7 +36,7 @@ public static class SettingsExtensions
         return fallback;
     }
 
-    /// <summary>A bool setting: a boolean, or its string form ("true"/"false"/"1"/"0"); else <paramref name="fallback"/>.</summary>
+    /// <summary>A bool setting: a boolean, or its string form ("true"/"false"); else <paramref name="fallback"/>.</summary>
     public static bool GetBool(this ISettings? settings, string path, bool fallback)
     {
         if (settings is null) return fallback;

@@ -149,7 +149,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             {
                 _rescanQueued = false;
                 if (_stopped) break;
-                if (!Setting("ideas.closeOnCommit", true)) break;
+                if (!ctx.Settings.GetOr("ideas.closeOnCommit", true)) break;
                 if (!(ctx.Services.Get<IGitHistory>() is not null || ctx.Rpc.Exists("files.commits"))) break;   // no Files plugin: nothing can read the commits
                 var projects = ctx.Sessions.ListProjects();
                 foreach (var project in projects)
@@ -411,7 +411,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// </summary>
     private async Task SweepAsync(Watch watch)
     {
-        if (_stopped || !Setting("ideas.closeOnCommit", true) || IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return;
+        if (_stopped || !ctx.Settings.GetOr("ideas.closeOnCommit", true) || IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return;
         // A check that just failed is not retried on every trigger that wakes the sweep (the two-minute timer, an
         // agent-status change, a burst of git file events): the attempts back off, and the setting names the first
         // interval (0 disables the backoff, so sweeps can be driven back to back).
@@ -501,7 +501,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// </summary>
     private int BackoffSeconds(long tries)
     {
-        var baseSeconds = Setting("ideas.commitRetrySeconds", DefaultRetrySeconds);
+        var baseSeconds = ctx.Settings.GetOr("ideas.commitRetrySeconds", DefaultRetrySeconds);
         if (baseSeconds <= 0) return 0;
         var shift = (int)Math.Min(tries - 1, 20);
         return Math.Min(baseSeconds * (1 << shift), MaxBackoffSeconds);
@@ -621,7 +621,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         if (!DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.decision")) return Decision.None;
         var subject = IdeaOps.Str(commit["subject"]) ?? "";
         var author = IdeaOps.Str(commit["author"]) ?? "";
-        var threshold = Math.Clamp(Setting("ideas.linkThreshold", DefaultLinkThreshold), 0.3, 0.99);
+        var threshold = Math.Clamp(ctx.Settings.GetOr("ideas.linkThreshold", DefaultLinkThreshold), 0.3, 0.99);
         List<JsonObject>? best = null;
         foreach (var window in IdeaMatch.Windows(open, subject + " " + author))
         {
@@ -681,7 +681,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         // The done question is the one-card courtesy, not the commit's reading: a skip (a decision the configuration
         // will make again — idea-np3a5g) and a drop alike mean "no offer now", and the cursor moves either way.
         if (answer.Probs is not { } probs) return false;
-        var threshold = Math.Clamp(Setting("ideas.doneThreshold", DefaultDoneThreshold), 0.3, 0.99);
+        var threshold = Math.Clamp(ctx.Settings.GetOr("ideas.doneThreshold", DefaultDoneThreshold), 0.3, 0.99);
         if (!DecisionConfidence.Clear(probs.GetValueOrDefault("DONE"), probs.GetValueOrDefault("MORE"), threshold)) return false;
         // The result judges this exact snapshot. A later revision must be judged again, never stamped onto old text.
         var current = _repo.Find(id);
@@ -737,7 +737,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         if (!verdict.Verified) return verdict.Retryable ? null : false;
         current = _repo.Find(id);
         if (current is null || IdeaRuns.ProjectBusy(ctx, watch.ProjectId) || current.Revision != revision) return null;
-        if (Setting("ideas.applyVerifiedUpdates", true))
+        if (ctx.Settings.GetOr("ideas.applyVerifiedUpdates", true))
         {
             var patch = new JsonObject { ["status"] = "done", ["addSections"] = new JsonArray(new JsonObject
             { ["kind"] = "research", ["title"] = "Completion verification", ["content"] = verdict.Reason + "\n\n" + string.Join('\n', linked) }) };
@@ -823,13 +823,5 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     private bool IsWatched(string repo)
     {
         lock (_watchLock) return _watches.ContainsKey(repo);
-    }
-
-    // ------------------------------------------------------------------ helpers
-
-    private T Setting<T>(string key, T fallback)
-    {
-        try { return ctx.Settings.Get(key, fallback) ?? fallback; }
-        catch { return fallback; }
     }
 }

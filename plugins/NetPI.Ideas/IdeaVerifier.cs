@@ -15,9 +15,9 @@ internal sealed class IdeaVerifier(IPluginContext ctx)
     internal sealed record Verdict(bool Verified, string Reason, bool Retryable = false, bool Deferred = false);
     public async Task<Verdict> VerifyAsync(string proposed, string evidence, string? sessionId, string? projectId, CancellationToken ct)
     {
-        if (!Setting("ideas.verify", true)) { Skipped("Ideas verification is disabled"); return new(false, "Ideas verification is disabled"); }
-        var name = Setting("ideas.verifyModel", "").Trim();
-        if (name.Length == 0) name = Setting("ideas.model", IdeaRecall.DefaultModel);
+        if (!ctx.Settings.GetOr("ideas.verify", true)) { Skipped("Ideas verification is disabled"); return new(false, "Ideas verification is disabled"); }
+        var name = ctx.Settings.GetOr("ideas.verifyModel", "").Trim();
+        if (name.Length == 0) name = ctx.Settings.GetOr("ideas.model", IdeaRecall.DefaultModel);
         var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
         if (model is null) { Skipped($"Verifier model {name} is unavailable"); return new(false, $"Verifier model {name} is unavailable", true); }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, ctx.Stopping);
@@ -89,6 +89,4 @@ internal sealed class IdeaVerifier(IPluginContext ctx)
         }
         catch { return new(false, "Verifier returned an invalid answer", true); }
     }
-
-    private T Setting<T>(string path, T fallback) { try { return ctx.Settings.Get(path, fallback) ?? fallback; } catch { return fallback; } }
 }

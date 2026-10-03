@@ -93,7 +93,7 @@ internal sealed record WebOptions(
     public static WebOptions Read(ISettings s)
     {
         var searx = Blank(s.Get<string>("web.search.searxngUrl"));
-        var brave = Secret(s.Get<string>("web.search.braveApiKey")) ?? Blank(Environment.GetEnvironmentVariable("BRAVE_API_KEY"));
+        var brave = s.GetSecret("web.search.braveApiKey") ?? Blank(Environment.GetEnvironmentVariable("BRAVE_API_KEY"));
         return new WebOptions(
             FetchMaxChars: Math.Clamp(s.Get("web.fetch.maxChars", 20_000), 1_000, 200_000),
             FetchTimeoutSeconds: Math.Clamp(s.Get("web.fetch.timeoutSeconds", 30), 3, 300),
@@ -117,15 +117,5 @@ internal sealed record WebOptions(
 
     /// <summary>A profile folder name (letters, digits, '-', '_'), or "temp"; anything else is "default".</summary>
     private static string ProfileName(string? v) => Blank(v) is { } n && Regex.IsMatch(n, "^[A-Za-z0-9_-]{1,40}$") ? n.ToLowerInvariant() : "default";
-
-    /// <summary>A value or <c>env:NAME</c> / <c>$NAME</c> (an environment variable).</summary>
-    private static string? Secret(string? v)
-    {
-        v = Blank(v);
-        if (v is null) return null;
-        if (v.StartsWith("env:", StringComparison.OrdinalIgnoreCase)) return Blank(Environment.GetEnvironmentVariable(v[4..]));
-        if (v.StartsWith('$')) return Blank(Environment.GetEnvironmentVariable(v[1..]));
-        return v;
-    }
 
 }

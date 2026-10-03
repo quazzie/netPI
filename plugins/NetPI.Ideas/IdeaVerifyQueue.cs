@@ -252,15 +252,9 @@ public sealed class IdeaVerifyQueue : IDisposable
 
     private int Backoff(int tries)
     {
-        var first = Math.Clamp(RetrySeconds(), 1, 3600);
+        var first = Math.Clamp(_ctx.Settings.GetOr("ideas.verifyRetrySeconds", DefaultRetrySeconds), 1, 3600);
         var shift = (int)Math.Min(tries, 10);
         return Math.Min(first * (1 << shift), MaxBackoffSeconds);
-    }
-
-    private int RetrySeconds()
-    {
-        try { return _ctx.Settings.Get("ideas.verifyRetrySeconds", DefaultRetrySeconds); }
-        catch { return DefaultRetrySeconds; }
     }
 
     /// <summary>Higher-priority work is queued on the model: a check must not take a turn the chats are waiting for.</summary>

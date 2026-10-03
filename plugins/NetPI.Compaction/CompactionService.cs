@@ -22,24 +22,19 @@ public sealed class CompactionOptions
     public static CompactionOptions From(ISettings? s)
     {
         if (s is null) return new CompactionOptions();
-        var threshold = Get(s, "compaction.thresholdPercent", 1.0);
-        var reserve = Math.Max(0, Get(s, "compaction.reserveTokens", 16_384));
+        var threshold = s.GetOr("compaction.thresholdPercent", 1.0);
+        var reserve = Math.Max(0, s.GetOr("compaction.reserveTokens", 16_384));
         if (threshold > 1) threshold /= 100; // "80" means 80%
         return new CompactionOptions
         {
-            Enabled = Get(s, "compaction.enabled", true),
-            DefaultContextWindow = Math.Max(1024, Get(s, "compaction.defaultContextWindow", 131_072)),
+            Enabled = s.GetOr("compaction.enabled", true),
+            DefaultContextWindow = Math.Max(1024, s.GetOr("compaction.defaultContextWindow", 131_072)),
             ThresholdPercent = Math.Clamp(threshold, 0.1, 1.0),
             ReserveTokens = reserve,
-            KeepRecentTokens = Math.Max(0, Get(s, "compaction.keepRecentTokens", 20_000)),
-            Model = Get<string?>(s, "compaction.model", null) is { Length: > 0 } m ? m.Trim() : null,
-            MaxSummaryTokens = Math.Clamp(Get(s, "compaction.maxSummaryTokens", (int)(reserve * 0.8)), 256, 128_000),
+            KeepRecentTokens = Math.Max(0, s.GetOr("compaction.keepRecentTokens", 20_000)),
+            Model = s.GetOr<string?>("compaction.model", null) is { Length: > 0 } m ? m.Trim() : null,
+            MaxSummaryTokens = Math.Clamp(s.GetOr("compaction.maxSummaryTokens", (int)(reserve * 0.8)), 256, 128_000),
         };
-    }
-
-    private static T Get<T>(ISettings s, string path, T fallback)
-    {
-        try { return s.Get(path, fallback) ?? fallback; } catch { return fallback; }
     }
 }
 
