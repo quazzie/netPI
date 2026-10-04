@@ -345,7 +345,12 @@ public static class SchedulerTests
         var leases = new List<IAgentSlot>();
         for (var i = 0; i < 2; i++) leases.Add(await s.AcquireAsync(Req(pool, "A" + i), CancellationToken.None));
         foreach (var l in leases) l.Dispose();
-        await Task.Delay(300);
+        // Close the window instead of guessing at it: the coalesced event is on the scheduler's publish timer, which
+        // runs late under load, and a fixed delay sampled before the event arrived made the next assertion count a
+        // straggler it had not seen yet.
+        var publishWindowMs = (s as AgentScheduler)?.PublishDelayMs ?? 100;
+        await Wait.Until(() => h.Bus.OfType(AgentSchedulerEvents.Changed).Count > before, "the coalesced agents.changed");
+        await Task.Delay(2 * publishWindowMs + 200);
         await h.Bus.DrainAsync();
         var after = h.Bus.OfType(AgentSchedulerEvents.Changed).Count;
         Check.True(after - before is >= 1 and <= 2, $"coalesced into {after - before} event(s)");
@@ -353,7 +358,7 @@ public static class SchedulerTests
         Check.Equal(0, pools.Count, "nothing busy");
         // a settings change that changes nothing here sends nothing
         h.Settings.Set("ui.theme", "dark");
-        await Task.Delay(250);
+        await Task.Delay(2 * publishWindowMs + 200);
         await h.Bus.DrainAsync();
         Check.Equal(after, h.Bus.OfType(AgentSchedulerEvents.Changed).Count);
     }

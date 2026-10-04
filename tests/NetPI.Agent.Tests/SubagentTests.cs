@@ -525,13 +525,21 @@ public static class SubagentTests
         var runningSeq = new ConcurrentDictionary<string, long>();
         var queuedSeq = new ConcurrentDictionary<string, long>();
         var yieldedSeq = new ConcurrentDictionary<string, long>();
+        // The parent's most recent yield as of the moment a child started running. A parent that waits again later
+        // publishes a second yield, so comparing its *last* yield with the child's start judged a correct hand-over
+        // wrong (the parent had yielded, the child had taken the slot, and only then the parent yielded again).
+        var yieldBeforeTakeover = new ConcurrentDictionary<string, long>();
         var sub = h.Bus.Subscribe(EventTypes.AgentStatus, evt =>
         {
             var a = FakeBus.Data(evt)["agent"];
             if ((string?)a!["id"] is not { } id || (string?)a!["status"] is not { } st) return;
             switch (st)
             {
-                case "running": runningSeq[id] = evt.Seq; break;
+                case "running":
+                    runningSeq[id] = evt.Seq;
+                    if ((string?)a!["parentAgentId"] is { Length: > 0 } pid && yieldedSeq.TryGetValue(pid, out var ys))
+                        yieldBeforeTakeover[id] = ys;
+                    break;
                 case "queued": queuedSeq[id] = evt.Seq; break;
                 case "yielded": yieldedSeq[id] = evt.Seq; break;
             }
@@ -608,10 +616,11 @@ public static class SubagentTests
             var p = await h.IdleAsync(parent.Id, 15_000);
             var child = h.Runtime.Get(p.Children.Single())!;
             Check.Equal(AgentStatus.Completed, child.Status, $"{tag} cycle {i}: the child finished");
-            // If the child waited for the slot, the parent's yield must have been recorded before the child took it.
+            // If the child waited for the slot, the parent's yield must have been recorded before the child took it: when
+            // the child started running, a yield of its parent was already on the bus.
             if (queuedSeq.TryGetValue(child.Id, out var q) && runningSeq[child.Id] > q
-                && yieldedSeq.TryGetValue(p.Id, out var y) && !(y < runningSeq[child.Id]))
-                lock (violations) violations.Add($"{tag} cycle {i}: the yield was recorded after the child took the slot");
+                && !yieldBeforeTakeover.ContainsKey(child.Id))
+                lock (violations) violations.Add($"{tag} cycle {i}: the child took the slot with no recorded parent yield before it");
         }
 
         done.Cancel();
@@ -663,9 +672,13 @@ public static class SubagentTests
             return ToolResult.Ok("slow done");
         }));
         var parentCalls = 0;
+        var childGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         h.Catalog.Handler = (r, ct) =>
         {
-            if (IsChild(r)) return Reply.Text("child finished");
+            // The child is held until the parent is inside its slow tool: the notification has to arrive while the
+            // turn is in flight, or it is drained into the turn and the queued-as-steering state the test waits for
+            // is over before it looks (under load the wait ran out on that race).
+            if (IsChild(r)) return Reply.Text("child finished", c => childGate.Task.WaitAsync(c));
             return Interlocked.Increment(ref parentCalls) switch
             {
                 1 => Reply.Tool("agent_spawn", new { task = "quick job", name = "quick", background = true }),
@@ -675,6 +688,7 @@ public static class SubagentTests
         };
         await h.SendAsync(parent.Id, "go");
         await slowStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        childGate.SetResult();
         var p = h.Runtime.GetBySession(parent.Id)!;
         await Wait.Until(() => h.Runtime.GetQueue(parent.Id).Count == 1, "notification queued as steering");
         Check.Equal("steer", h.Runtime.GetQueue(parent.Id)[0].Mode);

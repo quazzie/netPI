@@ -93,9 +93,12 @@ public static class PersistenceTests
         await h.SendAsync(s.Id, "start");
         await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Running, "the run is in flight");
 
-        // A follow-up and a steer land in the queue while the run holds the slot.
+        // A follow-up and a steer land in the queue while the run holds the slot. The steer is an internal one on
+        // purpose: a user's steer cancels the steer signal, so the running turn takes it as soon as it can (the
+        // steering tests cover that), and this test would be racing that drain for its own subject — what survives a
+        // reload. An internal steer is queued and nothing takes it until the agent asks.
         await h.SendAsync(s.Id, "follow up please", DeliveryMode.Queue);
-        await h.SendAsync(s.Id, "steer me left", DeliveryMode.Steer);
+        await h.Runtime.SendAsync(s.Id, new UserInput { Text = "steer me left", Source = "agent:test" }, DeliveryMode.Steer);
         Check.Equal(2, h.Runtime.GetQueue(s.Id).Count, "both inputs are queued before the reload");
 
         // The reload: the run is aborted, and a new instance rebuilds from the records (queue included).
