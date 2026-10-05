@@ -44,7 +44,7 @@ public static class HookTests
             Check.Contains(RunResult.Text(notice), "tool call written as text");
         });
 
-        r.Add("nudge.cutoff", "nudge: a cut-off response (length) gets a nudge notice and the agent continues", async () =>
+        r.Add("nudge.cutoff", "nudge: a response cut off while only thinking (length) gets the stop-deliberating nudge and the agent continues", async () =>
         {
             var s = await env.NewSession();
             var mockMark = await env.MockMark();
@@ -54,7 +54,9 @@ public static class HookTests
             Check.True(first.Arr("parts").All(p => p.S("type") == "thinking"), "only thinking in the cut-off message");
             var notice = run.Role("notice").Single();
             Check.Equal("nudge", notice.P("meta").S("kind"));
-            Check.Contains(RunResult.Text(notice), "cut off");
+            // a cut-off that is only thinking is not told to "continue where you left off" (that is more thinking)
+            Check.Contains(RunResult.Text(notice), "whole output budget thinking");
+            Check.Contains(RunResult.Text(notice), "smallest next step");
             Check.Contains(run.FinalText, "NUDGE-RESUMED");
             var log = await env.MockLog(mockMark);
             Check.Equal("notice:nudge", log.Last().S("lastRole"), "the model saw the nudge as the last message");
