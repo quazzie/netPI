@@ -836,6 +836,43 @@ public static class IdeasCommitTests
             Check.Equal(0, await env.Cards(), "but not offered: the commits do not finish it");
             env.Ctx.Unload();
         });
+
+        r.Add("ideas commits: a commit that lands while the project is busy is read at the run-end rescan, not taken as already read", async () =>
+        {
+            var env = new Env();
+            var gitDir = env.Repo.GitDir;
+            Directory.CreateDirectory(Path.Combine(gitDir, "refs", "heads"));
+            File.WriteAllText(Path.Combine(gitDir, "HEAD"), "ref: refs/heads/main\n");
+            File.WriteAllText(Path.Combine(gitDir, "packed-refs"), string.Empty);
+            var refFile = Path.Combine(gitDir, "refs", "heads", "main");
+            File.WriteAllText(refFile, "1" + new string('0', 39) + "\n");
+            await env.StartAsync();
+            await WaitAsked(env, 2, "the start's probe and sweep");
+
+            var idea = await env.AddIdea("Read after the run", "A plan long enough for the done question to see it in full.");
+            // the agent is working on the project when the commit lands: the sweep steps back
+            var runtime = new FakeAgentRuntime();
+            var agent = new AgentInfo { Id = "working", SessionId = env.Session.Id, Status = AgentStatus.Running };
+            runtime.Agents.Add(agent);
+            env.Ctx.ServicesFake.Register<IAgentRuntime>(runtime);
+            env.Repo.Commit($"implement {idea}");
+            var fresh = Path.Combine(gitDir, "refs", "heads", "main.fresh");
+            File.WriteAllText(fresh, "2" + new string('1', 39) + "\n");
+            File.Move(fresh, refFile, overwrite: true);
+            env.Ctx.Bus.Publish(new BusEvent { Type = EventTypes.AgentStatus, Data = new JsonObject { ["agent"] = new JsonObject { ["status"] = "idle" } } });
+            await WaitLog(env, "not swept while its project has active work");
+            Check.Equal(null, env.Cursor, "nothing is read while the project is busy");
+
+            // The run ends and the ref has not moved since: the rescan at the run's end still has to read the commit,
+            // because the busy sweep never read it (the marks it skipped on are not "seen").
+            agent.Status = AgentStatus.Idle;
+            env.Ctx.Bus.Publish(new BusEvent { Type = EventTypes.AgentStatus, Data = new JsonObject { ["agent"] = new JsonObject { ["status"] = "idle" } } });
+            await WaitCursor(env);
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "the commit is read at the run-end rescan");
+            Check.Equal(1, (await env.CommitsOn(idea)).Count, "and linked to the idea it names");
+            Check.False(env.Ctx.Log.Lines.Any(l => l.Contains("the sweep is skipped")), "the busy sweep did not mark the repository as read");
+            env.Ctx.Unload();
+        });
     }
 
     private static JsonObject Answer(Dictionary<string, double> probs)

@@ -179,12 +179,16 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                         ctx.Logger.LogDebug("Ideas: {Repo} has no new commit (its git directories keep the last check's marks); the sweep is skipped", watch.Repo);
                         continue;
                     }
+                    var complete = false;
                     await watch.Gate.WaitAsync(ctx.Stopping).ConfigureAwait(false);
-                    try { await SweepAsync(watch).ConfigureAwait(false); }
+                    try { complete = await SweepAsync(watch).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (ctx.Stopping.IsCancellationRequested) { }
                     catch (Exception ex) { ctx.Logger.LogWarning("Ideas: the commit check on {Repo} failed: {Message}", watch.Repo, ex.Message); }
                     // The pre-sweep marks are the floor: a commit that lands during the sweep moves them and is read next.
-                    finally { watch.Gate.Release(); watch.Seen = now; }
+                    // Only a sweep that read to the end takes them: one that stepped back (the project was busy, the check is
+                    // backed off, a commit could not be decided) keeps the earlier marks, so the next rescan — the one at the
+                    // run's end — reads again instead of seeing the repository as unchanged.
+                    finally { watch.Gate.Release(); if (complete) watch.Seen = now; }
                 }
             }
             while (_rescanQueued);
@@ -418,10 +422,17 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// commit that cannot be decided after <see cref="MaxTries"/> attempts is recorded unread and the cursor moves
     /// past it, so the later commits are read instead of being pinned behind it forever.
     /// </para>
+    /// True when the repository was read to the end (every new commit handled, or none to read); false when the sweep
+    /// stepped back before that, so the caller does not take the repository as read.
     /// </summary>
-    private async Task SweepAsync(Watch watch)
+    private async Task<bool> SweepAsync(Watch watch)
     {
-        if (_stopped || !ctx.Settings.GetOr("ideas.closeOnCommit", true) || IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return;
+        if (_stopped || !ctx.Settings.GetOr("ideas.closeOnCommit", true)) return false;
+        if (IdeaRuns.ProjectBusy(ctx, watch.ProjectId))
+        {
+            ctx.Logger.LogDebug("Ideas: {Repo} is not swept while its project has active work; the rescan at the run's end reads it", watch.Repo);
+            return false;
+        }
         // A check that just failed is not retried on every trigger that wakes the sweep (the two-minute timer, an
         // agent-status change, a burst of git file events): the attempts back off, and the setting names the first
         // interval (0 disables the backoff, so sweeps can be driven back to back).
@@ -431,7 +442,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             if (retryAt is { } until && DateTimeOffset.UtcNow < until)
             {
                 ctx.Logger.LogDebug("Ideas: {Repo} is not swept again until about {Until:HH:mm:ss} ({Tries} failed check(s) back it off)", watch.Repo, until, failure.Tries);
-                return;
+                return false;
             }
         }
         var since = _repo.LastSeen(watch.Repo);
@@ -465,14 +476,14 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         if (all.Count == 0)
         {
             ctx.Logger.LogDebug("Ideas: no new commit in {Repo}", watch.Repo);
-            return;
+            return true;
         }
         ctx.Logger.LogInformation("Ideas: {Count} new commit(s) in {Repo} since {Since}", all.Count, watch.Repo, since ?? "(the start)");
         ctx.Logger.LogDebug("Ideas: the watcher is the fast path; a missed event is caught by the {Minutes}-minute sweep", Rescan.TotalMinutes);
 
         foreach (var commit in all)
         {
-            if (_stopped || IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return;
+            if (_stopped || IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return false;
             // The agent or another window may close/update an idea between commits or while a decision runs.
             var open = OpenAsync(watch.ProjectId, ctx.Stopping);
             var (handled, why) = await HandleAsync(watch, open, commit, ctx.Stopping).ConfigureAwait(false);
@@ -494,14 +505,15 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                     _repo.RecordUnread(watch.Repo, IdeaOps.Str(commit["hash"]) ?? "", IdeaOps.Str(commit["subject"]), tries, reason);
                     ctx.Logger.LogWarning("Ideas: {Short} in {Repo} is not read yet ({Reason}, and {Tries} checks in a row did not answer); it is recorded unread and the cursor moves past it, so the later commits are read. It is listed in ideas.unread.",
                         shortHash, watch.Repo, reason, tries);
-                    return;
+                    return false; // the commits after it are still unread
                 }
                 var retryIn = BackoffSeconds(tries);
                 ctx.Logger.LogWarning("Ideas: {Short} in {Repo} is not read yet ({Reason}); attempt {Tries} of {Max}, and the next sweep tries it again in about {Seconds:0} s",
                     shortHash, watch.Repo, reason, tries, MaxTries, retryIn);
-                return; // the cursor stays: this commit, and every one after it, are still unseen
+                return false; // the cursor stays: this commit, and every one after it, are still unseen
             }
         }
+        return true;
     }
 
     /// <summary>
