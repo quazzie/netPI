@@ -773,6 +773,20 @@ log('plugin tab: Work');
   check('work: a top-level lane owner shows its session title, not "main"; a subagent its name',
     ownerNames.includes('Index docs for semantic search') && !ownerNames.includes('main') && ownerNames.includes('surveyor'), ownerNames.join(' | '));
   check('work: a subagent says whose work it is', /for Refactor provider retry policy/.test(await qwen.locator('.slot.busy', { hasText: 'surveyor' }).innerText()));
+  // a chat whose turn ended while its subagents work is not done: the Work tab, its row and its tab say what it waits for
+  await rpcCall('mock.agentStatus', { sessionId: 'ses_bg', patch: { status: 'idle', activity: null } });
+  await page.waitForTimeout(300);
+  const waitingChat = page.locator('.work .waiting-chat');
+  check('work: a chat whose subagents still work is listed as waiting for them',
+    (await waitingChat.count()) === 1 && /Refactor provider retry policy/.test(await waitingChat.innerText()) && /waiting for 2 agents/.test(await waitingChat.innerText()),
+    (await waitingChat.allInnerTexts()).join(' | '));
+  const bgRow = page.locator('.srow[data-session="ses_bg"]');
+  check('sessions: its row says it waits for its subagents, with the waiting dot',
+    /waiting for 2 agents/.test(await bgRow.locator('.waiting').innerText().catch(() => '')) && (await bgRow.locator('.np-dot').getAttribute('data-status')) === 'waiting');
+  await shot(page, '15b-work-waiting-chat');
+  await rpcCall('mock.agentStatus', { sessionId: 'ses_bg', patch: { status: 'yielded', activity: 'waiting for 2 agents' } });
+  await page.waitForTimeout(300);
+  check('work: …and not while it runs or waits inside a tool call', (await waitingChat.count()) === 0);
   // the shared clock ticks: a live elapsed time moves on its own (a clock nobody is told about stays at its first value)
   const elapsed = () => page.locator('.work .np-elapsed').allInnerTexts();
   const e0 = await elapsed();

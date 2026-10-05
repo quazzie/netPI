@@ -55,7 +55,7 @@
  *   .np-mono .np-muted .np-dim .np-ellipsis .np-small .np-strong
  *   .np-kbd               keyboard key
  *   .np-badge             small pill; tones via data-tone="ok|warn|err|info|accent" (or .np-badge-ok etc.)
- *   .np-dot               6px status dot; data-status="running|queued|yielded|asking|idle|unread|error|ok|warn|
+ *   .np-dot               6px status dot; data-status="running|queued|yielded|waiting|asking|idle|unread|error|ok|warn|
  *                         completed|failed|cancelled|loaded|unloaded|stopped|offline|available"
  *   .np-empty             centered dim empty-state message (optionally with an svg icon inside)
  *   .np-spinner           12px spinning ring
@@ -790,10 +790,21 @@ input.np-switch:disabled {
 .np-dot[data-status='queued'] {
   --dot: var(--warn);
 }
-.np-dot[data-status='yielded'] {
+.np-dot[data-status='yielded'],
+.np-dot[data-status='waiting'] {
   --dot: var(--info);
   background: transparent;
   box-shadow: inset 0 0 0 1.5px var(--dot);
+}
+/* the chat's turn ended while its subagents work: their reports start its next run (a ring that breathes; np-pulse
+   would replace the ring's own shadow) */
+.np-dot[data-status='waiting'] {
+  animation: np-breathe 2.4s var(--ease) infinite;
+}
+@keyframes np-breathe {
+  50% {
+    opacity: 0.4;
+  }
 }
 /* the agent asked the user and waits for the answer (ask_user) */
 .np-dot[data-status='asking'] {

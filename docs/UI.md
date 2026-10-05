@@ -847,6 +847,12 @@ names or an inline `<svg …>` string.
   string for "default".
 - `runs.list { includeFinished: true }` is called at startup to seed the status dots, including failed and
   completed subagents.
+- A chat whose own run has ended while its subagents are still running, queued or yielded is `waiting`
+  (`waitingOn(sessionId)` in `app.svelte.js`, from the runs' `parentSessionId`): its turn is over but it is not done,
+  since their reports start its next run. The dot is the yielded ring, breathing. The session row's second line says
+  "waiting for N agents" instead of the message count, the tab's tooltip names them, and the Work tab lists such a chat
+  under the agents ("<title> · waiting for N agents", click to open), because a chat without a run holds no instance
+  and has no row there otherwise.
 - Scoped events carry a non-null `sid`. The UI also falls back to `d.sessionId`.
 - `agent.status` is broadcast whenever `status` **or** `activity` changes. The run status line above the composer
   shows it in a word with the time since `startedAt`.

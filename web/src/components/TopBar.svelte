@@ -4,7 +4,7 @@
   import IconButton from '../lib/kit/IconButton.svelte';
   import Menu from '../lib/kit/Menu.svelte';
   import BudgetPill from './BudgetPill.svelte';
-  import { app, activate, closeTab, moveTab, newSession, sessionStatus, projectOf } from '../lib/state/app.svelte.js';
+  import { app, activate, closeTab, moveTab, newSession, sessionStatus, waitingOn, projectOf } from '../lib/state/app.svelte.js';
   import { modals, prefs } from '../lib/state/ui.svelte.js';
   import { conn, reconnectNow } from '../lib/rpc.svelte.js';
 
@@ -79,7 +79,13 @@
     const s = app.sessionsById.get(id);
     if (!s) return '';
     const p = projectOf(s);
-    return [s.title || 'New session', p ? `project: ${p.name}` : null, s.model ? `model: ${s.model}` : null]
+    const w = waitingOn(id);
+    return [
+      s.title || 'New session',
+      p ? `project: ${p.name}` : null,
+      s.model ? `model: ${s.model}` : null,
+      w.length ? `waiting for ${w.length} agent${w.length === 1 ? '' : 's'}: ${w.map((x) => x.name || x.id).join(', ')}` : null,
+    ]
       .filter(Boolean)
       .join('\n');
   }

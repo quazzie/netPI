@@ -4,7 +4,7 @@
   import IconButton from '../../lib/kit/IconButton.svelte';
   import TimeAgo from '../../lib/kit/TimeAgo.svelte';
   import Section from '../../lib/kit/Section.svelte';
-  import { app, openSession, newSession, updateSession, deleteSession, sessionStatus, loadSessions } from '../../lib/state/app.svelte.js';
+  import { app, openSession, newSession, updateSession, deleteSession, sessionStatus, waitingOn, loadSessions } from '../../lib/state/app.svelte.js';
   import { confirmDialog, toast } from '../../lib/state/ui.svelte.js';
   import { rpc } from '../../lib/rpc.svelte.js';
   import { recencyBucket } from '../../lib/format.js';
@@ -205,7 +205,12 @@
         </div>
         <div class="line2">
           {#if depth === 0 && projectName(s)}<span class="proj" title="Project {projectName(s)}"><Icon name="folder" size={11} /><span class="pn">{projectName(s)}</span></span>{/if}
-          {#if depth === 0 && s.messageCount}<span class="count">{s.messageCount} msgs</span>{/if}
+          {#if status === 'waiting'}
+            {@const w = waitingOn(s.id)}
+            <span class="waiting" title="Its turn ended while its subagents work; their reports start its next run: {w.map((x) => x.name || x.id).join(', ')}"
+              >waiting for {w.length} agent{w.length === 1 ? '' : 's'}</span
+            >
+          {:else if depth === 0 && s.messageCount}<span class="count">{s.messageCount} msgs</span>{/if}
           {#if kids?.length}
             <button
               class="kids"
@@ -490,6 +495,10 @@
   }
   .count {
     flex: none;
+  }
+  .waiting {
+    flex: none;
+    color: var(--info);
   }
   @container (max-width: 259px) {
     .kl {

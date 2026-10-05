@@ -5,7 +5,7 @@
   import WaitList from './WaitList.svelte';
   import RecentAgent from './RecentAgent.svelte';
   import ProcessRow from './ProcessRow.svelte';
-  import { TERMINAL, upsert } from './util.js';
+  import { ACTIVE, TERMINAL, upsert } from './util.js';
 
   /** ctx: host plugin API (docs/PROTOCOL.md → Plugin UI tabs) */
   let { ctx } = $props();
@@ -106,6 +106,23 @@
       .sort((a, b) => (Date.parse(b.finishedAt ?? b.createdAt) || 0) - (Date.parse(a.finishedAt ?? a.createdAt) || 0)),
   );
   const failedCount = $derived(recent.filter((a) => a.status === 'failed').length);
+  // Chats whose turn ended while their subagents work: no instance of their own, so no row above, yet not done — the
+  // subagents' reports start their next run. Without this line such a chat looks finished.
+  const waitingChats = $derived.by(() => {
+    const kids = new Map();
+    for (const a of agents ?? []) {
+      if (!a.isSubagent || !a.parentAgentId || !ACTIVE.has(a.status)) continue;
+      const list = kids.get(a.parentAgentId);
+      if (list) list.push(a);
+      else kids.set(a.parentAgentId, [a]);
+    }
+    const out = [];
+    for (const [pid, list] of kids) {
+      const parent = agentById.get(pid);
+      if (parent && !ACTIVE.has(parent.status)) out.push({ parent, kids: list });
+    }
+    return out;
+  });
 
   // Commands: a foreground one shows on the row of the chat that runs it (that is where the agent is, and a row does not
   // change size when a command starts or ends); the Background section lists the ones that outlive a tool call, and any
@@ -236,6 +253,17 @@
           {/if}
         </div>
       {/if}
+      {#each waitingChats as w (w.parent.id)}
+        <button
+          class="waiting-chat np-line"
+          title="Its turn ended while its subagents work; their reports start its next run: {w.kids.map((k) => k.name || k.id).join(', ')}"
+          onclick={() => ctx.app.openSession?.(w.parent.sessionId)}
+        >
+          <span class="np-dot" data-status="waiting"></span>
+          <span class="wtitle np-ellipsis">{titles.get(w.parent.sessionId) ?? w.parent.name}</span>
+          <span class="wcount">waiting for {w.kids.length} agent{w.kids.length === 1 ? '' : 's'}</span>
+        </button>
+      {/each}
       {#if errors.runs}<div class="na">Runs not available — {errors.runs}</div>{/if}
       {#if errors.usage}<div class="na">Usage not available — {errors.usage}</div>{/if}
     </div>
@@ -336,6 +364,34 @@
   .work-agents {
     padding: 4px 12px 6px;
     border-bottom: 1px solid var(--border);
+  }
+  .waiting-chat {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    height: 24px;
+    padding: 0 2px;
+    border: 0;
+    background: transparent;
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: var(--fs-sm);
+    text-align: left;
+    cursor: pointer;
+  }
+  .waiting-chat:hover {
+    color: var(--fg);
+  }
+  .wtitle {
+    flex: 1;
+    min-width: 0;
+  }
+  .wcount {
+    flex: none;
+    color: var(--info);
+    font-size: var(--fs-xs);
   }
   .unassigned {
     /* a fixed height, whether the line says "no one waiting" or holds the button: it moves nothing when a run arrives */

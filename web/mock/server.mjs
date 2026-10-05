@@ -836,6 +836,13 @@ const handlers = {
   // test helper: runs waiting for any agent (in nobody's queue)
   'mock.workSetUnassigned': (p = {}) => work.setUnassigned(p.items ?? []),
   'mock.workTake': (p = {}) => work.takeSlot(need(p, 'pool'), need(p, 'owner'), !!p.waiting),
+  // test helper: change a session's run state as the runtime would (agent.status), e.g. a parent whose turn ended
+  'mock.agentStatus': (p = {}) => {
+    const a = agentFor(need(p, 'sessionId'));
+    Object.assign(a, p.patch ?? {});
+    publish('agent.status', { agent: a });
+    return a;
+  },
   // e2e test helpers: slow the files.* responses and observe the served order (the workspace-switch checks)
   'mock.filesDelay': (p) => ((filesDelayMs = p.ms ?? 0), true),
   'mock.filesCalls': () => filesCalls,

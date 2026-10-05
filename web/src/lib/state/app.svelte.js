@@ -110,7 +110,19 @@ export function isBusy(sessionId) {
   return !!a && BUSY.has(a.status);
 }
 
-/** Status for tab dots: asking (a question, or a tool call, waits for the user) | running | queued | yielded | error | unread | idle */
+/**
+ * The subagents still at work for a chat whose own run has ended: its turn is over, but it is not done — their reports
+ * start its next run. Empty while the chat itself runs (then it is running, whatever its subagents do).
+ */
+export function waitingOn(sessionId) {
+  const a = app.agents.get(sessionId);
+  if (a && BUSY.has(a.status)) return [];
+  const kids = [];
+  for (const x of app.agents.values()) if (x.parentSessionId === sessionId && BUSY.has(x.status)) kids.push(x);
+  return kids;
+}
+
+/** Status for tab dots: asking (a question, or a tool call, waits for the user) | running | queued | yielded | waiting (on its subagents) | error | unread | idle */
 export function sessionStatus(sessionId) {
   if (pendingIn(sessionId) || approvalIn(sessionId) || planWaiting(sessionId)) return 'asking';
   const a = app.agents.get(sessionId);
@@ -120,6 +132,7 @@ export function sessionStatus(sessionId) {
     if (a.status === 'yielded') return 'yielded';
     if (a.status === 'failed') return 'error';
   }
+  if (waitingOn(sessionId).length) return 'waiting';
   if (app.errored.has(sessionId)) return 'error';
   if (app.unread.has(sessionId)) return 'unread';
   return 'idle';
