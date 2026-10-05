@@ -2,6 +2,9 @@
 
 Written 2026-09-26 at the end of the session that built `/v1/decision`. It lists every suggestion and next step from
 that session, in the order to do them. Results so far: `DECISION-MODELS.md`; the experiments: `archive/2026-09-26-decisions.md`.
+The `docs/…` files named below that are not in this repository's `docs/` are the NInfer fork's (`docs/decision.md`,
+`docs/serving.md`, `docs/admin.md`, `docs/multi-prefill.md` in `C:\AI\Projects\ninfer-windows`, branch `local/main`)
+or AiSwitcher's (`docs/COMPANION-CHANGES.md`); the scripts are the decisions lab's (`C:\AI\Projects\decisions-lab`).
 
 The work itself is in the ideas backlog, one idea per thread: **`idea-0m4hml`** — what NetPI uses decisions for
 (Phase 3), **`idea-im8862`** — engine work (Phase 2, global), **`idea-61dla9`** — the models behind the decisions
@@ -98,7 +101,7 @@ pass, ~37 ms per line, no 5090); single questions and in-loop checks on NInfer. 
 used above N items, or per-call guidance in the tool description. Decide after 0.1. *0.1 says bulk belongs on the
 nuc: Laya `laya-logs` is 8.5× faster per line and back-to-back NInfer decisions cut a generating agent's decode by 61 %.*
 
-1.4 **NInfer graceful stop** *Deployed 2026-09-26 (fork `7e348652`, `docs/admin.md`); the route answers, the hub uses it at its next stop.* (AiSwitcher `docs/COMPANION-CHANGES.md` A6): `POST /admin/shutdown?drain_ms=` (loopback
+1.4 **NInfer graceful stop** *Deployed 2026-09-26 (fork `7e348652`, the fork's `docs/admin.md`); the route answers, the hub uses it at its next stop.* (AiSwitcher's `docs/COMPANION-CHANGES.md` A6): `POST /admin/shutdown?drain_ms=` (loopback
 only; stop admitting with 503 `shutting_down`, drain, exit 0) and a console Ctrl handler. AiHub already calls it and
 falls back to a kill; today it always kills. A fork-local feature: new files plus one-line hooks, like `/v1/decision`.
 
@@ -136,7 +139,7 @@ deferred): decisions are overhead-bound, so batch branches inside one request fi
 
 2.3 **Build and prove it.** Batched vs sequential logits equal within tolerance; ctest serve/runtime set (FORK.md);
 throughput vs the 0.1/0.2 baselines; two-agent regression. Deploy by the one-NInfer procedure.
-*2b Stage 2 built and deployed 2026-09-26 (fork `060d7bf3`, `docs/decision.md` "Batched branches"): the longest
+*2b Stage 2 built and deployed 2026-09-26 (fork `060d7bf3`, the fork's `docs/decision.md` "Batched branches"): the longest
 branch is the Engine request and the others run as rows of its last prefill forward (`batch: false` keeps the old
 path). A log line with 4 questions: 95 ms instead of 220; next to a generating agent 133 instead of 454; gold
 accuracy unchanged (details in `DECISION-MODELS.md`, 0.1). Stage 1 was skipped (profiling: the cost is kernel

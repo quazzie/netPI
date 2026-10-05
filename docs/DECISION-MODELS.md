@@ -2,6 +2,9 @@
 
 A living results matrix for NetPI's decision helpers (`plugins/NetPI.Decide`). One model per task, chosen by
 measurement. How the numbers were made, and every experiment behind them: `docs/archive/2026-09-26-decisions.md`.
+The scripts and results named below live in the decisions lab (`C:\AI\Projects\decisions-lab`: `scripts/`,
+`results/`, `data/`), and "the fork's `docs/…`" means the NInfer fork (`C:\AI\Projects\ninfer-windows`, branch
+`local/main`); neither is in this repository.
 
 **Terms.** A *decision model* answers typed questions (yes/no, pick one, score) with a probability, without writing
 text. *Zero-shot*: used as released. *Fine-tuned*: trained further on our task. *Teacher → student* (distillation): a
@@ -202,7 +205,7 @@ remote_change: the Qwen decision at 0.2 calls 696 of 852 commands harmless, none
 782, including 4 borderline ones: scripts written to a remote `/tmp`, a test snapshot overwritten); Kev-9B at 0.2
 calls 364 harmless, none risky. `results/phase0/guard_to_label.json` holds 50 commands where the strong models
 disagree (the hard cases), hand-labelled 2026-09-26 (by Claude at the user's request; conventions in
-`guard_label_conventions.json`; `scripts/guard_label_report.mjs`): 1 destructive, 5 stop a process, 8 change a
+`guard_label_conventions.json`; decisions-lab `scripts/guard_label_report.mjs`): 1 destructive, 5 stop a process, 8 change a
 shared service or the nuc, 39 read-only. On them the Qwen decision is safe but underrates read-only (6 of 39 at
 0.5; `dotnet test` gets 0.05–0.4), so a read-only bar of 0.8 clears none; the three risk questions alone at 0.2
 clear 20 of the 39 and no risky command (at 0.3 a hub quit through the tray menu slips through). Accuracy at 0.5:
@@ -399,7 +402,7 @@ rejections).
   or 5 s after, the decision finds nothing and turn 2 loses everything (0 cached, `share_state` true or false); at
   2 s the decision reuses the head and turn 2 keeps it. So the decision path misses heads that a chat request finds
   (just after the turn, and after some idle seconds), and when it misses, its admission reclaims the head: a first
-  turn is a "one-request root", unprotected by design (continuation-first admission, fork `bffac01f`,
+  turn is a "one-request root", unprotected by design (continuation-first admission, fork `bffac01f`, the fork's
   `docs/serving.md`), so a loop with a decision after every turn never gets an established, protected lineage.
   Guardrails' second opinion is this pattern (a decision right after the agent's turn). **Fixed and deployed in the NInfer
   fork (`b1327df7`, deployed 2026-09-27 11:57; backup `C:\AI\Apps\ninfer-local\backup-ba443920`):** every running
@@ -423,8 +426,8 @@ front when an accessibility action focuses a page element (42 of 52 steps with C
 (`docs/archive/2026-09-27-browser.md`), and UIA stays for native apps. Next: a NetPI plugin (`windows.snapshot` / `windows.act`, the
 loop as a tool, confirmation for destructive controls); a done-check through `/v1/decision` (every variant had one
 false "done"); harder apps (Office, Electron, Settings read-only); record real steps for training (the traces here
-already hold the control list, reply, action and effect per step). Scripts: decisions-lab `uia-agent/`,
-`scripts/cu_live.mjs` (`--effort`, `--plan`), `cu_lib.mjs`, `cu_explore.mjs`, `cu_restore.mjs`; results in
+already hold the control list, reply, action and effect per step). Scripts (all in decisions-lab): `uia-agent/`,
+`scripts/cu_live.mjs` (`--effort`, `--plan`), `cu_lib.mjs`, `cu_explore.mjs`, `cu_restore.mjs`; results in its
 `results/cu_live/final-*.json[l]`.
 
 ## Ideas recall (first message), 2026-09-27
