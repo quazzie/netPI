@@ -151,6 +151,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `agent.abort` | netpi.runtime | `{ sessionId }` → `bool` |
 | `agent.queue` | netpi.runtime | `{ sessionId }` → `QueuedInput[]` |
 | `agent.dequeue` | netpi.runtime | `{ sessionId, id }` → `bool`: removes one of the person's queued inputs (`source: "user"`); an internal one (a subagent's report, a harness notice) is refused with `forbidden` |
+| `agent.promote` | netpi.runtime | `{ sessionId, id }` → `bool`: a queued follow-up (`mode: "queue"`, delivered after the run) becomes a steer, which the run takes at its next step, as `agent.send` with `mode: "steer"` would have. `false` when the input is not a queued follow-up (already delivered, already a steer, unknown). A follow-up waits for the whole run, and a worker's run can be its whole work package: this is how a coordinator gets an update it queued to a long run read now |
 | `runs.list` | netpi.runtime | `{ includeFinished? }` → `AgentInfo[]` |
 | `agent.get` | netpi.runtime | `{ id? , sessionId? }` → `AgentInfo\|null` |
 | `profiles.list` | netpi.profiles | → `{ defaultProfile, profiles: { id, name, prompt, toolsOff }[] }` |

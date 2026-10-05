@@ -42,6 +42,7 @@ public static class LoopTests
         t.Add("hooks: before model call, retry on error, block tool, run start/end", HookMisc);
         t.Add("middleware: model middleware wraps agent calls", Middleware);
         t.Add("rpc: agent.send / queue / dequeue / get / list / abort", Rpcs);
+        t.Add("rpc: agent.promote turns a queued follow-up into a steer the run takes at its next step", Promote);
         t.Add("runtime: stopping the agent plugin cancels runs", PluginStop);
     }
 
@@ -1043,6 +1044,36 @@ public static class LoopTests
         await h.IdleAsync(s.Id);
         Check.Equal(1, mw.Calls);
         Check.Equal("middleware says hi", (string?)FakeBus.Data(h.Bus.OfType(EventTypes.AgentNotice).Single())["text"]);
+    }
+
+    private static async Task Promote()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource();
+        h.AddTool(new FakeTool("work", async (c, a, ct) => { await gate.Task.WaitAsync(ct); return ToolResult.Ok("worked"); }));
+        var seen = new List<string>();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            lock (seen) seen.Add(string.Join("\n", r.Messages.Select(m => m.Text)));
+            return seen.Count == 1 ? Reply.Tool("work") : Reply.Text("done");
+        };
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "the run is in its tool call");
+
+        await h.Rpc.CallAsync("agent.send", new { sessionId = s.Id, text = "SPEC UPDATE", mode = "queue" });
+        JsonArray Queue() => (JsonArray)h.Rpc.CallAsync("agent.queue", new { sessionId = s.Id }).GetAwaiter().GetResult()!;
+        var id = (string)Queue()[0]!["id"]!;
+        Check.Equal("queue", (string?)Queue()[0]!["mode"]);
+        Check.Equal(true, (await h.Rpc.CallAsync("agent.promote", new { sessionId = s.Id, id }))!.GetValue<bool>());
+        Check.Equal("steer", (string?)Queue().Single()!["mode"], "now a steer");
+        Check.Equal(false, (await h.Rpc.CallAsync("agent.promote", new { sessionId = s.Id, id }))!.GetValue<bool>(), "a steer is not a queued follow-up");
+        Check.Equal(false, (await h.Rpc.CallAsync("agent.promote", new { sessionId = s.Id, id = "nope" }))!.GetValue<bool>());
+
+        gate.SetResult();
+        await h.IdleAsync(s.Id);
+        Check.Contains(seen[1], "SPEC UPDATE", "the next model call of the same run has it");
+        Check.Equal(1, h.Runtime.GetBySession(s.Id)!.Runs, "taken in the run, not after it");
     }
 
     private static async Task Rpcs()

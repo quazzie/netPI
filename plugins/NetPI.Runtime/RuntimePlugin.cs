@@ -70,6 +70,10 @@ public sealed class RuntimePlugin : INetPiPlugin
             Task.FromResult<object?>(runtime.RemoveQueued(req.Required("sessionId"), req.Required("id"))),
             "Remove a pending input: { sessionId, id } → bool");
 
+        context.Rpc.Register("agent.promote", (req, _) =>
+            Task.FromResult<object?>(runtime.PromoteQueued(req.Required("sessionId"), req.Required("id"))),
+            "Deliver a queued follow-up at the run's next step instead of after the run (it becomes a steer): { sessionId, id } → bool (false: not a queued follow-up)");
+
         context.Rpc.RegisterReadOnly("runs.list", (req, _) =>
             Task.FromResult<object?>(runtime.List(req.Bool("includeFinished") ?? true)),
             "Agents (active and recent): { includeFinished? } → AgentInfo[]");

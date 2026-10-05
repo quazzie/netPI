@@ -1238,6 +1238,37 @@ internal sealed class AgentRuntime : IAgentRuntime
         return RemoveQueuedInput(s, inputId);
     }
 
+    /// <summary>
+    /// agent.promote: a queued follow-up becomes a steer, delivered at the run's next step instead of after the run. A
+    /// follow-up waits for the whole run, and a worker's run can last its whole work package: a coordinator's spec update
+    /// sent as a follow-up sat unread for over an hour while the worker built on the old spec. False when the input is
+    /// not a queued follow-up (already delivered, already a steer, or unknown).
+    /// </summary>
+    public bool PromoteQueued(string sessionId, string inputId)
+    {
+        var s = FindState(sessionId);
+        if (s is null) return false;
+        CancellationTokenSource? sig = null;
+        lock (s.Gate)
+        {
+            var i = s.FollowUps.FindIndex(x => x.Id == inputId);
+            if (i < 0) return false;
+            var input = s.FollowUps[i];
+            s.FollowUps.RemoveAt(i);
+            s.Steering.Add(input);
+            // as a steer sent now: a guard approval, ask_user or agent wait reads the signal as "the user wrote"
+            if (s.Run is not null && string.Equals(input.Source, "user", StringComparison.Ordinal)) sig = s.SteerSignal;
+            s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
+        }
+        if (sig is not null)
+        {
+            try { sig.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        PublishQueue(s);
+        PublishStatus(s);
+        return true;
+    }
+
     private bool RemoveQueuedInput(AgentState s, string inputId)
     {
         bool removed;
