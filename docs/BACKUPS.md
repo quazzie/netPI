@@ -22,7 +22,7 @@ Open Settings → **Data & backups** → **Back up now**. Automatic backups run 
 are retained. Manual snapshots remain until removed. Retention runs only after a successful new snapshot, and skips a
 snapshot that carries files a new one would not have (an older snapshot's ideas files are the only copy of anything on a
 home that has not been migrated); the idea images a snapshot carries do not count, so a picture deleted since does not
-keep every snapshot taken while it existed. A failed/incomplete `.pending-*` directory is not listed as a usable backup.
+keep every snapshot taken while it existed. An entry that is not a regular file at all (a directory, a broken link) counts as a file a new snapshot would not have, so the snapshot is kept whole — retention never half-deletes one and fails the backup that met it. A failed/incomplete `.pending-*` directory is not listed as a usable backup.
 
 **Verify** is deliberately strict, because a snapshot that *looks* complete is the dangerous kind. A manifest is refused
 when it names no `provider`, when it lists no files, when it does not list `settings.json` or the files its provider

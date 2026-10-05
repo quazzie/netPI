@@ -495,7 +495,8 @@ ctx = {
     activeSessionId, activeSession, activeProject,        // plain snapshots (getters)
     activeWorkspace,                                      // { sessionId, workspaceId, identity, version, root, branch } | null: the active
                                                           // session's workspace as the host knows it (files.scope read on activation,
-                                                          // session.workspace since); identity is null until a files.scope answered
+                                                          // session.workspace since; a project change drops the record and re-reads the
+                                                          // active session's); identity is null until a files.scope answered
     sessionTitle(id): string | null,                      // from the host's session list; reactive in a $derived
     onChange(cb): () => void,                             // active session, its project or its workspace changed (and only then)
     openSession(id), newSession({ projectId? }), insertText(text), openTab('pluginId/tabId'),
