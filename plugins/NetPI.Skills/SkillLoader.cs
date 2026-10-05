@@ -42,6 +42,20 @@ internal sealed partial class SkillLoader(IPluginContext ctx, string? userHome =
 
     private readonly ConcurrentDictionary<string, Parsed> _cache = new(PathComparer);
 
+    /// <summary>
+    /// The SKILL.md files under a skills folder, as the last walk found them: one bounded walk per root per model call is
+    /// what every turn paid. An entry is good while the folder's own last write is unchanged and it is younger
+    /// than <see cref="EnumerationTtl"/>: a skill added or removed right under the root moves the folder's mark and is seen at
+    /// once, one that appears deeper is seen within the TTL.
+    /// </summary>
+    private sealed record Walk(DateTime RootMtimeUtc, DateTime At, List<string> Files);
+    private readonly ConcurrentDictionary<string, Walk> _walks = new(PathComparer);
+    internal static readonly TimeSpan EnumerationTtl = TimeSpan.FromSeconds(2);
+    private int _enumerations;
+
+    /// <summary>How many folder walks ran (a test watches that a repeated discovery does not walk again).</summary>
+    internal int Enumerations => Volatile.Read(ref _enumerations);
+
     internal static StringComparer PathComparer => WorkspacePaths.Comparer;
 
     private string UserHome => userHome ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -104,7 +118,7 @@ internal sealed partial class SkillLoader(IPluginContext ctx, string? userHome =
         var byName = new Dictionary<string, Skill>(StringComparer.OrdinalIgnoreCase);
         foreach (var (root, scope) in Roots(cwd))
         {
-            foreach (var file in SkillFiles(root))
+            foreach (var file in CachedSkillFiles(root))
             {
                 var p = Parse(file);
                 if (p is null) continue;
@@ -123,6 +137,20 @@ internal sealed partial class SkillLoader(IPluginContext ctx, string? userHome =
             }
         }
         return new SkillSet(skills, problems);
+    }
+
+    /// <summary><see cref="SkillFiles"/> through the per-root cache (see <see cref="Walk"/>).</summary>
+    private List<string> CachedSkillFiles(string root)
+    {
+        var now = DateTime.UtcNow;
+        DateTime mtime;
+        try { mtime = Directory.Exists(root) ? Directory.GetLastWriteTimeUtc(root) : DateTime.MinValue; }
+        catch { mtime = DateTime.MinValue; }
+        if (_walks.TryGetValue(root, out var hit) && hit.RootMtimeUtc == mtime && now - hit.At < EnumerationTtl) return hit.Files;
+        var files = SkillFiles(root).ToList();
+        Interlocked.Increment(ref _enumerations);
+        _walks[root] = new Walk(mtime, now, files);
+        return files;
     }
 
     /// <summary>The SKILL.md files under a skills folder (or the folder itself when it is one skill), sorted, bounded.</summary>
