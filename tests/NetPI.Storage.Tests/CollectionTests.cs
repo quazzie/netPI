@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using NetPI.Host.Storage;
 
 namespace NetPI.Storage.Tests;
 
@@ -207,6 +208,35 @@ public static class CollectionTests
             Check.Equal(0L, docs.Count(), "nothing was stored");
             docs.Put("ok", Build.Doc(("n", 3L)));
             Check.Equal(1L, docs.Count(), "a number in an Integer field and no value in the Text one is fine");
+        });
+
+        Providers.Add(r, "collections: a field a declaration dropped keeps its type: it comes back only as it was", store =>
+        {
+            var data = store.Plugins.For("test");
+            var docs = data.Collection("things", new CollectionSpec().Integer("n"));
+            docs.Put("a", Build.Doc(("n", 1L)));
+
+            // The plugin's new version declares the collection without the field: it is not an index field any more...
+            var dropped = data.Collection("things", new CollectionSpec().Text("other"));
+            Check.Equal(1L, dropped.Count(), "...but the documents and their values are still there");
+
+            // ...and when it comes back, it comes back with the type it had. A new type is a new field the port does not pretend to be.
+            Check.Throws<StorageException>(() => data.Collection("things", new CollectionSpec().Text("other").Text("n")),
+                "the dropped field cannot come back as another type");
+            Check.Throws<StorageException>(() => data.Collection("things", new CollectionSpec().Text("other").Real("n")));
+            var again = data.Collection("things", new CollectionSpec().Text("other").Integer("n"));
+            Check.Equal(1L, again.Count(new DataQuery().Eq("n", 1L)), "as its old type it indexes as before");
+        });
+
+        Providers.Add(r, "queries: an In or NotIn list above the cap is refused, and one at the cap still works", store =>
+        {
+            var docs = store.Plugins.For("test").Collection("listy", new CollectionSpec().Integer("n"));
+            for (var i = 0; i < 10; i++) docs.Put("k" + i, Build.Doc(("n", (long)i)));
+            var atCap = Enumerable.Range(0, StorageNames.MaxListValues).Select(v => (object)(long)v).ToArray();
+            Check.Equal(10L, docs.Count(new DataQuery().In("n", atCap)), "the cap itself fits in one statement");
+            var over = atCap.Append(999999L).ToArray();
+            Check.Throws<ArgumentException>(() => docs.Count(new DataQuery().In("n", over)), "one over the cap is refused");
+            Check.Throws<ArgumentException>(() => docs.Count(new DataQuery().NotIn("n", over)), "and so is a NotIn over the cap");
         });
 
         Providers.Add(r, "collections: a changed declaration is applied to the documents already stored", store =>

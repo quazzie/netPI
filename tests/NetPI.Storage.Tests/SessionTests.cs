@@ -1,4 +1,7 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging.Abstractions;
+using NetPI.Host.Storage.Memory;
+using NetPI.Host.Storage.Sqlite;
 
 namespace NetPI.Storage.Tests;
 
@@ -238,6 +241,38 @@ public static class SessionTests
                 if (parent.Length == 0) continue;
                 Check.True(tree.IndexOf(parent) < tree.IndexOf(id), $"{parent} comes before {id}");
             }
+        });
+
+        // ---------------------------------------------------------------- data errors
+
+        // A meta column that no longer parses is stored damage, not "no meta": read as null, the next update of the row
+        // would write the null back and the corruption would be gone with whatever the meta held. The error names the row.
+
+        r.Add("[memory] sessions: a meta column that no longer parses is a data error naming the row", () =>
+        {
+            using var store = new MemoryStorageProvider().Open(new StorageOpenOptions
+            {
+                Home = T.TempDir("corrupt-memory"), Logger = NullLogger.Instance, Settings = new EmptySettings(),
+            });
+            store.Sessions.InsertProject(Build.Project("p1", p => p.Meta = new JsonObject { ["owner"] = "me" }));
+            var mem = (MemoryStorage)store;
+            mem.Projects["p1"] = mem.Projects["p1"] with { Meta = "{ not json" };
+            var failure = Check.Throws<InvalidDataException>(() => store.Sessions.GetProject("p1"));
+            Check.Contains(failure.Message, "p1", "the error names the row: " + failure.Message);
+        });
+
+        r.Add("[sqlite] sessions: a meta column that no longer parses is a data error naming the row", () =>
+        {
+            var home = T.TempDir("corrupt-sqlite");
+            using var store = new SqliteStorageProvider().Open(new StorageOpenOptions
+            {
+                Home = home, Logger = NullLogger.Instance, Settings = new EmptySettings(),
+            });
+            store.Sessions.InsertProject(Build.Project("p1", p => p.Meta = new JsonObject { ["owner"] = "me" }));
+            using var raw = new Database(Path.Combine(home, "netpi.db"));
+            raw.Execute("UPDATE projects SET meta = '{ not json' WHERE id = @id", new { id = "p1" });
+            var failure = Check.Throws<InvalidDataException>(() => store.Sessions.GetProject("p1"));
+            Check.Contains(failure.Message, "p1", "the error names the row: " + failure.Message);
         });
     }
 }
