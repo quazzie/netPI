@@ -90,6 +90,22 @@ public static class ContextCacheTests
             Check.True(cache.TryGet("s") is not null);
         });
 
+        r.Add("context cache: an append with nothing to extend refuses the cold read in flight, so no hole is cached", () =>
+        {
+            var cache = new ContextCache();
+            // A cold read has its rows and the newest seq (3, still matching them) when message 4 commits; the append
+            // finds no entry to extend. The fill must be refused: cached, rows 1..3 would be the context of every warm
+            // read until the next drop, with 4 missing.
+            var generation = cache.BeginRead("s");
+            cache.Append(Msg("s", 4));
+            cache.Fill("s", Rows("s", 1, 2, 3), 3, generation);
+            Check.True(cache.TryGet("s") is null, "a view read before the append is not cached");
+
+            // The read after it sees the store with the message, and fills.
+            Read(cache, "s", Rows("s", 1, 2, 3, 4), 4);
+            Check.Equal("m1,m2,m3,m4", string.Join(",", cache.TryGet("s")!.Select(m => m.Text)));
+        });
+
         r.Add("context cache: the list a cold read hands back is not the list an append extends", () =>
         {
             var cache = new ContextCache();

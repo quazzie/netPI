@@ -56,9 +56,9 @@ internal sealed class ContextCache
     /// <summary>
     /// A cold read's result, with the newest seq the store reported in the same read. The slot is filled only when
     /// the result may be the newest: it is not bigger than the cache can keep, it ends at the newest seq (a message
-    /// that committed while the read ran would otherwise be missing from the cache with nothing left to drop it —
-    /// an append that finds no entry has nothing to extend), and nothing dropped or filled since the read began
-    /// (an append that ran alongside already extended the slot, and it knows more).
+    /// that committed between the two statements of the read would otherwise be missing from the cache), and nothing
+    /// dropped, appended or filled since the read began (an append that ran alongside either extended the slot, and it
+    /// knows more, or found no slot and bumped the generation: see <see cref="Append"/>).
     /// </summary>
     public void Fill(string sessionId, List<ChatMessage> rows, long newest, long generation)
     {
@@ -84,13 +84,23 @@ internal sealed class ContextCache
     /// commit in either order (a plugin's notice and the runtime's own message), and a message that arrives out of
     /// order would corrupt the order the model sees — that case drops the entry and the next read rebuilds it. A
     /// message stored as already compacted does not belong in this list at all.
+    /// <para>
+    /// An append that finds no entry bumps the generation, as a drop does: a cold read in flight may have read its
+    /// rows (and the newest seq, still matching them) before this message committed, and with nothing to extend it
+    /// would fill the slot with a context that lacks the message — a hole every warm read served until the next
+    /// drop. Refused instead, the read after it reads the store again and fills.
+    /// </para>
     /// </summary>
     public void Append(ChatMessage message)
     {
         if (string.IsNullOrEmpty(message.SessionId) || message.Compacted) return;
         lock (_lock)
         {
-            if (!_entries.TryGetValue(message.SessionId, out var entry)) return;
+            if (!_entries.TryGetValue(message.SessionId, out var entry))
+            {
+                _generation[message.SessionId] = _generation.GetValueOrDefault(message.SessionId) + 1;
+                return;
+            }
             if (message.Seq <= entry.LastSeq || entry.Rows.Count >= MaxMessages)
             {
                 _entries.Remove(message.SessionId);
