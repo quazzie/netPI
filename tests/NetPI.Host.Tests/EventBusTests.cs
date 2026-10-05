@@ -415,6 +415,45 @@ public static class EventBusTests
             Check.Contains(reports[1], "2 call(s)", "with the calls since the last report");
         });
 
+        r.Add("bus: a backlog past the threshold is reported again once the earlier one drained (the report ratchets per episode, not forever)", async () =>
+        {
+            var log = new CapturingLogger();
+            await using var bus = new EventBus(log, queueCapacity: 1);
+            var inside = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            using var _ = bus.Subscribe("w", e => { inside.Set(); release.Wait(30_000); });
+            bus.Publish("w");
+            Check.True(inside.Wait(5000), "the subscriber wedged on its first event");
+            bus.Publish("w");   // its queue of one is full now, and stays full while it is wedged
+            // The flush marker cannot be queued on that line: the dispatcher retries it on a 20 ms tick, and between the
+            // ticks it reads nothing — the only way a test can pile a backlog in front of it.
+            var flush = bus.FlushAsync();
+            try
+            {
+                int Reports() => log.Lines.Count(l => l.Contains("events behind"));
+                async Task<bool> PiledUpAndReported()
+                {
+                    var before = Reports();
+                    for (var attempt = 0; attempt < 200; attempt++)
+                    {
+                        // One burst of 1500: past the threshold of 1000, short of the 2000 the ratchet wanted after a first report
+                        for (var i = 0; i < 1500; i++) bus.Publish("b");
+                        var reported = Reports() > before;
+                        await WaitFor(() => bus.Backlog == 0, "the dispatcher drained the burst");
+                        if (reported) return true;   // a burst that fell into a tick's read is drained unseen: try again
+                    }
+                    return false;
+                }
+                Check.True(await PiledUpAndReported(), "a backlog past the threshold is reported: " + log.Dump());
+                Check.True(await PiledUpAndReported(), "and the next one, after the first drained, is reported again: " + log.Dump());
+            }
+            finally
+            {
+                release.Set();
+            }
+            await flush.WaitAsync(TimeSpan.FromSeconds(10));
+        });
+
         r.Add("bus: ring buffer keeps the last 500 events", async () =>
         {
             await using var bus = new EventBus(NullLogger.Instance);

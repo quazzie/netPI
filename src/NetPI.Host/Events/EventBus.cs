@@ -112,9 +112,9 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(evt);
         if (string.IsNullOrEmpty(evt.Type)) throw new ArgumentException("Event type is required", nameof(evt));
         var depth = (int)Interlocked.Increment(ref _backlog) + 1;
-        if (depth >= BacklogWarnAt && depth >= _warnedBacklog * 2)
+        if (depth >= BacklogWarnAt && depth >= Volatile.Read(ref _warnedBacklog) * 2)
         {
-            _warnedBacklog = Math.Min(int.MaxValue, depth);
+            Volatile.Write(ref _warnedBacklog, Math.Min(int.MaxValue, depth));   // doubling within an episode; reset when it drains (Deliver)
             _log.LogWarning("The event bus is {Depth} events behind: a subscriber is slow, or events arrive faster than they are fanned out", depth);
         }
         if (!_queue.Writer.TryWrite(evt)) { Interlocked.Decrement(ref _backlog); Interlocked.Increment(ref _dropped); _log.LogError("The event bus input is full: dropped an event of type '{Type}' (the dispatcher is not keeping up)", evt.Type); }
@@ -303,7 +303,9 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
             EnqueueMarker(marker);
             return;
         }
-        Interlocked.Decrement(ref _backlog);
+        // Drained: the episode is over, and the next backlog past the threshold is reported again from the start
+        // (the report ratchets within one episode only, or a 4000-deep one would silence every later 1000-deep one).
+        if (Interlocked.Decrement(ref _backlog) == 0) Volatile.Write(ref _warnedBacklog, 0);
         var evt = (BusEvent)item;
         item = null!;   // don't hold the event (possibly a plugin payload) in this long-lived state machine
         Dispatch(evt);
