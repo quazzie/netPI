@@ -18,6 +18,12 @@ public sealed class CompactionOptions
     public string? Model { get; init; }
     /// <summary>The summary's output budget (thinking included): by default 80 % of the reserve.</summary>
     public int MaxSummaryTokens { get; init; } = 13_107;
+    /// <summary>
+    /// The summarizer's reasoning effort: <c>low</c> by default, or another effort the model offers, or <c>chat</c> for
+    /// the chat's own. Its thinking counts against <see cref="MaxSummaryTokens"/>: at a coding chat's effort a model can
+    /// spend the whole budget thinking about a long turn and leave no room for the summary.
+    /// </summary>
+    public string Effort { get; init; } = "low";
 
     public static CompactionOptions From(ISettings? s)
     {
@@ -34,6 +40,7 @@ public sealed class CompactionOptions
             KeepRecentTokens = Math.Max(0, s.GetOr("compaction.keepRecentTokens", 20_000)),
             Model = s.GetOr<string?>("compaction.model", null) is { Length: > 0 } m ? m.Trim() : null,
             MaxSummaryTokens = Math.Clamp(s.GetOr("compaction.maxSummaryTokens", (int)(reserve * 0.8)), 256, 128_000),
+            Effort = s.GetOr<string?>("compaction.effort", null) is { Length: > 0 } e ? e.Trim() : "low",
         };
     }
 }
@@ -238,19 +245,21 @@ public sealed class CompactionService(IPluginContext ctx)
         var history = turnStart >= 0 ? fresh[..turnStart] : fresh;
         var prefix = turnStart >= 0 ? fresh[turnStart..] : [];
 
-        var sessionEffort = ctx.Sessions.GetSession(req.SessionId)?.Reasoning;
-        var effort = EffortFor(model, sessionEffort);
+        var wanted = string.Equals(o.Effort, "chat", StringComparison.OrdinalIgnoreCase) ? ctx.Sessions.GetSession(req.SessionId)?.Reasoning : o.Effort;
+        var effort = EffortFor(model, wanted);
         var calls = 0;
         string summary;
         if (prefix.Count > 0)
         {
             var historyText = previousText ?? "No earlier history.";
+            var (historyBudget, prefixBudget) = SplitBudget(o.MaxSummaryTokens,
+                history.Any(IsConversation) ? CompactionPlanner.Estimate(history) : 0, CompactionPlanner.Estimate(prefix));
             if (history.Any(IsConversation))
             {
-                (historyText, var n) = await RollAsync(history, previousText, false, model, effort, req, o, o.MaxSummaryTokens, ct).ConfigureAwait(false);
+                (historyText, var n) = await RollAsync(history, previousText, false, model, effort, req, o, historyBudget, ct).ConfigureAwait(false);
                 calls += n;
             }
-            var (prefixText, m) = await RollAsync(prefix, null, true, model, effort, req, o, o.MaxSummaryTokens / 2, ct).ConfigureAwait(false);
+            var (prefixText, m) = await RollAsync(prefix, null, true, model, effort, req, o, prefixBudget, ct).ConfigureAwait(false);
             calls += m;
             summary = historyText + SummaryPrompts.SplitTurnHeading + prefixText;
         }
@@ -261,6 +270,21 @@ public sealed class CompactionService(IPluginContext ctx)
 
         var (read, modified) = FileLists.Collect(fresh, previous?.Meta);
         return (FileLists.Strip(summary) + FileLists.Format(read, modified), calls, read, modified);
+    }
+
+    /// <summary>
+    /// The output budgets of a split turn's two summaries: the history before the turn and the turn's start. Together
+    /// they may take one and a half summaries (what the history's full budget plus the start's half always allowed),
+    /// shared by their sizes, each between half a summary and a whole one. A turn with no history before it, the usual
+    /// shape of a long agentic run (one request, hundreds of tool calls), gets the whole budget: at half of it the
+    /// summary of a 250k-token turn did not fit and compaction failed on every model call.
+    /// </summary>
+    public static (int History, int Prefix) SplitBudget(int max, long historyTokens, long prefixTokens)
+    {
+        if (historyTokens <= 0) return (max, max);
+        var total = max * 3 / 2;
+        var prefix = (int)Math.Clamp(total * prefixTokens / Math.Max(1, historyTokens + prefixTokens), max / 2, max);
+        return (Math.Clamp(total - prefix, max / 2, max), prefix);
     }
 
     /// <summary>The summarizer's fixed prompt parts (system prompt, conversation tags, instructions), in tokens (chars/4).</summary>
@@ -314,28 +338,42 @@ public sealed class CompactionService(IPluginContext ctx)
         var chunks = TranscriptSerializer.Chunk(messages.Select(TranscriptSerializer.Serialize), budgetChars);
         if (chunks.Count == 0) throw new InvalidOperationException("Nothing to summarize.");
 
+        var retries = 0;
         foreach (var chunk in chunks)
         {
-            var request = new ModelRequest
+            var prompt = SummaryPrompts.Build(chunk, summary, turnPrefix, req.Instructions);
+            ModelRequest Request(int output) => new()
             {
                 Model = model,
                 SystemPrompt = SystemPrompt,
-                Messages = [ChatMessage.UserText(SummaryPrompts.Build(chunk, summary, turnPrefix, req.Instructions))],
+                Messages = [ChatMessage.UserText(prompt)],
                 ReasoningEffort = effort,
-                MaxOutputTokens = maxOut,
+                MaxOutputTokens = output,
                 SessionId = req.SessionId,
                 AgentId = req.AgentId,
                 Purpose = "compaction",
             };
-            var response = await ctx.Models.CompleteAsync(request, ct).ConfigureAwait(false);
+            var response = await ctx.Models.CompleteAsync(Request(maxOut), ct).ConfigureAwait(false);
             if (response.StopReason == "length")
-                throw new InvalidOperationException($"The summary hit the output limit ({maxOut} tokens) and would be incomplete; the context was left as it was (setting compaction.maxSummaryTokens).");
+            {
+                // Once more with up to twice the room, as far as the window and the model's output cap allow: a summary
+                // that ran long (or thought long) usually fits then, and the alternative is no compaction at all.
+                var input = ModelMessages.EstimateTokens(prompt) + FixedPromptTokens;
+                var cap = Math.Min(model.MaxOutputTokens is > 0 and var mo ? mo : int.MaxValue, window / 2);
+                var more = (int)Math.Min(Math.Min(2L * maxOut, cap), window - input - 1024);
+                if (more < maxOut * 5 / 4)
+                    throw new InvalidOperationException($"The summary hit the output limit ({maxOut} tokens) and would be incomplete; the context was left as it was (settings compaction.maxSummaryTokens, compaction.effort).");
+                response = await ctx.Models.CompleteAsync(Request(more), ct).ConfigureAwait(false);
+                retries++;
+                if (response.StopReason == "length")
+                    throw new InvalidOperationException($"The summary hit the output limit twice ({maxOut}, then {more} tokens) and would be incomplete; the context was left as it was (settings compaction.maxSummaryTokens, compaction.effort).");
+            }
             var text = response.Text.Trim();
             if (text.Length == 0)
                 throw new InvalidOperationException($"The summarizer ({model.Ref}) returned an empty response (stop reason: {response.StopReason ?? "?"}).");
             summary = text;
         }
-        return (summary!, chunks.Count + calls);
+        return (summary!, chunks.Count + calls + retries);
     }
 
     /// <summary>

@@ -272,7 +272,7 @@ public static class CompactionTests
             var req = env.Ctx.ModelsFake.Requests.Single();
             Check.Equal("compaction", req.Purpose);
             Check.Equal(CompactionService.SystemPrompt, req.SystemPrompt);
-            Check.True(req.ReasoningEffort is null, "the chat has no effort set: the model's default");
+            Check.Equal("low", req.ReasoningEffort, "compaction.effort: low by default, whatever the chat's");
             Check.Equal(10_000, req.MaxOutputTokens); // 80 % of the reserve, at most a quarter of the 40k window
             Check.Equal(0, req.Tools.Count);
             Check.Equal(session.Id, req.SessionId);
@@ -473,7 +473,7 @@ public static class CompactionTests
             Check.NotContains(reqs[0].Messages[0].Text, "LONG TASK");
             Check.Contains(reqs[1].Messages[0].Text, "LONG TASK: migrate the parser");
             Check.Contains(reqs[1].Messages[0].Text, "## Original Request");
-            Check.True(reqs[1].MaxOutputTokens < reqs[0].MaxOutputTokens, "a smaller budget for the prefix");
+            Check.True(reqs[1].MaxOutputTokens > reqs[0].MaxOutputTokens, "the budgets follow the sizes: the long turn start gets more than the short history");
             Check.True(result.Summary!.Text.StartsWith("HISTORY-SUMMARY\n\n---\n\n**Turn Context (split turn):**\n\nPREFIX-SUMMARY"), result.Summary.Text);
             var firstKept = env.Ctx.Sessions.GetContextMessages(env.Session.Id)[1];
             Check.Equal(MessageRole.Assistant, firstKept.Role);
@@ -530,6 +530,90 @@ public static class CompactionTests
             catch (InvalidOperationException ex) { Check.Contains(ex.Message, "output limit"); }
             Check.Equal(before, env.Ctx.Sessions.GetContextMessages(env.Session.Id).Count, "context unchanged");
             Check.False(env.Ctx.SessionsFake.Appended.Any(m => m.Role == MessageRole.Summary), "no summary written");
+        });
+
+        r.Add("compaction: a summary cut off at the output limit is tried once more with more room", async () =>
+        {
+            var env = new Env();
+            env.Conversation(13);
+            var n = 0;
+            env.Ctx.ModelsFake.Responder = _ => Interlocked.Increment(ref n) == 1
+                ? new ChatMessage { Role = MessageRole.Assistant, StopReason = "length", Parts = [new ThinkingPart { Text = "a long thought" }] }
+                : new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "## Task\nwhole" }] };
+            var result = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.True(result.Compacted, result.Message);
+            var reqs = env.Ctx.ModelsFake.Requests.ToList();
+            Check.True(reqs[1].MaxOutputTokens > reqs[0].MaxOutputTokens, $"{reqs[0].MaxOutputTokens} then {reqs[1].MaxOutputTokens}");
+            Check.True(reqs[1].MaxOutputTokens <= 16_000, "never over the model's output cap");
+            Check.Equal(reqs[0].Messages[0].Text, reqs[1].Messages[0].Text, "the same chunk again");
+            Check.Equal(reqs.Count, result.SummarizerCalls, "the retry counts as a call");
+        });
+
+        r.Add("compaction: the summarizer thinks at compaction.effort (low by default), or at the chat's own with chat", async () =>
+        {
+            var env = new Env();
+            env.Ctx.SessionsFake.UpdateSession(env.Session.Id, s => s.Reasoning = "high");
+            env.Conversation(13);
+            await env.Hook.OnBeforeModelCallAsync(env.Turn());
+            Check.Equal("low", env.Ctx.ModelsFake.Requests.Single().ReasoningEffort, "not the chat's high");
+
+            var chat = new Env();
+            chat.Ctx.SettingsFake.Set("compaction.effort", "chat");
+            chat.Ctx.SessionsFake.UpdateSession(chat.Session.Id, s => s.Reasoning = "high");
+            chat.Conversation(13);
+            await chat.Hook.OnBeforeModelCallAsync(chat.Turn());
+            Check.Equal("high", chat.Ctx.ModelsFake.Requests.Single().ReasoningEffort);
+        });
+
+        r.Add("compaction: a turn with no history before it gets the whole summary budget; a split one shares 1.5 budgets by size", async () =>
+        {
+            Check.Equal((1000, 1000), CompactionService.SplitBudget(1000, 0, 5000), "no history");
+            Check.Equal((750, 750), CompactionService.SplitBudget(1000, 5000, 5000));
+            Check.Equal((1000, 500), CompactionService.SplitBudget(1000, 9000, 1000), "a short turn start keeps half a budget");
+            Check.Equal((500, 1000), CompactionService.SplitBudget(1000, 1000, 9000), "a long turn start gets the whole one");
+
+            // One request and a long run of tool calls: the cut falls inside the only turn, so the turn start is all there is.
+            var env = new Env();
+            env.Add(T.User("Build the engine. " + new string('u', 2000)));
+            for (var i = 0; i < 13; i++)
+            {
+                env.Add(T.Assistant($"Reading file {i}", T.Call($"c{i}", "read", $"{{\"path\":\"src/f{i}.cs\"}}")));
+                env.Add(T.ToolResult(($"c{i}", "read", "R" + new string('r', 9999))));
+            }
+            await env.Hook.OnBeforeModelCallAsync(env.Turn());
+            var req = env.Ctx.ModelsFake.Requests.Single();
+            Check.Contains(req.Messages[0].Text, "Build the engine");
+            Check.Equal(10_000, req.MaxOutputTokens, "the whole budget (a quarter of the 40k window), not half of it");
+        });
+
+        r.Add("compaction: after a failed auto-compaction the next model calls wait, unless the context grows", async () =>
+        {
+            var env = new Env();
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "length", Parts = [new ThinkingPart { Text = "..." }] };
+            env.Conversation(13);
+            await env.Hook.OnBeforeModelCallAsync(env.Turn());
+            var tried = env.Ctx.ModelsFake.Requests.Count();
+            Check.True(tried > 0 && env.Hook.BackingOff(env.Session.Id));
+            var failed = (JsonObject)env.Ctx.Bus.OfType(EventTypes.AgentNotice).Last().Data!;
+            Check.Contains(failed["text"].Str(), $"tried again after {CompactionHook.BackoffCalls} model calls");
+
+            for (var i = 0; i < CompactionHook.BackoffCalls; i++) await env.Hook.OnBeforeModelCallAsync(env.Turn());
+            Check.Equal(tried, env.Ctx.ModelsFake.Requests.Count(), "no summarizer call while it waits");
+            await env.Hook.OnBeforeModelCallAsync(env.Turn());
+            Check.True(env.Ctx.ModelsFake.Requests.Count() > tried, "tried again once the wait is over");
+
+            // a context that grew by more than 5 % of the window does not wait
+            tried = env.Ctx.ModelsFake.Requests.Count();
+            env.Conversation(1, "more");
+            await env.Hook.OnBeforeModelCallAsync(env.Turn());
+            Check.True(env.Ctx.ModelsFake.Requests.Count() > tried, "a grown context is tried at once");
+
+            // and a success ends the wait
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "## Task\nok" }] };
+            env.Conversation(1, "again");
+            await env.Hook.OnBeforeModelCallAsync(env.Turn());
+            Check.False(env.Hook.BackingOff(env.Session.Id));
+            Check.Equal(1, env.Ctx.SessionsFake.MarkCompactedCalls.Count);
         });
 
         r.Add("compaction: chunked (rolling) summaries when the transcript exceeds the summarizer window", async () =>

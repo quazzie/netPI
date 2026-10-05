@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Compaction;
@@ -5,7 +6,7 @@ namespace NetPI.Compaction;
 /// <summary>
 /// Auto-compaction (agent hook, runs first), overflow recovery, the <c>compaction.run</c> RPC and the <c>/compact</c>
 /// slash command. Settings: <c>compaction.enabled</c>, <c>compaction.defaultContextWindow</c>, <c>compaction.thresholdPercent</c>,
-/// <c>compaction.reserveTokens</c>, <c>compaction.keepRecentTokens</c>, <c>compaction.model</c>, <c>compaction.maxSummaryTokens</c>.
+/// <c>compaction.reserveTokens</c>, <c>compaction.keepRecentTokens</c>, <c>compaction.model</c>, <c>compaction.effort</c>, <c>compaction.maxSummaryTokens</c>.
 /// </summary>
 [NetPiPlugin("netpi.compaction", Name = "Compaction", Description = "Summarizes older messages when the context fills up", Order = 70)]
 public sealed class CompactionPlugin : INetPiPlugin
@@ -21,8 +22,10 @@ public sealed class CompactionPlugin : INetPiPlugin
                 SettingInfo.Int("compaction.reserveTokens", "Compact when fewer tokens are left", 16384, "Room kept for the next answer.", 0, null, "tokens"),
                 SettingInfo.Number("compaction.thresholdPercent", "Also compact at", 1.0, "Share of the context window; 1 = only by the reserve above.", 0.3, 1.0),
                 SettingInfo.Int("compaction.keepRecentTokens", "Recent tokens kept verbatim", 20000, null, 0, null, "tokens"),
-                SettingInfo.ModelRef("compaction.model", "Summarizer model", "It summarizes at the chat's reasoning effort when it offers it.", "the session's model"),
-                SettingInfo.Int("compaction.maxSummaryTokens", "Summary length", 13107, "Output budget of a summary, thinking included (80 % of the reserve); a summary cut off at it is not used.", 256, null, "tokens"),
+                SettingInfo.ModelRef("compaction.model", "Summarizer model", null, "the session's model"),
+                SettingInfo.Choice("compaction.effort", "Summarizer reasoning", "low", ["none", "low", "medium", "high", "chat"],
+                    "Its thinking counts against the summary length. chat: the chat's own effort. An effort the model does not offer means its default."),
+                SettingInfo.Int("compaction.maxSummaryTokens", "Summary length", 13107, "Output budget of a summary, thinking included (80 % of the reserve); a summary cut off at it is tried once more with up to twice the room, then not used.", 256, null, "tokens"),
                 SettingInfo.Int("compaction.defaultContextWindow", "Context window when unknown", 131072, null, 1024, null, "tokens"),
             ],
         });
@@ -92,6 +95,14 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
     public const string OverflowTurnKey = "netpi.compaction.overflowTurn";
     public const string OverflowCountKey = "netpi.compaction.overflowCount";
     public const int MaxOverflowCompactionsPerRun = 3;
+    /// <summary>After a failed auto-compaction, the model calls that pass before it is tried again…</summary>
+    public const int BackoffCalls = 5;
+    /// <summary>…unless the context grew by this share of the window meanwhile.</summary>
+    public const double BackoffGrowth = 0.05;
+
+    // A failed auto-compaction per session: the calls still to skip and the context size it failed at. Without it every
+    // model call tried again (a full summarizer pass over ~250k tokens each, six in four minutes on one chat).
+    private readonly ConcurrentDictionary<string, (int Skip, long Estimate)> _backoff = new();
 
     public int Order => -100;
 
@@ -105,13 +116,21 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
         var estimate = EstimateContext(turn, overhead);
         if (!CompactionService.ShouldCompact(estimate, window, o)) return;
 
+        var sessionId = run.Session.Id;
+        if (_backoff.TryGetValue(sessionId, out var b) && b.Skip > 0 && estimate < b.Estimate + (long)(window * BackoffGrowth))
+        {
+            _backoff[sessionId] = (b.Skip - 1, b.Estimate);
+            return;
+        }
+
         try
         {
             var result = await service.CompactAsync(new CompactionRequest
             {
-                SessionId = run.Session.Id, Model = run.Model, Mode = CompactionMode.Auto, OverheadTokens = overhead,
+                SessionId = sessionId, Model = run.Model, Mode = CompactionMode.Auto, OverheadTokens = overhead,
                 TokensBefore = estimate, AgentId = run.Agent.Id, HoldsSlot = true,
             }, run.CancellationToken).ConfigureAwait(false);
+            _backoff.TryRemove(sessionId, out _);
             if (!result.Compacted) return;
             await turn.ReloadMessagesAsync().ConfigureAwait(false);
             turn.LastContextTokens = result.TokensAfter;
@@ -119,11 +138,17 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
         catch (OperationCanceledException) when (run.CancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            // Never break the run: the model call may still fit, and the overflow path is a second chance.
-            logger?.LogWarning(ex, "Auto-compaction of {Session} failed", run.Session.Id);
-            service.Notice(run.Session.Id, "warn", "Auto-compaction failed: " + ex.Message, "failed", CompactionMode.Auto);
+            // Never break the run: the model call may still fit, and the overflow path is a second chance. The next
+            // attempt waits a few calls (or a real growth of the context), since the same input fails the same way.
+            if (_backoff.Count > 1000) _backoff.Clear();
+            _backoff[sessionId] = (BackoffCalls, estimate);
+            logger?.LogWarning(ex, "Auto-compaction of {Session} failed", sessionId);
+            service.Notice(sessionId, "warn", $"Auto-compaction failed: {ex.Message} It is tried again after {BackoffCalls} model calls.", "failed", CompactionMode.Auto);
         }
     }
+
+    /// <summary>Whether auto-compaction of a session is waiting after a failure (tests).</summary>
+    public bool BackingOff(string sessionId) => _backoff.TryGetValue(sessionId, out var b) && b.Skip > 0;
 
     public async ValueTask<ModelErrorDecision?> OnModelErrorAsync(AgentTurnContext turn, Exception error)
     {

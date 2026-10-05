@@ -298,13 +298,17 @@ Compaction works like pi's. When fewer than `compaction.reserveTokens` are left 
 chat is summarized and the last `compaction.keepRecentTokens` are kept as they are (never a tool call without its
 result). The summary is a structured checkpoint (Task, Constraints & Preferences, Progress: Done / In Progress /
 Blocked, Key Decisions, Next Steps, Critical Context; pi's "Goal" is "Task" so it can't be taken for a /goal) written
-at the chat's reasoning effort from a transcript that includes the model's thinking (tool results cut to 2000
+at `compaction.effort` (low) from a transcript that includes the model's thinking (tool results cut to 2000
 characters). An earlier summary is merged by rule (keep everything, move finished work to Done, update the next steps).
 When the kept part starts inside one long turn, the start of that turn gets its own summary; what came before it is
 summarized only if it holds conversation, not just notices (their plugins announce them again after a compaction, and
-nothing but notices to summarize is nothing to compact). The files read and modified are listed from the tool calls themselves
-(`<read-files>`, `<modified-files>`) and carried from summary to summary. A summary cut off at its output limit is not
-used: the chat stays as it was. Beyond pi: a transcript too long for the summarizer is summarized in rolling parts, and
+nothing but notices to summarize is nothing to compact). The two share one and a half summary budgets by their sizes
+(each at least half a budget and at most a whole one), and a turn with nothing before it, the usual shape of a long
+agentic run, gets the whole budget. The files read and modified are listed from the tool calls themselves
+(`<read-files>`, `<modified-files>`) and carried from summary to summary. A summary cut off at its output limit is
+asked again once with up to twice the room; cut off again, it is not used: the chat stays as it was, and auto-compaction
+waits five model calls before it tries again (sooner when the context grows by 5 % of the window), since the same input
+fails the same way. Beyond pi: a transcript too long for the summarizer is summarized in rolling parts, and
 `compaction.model` can summarize with another model. A *previous* summary that the summarizer in use could not have
 written — it was made by a bigger model, or the setting changed — is condensed in its own calls first; that costs extra
 summarizer calls and shortens the result, so a smaller `compaction.model` shows up as more calls and a terser summary.
@@ -315,8 +319,9 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `compaction.reserveTokens` | `16384` | compact when fewer tokens than this are left (at most half the window) |
 | `compaction.thresholdPercent` | `1` | also compact at this share of the window (1 = only by the reserve) |
 | `compaction.keepRecentTokens` | `20000` | recent messages kept verbatim |
-| `compaction.model` | – | summarizer model ref (default: the session's model); it summarizes at the chat's reasoning effort when it offers it |
-| `compaction.maxSummaryTokens` | 80 % of the reserve (`13107`) | output budget of a summary, thinking included (at most a quarter of the window) |
+| `compaction.model` | – | summarizer model ref (default: the session's model) |
+| `compaction.effort` | `low` | the summarizer's reasoning effort (`none`, `low`, `medium`, `high`, or `chat` for the chat's own); an effort the model does not offer means its default. Its thinking counts against the summary's budget, which at a coding chat's effort a long turn used up |
+| `compaction.maxSummaryTokens` | 80 % of the reserve (`13107`) | output budget of a summary, thinking included (at most a quarter of the window). A summary cut off at it is asked again once with up to twice the room (within the window and the model's output cap) before the compaction fails |
 | `compaction.defaultContextWindow` | `131072` | for models without a known window |
 | `nudge.enabled` / `nudge.maxPerRun` | `true` / `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it. `maxPerRun` counts *consecutive* nudges: any acceptable response (a tool call, a final answer, an aborted or errored turn) resets it, so the cap bounds one stall episode rather than the whole run |
 | `loops.enabled` / `loops.maxHintsPerRun` | `true` / `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results (the whole result text, durations and times aside, and its images: two screenshots or page snapshots that differ anywhere are progress), the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
