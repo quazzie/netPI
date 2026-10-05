@@ -129,17 +129,19 @@ if ($Pending -or $Discard) {
     return
 }
 
-# ---- web UI (optional). The bundles land in the source folders (web\dist, plugins\*\wwwroot\ui.js); the .NET build
-# copies them into its output, so nothing is written into artifacts\app here.
+# ---- web UI (optional). The bundles land in the source folders (web\dist, plugins\*\wwwroot\ui.js) and the .NET build
+# copies them into its output, artifacts\dev\app; a publish then installs them with everything else, inside the install
+# lock and after the idle wait, from the file-by-file comparison below. Nothing is written into the app folder here:
+# this runs before the build, before the wait and before the lock.
 if (-not $SkipWeb) {
     if (Get-Command npm -ErrorAction SilentlyContinue) {
         Step 'Web UI (npm)'
         if (-not (Test-Path node_modules)) { npm ci; if ($LASTEXITCODE) { throw 'npm ci failed' } }
-        # --copy installs the bundles into artifacts\app as well (UI edits then hot-reload without a .NET build); the
-        # default leaves the app alone, and NETPI_NO_COPY (build.ps1 -NextStart) does too.
-        if ($Publish -and -not $defer) { $env:NETPI_COPY = '1' }
+        # The bundle scripts' own --copy (or NETPI_COPY) installs a bundle into the app folder, for a UI edit that should
+        # hot-reload without a .NET build; a publish must not, whatever the caller's environment says: NETPI_NO_COPY wins.
+        $env:NETPI_NO_COPY = '1'
         try { npm run build; if ($LASTEXITCODE) { throw 'npm run build failed' } }
-        finally { Remove-Item Env:NETPI_COPY -ErrorAction SilentlyContinue }
+        finally { Remove-Item Env:NETPI_NO_COPY -ErrorAction SilentlyContinue }
     }
     else {
         Write-Host 'npm not found: using the prebuilt web UI (web\dist and plugins\*\wwwroot\ui.js).' -ForegroundColor Yellow
@@ -303,6 +305,27 @@ if ($Publish) {
                 $rel = $f.FullName.Substring($dev.Length + 1)
                 Copy-Rel $dev $app $rel
             }
+            # What the dev tree no longer has goes too: a plugin deleted from the repository would keep loading, and old
+            # hashed wwwroot assets would pile up (the running path and build\WebRoot.targets replace wwwroot wholesale).
+            # Under plugins\ and wwwroot\ only - never .old, .pending, the lock, server.json or anything else beside them.
+            $appRoot = $app.TrimEnd('\') + '\'
+            $removed = @()
+            foreach ($top in 'plugins', 'wwwroot') {
+                $dir = Join-Path $app $top
+                if (-not (Test-Path -LiteralPath $dir)) { continue }
+                foreach ($f in Get-ChildItem $dir -Recurse -File -Force) {
+                    $rel = $f.FullName.Substring($appRoot.Length)
+                    if (-not (Test-Path -LiteralPath (Join-Path $dev $rel))) {
+                        Remove-Item -LiteralPath $f.FullName -Force
+                        $removed += $rel
+                    }
+                }
+                # the folders that are empty now (deepest first, so an emptied parent goes after its children)
+                foreach ($d in Get-ChildItem $dir -Recurse -Directory -Force | Sort-Object { $_.FullName.Length } -Descending) {
+                    if (-not (Get-ChildItem -LiteralPath $d.FullName -Force)) { Remove-Item -LiteralPath $d.FullName -Force }
+                }
+            }
+            if ($removed.Count) { Write-Host "Removed what the build no longer makes: $($removed -join ', ')" -ForegroundColor Yellow }
             Write-Host "Installed into artifacts\app ($($pluginNames.Count) plugin(s) changed: $(if ($pluginNames.Count) { $pluginNames -join ', ' } else { 'none' }))." -ForegroundColor Green
         }
         else {

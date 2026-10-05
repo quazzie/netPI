@@ -287,6 +287,14 @@ Write-Output 'LOCK-OK'
         Check.True(ps.IndexOf("finally {", taken, StringComparison.Ordinal) < released && released > 0,
             "the lock is disposed in a finally, so a failed install frees it");
 
+        // nothing reaches the app folder before the lock: the npm step runs before the build, the idle wait and the lock,
+        // so it must never ask the bundle scripts to install (NETPI_COPY), and it forbids it whatever the caller's
+        // environment says. The bundles reach the app with everything else, from artifacts\dev\app, inside the lock.
+        var npm = ps.IndexOf("npm run build", StringComparison.Ordinal);
+        Check.True(npm > 0 && npm < taken, "the npm step is before the install lock, which is why it must not install");
+        Check.NotContains(ps, "$env:NETPI_COPY", "build.ps1 never asks the bundle scripts to install into the app folder");
+        Check.Contains(ps, "$env:NETPI_NO_COPY = '1'", "and forbids it for the npm step, whatever the caller's environment says");
+
         var lockFn = Slice(ps, "function Enter-InstallLock", "function Get-LiveChats");
         Check.NotContains(lockFn, "continue", "every retry sleeps, so waiting for a lock really waits");
         Check.Contains(lockFn, "Get-Item -LiteralPath $path -ErrorAction SilentlyContinue", "a released lock does not throw while we look at it");
