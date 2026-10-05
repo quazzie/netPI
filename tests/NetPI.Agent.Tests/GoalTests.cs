@@ -22,11 +22,17 @@ public static class GoalTests
         t.Add("goal: goal_set on the user's request starts the loop", SetByModel);
         t.Add("goal: announced again after compaction, once; changes and resumes are announced", Notices);
         t.Add("goal: RPC validation (empty, too long, subagent sessions, nothing to pause)", RpcValidation);
+        t.Add("goal: a completion is reviewed against the evidence: gaps refuse it, a second refusal blocks it for the user", ReviewRefusesThenBlocks);
+        t.Add("goal: a completion the review passes closes the goal; a review that cannot run never holds it back", ReviewPasses);
+        t.Add("goal: a run that ends while its subagents work is continued at once, naming them; completing is refused until they report", ContinueWhileSubagentsWork);
     }
 
-    private static async Task<(TestHost H, TestPluginContext Ctx)> Start()
+    /// <summary>The goal plugin on a test host. The completion review is off unless asked for: it is one more model call,
+    /// and most tests here script every call in order.</summary>
+    private static async Task<(TestHost H, TestPluginContext Ctx)> Start(bool review = false)
     {
         var h = await TestHost.StartAsync();
+        if (!review) h.Settings.Set("goal.review", "off");
         var ctx = await h.StartPluginAsync(new GoalPlugin());
         return (h, ctx);
     }
@@ -416,5 +422,142 @@ public static class GoalTests
         var sub = h.Sessions.CreateSession(new SessionInfo { Title = "sub", Kind = "subagent" });
         Check.Contains(await Fails("goal.set", new { sessionId = sub.Id, objective = "x" }), "not subagents");
         Check.True(await h.Rpc.CallAsync("goal.get", new { sessionId = s.Id }) is null, "no goal yet");
+    }
+
+    private static bool IsReview(ModelRequest r) => r.Purpose == "goal-review";
+
+    private static List<ToolResultPart> GoalResults(TestHost h, string sid) =>
+        h.Messages(sid).SelectMany(m => m.ToolResults).Where(x => x.Name == "goal_update").ToList();
+
+    private static async Task ReviewRefusesThenBlocks()
+    {
+        var (h, _) = await Start(review: true);
+        await using var _h = h;
+        h.AddTool(new FakeTool("work", (c, a, ct) => Task.FromResult(ToolResult.Ok("packtest: 54 checks, 0 failed\nramcheck: OVER BUDGET by 5900 bytes"))));
+        var s = h.NewSession();
+        var reviews = new List<ModelRequest>();
+        var verdicts = new Queue<string>(["GAPS\n- packtest was pointed at the demo pack so it would pass\n- ramcheck still says OVER BUDGET", "**GAPS**\n- still OVER BUDGET"]);
+        var agentCalls = 0;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsReview(r)) { lock (reviews) reviews.Add(r); return Reply.Text(verdicts.Dequeue()); }
+            return Interlocked.Increment(ref agentCalls) switch
+            {
+                1 => Reply.Tool("work"),
+                2 => Reply.Tool("goal_update", new { status = "complete", summary = "Engine done, packtest is green." }),
+                3 => Reply.Tool("goal_update", new { status = "complete", summary = "It is fine." }),
+                _ => Reply.Text("The review blocked it."),
+            };
+        };
+        await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Build the engine within the RAM budget" });
+        await SettledAsync(h, s.Id, "blocked");
+
+        Check.Equal(2, reviews.Count);
+        var prompt = reviews[0].Messages.Single().Text;
+        Check.Contains(prompt, "<goal>\nBuild the engine within the RAM budget\n</goal>");
+        Check.Contains(prompt, "Engine done, packtest is green.");
+        Check.Contains(prompt, "OVER BUDGET by 5900 bytes", "the evidence carries what the tools returned");
+        Check.Equal(GoalReview.SystemPrompt, reviews[0].SystemPrompt);
+        Check.True(reviews[0].Tools.Count == 0, "the reviewer runs nothing");
+
+        var results = GoalResults(h, s.Id);
+        Check.True(results[0].IsError);
+        Check.Contains(results[0].Content, "Not accepted yet");
+        Check.Contains(results[0].Content, "pointed at the demo pack");
+        Check.Contains(results[1].Content, "blocked for the user");
+        var goal = GoalOf(h, s.Id)!;
+        Check.Contains((string?)goal["reason"], "still OVER BUDGET");
+        Check.Equal(2, IntOf(h, s.Id, "refusals"));
+        Check.Equal("The review blocked it.", h.Messages(s.Id)[^1].Text, "the agent told the user, and no run followed");
+    }
+
+    private static async Task ReviewPasses()
+    {
+        var (h, _) = await Start(review: true);
+        await using var _h = h;
+        h.AddTool(Work());
+        var s = h.NewSession();
+        var agentCalls = 0;
+        var reviewed = 0;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsReview(r)) { Interlocked.Increment(ref reviewed); return Reply.Text("PASS"); }
+            return Interlocked.Increment(ref agentCalls) switch
+            {
+                1 => Reply.Tool("work"),
+                2 => Reply.Tool("goal_update", new { status = "complete", summary = "Done and checked." }),
+                _ => Reply.Text("Done."),
+            };
+        };
+        await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Do it" });
+        await SettledAsync(h, s.Id, "complete");
+        Check.Equal(1, reviewed);
+        Check.Contains(GoalResults(h, s.Id).Single().Content, "An independent review of the evidence passed it.");
+
+        // a review that fails (the model errs) lets the completion stand, and says so
+        var s2 = h.NewSession();
+        agentCalls = 0;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsReview(r)) throw new ModelException("the reviewer is down", false);
+            return Interlocked.Increment(ref agentCalls) switch
+            {
+                1 => Reply.Tool("work"),
+                2 => Reply.Tool("goal_update", new { status = "complete", summary = "Done." }),
+                _ => Reply.Text("Done."),
+            };
+        };
+        await h.Rpc.CallAsync("goal.set", new { sessionId = s2.Id, objective = "Do it again" });
+        await SettledAsync(h, s2.Id, "complete");
+        Check.Contains(GoalResults(h, s2.Id).Single().Content, "not reviewed: the reviewer is down");
+    }
+
+    private static async Task ContinueWhileSubagentsWork()
+    {
+        var (h, _) = await Start(review: true);
+        await using var _h = h;
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 3;
+        h.AddTool(Work());
+        var childGate = new TaskCompletionSource();
+        static bool IsChild(ModelRequest r) => r.SystemPrompt?.Contains("a subagent working for") == true;
+        var continuation = "";
+        var parentCalls = 0;
+        var reviewed = 0;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r)) return Reply.Text("CHILD REPORT", c => childGate.Task.WaitAsync(c));
+            if (IsReview(r)) { Interlocked.Increment(ref reviewed); return Reply.Text("PASS"); }
+            var n = Interlocked.Increment(ref parentCalls);
+            if (Last(r).Contains("still working")) continuation = Last(r);
+            return n switch
+            {
+                1 => Reply.Tool("agent_spawn", new { task = "the slow part", name = "slowpoke", background = true }),
+                2 => Reply.Text("Spawned it."),                 // ends the run while the child works: continued at once
+                3 => Reply.Tool("work"),                        // the continuation does something
+                4 => Reply.Tool("goal_update", new { status = "complete", summary = "Done." }), // refused: the child still works
+                5 => Reply.Text("Waiting for slowpoke."),        // ends again with progress: continued once more
+                6 => Reply.Text("Nothing to add."),             // only talk: now it waits for the report
+                7 => Reply.Tool("goal_update", new { status = "complete", summary = "Done, with the child's report." }),
+                _ => Reply.Text("All done."),
+            };
+        };
+        var s = h.NewSession();
+        await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Do the slow and the fast part" });
+
+        await Wait.Until(() => Volatile.Read(ref parentCalls) >= 6 && Idle(h, s.Id), "the continuation that only talked ended");
+        await Task.Delay(200);
+        Check.Equal(6, Volatile.Read(ref parentCalls), "after a continuation that only talked, the goal waits for the report");
+        Check.Equal("active", StatusOf(h, s.Id));
+        Check.Contains(continuation, "1 of your subagents is still working: slowpoke");
+        Check.Contains(continuation, "call agent with action wait");
+        var refused = GoalResults(h, s.Id).Single();
+        Check.True(refused.IsError);
+        Check.Contains(refused.Content, "still working (slowpoke)");
+        Check.Equal(0, reviewed, "no model review while the subagent works");
+
+        childGate.TrySetResult();
+        await SettledAsync(h, s.Id, "complete");
+        Check.Equal(1, reviewed);
+        Check.True(h.Messages(s.Id).Any(m => m.Text.Contains("CHILD REPORT")), "the report started the next run");
     }
 }

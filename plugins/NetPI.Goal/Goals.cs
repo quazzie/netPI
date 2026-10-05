@@ -28,6 +28,8 @@ internal sealed class Goal
     public int Continuations { get; set; }
     /// <summary>Continuation runs in a row without a successful tool call.</summary>
     public int NoProgress { get; set; }
+    /// <summary>Completions the review refused in a row (a second refusal blocks the goal for the user).</summary>
+    public int Refusals { get; set; }
     public int Version { get; set; } = 1;
     public int ToldVersion { get; set; }
     public string? ToldStatus { get; set; }
@@ -46,6 +48,7 @@ internal sealed class Goal
         ["tokensUsed"] = TokensUsed,
         ["continuations"] = Continuations,
         ["noProgress"] = NoProgress,
+        ["refusals"] = Refusals,
         ["version"] = Version,
         ["toldVersion"] = ToldVersion,
         ["toldStatus"] = ToldStatus,
@@ -66,6 +69,7 @@ internal sealed class Goal
             TokensUsed = Num(o, "tokensUsed"),
             Continuations = (int)Num(o, "continuations"),
             NoProgress = (int)Num(o, "noProgress"),
+            Refusals = (int)Num(o, "refusals"),
             Version = Math.Max(1, (int)Num(o, "version")),
             ToldVersion = (int)Num(o, "toldVersion"),
             ToldStatus = Str(o, "toldStatus"),
@@ -239,6 +243,7 @@ internal sealed class Goals(IPluginContext ctx)
             g.Reason = null;
             g.Continuations = 0;
             g.NoProgress = 0;
+            g.Refusals = 0;
             return g;
         })!;
         Kick(sessionId, goal, "resumed");
@@ -276,8 +281,11 @@ internal sealed class Goals(IPluginContext ctx)
 
     // ---------------------------------------------------------------- notices
 
-    /// <summary>The notice for a goal that is (still) active; <paramref name="what"/>: set | changed | resumed | continue | reminder.</summary>
-    public static string ActiveNotice(Goal g, string what)
+    /// <summary>
+    /// The notice for a goal that is (still) active; <paramref name="what"/>: set | changed | resumed | continue | reminder.
+    /// <paramref name="working"/>: the chat's subagents still at work when a continuation starts.
+    /// </summary>
+    public static string ActiveNotice(Goal g, string what, IReadOnlyList<string>? working = null)
     {
         var sb = new StringBuilder();
         sb.Append(what switch
@@ -296,6 +304,10 @@ internal sealed class Goals(IPluginContext ctx)
             "- Done: call goal_update with status \"complete\" and a short summary of what was done and how it was checked.\n" +
             "- Only the user can unblock you (access, a decision that is theirs): goal_update with status \"blocked\" and what you need.\n" +
             "- Otherwise keep going: when you stop without calling goal_update, you are started again.");
+        if (working is { Count: > 0 })
+            sb.Append($"\n{working.Count} of your subagents {(working.Count == 1 ? "is" : "are")} still working: {string.Join(", ", working)}. " +
+                "Their reports arrive on their own. Meanwhile do what they do not cover: review what is done, test it, or " +
+                "research the next part. If there is really nothing to do until they report, call agent with action wait.");
         if (g.TokenBudget > 0) sb.Append($"\nTokens used for this goal: {Tokens(g.TokensUsed)} of {Tokens(g.TokenBudget)}.");
         return sb.ToString();
     }
@@ -549,12 +561,24 @@ internal sealed class Goals(IPluginContext ctx)
         if (rt is null) { Unavailable(sid, goal); return; }
         // queued input starts the next run by itself, and a running subagent's report does too: their ends decide again
         if (rt.GetQueue(sid).Count > 0) return;
-        if (run.Agent.Children.Any(id => rt.Get(id) is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })) return;
-        _ = ContinueAsync(rt, sid, goal.Id, track?.Runs ?? run.Agent.Runs);
+        var working = run.Agent.Children.Select(rt.Get)
+            .Where(a => a is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })
+            .Select(a => string.IsNullOrWhiteSpace(a!.Name) ? a.Id : a.Name).ToList();
+        if (working.Count > 0)
+        {
+            // goal.whileSubagentsRun: "wait" lets their reports start the next run; "continue" (the default) starts it
+            // now, naming them, so an orchestrator reviews, tests or researches while they work instead of sitting idle
+            // (a MarioV2 orchestrator under a "do not stop and wait" goal idled 6 and 14 minutes like that). A
+            // continuation that only talked meanwhile has nothing to add: then it waits for the reports after all, which
+            // also keeps the no-progress rule from pausing a goal whose work is being done by its subagents.
+            if (!string.Equals(ctx.Settings.Get("goal.whileSubagentsRun", "continue"), "continue", StringComparison.OrdinalIgnoreCase)) return;
+            if (auto && track!.Progress == 0) return;
+        }
+        _ = ContinueAsync(rt, sid, goal.Id, track?.Runs ?? run.Agent.Runs, working);
     }
 
     /// <summary>Once the agent is idle (right after the run-end hooks), start the next run, unless something else started one.</summary>
-    private async Task ContinueAsync(IAgentRuntime rt, string sessionId, string goalId, int runs)
+    private async Task ContinueAsync(IAgentRuntime rt, string sessionId, string goalId, int runs, IReadOnlyList<string>? working = null)
     {
         try
         {
@@ -572,7 +596,7 @@ internal sealed class Goals(IPluginContext ctx)
                 return g;
             });
             if (goal is not { Status: Goal.Active } || goal.Id != goalId) return;
-            await SendNoticeAsync(rt, sessionId, goal, ActiveNotice(goal, "continue"), auto: true).ConfigureAwait(false);
+            await SendNoticeAsync(rt, sessionId, goal, ActiveNotice(goal, "continue", working), auto: true).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { ctx.Logger.LogWarning(ex, "Goal continuation for session {Session} failed", sessionId); }

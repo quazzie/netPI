@@ -23,6 +23,10 @@ public sealed class GoalPlugin : INetPiPlugin
                 SettingInfo.Int("goal.maxContinuations", "Automatic runs before a goal pauses", 100, "Resume allows as many again.", 1, 10000),
                 SettingInfo.Int("goal.noProgressLimit", "Runs without progress before a goal pauses", 3, "Automatic runs in a row without a successful tool call.", 1, 50),
                 SettingInfo.Int("goal.tokenBudget", "Default token budget of a goal", 0, "For goals set without one; 0 = none.", 0, null, "tokens"),
+                SettingInfo.Choice("goal.review", "Check a completion", "check", ["check", "off"],
+                    "check: before goal_update complete stands, one model call that did not do the work reads the goal, the agent's summary and its tool calls, and refuses it with the gaps it finds; a second refusal blocks the goal for you. A completion is also refused while the chat's own subagents are still working."),
+                SettingInfo.Choice("goal.whileSubagentsRun", "While the chat's subagents work", "continue", ["continue", "wait"],
+                    "continue: a goal run that ends while its subagents work is followed by the next one at once, naming them, so the agent reviews or tests meanwhile (a continuation that only talks then waits for their reports). wait: their reports start the next run."),
             ],
         });
         var goals = new Goals(context);
@@ -35,7 +39,7 @@ public sealed class GoalPlugin : INetPiPlugin
         {
             if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) goals.Forget(id);
         });
-        context.Tools.Register(new GoalUpdateTool(goals));
+        context.Tools.Register(new GoalUpdateTool(goals, new GoalsReview(context, goals)));
         context.Tools.Register(new GoalSetTool(goals));
         context.Services.Register<IAgentHook>(new GoalHook(goals));
         context.Services.Register<IAgentCallObserver>(new GoalUsageObserver(goals));
@@ -112,7 +116,7 @@ internal sealed class GoalUsageObserver(Goals goals) : IAgentCallObserver
     }
 }
 
-internal sealed class GoalUpdateTool(Goals goals) : IAgentTool
+internal sealed class GoalUpdateTool(Goals goals, GoalsReview review) : IAgentTool
 {
     public ToolDefinition Definition { get; } = new()
     {
@@ -139,7 +143,7 @@ internal sealed class GoalUpdateTool(Goals goals) : IAgentTool
         // no guideline: every notice of an active goal says when to call it
     };
 
-    public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
+    public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         var status = a.Str("status", "state")?.Trim().ToLowerInvariant() switch
@@ -149,14 +153,22 @@ internal sealed class GoalUpdateTool(Goals goals) : IAgentTool
             "paused" or "pause" => Goal.Paused,
             _ => null,
         };
-        if (status is null) return Task.FromResult(ToolResult.Error("goal_update needs status: complete, blocked or paused."));
+        if (status is null) return ToolResult.Error("goal_update needs status: complete, blocked or paused.");
         var summary = a.Str("summary", "reason", "message", "note")?.Trim();
         if (string.IsNullOrEmpty(summary))
-            return Task.FromResult(ToolResult.Error(status == Goal.Complete
+            return ToolResult.Error(status == Goal.Complete
                 ? "goal_update needs a summary: what was done and how it was checked."
-                : "goal_update needs a summary: what you need from the user."));
+                : "goal_update needs a summary: what you need from the user.");
         try
         {
+            // A completion is checked against the evidence before it stands (GoalReview): refused, the goal stays active.
+            string? note = null;
+            if (status == Goal.Complete && goals.Get(context.SessionId) is { Status: Goal.Active } current)
+            {
+                (var refusal, note) = await review.CheckAsync(context, current, summary, ct).ConfigureAwait(false);
+                if (refusal is not null)
+                    return new ToolResult { Content = refusal.Content, IsError = true, Details = new { goal = goals.Get(context.SessionId)?.ToJson(), review = "refused" } };
+            }
             var g = goals.ReportByModel(context.SessionId, status, summary);
             var text = status switch
             {
@@ -164,12 +176,13 @@ internal sealed class GoalUpdateTool(Goals goals) : IAgentTool
                 Goal.Blocked => "Goal marked blocked. It no longer restarts you; tell the user what you need.",
                 _ => "Goal paused. It no longer restarts you.",
             };
-            return Task.FromResult(ToolResult.Ok(text, new { goal = g.ToJson() }));
+            if (note is not null) text += " " + note;
+            return ToolResult.Ok(text, new { goal = g.ToJson(), review = note });
         }
-        catch (GoalException ex) { return Task.FromResult(ToolResult.Error(ex.Message)); }
+        catch (GoalException ex) { return ToolResult.Error(ex.Message); }
         catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
         {
-            return Task.FromResult(ToolResult.Error($"Session {context.SessionId} not found."));
+            return ToolResult.Error($"Session {context.SessionId} not found.");
         }
     }
 }

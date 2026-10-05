@@ -857,14 +857,32 @@ The runtime, not the model, stops the loop, pausing the goal with a reason:
 - `goal.maxContinuations` (100) automatic runs;
 - the goal's token budget (`goal.tokenBudget`, default none): input not read from the cache plus output.
 
-Resume resets the counters. Queued user input and a running subagent (whose report starts a run anyway) come before
-a continuation; a user message during a goal steers it and the goal continues after that run.
+Resume resets the counters. Queued user input comes before a continuation; a user message during a goal steers it and
+the goal continues after that run. A run that ends while the chat's own subagents are still working is continued at
+once (`goal.whileSubagentsRun`: `continue`, the default), its notice naming them ("2 of your subagents are still
+working: a, b … meanwhile review, test or research; if there is really nothing to do, call agent with action wait"),
+so an orchestrator works alongside them instead of sitting idle until a report arrives. A continuation that only
+talked (no successful tool call) is not repeated while they work: the goal then waits for their reports, which start
+the next run anyway, and the no-progress rule cannot pause a goal whose work its subagents are doing. `wait`: their
+reports start the next run, as before.
 
 ### `goal_update` (summary arg `status`)
 
 `{ status: "complete" | "blocked" | "paused", summary }`. complete: every part done and checked, the summary says what
 was done and how it was verified; blocked: only the user can unblock it (access, a decision that is theirs); paused:
 only when the user asks. No active goal is an error.
+
+**A completion is checked before it stands** (`goal.review`: `check`, the default, or `off`). It is refused, without a
+model, while the chat's own subagents are still working ("wait for their reports, check them, then complete"). Then
+one model call that did not do the work (the chat's model, effort `low`, no tools, at most 2000 output tokens) reads
+the objective, the agent's summary and the evidence (the context's tool calls with the end of what each returned,
+newest last, at most 60 calls and 24k characters, plus a compaction summary when there is one) and answers `PASS` or
+`GAPS` with what is missing: a part without evidence, a check that failed, was skipped or was pointed at other input
+so it would pass, a warning the summary does not deal with (`OVER BUDGET`), a claim the evidence does not show, or a
+goal that cannot be finished by its nature. Gaps refuse the completion (an error result listing them; the goal stays
+active and the agent goes on); a second refusal in a row blocks the goal for the user with the gaps as its reason
+(`refusals` in the goal counts them; resume resets it), so the two never loop. A pass closes the goal and says so in
+the result; a review that cannot run (no model, an error) never holds a completion back and says that instead.
 
 ### `goal_set` (summary arg `objective`)
 

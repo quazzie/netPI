@@ -449,6 +449,8 @@ refuses an `ssh` download into another checkout of the repository.
 | `goal.maxContinuations` | `100` | automatic runs before the goal pauses (resume allows as many again) |
 | `goal.noProgressLimit` | `3` | automatic runs in a row without a successful tool call before the goal pauses |
 | `goal.tokenBudget` | `0` | token budget for goals set without one (0 = none); input not read from the cache plus output |
+| `goal.review` | `check` | `check`: before `goal_update complete` stands, one model call that did not do the work judges the goal against the run's evidence and refuses it with the gaps it finds (a second refusal blocks the goal for the user); also refused while the chat's own subagents still work. `off`: the model's word is enough. See TOOLS.md, Goal |
+| `goal.whileSubagentsRun` | `continue` | `continue`: a goal run that ends while the chat's subagents work is continued at once, naming them (a continuation that only talks then waits for their reports). `wait`: their reports start the next run |
 
 ## Plan mode
 
