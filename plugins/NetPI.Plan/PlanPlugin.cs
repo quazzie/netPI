@@ -74,9 +74,10 @@ public sealed class PlanPlugin : INetPiPlugin
             Rpc = "plan.command", ArgsHint = "[task] | off | show",
         });
 
+        // the host publishes { id } as the payload (no session on the envelope), like sessions.delete does
         context.Events.Subscribe(EventTypes.SessionDeleted, e =>
         {
-            if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) store.DeleteSession(id);
+            if ((e.As<JsonObject>()?["id"]?.GetValue<string>() ?? e.SessionId) is { Length: > 0 } id) store.DeleteSession(id);
         });
         return Task.CompletedTask;
     }

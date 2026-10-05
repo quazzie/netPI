@@ -31,6 +31,8 @@ DecisionReworkTests.Register(runner);
 LoopTests.Register(runner);
 SshTests.Register(runner);
 SchedulesTests.Register(runner);
+PlanStoreTests.Register(runner);
+SkillsCacheTests.Register(runner);
 PanelTests.Register(runner);
 InspectTests.Register(runner);
 RpcReadOnlyTests.Register(runner);
