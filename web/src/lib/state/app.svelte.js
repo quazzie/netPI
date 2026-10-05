@@ -146,6 +146,14 @@ function upsertSession(s) {
     // an RPC result can arrive after a newer session.updated (e.g. sessions.create, then the default profile the server
     // gives the new chat right away): never replace a session with an older copy of it
     if (Date.parse(s.updatedAt) < Date.parse(list[i].updatedAt)) return;
+    // the session's project moved: its recorded workspace was resolved for the old one, so it is stale from now on. One
+    // files.scope per workspace, not per message: the read below is the only cost of the change.
+    if (list[i].projectId !== s.projectId && app.workspaces.has(s.id)) {
+      const workspaces = new Map(app.workspaces);
+      workspaces.delete(s.id);
+      app.workspaces = workspaces;
+      if (s.id === app.activeId) void loadWorkspace(s.id);
+    }
     const next = list.slice();
     next[i] = s;
     // keep newest-first order by updatedAt

@@ -63,7 +63,9 @@
   const long = true; // every notice opens to what was sent
   const key = $derived(`n${msg.id}`);
   const open = $derived(chat.expanded.get(key) ?? false);
-  const oneLine = $derived(truncate(firstLine(text).replace(/[*_`#>]/g, ''), 160));
+  // a plain preview of the first line, closed: the words have to stay intact — a request id with underscores is what
+  // gets read when the row is not opened — so nothing is stripped out of it
+  const oneLine = $derived(truncate(firstLine(text), 160));
 
   // the budget stopped this chat and budget.onLimit is "ask": the latest such notice offers to let the chat go over
   let allowed = $state(false);
