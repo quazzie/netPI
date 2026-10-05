@@ -7,6 +7,9 @@
 //   node scripts/netpi.mjs <method> --params-file f  params from a JSON file (`-` = standard input): a long prompt or an image
 //                                                    need no shell quoting and no command-line length limit
 //   node scripts/netpi.mjs methods [prefix]         every method with what it does (rpc.list)
+//   node scripts/netpi.mjs events [--types a,b] [--session id | --project name] [--until text] [--json] [--activity]
+//                                                    the bus as one line per event, reconnecting on its own (streamEvents)
+//   node scripts/netpi.mjs runs.result sessionId=ses_abc --pick report   one field of an answer, a string printed as it is
 //
 //   node scripts/netpi.mjs diag.problems
 //   node scripts/netpi.mjs diag.calls limit=20 errors=true
@@ -17,7 +20,7 @@
 // refused without it, so looking around never changes the app), --params-file <file|->, --compact (one-line JSON), --timeout <seconds> (give up
 // on a server that does not answer in that time; without it a call waits as long as the server works: backup.create,
 // compaction.run and the model-backed methods take minutes, and abandoning one that is still running invites a rerun).
-// Exit codes: 0 ok, 1 the call failed, 2 NetPI isn't running or can't be reached.
+// Exit codes: 0 ok, 1 the call failed, 2 NetPI isn't running or can't be reached, 4 events --until did not match within --timeout.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -51,11 +54,29 @@ const paramsFile = option('--params-file');
 const timeoutSeconds = Number(option('--timeout') ?? 0);
 if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0) fail(1, '--timeout takes a number of seconds (0 or more).');
 const CALL_TIMEOUT_MS = timeoutSeconds * 1000;
+// --pick <path>: print one field of the answer (a.b.0.c); a string is printed as it is, e.g. runs.result --pick report
+const pick = option('--pick');
+// events: the bus as lines (see streamEvents)
+const ev = {
+  types: option('--types'),
+  session: option('--session'),
+  project: option('--project'),
+  until: option('--until'),
+  json: flag('--json'),
+  activity: flag('--activity'),
+};
 // Anything still starting with -- is an option this script does not have: say so, instead of sending it as a parameter.
 const unknown = args.find((a) => a.startsWith('--'));
-if (unknown) fail(1, `Unknown option ${unknown}. Options: --home, --write, --compact, --timeout, --params-file.`);
+if (unknown) fail(1, `Unknown option ${unknown}. Options: --home, --write, --compact, --timeout, --params-file, --pick; for events: --types, --session, --project, --until, --json, --activity.`);
 let method = args.shift() ?? 'diag.overview';
 let params = {};
+
+if (method !== 'events' && (ev.types || ev.session || ev.project || ev.until || ev.json || ev.activity))
+  fail(1, '--types, --session, --project, --until, --json and --activity are options of the events command.');
+if (method === 'events') {
+  await streamEvents();
+  process.exit(0);
+}
 
 if (method === 'methods' || method === 'help') {
   const prefix = args.shift() ?? '';
@@ -105,8 +126,139 @@ if (paramsFile !== null) {
 if (!write && (await declaredReadOnly()).get(method) !== true)
   fail(1, `${method} changes something (or the host does not mark it read-only); pass --write to call it. (Looking around: the methods rpc.list marks read-only.)`);
 
+// A follow-up waits for the whole run: on a worker's run that is its whole work package (a coordinator's updates sat
+// unread for an hour that way). Say so before it is queued behind a long run.
+if (method === 'agent.send' && params.mode === 'queue' && params.sessionId) await warnQueueBehindLongRun(params.sessionId);
+
 const result = await call(method, params);
-console.log(compact ? JSON.stringify(result) : JSON.stringify(result, null, 2));
+if (pick !== null) {
+  let v = result;
+  for (const part of pick.split('.').filter(Boolean)) v = v == null ? undefined : v[/^\d+$/.test(part) ? Number(part) : part];
+  if (v === undefined) fail(1, `The answer has no ${pick}.`);
+  console.log(typeof v === 'string' ? v : compact ? JSON.stringify(v) : JSON.stringify(v, null, 2));
+} else console.log(compact ? JSON.stringify(result) : JSON.stringify(result, null, 2));
+
+async function warnQueueBehindLongRun(sessionId) {
+  try {
+    const run = await tryCall('agent.get', { sessionId });
+    if (!run || !['running', 'queued', 'yielded'].includes(run.status) || !run.startedAt) return;
+    const minutes = Math.floor((Date.now() - Date.parse(run.startedAt)) / 60000);
+    if (minutes < 10) return;
+    console.error(`warning: ${sessionId} has been running for ${minutes} min, and a queued message waits until the run ends. ` +
+      'Send it with mode steer to have it read at the next step, or promote it later: agent.promote { sessionId, id }.');
+  } catch {}
+}
+
+/**
+ * `events`: the bus as one line per event, for a coordinator that watches instead of polling (a Monitor, a script).
+ * Connects to the app's WebSocket (the token from server.json, read again on every reconnect: a restart changes it),
+ * subscribes, filters, and reconnects on its own. agent.status prints only changes of status unless --activity.
+ *
+ *   --types a,b      event types or prefixes (default: the coordinator's set below; "all": everything but the per-token
+ *                    and per-chunk streams, unless they are named)
+ *   --session id     one chat (and its subagents)        --project name|id   the chats of one project
+ *   --until text     exit 0 after printing the first line that contains it (e.g. "→ idle")
+ *   --json           the raw frame (plus the chat's title) instead of the line
+ *   --timeout s      exit 4 when --until has not matched by then
+ */
+async function streamEvents() {
+  const DEFAULT = ['agent.status', 'guard.asked', 'ask.asked', 'plan.changed', 'process.idle', 'session.created', 'session.deleted', 'schedules.ran'];
+  const NOISY = ['stream.', 'tool.output', 'process.output', 'message.updated'];
+  const SCOPED = ['message.', 'messages.', 'stream.', 'tool.', 'agent.queue', 'agent.notice', 'context.prompt', 'schedules.'];
+  const wanted = !ev.types ? DEFAULT : ev.types === 'all' ? null : ev.types.split(',').map((s) => s.trim()).filter(Boolean);
+  const matches = (type) => (wanted ? wanted.some((w) => type === w || type.startsWith(w.endsWith('.') ? w : w + '.')) : !NOISY.some((n) => type.startsWith(n)));
+  const scoped = (wanted ?? []).some((w) => SCOPED.some((s) => w.startsWith(s) || s.startsWith(w)));
+  const sessions = new Map(); // id → { title, projectId, parent }
+  const status = new Map(); // agent id → last status printed
+  let projectId = null;
+  let deadline = null;
+  // --timeout: how long to watch; with --until, not matching by then is a failure (exit 4)
+  if (timeoutSeconds > 0)
+    deadline = setTimeout(() => {
+      if (!ev.until) process.exit(0);
+      console.error(`events: --until "${ev.until}" did not match in ${timeoutSeconds}s`);
+      process.exit(4);
+    }, timeoutSeconds * 1000);
+
+  const remember = (s) => s?.id && sessions.set(s.id, { title: s.title || 'New session', projectId: s.projectId ?? null, parent: s.parentSessionId ?? null });
+  const sidOf = (f) => f.sid ?? f.d?.sessionId ?? f.d?.agent?.sessionId ?? f.d?.session?.id ?? f.d?.process?.sessionId ?? (f.type === 'session.deleted' ? f.d?.id : null);
+  const inScope = (sid) => {
+    if (ev.session) return sid === ev.session || sessions.get(sid)?.parent === ev.session;
+    if (projectId) return sid != null && sessions.get(sid)?.projectId === projectId;
+    return true;
+  };
+  const time = (ts) => new Date(ts ?? Date.now()).toLocaleTimeString('en-GB', { hour12: false });
+  const one = (s, n = 160) => String(s ?? '').replace(/\s+/g, ' ').slice(0, n);
+  const describe = (f) => {
+    const d = f.d ?? {};
+    switch (f.type) {
+      case 'agent.status': {
+        const a = d.agent ?? {};
+        const was = status.get(a.id);
+        if (!ev.activity && was === a.status) return null;
+        status.set(a.id, a.status);
+        return `${a.name ?? 'agent'}: ${was && was !== a.status ? `${was} → ` : ''}${a.status}${a.activity && ev.activity ? ` (${one(a.activity, 60)})` : ''}${a.status === 'idle' || a.status === 'completed' || a.status === 'failed' ? ` · turns ${a.turns ?? 0}${a.error ? ` · error: ${one(a.error, 120)}` : ''}` : ''}`;
+      }
+      case 'guard.asked': return `${d.tool} ${one(d.subject, 100)} — rule ${d.rule} (approval ${d.approvalId})`;
+      case 'ask.asked': return one(d.questions?.[0]?.question, 160);
+      case 'process.idle': return `silent ${d.idleSeconds}s: ${one(d.process?.command, 140)} (${d.process?.id})`;
+      case 'plan.changed': return `plan ${d.mode ?? ''} ${d.status ?? ''} ${one(d.title, 80)}`.trim();
+      case 'session.created': return one(d.session?.title, 120);
+      default: return one(JSON.stringify(d), 200);
+    }
+  };
+
+  for (let backoff = 1000; ; backoff = Math.min(backoff * 2, 15000)) {
+    let server = null;
+    try { server = JSON.parse(fs.readFileSync(path.join(home, 'server.json'), 'utf8')); } catch {}
+    if (server) {
+      try {
+        for (const s of (await tryCall('sessions.list', { includeSubagents: true, limit: 2000 })) ?? []) remember(s);
+        if (ev.project && !projectId) {
+          const list = (await tryCall('projects.list', {})) ?? [];
+          const p = list.find((x) => x.id === ev.project || x.name?.toLowerCase() === ev.project.toLowerCase());
+          if (!p) fail(1, `No project ${ev.project}. Projects: ${list.map((x) => x.name).join(', ')}.`);
+          projectId = p.id;
+        }
+      } catch {}
+      const opened = await new Promise((resolve) => {
+        let open = false;
+        const ws = new WebSocket(`${server.url.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(server.token)}`);
+        ws.onopen = () => {
+          open = true;
+          backoff = 1000;
+          ws.send(JSON.stringify({ t: 'sub', sessions: scoped ? (ev.session ? [ev.session] : ['*']) : [] }));
+          console.error(`# events: connected to ${server.url}`);
+        };
+        ws.onmessage = (m) => {
+          let f;
+          try { f = JSON.parse(m.data); } catch { return; }
+          if (f.t !== 'ev') return;
+          if (f.type === 'session.created' || f.type === 'session.updated') remember(f.d?.session);
+          if (!matches(f.type)) return;
+          const sid = sidOf(f);
+          if (!inScope(sid)) return;
+          const text = describe(f);
+          if (text === null) return;
+          const title = sid ? sessions.get(sid)?.title : null;
+          const line = ev.json
+            ? JSON.stringify({ ...f, title: title ?? undefined })
+            : `${time(f.ts)} ${f.type.padEnd(15)} ${title ? `${one(title, 40)} [${sid}] ` : sid ? `[${sid}] ` : ''}${text}`;
+          console.log(line);
+          if (ev.until && line.includes(ev.until)) {
+            if (deadline) clearTimeout(deadline);
+            ws.close();
+            process.exit(0);
+          }
+        };
+        ws.onerror = () => {};
+        ws.onclose = () => resolve(open);
+      });
+      if (opened) console.error('# events: disconnected; reconnecting');
+    }
+    await new Promise((r) => setTimeout(r, backoff));
+  }
+}
 
 /**
  * The host's own answer, not a guess: `rpc.list` carries `readOnly` per method (idea-de1s7t), so a method cannot become
@@ -123,6 +275,22 @@ async function declaredReadOnly() {
     }
   }
   return declared;
+}
+
+/** call() for the long-lived paths (events, the queue warning): a failure throws instead of ending the process. */
+async function tryCall(m, p) {
+  const file = path.join(home, 'server.json');
+  const server = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const res = await fetch(`${server.url}/api/rpc/${m}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-NetPI-Token': server.token },
+    body: JSON.stringify(p ?? {}),
+    signal: AbortSignal.timeout(15000),
+  });
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new Error(`${m} failed (${res.status}): ${body?.error?.message ?? text}`);
+  return body;
 }
 
 async function call(m, p) {

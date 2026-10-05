@@ -61,7 +61,30 @@ node scripts/netpi.mjs diag.journal '{"sessionId":"ses_abc","limit":300}'
 node scripts/netpi.mjs methods diag.                  # every method with what it does (W = changes something)
 ```
 
-Options: `--home <dir>`, `--compact`, `--timeout <seconds>`, `--params-file <file|->` (the parameters as a JSON file, or `-` for
+**Watching instead of polling** (`events`): the bus as one line per event, for a coordinator, a script or a Monitor
+that turns stdout lines into events. It opens the app's WebSocket (the token from `server.json`, read again on every
+reconnect, since a restart changes it), reconnects on its own, and prints only what passes its filters:
+
+```bash
+node scripts/netpi.mjs events                                   # the coordinator's set: agent.status (changes of status only), guard.asked, ask.asked,
+                                                                # plan.changed, process.idle, session.created/deleted, schedules.ran
+node scripts/netpi.mjs events --project MarioV3 --activity      # one project's chats, with every activity change
+node scripts/netpi.mjs events --session ses_abc --until "→ idle" --timeout 3600   # block until that chat's run ends (exit 4 when it did not in time)
+node scripts/netpi.mjs events --types tool.,message.added --json                  # named types (prefixes), raw frames plus the chat's title
+```
+
+`--types all` is everything but the per-token and per-chunk streams (unless they are named); a scoped type (`tool.*`,
+`message.*`, `stream.*`…) subscribes to the chats it needs. Lines look like
+`16:05:27 agent.status    WP08 motions [ses_x] main: running → idle · turns 129`.
+
+**For a coordinator** the other pieces are RPC methods (PROTOCOL.md): `sessions.dispatch` (one call: validate, create,
+bind, agent, profile, send), `runs.result` (the run's report, status, todo, commits; `--pick report` prints just the text),
+`agent.promote` (a queued follow-up read at the next step), `workspaces.integrate { baseFirst, verify }` (the merge loop),
+and the `process.idle` event. `agent.send` with `mode: "queue"` to a chat whose run has gone on for 10 minutes prints a
+warning: the message waits until that run ends.
+
+Options: `--home <dir>`, `--compact`, `--timeout <seconds>`, `--pick <path>` (print one field of the answer, `a.b.0.c`; a
+string as it is), `--params-file <file|->` (the parameters as a JSON file, or `-` for
 standard input: a long prompt or an image needs no shell quoting and no command-line length limit), and `--write` for methods
 that change something (they are refused without it, so looking around never changes the app). Which methods those are is not a
 guess: the host marks each registration `readOnly` and `rpc.list` reports it, so a rename can neither make a method writable nor
