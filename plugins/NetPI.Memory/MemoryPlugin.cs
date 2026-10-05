@@ -39,7 +39,8 @@ public sealed class MemoryPlugin : INetPiPlugin
         }, "Past chats closest in meaning: { query, limit? (5), projectId?, excludeSessionId? } → { available, chats: [{ sessionId, title, projectId, updatedAt, score, snippet }] }");
         context.Rpc.Register("memory.reindex", async (_, rct) => await index.SweepAsync(rct).ConfigureAwait(false),
             "Embed the chats that changed since they were last embedded, now: { } → { enabled, indexed?, unchanged?, removed? }");
-        context.Track(context.Events.Subscribe(EventTypes.SessionDeleted, e => index.Forget(e.SessionId)));
+        // the host publishes { id } as the payload (no session on the envelope), like sessions.delete does
+        context.Track(context.Events.Subscribe(EventTypes.SessionDeleted, e => index.Forget(e.As<JsonObject>()?["id"]?.GetValue<string>() ?? e.SessionId)));
         index.Start();
         return Task.CompletedTask;
     }
@@ -52,6 +53,8 @@ internal sealed class MemoryIndex : IDisposable
 {
     public const int DefaultMaxChunks = 24;
     public const int ChunkChars = 1200;
+    /// <summary>Sessions read per page: the store's list has a window (100 by default), so the sweep pages through all of them.</summary>
+    public const int SessionPage = 100;
     private static readonly TimeSpan Every = TimeSpan.FromMinutes(5);
 
     private readonly IPluginContext _ctx;
@@ -95,8 +98,7 @@ internal sealed class MemoryIndex : IDisposable
         try
         {
             var cache = Load();
-            var sessions = _ctx.Sessions.ListSessions(new SessionQuery { IncludeArchived = true })
-                .Where(s => s.Kind == "chat").ToList();
+            var sessions = AllChats();
             var maxChunks = Math.Clamp(_ctx.Settings.GetOr("memory.maxChunksPerChat", DefaultMaxChunks), 4, 200);
             int indexed = 0, unchanged = 0, removed = 0;
             foreach (var session in sessions)
@@ -128,6 +130,30 @@ internal sealed class MemoryIndex : IDisposable
             return new JsonObject { ["enabled"] = true, ["model"] = model, ["indexed"] = indexed, ["unchanged"] = unchanged, ["removed"] = removed };
         }
         finally { _sweeping.Release(); }
+    }
+
+    /// <summary>
+    /// Every chat, archived ones included, page by page: a list query answers a window (<c>Limit</c>, 100 when unset),
+    /// so one unpaged read embeds only the most recently updated chats. A page that brings nothing new ends the walk
+    /// (a store that ignores the window would otherwise never end it).
+    /// </summary>
+    private List<SessionInfo> AllChats()
+    {
+        var chats = new List<SessionInfo>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var offset = 0; ; offset += SessionPage)
+        {
+            var page = _ctx.Sessions.ListSessions(new SessionQuery { IncludeArchived = true, Offset = offset, Limit = SessionPage });
+            var fresh = 0;
+            foreach (var s in page)
+            {
+                if (!seen.Add(s.Id)) continue;
+                fresh++;
+                if (s.Kind == "chat") chats.Add(s);
+            }
+            if (page.Count < SessionPage || fresh == 0) break;
+        }
+        return chats;
     }
 
     public void Forget(string? sessionId)

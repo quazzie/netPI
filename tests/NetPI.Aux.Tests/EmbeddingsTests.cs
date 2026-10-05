@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using NetPI.Embeddings;
+using NetPI.Host.Sessions;
 using NetPI.Ideas;
 
 namespace NetPI.Aux.Tests;
@@ -165,6 +166,24 @@ public static class EmbeddingsTests
             Check.False(status["available"]!.GetValue<bool>());
             Check.Equal(1L, status["failures"]!.GetValue<long>());
             Check.Contains(status["lastError"]!.GetValue<string>(), "200 ms");
+        });
+
+        r.Add("embeddings: a connection cut while the answer streams is a failure that backs off, not a raw exception", async () =>
+        {
+            await using var server = await LocalWeb.StartAsync(app => app.MapPost("/v1/embeddings", async (HttpContext http) =>
+            {
+                http.Response.StatusCode = 200;
+                http.Response.ContentType = "application/json";
+                http.Response.ContentLength = 100_000; // promised, never delivered
+                await http.Response.WriteAsync("{\"object\":\"list\",\"data\":[");
+                await http.Response.Body.FlushAsync();
+                http.Abort();
+            }));
+            var ctx = new FakePluginContext(T.TempDir("emb-cut"));
+            var client = await StartClient(ctx, server.Url);
+            var ex = await Check.ThrowsAsync<EmbeddingException>(() => client.EmbedAsync(new EmbeddingRequest { Texts = ["cut"] }, CancellationToken.None));
+            Check.Equal("unreachable", ex.Code);
+            Check.False(client.Available, "backing off after the cut");
         });
 
         r.Add("embeddings: a server error keeps its code; embed.texts answers through the RPC", async () =>
@@ -404,6 +423,48 @@ public static class EmbeddingsTests
             embedder.Model = null;
             var off = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.search", new JsonObject { ["query"] = "radio" }))!;
             Check.False(off["available"]!.GetValue<bool>());
+            ctx.Unload();
+        });
+
+        r.Add("memory: the sweep pages through every chat, not only the 100 most recent ones the list answers by default", async () =>
+        {
+            // The real session service over the real store: its list has a window (100 by default), which the fake has not.
+            var home = T.TempDir("memory-paged");
+            var ctx = new FakePluginContext(home, "netpi.memory");
+            var sessions = new SessionService(ctx.Storage, ctx.Events, home);
+            ctx.RealSessions = sessions;
+            ctx.ServicesFake.Register<IEmbeddingService>(new BagOfWords());
+            const int chats = NetPI.Memory.MemoryIndex.SessionPage + 20;
+            for (var i = 0; i < chats; i++)
+            {
+                var s = sessions.CreateSession(new SessionInfo { Title = $"Chat {i}" });
+                sessions.AppendMessage(s.Id, ChatMessage.UserText($"chat number {i} talks about topic {i}"));
+            }
+            Check.Equal(NetPI.Memory.MemoryIndex.SessionPage, sessions.ListSessions(new SessionQuery { IncludeArchived = true }).Count, "the unpaged list is one window");
+            await new NetPI.Memory.MemoryPlugin().StartAsync(ctx, CancellationToken.None);
+            var swept = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.reindex", new JsonObject()))!;
+            Check.Equal(chats, swept["indexed"]!.GetValue<int>(), "every chat is embedded, the older pages too");
+            ctx.Unload();
+        });
+
+        r.Add("memory: session.deleted names the chat as { id }, and the index forgets it at once, without waiting for a sweep", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("memory-deleted"));
+            ctx.ServicesFake.Register<IEmbeddingService>(new BagOfWords());
+            var radio = ctx.SessionsFake.CreateSession(new SessionInfo { Title = "Radio buffer" });
+            ctx.SessionsFake.AppendMessage(radio.Id, ChatMessage.UserText("the radio runs out of buffered songs when the batch size is raised"));
+            var other = ctx.SessionsFake.CreateSession(new SessionInfo { Title = "Timer leak" });
+            ctx.SessionsFake.AppendMessage(other.Id, ChatMessage.UserText("the work tab leaks a timer per collapsed process row"));
+            await new NetPI.Memory.MemoryPlugin().StartAsync(ctx, CancellationToken.None);
+            Check.Equal(2, ((JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.reindex", new JsonObject()))!)["indexed"]!.GetValue<int>());
+
+            ctx.SessionsFake.DeleteSession(radio.Id);
+            // as the host publishes it: the id in the payload, nothing on the envelope
+            ctx.Bus.Publish(new BusEvent { Type = EventTypes.SessionDeleted, Data = new { id = radio.Id }, Source = "host" });
+            var found = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.search", new JsonObject { ["query"] = "radio buffered songs batch" }))!;
+            Check.NotContains(found.ToJsonString(), radio.Id, "the deleted chat is not found any more");
+            Check.Equal(0, ((JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.reindex", new JsonObject()))!)["removed"]!.GetValue<int>(),
+                "the sweep has nothing left to remove: the event already did it");
             ctx.Unload();
         });
     }
