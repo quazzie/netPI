@@ -84,7 +84,7 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
         }
     }
 
-    /// <summary>Mark the cache stale and refresh in the background (publishes models.changed when the set changes).</summary>
+    /// <summary>Mark the cache stale and refresh in the background (publishes models.changed when the set, or any listed fact of a model, changes).</summary>
     public void Invalidate()
     {
         lock (_gate) _dirty = true;
@@ -258,11 +258,29 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
         }
     }
 
+    /// <summary>
+    /// What <c>models.changed</c> is about: every listed fact of every model. The slot count is in it because the
+    /// agents read their shared capacity from the cache on that event (a backend that adds a slot with the status
+    /// unchanged was silent), and the limits, modalities and reasoning because the UI and the callers re-read the list on it.
+    /// </summary>
     private static string Signature(List<ModelInfo> models)
     {
         var sb = new StringBuilder();
         foreach (var m in models)
-            sb.Append(m.Ref).Append('|').Append(m.Status).Append('|').Append(m.ContextWindow).Append('|').Append(m.DisplayName).Append('\n');
+        {
+            sb.Append(m.Ref).Append('|').Append(m.Status).Append('|').Append(m.ContextWindow).Append('|').Append(m.DisplayName)
+                .Append('|').Append(m.MaxOutputTokens).Append('|').Append(m.Concurrency).Append('|');
+            if (m.InputModalities is { } modalities)   // a provider's own object: defensive about a null it should not hand over
+                foreach (var modality in modalities) sb.Append(modality).Append(',');
+            sb.Append('|');
+            if (m.Reasoning is { } reasoning)
+            {
+                sb.Append(reasoning.Supported ? "reasoning:" : "no-reasoning:").Append(reasoning.Default).Append(':');
+                if (reasoning.Efforts is { } efforts)
+                    foreach (var effort in efforts) sb.Append(effort).Append(',');
+            }
+            sb.Append('\n');
+        }
         return sb.ToString();
     }
 

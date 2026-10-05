@@ -230,6 +230,41 @@ public static class ModelCatalogTests
             await Wait.Until(async () => (await catalog.ListAsync()).Count == 2, "provider removal invalidates");
         });
 
+        r.Add("models: a model whose slots, limits, modalities or reasoning change publishes models.changed with its status unchanged", async () =>
+        {
+            var dir = T.TempDir("models");
+            await using var bus = new EventBus(NullLogger.Instance);
+            using var settings = new SettingsStore(Path.Combine(dir, "settings.json"), NullLogger.Instance);
+            var services = new ServiceRegistry();
+            using var catalog = new ModelCatalog(services, settings, bus, NullLogger.Instance);
+            var changed = 0;
+            using var sub = bus.Subscribe(EventTypes.ModelsChanged, e => { if (e.Source == ModelCatalog.Source) Interlocked.Increment(ref changed); });
+            var model = Model("fake", "a", "loaded");
+            model.Concurrency = 2;
+            using var reg = services.Register<IModelProvider>(new FakeProvider("fake", model));   // the same instance on every listing: the test edits it in place
+            async Task<int> Relisted()
+            {
+                await catalog.ListAsync(refresh: true);
+                await bus.FlushAsync();
+                return Volatile.Read(ref changed);
+            }
+            Check.Equal(1, await Relisted(), "the first listing is a change");
+            Check.Equal(1, await Relisted(), "the same listing again says nothing");
+
+            // The backend added a slot: same model, same status. The agents share a local model's slots and read the
+            // count from the cache on models.changed, so a silent change left them on the old capacity.
+            model.Concurrency = 4;
+            Check.Equal(2, await Relisted(), "a slot count change is published");
+            Check.Equal(4, catalog.Cached.Single().Concurrency ?? 0, "and the cache carries it");
+            model.MaxOutputTokens = 8192;
+            Check.Equal(3, await Relisted(), "an output limit change is published");
+            model.InputModalities = ["text", "image"];
+            Check.Equal(4, await Relisted(), "a modality change is published");
+            model.Reasoning = new ReasoningInfo { Supported = true, Efforts = ["low", "high"], Default = "low" };
+            Check.Equal(5, await Relisted(), "a reasoning change is published");
+            Check.Equal(5, await Relisted(), "and nothing is published for a listing that changed nothing");
+        });
+
         r.Add("models: the newest refresh wins even when an older one finishes last, and a provider removed mid-refresh does not come back", async () =>
         {
             var dir = T.TempDir("models");
