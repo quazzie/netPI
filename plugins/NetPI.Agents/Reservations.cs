@@ -51,7 +51,7 @@ internal sealed partial class Ledger
             var laneDoc = _laneUsage!.Get(key);
             if (laneDoc is null)
                 laneDoc = new JsonObject { ["day"] = day, ["lane"] = agent, ["laneKey"] = laneKey };
-            laneDoc["costUsd"] = D(laneDoc["costUsd"]) + cost;
+            laneDoc["costUsd"] = Usd6(D(laneDoc["costUsd"]) + cost);
             _laneUsage.Put(key, laneDoc);
         }
         PeriodUsageAdd(period, agent, request.Model.Provider, request.Model.Id, 1,
@@ -89,7 +89,7 @@ internal sealed partial class Ledger
         doc["outputTokens"] = L(doc["outputTokens"]) + output;
         doc["cacheReadTokens"] = L(doc["cacheReadTokens"]) + cacheRead;
         doc["cacheWriteTokens"] = L(doc["cacheWriteTokens"]) + cacheWrite;
-        doc["costUsd"] = D(doc["costUsd"]) + cost;
+        doc["costUsd"] = Usd6(D(doc["costUsd"]) + cost);
         doc["unknownCalls"] = L(doc["unknownCalls"]) + unknown;
         _periodUsage.Put(key, doc);
     }
@@ -115,7 +115,7 @@ internal sealed partial class Ledger
             g["outputTokens"] = L(g["outputTokens"]) + L(call["outputTokens"]);
             g["cacheReadTokens"] = L(g["cacheReadTokens"]) + L(call["cacheReadTokens"]);
             g["cacheWriteTokens"] = L(g["cacheWriteTokens"]) + L(call["cacheWriteTokens"]);
-            g["costUsd"] = D(g["costUsd"]) + cost;
+            g["costUsd"] = Usd6(D(g["costUsd"]) + cost);
             g["unknownCalls"] = L(g["unknownCalls"]) + unknown;
         }
 
@@ -296,7 +296,7 @@ internal sealed partial class Ledger
                     var laneDoc = _laneUsage!.Get(day + "|" + laneKey);
                     if (laneDoc is not null)
                     {
-                        laneDoc["costUsd"] = D(laneDoc["costUsd"]) + (cost - oldCost);
+                        laneDoc["costUsd"] = Usd6(D(laneDoc["costUsd"]) + (cost - oldCost));
                         _laneUsage.Put(day + "|" + laneKey, laneDoc);
                     }
                 }

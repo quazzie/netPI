@@ -568,4 +568,9 @@ internal sealed partial class Ledger
     // The roll-up documents store plain JSON numbers; read them with a zero default for a fresh document.
     private static double D(JsonNode? n) => n is JsonValue v && v.TryGetValue<double>(out var d) ? d : 0;
     private static long L(JsonNode? n) => n is JsonValue v && v.TryGetValue<long>(out var x) ? x : 0;
+
+    // The roll-ups' USD precision (the same as the reports): round every accumulation so an estimate followed by its
+    // settlement (estimate, then settled − estimate) lands exactly on the settled cost instead of drifting by a
+    // fraction of an ulp per pair, which 100 concurrent writes turn into 100 ± 1e-14.
+    private static double Usd6(double v) => Math.Round(v, 6);
 }
