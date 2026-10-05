@@ -2,4 +2,9 @@
   <ItemGroup>
     <InternalsVisibleTo Include="NetPI.Aux.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The provider kit's HTTP client factory (pooled connections, no proxy for loopback hosts), compiled in the way
+         the providers compile the kit: plugins share source, never assemblies (docs/PLUGINS.md). -->
+    <Compile Include="$(RepoRoot)shared/ProviderKit/HttpFactory.cs" Link="Kit/HttpFactory.cs" />
+  </ItemGroup>
 </Project>

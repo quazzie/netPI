@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetPI.Providers.Kit;
 
 namespace NetPI.Embeddings;
 
@@ -29,7 +30,8 @@ public sealed class EmbeddingsPlugin : INetPiPlugin
                 SettingInfo.Int("embed.batchSize", "Texts per request", EmbeddingClient.DefaultBatchSize, null, 1, 256),
             ],
         });
-        var http = context.Track(new HttpClient { Timeout = Timeout.InfiniteTimeSpan });
+        // The kit's client: a bare HttpClient went through the system proxy for a loopback server too.
+        var http = context.Track(HttpFactory.Create());
         var client = new EmbeddingClient(context.Settings, http);
         context.Services.Register<IEmbeddingService>(client);
         context.Rpc.Register("embed.texts", async (r, rct) =>
@@ -133,11 +135,15 @@ internal sealed class EmbeddingClient(ISettings settings, HttpClient http, Func<
         HttpResponseMessage res;
         try { res = await http.SendAsync(req, cts.Token).ConfigureAwait(false); }
         catch (HttpRequestException ex) { throw new EmbeddingException("unreachable", $"Cannot reach {Root()}: {ex.Message}"); }
+        // A connection cut while the answer streams: it has to start the back-off like any other failure.
+        catch (IOException ex) { throw new EmbeddingException("unreachable", $"Lost the connection to {Root()}: {ex.Message}"); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new EmbeddingException("timeout", $"{model} did not answer within {timeout.TotalMilliseconds:0} ms"); }
         using (res)
         {
             string text;
             try { text = await res.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false); }
+            catch (HttpRequestException ex) { throw new EmbeddingException("unreachable", $"Lost the connection to {Root()}: {ex.Message}"); }
+            catch (IOException ex) { throw new EmbeddingException("unreachable", $"Lost the connection to {Root()}: {ex.Message}"); }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new EmbeddingException("timeout", $"{model} did not answer within {timeout.TotalMilliseconds:0} ms"); }
             JsonNode? json = null;
             try { json = JsonNode.Parse(text); } catch (JsonException) { }
