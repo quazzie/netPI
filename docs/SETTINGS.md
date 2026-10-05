@@ -341,6 +341,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `shell.pwshPath` | auto | `pwsh` (PowerShell 7), falls back to Windows PowerShell |
 | `shell.pwshAlways` | `false` | offer `pwsh` even when no PowerShell was found |
 | `shell.timeoutSeconds` | `120` | default per command (max 1800) |
+| `shell.trackChanges` | `true` | compare `git status` before and after a foreground command that may write, and report the files it changed in its repository (and a script edit that changed nothing); see TOOLS.md, `bash` / `pwsh` |
 | `ideas.fileName` | `ideas.json` | the name the ideas file had before the backlog moved into the store. Nothing reads or writes it any more; an export is written under it when a path is given, and `ideas.list` reports it so an older UI still has a hint (docs/PLUGIN-IDEAS.md) |
 | `ideas.saveCheck` | `true` | when a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down; a new plan gets a card to save or discard, work on an open idea is attached to that idea instead |
 | `ideas.attachThreshold` | `0.8` | the probability a closed chat has to be about an open idea before it is attached to it (0.3–0.99); 0.8 was right on 5 of 6 |

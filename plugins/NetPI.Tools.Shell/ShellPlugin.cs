@@ -4,7 +4,7 @@ namespace NetPI.Tools.Shell;
 
 /// <summary>
 /// Shell tools: bash (Git Bash on Windows), pwsh, process (list / output / kill), and the
-/// processes.* RPC methods. Settings: <c>shell.bashPath</c>, <c>shell.pwshPath</c>, <c>shell.timeoutSeconds</c>.
+/// processes.* RPC methods. Settings: <c>shell.bashPath</c>, <c>shell.pwshPath</c>, <c>shell.timeoutSeconds</c>, <c>shell.trackChanges</c>.
 /// </summary>
 [NetPiPlugin("netpi.tools.shell", Name = "Shell tools", Description = "bash (Git Bash on Windows), pwsh and background processes", Order = 20)]
 public sealed class ShellPlugin : INetPiPlugin
@@ -30,6 +30,8 @@ public sealed class ShellPlugin : INetPiPlugin
                 SettingInfo.FilePath("shell.bashPath", "bash", "Git Bash on Windows, never WSL. Empty: the one found.", ShellLocator.FindBash(null) ?? "none found (install Git for Windows)"),
                 SettingInfo.FilePath("shell.pwshPath", "PowerShell", "Empty: the one found.", ShellLocator.FindPwsh(null, out _) ?? "none found"),
                 SettingInfo.Bool("shell.pwshAlways", "Offer pwsh even when none was found", false),
+                SettingInfo.Bool("shell.trackChanges", "Report the files a command changed", true,
+                    "Compares git status before and after a command that may write, and tells the model and the chat which files in its repository changed."),
             ],
         });
         _registry = new ProcessRegistry(context.Events);

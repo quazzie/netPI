@@ -240,8 +240,9 @@ into locals first, because after the parent clears the modal state or the row re
    calls are steps in the open group (tool steps already carry their final key, `c<callId>`), its text is a text
    item. So nothing changes height when `message.added` replaces the stream.
 3. **Components.** `ToolRow` renders one row: icon, label, summary argument, badge, duration and status. It
-   expands to a specialised view: `DiffView` (edit/write), `ShellView` (bash/pwsh: command, live output, exit
-   code), `ReadView` (path, line range, highlighted content), `SearchView` (grep/find/ls), `AgentView`
+   expands to a specialised view: `DiffView` (edit/write; an edit of several files summarises as `N files · a, b`
+   and gets a header row per file), `ShellView` (bash/pwsh: command, live output, exit code, and the files the
+   command changed in its repository with their diff on request, from `details.changes`), `ReadView` (path, line range, highlighted content), `SearchView` (grep/find/ls), `AgentView`
    (`agent_*`, link to the subagent session), `WebView` (`web_fetch` title and text, `web_search` results as links,
    `screenshot` image and console errors), `TodoView` (the `todo_write` checklist) and `GenericView` (anything
    else). `read`/`write`/`edit` rows get an "Open file" button (`lib/openFile.js` → `files.open`). The SSH tools reuse

@@ -1,5 +1,6 @@
 <script>
   import Icon from '../../../lib/kit/Icon.svelte';
+  import DiffView from './DiffView.svelte';
   import { arg } from '../../../lib/tools.js';
   import { copyText } from '../../../lib/markdown.js';
 
@@ -8,6 +9,11 @@
 
   const cmd = $derived(String(arg(args, 'command', 'cmd', 'script') ?? ''));
   const d = $derived(result?.details ?? {});
+  // what the command changed in its repository (shell.trackChanges), and the diff of the files that were clean before
+  const changed = $derived(Array.isArray(d.changes?.files) ? d.changes.files : []);
+  const changeDiff = $derived(d.changes?.diff ? { details: { diff: d.changes.diff } } : null);
+  const LETTER = { added: 'A', deleted: 'D', reverted: 'R', modified: 'M' };
+  let showChanges = $state(false);
   const running = $derived(!result && live?.status === 'running');
   // live output is the complete stream (capped at 200KB); the result is the model-facing (tail) version
   const output = $derived(live?.output || result?.content || '');
@@ -53,6 +59,21 @@
     <pre class="out np-mono np-scroll" class:full bind:this={pre}>{output}</pre>
   {:else}
     <div class="out empty np-mono">{running ? 'waiting for output…' : '(no output)'}</div>
+  {/if}
+  {#if changed.length}
+    <div class="changes" title={d.changes.root}>
+      <div class="chead">
+        <span>Changed {changed.length} file{changed.length === 1 ? '' : 's'}</span>
+        {#if changeDiff}
+          <button class="np-btn np-btn-ghost np-btn-sm" onclick={() => (showChanges = !showChanges)}>{showChanges ? 'Hide diff' : 'Diff'}</button>
+        {/if}
+      </div>
+      {#each changed.slice(0, 20) as f (f.path)}
+        <div class="cf np-mono np-ellipsis" title={f.path}><span class="k" data-kind={f.kind}>{LETTER[f.kind] ?? 'M'}</span>{f.path}</div>
+      {/each}
+      {#if changed.length > 20}<div class="np-dim more-files">and {changed.length - 20} more</div>{/if}
+    </div>
+    {#if changeDiff && showChanges}<DiffView name="edit" args={{}} result={changeDiff} />{/if}
   {/if}
   <div class="foot">
     {#if running}
@@ -133,6 +154,43 @@
   }
   .out.full {
     max-height: none;
+  }
+  .changes {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    font-size: 12px;
+  }
+  .chead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--fg-muted);
+    font-size: var(--fs-xs);
+  }
+  .cf {
+    color: var(--fg-muted);
+    min-width: 0;
+  }
+  .k {
+    display: inline-block;
+    width: 14px;
+    margin-right: 4px;
+    font-weight: 600;
+    color: var(--warn);
+  }
+  .k[data-kind='added'] {
+    color: var(--ok);
+  }
+  .k[data-kind='deleted'] {
+    color: var(--err);
+  }
+  .k[data-kind='reverted'] {
+    color: var(--fg-dim);
+  }
+  .more-files {
+    font-size: var(--fs-xs);
   }
   .out.empty {
     color: var(--fg-dim);

@@ -1,3 +1,4 @@
+extern alias shell;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -5,7 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetPI.Host.Sessions;
 using NetPI.Host.Storage.Memory;
-using NetPI.Tools.Shell;
+using shell::NetPI.Tools.Shell;
 
 using SharedT = NetPI.TestShared.T;
 

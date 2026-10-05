@@ -1,6 +1,7 @@
+extern alias shell;
 using System.Diagnostics;
 using System.Text;
-using NetPI.Tools.Shell;
+using shell::NetPI.Tools.Shell;
 
 namespace NetPI.Tools.Tests;
 
@@ -128,6 +129,109 @@ public static class ShellTests
             Check.Equal<int?>(1, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout = 0.2 })), false)); // under 1 s clamps to 1 s
             settings.Set("shell.timeoutSeconds", 7);
             Check.Equal<int?>(7, svc.ResolveTimeout(new ToolArgs(T.Args(new { })), false));
+        });
+
+        // ------------------------------------------------ what a command changed (ChangeTracker)
+        r.Add("shell changes: which commands may write, which look like edits, and where a leading cd points", () =>
+        {
+            foreach (var ro in (string[])["ls -la", "cat a.txt | head -5", "grep -rn foo src 2>/dev/null", "git log --oneline -3 && git status",
+                         "cd /c/x && git diff HEAD~1 -- a.cs", "sed -n '1,40p' a.cs", "find . -name '*.cs'", "echo hi >&2", "Get-ChildItem -Recurse | Select-Object -First 3",
+                         "FOO=1 rg pattern", "git branch --show-current", "wc -l a.txt > /dev/null"])
+                Check.False(ChangeTracker.MayWrite(ro), $"reads only: {ro}");
+            foreach (var w in (string[])["dotnet build", "echo x > a.txt", "cat a >> b", "sed -i 's/a/b/' f", "find . -name x -delete", "git commit -m x",
+                         "python - <<'PY'\nopen('a','w').write('x')\nPY", "npm install", "Set-Content a.txt x", "git checkout -- a.txt", "ls; rm a.txt"])
+                Check.True(ChangeTracker.MayWrite(w), $"may write: {w}");
+
+            Check.True(ChangeTracker.LooksLikeEdit("cd /c/r && python - <<'PY'\np='a.cs'\ns=open(p).read().replace('a','b')\nopen(p,'w').write(s)\nPY"));
+            Check.True(ChangeTracker.LooksLikeEdit("node -e \"fs.writeFileSync('a', x)\""));
+            Check.True(ChangeTracker.LooksLikeEdit("sed -i 's/a/b/' a.cs"));
+            Check.True(ChangeTracker.LooksLikeEdit("perl -pi -e 's/a/b/' a.cs"));
+            Check.True(ChangeTracker.LooksLikeEdit("(Get-Content a.cs) -replace 'a','b' | Set-Content a.cs"));
+            Check.False(ChangeTracker.LooksLikeEdit("python script.py --check"), "a script that does not write");
+            Check.False(ChangeTracker.LooksLikeEdit("dotnet build"));
+
+            var dir = T.TempDir("probe");
+            Directory.CreateDirectory(Path.Combine(dir, "sub dir"));
+            Check.Equal(Path.Combine(dir, "sub dir"), ChangeTracker.ProbeDir("cd \"sub dir\" && make", dir), "a quoted relative cd");
+            Check.Equal(Path.GetFullPath(Path.Combine(dir, "sub dir")), ChangeTracker.ProbeDir($"cd '{dir}/sub dir'; ls", "/elsewhere"), "an absolute cd with ;");
+            Check.Equal(dir, ChangeTracker.ProbeDir("cd nope && make", dir), "a directory that does not exist is not where it runs");
+            Check.Equal(dir, ChangeTracker.ProbeDir("make && cd sub", dir), "only a leading cd counts");
+            if (OperatingSystem.IsWindows())
+            {
+                var gitBash = "/" + char.ToLowerInvariant(dir[0]) + dir[2..].Replace('\\', '/');
+                Check.Equal(Path.GetFullPath(dir), ChangeTracker.ProbeDir($"cd {gitBash} && make", "C:\\"), "Git Bash spells C:\\x as /c/x");
+            }
+            return Task.CompletedTask;
+        });
+
+        r.Add("shell changes: git status v2 is read as paths with one letter, and the snapshots' difference is what changed", () =>
+        {
+            var status = "# branch.oid 1234abcd\0# branch.head main\0" +
+                "1 .M N... 100644 100644 100644 aaa bbb src/a b.cs\0" +
+                "1 A. N... 000000 100644 100644 000 ccc new.cs\0" +
+                "1 .D N... 100644 100644 000000 ddd ddd gone.txt\0" +
+                "2 R. N... 100644 100644 100644 eee eee R100 moved.cs\0old.cs\0" +
+                "? untracked.txt\0";
+            var (head, paths) = ChangeTracker.ParseStatus(status);
+            Check.Equal("1234abcd", head);
+            Check.Equal("src/a b.cs:M,new.cs:A,gone.txt:D,moved.cs:M,untracked.txt:A", string.Join(",", paths.Select(p => $"{p.Path}:{p.Kind}")));
+            Check.True(ChangeTracker.ParseStatus("# branch.oid (initial)\0").Head is null, "no commit yet");
+
+            ChangeTracker.Snapshot Snap(string? h, params (string P, char K, long S, long T)[] e) =>
+                new("/r", h, e.ToDictionary(x => x.P, x => new ChangeTracker.Entry(x.K, x.S, x.T)));
+            var before = Snap("h1", ("dirty.cs", 'M', 10, 1), ("staged.cs", 'M', 5, 1), ("undone.cs", 'M', 3, 1));
+            var after = Snap("h1", ("dirty.cs", 'M', 12, 2), ("staged.cs", 'M', 5, 1), ("fresh.cs", 'M', 1, 1), ("new.txt", 'A', 1, 1));
+            var (changes, moved) = ChangeTracker.Diff(before, after);
+            Check.False(moved);
+            Check.Equal("dirty.cs:modified:False,fresh.cs:modified:True,new.txt:added:True,undone.cs:reverted:False",
+                string.Join(",", changes.Select(c => $"{c.Path}:{c.Kind}:{c.CleanBefore}")), "staging alone (same size and time) is not a change");
+            (changes, moved) = ChangeTracker.Diff(before, Snap("h2"));
+            Check.True(moved);
+            Check.Equal(0, changes.Count, "after a commit, files that became clean were committed, not reverted");
+            return Task.CompletedTask;
+        });
+
+        r.Add("bash: a command reports the files it changed in its repository, and an edit that changed nothing says so", async () =>
+        {
+            var dir = T.TempDir("changes");
+            if (!await TestGit.RunAsync(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
+            await TestGit.RunAsync(dir, "config", "user.email", "test@example.com");
+            await TestGit.RunAsync(dir, "config", "user.name", "Test");
+            await File.WriteAllTextAsync(Path.Combine(dir, "a.txt"), "alpha\nbeta\n");
+            await File.WriteAllTextAsync(Path.Combine(dir, "b.txt"), "one\n");
+            await TestGit.RunAsync(dir, "add", "-A");
+            await TestGit.RunAsync(dir, "commit", "-q", "-m", "first");
+            var (svc, _, _) = NewService();
+            var ctx = T.Ctx(dir);
+
+            var res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "sed -i 's/beta/BETA/' a.txt && echo new > c.txt" }), default);
+            ToolCheck.Ok(res);
+            Check.Contains(res.Content, "[Files changed while the command ran: M a.txt, A c.txt]");
+            var ch = T.D(res).GetProperty("changes");
+            Check.Equal(2, ch.GetProperty("files").GetArrayLength());
+            Check.Contains(ch.Str("diff")!, "+BETA", "the diff of a file that was clean before is the command's change");
+
+            res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "sed -i 's/nowhere/x/' b.txt" }), default);
+            Check.Contains(res.Content, "[No file in ");
+            Check.Contains(res.Content, "the text it looked for may not be there");
+
+            res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "cat a.txt" }), default);
+            Check.NotContains(res.Content, "[Files changed");
+            Check.True(!T.D(res).TryGetProperty("changes", out var none) || none.ValueKind == System.Text.Json.JsonValueKind.Null, "a command that only reads is not tracked");
+
+            res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "git add -A && git commit -q -m second" }), default);
+            Check.NotContains(res.Content, "reverted", "a commit is not a revert");
+
+            res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "echo more >> b.txt" }), default);
+            Check.Contains(res.Content, "M b.txt");
+            res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "git checkout -- b.txt" }), default);
+            Check.Contains(res.Content, "R b.txt", "a dirty file put back is reported as reverted");
+
+            var offSettings = new FakeSettings();
+            offSettings.Set("shell.trackChanges", false);
+            var off = NewService(offSettings).Service;
+            res = await Bash(off).ExecuteAsync(ctx, T.Args(new { command = "echo x > d.txt" }), default);
+            Check.NotContains(res.Content, "[Files changed", "shell.trackChanges off");
         });
 
         r.Add("bash: foreground output, stderr merged, exit code, cwd, live streaming", async () =>

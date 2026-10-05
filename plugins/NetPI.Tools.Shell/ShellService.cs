@@ -94,6 +94,12 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         if (ct.IsCancellationRequested)
             return ToolResult.Error("[aborted before the command started; nothing was run]", new { command, shell, cwd, background, aborted = true });
 
+        // What the command changes in its repository: a snapshot before a foreground command that may write, compared
+        // after it (a background job writes after this call has returned, so it is not tracked).
+        ChangeTracker.Snapshot? before = null;
+        if (!background && Settings.GetOr("shell.trackChanges", true) && ChangeTracker.MayWrite(command))
+            before = await ChangeTracker.TakeAsync(ChangeTracker.ProbeDir(command, cwd), ct).ConfigureAwait(false);
+
         var id = Ids.New("proc");
         var capture = new OutputCapture(1024 * 1024, background ? null : Path.Combine(TempDir, $"{shell}-{id}.log"));
         Action<string>? live = background ? BackgroundPublisher(id) : ctx.Output;
@@ -131,7 +137,22 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
                 catch (TimeoutException) { }
             }
         }
-        return FormatForeground(mp, timeout ?? DefaultTimeoutSeconds, timedOut, aborted, workspace, elsewhere);
+        // A command that was killed may still have written: the report is taken either way (but not for a cancelled run,
+        // whose result nobody reads).
+        ChangeTracker.Report? changes = null;
+        if (before is not null && !aborted)
+        {
+            var after = await ChangeTracker.TakeAsync(before.Root, CancellationToken.None, before.Root).ConfigureAwait(false);
+            if (after is not null)
+            {
+                var (list, headMoved) = ChangeTracker.Diff(before, after);
+                var diff = list.Count > 0 ? await ChangeTracker.DiffTextAsync(before, list, CancellationToken.None).ConfigureAwait(false) : null;
+                changes = new ChangeTracker.Report(before.Root, list, headMoved, diff);
+            }
+        }
+        var editLike = changes is not null && ChangeTracker.LooksLikeEdit(command);
+        var outside = changes is not null && workspace is not null && !WorkspacePaths.IsInside(workspace.Root, changes.Root);
+        return FormatForeground(mp, timeout ?? DefaultTimeoutSeconds, timedOut, aborted, workspace, elsewhere, changes, editLike, outside);
     }
 
     /// <summary>One line naming where the shell actually started, for a call that ran outside this session's workspace.</summary>
@@ -179,7 +200,7 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
     }
 
     private ToolResult FormatForeground(ManagedProcess mp, int timeoutSeconds, bool timedOut, bool aborted,
-        WorkspaceBinding? workspace = null, bool elsewhere = false)
+        WorkspaceBinding? workspace = null, bool elsewhere = false, ChangeTracker.Report? changes = null, bool editLike = false, bool outside = false)
     {
         var full = ToolOutput.ResolveCarriageReturns(mp.Output.Snapshot());
         var (tail, truncated, totalLines, shownLines) = ToolOutput.TailLines(full, ToolOutput.ModelMaxLines, ToolResultLimit.Fit(Settings, ToolOutput.ModelMaxBytes));
@@ -204,12 +225,13 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         sb.Append(WhereNote(workspace, elsewhere, mp.Cwd));
         if (!mp.OutputReachedEof)
             sb.Append("\n[note: something the command started is still running and holding its output open, so this may be incomplete]");
+        if (changes is not null && ChangeTracker.Line(changes, editLike, outside) is { } line) sb.Append('\n').Append(line);
 
         return new ToolResult
         {
             Content = sb.ToString(),
             IsError = timedOut || aborted,
-            Details = Details(mp, truncated, fullPath, timedOut, aborted),
+            Details = Details(mp, truncated, fullPath, timedOut, aborted, changes),
         };
     }
 
@@ -217,8 +239,18 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         ? (bytes / 1024.0).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " KB"
         : (bytes / (1024.0 * 1024)).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " MB";
 
-    private static object Details(ManagedProcess mp, bool truncated, string? fullOutputPath, bool timedOut = false, bool aborted = false) => new
+    private static object Details(ManagedProcess mp, bool truncated, string? fullOutputPath, bool timedOut = false, bool aborted = false,
+        ChangeTracker.Report? changes = null) => new
     {
+        // What changed in the repository while the command ran (null: not tracked), and the diff of the files that were
+        // clean before it, which is exactly what the command did to them.
+        changes = changes is null ? null : new
+        {
+            root = changes.Root,
+            files = changes.Changes.Select(c => new { path = c.Path, kind = c.Kind }).ToArray(),
+            headMoved = changes.HeadMoved ? true : (bool?)null,
+            diff = changes.Diff,
+        },
         command = mp.Command,
         shell = mp.Shell,
         // The directory the shell was actually started in. A `cd` inside the command does not change it, so this is the

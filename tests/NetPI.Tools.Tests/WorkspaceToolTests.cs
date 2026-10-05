@@ -1,6 +1,7 @@
+extern alias shell;
 using System.Text.Json;
 using NetPI.Tools.Files;
-using NetPI.Tools.Shell;
+using shell::NetPI.Tools.Shell;
 
 namespace NetPI.Tools.Tests;
 

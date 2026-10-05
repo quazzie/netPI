@@ -6,4 +6,12 @@
   <ItemGroup>
     <InternalsVisibleTo Include="NetPI.Tools.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The git kit is shared SOURCE, not a shared assembly (docs/PLUGINS.md): the shell tools use it to see what a
+         command changed in its repository (ChangeTracker). -->
+    <Compile Include="$(RepoRoot)shared/GitKit/*.cs" LinkBase="GitKit" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="NetPI.GitKit" />
+  </ItemGroup>
 </Project>

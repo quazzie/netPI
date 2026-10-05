@@ -447,6 +447,13 @@ await shot(page, '09-subagents-notices');
   await shot(page, '09c-notice-as-sent');
 
   // an edit of several files: the row says how many and which, the diff has a header per file
+  // (finished groups of more than three steps are folded: open them first)
+  for (let i = 0; i < 10; i++) {
+    const folded = page.locator('.content:visible .group.collapsible:not(.open) .head');
+    if (!(await folded.count())) break;
+    await folded.first().click();
+    await page.waitForTimeout(100);
+  }
   const multi = page.locator('.content:visible .tool', { hasText: '2 files' }).first();
   check('an edit of several files names them on its row', (await multi.count()) === 1 && (await multi.locator('.line').innerText()).includes('rpc.svelte.js'));
   await multi.locator('.line').click();
@@ -454,6 +461,16 @@ await shot(page, '09-subagents-notices');
   const heads = await multi.locator('.dl.file').allInnerTexts();
   check('…and its diff has a header per file', heads.length === 2 && heads[0].includes('rpc.svelte.js') && heads[1].includes('PROTOCOL.md'), heads.join(' | '));
   await shot(page, '09d-edit-several-files');
+
+  // a shell command that changed a file: the files it changed, and its diff on request
+  const sed = page.locator('.content:visible .tool', { hasText: 'RECONNECT_MS' }).first();
+  await sed.locator('.line').click();
+  await page.waitForTimeout(150);
+  check('a shell command lists the files it changed', (await sed.locator('.changes .cf').allInnerTexts()).some((x) => x.includes('rpc.svelte.js')));
+  await sed.locator('.changes button', { hasText: 'Diff' }).click();
+  await page.waitForTimeout(100);
+  check('…and shows its diff on request', (await sed.locator('.diff .dl.add').innerText()).includes('RECONNECT_MS = 250'));
+  await shot(page, '09e-shell-changed-files');
 }
 
 }

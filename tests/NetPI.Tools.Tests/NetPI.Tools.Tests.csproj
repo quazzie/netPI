@@ -18,6 +18,8 @@
     <!-- The real storage provider and the real session service, so the harness fake is built over the kernel's own code. -->
     <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Files/NetPI.Tools.Files.csproj" />
-    <ProjectReference Include="../../plugins/NetPI.Tools.Shell/NetPI.Tools.Shell.csproj" />
+    <!-- Both plugins compile the shared GitKit source in and show this project their internals, so the shell assembly
+         goes under an alias (extern alias shell): GitRunner then names the file tools' copy. -->
+    <ProjectReference Include="../../plugins/NetPI.Tools.Shell/NetPI.Tools.Shell.csproj" Aliases="shell" />
   </ItemGroup>
 </Project>

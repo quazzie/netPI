@@ -421,6 +421,18 @@ export function seed() {
     ],
     diff: multiDiff, added: 2, removed: 1, edits: 2,
   }, { durationMs: 14 })], {}, (t += 60));
+  // a shell command that changed files: the tool reports which ones (shell.trackChanges), with the diff
+  const s1 = newId('call');
+  const sedCmd = "sed -i 's/RECONNECT_MS = 500/RECONNECT_MS = 250/' web/src/lib/rpc.svelte.js";
+  pushMessage(show.id, 'assistant', [call(s1, 'bash', { command: sedCmd })], { provider: 'aiproxy', model: 'qwen3.8-27b', stopReason: 'tool_use', usage: usage(10800, 70, 10200), durationMs: 900, meta: { ttftMs: 210 } }, (t += 1000));
+  pushMessage(show.id, 'tool', [result(s1, 'bash', '(no output)\n[Files changed while the command ran: M web/src/lib/rpc.svelte.js]', {
+    ...shellDetails(sedCmd, 0, 140, REPO),
+    changes: {
+      root: REPO,
+      files: [{ path: 'web/src/lib/rpc.svelte.js', kind: 'modified' }],
+      diff: '--- a/web/src/lib/rpc.svelte.js\n+++ b/web/src/lib/rpc.svelte.js\n@@ -12,1 +12,1 @@\n-const RECONNECT_MS = 500;\n+const RECONNECT_MS = 250;\n',
+    },
+  }, { durationMs: 140 })], {}, (t += 200));
   const b1 = newId('call');
   pushMessage(show.id, 'assistant', [thinking('The subagent confirms subscriptions are per-connection. Run the reconnect test script.', 900), call(b1, 'bash', { command: 'node web/mock/reconnect-test.mjs --drop-after 2s' })], { provider: 'aiproxy', model: 'qwen3.8-27b', stopReason: 'tool_use', usage: usage(11000, 100, 10000), durationMs: 1500, meta: { ttftMs: 260 } }, (t += 1600));
   pushMessage(show.id, 'tool', [result(b1, 'bash', 'connecting ws://127.0.0.1:7431/ws\nsubscribed ses_show\nstream.delta × 41\n-- dropping socket --\nreconnected in 412ms\nwaiting for events… (timeout 5s)\nFAIL: no events after reconnect\n[exit code 1]', shellDetails('node web/mock/reconnect-test.mjs --drop-after 2s', 1, 6120, REPO), { durationMs: 6120 })], {}, (t += 6200));

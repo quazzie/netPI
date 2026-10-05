@@ -337,12 +337,31 @@ The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.
 - **Background** (`background: true`): starts and returns within about 0.5s, with the id `proc_…`. If the command exits
   within that window, its output and exit code are reported instead. Background processes have no timeout unless
   `timeout` is given.
+- **What the command changed** (`shell.trackChanges`, on by default). Agents change files through the shell as well as
+  through `edit` (scripts, `sed -i`, redirects), and that used to leave no trace in the chat. For a foreground command
+  that may write, the tool takes `git status --porcelain=v2` of the command's repository before and after it runs, with
+  the size and modification time of every dirty path. The repository is the one of a leading `cd <dir> &&` (or `;`,
+  `Set-Location`; Git Bash's `/c/x` is `C:\x`), else of the start directory. A command made only of commands that read
+  (ls, cat, grep, `git log`/`status`/`diff`…, `sed -n`, `find` without `-delete`/`-exec`, Get-ChildItem…) with no redirect
+  into a file is not tracked, and neither is a background job. The difference is a note after the output:
+  `[Files changed while the command ran: M src/a.cs, A docs/new.md, D old.txt, R b.txt]` (M modified, A added or
+  untracked, D deleted, R reverted: dirty before and clean after, while HEAD did not move; a commit cleans what it takes,
+  which is not a revert; staging alone is not a change), at most 20 named. A command that looks like an edit (a
+  Python/Node script that writes a file, `sed -i`, `perl -pi`, `Set-Content`…) and changed nothing gets
+  `[No file in <repo> changed. If this command was meant to edit one, the text it looked for may not be there …]`: the
+  replace that matched nothing. A repository outside the session's workspace is named. Each snapshot has 3 s; a slower
+  repository, more than 5000 dirty paths or no git is simply not tracked. It sees what git sees, so ignored files and
+  other repositories are outside it, and a change another process made meanwhile is reported too: a report, not a
+  guard. The chat shows the files under the output and, on request, the diff of those that were clean before (against
+  the commit they were clean at, which is exactly the command's change).
 
 ```ts
 details: { command, shell: 'bash'|'pwsh', cwd, exitCode?: number /* absent while running */, durationMs?: number,
            truncated: boolean, fullOutputPath?: string, background: boolean, processId: string, pid: number,
            status: 'running'|'exited'|'killed'|'timeout', timedOut?: true, aborted?: true,
-           outputEof: boolean /* false: something the command started is still holding its output open */ }
+           outputEof: boolean /* false: something the command started is still holding its output open */,
+           changes?: { root, files: { path /* relative to root */, kind: 'modified'|'added'|'deleted'|'reverted' }[],
+                       headMoved?: true, diff?: string } /* absent: not tracked */ }
 // spawn / "shell not found" errors: { command, shell, cwd, background }
 ```
 
