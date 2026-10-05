@@ -32,6 +32,7 @@ public static class WorkspaceTests
         t.Add("workspaces: a failed provisioning leaves no runnable workspace", FailedProvisioning);
         t.Add("workspaces: integrations into one branch serialize", IntegrationSerializes);
         t.Add("workspaces: integrate verifies the branch the worktree is on, and refuses a stale record", IntegrateRefusesStaleRecord);
+        t.Add("workspaces: a gated integrate merges the base first, runs verify in the worktree, and moves the base only when it passes", IntegrateGated);
         t.Add("workspaces: cleanup refuses a dirty, unbound or running worktree and removes a merged one", CleanupSafety);
         t.Add("workspaces: a background process keeps its workspace busy", BackgroundProcessHoldsWorkspace);
         t.Add("workspaces: retirement ignores an archived bound session; a live one still blocks", RetirementIgnoresArchived);
@@ -555,6 +556,54 @@ public static class WorkspaceTests
     /// merged and verified. The stale record is refused with both branches named, and a record without a branch
     /// resolves the branch from git (idea-ui6o31).
     /// </summary>
+    private static async Task IntegrateGated()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("gated integrate"); }
+        TestGit.Run(env.ProjectPath, "config", "user.name", "t");
+        TestGit.Run(env.ProjectPath, "config", "user.email", "t@t");
+        var w = env.Provision("gated", "ses_g");
+        Check.True(w.Ok, w.Error ?? "");
+        var id = w.Binding!.WorkspaceId;
+        var root = w.Binding.Root;
+        env.Write(root, "work.txt", "work");
+        TestGit.Run(root, "add", "-A");
+        TestGit.Run(root, "commit", "-q", "-m", "the work");
+        // the base moves on meanwhile: another worker's merge
+        env.Write(env.ProjectPath, "other.txt", "other");
+        TestGit.Run(env.ProjectPath, "add", "-A");
+        TestGit.Run(env.ProjectPath, "commit", "-q", "-m", "other work on main");
+        var mainBefore = TestGit.Out(env.ProjectPath, "rev-parse", "main")!;
+
+        async Task<JsonObject> Integrate(object p) => (JsonObject)NetPiJson.ToNode(await env.Ctx.RpcFake.InvokeAsync("workspaces.integrate", p))!;
+
+        // a verify that fails: the base was merged into the branch, the base itself did not move, and the output is in the answer
+        var failed = await Integrate(new { id, baseFirst = true, verify = "echo checking; exit 3", verifyTimeoutSeconds = 120 });
+        Check.False(failed["merged"]!.GetValue<bool>());
+        Check.Equal("merged", failed["baseMerge"]?.GetValue<string>(), "main was merged into the worker's branch first");
+        Check.Equal(3, failed["verify"]!["exitCode"]!.GetValue<int>());
+        Check.Contains(failed["verify"]!["tail"]!.GetValue<string>(), "checking");
+        Check.Contains(failed["reason"]!.GetValue<string>(), "Nothing was integrated");
+        Check.Equal(mainBefore, TestGit.Out(env.ProjectPath, "rev-parse", "main"), "main did not move");
+        Check.True(env.Provisioner.IsAncestor(root, mainBefore, "HEAD"), "the branch has main in it now");
+
+        // uncommitted work is refused before anything happens
+        env.Write(root, "work.txt", "changed, not committed");
+        var dirty = await Check.ThrowsAsync<RpcException>(async () => await Integrate(new { id, baseFirst = true, verify = "echo ok" }));
+        Check.Contains(dirty.Message, "uncommitted");
+        TestGit.Run(root, "checkout", "--", "work.txt");
+
+        // a verify that passes: main is fast-forwarded to the branch, which carries both lines of work
+        var passed = await Integrate(new { id, baseFirst = true, verify = "echo verified-ok", verifyTimeoutSeconds = 120 });
+        Check.True(passed["merged"]!.GetValue<bool>(), passed.ToJsonString());
+        Check.True(passed["verify"]!["passed"]!.GetValue<bool>());
+        Check.Contains(passed["verify"]!["tail"]!.GetValue<string>(), "verified-ok");
+        Check.Equal(TestGit.Out(root, "rev-parse", "HEAD"), TestGit.Out(env.ProjectPath, "rev-parse", "main"), "a fast-forward: main is the branch");
+        var log = TestGit.Out(env.ProjectPath, "log", "--format=%s") ?? "";
+        Check.Contains(log, "the work");
+        Check.Contains(log, "other work on main");
+    }
+
     private static async Task IntegrateRefusesStaleRecord()
     {
         using var env = new Env();

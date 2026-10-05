@@ -262,7 +262,7 @@ public sealed class WorkspaceProvisioner(
     /// integrators serialize instead of racing on the same index; the second waits and re-reads the branch, which is why
     /// the merge runs after it takes the lock rather than before.
     /// </summary>
-    public async Task<(bool Ok, string? Error)> IntegrateAsync(WorkspaceInfo workspace, string? intoBranch = null, CancellationToken ct = default)
+    public async Task<(bool Ok, string? Error)> IntegrateAsync(WorkspaceInfo workspace, string? intoBranch = null, CancellationToken ct = default, bool ffOnly = false)
     {
         // The branch to merge and verify: the worktree's actual branch, refused when the record has gone stale.
         var (branch, problem) = IntegrateBranch(workspace);
@@ -285,15 +285,80 @@ public sealed class WorkspaceProvisioner(
             var (checkoutCode, checkoutOut) = await git.ExecAsync(repo, ct, "checkout", target).ConfigureAwait(false);
             if (checkoutCode != 0)
                 return (false, $"Could not switch {repo} to {target}: {checkoutOut.Trim()}");
-            var (mergeCode, mergeOut) = await git.ExecAsync(repo, ct, "merge", "--no-ff", "-m", $"Merge {branch} into {target}", branch).ConfigureAwait(false);
+            var (mergeCode, mergeOut) = ffOnly
+                ? await git.ExecAsync(repo, ct, "merge", "--ff-only", branch).ConfigureAwait(false)
+                : await git.ExecAsync(repo, ct, "merge", "--no-ff", "-m", $"Merge {branch} into {target}", branch).ConfigureAwait(false);
             if (mergeCode != 0)
             {
-                await git.ExecAsync(repo, ct, "merge", "--abort").ConfigureAwait(false);
-                return (false, $"Merging {branch} into {target} did not go cleanly: {mergeOut.Trim()} Resolve it by hand in {repo}.");
+                if (!ffOnly) await git.ExecAsync(repo, ct, "merge", "--abort").ConfigureAwait(false);
+                return (false, ffOnly
+                    ? $"{target} cannot be fast-forwarded to {branch}: {mergeOut.Trim()} ({target} moved after the base was merged into the branch: integrate again.)"
+                    : $"Merging {branch} into {target} did not go cleanly: {mergeOut.Trim()} Resolve it by hand in {repo}.");
             }
             return (true, mergeOut.Trim());
         }
         finally { gate.Release(); }
+    }
+
+    /// <summary>What a gated integrate did, step by step: the answer of <c>workspaces.integrate</c> with baseFirst/verify.</summary>
+    public sealed record GatedOutcome(string Branch, string Into, string? BaseMerge, VerifyRunner.Outcome? Verify, bool Merged, string? Reason);
+
+    /// <summary>
+    /// The whole merge loop of a coordinator in one call: refuse while the worker still runs or has uncommitted work,
+    /// merge the project's branch into the worker's branch inside its worktree (<paramref name="baseFirst"/>), run
+    /// <paramref name="verify"/> there, and only when it passes fast-forward the project's branch to the worker's (the
+    /// ordinary merge when the base was not merged first). Nothing reaches the project's branch otherwise, and a failed
+    /// verify returns its output instead of an error, so the caller can read why.
+    /// </summary>
+    public async Task<GatedOutcome> IntegrateGatedAsync(WorkspaceInfo workspace, string? intoBranch, bool baseFirst, string? verify,
+        string? verifyShell, TimeSpan verifyTimeout, Func<string, bool>? busyDir, CancellationToken ct)
+    {
+        var (branch, problem) = IntegrateBranch(workspace);
+        if (branch is null) throw new RpcException("integration_failed", problem ?? "The workspace cannot be integrated.");
+        var into = intoBranch ?? ProjectBranchOf(workspace) ?? "master";
+        var root = workspace.Path;
+
+        // The worker must be done: a running chat in the workspace, or a command still running in it, would change the
+        // branch under the merge and the verify.
+        var rt = ctx.Services.Get<IAgentRuntime>();
+        foreach (var sid in SessionsUsing(workspace.Id))
+            if (rt?.GetBySession(sid) is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })
+                throw new RpcException("workspace_busy", $"{workspace.Name} is still being worked in (session {sid} is running): integrate it when the worker is idle.");
+        if (busyDir?.Invoke(root) == true)
+            throw new RpcException("workspace_busy", $"A command is still running in {root}: integrate when it has finished.");
+        var (statusCode, status) = await git.ExecAsync(root, ct, "status", "--porcelain", "--untracked-files=no").ConfigureAwait(false);
+        if (statusCode != 0) throw new RpcException("integration_failed", $"git status failed in {root}: {status.Trim()}");
+        if (status.Trim().Length > 0)
+            throw new RpcException("integration_failed", $"{workspace.Name} has uncommitted changes, which would not be integrated: " +
+                string.Join(", ", status.Split('\n', StringSplitOptions.RemoveEmptyEntries).Take(5).Select(l => l.Trim())) + ". Commit or discard them first.");
+
+        string? baseMerge = null;
+        if (baseFirst)
+        {
+            var (code, output) = await git.ExecAsync(root, ct, "merge", "--no-edit", into).ConfigureAwait(false);
+            if (code != 0)
+            {
+                await git.ExecAsync(root, ct, "merge", "--abort").ConfigureAwait(false);
+                return new GatedOutcome(branch, into, null, null, false,
+                    $"Merging {into} into {branch} conflicts: {output.Trim()} Nothing was integrated; the worker (or you) resolves it in {root}.");
+            }
+            baseMerge = output.Contains("Already up to date", StringComparison.OrdinalIgnoreCase) ? "up to date" : "merged";
+        }
+
+        VerifyRunner.Outcome? verified = null;
+        if (!string.IsNullOrWhiteSpace(verify))
+        {
+            verified = await VerifyRunner.RunAsync(verify, root, verifyShell, verifyTimeout, ct).ConfigureAwait(false);
+            if (!verified.Passed)
+                return new GatedOutcome(branch, into, baseMerge, verified, false,
+                    verified.StartError ?? (verified.TimedOut
+                        ? $"The verify command did not finish in {(int)verifyTimeout.TotalSeconds}s and was stopped. Nothing was integrated."
+                        : $"The verify command failed (exit {verified.ExitCode}). Nothing was integrated."));
+        }
+
+        var (ok, error) = await IntegrateAsync(workspace, into, ct, ffOnly: baseFirst).ConfigureAwait(false);
+        if (!ok) return new GatedOutcome(branch, into, baseMerge, verified, false, error);
+        return new GatedOutcome(branch, into, baseMerge, verified, IsAncestor(root, branch, into), null);
     }
 
     /// <summary>Whether <paramref name="commit"/> is an ancestor of <paramref name="ref"/>: the ancestry check after a merge.</summary>

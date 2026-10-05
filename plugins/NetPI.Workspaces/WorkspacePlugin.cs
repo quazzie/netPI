@@ -179,13 +179,30 @@ public sealed class WorkspacePlugin : INetPiPlugin
             var (branch, problem) = provisioner.IntegrateBranch(workspace);
             if (branch is null) throw new RpcException("integration_failed", problem ?? "The workspace cannot be integrated.");
             var into = req.Str("into");
+            var baseFirst = req.Bool("baseFirst") ?? false;
+            var verify = req.Str("verify");
+            if (baseFirst || !string.IsNullOrWhiteSpace(verify))
+            {
+                var seconds = Math.Clamp(req.Int("verifyTimeoutSeconds") ?? VerifyRunner.DefaultTimeoutSeconds, 1, VerifyRunner.MaxTimeoutSeconds);
+                var o = await provisioner.IntegrateGatedAsync(workspace, into, baseFirst, verify, req.Str("verifyShell"),
+                    TimeSpan.FromSeconds(seconds), busy, ct).ConfigureAwait(false);
+                return new
+                {
+                    id, branch = o.Branch, into = o.Into, baseMerge = o.BaseMerge,
+                    verify = o.Verify is { } v ? new { shell = v.Shell, exitCode = v.ExitCode, timedOut = v.TimedOut, durationMs = v.DurationMs, passed = v.Passed, tail = v.Tail, error = v.StartError } : null,
+                    merged = o.Merged, verified = o.Merged, reason = o.Reason,
+                };
+            }
             var (ok, error) = await provisioner.IntegrateAsync(workspace, into, ct).ConfigureAwait(false);
             if (!ok) throw new RpcException("integration_failed", error!);
             // Ancestry, not "the command said OK": the commit has to be an ancestor of the integration branch afterwards.
             var merged = provisioner.IsAncestor(workspace.Path, branch, into ?? provisioner.ProjectBranchOf(workspace) ?? "master");
             return new { id, branch, merged, verified = merged };
         }, "Merge a workspace's branch into the project's branch, serialized per repository: { id, into? } → { id, branch, merged, verified } " +
-           "(the worktree's actual branch, refused when the record has gone stale; merged/verified from an ancestry check after the merge)");
+           "(the worktree's actual branch, refused when the record has gone stale; merged/verified from an ancestry check after the merge). " +
+           "Gated: { id, into?, baseFirst?, verify?, verifyShell? (pwsh|cmd|sh), verifyTimeoutSeconds? (900) } refuses while the worker runs or has " +
+           "uncommitted work, merges the base into the branch in its worktree, runs verify there, and only then fast-forwards the base → " +
+           "{ id, branch, into, baseMerge, verify: { exitCode, timedOut, passed, tail, … }, merged, verified, reason } (a failed verify is an answer with merged false, not an error)");
 
         ctx.Rpc.Register("workspaces.canRetire", (req, _) =>
         {
