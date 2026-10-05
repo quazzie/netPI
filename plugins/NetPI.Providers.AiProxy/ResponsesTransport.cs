@@ -227,7 +227,10 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
 
     public void Handle(SseEvent sse)
     {
-        if (sse.IsDone) { if (asm.HasContent || _items.Count > 0) Finished = true; return; }
+        // OpenAI's [DONE] sentinel says nothing about how the response ended and carries no usage: without the
+        // terminal event (response.completed / incomplete / failed) the stream was cut, and Finish reports it so.
+        // It used to pass as a clean completion once anything had streamed, with no usage recorded (D3).
+        if (sse.IsDone) return;
         JsonDocument doc;
         // A frame that does not parse is counted, not swallowed: the terminal event and the usage live in the last
         // frames, so dropping one silently ends the call looking clean (idea-saljbd).

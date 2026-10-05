@@ -249,6 +249,15 @@ internal sealed class MockServer : IAsyncDisposable
                     D(new { type = "response.incomplete", response = new { status = "incomplete", incomplete_details = new { reason = "max_output_tokens" }, usage = new { input_tokens = 10, output_tokens = 5 } } }),
                 ]);
                 return;
+            case "done-sentinel":
+                // Deltas, then OpenAI's [DONE] sentinel and nothing else: no terminal event, no usage.
+                await Sse(ctx,
+                [
+                    D(new { type = "response.output_item.added", output_index = 0, item = new { id = "msg_1", type = "message", role = "assistant", content = Array.Empty<object>() } }),
+                    D(new { type = "response.output_text.delta", item_id = "msg_1", output_index = 0, content_index = 0, delta = "Half an ans" }),
+                    "data: [DONE]\n\n",
+                ]);
+                return;
             case "done-only":
                 await Sse(ctx,
                 [

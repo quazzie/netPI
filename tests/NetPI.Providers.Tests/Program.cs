@@ -14,6 +14,7 @@ using OR = openrouter::NetPI.Providers.OpenRouter;
 // another assembly, which needs that assembly's copy.
 using Kit = aiproxy::NetPI.Providers.Kit;
 using OrKit = openrouter::NetPI.Providers.Kit;
+using AnKit = anthropic::NetPI.Providers.Kit;
 
 Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
 Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null);
@@ -819,6 +820,59 @@ await t.Run("responses: only response.completed with output list; generated call
     t.Eq("tool_use", msg.StopReason, "stop");
 });
 
+// A Responses stream that ends in OpenAI's [DONE] sentinel with no terminal event (response.completed, .incomplete,
+// .failed) is a cut stream: nothing said how it ended and no usage arrived. It used to pass as a clean completion
+// once anything had streamed, so the ledger recorded no usage and the retry plugin saw nothing to retry (D3).
+await t.Run("responses: [DONE] without a terminal event is a truncated stream, not a completion", async () =>
+{
+    var e = await Fails(aiproxy, Req(M("aiproxy", "done-sentinel")));
+    t.Check(e is { Transient: true, ErrorType: "stream_truncated" }, "truncated, and retried as a lost connection: " + e?.Message);
+
+    var p = new AP.ResponsesStreamParser(new Kit.MessageAssembler(), "P");
+    p.Handle(new Kit.SseEvent(null, """{"type":"response.output_text.delta","item_id":"m","output_index":0,"delta":"partial"}"""));
+    p.Handle(new Kit.SseEvent(null, "[DONE]"));
+    t.Check(!p.Finished, "the sentinel alone finishes nothing");
+    ModelException? err = null;
+    try { p.Finish(); } catch (ModelException ex) { err = ex; }
+    t.Check(err is { ErrorType: "stream_truncated" }, "Finish reports the truncation");
+    var done = new AP.ResponsesStreamParser(new Kit.MessageAssembler(), "P");
+    done.Handle(new Kit.SseEvent(null, """{"type":"response.completed","response":{"status":"completed"}}"""));
+    done.Handle(new Kit.SseEvent(null, "[DONE]"));
+    done.Finish();
+    t.Check(done.Finished, "after the terminal event the sentinel is what it always was: ignored");
+});
+
+// Paths the mocks never produce, pinned to what the parser does today (D8).
+await t.Run("responses parser: refusal deltas are the message text; an error event with a numeric code carries the status", () =>
+{
+    static Kit.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
+    var asm = new Kit.MessageAssembler();
+    var p = new AP.ResponsesStreamParser(asm, "P");
+    p.Handle(Ev(new { type = "response.output_item.added", output_index = 0, item = new { id = "msg_1", type = "message", content = Array.Empty<object>() } }));
+    p.Handle(Ev(new { type = "response.refusal.delta", item_id = "msg_1", output_index = 0, content_index = 0, delta = "I can't " }));
+    p.Handle(Ev(new { type = "response.refusal.delta", item_id = "msg_1", output_index = 0, content_index = 0, delta = "help with that." }));
+    p.Handle(Ev(new { type = "response.refusal.done", item_id = "msg_1", output_index = 0, content_index = 0, refusal = "I can't help with that." }));
+    p.Handle(Ev(new { type = "response.output_item.done", output_index = 0, item = new { id = "msg_1", type = "message", content = new[] { new { type = "refusal", refusal = "I can't help with that." } } } }));
+    p.Handle(Ev(new { type = "response.completed", response = new { status = "completed", usage = new { input_tokens = 4, output_tokens = 6 } } }));
+    p.Finish();
+    var msg = asm.Build("aiproxy", "m", null, 0);
+    t.Eq("I can't help with that.", msg.Text, "the refusal is the text, once");
+    t.Eq("stop", msg.StopReason, "and the stop reason is a plain stop (nothing marks a refusal today)");
+
+    static ModelException? Err(object frame)
+    {
+        try { new AP.ResponsesStreamParser(new Kit.MessageAssembler(), "P").Handle(Ev(frame)); return null; }
+        catch (ModelException ex) { return ex; }
+    }
+    var nested = Err(new { type = "error", error = new { code = 503, type = "server_error", message = "backend restarting" } });
+    t.Check(nested is { StatusCode: 503, ErrorType: "server_error", Transient: true } && nested.Message.Contains("backend restarting"), "a numeric code is the status, the type the kind: " + nested?.Message);
+    var flat = Err(new { type = "error", code = 500, message = "boom" });
+    t.Check(flat is { StatusCode: 500, ErrorType: null, Transient: true }, "a flat frame with the generic type: the status from the code, no kind: " + flat?.Message);
+    var named = Err(new { type = "error", error = new { code = "rate_limit_exceeded", message = "slow down" } });
+    t.Check(named is { StatusCode: null, ErrorType: "rate_limit_exceeded", Transient: true }, "a string code is the kind");
+    return Task.CompletedTask;
+});
+
 await t.Run("responses: incomplete (max_output_tokens) -> stop reason length", async () =>
 {
     var msg = ((StreamCompleted)(await Collect(aiproxy, Req(M("aiproxy", "incomplete"))))[^1]).Message;
@@ -1158,8 +1212,8 @@ await t.Run("anthropic: models list merged with capability table; fallback list 
     try
     {
         var fb = await anthropic.ListModelsAsync(false, CancellationToken.None);
-        t.Check(fb.Count == AN.ClaudeCapabilities.FallbackModels.Length && fb.Any(m => m.Id == "claude-sonnet-4-5"), "static fallback list");
-        t.Eq("Claude Opus 4.6", fb[0].DisplayName, "prettified display name");
+        t.Check(fb.Count == AN.ClaudeCapabilities.FallbackModels.Length && fb.Any(m => m.Id == "claude-sonnet-5-5"), "static fallback list names the current ids");
+        t.Eq("Claude Opus 5.5", fb[0].DisplayName, "prettified display name");
     }
     finally { anCtx.SettingsImpl.Set("providers.anthropic.apiKey", "test-key"); }
 });
@@ -1279,6 +1333,166 @@ await t.Run("anthropic: thinking modes (foreign assistant turn, adaptive, off, m
     t.Check(!b.ToJsonString().Contains("cache_control"), "promptCaching=false");
     anCtx.SettingsImpl.Set("providers.anthropic.thinking", null);
     anCtx.SettingsImpl.Set("providers.anthropic.promptCaching", null);
+});
+
+// Which thinking configuration a Claude takes is a property of its generation (the API reference, 2026): budget_tokens
+// up to 4.5, adaptive from 4.6, and from 4.7 on budget_tokens is refused with HTTP 400. The default used to be budget
+// for every id, so a newer model got a request it rejects (D1).
+await t.Run("anthropic: auto thinking follows the generation (budget to 4.5, adaptive from 4.6, xhigh and never budget_tokens on newer ids)", () =>
+{
+    var auto = AN.AnthropicOptions.Parse(new JsonObject());
+    t.Eq(AN.ThinkingMode.Auto, auto.Thinking, "the default mode");
+    static ModelInfo Model(string id) => AN.ClaudeCapabilities.ToModelInfo("anthropic", id, null);
+
+    var plan45 = AN.AnthropicRequest.PlanThinking(Req(Model("claude-sonnet-4-5"), effort: "high"), auto);
+    t.Check(plan45.Thinking?["type"]?.GetValue<string>() == "enabled" && plan45.Thinking?["budget_tokens"]?.GetValue<int>() == 16384, "4.5: budget_tokens from the effort");
+    t.Check(plan45.OutputConfig is null, "4.5: no output_config");
+    t.Eq("none,low,medium,high,max", string.Join(",", Model("claude-sonnet-4-5").Reasoning!.Efforts), "4.5 efforts: no xhigh");
+
+    var plan46 = AN.AnthropicRequest.PlanThinking(Req(Model("claude-opus-4-6"), effort: "high"), auto);
+    t.Check(plan46.Thinking?["type"]?.GetValue<string>() == "adaptive" && plan46.Thinking?["budget_tokens"] is null, "4.6: adaptive, no budget_tokens");
+    t.Eq("high", plan46.OutputConfig?["effort"]?.GetValue<string>(), "4.6: the effort in output_config");
+    t.Eq("none,low,medium,high,max", string.Join(",", Model("claude-sonnet-4-6").Reasoning!.Efforts), "4.6 efforts: no xhigh");
+    t.Eq("high", AN.AnthropicRequest.PlanThinking(Req(Model("claude-opus-4-6"), effort: "xhigh"), auto).OutputConfig?["effort"]?.GetValue<string>(), "4.6 asked for xhigh: high, the step it has");
+
+    var newer = Model("claude-opus-5-5");
+    t.Eq("none,low,medium,high,xhigh,max", string.Join(",", newer.Reasoning!.Efforts), "5.5 (unknown to the table): xhigh offered");
+    var plan55 = AN.AnthropicRequest.PlanThinking(Req(newer, effort: "xhigh"), auto);
+    t.Check(plan55.Thinking?["type"]?.GetValue<string>() == "adaptive" && plan55.Thinking?["budget_tokens"] is null, "5.5: adaptive, never budget_tokens");
+    t.Eq("xhigh", plan55.OutputConfig?["effort"]?.GetValue<string>(), "5.5: xhigh goes through");
+
+    var budget = AN.AnthropicOptions.Parse(new JsonObject { ["thinking"] = "budget" });
+    var forced = AN.AnthropicRequest.PlanThinking(Req(newer, effort: "high"), budget);
+    t.Check(forced.Thinking?["type"]?.GetValue<string>() == "enabled" && forced.Thinking?["budget_tokens"]?.GetValue<int>() == 16384, "the explicit budget override goes out as asked, on a 5.5 id too");
+    var off = AN.AnthropicOptions.Parse(new JsonObject { ["thinking"] = "off" });
+    t.Check(AN.AnthropicRequest.PlanThinking(Req(newer, effort: "high"), off).Thinking is null, "off: nothing");
+    t.Check(AN.AnthropicRequest.PlanThinking(Req(newer, effort: "none"), auto).Thinking is null, "effort none: thinking omitted, never type disabled");
+    return Task.CompletedTask;
+});
+
+// thinking.display was never sent: from 4.7 on the API omits the thinking text by default, so the UI's thinking rows
+// stayed blank, and an empty block got no duration either (D2).
+await t.Run("anthropic: thinking.display goes out with adaptive thinking only; an empty thinking block still has a duration", async () =>
+{
+    var opus = AN.ClaudeCapabilities.ToModelInfo("anthropic", "claude-opus-5-5", null);
+    await Collect(anthropic, Req(opus, effort: "xhigh"));
+    var b = mock.Last("/v1/messages").Json;
+    t.Eq("adaptive", b["thinking"]?["type"]?.GetValue<string>(), "auto on a 5.5 id: adaptive");
+    t.Eq("summarized", b["thinking"]?["display"]?.GetValue<string>(), "display summarized by default");
+    t.Check(b["thinking"]?["budget_tokens"] is null, "no budget_tokens");
+    t.Eq("xhigh", b["output_config"]?["effort"]?.GetValue<string>(), "xhigh through output_config");
+
+    anCtx.SettingsImpl.Set("providers.anthropic.thinkingDisplay", "omitted");
+    try
+    {
+        await Collect(anthropic, Req(opus, effort: "high"));
+        t.Eq("omitted", mock.Last("/v1/messages").Json["thinking"]?["display"]?.GetValue<string>(), "thinkingDisplay: omitted");
+        await Collect(anthropic, Req(sonnet, effort: "high"));
+        b = mock.Last("/v1/messages").Json;
+        t.Check(b["thinking"]?["type"]?.GetValue<string>() == "enabled" && b["thinking"]?["display"] is null, "a budget request carries no display");
+    }
+    finally { anCtx.SettingsImpl.Set("providers.anthropic.thinkingDisplay", null); }
+
+    static AnKit.SseEvent Ev(string evt, object o) => new(evt, System.Text.Json.JsonSerializer.Serialize(o));
+    var asm = new AnKit.MessageAssembler();
+    var p = new AN.AnthropicStreamParser(asm, "Anthropic");
+    p.Handle(Ev("message_start", new { type = "message_start", message = new { id = "m", usage = new { input_tokens = 3, output_tokens = 1 } } }));
+    p.Handle(Ev("content_block_start", new { type = "content_block_start", index = 0, content_block = new { type = "thinking", thinking = "", signature = "" } }));
+    await Task.Delay(40);
+    p.Handle(Ev("content_block_delta", new { type = "content_block_delta", index = 0, delta = new { type = "signature_delta", signature = "SIG" } }));
+    p.Handle(Ev("content_block_stop", new { type = "content_block_stop", index = 0 }));
+    p.Handle(Ev("content_block_start", new { type = "content_block_start", index = 1, content_block = new { type = "text", text = "" } }));
+    p.Handle(Ev("content_block_delta", new { type = "content_block_delta", index = 1, delta = new { type = "text_delta", text = "Done." } }));
+    p.Handle(Ev("content_block_stop", new { type = "content_block_stop", index = 1 }));
+    p.Handle(Ev("message_delta", new { type = "message_delta", delta = new { stop_reason = "end_turn" }, usage = new { output_tokens = 9 } }));
+    p.Handle(Ev("message_stop", new { type = "message_stop" }));
+    p.Finish();
+    var th = asm.Build("anthropic", "claude-opus-5-5", null, 0).Parts.OfType<ThinkingPart>().Single();
+    t.Check(th.Text == "" && th.Signature == "SIG", "the empty block is kept with its signature (it is replayed)");
+    t.Check(th.DurationMs is >= 15, $"and it has a duration: {th.DurationMs} ms");
+});
+
+// The rule "a final assistant message must start with a thinking block (preceeding the lastmost set of tool_use and
+// tool_result blocks)" is budget thinking's; adaptive thinking takes an assistant turn without one. The fallback that
+// switched thinking off used to apply to both modes, and read the last assistant turn alone (D4).
+await t.Run("anthropic: the no-thinking-block fallback is budget mode's and reads the whole trailing tool loop", async () =>
+{
+    static ChatMessage Turn(string provider, bool thinking, string callId)
+    {
+        var parts = new List<MessagePart>();
+        if (thinking) parts.Add(new ThinkingPart { Text = "think " + callId, Signature = "S_" + callId });
+        parts.Add(new ToolCallPart { Id = callId, Name = "read", Arguments = "{}" });
+        return new ChatMessage { Role = MessageRole.Assistant, Provider = provider, Parts = parts };
+    }
+    static ChatMessage Result(string callId) => new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = callId, Name = "read", Content = "ok" }] };
+
+    // a foreign turn, then our own thinking turn: the loop still holds a turn without a thinking block
+    var mixed = new List<ChatMessage> { ChatMessage.UserText("go"), Turn("aiproxy", false, "c1"), Result("c1"), Turn("anthropic", true, "c2"), Result("c2") };
+    await Collect(anthropic, Req(sonnet, mixed, effort: "high"));
+    t.Check(mock.Last("/v1/messages").Json["thinking"] is null, "budget (4.5): a foreign turn earlier in the loop switches thinking off, not only a last one");
+
+    var opus46 = AN.ClaudeCapabilities.ToModelInfo("anthropic", "claude-opus-4-6", null);
+    await Collect(anthropic, Req(opus46, mixed, effort: "high"));
+    t.Eq("adaptive", mock.Last("/v1/messages").Json["thinking"]?["type"]?.GetValue<string>(), "adaptive (4.6, auto): the turn without a thinking block goes as it is, thinking stays on");
+
+    // the loop starts at the last user turn without tool results: a thinking-less turn before it is history
+    var earlier = new List<ChatMessage>
+    {
+        ChatMessage.UserText("first"), Turn("aiproxy", false, "c0"), Result("c0"),
+        new() { Role = MessageRole.Assistant, Provider = "aiproxy", Parts = [new TextPart { Text = "done" }] },
+        ChatMessage.UserText("go"), Turn("anthropic", true, "c1"), Result("c1"),
+    };
+    await Collect(anthropic, Req(sonnet, earlier, effort: "high"));
+    t.Eq("enabled", mock.Last("/v1/messages").Json["thinking"]?["type"]?.GetValue<string>(), "budget: a thinking-less turn before the loop does not switch thinking off");
+});
+
+// Paths neither mock produces, pinned to what the parser does today (D8).
+await t.Run("anthropic parser: input in content_block_start, a signature in the start block, refusal and pause_turn stops, the error frame", () =>
+{
+    static AnKit.SseEvent Ev(string evt, object o) => new(evt, System.Text.Json.JsonSerializer.Serialize(o));
+    static ChatMessage Run(string stop, Action<AN.AnthropicStreamParser>? blocks = null)
+    {
+        var asm = new AnKit.MessageAssembler();
+        var p = new AN.AnthropicStreamParser(asm, "Anthropic");
+        p.Handle(Ev("message_start", new { type = "message_start", message = new { id = "m", usage = new { input_tokens = 3, output_tokens = 1 } } }));
+        blocks?.Invoke(p);
+        p.Handle(Ev("message_delta", new { type = "message_delta", delta = new { stop_reason = stop }, usage = new { output_tokens = 9 } }));
+        p.Handle(Ev("message_stop", new { type = "message_stop" }));
+        p.Finish();
+        return asm.Build("anthropic", "m", null, 0);
+    }
+
+    var prefilled = Run("tool_use", p =>
+    {
+        p.Handle(Ev("content_block_start", new { type = "content_block_start", index = 0, content_block = new { type = "tool_use", id = "toolu_9", name = "read", input = new { path = "x.txt" } } }));
+        p.Handle(Ev("content_block_stop", new { type = "content_block_stop", index = 0 }));
+    });
+    t.Eq("""{"path":"x.txt"}""", prefilled.ToolCalls.Single().Arguments, "a non-empty input in content_block_start is the call's arguments when no delta follows");
+    var both = Run("tool_use", p =>
+    {
+        p.Handle(Ev("content_block_start", new { type = "content_block_start", index = 0, content_block = new { type = "tool_use", id = "toolu_9", name = "read", input = new { path = "x.txt" } } }));
+        p.Handle(Ev("content_block_delta", new { type = "content_block_delta", index = 0, delta = new { type = "input_json_delta", partial_json = "{\"path\":\"y\"}" } }));
+        p.Handle(Ev("content_block_stop", new { type = "content_block_stop", index = 0 }));
+    });
+    t.Eq("""{"path":"y"}""", both.ToolCalls.Single().Arguments, "streamed deltas win over the start block's input");
+
+    var signed = Run("end_turn", p =>
+    {
+        p.Handle(Ev("content_block_start", new { type = "content_block_start", index = 0, content_block = new { type = "thinking", thinking = "all at once", signature = "SIG0" } }));
+        p.Handle(Ev("content_block_stop", new { type = "content_block_stop", index = 0 }));
+    });
+    var th = signed.Parts.OfType<ThinkingPart>().Single();
+    t.Check(th.Text == "all at once" && th.Signature == "SIG0", "thinking and signature from the start block");
+
+    t.Eq("content_filter", Run("refusal").StopReason, "refusal -> content_filter");
+    t.Eq("pause_turn", Run("pause_turn").StopReason, "pause_turn passes through as it is");
+
+    var p2 = new AN.AnthropicStreamParser(new AnKit.MessageAssembler(), "Anthropic");
+    ModelException? err = null;
+    try { p2.Handle(Ev("error", new { type = "error", request_id = "req_e", error = new { type = "overloaded_error", message = "Overloaded" } })); }
+    catch (ModelException ex) { err = ex; }
+    t.Check(err is { Transient: true, ErrorType: "overloaded_error" } && p2.RequestId == "req_e", "the error frame: typed, transient, with its request id");
+    return Task.CompletedTask;
 });
 
 // A caller that names its own max_tokens (the budget ledger reserves exactly that, and a compaction summary counts

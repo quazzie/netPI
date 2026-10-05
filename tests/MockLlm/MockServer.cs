@@ -638,8 +638,10 @@ public sealed class MockLlmServer : IAsyncDisposable
         await Send("ping", new JsonObject()).ConfigureAwait(false);
         var index = 0;
 
-        // With thinking enabled the real API always starts with a thinking block.
+        // With thinking enabled the real API always starts with a thinking block; with display omitted (adaptive, the
+        // default from 4.7 on) the block arrives with no text, and its signature signs that empty text.
         var thinking = req.ThinkingEnabled ? plan.Thinking ?? "Considering the next step." : null;
+        if (thinking is not null && req.ThinkingDisplay == "omitted") thinking = "";
         if (thinking is not null)
         {
             await Send("content_block_start", new JsonObject
@@ -698,7 +700,12 @@ public sealed class MockLlmServer : IAsyncDisposable
         await Send("message_delta", new JsonObject
         {
             ["delta"] = new JsonObject { ["stop_reason"] = stop, ["stop_sequence"] = null },
-            ["usage"] = new JsonObject { ["output_tokens"] = usage.Output },
+            // The real API repeats the whole usage here, cumulative: input split as in message_start, output so far.
+            ["usage"] = new JsonObject
+            {
+                ["input_tokens"] = usage.Input - usage.Cached, ["cache_creation_input_tokens"] = 0, ["cache_read_input_tokens"] = usage.Cached,
+                ["output_tokens"] = usage.Output,
+            },
         }).ConfigureAwait(false);
         await Send("message_stop", new JsonObject()).ConfigureAwait(false);
         return true;

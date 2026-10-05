@@ -56,6 +56,8 @@ public sealed class NRequest
     public int? MaxTokens { get; set; }
     public bool ThinkingEnabled { get; set; }
     public int? ThinkingBudget { get; set; }
+    /// <summary>Adaptive thinking: "summarized" (readable thinking) or "omitted" (empty thinking blocks).</summary>
+    public string? ThinkingDisplay { get; set; }
     public double? Temperature { get; set; }
     public bool Stream { get; set; } = true;
     public int CacheControlBlocks { get; set; }
@@ -100,6 +102,18 @@ public static class RequestParser
 {
     public static string Sig(string thinking) =>
         "mocksig_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(thinking)))[..20].ToLowerInvariant();
+
+    /// <summary>Claude 3.7 to 4.6 take <c>thinking: {type: enabled, budget_tokens}</c>; from 4.7 on the real API refuses it (400).</summary>
+    public static bool AcceptsBudget(string model)
+    {
+        var m = model.ToLowerInvariant();
+        if (m.StartsWith("claude-opus-4-7", StringComparison.Ordinal) || m.StartsWith("claude-opus-4-8", StringComparison.Ordinal)) return false;
+        return m.StartsWith("claude-3-7-", StringComparison.Ordinal) || m.StartsWith("claude-sonnet-4-", StringComparison.Ordinal)
+            || m.StartsWith("claude-opus-4-", StringComparison.Ordinal) || m.StartsWith("claude-haiku-4-5", StringComparison.Ordinal);
+    }
+
+    /// <summary>thinking.display defaults to summarized on 4.6 and older, omitted from 4.7 on.</summary>
+    public static bool DefaultsToSummarized(string model) => AcceptsBudget(model);
 
     private static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
@@ -319,6 +333,8 @@ public static class RequestParser
             var type = Str(th["type"]);
             if (type == "enabled")
             {
+                if (!AcceptsBudget(r.Model))
+                    throw new MockApiException(400, "invalid_request_error", $"thinking: `budget_tokens` is not supported on {r.Model}. Use `thinking: {{\"type\": \"adaptive\"}}` with `output_config.effort`.");
                 r.ThinkingEnabled = true;
                 r.ThinkingBudget = Int(th["budget_tokens"]);
                 if (r.ThinkingBudget is null or < 1024)
@@ -326,7 +342,11 @@ public static class RequestParser
                 if (r.MaxTokens <= r.ThinkingBudget)
                     throw new MockApiException(400, "invalid_request_error", "`max_tokens` must be greater than `thinking.budget_tokens`.");
             }
-            else if (type == "adaptive") r.ThinkingEnabled = true;
+            else if (type == "adaptive")
+            {
+                r.ThinkingEnabled = true;
+                r.ThinkingDisplay = Str(th["display"]) ?? (DefaultsToSummarized(r.Model) ? "summarized" : "omitted");
+            }
             if (r.ThinkingEnabled && r.Temperature is { } t && t != 1)
                 throw new MockApiException(400, "invalid_request_error", "`temperature` may only be set to 1 when thinking is enabled.");
             r.Effort = Str(body["output_config"]?["effort"]) ?? (r.ThinkingBudget is { } b ? $"budget:{b}" : type);
@@ -457,8 +477,9 @@ public static class RequestParser
         if (cache > 4) throw new MockApiException(400, "invalid_request_error", $"A maximum of 4 blocks with cache_control may be provided. Found {cache}.");
         r.CacheControlBlocks = cache;
 
-        // With thinking on, a final assistant turn that is continued with tool results must start with a thinking block.
-        if (r.ThinkingEnabled && msgs.Count >= 2 && msgs[^1] is JsonObject lastUser && msgs[^2] is JsonObject lastAsst
+        // With budget thinking on, a final assistant turn that is continued with tool results must start with a thinking
+        // block. Adaptive thinking takes an assistant turn without one (the API reference, 2026).
+        if (r.ThinkingBudget is not null && msgs.Count >= 2 && msgs[^1] is JsonObject lastUser && msgs[^2] is JsonObject lastAsst
             && Str(lastAsst["role"]) == "assistant" && lastUser["content"] is JsonArray lc && lc.OfType<JsonObject>().Any(b => Str(b["type"]) == "tool_result")
             && lastAsst["content"] is JsonArray ac && ac.Count > 0 && Str(ac[0]?["type"]) is not ("thinking" or "redacted_thinking"))
         {

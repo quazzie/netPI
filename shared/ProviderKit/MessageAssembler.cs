@@ -16,6 +16,8 @@ internal sealed class MessageAssembler
         public StringBuilder Text { get; } = new();
         public long Started { get; } = Stopwatch.GetTimestamp();
         public long LastDelta { get; set; } = Stopwatch.GetTimestamp();
+        /// <summary>When the part ended: the parser said so, or the next part began. Null while it is the open one.</summary>
+        public long? Ended { get; set; }
     }
 
     private readonly List<Slot> _slots = [];
@@ -42,6 +44,7 @@ internal sealed class MessageAssembler
 
     private Slot Add(MessagePart part)
     {
+        if (Last is { Ended: null } open) open.Ended = Stopwatch.GetTimestamp();
         var s = new Slot(part);
         _slots.Add(s);
         _byPart[part] = s;
@@ -69,6 +72,12 @@ internal sealed class MessageAssembler
         s.Text.Append(text);
         s.LastDelta = Stopwatch.GetTimestamp();
         _pending.Add(new ThinkingDelta(text));
+    }
+
+    /// <summary>The block ended, text or not: a parser with block boundaries says so (the others end it when the next part begins).</summary>
+    public void EndThinking(ThinkingPart part)
+    {
+        if (_byPart.TryGetValue(part, out var s)) s.Ended ??= Stopwatch.GetTimestamp();
     }
 
     // ---------------------------------------------------------------- text
@@ -167,8 +176,11 @@ internal sealed class MessageAssembler
                     th.Text = s.Text.ToString();
                     if (th.Text.Length > 0 || th.Signature is not null || th.Redacted is not null || th.ProviderData is not null)
                     {
-                        if (th.Text.Length > 0)
-                            th.DurationMs = Math.Max(0, (long)Stopwatch.GetElapsedTime(s.Started, s.LastDelta).TotalMilliseconds);
+                        // From the block's start to its end (where the parser said it stopped or the next part
+                        // began), or to its last delta when nothing followed it. A block without text (display
+                        // omitted, redacted) used to get no duration at all, and its row showed nothing.
+                        var ended = s.Ended ?? (th.Text.Length > 0 ? s.LastDelta : Stopwatch.GetTimestamp());
+                        th.DurationMs = Math.Max(0, (long)Stopwatch.GetElapsedTime(s.Started, ended).TotalMilliseconds);
                         parts.Add(th);
                     }
                     break;

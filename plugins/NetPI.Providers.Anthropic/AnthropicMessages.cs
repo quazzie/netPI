@@ -33,15 +33,23 @@ internal static partial class AnthropicRequest
         if (effort is "default" or "auto" or "") effort = req.Model.Reasoning?.Default?.ToLowerInvariant();
         if (!supported || o.Thinking == ThinkingMode.Off || effort is null or "none" or "off") return new(null, null, maxTokens);
 
-        if (o.Thinking == ThinkingMode.Adaptive)
+        // Which configuration the model takes is a property of its generation: budget_tokens up to Claude 4.5,
+        // adaptive from 4.6 (where budget_tokens is deprecated), adaptive alone from 4.7 on (budget_tokens is an
+        // HTTP 400 there). Auto follows the id; an explicit mode is the user's call and goes out as asked.
+        var api = ClaudeCapabilities.ThinkingApiOf(req.Model.Id);
+        var mode = o.Thinking != ThinkingMode.Auto ? o.Thinking : api == ThinkingApi.Budget ? ThinkingMode.Budget : ThinkingMode.Adaptive;
+        if (mode == ThinkingMode.Adaptive)
         {
             JsonObject? outputConfig = null;
             if (o.AdaptiveEffort)
             {
-                var e = effort switch { "minimal" => "low", "xhigh" => "high", _ => effort };
-                if (e is "low" or "medium" or "high" or "max") outputConfig = new JsonObject { ["effort"] = e };
+                // xhigh exists from Opus 4.7 on; a 4.6 asked for it gets the step it has.
+                var e = effort switch { "minimal" => "low", "xhigh" when api != ThinkingApi.AdaptiveXhigh => "high", _ => effort };
+                if (e is "low" or "medium" or "high" or "xhigh" or "max") outputConfig = new JsonObject { ["effort"] = e };
             }
-            return new(new JsonObject { ["type"] = "adaptive" }, outputConfig, maxTokens);
+            // display is omitted by default from 4.7 on (the thinking blocks arrive empty) and summarized on 4.6:
+            // sent explicitly, so the thinking rows show what the user chose on every generation.
+            return new(new JsonObject { ["type"] = "adaptive", ["display"] = o.ThinkingDisplay }, outputConfig, maxTokens);
         }
 
         var key = effort switch { "minimal" => "low", "xhigh" => "high", _ => effort };
@@ -80,9 +88,10 @@ internal static partial class AnthropicRequest
         var messages = BuildMessages(req.Messages, providerId, o.PromptCaching, hasTools: req.Tools.Count > 0);
         var thinking = plan.Thinking;
 
-        // With thinking on, an assistant turn that is continued with tool results must start with a thinking block.
-        // Turns produced by another provider (or with thinking off) have none: disable thinking for this call.
-        if (thinking is not null && LastAssistantLacksThinking(messages)) thinking = null;
+        // Budget thinking refuses a trailing tool loop with an assistant turn that has no thinking block to replay
+        // (one from another provider, or made with thinking off): the call then runs without thinking. Adaptive
+        // thinking takes such a turn as it is, so from 4.6 on nothing is switched off.
+        if (thinking is not null && thinking.Str("type") == "enabled" && ToolLoopLacksThinking(messages)) thinking = null;
 
         var body = new JsonObject
         {
@@ -114,14 +123,31 @@ internal static partial class AnthropicRequest
         return body;
     }
 
-    private static bool LastAssistantLacksThinking(JsonArray messages)
+    /// <summary>
+    /// With thinking enabled (budget_tokens) the API refuses a request whose trailing tool loop has an assistant
+    /// turn without a leading thinking block ("a final assistant message must start with a thinking block,
+    /// preceeding the lastmost set of tool_use and tool_result blocks"). The loop is every assistant turn since the
+    /// last user turn that carries no tool result; what came before it is history, whose thinking the API strips
+    /// itself. It used to read the last assistant turn alone.
+    /// </summary>
+    private static bool ToolLoopLacksThinking(JsonArray messages)
     {
-        if (messages.Count < 2) return false;
-        if (messages[^1] is not JsonObject last || last.Str("role") != "user") return false;
-        if (last["content"] is not JsonArray lc || !lc.OfType<JsonObject>().Any(b => b.Str("type") == "tool_result")) return false;
-        if (messages[^2] is not JsonObject prev || prev.Str("role") != "assistant" || prev["content"] is not JsonArray pc || pc.Count == 0) return false;
-        return pc[0] is JsonObject first && first.Str("type") is not ("thinking" or "redacted_thinking");
+        if (messages.Count < 2 || messages[^1] is not JsonObject last || last.Str("role") != "user" || !HasToolResult(last)) return false;
+        for (var i = messages.Count - 2; i >= 0; i--)
+        {
+            if (messages[i] is not JsonObject m) continue;
+            if (m.Str("role") == "user")
+            {
+                if (!HasToolResult(m)) break; // the user's message that started the loop
+                continue;
+            }
+            if (m["content"] is not JsonArray c || c.Count == 0 || c[0] is not JsonObject first || first.Str("type") is not ("thinking" or "redacted_thinking")) return true;
+        }
+        return false;
     }
+
+    private static bool HasToolResult(JsonObject turn) =>
+        turn["content"] is JsonArray c && c.OfType<JsonObject>().Any(b => b.Str("type") == "tool_result");
 
     /// <summary>
     /// Convert normalized messages to Messages API turns. Without tool definitions the API rejects tool_use/tool_result
@@ -373,8 +399,9 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
             case "content_block_stop":
             {
                 var idx = e.IntOrNull("index") ?? -1;
-                if (_blocks.TryGetValue(idx, out var block) && block.Call is not null && block.InitialInput is not null
-                    && asm.CurrentText(block.Call).Length == 0)
+                if (!_blocks.TryGetValue(idx, out var block)) break;
+                if (block.Thinking is not null) asm.EndThinking(block.Thinking);
+                if (block.Call is not null && block.InitialInput is not null && asm.CurrentText(block.Call).Length == 0)
                     asm.AppendToolArgs(block.Call, block.InitialInput);
                 break;
             }

@@ -2,13 +2,15 @@ using System.Text.Json.Nodes;
 
 namespace NetPI.Providers.Anthropic;
 
-public enum ThinkingMode { Budget, Adaptive, Off }
+/// <summary>auto: by the model's generation (see <see cref="ClaudeCapabilities.ThinkingApiOf"/>); the others as asked.</summary>
+public enum ThinkingMode { Auto, Budget, Adaptive, Off }
 
 /// <summary>
 /// Snapshot of <c>providers.anthropic</c>: apiKey (fallback env ANTHROPIC_API_KEY; "env:NAME"/"$NAME" supported),
-/// baseUrl, thinking (budget|adaptive|off), promptCaching, defaultMaxOutputTokens, enabled, betas [..] (anthropic-beta
-/// header), headers {k:v}, adaptiveEffort (send output_config.effort in adaptive mode), thinkingBudgets {low,medium,high,max},
-/// dumpFailedRequests, fallbackModels [ids] (used when the model list call fails), modelsCacheSeconds.
+/// baseUrl, thinking (auto|budget|adaptive|off), thinkingDisplay (summarized|omitted, adaptive only), promptCaching,
+/// defaultMaxOutputTokens, enabled, betas [..] (anthropic-beta header), headers {k:v}, adaptiveEffort (send
+/// output_config.effort in adaptive mode), thinkingBudgets {low,medium,high,max}, dumpFailedRequests,
+/// fallbackModels [ids] (used when the model list call fails), modelsCacheSeconds.
 /// </summary>
 internal sealed class AnthropicOptions
 {
@@ -16,7 +18,10 @@ internal sealed class AnthropicOptions
 
     public string BaseUrl { get; init; } = DefaultBaseUrl;
     public string? ApiKey { get; init; }
-    public ThinkingMode Thinking { get; init; } = ThinkingMode.Budget;
+    public ThinkingMode Thinking { get; init; } = ThinkingMode.Auto;
+    /// <summary><c>thinking.display</c> with adaptive thinking: "summarized" (readable thinking) or "omitted" (empty
+    /// thinking blocks, the API's own default from Claude 4.7 on).</summary>
+    public string ThinkingDisplay { get; init; } = "summarized";
     public bool PromptCaching { get; init; } = true;
     public int DefaultMaxOutputTokens { get; init; } = 32000;
     public bool DumpFailedRequests { get; init; } = true;
@@ -61,10 +66,12 @@ internal sealed class AnthropicOptions
             ApiKey = SettingsExtensions.ResolveSecret(o.Str("apiKey")) ?? SettingsExtensions.ResolveSecret("env:ANTHROPIC_API_KEY"),
             Thinking = o.Str("thinking")?.Trim().ToLowerInvariant() switch
             {
+                "budget" => ThinkingMode.Budget,
                 "adaptive" => ThinkingMode.Adaptive,
                 "off" or "none" or "disabled" or "false" => ThinkingMode.Off,
-                _ => ThinkingMode.Budget,
+                _ => ThinkingMode.Auto,
             },
+            ThinkingDisplay = o.Str("thinkingDisplay")?.Trim().ToLowerInvariant() == "omitted" ? "omitted" : "summarized",
             PromptCaching = o.Bool("promptCaching", true),
             DefaultMaxOutputTokens = o.Int("defaultMaxOutputTokens") is > 0 and var m ? m : 32000,
             DumpFailedRequests = o.Bool("dumpFailedRequests", true),
@@ -88,6 +95,18 @@ internal sealed class AnthropicOptions
     }
 }
 
+/// <summary>How a Claude generation takes its thinking configuration (the Messages API reference, 2026).</summary>
+internal enum ThinkingApi
+{
+    /// <summary>Claude 3.7 to 4.5: <c>thinking: {type: enabled, budget_tokens}</c>.</summary>
+    Budget,
+    /// <summary>Opus and Sonnet 4.6: adaptive thinking (budget_tokens deprecated but accepted); efforts low to max, no xhigh.</summary>
+    Adaptive,
+    /// <summary>Opus 4.7 and later, Sonnet 5 and later, and every id this table does not know: adaptive thinking only
+    /// (budget_tokens is refused with HTTP 400); the efforts include xhigh.</summary>
+    AdaptiveXhigh,
+}
+
 /// <summary>Static capability table (the models API only returns ids and display names).</summary>
 internal static class ClaudeCapabilities
 {
@@ -96,10 +115,30 @@ internal static class ClaudeCapabilities
     /// <summary>Used when the models endpoint fails but an API key exists (override with fallbackModels).</summary>
     public static readonly string[] FallbackModels =
     [
-        "claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1",
+        "claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5",
     ];
 
+    /// <summary>The efforts of a budget-thinking model and of 4.6 (whose output_config.effort has no xhigh).</summary>
     public static readonly string[] Efforts = ["none", "low", "medium", "high", "max"];
+    /// <summary>The efforts from Opus 4.7 on: xhigh sits between high and max.</summary>
+    public static readonly string[] EffortsXhigh = ["none", "low", "medium", "high", "xhigh", "max"];
+
+    private static readonly string[] BudgetFamilies =
+    [
+        "claude-3-7-sonnet", "claude-sonnet-4-0", "claude-sonnet-4-2025", "claude-opus-4-0", "claude-opus-4-1", "claude-opus-4-2025",
+        "claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5",
+    ];
+
+    /// <summary>Which thinking configuration <paramref name="id"/> takes; an id this table does not know is a newer model.</summary>
+    public static ThinkingApi ThinkingApiOf(string id)
+    {
+        var m = id.ToLowerInvariant();
+        if (BudgetFamilies.Any(f => m.StartsWith(f, StringComparison.Ordinal))) return ThinkingApi.Budget;
+        if (m.StartsWith("claude-opus-4-6", StringComparison.Ordinal) || m.StartsWith("claude-sonnet-4-6", StringComparison.Ordinal)) return ThinkingApi.Adaptive;
+        return ThinkingApi.AdaptiveXhigh;
+    }
+
+    public static string[] EffortsFor(ThinkingApi api) => api == ThinkingApi.AdaptiveXhigh ? EffortsXhigh : Efforts;
 
     public static (int ContextWindow, int MaxOutput, bool Thinking) For(string id)
     {
@@ -125,7 +164,7 @@ internal static class ClaudeCapabilities
             ContextWindow = contextWindow ?? caps.ContextWindow,
             MaxOutputTokens = maxOutput ?? caps.MaxOutput,
             InputModalities = ["text", "image"],
-            Reasoning = caps.Thinking ? new ReasoningInfo { Supported = true, Efforts = [.. Efforts], Default = "medium" } : null,
+            Reasoning = caps.Thinking ? new ReasoningInfo { Supported = true, Efforts = [.. EffortsFor(ThinkingApiOf(id))], Default = "medium" } : null,
             Status = "available",
             IsLocal = false,
         };

@@ -26,7 +26,10 @@ public sealed class AnthropicPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Secret("providers.anthropic.apiKey", "API key", "env:NAME reads another environment variable.", "env ANTHROPIC_API_KEY"),
-                SettingInfo.Choice("providers.anthropic.thinking", "Thinking", "budget", ["budget", "adaptive", "off"], "budget: budget_tokens from the effort; adaptive: the model decides."),
+                SettingInfo.Choice("providers.anthropic.thinking", "Thinking", "auto", ["auto", "budget", "adaptive", "off"],
+                    "auto: by model (budget_tokens up to Claude 4.5, adaptive from 4.6); budget: budget_tokens from the effort; adaptive: the model decides."),
+                SettingInfo.Choice("providers.anthropic.thinkingDisplay", "Thinking text", "summarized", ["summarized", "omitted"],
+                    "With adaptive thinking: summarized shows the model's thinking, omitted leaves it out (the API's own default from Claude 4.7 on)."),
                 SettingInfo.Bool("providers.anthropic.adaptiveEffort", "Send the effort with adaptive thinking", true),
                 SettingInfo.Bool("providers.anthropic.promptCaching", "Prompt caching", true),
                 SettingInfo.Int("providers.anthropic.defaultMaxOutputTokens", "Output limit", 32000, null, 256, null, "tokens"),
