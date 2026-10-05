@@ -47,6 +47,28 @@ public static class NudgeTests
             Check.Contains(d.Text, "Continue exactly where you left off");
         });
 
+        r.Add("nudge: cut off while only thinking → stop deliberating, not continue", async () =>
+        {
+            var (hook, turn, _) = Setup();
+            var d = await After(hook, turn, new ChatMessage { Role = MessageRole.Assistant, Parts = [new ThinkingPart { Text = new string('t', 60_000) }], StopReason = "length" });
+            Check.Contains(d!.Text, "whole output budget thinking");
+            Check.Contains(d.Text, "smallest next step");
+            Check.NotContains(d.Text, "Continue exactly where you left off", "continuing would mean thinking more");
+            Check.Equal(NudgeReason.CutOffThinking, NudgeHook.Classify(new ChatMessage { Role = MessageRole.Assistant, Parts = [new ThinkingPart { Redacted = "x" }], StopReason = "length" }, 0));
+        });
+
+        r.Add("nudge: cut off while writing a tool call as text → make it smaller, it did not run", async () =>
+        {
+            var (hook, turn, _) = Setup();
+            var d = await After(hook, turn, new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "length",
+                Parts = [new ThinkingPart { Text = "write motion.cpp" }, new TextPart { Text = "Now the core: <tool_call> <function=write> <parameter=content> // Motion controllers…" }],
+            });
+            Check.Contains(d!.Text, "NOT executed");
+            Check.Contains(d.Text, "write a large file in parts");
+        });
+
         r.Add("nudge: announced action without a tool call (only after tools were used)", async () =>
         {
             var announce = new[]

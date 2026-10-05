@@ -26,8 +26,13 @@ public sealed class NudgePlugin : INetPiPlugin
     }
 }
 
-/// <summary>Why a response needs a nudge.</summary>
-public enum NudgeReason { CutOff, Empty, EmptyAfterThinking, TextToolCall, AnnouncedAction }
+/// <summary>
+/// Why a response needs a nudge. The cut-offs are told apart because "continue where you left off" is the wrong advice
+/// for two of them: a response that spent the whole output budget thinking continues by thinking more (qwen did that 19
+/// times in two weeks, 50k–118k characters each, one to seven minutes of a GPU slot), and a tool call cut off at the
+/// limit was not run, so it has to be made smaller, not repeated.
+/// </summary>
+public enum NudgeReason { CutOff, CutOffThinking, CutOffInToolCall, Empty, EmptyAfterThinking, TextToolCall, AnnouncedAction }
 
 /// <summary>
 /// After a model call that produced no tool calls, detect a stalled agent and inject a notice (kind <c>nudge</c>)
@@ -71,7 +76,13 @@ public sealed partial class NudgeHook(Func<ISettings?> settings) : IAgentHook
         if (assistant.StopReason is "aborted" or "error") return null;
 
         var text = assistant.Text;
-        if (assistant.StopReason == "length") return NudgeReason.CutOff;
+        if (assistant.StopReason == "length")
+        {
+            if (HasToolMarkup(text)) return NudgeReason.CutOffInToolCall;
+            if (string.IsNullOrWhiteSpace(text) && assistant.Parts.OfType<ThinkingPart>().Any(t => !string.IsNullOrWhiteSpace(t.Text) || t.Redacted is not null))
+                return NudgeReason.CutOffThinking;
+            return NudgeReason.CutOff;
+        }
         if (string.IsNullOrWhiteSpace(text))
             return assistant.Parts.OfType<ThinkingPart>().Any(t => !string.IsNullOrWhiteSpace(t.Text) || t.Redacted is not null)
                 ? NudgeReason.EmptyAfterThinking
@@ -86,6 +97,13 @@ public sealed partial class NudgeHook(Func<ISettings?> settings) : IAgentHook
         NudgeReason.CutOff =>
             "Your previous response was cut off (it hit the output token limit). Continue exactly where you left off; " +
             "if you were about to call a tool, call it now.",
+        NudgeReason.CutOffThinking =>
+            "Your previous response used the whole output budget thinking, without an answer or a tool call, so nothing " +
+            "happened. Stop deliberating: take the smallest next step now (one tool call), or give your answer if you are done.",
+        NudgeReason.CutOffInToolCall =>
+            "Your previous response was cut off at the output token limit while writing a tool call, so the call was NOT " +
+            "executed. Make it smaller rather than repeating it: write a large file in parts (create it with the first part, " +
+            "then add the rest with edit), and call the tool through the native tool-calling interface.",
         NudgeReason.EmptyAfterThinking =>
             "Your previous response ended while you were still thinking, without an answer or a tool call. " +
             "Continue exactly where you left off; if you were about to call a tool, call it now. If the task is complete, give your final answer.",
