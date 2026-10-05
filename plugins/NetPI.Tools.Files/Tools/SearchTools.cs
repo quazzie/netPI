@@ -33,16 +33,16 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
         PromptGuidelines = [UseFileTools],
     };
 
-    protected override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
         var pattern = args.Str("pattern", "regex", "query", "search", "q", "expression");
-        if (string.IsNullOrEmpty(pattern)) return Task.FromResult(MissingArg("pattern", "{\"pattern\": \"TODO\", \"glob\": \"*.cs\"}"));
+        if (string.IsNullOrEmpty(pattern)) return MissingArg("pattern", "{\"pattern\": \"TODO\", \"glob\": \"*.cs\"}");
 
         var globs = new List<string>();
         if (args.List("glob", "globs", "include", "includes", "file_pattern", "filePattern", "files_glob") is { } gl)
             globs.AddRange(gl.Where(g => g.ValueKind == JsonValueKind.String).Select(g => g.GetString()!).Where(g => g.Length > 0));
 
-        var pathArg = args.Str(PathNames.Concat(["dir", "directory", "cwd"]).ToArray());
+        var pathArg = args.Str(ToolPathArgs.PathNames.Concat(["dir", "directory", "cwd"]).ToArray());
         var target = ctx.Cwd;
         if (!string.IsNullOrWhiteSpace(pathArg))
         {
@@ -54,7 +54,7 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
                 target = ctx.ResolvePath(b.Length == 0 ? "." : b);
                 globs.Add(g);
             }
-            if (!File.Exists(target) && !Directory.Exists(target)) return Task.FromResult(NotFound(ctx, target));
+            if (!File.Exists(target) && !Directory.Exists(target)) return NotFound(ctx, target);
         }
 
         var mode = (args.Str("outputMode", "output_mode", "mode", "output") ?? "content").Trim().ToLowerInvariant() switch
@@ -78,7 +78,7 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
             DisplayBase = ctx.Cwd,
         };
 
-        var r = GrepEngine.Run(target, options, ct);
+        var r = await GrepEngine.RunAsync(target, options, ct).ConfigureAwait(false);
         var sb = new StringBuilder();
         foreach (var n in r.Notes.Where(n => n.Contains("literally"))) sb.Append(n).Append('\n');
         if (r.Output.Length == 0)
@@ -98,7 +98,7 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
             sb.Append($"\n\n[Results truncated at {options.MaxResults} {unit}. Narrow the search with path/glob or a more specific pattern, or raise maxResults.]");
         }
 
-        return Task.FromResult(ToolResult.Ok(sb.ToString(), new
+        return ToolResult.Ok(sb.ToString(), new
         {
             pattern,
             path = target,
@@ -107,7 +107,7 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
             files = r.FilesMatched,
             filesSearched = r.FilesSearched,
             truncated = r.Truncated,
-        }));
+        });
     }
 
     private static string Quote(string s) => s.Length > 80 ? $"/{s[..80]}…/" : $"/{s}/";
@@ -141,7 +141,7 @@ public sealed class FindTool(ISettings? settings = null) : FileToolBase(settings
         pattern = pattern.Trim().Replace('\\', '/');
         if (pattern.Length == 0) pattern = "**/*";
         var max = Math.Clamp(args.Int("maxResults", "max_results", "limit", "max") ?? DefaultMax, 1, 20_000);
-        var pathArg = args.Str(PathNames.Concat(["dir", "directory", "cwd"]).ToArray());
+        var pathArg = args.Str(ToolPathArgs.PathNames.Concat(["dir", "directory", "cwd"]).ToArray());
         var root = string.IsNullOrWhiteSpace(pathArg) ? ctx.Cwd : ctx.ResolvePath(pathArg);
 
         // Absolute or prefixed patterns: walk from the literal base directory.
@@ -207,7 +207,7 @@ public sealed class LsTool(ISettings? settings = null) : FileToolBase(settings)
 
     protected override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
-        var pathArg = args.Str(PathNames.Concat(["dir", "directory"]).ToArray());
+        var pathArg = args.Str(ToolPathArgs.PathNames.Concat(["dir", "directory"]).ToArray());
         var dir = string.IsNullOrWhiteSpace(pathArg) ? ctx.Cwd : ctx.ResolvePath(pathArg);
         if (File.Exists(dir))
         {

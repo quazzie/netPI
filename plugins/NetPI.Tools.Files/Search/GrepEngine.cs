@@ -83,7 +83,7 @@ public static class GrepEngine
         }
     }
 
-    public static GrepResult Run(string target, GrepOptions o, CancellationToken ct = default)
+    public static async Task<GrepResult> RunAsync(string target, GrepOptions o, CancellationToken ct = default)
     {
         var regex = BuildRegex(o, out var regexNote);
         var notes = new List<string>();
@@ -117,10 +117,11 @@ public static class GrepEngine
             ct.ThrowIfCancellationRequested();
             var slice = files.GetRange(start, Math.Min(chunk, files.Count - start));
             var chunkResults = new FileResult?[slice.Count];
-            Parallel.For(0, slice.Count, new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = Environment.ProcessorCount }, i =>
+            // Every grep on the machine draws from these shared slots: the work in flight is the size of one search. A
+            // search waiting for a slot awaits it, so k searches at once park no k × cores pool threads on the semaphore.
+            await Parallel.ForEachAsync(Enumerable.Range(0, slice.Count), new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = Environment.ProcessorCount }, async (i, token) =>
             {
-                // Every grep on the machine draws from these shared slots: the work in flight is the size of one search.
-                Work.Wait(ct);
+                await Work.WaitAsync(token).ConfigureAwait(false);
                 var inFlight = Interlocked.Increment(ref _inFlight);
                 if (inFlight > PeakInFlight) PeakInFlight = inFlight;
                 try { chunkResults[i] = SearchFile(slice[i].Full, slice[i].Rel, regex, o, canPrecheck); }
@@ -129,7 +130,7 @@ public static class GrepEngine
                     Interlocked.Decrement(ref _inFlight);
                     Work.Release();
                 }
-            });
+            }).ConfigureAwait(false);
             foreach (var r in chunkResults)
             {
                 if (r is null) continue;

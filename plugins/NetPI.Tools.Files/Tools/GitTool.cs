@@ -80,7 +80,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
     {
         var n = Math.Clamp(args.Int("n", "limit", "count") ?? 20, 1, MaxCommits);
         string? path = null;
-        if (args.Str(PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return Task.FromResult(NotFound(ctx, path)); }
+        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return Task.FromResult(NotFound(ctx, path)); }
         var list = new List<string> { "log", "--no-color", "-n", n.ToString(), "--pretty=format:%h %ad %an %s", "--date=short" };
         if (path is not null) list.AddRange(["--", path]);
         return Run(ctx, "log", ct, list, new { n, path });
@@ -92,7 +92,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
         if (string.IsNullOrWhiteSpace(commit)) return MissingArg("commit", """{"action": "show", "commit": "HEAD"}""");
         if (Ref(commit) is { } bad) return bad;
         string? path = null;
-        if (args.Str(PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
+        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
         var patch = args.Bool("patch", "full") ?? false;
         var list = new List<string> { "show", "--no-color", "--no-ext-diff" };
         if (patch) list.AddRange(["--stat", "--patch"]);
@@ -114,7 +114,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
             if (name == "a") a = value; else b = value;
         }
         string? path = null;
-        if (args.Str(PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
+        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
         var list = new List<string> { "diff", "--no-color", "--no-ext-diff" };
         if (staged) list.Add("--cached");
         if (a is not null) list.Add(a);
@@ -126,7 +126,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
     private async Task<ToolResult> StatusAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
         string? path = null;
-        if (args.Str(PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
+        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
         var list = new List<string> { "status", "--porcelain=v1", "-b" };
         if (path is not null) list.AddRange(["--", path]);
         return await Run(ctx, "status", ct, list, new { path }).ConfigureAwait(false);
@@ -134,7 +134,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
 
     private async Task<ToolResult> BlameAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
-        var p = args.Str(PathNames);
+        var p = args.Str(ToolPathArgs.PathNames);
         if (string.IsNullOrWhiteSpace(p)) return MissingArg("path", """{"action": "blame", "path": "src/Upload.cs"}""");
         var full = ctx.ResolvePath(p);
         if (!File.Exists(full))

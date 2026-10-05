@@ -31,6 +31,7 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
     public static bool Available { get; set; } = true;
 
     public string? CommonDirOf(string path) => Ask(path, CommonDirArgs);
+    public Task<string?> CommonDirOfAsync(string path, CancellationToken ct) => AskAsync(path, ct, CommonDirArgs);
     public string? BranchOf(string path) => Ask(path, "rev-parse", "--abbrev-ref", "HEAD");
     public string? HeadOf(string path) => Ask(path, "rev-parse", "HEAD");
 
@@ -82,7 +83,11 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
         return (r.ExitCode, r.Stdout, r.Stderr);
     }
 
-    private string? Ask(string path, params string[] args)
+    /// <summary>The synchronous question, for the callers whose own contract is synchronous (the resolver, provisioning).
+    /// The hooks and the tools ask <see cref="AskAsync"/>, so they park no thread on git.</summary>
+    private string? Ask(string path, params string[] args) => AskAsync(path, CancellationToken.None, args).GetAwaiter().GetResult();
+
+    private async Task<string?> AskAsync(string path, CancellationToken ct, params string[] args)
     {
         var dir = DirectoryFor(path);
         if (dir is null) return null;    // no existing directory: the answer is "not in a repository", not a failure
@@ -94,7 +99,7 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
         {
             if (Directory.Exists(dir) || File.Exists(dir))
             {
-                var (code, stdout, stderr) = ExecSplitAsync(dir, CancellationToken.None, args).GetAwaiter().GetResult();
+                var (code, stdout, stderr) = await ExecSplitAsync(dir, ct, args).ConfigureAwait(false);
                 if (code == 0) value = stdout.Trim();   // the answer is stdout: a warning git prints on stderr must not become a commit id
                 else if (!NotARepository(dir, code)) RememberProblem(key, stderr + stdout);
             }

@@ -208,6 +208,22 @@ public static class SshTests
             Check.True(Utf8(env.Fake.Calls[^1].Stdin).StartsWith("cd -- \"$HOME\"/'proj' || exit 125; \n"), Utf8(env.Fake.Calls[^1].Stdin));
         });
 
+        r.Add("ssh: saved outputs older than the keep window are removed at start; newer ones and other plugins' files stay", () =>
+        {
+            var dir = T.TempDir("ssh-logs");
+            var old = Path.Combine(dir, "ssh-nuc-20240101-000000-000.log");
+            var fresh = Path.Combine(dir, "ssh-nuc-20990101-000000-000.log");
+            var other = Path.Combine(dir, "bash-proc_1.log");
+            foreach (var f in new[] { old, fresh, other }) File.WriteAllText(f, "x");
+            File.SetLastWriteTimeUtc(old, DateTime.UtcNow - TimeSpan.FromDays(3));
+            File.SetLastWriteTimeUtc(other, DateTime.UtcNow - TimeSpan.FromDays(3));
+            Check.Equal(1, SshRunTool.CleanupLogs(dir, SshRunTool.KeepLogsFor));
+            Check.False(File.Exists(old), "the old log is gone");
+            Check.True(File.Exists(fresh), "a recent log stays");
+            Check.True(File.Exists(other), "another plugin's file is not ours to delete");
+            Check.Equal(0, SshRunTool.CleanupLogs(Path.Combine(dir, "missing"), SshRunTool.KeepLogsFor), "a missing folder is nothing to do");
+        });
+
         r.Add("ssh_run: long output shows the tail and saves the whole output, like bash", async () =>
         {
             var env = new Env();

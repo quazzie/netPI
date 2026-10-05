@@ -9,10 +9,11 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
     /// <summary>What a transport takes; a bigger image is refused here rather than sent and rejected by every later call (idea-begg3v).</summary>
     private const long MaxImageBytes = ModelMessages.MaxImageBytes;
     /// <summary>
-    /// Above this size a file is paged by streaming instead of being read whole. A field, not a constant, so a test can
-    /// put a small file on the streaming path and assert what it does (the production value is what ships).
+    /// Above this size a file is paged by streaming instead of being read whole: every page of a whole-file read loads,
+    /// decodes and splits the file again, so the bound keeps that to a megabyte per page. A field, not a constant, so
+    /// a test can put a small file on the streaming path and assert what it does (the production value is what ships).
     /// </summary>
-    internal static long StreamingThresholdBytes = 32L * 1024 * 1024;
+    internal static long StreamingThresholdBytes = 1L * 1024 * 1024;
 
     public override ToolDefinition Definition { get; } = new()
     {
@@ -36,7 +37,7 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
 
     protected override async Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
-        var path = args.Str(PathNames);
+        var path = args.Str(ToolPathArgs.PathNames);
         if (string.IsNullOrWhiteSpace(path)) return MissingArg("path", "{\"path\": \"src/Program.cs\"}");
         var full = ctx.ResolvePath(path);
         if (Directory.Exists(full))

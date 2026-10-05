@@ -20,6 +20,13 @@ internal static partial class ChangeTracker
     public const int MaxListed = 20;
     /// <summary>A repository with more dirty paths than this is not fingerprinted (each one is a stat).</summary>
     public const int MaxDirty = 5000;
+    /// <summary>
+    /// How long "not a repository" is remembered for a directory. A repository appears where there was none far more
+    /// often than one disappears (<c>git init</c> in a folder the agent just made), and the commands after it must be
+    /// tracked: so a negative answer expires, while a root is kept (a root that is gone fails the status read, which is
+    /// the same "not tracked"). A field so a test can shorten it.
+    /// </summary>
+    public static TimeSpan NotRepositoryCacheFor { get; set; } = TimeSpan.FromSeconds(30);
     private const int StatusMaxChars = 4 * 1024 * 1024;
     private const int DiffMaxChars = 60_000;
 
@@ -34,7 +41,7 @@ internal static partial class ChangeTracker
     /// <summary>What the command changed, ready for the result.</summary>
     public sealed record Report(string Root, List<Change> Changes, bool HeadMoved, string? Diff);
 
-    private static readonly ConcurrentDictionary<string, string?> Roots = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, (string? Root, DateTime At)> Roots = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
     // ------------------------------------------------------------------ which commands, which directory
 
@@ -158,12 +165,13 @@ internal static partial class ChangeTracker
     private static async Task<string?> RootAsync(string dir, CancellationToken ct)
     {
         var key = Path.GetFullPath(dir);
-        if (Roots.TryGetValue(key, out var cached)) return cached;
+        if (Roots.TryGetValue(key, out var cached) && (cached.Root is not null || DateTime.UtcNow - cached.At < NotRepositoryCacheFor))
+            return cached.Root;
         var r = await GitRunner.RunAsync(key, ct, 4096, "rev-parse", "--show-toplevel").ConfigureAwait(false);
         if (r.StartError is not null || r.TimedOut || r.Aborted) return null; // not an answer: ask again next time
         var root = r.ExitCode == 0 && r.Stdout.Trim() is { Length: > 0 } top ? Path.GetFullPath(top) : null;
         if (Roots.Count > 256) Roots.Clear();
-        Roots[key] = root;
+        Roots[key] = (root, DateTime.UtcNow);
         return root;
     }
 

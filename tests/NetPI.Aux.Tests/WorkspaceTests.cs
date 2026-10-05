@@ -214,36 +214,36 @@ public static class WorkspaceTests
         static ToolArgs AObj(object args) => ToolArgs.Parse(JsonSerializer.Serialize(args));
 
         // the arguments object sent as a JSON string, as some models do: the tools unwrap it, so the guard must
-        Check.Equal("a.txt", WorkspaceGuard.PathArg(A(JsonSerializer.Serialize("""{"path":"a.txt","content":"x"}"""))), "a string-encoded arguments object is unwrapped");
-        Check.Equal("a.txt", WorkspaceGuard.PathArg(A(JsonSerializer.Serialize(JsonSerializer.Serialize(JsonSerializer.Serialize(new { path = "a.txt", content = "x" }))))), "a double-encoded arguments object is unwrapped");
-        Check.True(WorkspaceGuard.PathArg(A("\"not json\"")) is null, "a string that is not an object is not arguments");
-        Check.True(WorkspaceGuard.PathArg(A("{broken")) is null);
+        Check.Equal("a.txt", ToolPathArgs.PathOf(A(JsonSerializer.Serialize("""{"path":"a.txt","content":"x"}"""))), "a string-encoded arguments object is unwrapped");
+        Check.Equal("a.txt", ToolPathArgs.PathOf(A(JsonSerializer.Serialize(JsonSerializer.Serialize(JsonSerializer.Serialize(new { path = "a.txt", content = "x" }))))), "a double-encoded arguments object is unwrapped");
+        Check.True(ToolPathArgs.PathOf(A("\"not json\"")) is null, "a string that is not an object is not arguments");
+        Check.True(ToolPathArgs.PathOf(A("{broken")) is null);
 
         foreach (var key in (string[])["path", "Path", "PATH", "file_path", "filePath", "File-Path", "FILE PATH", "file", "filename", "fileName", "target"])
-            Check.Equal("x.txt", WorkspaceGuard.PathArg(AObj(new Dictionary<string, string> { [key] = "x.txt" })), $"read from '{key}'");
-        Check.Equal("p", WorkspaceGuard.PathArg(A("""{"target":"t","path":"p"}""")), "path comes before target whatever order they were written in");
-        Check.True(WorkspaceGuard.PathArg(A("""{"path":"","file":"f"}""")) is null, "a blank first name is the tool's refusal, not a reason to look at the next");
-        Check.Equal("a\nb", WorkspaceGuard.PathArg(A("""{"path":["a","b"]}""")), "an array is its lines, as the tools join it");
+            Check.Equal("x.txt", ToolPathArgs.PathOf(AObj(new Dictionary<string, string> { [key] = "x.txt" })), $"read from '{key}'");
+        Check.Equal("p", ToolPathArgs.PathOf(A("""{"target":"t","path":"p"}""")), "path comes before target whatever order they were written in");
+        Check.True(ToolPathArgs.PathOf(A("""{"path":"","file":"f"}""")) is null, "a blank first name is the tool's refusal, not a reason to look at the next");
+        Check.Equal("a\nb", ToolPathArgs.PathOf(A("""{"path":["a","b"]}""")), "an array is its lines, as the tools join it");
 
         // an edit of several files writes every files[].path, read by the tool's own names
-        Check.Equal("a.txt|b.txt", string.Join("|", WorkspaceGuard.WriteTargets("edit", A("""{"files":[{"path":"a.txt","edits":[]},{"file_path":"b.txt","oldText":"x","newText":"y"}]}"""))));
-        Check.Equal("a.txt|b.txt", string.Join("|", WorkspaceGuard.WriteTargets("Edit", A("""{"files":"[{\"path\":\"a.txt\"},{\"path\":\"b.txt\"}]"}"""))), "files as a JSON string, tool-name case");
-        Check.Equal("p", string.Join("|", WorkspaceGuard.WriteTargets("write", A("""{"path":"p","files":[{"path":"a.txt"}]}"""))), "write has no several-files form");
-        Check.Equal(0, WorkspaceGuard.WriteTargets("edit", A("""{"oldText":"x"}""")).Count);
+        Check.Equal("a.txt|b.txt", string.Join("|", ToolPathArgs.WriteTargets("edit", A("""{"files":[{"path":"a.txt","edits":[]},{"file_path":"b.txt","oldText":"x","newText":"y"}]}"""))));
+        Check.Equal("a.txt|b.txt", string.Join("|", ToolPathArgs.WriteTargets("Edit", A("""{"files":"[{\"path\":\"a.txt\"},{\"path\":\"b.txt\"}]"}"""))), "files as a JSON string, tool-name case");
+        Check.Equal("p", string.Join("|", ToolPathArgs.WriteTargets("write", A("""{"path":"p","files":[{"path":"a.txt"}]}"""))), "write has no several-files form");
+        Check.Equal(0, ToolPathArgs.WriteTargets("edit", A("""{"oldText":"x"}""")).Count);
 
-        Check.Equal("/w", A("""{"Working-Directory":"/w"}""").Str(WorkspaceGuard.CwdArgs));
-        Check.Equal("a", A("""{"dir":"b","cwd":"a"}""").Str(WorkspaceGuard.CwdArgs), "cwd comes before dir");
+        Check.Equal("/w", A("""{"Working-Directory":"/w"}""").Str(ToolPathArgs.CwdNames));
+        Check.Equal("a", A("""{"dir":"b","cwd":"a"}""").Str(ToolPathArgs.CwdNames), "cwd comes before dir");
 
         // ssh: copy in the download direction writes `to` on this machine; nothing else does
-        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"download","to":"/w/x"}""")));
-        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("SSH", A("""{"action":"download","destination":"/w/x"}""")), "the action says the direction; name case");
-        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"scp","mode":"download","dest":"/w/x"}""")));
-        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"upload","from":"/w/x","to":"/remote"}""")) is null, "an upload only reads");
-        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"download","mode":"upload","to":"/w/x"}""")), "the tool fills direction from the action, so mode does not turn the download into an upload");
-        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"download","mode":"upload","to":"/w/x"}""")), "direction comes before mode");
-        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"upload","mode":"download","from":"/w/x","to":"/remote"}""")) is null, "the action's upload wins over mode");
-        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", A("""{"action":"run","script":"ls","to":"/w/x"}""")) is null, "not a copy");
-        Check.True(WorkspaceGuard.SshDownloadTarget("bash", A("""{"action":"copy","direction":"download","to":"/w/x"}""")) is null, "only the ssh tool");
+        Check.Equal("/w/x", ToolPathArgs.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"download","to":"/w/x"}""")));
+        Check.Equal("/w/x", ToolPathArgs.SshDownloadTarget("SSH", A("""{"action":"download","destination":"/w/x"}""")), "the action says the direction; name case");
+        Check.Equal("/w/x", ToolPathArgs.SshDownloadTarget("ssh", A("""{"action":"scp","mode":"download","dest":"/w/x"}""")));
+        Check.True(ToolPathArgs.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"upload","from":"/w/x","to":"/remote"}""")) is null, "an upload only reads");
+        Check.Equal("/w/x", ToolPathArgs.SshDownloadTarget("ssh", A("""{"action":"download","mode":"upload","to":"/w/x"}""")), "the tool fills direction from the action, so mode does not turn the download into an upload");
+        Check.Equal("/w/x", ToolPathArgs.SshDownloadTarget("ssh", A("""{"action":"copy","direction":"download","mode":"upload","to":"/w/x"}""")), "direction comes before mode");
+        Check.True(ToolPathArgs.SshDownloadTarget("ssh", A("""{"action":"upload","mode":"download","from":"/w/x","to":"/remote"}""")) is null, "the action's upload wins over mode");
+        Check.True(ToolPathArgs.SshDownloadTarget("ssh", A("""{"action":"run","script":"ls","to":"/w/x"}""")) is null, "not a copy");
+        Check.True(ToolPathArgs.SshDownloadTarget("bash", A("""{"action":"copy","direction":"download","to":"/w/x"}""")) is null, "only the ssh tool");
         return Task.CompletedTask;
     }
 
@@ -254,6 +254,7 @@ public static class WorkspaceTests
     {
         public const string Problem = "git is not answering";
         public string? CommonDirOf(string path) => throw new InvalidOperationException(Problem);
+        public Task<string?> CommonDirOfAsync(string path, CancellationToken ct) => throw new InvalidOperationException(Problem);
         public string? BranchOf(string path) => throw new InvalidOperationException(Problem);
         public string? HeadOf(string path) => throw new InvalidOperationException(Problem);
         public string? ProbeProblem(string path) => Problem;
@@ -468,7 +469,7 @@ public static class WorkspaceTests
         var b = env.Provision("docs", "ses_b");
         Check.True(a.Ok && b.Ok, a.Error ?? b.Error ?? "");
 
-        var root = Path.Combine(env.ProjectPath, WorkspaceProvisioner.DefaultWorktreeFolder);
+        var root = Path.Combine(WorkspacePaths.Canonical(env.ProjectPath), WorkspaceProvisioner.DefaultWorktreeFolder);
         Check.Equal(Path.Combine(root, "tests"), a.Binding!.Root);
         Check.Equal(Path.Combine(root, "docs"), b.Binding!.Root);
         Check.True(WorkspacePaths.IsInside(env.ProjectPath, a.Binding.Root));
@@ -909,7 +910,15 @@ public static class WorkspaceTests
         {
             // On Unix the escapes are Windows spellings; the canonical form is the absolute path itself.
             Check.Equal("/x", WorkspacePaths.Canonical("/x"));
-            Check.Equal("/x/y", WorkspacePaths.Canonical("/x/../y"));
+            Check.Equal("/y", WorkspacePaths.Canonical("/x/../y"), "a level that does not exist: below it `..` folds lexically");
+            // The kernel follows a link before it applies a `..` after it: link/../x is next to the link's target.
+            var box = T.TempDir("ws-physical");
+            var target = Path.Combine(box, "proj", "sub");
+            Directory.CreateDirectory(target);
+            Directory.CreateDirectory(Path.Combine(box, "w1"));
+            Directory.CreateSymbolicLink(Path.Combine(box, "w1", "link"), target);
+            Check.Equal(Path.Combine(box, "proj", "x.txt"), WorkspacePaths.Canonical(Path.Combine(box, "w1", "link", "..", "x.txt")), "link/../x is the target's sibling");
+            Check.False(WorkspacePaths.IsInside(Path.Combine(box, "w1"), Path.Combine(box, "w1", "link", "..", "x.txt")), "and so not inside the link's own folder");
         }
         return Task.CompletedTask;
     }
@@ -1003,6 +1012,7 @@ public static class WorkspaceTests
         public Func<string, string?> Answer = _ => null;
         public Func<string, string?> Problem = _ => null;
         public string? CommonDirOf(string path) => Answer(path);
+        public Task<string?> CommonDirOfAsync(string path, CancellationToken ct) => Task.FromResult(Answer(path));
         public string? BranchOf(string path) => null;
         public string? HeadOf(string path) => null;
         public string? ProbeProblem(string path) => Problem(path);

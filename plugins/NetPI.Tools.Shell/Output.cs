@@ -113,6 +113,10 @@ public sealed class OutputCapture : IDisposable
             }
             else if (_spillPath is not null && TotalChars > _spillThreshold && _dropped == 0)
             {
+                // Also reached after Dispose, when a descendant that outlived the shell keeps writing: the file at
+                // this path (the one SaveFull wrote, when the result was cut) is rewritten from the buffer, which
+                // still holds everything (nothing was dropped - a TrimTo that dropped anything keeps this branch
+                // shut), so the saved log is replaced by a longer copy of itself, never by less.
                 try
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(_spillPath)!);

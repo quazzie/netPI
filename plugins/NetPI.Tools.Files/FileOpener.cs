@@ -82,19 +82,13 @@ internal static partial class FileOpener
         return (full, Viewable.Contains(ext) ? "open" : "reveal");
     }
 
-    /// <summary>Whether <paramref name="path"/> is the root itself or below it (the comparison follows the platform's
-    /// case rules, and anything that cannot be resolved is not inside).</summary>
+    /// <summary>Whether <paramref name="path"/> is the root itself or below it, as places rather than spellings: both
+    /// sides are canonical (<see cref="WorkspacePaths.Canonical"/>), so a link inside the workspace that points outside it
+    /// is outside, and the user is asked. Anything that cannot be resolved is not inside.</summary>
     private static bool IsUnder(string path, string root)
     {
-        try
-        {
-            var rel = Path.GetRelativePath(Path.GetFullPath(root), path);
-            return !Path.IsPathRooted(rel) && !rel.StartsWith("..", StringComparison.Ordinal);
-        }
-        catch (Exception)
-        {
-            return false;
-        }
+        try { return WorkspacePaths.IsInside(root, path); }
+        catch (Exception) { return false; }
     }
 
     /// <summary>The path as given, then without a line suffix (<c>:12</c>, <c>:12:3</c>, <c>#L12</c>, <c>#L12-L20</c>).</summary>

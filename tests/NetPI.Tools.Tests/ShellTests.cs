@@ -234,6 +234,48 @@ public static class ShellTests
             Check.NotContains(res.Content, "[Files changed", "shell.trackChanges off");
         });
 
+        r.Add("shell changes: a folder that becomes a repository is tracked once the remembered \"not a repository\" expires", async () =>
+        {
+            if (!TestGit.Available()) Check.Skip("no git on PATH");
+            var dir = T.TempDir("changes-late");
+            var was = ChangeTracker.NotRepositoryCacheFor;
+            ChangeTracker.NotRepositoryCacheFor = TimeSpan.FromMinutes(10);
+            try
+            {
+                Check.True(await ChangeTracker.TakeAsync(dir, default) is null, "not a repository yet");
+                await TestGit.RunAsync(dir, "init", "-q", "-b", "main");
+                Check.True(await ChangeTracker.TakeAsync(dir, default) is null, "the negative answer is remembered for a while");
+                ChangeTracker.NotRepositoryCacheFor = TimeSpan.Zero;
+                var snapshot = await ChangeTracker.TakeAsync(dir, default);
+                Check.True(snapshot is not null, "asked again once the answer expired: the new repository is tracked");
+                Check.Equal(Path.GetFileName(dir), Path.GetFileName(Path.TrimEndingDirectorySeparator(snapshot!.Root)));
+            }
+            finally { ChangeTracker.NotRepositoryCacheFor = was; }
+        });
+
+        r.Add("bash: the server's secrets are not in a command's environment; the user's variables are", async () =>
+        {
+            var settings = new FakeSettings();
+            settings.Set("providers.anthropic.apiKey", "env:NETPI_TEST_FROM_SETTING");
+            settings.Set("mcp.servers.demo.env", new System.Text.Json.Nodes.JsonObject { ["API_KEY"] = "NETPI_TEST_MCP_SOURCE" });
+            settings.Set("shell.hideEnv", new System.Text.Json.Nodes.JsonArray("NETPI_TEST_HIDDEN"));
+            var hidden = ShellService.HiddenEnvironment(settings);
+            foreach (var name in new[] { "NETPI_TOKEN", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "BRAVE_API_KEY", "NETPI_TEST_FROM_SETTING", "NETPI_TEST_MCP_SOURCE", "NETPI_TEST_HIDDEN" })
+                Check.True(hidden.Contains(name), $"{name} is hidden");
+            Check.False(hidden.Contains("NETPI_TEST_KEEP"), "nothing else is");
+
+            var names = new[] { "NETPI_TOKEN", "NETPI_TEST_FROM_SETTING", "NETPI_TEST_MCP_SOURCE", "NETPI_TEST_HIDDEN", "NETPI_TEST_KEEP" };
+            foreach (var name in names) Environment.SetEnvironmentVariable(name, "secret-" + name);
+            try
+            {
+                var (svc, _, _) = NewService(settings);
+                var res = await T.Run(Bash(svc), T.TempDir("env"), new { command = "echo \"[$NETPI_TOKEN][$NETPI_TEST_FROM_SETTING][$NETPI_TEST_MCP_SOURCE][$NETPI_TEST_HIDDEN][$NETPI_TEST_KEEP]\"" });
+                ToolCheck.Ok(res);
+                Check.Equal("[][][][][secret-NETPI_TEST_KEEP]", res.Content, "the secrets are gone, the user's variable passes");
+            }
+            finally { foreach (var name in names) Environment.SetEnvironmentVariable(name, null); }
+        });
+
         r.Add("shell: cmd /c with a .ps1 is refused with the pwsh line to use instead (it would open an editor and hang)", async () =>
         {
             var (svc, registry, _) = NewService();

@@ -9,8 +9,8 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
     private static readonly string[] OldNames = ["oldText", "old_text", "old_string", "oldString", "old", "search", "find", "from", "original"];
     private static readonly string[] NewNames = ["newText", "new_text", "new_string", "newString", "new", "replace", "replacement", "to", "updated"];
     private static readonly string[] AllNames = ["replaceAll", "replace_all", "all", "global"];
-    /// <summary>The several-files form: <c>files: [{ path, edits }]</c>.</summary>
-    internal static readonly string[] FilesNames = ["files", "fileEdits"];
+    /// <summary>The several-files form: <c>files: [{ path, edits }]</c> (the shared names, so the guards read the same form).</summary>
+    internal static readonly string[] FilesNames = ToolPathArgs.EditFilesNames;
 
     public const int ModelDiffLines = 80;
     public const int ModelDiffChars = 6000;
@@ -83,22 +83,11 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
     }
 
     /// <summary>
-    /// The paths an edit call changes, in the order the tool takes them: <c>path</c>, or each <c>files[].path</c>.
-    /// Hooks that judge a write by its path (guardrails, the workspace guard) keep their own copy of this rule, since
-    /// plugins do not share code; this one is the tool's, and the tests pin both against it.
+    /// The paths an edit call changes, in the order the tool takes them: <c>path</c>, or each <c>files[].path</c>. The
+    /// rule is the shared one (<see cref="ToolPathArgs.WriteTargets"/>): the hooks that judge a write by its path
+    /// (guardrails, the workspace guard) read exactly what the tool reads.
     /// </summary>
-    public static List<string> TargetPaths(ToolArgs args)
-    {
-        var paths = new List<string>();
-        if (args.List(FilesNames) is { Count: > 0 } files)
-        {
-            foreach (var f in files)
-                if (f.ValueKind == JsonValueKind.Object && new ToolArgs(f).Str(PathNames)?.Trim() is { Length: > 0 } p) paths.Add(p);
-            return paths;
-        }
-        if (args.Str(PathNames)?.Trim() is { Length: > 0 } one) paths.Add(one);
-        return paths;
-    }
+    public static List<string> TargetPaths(ToolArgs args) => ToolPathArgs.WriteTargets("edit", args);
 
     /// <summary>One file's edits, matched and applied in memory, ready to be written.</summary>
     private sealed record Prepared(string Full, string Rel, byte[] Original, TextDocument Doc, string Text, EolStyle Eol,
@@ -114,12 +103,12 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
     {
         if (args.List(FilesNames) is { Count: > 0 } files)
         {
-            if (args.Has(PathNames))
+            if (args.Has(ToolPathArgs.PathNames))
                 return ToolResult.Error("Pass either path (one file) or files (several), not both: put this file into files as well.");
             return await RunManyAsync(ctx, files, ct).ConfigureAwait(false);
         }
 
-        var path = args.Str(PathNames);
+        var path = args.Str(ToolPathArgs.PathNames);
         if (string.IsNullOrWhiteSpace(path)) return MissingArg("path", "{\"path\": \"src/app.ts\", \"oldText\": \"…\", \"newText\": \"…\"}");
         var (edits, parseError) = ParseEdits(args);
         if (parseError is not null) return ToolResult.Error(parseError);
@@ -151,7 +140,7 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
             if (files[i].ValueKind != JsonValueKind.Object)
                 return ToolResult.Error($"files[{i}] must be an object with path and edits.");
             var fa = new ToolArgs(files[i]);
-            var path = fa.Str(PathNames);
+            var path = fa.Str(ToolPathArgs.PathNames);
             if (string.IsNullOrWhiteSpace(path)) return ToolResult.Error($"File {i + 1} of {files.Count}: missing path.");
             var (edits, parseError) = ParseEdits(fa);
             if (parseError is not null) return ToolResult.Error($"File {i + 1} of {files.Count} ({path}): {parseError}");
@@ -249,7 +238,7 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
         Refusal Fail(string message, object? details = null) => new(label + message + nothing, details);
 
         var full = ctx.ResolvePath(path);
-        if (WorkspaceRefusal(ctx, full) is { } refusal) return (null, Fail(refusal));
+        if (await WorkspacePaths.MutationRefusalAsync(ctx, full, ct).ConfigureAwait(false) is { } refusal) return (null, Fail(refusal));
         if (Directory.Exists(full)) return (null, Fail($"{full} is a directory, not a file."));
         if (!File.Exists(full)) return (null, Fail(NotFoundText(full, "To create a new file use the write tool.")));
         var size = new FileInfo(full).Length;

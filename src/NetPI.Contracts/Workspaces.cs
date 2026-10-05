@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text.Json.Nodes;
 
 namespace NetPI;
@@ -138,6 +140,11 @@ public interface IWorkspaceRepoProbe
 {
     /// <summary>The repository's common git directory for a directory, or null when it is not in a repository.</summary>
     string? CommonDirOf(string path);
+    /// <summary>
+    /// <see cref="CommonDirOf"/> for a caller that runs asynchronously (the guard hook, the file and ssh tools): git is
+    /// awaited, not waited for, so no thread-pool thread is parked on a probe. The same answers and the same cache.
+    /// </summary>
+    Task<string?> CommonDirOfAsync(string path, CancellationToken ct);
     /// <summary>The branch checked out at a directory, or null.</summary>
     string? BranchOf(string path);
     /// <summary>The commit HEAD is at, or null.</summary>
@@ -237,10 +244,15 @@ public static class WorkspacePaths
 
     /// <summary>
     /// The canonical spelling of a path: absolute, without a trailing separator, a local spelling (a <c>\\?\</c>
-    /// prefix, an admin share of this machine, the device namespace) in its own form, and every level that exists
-    /// resolved to the place it is — a junction or symlink at any depth, not only at the end, is recognized as the
-    /// place it points to. A level that does not exist ends the walk: the rest is only a name. Falls back to the
-    /// normalized spelling when it cannot be resolved.
+    /// prefix, an admin share of this machine, the device namespace) in its own form, on Windows the long name of every
+    /// level that exists (a short 8.3 spelling such as <c>SSH~1</c> is the same directory as <c>.ssh</c>), and every
+    /// level that exists resolved to the place it is — a junction or symlink at any depth, not only at the end, is
+    /// recognized as the place it points to. A level that does not exist ends the walk: the rest is only a name. Falls
+    /// back to the normalized spelling when it cannot be resolved.
+    /// <para>
+    /// <c>..</c> is folded the way the platform folds it: Windows resolves it lexically (<c>link\..\x</c> is next to
+    /// the link), Unix physically (the link is followed first, so <c>link/../x</c> is next to the link's target).
+    /// </para>
     /// </summary>
     public static string Canonical(string path)
     {
@@ -250,6 +262,8 @@ public static class WorkspacePaths
         full = LocalSpelling(full);
         try
         {
+            if (!OperatingSystem.IsWindows()) return Physical(path);
+            full = LongSpelling(full);
             var root = Path.GetPathRoot(full);
             if (string.IsNullOrEmpty(root) || !full.StartsWith(root, StringComparison.Ordinal))
                 return Path.TrimEndingDirectorySeparator(full);
@@ -286,6 +300,88 @@ public static class WorkspacePaths
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { }
         return Path.TrimEndingDirectorySeparator(full);
     }
+
+    /// <summary>
+    /// The walk on Unix, where the kernel resolves a path physically: a link is followed before a <c>..</c> after it is
+    /// applied, so <c>w1/link/../x</c> is next to the link's target, not inside <c>w1</c>. <see cref="Path.GetFullPath"/>
+    /// folds <c>..</c> lexically first and would judge the other place, so the raw levels are walked here, <c>..</c>
+    /// taken on the resolved base. The first level that does not exist ends the walk as on Windows: below it is only a
+    /// name, folded lexically.
+    /// </summary>
+    private static string Physical(string path)
+    {
+        var raw = Path.IsPathRooted(path) ? path : Path.Combine(Directory.GetCurrentDirectory(), path);
+        var parts = raw.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var base_ = "/";
+        for (var i = 0; i < parts.Length; i++)
+        {
+            var part = parts[i];
+            if (part == ".") continue;
+            if (part == "..")
+            {
+                base_ = Path.GetDirectoryName(base_) ?? "/";
+                continue;
+            }
+            var next = base_ == "/" ? "/" + part : base_ + "/" + part;
+            if (i == parts.Length - 1)
+            {
+                var file = new FileInfo(next);
+                return Path.TrimEndingDirectorySeparator(file.LinkTarget is not null ? file.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? next : next);
+            }
+            var dir = new DirectoryInfo(next);
+            if (dir.LinkTarget is not null)
+                base_ = dir.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? dir.FullName;
+            else if (dir.Exists)
+                base_ = next;
+            else
+            {
+                var tail = string.Join("/", parts[(i + 1)..]);
+                return Path.TrimEndingDirectorySeparator(Path.GetFullPath(tail.Length == 0 ? next : next + "/" + tail));
+            }
+        }
+        return Path.TrimEndingDirectorySeparator(base_);
+    }
+
+    /// <summary>
+    /// Windows only: the long spelling of every level that exists. A short (8.3) name — <c>SSH~1</c> for <c>.ssh</c>,
+    /// <c>PROGRA~1</c> for <c>Program Files</c> — names the same directory, and a rule or a root written in the long
+    /// spelling must reach it, so the existing prefix is expanded before anything is compared; a level that does not
+    /// exist keeps its spelling, there is nothing to expand. A generated short name always carries a <c>~</c>, so a
+    /// path without one is left alone and the call is only paid where it can matter.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static string LongSpelling(string full)
+    {
+        if (!full.Contains('~')) return full;
+        var path = Path.TrimEndingDirectorySeparator(full);
+        var tail = "";
+        while (true)
+        {
+            if (GetLongPathName(path) is { } expanded) return expanded + tail;
+            var parent = Path.GetDirectoryName(path);
+            if (parent is null) return full;    // nothing of it exists: the spelling as given
+            tail = Path.DirectorySeparatorChar + Path.GetFileName(path) + tail;
+            path = parent;
+        }
+    }
+
+    /// <summary>The long spelling of a path that exists, or null when it does not (or Windows cannot say).</summary>
+    [SupportedOSPlatform("windows")]
+    private static string? GetLongPathName(string path)
+    {
+        var buffer = new char[260];
+        var length = GetLongPathNameW(path, buffer, (uint)buffer.Length);
+        if (length > buffer.Length)
+        {
+            buffer = new char[length];
+            length = GetLongPathNameW(path, buffer, (uint)buffer.Length);
+        }
+        return length == 0 || length > buffer.Length ? null : new string(buffer, 0, (int)length);
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+    [SupportedOSPlatform("windows")]
+    private static extern uint GetLongPathNameW(string lpszShortPath, [Out] char[]? lpszLongPath, uint cchBuffer);
 
     /// <summary>
     /// The local spelling of a path: the long-path prefix (<c>\\?\</c>) is dropped, a spelling through this machine's
@@ -352,8 +448,23 @@ public static class WorkspacePaths
         if (binding is null) return WorkspacePathVerdict.Allow;
         if (IsInside(binding.Root, fullPath)) return WorkspacePathVerdict.Allow;
         if (probe is null) return WorkspacePathVerdict.Outside;
-        var here = probe.CommonDirOf(binding.Root);
-        var there = probe.CommonDirOf(fullPath);
+        return Verdict(binding, fullPath, probe, probe.CommonDirOf(binding.Root), probe.CommonDirOf(fullPath));
+    }
+
+    /// <summary><see cref="CheckMutation"/> for an asynchronous caller (a hook, a tool): the same rule, git awaited rather than waited for.</summary>
+    public static async Task<WorkspacePathVerdict> CheckMutationAsync(WorkspaceBinding? binding, string fullPath, IWorkspaceRepoProbe? probe, CancellationToken ct = default)
+    {
+        if (binding is null) return WorkspacePathVerdict.Allow;
+        if (IsInside(binding.Root, fullPath)) return WorkspacePathVerdict.Allow;
+        if (probe is null) return WorkspacePathVerdict.Outside;
+        var here = await probe.CommonDirOfAsync(binding.Root, ct).ConfigureAwait(false);
+        var there = await probe.CommonDirOfAsync(fullPath, ct).ConfigureAwait(false);
+        return Verdict(binding, fullPath, probe, here, there);
+    }
+
+    /// <summary>The verdict for a path outside the workspace, from what the probe said about both sides.</summary>
+    private static WorkspacePathVerdict Verdict(WorkspaceBinding binding, string fullPath, IWorkspaceRepoProbe probe, string? here, string? there)
+    {
         if (here is not null && there is not null)
             return string.Equals(Canonical(here), Canonical(there), Comparison)
                 ? WorkspacePathVerdict.ForeignCheckout
@@ -368,7 +479,17 @@ public static class WorkspacePaths
 
     /// <summary>The message a refused mutation gets: which workspace it is in, which checkout it aimed at, and — for
     /// <see cref="WorkspacePathVerdict.Unverifiable"/> — what git could not say.</summary>
-    public static string Refusal(WorkspaceBinding binding, string fullPath, IWorkspaceRepoProbe? probe, WorkspacePathVerdict verdict)
+    public static string Refusal(WorkspaceBinding binding, string fullPath, IWorkspaceRepoProbe? probe, WorkspacePathVerdict verdict) =>
+        RefusalText(binding, fullPath, probe, verdict, verdict == WorkspacePathVerdict.Unverifiable ? null : probe?.CommonDirOf(fullPath));
+
+    /// <summary><see cref="Refusal"/> for an asynchronous caller.</summary>
+    public static async Task<string> RefusalAsync(WorkspaceBinding binding, string fullPath, IWorkspaceRepoProbe? probe, WorkspacePathVerdict verdict, CancellationToken ct = default)
+    {
+        var repo = verdict == WorkspacePathVerdict.Unverifiable || probe is null ? null : await probe.CommonDirOfAsync(fullPath, ct).ConfigureAwait(false);
+        return RefusalText(binding, fullPath, probe, verdict, repo);
+    }
+
+    private static string RefusalText(WorkspaceBinding binding, string fullPath, IWorkspaceRepoProbe? probe, WorkspacePathVerdict verdict, string? repo)
     {
         var target = Canonical(fullPath);
         if (verdict == WorkspacePathVerdict.Unverifiable)
@@ -379,10 +500,27 @@ public static class WorkspacePaths
                    "cannot be verified is refused: the write does not run.";
         }
         var line = $"Refused: {target} is not inside this session's workspace ({binding.Describe()}).";
-        var repo = probe?.CommonDirOf(fullPath);
         if (repo is not null)
             line += $" It is another checkout of the same repository ({repo}), which belongs to another worker or to the primary checkout.";
         line += " Native writes stay in the session's own workspace; use absolute paths only for files that are genuinely elsewhere.";
         return line;
+    }
+
+    /// <summary>
+    /// The workspace rule for a native write on this machine, as a tool applies it itself: an unbound session (or one that
+    /// is not isolated) may write anywhere, the behavior before workspaces existed; an isolated one may not write into
+    /// another checkout of the same repository, nor where git cannot say. Null when the write may run, the refusal
+    /// otherwise. The workspace guard hook already blocks most of these; this is the tool's own answer, so a call made
+    /// without hooks (a test, another caller) is not unprotected either, and every tool gives the same one.
+    /// </summary>
+    public static async Task<string?> MutationRefusalAsync(ToolContext context, string fullPath, CancellationToken ct = default)
+    {
+        var binding = context.Workspace();
+        if (binding is null || !binding.Isolated) return null;
+        var probe = context.Services?.Get<IWorkspaceRepoProbe>();
+        var verdict = await CheckMutationAsync(binding, fullPath, probe, ct).ConfigureAwait(false);
+        return verdict is WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable
+            ? await RefusalAsync(binding, fullPath, probe, verdict, ct).ConfigureAwait(false)
+            : null;
     }
 }

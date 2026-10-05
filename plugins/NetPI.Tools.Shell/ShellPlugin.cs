@@ -4,7 +4,7 @@ namespace NetPI.Tools.Shell;
 
 /// <summary>
 /// Shell tools: bash (Git Bash on Windows), pwsh, process (list / output / kill), and the
-/// processes.* RPC methods. Settings: <c>shell.bashPath</c>, <c>shell.pwshPath</c>, <c>shell.timeoutSeconds</c>, <c>shell.trackChanges</c>.
+/// processes.* RPC methods. Settings: <c>shell.bashPath</c>, <c>shell.pwshPath</c>, <c>shell.timeoutSeconds</c>, <c>shell.trackChanges</c>, <c>shell.hideEnv</c>.
 /// </summary>
 [NetPiPlugin("netpi.tools.shell", Name = "Shell tools", Description = "bash (Git Bash on Windows), pwsh and background processes", Order = 20)]
 public sealed class ShellPlugin : INetPiPlugin
@@ -34,6 +34,8 @@ public sealed class ShellPlugin : INetPiPlugin
                     "A running command that has printed nothing this long raises process.idle once (it may wait on an editor or a prompt); 0 = off.", 0, 240, "min"),
                 SettingInfo.Bool("shell.trackChanges", "Report the files a command changed", true,
                     "Compares git status before and after a command that may write, and tells the model and the chat which files in its repository changed."),
+                SettingInfo.List("shell.hideEnv", "Hidden environment variables", [],
+                    "Environment variables a bash/pwsh command never sees, on top of NetPI's own secrets (NETPI_TOKEN, the provider and search keys, and every variable a secret setting or an MCP server reads)."),
             ],
         });
         _registry = new ProcessRegistry(context.Events);

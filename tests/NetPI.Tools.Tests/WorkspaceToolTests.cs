@@ -102,6 +102,7 @@ public static class WorkspaceToolTests
     {
         public string? CommonDirOf(string path) =>
             path.StartsWith(commonDir[..commonDir.LastIndexOf(Path.DirectorySeparatorChar)], StringComparison.OrdinalIgnoreCase) ? commonDir : null;
+        public Task<string?> CommonDirOfAsync(string path, CancellationToken ct) => Task.FromResult(CommonDirOf(path));
         public string? BranchOf(string path) => "main";
         public string? HeadOf(string path) => "abc123";
         public string? ProbeProblem(string path) => null;   // this fake always answers

@@ -34,6 +34,8 @@ public sealed class SshPlugin : INetPiPlugin
         // One broker for every action: its connections outlive a call, and a reload's Track disposal closes them.
         var broker = context.Track(new SshBroker(context.Logger));
         foreach (var tool in SshToolSet.Create(context, new ProcessLauncher(), broker)) context.Tools.Register(tool);
+        // The saved outputs of earlier runs (ssh-<host>-<stamp>.log): kept for two days, like the shell's own logs.
+        _ = Task.Run(() => SshRunTool.CleanupLogs(SshRunTool.LogDir, SshRunTool.KeepLogsFor), CancellationToken.None);
         return Task.CompletedTask;
     }
 }
@@ -149,22 +151,6 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
     /// <summary>What the action does: the dispatcher's help shows it under the name.</summary>
     internal abstract string Summary { get; }
     internal virtual bool ReadOnly => false;
-
-    /// <summary>
-    /// The workspace rule for a write on this machine, the one the file tools apply (a private copy: plugins do not share
-    /// code): an unbound session may write anywhere, an isolated one may not write into another checkout of the same
-    /// repository. The workspace hook already blocks these; this is the tool's own answer for a call made without hooks.
-    /// </summary>
-    protected static string? WorkspaceRefusal(ToolContext context, string fullPath)
-    {
-        var binding = context.Workspace();
-        if (binding is null || !binding.Isolated) return null;
-        var probe = context.Services?.Get<IWorkspaceRepoProbe>();
-        var verdict = WorkspacePaths.CheckMutation(binding, fullPath, probe);
-        return verdict is WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable
-            ? WorkspacePaths.Refusal(binding, fullPath, probe, verdict)
-            : null;
-    }
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -283,7 +269,7 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
         var a = new ToolArgs(args);
-        var script = a.Str("script", "command", "cmd", "code");
+        var script = a.Str(ToolPathArgs.SshCommandNames);
         if (string.IsNullOrWhiteSpace(script)) return ToolResult.Error("ssh_run needs a script.");
         var cwd = a.Str("cwd", "dir", "directory", "workdir");
         var timeout = Math.Clamp(a.Int("timeout", "timeout_seconds") ?? o.Timeout, 1, 1800);
@@ -381,20 +367,50 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
         catch (Exception) { }
     }
 
+    /// <summary>Where the saved outputs go: the temp folder the shell's own logs use.</summary>
+    internal static string LogDir => Path.Combine(Path.GetTempPath(), "netpi");
+    /// <summary>The saved outputs' prefix; the shell plugin cleans its own prefixes there, this one is ours.</summary>
+    internal const string LogPrefix = "ssh-";
+    /// <summary>How long a saved output is kept (the shell's rule for its logs).</summary>
+    internal static readonly TimeSpan KeepLogsFor = TimeSpan.FromDays(2);
+
     /// <summary>The whole output, for read/grep, when the result shows only its tail (in the temp folder, like bash's logs).</summary>
     private static string? Save(SshHost host, string output)
     {
         try
         {
-            var dir = Path.Combine(Path.GetTempPath(), "netpi");
+            var dir = LogDir;
             Directory.CreateDirectory(dir);
             var name = string.Concat(host.Alias.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '_'));
-            var path = Path.Combine(dir, $"ssh-{name}-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log");
+            var path = Path.Combine(dir, $"{LogPrefix}{name}-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log");
             File.WriteAllText(path, output);
             return path;
         }
         catch (IOException) { return null; }
         catch (UnauthorizedAccessException) { return null; }
+    }
+
+    /// <summary>
+    /// Delete this plugin's saved outputs (<c>ssh-*.log</c> in <paramref name="dir"/>) older than <paramref name="maxAge"/>,
+    /// at start, the way the shell plugin cleans its own prefixes: each plugin owns its files there, and nothing else is
+    /// touched. Best effort; returns how many were deleted.
+    /// </summary>
+    internal static int CleanupLogs(string dir, TimeSpan maxAge)
+    {
+        var deleted = 0;
+        try
+        {
+            if (!Directory.Exists(dir)) return 0;
+            foreach (var f in Directory.EnumerateFiles(dir))
+            {
+                var name = Path.GetFileName(f);
+                if (!name.StartsWith(LogPrefix, StringComparison.Ordinal) || !name.EndsWith(".log", StringComparison.OrdinalIgnoreCase)) continue;
+                if (DateTime.UtcNow - File.GetLastWriteTimeUtc(f) <= maxAge) continue;
+                try { File.Delete(f); deleted++; } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return deleted;
     }
 }
 
@@ -691,9 +707,9 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
         var a = new ToolArgs(args);
-        var direction = (a.Str("direction", "mode") ?? "").Trim().ToLowerInvariant();
+        var direction = ToolPathArgs.SshDirection(a) ?? "";
         var from = a.Str("from", "source", "src")?.Trim();
-        var to = a.Str("to", "destination", "dest", "target")?.Trim();
+        var to = a.Str(ToolPathArgs.SshDownloadTargetNames)?.Trim();
         if (direction is not ("upload" or "download")) return ToolResult.Error("ssh_copy needs direction: upload or download.");
         if (string.IsNullOrEmpty(from) || string.IsNullOrEmpty(to)) return ToolResult.Error("ssh_copy needs from and to.");
         var recursive = a.Bool("recursive", "r") ?? false;
@@ -711,7 +727,7 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
         else
         {
             local = context.ResolvePath(to);
-            if (WorkspaceRefusal(context, local) is { } refusal) return ToolResult.Error(refusal);
+            if (await WorkspacePaths.MutationRefusalAsync(context, local, ct).ConfigureAwait(false) is { } refusal) return ToolResult.Error(refusal);
             var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(local)) ?? local;
             Directory.CreateDirectory(parent);
             workDir = parent;

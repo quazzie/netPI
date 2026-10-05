@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using NetPI.Guardrails;
@@ -18,6 +19,7 @@ public static class GuardrailsTests
         t.Add("guardrails: in a subagent an ask rule blocks; switched off, nothing is checked", SubagentAndOff);
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
         t.Add("guardrails: a protected path in a long-path, admin-share or device spelling is the same path", ProtectedSpellings);
+        t.Add("guardrails: a protected path spelled with Windows 8.3 short names is the same path", ShortNames);
         t.Add("guardrails: second opinion: a confidently read-only command runs without asking, the rest ask with the model's view", SecondOpinionClears);
         t.Add("guardrails: second opinion never clears a path ask (it reads the command, not where it writes)", SecondOpinionSkipsPathRules);
         t.Add("guardrails: second opinion never relaxes a block or write/edit, is off by default, and asks when the model fails", SecondOpinionLimits);
@@ -397,6 +399,40 @@ public static class GuardrailsTests
             Check.Contains(results[i].Content, "is protected by the guardrail", "the spelling is the same path: " + spellings[i]);
         Check.Equal(0, ran.Count, "no write through a spelling of the protected path ran: " + string.Join(" | ", ran));
     }
+
+    /// <summary>
+    /// <c>C:\Users\me\SSH~1\authorized_keys</c> is <c>~/.ssh/authorized_keys</c>: a rule root and a write target are
+    /// compared as places, and a short (8.3) spelling of an existing level is expanded to the directory it names. On
+    /// Unix there are no short names, so the one spelling that matters is the path itself.
+    /// </summary>
+    private static Task ShortNames()
+    {
+        var dir = Path.Combine(TestShared.T.TempDir("guard-short"), "protected folder with a long name");
+        Directory.CreateDirectory(dir);
+        var rules = RuleSet.Parse([], [dir], Home);
+        Check.Equal(0, rules.Problems.Count, string.Join("; ", rules.Problems));
+        Check.True(Judge(rules, "write", new { path = Path.Combine(dir, "authorized_keys"), content = "x" }) is { Action: GuardAction.Block, Kind: "path" }, "the long spelling is protected");
+        if (!OperatingSystem.IsWindows()) return Task.CompletedTask;
+        var shortDir = ShortPath(dir);
+        if (shortDir is null || string.Equals(shortDir, dir, StringComparison.OrdinalIgnoreCase)) Check.Skip("the volume generates no short names");
+        Check.True(Judge(rules, "write", new { path = Path.Combine(shortDir, "authorized_keys"), content = "x" }) is { Action: GuardAction.Block, Kind: "path" },
+            $"the short spelling {shortDir} is the same protected path");
+        Check.True(Judge(rules, "edit", new { path = Path.Combine(shortDir, "config"), oldText = "a", newText = "b" }) is { Action: GuardAction.Block, Kind: "path" }, "edit too");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>The 8.3 spelling of an existing path, or null when Windows cannot give one.</summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static string? ShortPath(string path)
+    {
+        var buffer = new char[1024];
+        var length = GetShortPathNameW(path, buffer, (uint)buffer.Length);
+        return length == 0 || length > buffer.Length ? null : new string(buffer, 0, (int)length);
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static extern uint GetShortPathNameW(string lpszLongPath, [Out] char[]? lpszShortPath, uint cchBuffer);
 
     private static async Task AskRules()
     {

@@ -52,15 +52,8 @@ internal sealed partial class RuleSet
     public static readonly HashSet<string> LocalShellTools = new(StringComparer.OrdinalIgnoreCase) { "bash", "pwsh" };
     public static readonly HashSet<string> WriteTools = new(StringComparer.OrdinalIgnoreCase) { "write", "edit" };
 
-    // The names each tool reads its argument by, in the order it tries them (Tools.Shell ShellService, Tools.Ssh run,
-    // Tools.Files FileToolBase.PathNames, Tools.Ssh copy): the first one present wins, so the guard takes the same one.
-    private static readonly string[] ShellCommandNames = ["command", "cmd", "script", "code", "commands", "input"];
-    private static readonly string[] SshCommandNames = ["script", "command", "cmd", "code"];
-    private static readonly string[] WritePathNames = ["path", "file_path", "filePath", "file", "filename", "fileName", "target"];
-    private static readonly string[] EditFilesNames = ["files", "fileEdits"];
-    private static readonly string[] SshDownloadTargetNames = ["to", "destination", "dest", "target"];
-
-    private static string[] CommandNames(string tool) => tool.Equals("ssh", StringComparison.OrdinalIgnoreCase) ? SshCommandNames : ShellCommandNames;
+    // The names each tool reads its argument by, in the order it tries them, are the shared vocabulary (ToolPathArgs):
+    // the first one present wins, so the guard takes the same one the tool will.
 
     private sealed record CommandRule(string Text, Regex Pattern, GuardAction Action);
     private sealed record PathRule(string Text, string Root, string[] Spellings, GuardAction Action);
@@ -127,7 +120,7 @@ internal sealed partial class RuleSet
             return false;
         }
 
-        if (CommandTools.Contains(tool) && args.Str(CommandNames(tool)) is { Length: > 0 } command)
+        if (CommandTools.Contains(tool) && ToolPathArgs.CommandOf(tool, args) is { Length: > 0 } command)
         {
             foreach (var part in Parts(command))
             {
@@ -158,54 +151,20 @@ internal sealed partial class RuleSet
 
     /// <summary>The command a bash, pwsh or ssh (run) call runs (null for other tools or without one).</summary>
     internal static string? CommandOf(string tool, ToolArgs args) =>
-        CommandTools.Contains(tool) ? args.Str(CommandNames(tool)) : null;
+        CommandTools.Contains(tool) ? ToolPathArgs.CommandOf(tool, args) : null;
 
     /// <summary>The host an ssh call runs on, when it names one.</summary>
     internal static string? HostOf(ToolArgs args) => args.Str("host", "server", "alias");
 
     /// <summary>
     /// The local paths a call writes: the file of write and edit (every <c>files[].path</c> of an edit of several files,
-    /// as Tools.Files EditTool.TargetPaths reads them), the destination of an ssh download (scp writes it).
+    /// as the edit tool reads them), the destination of an ssh download (scp writes it) — read by the shared vocabulary
+    /// (<see cref="ToolPathArgs"/>), which is what the tools themselves read.
     /// </summary>
     internal static List<string> LocalWriteTargets(string tool, ToolArgs args)
     {
-        var paths = new List<string>();
-        if (WriteTools.Contains(tool))
-        {
-            if (tool.Equals("edit", StringComparison.OrdinalIgnoreCase) && args.List(EditFilesNames) is { Count: > 0 } files)
-            {
-                foreach (var f in files)
-                    if (f.ValueKind == System.Text.Json.JsonValueKind.Object && new ToolArgs(f).Str(WritePathNames) is { Length: > 0 } p) paths.Add(p);
-                return paths;
-            }
-            if (args.Str(WritePathNames) is { Length: > 0 } one) paths.Add(one);
-            return paths;
-        }
-        if (IsSshDownload(tool, args) && args.Str(SshDownloadTargetNames)?.Trim() is { Length: > 0 } to) paths.Add(to);
-        return paths;
-    }
-
-    /// <summary>
-    /// Whether an ssh call is a download, routed as the ssh tool routes it: the action is <c>copy</c> (or scp, upload,
-    /// download), and the direction is what the tool resolves: the action itself when it says upload/download and there is
-    /// no <c>direction</c> argument (the dispatcher fills it in), otherwise <c>direction</c>, then <c>mode</c>.
-    /// </summary>
-    internal static bool IsSshDownload(string tool, ToolArgs args)
-    {
-        if (!tool.Equals("ssh", StringComparison.OrdinalIgnoreCase)) return false;
-        var action = args.Str("action", "verb", "command")?.Trim().ToLowerInvariant();
-        if (action is null && args.Has("script")) action = "run";
-        if (action is not ("copy" or "scp" or "upload" or "download")) return false;
-        var direction = SshDirection(args);
-        return direction == "download";
-    }
-
-    /// <summary>The direction of an ssh copy as the tool reads it (the ssh dispatcher, then ssh_copy), so a call cannot name one and be run as another.</summary>
-    private static string? SshDirection(ToolArgs args)
-    {
-        var action = args.Str("action")?.Trim().ToLowerInvariant();
-        var direction = args.Str("direction") is null && action is "upload" or "download" ? action : args.Str("direction", "mode");
-        return direction?.Trim().ToLowerInvariant();
+        if (WriteTools.Contains(tool)) return ToolPathArgs.WriteTargets(tool, args);
+        return ToolPathArgs.SshDownloadTarget(tool, args) is { } to ? [to] : [];
     }
 
     /// <summary>

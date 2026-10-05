@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace NetPI.Tools.Shell;
@@ -18,6 +19,58 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
     public ProcessRegistry Registry { get; } = registry;
     public ISettings? Settings { get; } = settings;
     public string TempDir { get; } = tempDir ?? Path.Combine(Path.GetTempPath(), "netpi");
+
+    /// <summary>
+    /// The server's own secrets, never a child's: its RPC token, the keys the providers and the web search read from the
+    /// environment when the settings name no other. Everything else in the environment is the user's (a GITHUB_TOKEN is
+    /// theirs to pass on) and stays.
+    /// </summary>
+    internal static readonly string[] OwnSecrets = ["NETPI_TOKEN", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "BRAVE_API_KEY"];
+
+    /// <summary>
+    /// The environment variables a child shell never sees: <see cref="OwnSecrets"/>, every variable a secret setting reads
+    /// (<c>env:NAME</c> / <c>$NAME</c> anywhere under <c>providers</c> and <c>mcp</c>, and the variables an MCP server's
+    /// <c>env</c> and <c>headerEnv</c> name), plus <c>shell.hideEnv</c>. A child inherits the rest of the server's
+    /// environment, as before.
+    /// </summary>
+    internal static HashSet<string> HiddenEnvironment(ISettings? settings)
+    {
+        var hidden = new HashSet<string>(OwnSecrets, StringComparer.OrdinalIgnoreCase);
+        if (settings is null) return hidden;
+        JsonObject root;
+        try { root = settings.Snapshot(); }
+        catch { return hidden; }
+        foreach (var section in new[] { "providers", "mcp" })
+            if (root[section] is JsonNode node) CollectSecretSources(node, hidden);
+        if (root["mcp"]?["servers"] is JsonObject servers)
+            foreach (var (_, server) in servers)
+                foreach (var map in new[] { "env", "headerEnv" })
+                    if (server?[map] is JsonObject names)
+                        foreach (var (_, source) in names)
+                            if (source is JsonValue v && v.TryGetValue<string>(out var name) && !string.IsNullOrWhiteSpace(name)) hidden.Add(name.Trim());
+        foreach (var name in settings.GetStrings("shell.hideEnv")) hidden.Add(name);
+        return hidden;
+    }
+
+    /// <summary>Every <c>env:NAME</c> / <c>$NAME</c> string value under a node: the variables a secret setting reads.</summary>
+    private static void CollectSecretSources(JsonNode node, HashSet<string> into)
+    {
+        switch (node)
+        {
+            case JsonObject o:
+                foreach (var (_, child) in o) if (child is not null) CollectSecretSources(child, into);
+                break;
+            case JsonArray a:
+                foreach (var child in a) if (child is not null) CollectSecretSources(child, into);
+                break;
+            case JsonValue v when v.TryGetValue<string>(out var text):
+                var value = text.Trim();
+                var name = value.StartsWith("env:", StringComparison.OrdinalIgnoreCase) ? value[4..].Trim()
+                    : value.StartsWith('$') && value.Length > 1 ? value[1..].Trim() : null;
+                if (!string.IsNullOrEmpty(name)) into.Add(name);
+                break;
+        }
+    }
 
     /// <summary>Delete spill files older than two days (best effort).</summary>
     public void CleanupTempFiles()
@@ -76,7 +129,7 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
 
     internal async Task<ToolResult> RunAsync(string shell, ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
-        var command = args.Str("command", "cmd", "script", "code", "commands", "input");
+        var command = ToolPathArgs.CommandOf(shell, args);
         if (string.IsNullOrWhiteSpace(command))
             return ToolResult.Error($"Missing required argument 'command'. Example: {{\"command\": \"{(shell == "pwsh" ? "Get-ChildItem" : "ls -la")}\"}}");
         // cmd does not run a .ps1: it hands the file to its default program (an editor) and waits for that program, so the
@@ -86,8 +139,7 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
                 "program (usually an editor) and waits for that program to close, so the command would hang until its timeout. " +
                 $"Run it with PowerShell instead: pwsh -NoProfile -File {ps1.Groups["file"].Value} <arguments> (or the pwsh tool).");
 
-        var cwdArg = args.Str("cwd", "workdir", "working_directory", "workingDirectory", "directory", "dir");
-        var cwd = string.IsNullOrWhiteSpace(cwdArg) ? ctx.Cwd : ctx.ResolvePath(cwdArg);
+        var cwd = ToolPathArgs.CwdOf(args) is { } cwdArg ? ctx.ResolvePath(cwdArg) : ctx.Cwd;
         if (!Directory.Exists(cwd))
             return ToolResult.Error($"Working directory does not exist: {cwd}");
 
@@ -102,6 +154,8 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
 
         var (spec, specError) = BuildSpec(shell, command);
         if (spec is null) return ToolResult.Error(specError!, new { command, shell, cwd, background });
+        // The server's secrets are not the child's: removed from what it inherits (a null entry removes the variable).
+        foreach (var name in HiddenEnvironment(Settings)) spec.Environment[name] = null;
         if (ct.IsCancellationRequested)
             return ToolResult.Error("[aborted before the command started; nothing was run]", new { command, shell, cwd, background, aborted = true });
 

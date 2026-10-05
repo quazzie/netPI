@@ -65,6 +65,9 @@ public static class IdeasNoticeTests
             var run = env.Run();
             var turn = TurnWithIdeas(run);
             await hook.OnAfterToolCallAsync(turn, Commit("git add -A; git commit -m \"Work tab: a fix\""), Ok());
+            // The run context is the host's: the pending commit is kept there as plain JSON, never as a plugin type
+            // that would pin this assembly after a reload (docs/PLUGINS.md).
+            Check.True(run.Items[IdeaCommitNoticeHook.PendingKey] is JsonObject, "the pending commit is JSON in the run context");
             var d = await After(hook, turn);
             Check.Equal(TurnAction.Inject, d!.Action);
             Check.Equal(IdeaCommitNoticeHook.NoticeKind, d.NoticeKind);
@@ -472,6 +475,7 @@ public static class IdeasNoticeTests
     private sealed class RealGitProbe : IWorkspaceRepoProbe
     {
         public string? CommonDirOf(string path) => TestGit.Out(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+        public Task<string?> CommonDirOfAsync(string path, CancellationToken ct) => Task.FromResult(CommonDirOf(path));
         public string? BranchOf(string path) => null;
         public string? HeadOf(string path) => null;
         public string? ProbeProblem(string path) => null;   // real git answered: "not a repository" is an answer
