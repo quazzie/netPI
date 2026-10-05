@@ -20,6 +20,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy`) | – |
 | `plugins/NetPI.Workspaces` | `netpi.workspaces` | `workspace` (actions `info` `list` `switch`) | `workspaces.*` (see `docs/PROTOCOL.md`) |
+| `plugins/NetPI.Coordinator` | `netpi.coordinator` | – (for outside coordinators: the RPC/CLI only) | `sessions.dispatch`, `runs.result` |
 
 The file and shell tools start at `Order = 20`. Tests live in `tests/NetPI.Tools.Tests`, a console app with no test framework:
 

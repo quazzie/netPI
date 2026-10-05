@@ -7,6 +7,7 @@
     <Project Path="plugins/NetPI.Ask/NetPI.Ask.csproj" />
     <Project Path="plugins/NetPI.Compaction/NetPI.Compaction.csproj" />
     <Project Path="plugins/NetPI.Context/NetPI.Context.csproj" />
+    <Project Path="plugins/NetPI.Coordinator/NetPI.Coordinator.csproj" />
     <Project Path="plugins/NetPI.Diagnostics/NetPI.Diagnostics.csproj" />
     <Project Path="plugins/NetPI.Ideas/NetPI.Ideas.csproj" />
     <Project Path="plugins/NetPI.Agents/NetPI.Agents.csproj" />

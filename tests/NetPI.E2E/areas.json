@@ -13,6 +13,7 @@
     { "path": "plugins/NetPI.Ask/", "tags": ["ask"] },
     { "path": "plugins/NetPI.Backup/", "ids": ["ui.smoke"] },
     { "path": "plugins/NetPI.Compaction/", "tags": ["compaction"] },
+    { "path": "plugins/NetPI.Coordinator/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Context/", "tags": ["context", "skills"] },
     { "path": "plugins/NetPI.Decide/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Embeddings/", "tags": ["smoke", "ideas"] },

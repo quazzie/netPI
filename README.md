@@ -135,6 +135,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
 NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Loops · NetPI.Retry · NetPI.ToolRepair
 NetPI.Contracts: the higher abstractions'       │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics · NetPI.Schedules
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Workspaces   checkouts, bindings, worktrees (the plugin that owns them)
+                                                │   NetPI.Coordinator  one-call dispatch and run results for an outside coordinator
                                                 └─ ~/.netpi/plugins/ (your own)
 ```
 

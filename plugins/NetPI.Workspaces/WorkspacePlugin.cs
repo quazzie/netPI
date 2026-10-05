@@ -149,7 +149,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
                 Isolated: req.Bool("isolated") ?? provisioner.IsolationEnabled,
                 Base: req.Str("base")), ct).ConfigureAwait(false);
             if (!outcome.Ok) throw new RpcException("workspace_failed", outcome.Error!);
-            return Describe(outcome.Binding!);
+            return store.GetWorkspace(outcome.Binding!.WorkspaceId) is { } made ? Describe(made) : Describe(outcome.Binding!);
         }, "Create a workspace for a worker: { projectId, name, ownerSessionId?, ownerAgentId?, isolated?, base? } → WorkspaceInfo " +
            "(a git project gets a worktree and a branch from a recorded commit; a non-git project gets a plain folder)");
 
@@ -157,7 +157,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
         {
             var outcome = provisioner.Attach(req.Required("path"), req.Str("projectId"), req.Str("name") ?? "attached", req.Str("ownerSessionId"));
             if (!outcome.Ok) throw new RpcException("workspace_failed", outcome.Error!);
-            return Task.FromResult<object?>(Describe(outcome.Binding!));
+            return Task.FromResult<object?>(store.GetWorkspace(outcome.Binding!.WorkspaceId) is { } made ? Describe(made) : Describe(outcome.Binding!));
         }, "Attach an existing checkout as a workspace: { path, projectId?, name?, ownerSessionId? } → WorkspaceInfo (a checkout of another repository than the project is refused)");
 
         ctx.Rpc.Register("workspaces.delete", async (req, ct) =>
@@ -235,6 +235,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
 
     private static object Describe(WorkspaceBinding b) => new
     {
+        id = b.WorkspaceId,
         workspaceId = b.WorkspaceId,
         name = (string?)null,
         path = b.Root,
@@ -250,6 +251,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
 
     private static object Describe(WorkspaceInfo w) => new
     {
+        id = w.Id,
         workspaceId = w.Id,
         name = w.Name,
         path = w.Path,

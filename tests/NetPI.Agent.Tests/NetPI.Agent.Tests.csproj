@@ -26,6 +26,7 @@
     <ProjectReference Include="../../plugins/NetPI.Agents/NetPI.Agents.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Ask/NetPI.Ask.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Context/NetPI.Context.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Coordinator/NetPI.Coordinator.csproj" />
     <ProjectReference Include="../../plugins/NetPI.AgentsMd/NetPI.AgentsMd.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Runtime/NetPI.Runtime.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />

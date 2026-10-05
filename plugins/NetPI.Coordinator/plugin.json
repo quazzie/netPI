@@ -1,0 +1,5 @@
+{
+  "id": "netpi.coordinator",
+  "name": "Coordinator",
+  "description": "What an outside coordinator needs to drive NetPI workers: one-call dispatch (sessions.dispatch) and a run's result (runs.result)."
+}

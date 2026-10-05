@@ -26,6 +26,7 @@ PlanTests.Register(runner);
 GuardrailsTests.Register(runner);
 LoopsTests.Register(runner);
 RpcReadOnlyTests.Register(runner);
+CoordinatorTests.Register(runner);
 var code = await runner.RunAsync(filters);
 // No blanket delete of the shared root: each TestHost removes its own directory when it is disposed,
 // and a shared delete would take a concurrent run's files with it.

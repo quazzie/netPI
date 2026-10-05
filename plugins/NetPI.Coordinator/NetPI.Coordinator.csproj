@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The surface an outside coordinator drives NetPI workers through: sessions.dispatch, runs.result. -->
+  <PropertyGroup>
+    <Description>NetPI coordinator surface (one-call dispatch, run results) for external orchestrators.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Agent.Tests" />
+  </ItemGroup>
+</Project>
