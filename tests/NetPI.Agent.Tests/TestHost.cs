@@ -119,6 +119,8 @@ public sealed class TestHost : IAsyncDisposable
     };
 
     private readonly List<(string Id, INetPiPlugin Plugin, TestPluginContext Ctx)> _plugins = [];
+    private readonly SessionService _service;
+    private readonly IDisposable _hostLeases;
 
     public string Root { get; }
     public string Workspace { get; }
@@ -130,7 +132,8 @@ public sealed class TestHost : IAsyncDisposable
     public FakeTools Tools { get; }
     public FakeRpc Rpc { get; } = new();
     public FakeUi Ui { get; } = new();
-    public ISessionStore Sessions { get; }
+    /// <summary>The plugins' <c>ctx.Sessions</c>: the real session service, or a double over it (<see cref="UseSessions"/>).</summary>
+    public ISessionStore Sessions { get; private set; }
     /// <summary>The store the plugins' <c>ctx.Data</c> and the session service live in (memory, in this process).</summary>
     public IStorage Storage { get; }
     public FakeCatalog Catalog { get; }
@@ -158,15 +161,23 @@ public sealed class TestHost : IAsyncDisposable
             Logger = new ConsoleLogger("storage", TestHost.Verbose),
             Settings = Settings,
         });
-        Sessions = new SessionService(Storage, Bus, Workspace);
+        Sessions = _service = new SessionService(Storage, Bus, Workspace);
         Catalog = new FakeCatalog(Services);
         Services.Changed = type => ((IEventBus)Bus).Publish("services.changed", new { contract = type.FullName });
         // the host registers its core services too
         Services.Register<ISessionStore>(Sessions);
         Services.Register<IModelCatalog>(Catalog);
-        // the physical registry of shared model resources: owned by the host, adopted by the agents plugin, and outlives a reload of it
-        Services.Register<IResourceLeases>(new ResourceLeases(Bus));
+        // The physical registry of shared model resources, registered here as a stand-in: the real host registers none (the kernel
+        // cannot reference the contracts), the runtime plugin keeps one, and the agents plugin adopts whichever is registered.
+        // A test of that production shape drops it with WithoutHostLeases.
+        _hostLeases = Services.Register<IResourceLeases>(new ResourceLeases(Bus));
     }
+
+    /// <summary>Run without the host-level lease registry (the production shape: only the plugins register one). Call it from the setup of <see cref="StartAsync"/>, before the plugins start.</summary>
+    public void WithoutHostLeases() => _hostLeases.Dispose();
+
+    /// <summary>Put a double over the session store for the plugins' <c>ctx.Sessions</c> (a store that fails, say); what the plugins already resolved stays.</summary>
+    public void UseSessions(ISessionStore store) => Sessions = store;
 
     /// <summary>Which plugins <see cref="StartAsync"/> loads.</summary>
     [Flags]
@@ -242,11 +253,11 @@ public sealed class TestHost : IAsyncDisposable
         var context = SessionFork.ContextTokens(Sessions.GetMessages(sessionId, upTo + 1, 50));
         var taken = Sessions.ListSessions(new SessionQuery { Search = SessionFork.BaseTitle(from.Title), IncludeArchived = true, Limit = 1000 })
             .Select(s => s.Title).ToHashSet(StringComparer.Ordinal);
-        return Sessions.ForkSession(sessionId, upTo, SessionFork.Template(from, upTo, context, ((SessionService)Sessions).ForkResetKeys(), taken));
+        return Sessions.ForkSession(sessionId, upTo, SessionFork.Template(from, upTo, context, _service.ForkResetKeys(), taken));
     }
 
     /// <summary>A project's per-project data, the way <c>projects.update</c> writes it (merged key by key).</summary>
-    public ProjectInfo UpdateProject(string id, JsonObject? meta) => ((SessionService)Sessions).UpdateProject(id, null, null, meta);
+    public ProjectInfo UpdateProject(string id, JsonObject? meta) => _service.UpdateProject(id, null, null, meta);
 
     /// <summary>Wait until the session's agent is not busy (Running/Queued/Yielded).</summary>
     public async Task<AgentInfo> IdleAsync(string sessionId, int timeoutMs = 10_000)

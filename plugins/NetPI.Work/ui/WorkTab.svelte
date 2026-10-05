@@ -19,7 +19,9 @@
   let loading = $state(true);
   let failed = $state('');
   let updatedAt = $state(null);
-  let titles = $state.raw(new Map()); // sessionId -> title
+  // sessionId -> title, from the host's own session list (ctx.app.sessionTitle is reactive, so the rows follow a
+  // session.updated): no copy of sessions.list here and no session.* handlers to keep one current
+  const titles = { get: (id) => (id ? ctx.app.sessionTitle(id) : null) };
   let showAllRecent = $state(false);
   let showAllProcs = $state(false);
 
@@ -43,19 +45,6 @@
     }
   }
 
-  async function loadTitles() {
-    try {
-      const list = await ctx.rpc('sessions.list', { includeSubagents: true, limit: 300 });
-      titles = new Map((list ?? []).map((s) => [s.id, s.title]));
-    } catch {}
-  }
-  function setTitle(s) {
-    if (!s?.id || titles.get(s.id) === s.title) return;
-    const m = new Map(titles);
-    m.set(s.id, s.title);
-    titles = m;
-  }
-
   // The snapshot follows what can change it, and is polled as a safety net (the elapsed labels tick on their own). What
   // lands while the tab is hidden only marks it stale: a fresh snapshot is taken when it is shown again.
   // svelte-ignore state_referenced_locally
@@ -72,7 +61,6 @@
   }
 
   onMount(() => {
-    loadTitles();
     const offs = [
       ctx.on('agent.status', (d) => {
         if (!tab.visible) return void tab.schedule();
@@ -91,8 +79,6 @@
         if (!tab.visible) return void tab.schedule();
         processes = upsert(processes, d?.process);
       }),
-      ctx.on('session.created', (d) => setTitle(d?.session)),
-      ctx.on('session.updated', (d) => setTitle(d?.session)),
     ];
     return () => offs.forEach((off) => off());
   });

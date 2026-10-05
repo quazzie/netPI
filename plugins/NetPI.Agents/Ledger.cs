@@ -210,27 +210,8 @@ internal sealed partial class Ledger
 
     // ---------------------------------------------------------------- recording
 
-    /// <summary>A finished call: its cost row, the cost caches, the daily token totals, and <c>usage.changed</c>.</summary>
-    public void RecordCall(ModelRequest request, ChatMessage message, string? agent, JsonObject? agentCfg)
-    {
-        var u = message.Usage;
-        if (u is null) return;
-        var model = request.Model;
-        var (cost, source) = CostOf(model, u, agentCfg);
-        var root = RootSession(request.SessionId);
-        if (_calls is null)
-        {
-            _ctx.Logger.LogWarning("Usage store unavailable; the call's usage is not recorded");
-            return;
-        }
-        // One transaction: the call's row, the lane's cost and the token roll-up commit together.
-        _ctx.Data.Transaction(() =>
-        {
-            AddCharge(request, agent, root, u, cost, source);
-            RecordTx(message.Provider ?? model.Provider, model.Id, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens);
-        });
-        ScheduleChanged();
-    }
+    // A call is recorded by its reservation (Reserve) and corrected by its settlement (Settle), both in Reservations.cs:
+    // there is no second way to charge a call.
 
     internal static (double Cost, string Source) CostOf(ModelInfo model, Usage u, JsonObject? agentCfg)
     {
@@ -320,32 +301,8 @@ internal sealed partial class Ledger
 
     // ---------------------------------------------------------------- budget
 
-    /// <summary>
-    /// Before a call to a paid model: throws when the month's or today's budget or the agent's daily cap is spent. With
-    /// budget.onLimit "ask" the user's own chats may be allowed to go over (<see cref="Allow"/>).
-    /// </summary>
-    public void Check(ModelRequest request, string? agent, JsonObject? agentCfg)
-    {
-        var model = request.Model;
-        if (!Paid(model, PriceOf(model, agentCfg))) return;
-        var o = Options();
-        var (period, today) = Spent();
-        string? why = null;
-        if (o.MonthlyUsd is { } month && period >= month)
-            why = $"The monthly budget is spent: {Usd(period)} of {Usd(month)} since {PeriodStart.ToString("d MMM", CultureInfo.InvariantCulture)}.";
-        else if (o.DailyUsd is { } day && today >= day)
-            why = $"Today's budget is spent: {Usd(today)} of {Usd(day)}.";
-        else if (agent is not null && DailyCap(agentCfg) is { } cap && SpentToday(agent) is var spent && spent >= cap)
-            why = $"The agent {agent} has spent its {Usd(cap)} for today ({Usd(spent)}).";
-        if (why is null) return;
-
-        var session = request.SessionId is null ? null : _ctx.Sessions.GetSession(request.SessionId);
-        var ask = o.OnLimit == "ask" && session is { Kind: not "subagent" } && request.Purpose == "agent";
-        if (ask && AllowedNow(session!)) return;
-        throw new CallRefusedException(why + (ask
-            ? " You can let this chat go over, or switch it to a free model."
-            : " Raise the budget in Settings → Budget (budget.*), or use a free agent.")) { Kind = "budget", CanOverride = ask };
-    }
+    // The budget is checked where a call is reserved (Reserve, Reservations.cs): the "already spent" refusals and the
+    // reservation that must still fit are one transaction there, and the refusal wording lives there once.
 
     /// <summary>An agent's own daily cap: <c>agents.&lt;id&gt;.budget.limitUsd</c>.</summary>
     internal static double? DailyCap(JsonObject? agentCfg) => Positive((agentCfg?["budget"] as JsonObject)?["limitUsd"]);
@@ -486,8 +443,7 @@ internal sealed partial class Ledger
 
     /// <summary>
     /// The per-(day, provider, model) token roll-up: upserted with every recorded call. When called inside the
-    /// caller's storage transaction (as RecordCall and Settle do) it joins it, so the roll-up commits with the
-    /// call's row.
+    /// caller's storage transaction (as Settle does) it joins it, so the roll-up commits with the call's row.
     /// </summary>
     public void Record(string provider, string model, long input, long output, long cacheRead, long cacheWrite)
     {

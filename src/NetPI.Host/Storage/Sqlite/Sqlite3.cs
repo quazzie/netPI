@@ -63,6 +63,9 @@ internal static unsafe class Sqlite3
 
     public static string Version => Utf8.FromZ(sqlite3_libversion()) ?? "?";
 
+    /// <summary>The loaded library's version as one number (3.35.0 is 3035000), for the minimum the provider checks at open.</summary>
+    public static int VersionNumber => sqlite3_libversion_number();
+
     private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? searchPath)
     {
         if (name != Lib) return IntPtr.Zero;
@@ -143,6 +146,7 @@ internal static unsafe class Sqlite3
     [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_exec(IntPtr db, byte* sql, IntPtr callback, IntPtr arg, byte** errmsg);
     [DllImport(Lib, ExactSpelling = true)] public static extern void sqlite3_free(void* p);
     [DllImport(Lib, ExactSpelling = true)] public static extern byte* sqlite3_libversion();
+    [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_libversion_number();
 
     // The online backup API: a consistent copy of one database into a fresh one, in interruptible batches.
     [DllImport(Lib, ExactSpelling = true)] public static extern IntPtr sqlite3_backup_init(IntPtr dest, byte* destName, IntPtr source, byte* sourceName);

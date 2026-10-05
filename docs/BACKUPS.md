@@ -21,7 +21,8 @@ carries the ideas JSON files — restores as it was, and the plugin imports thos
 Open Settings → **Data & backups** → **Back up now**. Automatic backups run daily by default; seven automatic snapshots
 are retained. Manual snapshots remain until removed. Retention runs only after a successful new snapshot, and skips a
 snapshot that carries files a new one would not have (an older snapshot's ideas files are the only copy of anything on a
-home that has not been migrated). A failed/incomplete `.pending-*` directory is not listed as a usable backup.
+home that has not been migrated); the idea images a snapshot carries do not count, so a picture deleted since does not
+keep every snapshot taken while it existed. A failed/incomplete `.pending-*` directory is not listed as a usable backup.
 
 **Verify** is deliberately strict, because a snapshot that *looks* complete is the dangerous kind. A manifest is refused
 when it names no `provider`, when it lists no files, when it does not list `settings.json` or the files its provider
@@ -53,7 +54,8 @@ non-empty file list, a checksum for every entry, a plain name inside the snapsho
 inside `idea-images/`), then the provider's own check and the settings JSON, before creating the destination: a
 `sqlite` snapshot must start with `SQLite format 3`, and any other provider restores the files it listed. It refuses
 an existing directory or symlink. On a write failure it leaves any partial destination for inspection; retry into a
-different directory.
+different directory. A `memory` snapshot (`memory.json`) is restored like any other file, but it is input for a one-off
+migration tool, not for a start: the memory provider loads nothing from its home, so a home restored from one starts empty.
 
 A snapshot whose manifest names no provider — one made before the provider was recorded — can only be restored by the
 build that made it. A newer build refuses it rather than guess which storage layout it holds.

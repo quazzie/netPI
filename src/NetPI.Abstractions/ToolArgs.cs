@@ -69,7 +69,9 @@ public readonly struct ToolArgs
 
     private static string Key(string name)
     {
-        Span<char> buf = stackalloc char[name.Length];
+        // The name comes from a model or an MCP server: a huge one must not go on the stack (an overflow there is a
+        // crash nothing catches), so only a short one is stackalloc'd.
+        Span<char> buf = name.Length <= 256 ? stackalloc char[256] : new char[name.Length];
         var n = 0;
         foreach (var c in name)
             if (c != '_' && c != '-' && c != ' ') buf[n++] = char.ToLowerInvariant(c);

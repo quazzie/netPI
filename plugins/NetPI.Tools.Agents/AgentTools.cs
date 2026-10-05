@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
 
 namespace NetPI.Tools.Agents;
 
@@ -397,21 +398,24 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     }
 
     /// <summary>
-    /// Give every subagent in the batch its workspace before the first one starts. A subagent that asks for one gets it
-    /// provisioned here — a worktree and a branch created now, not when its first tool runs — and a subagent that names a
-    /// workspace that does not exist, is gone from disk or belongs to another project fails the whole call. Half a batch
-    /// running in the caller's checkout is exactly the state this prevents.
+    /// Give every subagent in the batch its workspace before the first one starts, by the provisioner's own rule: a worker
+    /// that writes gets its worktree and branch created now (not when it is spawned, one after the other), a reader gets
+    /// none, a named workspace is resolved, and one that does not exist, is gone from disk or belongs to another project
+    /// fails the whole call. A provisioning that fails after another succeeded releases what the batch created, so neither
+    /// half a batch running in the caller's checkout nor a worktree without a worker is left behind.
     /// </summary>
     private async Task<string?> PrepareBatchWorkspacesAsync(List<SpawnRequest> requests, ToolContext context, bool single, CancellationToken ct)
     {
         var provisioner = context.Services.Get<IWorkspaceProvisioner>();
         if (provisioner is null) return null;   // no workspace support loaded: the pre-workspace behavior for everything
         var session = context.Services.Get<ISessionStore>()?.GetSession(context.SessionId);
-        var prepared = new List<SpawnRequest>(requests.Count);
+        // What the batch creates is what was not there before it: only those are released on a failure (a named existing
+        // workspace is bound, not made, and stays).
+        var before = context.Services.Get<IWorkspaceStore>()?.ListWorkspaces().Select(w => w.Id).ToHashSet(StringComparer.Ordinal);
+        var provisioned = new List<WorkspaceBinding>();
         for (var i = 0; i < requests.Count; i++)
         {
             var request = requests[i];
-            if (request.Workspace() is not { } asked || (asked.WorkspaceId is null && !asked.Isolated)) { prepared.Add(request); continue; }
             WorkspaceOutcome outcome;
             try
             {
@@ -419,27 +423,48 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                await ReleaseAsync(provisioned, before).ConfigureAwait(false);
                 throw;
             }
             catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or WorkspaceUnavailableException or KeyNotFoundException)
             {
-                return Describe(single, i, $"{ex.Message}\nNone of them was started.");
+                outcome = new WorkspaceOutcome(null, ex.Message);
             }
-            if (outcome.Error is not null) return Describe(single, i, $"{outcome.Error}\nNone of them was started.");
-            if (outcome.Binding is null) { prepared.Add(request); continue; }
-            // The workspace now exists; the child binds it (the runtime hands ownership to its own session).
-            var bound = new SpawnRequest
-            {
-                Task = request.Task, Name = request.Name, Model = request.Model, Reasoning = request.Reasoning,
-                ParentAgentId = request.ParentAgentId, ProjectId = request.ProjectId,
-                Agent = request.Agent, Tools = request.Tools, Instructions = request.Instructions, NotifyParent = request.NotifyParent,
-            };
-            bound.Features.Set(new SpawnWorkspace(outcome.Binding.WorkspaceId, Name: asked.Name, Base: asked.Base));
-            prepared.Add(bound);
+            if (outcome.Error is not null)
+                return Describe(single, i, $"{outcome.Error}\nNone of them was started.") + await ReleaseAsync(provisioned, before).ConfigureAwait(false);
+            if (outcome.Binding is null) continue;   // nothing of its own: the child starts where its parent works
+            // The workspace now exists: the planner takes the binding as it is, and the runtime hands ownership to the
+            // child's own session once that exists.
+            request.Features.Set(outcome.Binding);
+            provisioned.Add(outcome.Binding);
         }
-        requests.Clear();
-        requests.AddRange(prepared);
         return null;
+    }
+
+    /// <summary>
+    /// Release the workspaces a failed batch created (the children they were for never start) through the workspace
+    /// plugin's own retire (<c>workspaces.delete</c>: a managed checkout nothing works in). What could not be released is
+    /// named, for the caller to remove.
+    /// </summary>
+    private async Task<string> ReleaseAsync(List<WorkspaceBinding> provisioned, HashSet<string>? before)
+    {
+        var problems = new List<string>();
+        foreach (var binding in provisioned)
+        {
+            if (before is null || before.Contains(binding.WorkspaceId)) continue;
+            try
+            {
+                if (!Plugin.Rpc.Exists("workspaces.delete")) throw new InvalidOperationException("workspaces.delete is not available");
+                await Plugin.Rpc.InvokeAsync("workspaces.delete", new { id = binding.WorkspaceId }, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogWarning(ex, "Releasing the workspace {Workspace} of a failed batch failed", binding.WorkspaceId);
+                problems.Add($"{binding.Describe()} ({binding.WorkspaceId}): {ex.Message}");
+            }
+        }
+        return problems.Count == 0 ? ""
+            : "\nThe workspaces provisioned for the batch could not all be released; remove them with workspaces.delete: " + string.Join("; ", problems);
     }
 
     /// <summary>The name a provisioned workspace gets when the subagent did not name it.</summary>

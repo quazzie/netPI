@@ -8,7 +8,7 @@
   import Welcome from './components/Welcome.svelte';
   import Toasts from './components/Toasts.svelte';
   import Modals from './components/modals/Modals.svelte';
-  import { app, startApp, activate, closeTab, cycleTab, newSession, abortAgent, isBusy, goneSessions, hasRpc } from './lib/state/app.svelte.js';
+  import { app, startApp, activate, closeTab, cycleTab, newSession, abortAgent, isBusy, goneSessions, hasRpc, workspaceOf } from './lib/state/app.svelte.js';
   import { getChat } from './lib/state/chat.svelte.js';
   import { modals, togglePanel, applyTheme, openIdeaDialog } from './lib/state/ui.svelte.js';
   import { registerCoreTab } from './lib/state/tabs.svelte.js';
@@ -28,11 +28,13 @@
     return id && !goneSessions.has(id) && app.openTabs.includes(id) ? getChat(id) : null;
   });
 
-  // Plugin ctx.app.onChange(): fire when the active session / its project changes.
+  // Plugin ctx.app.onChange(): fire when the active session, its project or its workspace changed — and only then. The
+  // effect also reruns when another session's workspace is recorded (app.workspaces is one map), which is nobody's change.
+  let notified = null;
   $effect(() => {
-    app.activeId;
-    app.activeSession;
-    app.activeProject;
+    const now = { id: app.activeId, session: app.activeSession, project: app.activeProject, workspace: workspaceOf(app.activeSession) };
+    if (notified && now.id === notified.id && now.session === notified.session && now.project === notified.project && now.workspace === notified.workspace) return;
+    notified = now;
     notifyAppChange();
   });
 

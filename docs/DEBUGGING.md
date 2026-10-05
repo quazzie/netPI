@@ -138,6 +138,9 @@ web_fetch (plugin reload netpi.tools.web).` — and the diagnostics plugin recor
 `reloads` (which plugins, when, which chats were mid-turn, and what it cost) and `deferred` (what quiet is holding),
 `diag.problems` has a line for each, and the Diagnostics tab shows both. The full history of one chat is
 `diag.toolsets { sessionId }`: its tools now, the baseline of its first model call, and every change with its cause.
+A reload that leaks shows up in the log as `Plugin <id>: the previous load context is still alive after unload (something
+still references plugin objects); its memory is not reclaimed` (and as `plugins.unloaded { collected: false }` on the bus):
+the old version's memory stays until a restart, usually because a plugin type sits in a host-wide cache (`docs/PLUGINS.md`, "Hot-reload rule").
 
 ## "The app stopped answering"
 

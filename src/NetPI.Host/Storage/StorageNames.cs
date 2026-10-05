@@ -9,6 +9,13 @@ namespace NetPI.Host.Storage;
 /// </summary>
 internal static partial class StorageNames
 {
+    /// <summary>
+    /// The most values an <c>In</c>/<c>NotIn</c> list may hold, the same for every provider (the port documents it): a
+    /// provider that binds every value as a parameter of one statement has a cap of its own, and a list that works on one
+    /// provider must work on the other.
+    /// </summary>
+    public const int MaxListValues = 1000;
+
     [GeneratedRegex("^[A-Za-z][A-Za-z0-9_]{0,63}$")]
     private static partial Regex Pattern();
 

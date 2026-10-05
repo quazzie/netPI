@@ -19,12 +19,12 @@ import fs from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import http from 'node:http';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compile, compileModule } from 'svelte/compiler';
 import { loadPlaywright, launchBrowser } from '../mock/pw.mjs';
 import { writeHostShims, exportNames } from './host-shims.mjs';
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname).replace(/^\//, ''), '../..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const KIT = path.join(root, 'web/src/lib/kit');
 const SVELTE = path.join(root, 'node_modules/svelte');
 

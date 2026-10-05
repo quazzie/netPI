@@ -17,11 +17,11 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compile, compileModule } from 'svelte/compiler';
 import { loadPlaywright, launchBrowser } from '../mock/pw.mjs';
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname).replace(/^\//, ''), '../..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const APP_STUB = `export const app = { projects: [], sessions: [] };
 export const deleted = [];

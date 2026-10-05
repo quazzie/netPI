@@ -388,17 +388,13 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             state.Steering.Clear();
             run.Delivered = true;
             Info.QueuedMessages = state.FollowUps.Count;
-            if (state.SteerSignal.IsCancellationRequested) state.SteerSignal = new CancellationTokenSource();
+            // The steers are taken: a fresh signal, whether or not the old one was cancelled yet. A user's steer cancels
+            // its signal after the add, outside the gate (DeliverAsync), so a cancel can land after this drain took the
+            // steer — on the old signal, which nothing reads any more, instead of on the live one with nothing queued
+            // (that made the next agent wait or ask_user return at once for a message that was already read).
+            state.SteerSignal = new CancellationTokenSource();
         }
-        foreach (var input in items)
-        {
-            // A drained agent-result notice is the parent's copy of the report — unless a wait already returned
-            // the report (ResultConsumed): then the notice is dropped, not persisted as a second copy.
-            if (input.NoticeKind == "agent-result" && input.Source?.StartsWith("agent:", StringComparison.Ordinal) == true
-                && !rt.ClaimNoticeForParent(input.Source!["agent:".Length..]))
-                continue;
-            rt.PersistInput(state, input, "steer");
-        }
+        foreach (var input in items) rt.PersistQueued(state, input, "steer");
         rt.PublishQueue(state);
         rt.PublishStatus(state);
     }

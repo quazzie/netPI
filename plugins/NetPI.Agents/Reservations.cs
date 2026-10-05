@@ -10,9 +10,9 @@ internal sealed partial class Ledger
     internal sealed record Reservation(long Id, double Cost, ModelRequest Request, string? Agent, JsonObject? Config);
 
     /// <summary>
-    /// Record one call (a reservation, or a final charge) with a fresh id, and add its cost to the lane's day.
-    /// Runs inside the caller's storage transaction, so the id, the call and the roll-ups commit together; a failed
-    /// write fails the call, rather than silently disabling the budget.
+    /// Record one call (its reservation) with a fresh id, and add its cost to the lane's day. Runs inside the caller's
+    /// storage transaction, so the id, the call and the roll-ups commit together; a failed write fails the call, rather
+    /// than silently disabling the budget.
     /// </summary>
     private long AddCharge(ModelRequest request, string? agent, string? root, Usage u, double cost, string source)
     {
@@ -169,26 +169,12 @@ internal sealed partial class Ledger
     internal static double Estimate(ModelRequest request, Price? price, ISettings? settings)
     {
         if (price is null || price.Free) return 0;
-        var input = EstimateInput(request);
+        // The input is the shared estimate of what the request puts into the window (the conversation, the system prompt
+        // and the tool definitions, their schema length cached per definition): the same figure the output clamp below
+        // works from, not a second serialisation of every tool schema per paid call.
+        var input = ModelMessages.EstimateInputTokens(request);
         var output = ModelMessages.ClampMaxTokens(request, request.MaxOutputTokens is > 0 and var max ? max : OutputLimit.Model(request.Model, settings));
         return (input * price.CacheRead + output * price.Output) / 1_000_000;
-    }
-
-    /// <summary>Approximate input context in tokens: the conversation, the system prompt and the tool definitions (images at 4000).</summary>
-    internal static long EstimateInput(ModelRequest request)
-    {
-        var input = ModelMessages.EstimateTokens(request.Messages) + ModelMessages.EstimateTokens(request.SystemPrompt);
-        if (request.Tools is { Count: > 0 } tools)
-        {
-            var chars = 0;
-            foreach (var t in tools)
-            {
-                chars += t.Name.Length + t.Description.Length + (t.Help?.Length ?? 0);
-                if (t.Parameters is not null) chars += t.Parameters.ToJsonString(NetPiJson.Options).Length;
-            }
-            input += chars / 4;
-        }
-        return input;
     }
 
     private (double Reserved, double Interrupted, long InterruptedCalls, long Unknown) EstimateStatus()
@@ -235,7 +221,7 @@ internal sealed partial class Ledger
             string? why = null;
             if (paid)
             {
-                // The "already spent" refusals first (Check's wording), then this call's reservation against the rest.
+                // The "already spent" refusals first, then this call's reservation against the rest.
                 if (o.MonthlyUsd is { } month && period >= month)
                     why = $"The monthly budget is spent: {Usd(period)} of {Usd(month)} since {Period(now, o.ResetDay).Start.ToString("d MMM", CultureInfo.InvariantCulture)}.";
                 else if (o.DailyUsd is { } day && today >= day)
@@ -387,7 +373,7 @@ internal sealed class LedgerMiddleware(Ledger ledger, AgentScheduler scheduler) 
                 if (usage is null && started)
                     // The stream died before reporting usage: price what was sent and what had streamed, not the
                     // reservation (a stop after a few seconds no longer charges the full output limit).
-                    usage = new Usage { InputTokens = Ledger.EstimateInput(request), OutputTokens = ModelMessages.EstimateTokens(streamed.ToString()) };
+                    usage = new Usage { InputTokens = ModelMessages.EstimateInputTokens(request), OutputTokens = ModelMessages.EstimateTokens(streamed.ToString()) };
                 // !started: nothing arrived before the failure or stop — rejected, $0 (a 503/529 before the first
                 // byte, a connect failure, or a cancel that made it out the door).
                 ledger.Settle(reservation, usage, false, !started);

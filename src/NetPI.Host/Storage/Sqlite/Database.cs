@@ -35,6 +35,16 @@ internal sealed unsafe class Database : IDisposable
     private readonly Timer _checkpointTimer;
     /// <summary>Environment.TickCount64 of the last statement (0: none yet): the idle timer's notion of "quiet".</summary>
     private long _lastActivity;
+    /// <summary>When the last statement ran (<see cref="Environment.TickCount64"/>). Settable so a test can make the database quiet.</summary>
+    internal long LastActivity
+    {
+        get => Interlocked.Read(ref _lastActivity);
+        set => Interlocked.Exchange(ref _lastActivity, value);
+    }
+    /// <summary>Copies (<see cref="BackupTo"/>) in flight, under the gate: <see cref="Dispose"/> waits for them to stop before it closes the source.</summary>
+    private int _backups;
+    /// <summary>Set under the gate by <see cref="Dispose"/>: a copy in flight gives up at its next batch instead of stepping a closed source.</summary>
+    private bool _closing;
 
     public string FilePath { get; }
 
@@ -113,38 +123,56 @@ internal sealed unsafe class Database : IDisposable
             if (dest != IntPtr.Zero) Sqlite3.sqlite3_close_v2(dest);
             throw ex;
         }
-        fixed (byte* name = main)
+        var finishRc = Sqlite3.OK;
+        try
         {
-            // init and finish touch the source connection, so they run under the gate like every other statement
-            IntPtr backup;
-            lock (_gate) backup = Sqlite3.sqlite3_backup_init(dest, name, _db, name);
-            if (backup == IntPtr.Zero)
+            fixed (byte* name = main)
             {
-                Sqlite3.sqlite3_close_v2(dest);
-                throw SqliteException.From(dest, Sqlite3.sqlite3_errcode(dest), null, "The backup could not be started");
-            }
-            var finished = false;
-            try
-            {
-                while (true)
+                // init and finish touch the source connection, so they run under the gate like every other statement
+                IntPtr backup;
+                lock (_gate)
                 {
-                    lock (_gate) rc = Sqlite3.sqlite3_backup_step(backup, 256);
-                    if (rc == Sqlite3.DONE) { finished = true; break; }
-                    if (rc is not (Sqlite3.OK or Sqlite3.BUSY))
-                        throw SqliteException.From(_db, rc, null, "The backup failed");
-                    Thread.Yield();   // the gate is free: a statement that was waiting takes the slice this one just gave up
+                    ThrowIfClosing();
+                    backup = Sqlite3.sqlite3_backup_init(dest, name, _db, name);
+                    if (backup == IntPtr.Zero)
+                        throw SqliteException.From(dest, Sqlite3.sqlite3_errcode(dest), null, "The backup could not be started");
+                    _backups++;   // from here Dispose waits: the source is never closed under a copy
                 }
-                lock (_gate) rc = Sqlite3.sqlite3_backup_finish(backup);
-                finished = true;
-            }
-            finally
-            {
-                if (!finished) { try { lock (_gate) Sqlite3.sqlite3_backup_finish(backup); } catch { } }
-                Sqlite3.sqlite3_close_v2(dest);
+                try
+                {
+                    while (true)
+                    {
+                        lock (_gate)
+                        {
+                            ThrowIfClosing();   // the database is closing: the copy is given up here, not stepped on a closed source
+                            rc = Sqlite3.sqlite3_backup_step(backup, 256);
+                        }
+                        if (rc == Sqlite3.DONE) break;
+                        if (rc is not (Sqlite3.OK or Sqlite3.BUSY))
+                            throw SqliteException.From(_db, rc, null, "The backup failed");
+                        Thread.Yield();   // the gate is free: a statement that was waiting takes the slice this one just gave up
+                    }
+                }
+                finally
+                {
+                    lock (_gate)
+                    {
+                        finishRc = Sqlite3.sqlite3_backup_finish(backup);
+                        _backups--;
+                        Monitor.PulseAll(_gate);   // a Dispose waiting for this copy may go on
+                    }
+                }
             }
         }
-        if (rc != Sqlite3.OK)
-            throw SqliteException.From(_db, rc, null, "Finishing the backup failed");
+        finally { Sqlite3.sqlite3_close_v2(dest); }
+        if (finishRc != Sqlite3.OK)
+            throw SqliteException.From(_db, finishRc, null, "Finishing the backup failed");
+    }
+
+    /// <summary>Under the gate: a copy may not start, or go on, once the database is closing.</summary>
+    private void ThrowIfClosing()
+    {
+        if (_closing || _db == IntPtr.Zero) throw new ObjectDisposedException(nameof(Database), "The database is closing: the copy is given up");
     }
 
     public long Insert(string sql, object? args = null)
@@ -304,7 +332,11 @@ internal sealed unsafe class Database : IDisposable
         }
     }
 
-    /// <summary>Execute a parameterless multi-statement script (PRAGMAs, migrations, transaction control).</summary>
+    /// <summary>
+    /// Execute a parameterless multi-statement script (PRAGMAs, migrations, transaction control). Not counted as activity:
+    /// the statements inside a transaction are (every prepared statement is, when it is returned), and the idle checkpoint
+    /// runs through here, so counting it would keep a quiet database "busy" with its own housekeeping.
+    /// </summary>
     private void ExecScript(string sql)
     {
         ThrowIfDisposed();
@@ -313,11 +345,7 @@ internal sealed unsafe class Database : IDisposable
         int rc;
         fixed (byte* p = bytes)
             rc = Sqlite3.sqlite3_exec(_db, p, IntPtr.Zero, IntPtr.Zero, &err);
-        if (rc == Sqlite3.OK)
-        {
-            Interlocked.Exchange(ref _lastActivity, Environment.TickCount64);
-            return;
-        }
+        if (rc == Sqlite3.OK) return;
         var message = Utf8.FromZ(err);
         if (err != null) Sqlite3.sqlite3_free(err);
         var str = Utf8.FromZ(Sqlite3.sqlite3_errstr(rc));
@@ -699,9 +727,10 @@ internal sealed unsafe class Database : IDisposable
     /// <summary>
     /// The WAL with auto-checkpoint off: a quiet database truncates its WAL (nothing a reader has to replay, a backup
     /// copies the database alone), and a WAL that outgrows <see cref="WalMaxBytes"/> is truncated even while the app
-    /// is busy.
+    /// is busy. A WAL that is absent or already empty is left alone: the timer then costs one stat every tick, not a
+    /// checkpoint forever.
     /// </summary>
-    private void IdleCheckpoint(object? state)
+    internal void IdleCheckpoint(object? state)
     {
         if (_db == IntPtr.Zero) return;
         long walBytes = 0;
@@ -711,6 +740,7 @@ internal sealed unsafe class Database : IDisposable
             walBytes = File.Exists(wal) ? new FileInfo(wal).Length : 0;
         }
         catch { return; }
+        if (walBytes == 0) return;
         if (Environment.TickCount64 - Interlocked.Read(ref _lastActivity) < CheckpointIdleMs && walBytes <= WalMaxBytes) return;
         try
         {
@@ -736,6 +766,11 @@ internal sealed unsafe class Database : IDisposable
         lock (_gate)
         {
             if (_db == IntPtr.Zero) return;
+            // A copy in flight gives up at its next batch and finishes first (Wait lets go of the gate for that): a source
+            // closed under a backup lives on as a zombie connection until the copy's last step, with a half-written
+            // destination nothing owns.
+            _closing = true;
+            while (_backups > 0) Monitor.Wait(_gate);
             // The last checkpoint (TRUNCATE): the file left behind is the whole database, with nothing left to replay.
             try { ExecScript("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { }
             try { ExecScript("PRAGMA optimize"); } catch { }

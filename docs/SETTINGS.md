@@ -113,7 +113,8 @@ turned off; models without effort levels only get on/off. Free models are limite
 |---|---|---|
 | `apiKey` | env `ANTHROPIC_API_KEY` | required |
 | `baseUrl` | `https://api.anthropic.com` | |
-| `thinking` | `budget` | `budget` (`budget_tokens` from the effort), `adaptive`, `off` |
+| `thinking` | `auto` | `auto`: by model (`budget_tokens` up to Claude 4.5, adaptive from 4.6, where `budget_tokens` is deprecated and from 4.7 on refused); `budget` (`budget_tokens` from the effort), `adaptive`, `off` |
+| `thinkingDisplay` | `summarized` | adaptive thinking only: `summarized` returns readable thinking, `omitted` leaves the thinking blocks empty (the API's default from 4.7 on; the duration is still shown) |
 | `thinkingBudgets` | low 2048, medium 8192, high 16384, max 32000 | tokens per effort. A budget is fitted inside `max_tokens` rather than raising it: when the caller named its own cap (a compaction summary, the budget ledger's reservation) that cap is what is sent |
 | `adaptiveEffort` | `true` | send `output_config.effort` with adaptive thinking |
 | `promptCaching` | `true` | cache_control on system prompt, tools and the rolling last message |
@@ -267,7 +268,7 @@ instructions.
 | key | default | meaning |
 |---|---|---|
 | `schedules.enabled` | `true` | Start due runs (`netpi.schedules`, `schedules.*` in PROTOCOL.md). Off: nothing starts; due runs wait and the missed-run rule applies when it is back on |
-| `schedules.missedGraceHours` | `24` | A run that fell due while NetPI was not running still starts if it is at most this late (0–720 h); a later one is recorded as `missed`. Never more than one catch-up run |
+| `schedules.missedGraceHours` | `24` | A run that fell due while NetPI was not running still starts if it is at most this late (0–720 h); a later one is recorded as `missed`. Never more than one catch-up run. The grace is never under one minute: the timer loop wakes up to a minute late, and that is not downtime |
 | `schedules.minIntervalMinutes` | `5` | The smallest `minutes` an `every` cadence may have (1–1440) |
 | `schedules.maxRunsPerDay` | `48` | Runs one schedule may start in any 24 hours (1–1440); past it, a run is skipped |
 
@@ -331,7 +332,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `memory.maxChunksPerChat` | `24` | pieces of ~1,200 characters a chat is embedded as (4–200); the start, the summaries and the end are kept first |
 | `loops.model` | – | a decision model (`qwen3.8-27b`, `kev-9b`) that also reads the goal and the last 10 steps when 6 of the last 8 use one tool and 3 of them failed, and hints at p(stuck) ≥ 0.8 (`decide.ask`, needs the Decide plugin; at most 5 checks per run, 10 s each) |
 | `toolRepair.enabled` | `true` | execute tool calls a model wrote as text (`<tool_call>…`), but only when the message is nothing but the call: an answer that also explains, documents or quotes the markup stays text, and the nudge asks for a real call |
-| `retry.enabled` / `retry.maxAttempts` | `true` / `6` | retries lost connections and stalled streams |
+| `retry.enabled` / `retry.maxAttempts` | `true` / `6` | retries what the provider calls transient — lost connections, stalled streams, rate limits and overload (429/529) and 5xx/server-error responses — up to this many attempts, with a notice in the chat each time; after that the error surfaces unchanged, with its request id |
 | `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter; when the server says how long to wait (`Retry-After`, e.g. with a 429 or 529), at least that long |
 | `retry.firstEventTimeoutSeconds` | `600` | silence before the first token (slow prefill) |
 | `retry.stallTimeoutSeconds` | `180` | silence between tokens |
@@ -348,6 +349,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `shell.timeoutSeconds` | `120` | default per command (max 1800) |
 | `shell.idleMinutes` | `5` | a running command that has printed nothing this long raises `process.idle` once per silence (0 = off) |
 | `shell.trackChanges` | `true` | compare `git status` before and after a foreground command that may write, and report the files it changed in its repository (and a script edit that changed nothing); see TOOLS.md, `bash` / `pwsh` |
+| `shell.hideEnv` | `[]` | environment variables a `bash`/`pwsh` command never sees, on top of what is always hidden: `NETPI_TOKEN`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `BRAVE_API_KEY`, every variable a secret setting reads (`env:NAME` under `providers`/`mcp`, an MCP server's `env`/`headerEnv` sources); see TOOLS.md, `bash` Environment |
 | `ideas.fileName` | `ideas.json` | the name the ideas file had before the backlog moved into the store. Nothing reads or writes it any more; an export is written under it when a path is given, and `ideas.list` reports it so an older UI still has a hint (docs/PLUGIN-IDEAS.md) |
 | `ideas.saveCheck` | `true` | when a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down; a new plan gets a card to save or discard, work on an open idea is attached to that idea instead |
 | `ideas.attachThreshold` | `0.8` | the probability a closed chat has to be about an open idea before it is attached to it (0.3–0.99); 0.8 was right on 5 of 6 |

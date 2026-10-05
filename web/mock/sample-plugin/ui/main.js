@@ -33,7 +33,9 @@ export function mountEvents(el, ctx) {
   let count = 0;
   const rows = [];
 
-  const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+  // Event payloads go into text nodes and into a title="…" attribute: the quotes have to go too (a message with
+  // `" onmouseover=…` in it would end the attribute), the same table as the host's markdown.js.
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const matches = (type) => {
     const f = filter.value.trim();
     if (!f) return true;

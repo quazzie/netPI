@@ -302,7 +302,7 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
 
     private async Task FinishAsync(AgentTurnContext turn, PreparedCall p, ToolResultPart result, HashSet<string> done, CancellationToken ct)
     {
-        Persist(result);
+        Persist(result, required: true);
         // the result is in the transcript: the call is done. A run cancelled in a hook below must not write a second
         // result ("aborted") for the same call id (idea-3coif8).
         done.Add(p.Call.Id);
@@ -323,7 +323,14 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
             await AgentRunner.SafeAsync(Ctx, () => hook.OnAfterToolCallAsync(turn, p.EffectiveCall ?? p.Call, result), "OnAfterToolCall", ct).ConfigureAwait(false);
     }
 
-    private void Persist(ToolResultPart result)
+    /// <summary>
+    /// Store a result. The result of a call that ran is <paramref name="required"/>: when the store refuses it, the run
+    /// fails with the store's error in a notice, because a transcript without the result closes the call as "not
+    /// executed" at the next model call (<see cref="ModelMessages.Normalize"/>), and the model runs a write or a shell
+    /// command again that did run. A marker for a call that never ran (skipped, aborted, stopped) is best effort: the
+    /// next request closes such a call the same way when the marker is missing.
+    /// </summary>
+    private void Persist(ToolResultPart result, bool required)
     {
         try
         {
@@ -337,7 +344,16 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
         }
         catch (Exception ex)
         {
-            Ctx.Logger.LogWarning(ex, "Failed to persist the result of {Tool}", result.Name);
+            if (!required)
+            {
+                Ctx.Logger.LogWarning(ex, "Failed to persist the result of {Tool}", result.Name);
+                return;
+            }
+            Ctx.Logger.LogError(ex, "Failed to persist the result of {Tool}; the run stops", result.Name);
+            var msg = $"The result of {result.Name} could not be stored ({ex.Message}). The run stopped here: the tool did run, " +
+                      "and a transcript without its result would make the model run it again.";
+            rt.AppendNotice(state, msg, "error");
+            throw new RunFailedException(msg, ex);
         }
     }
 
@@ -349,7 +365,7 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
         {
             CallId = call.Id, Name = call.Name, Content = content, IsError = isError, DurationMs = 0,
             Details = skipped is null ? null : new JsonObject { ["skipped"] = skipped },
-        });
+        }, required: false);
         if (publishEnd)
             rt.Emit(EventTypes.ToolEnd, new JsonObject
             {

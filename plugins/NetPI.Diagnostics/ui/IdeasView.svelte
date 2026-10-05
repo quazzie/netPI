@@ -1,48 +1,33 @@
 <script>
   import { onMount } from 'svelte';
-  import { Empty, StatusDot, timeAgo } from '@netpi/kit';
+  import { Empty, StatusDot, timeAgo, useRefresh } from '@netpi/kit';
 
   /**
    * Background idea checks (ideas.work): the Ideas plugin's waits, running work and recent outcomes — the save check,
    * recall, the verifier and the commit sweep. The last 10, newest first; the server keeps the last 40. Event-driven
-   * (ideas.workChanged) with a slow poll while visible as the safety net (a plugin reload drops the subscription).
+   * (ideas.workChanged carries the rows) with a slow poll while visible as the safety net (a plugin reload drops the
+   * subscription).
    */
   let { ctx, visible = true } = $props();
 
   let work = $state.raw(null);
   let error = $state('');
-  let disposed = false;
 
   async function load() {
     try {
       const answer = await ctx.rpc('ideas.work');
-      if (disposed) return;
+      if (!tab.alive) return;
       work = answer ?? [];
       error = '';
     } catch (e) {
-      if (!disposed) error = e?.message ?? String(e);
+      if (tab.alive) error = e?.message ?? String(e);
     }
   }
-  let pollTimer = 0;
-  function poll() {
-    if (disposed) return;
-    clearTimeout(pollTimer);
-    pollTimer = setTimeout(() => {
-      if (disposed) return;
-      if (visible) load();
-      poll();
-    }, 30_000);
-  }
-  onMount(() => {
-    load();
-    poll();
-    const off = ctx.on('ideas.workChanged', (d) => (work = d?.work ?? null));
-    return () => {
-      disposed = true;
-      clearTimeout(pollTimer);
-      off();
-    };
-  });
+  // one load on mount and a poll every 30 s while the parent says the view is visible; one request in flight, nothing
+  // after the view is gone (the same loop every other Diagnostics view runs on)
+  // svelte-ignore state_referenced_locally
+  const tab = useRefresh(ctx, { load, pollMs: 30_000, visible: () => visible });
+  onMount(() => ctx.on('ideas.workChanged', (d) => (work = d?.work ?? null)));
 
   const shown = $derived((work ?? []).toReversed().slice(0, 10));
   const dot = (s) =>

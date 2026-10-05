@@ -11,12 +11,26 @@ internal sealed class SqliteStorageProvider : IStorageProvider
 {
     public string Id => "sqlite";
 
+    /// <summary>
+    /// The oldest SQLite this provider runs on: <c>RETURNING</c> (3.35) is what an append is written with, and UPSERT (3.24)
+    /// what every put is. An older library opens the file without complaint and fails at the first message with a syntax
+    /// error that says nothing about why, so the version is checked at open and refused with the library named.
+    /// </summary>
+    internal const int MinVersionNumber = 3_035_000;
+    internal const string MinVersion = "3.35.0";
+
     public IStorage Open(StorageOpenOptions options)
     {
         Sqlite3.ConfiguredPath = options.Settings.Get<string>("database.sqlitePath");
         var file = Path.Combine(options.Home, "netpi.db");
         Database db;
-        try { db = new Database(file, options.Logger); }
+        try
+        {
+            Sqlite3.EnsureLoaded();
+            CheckVersion(Sqlite3.VersionNumber, Sqlite3.Version, Sqlite3.LoadedFrom);
+            db = new Database(file, options.Logger);
+        }
+        catch (StorageException) { throw; }
         catch (Exception ex) { throw new StorageException($"Cannot open the SQLite database '{file}': {ex.Message}", ex); }
         try
         {
@@ -29,12 +43,21 @@ internal sealed class SqliteStorageProvider : IStorageProvider
             throw;
         }
     }
+
+    /// <summary>Refuses a library older than <see cref="MinVersion"/>, naming the one that was loaded and where it came from.</summary>
+    internal static void CheckVersion(int versionNumber, string version, string? loadedFrom)
+    {
+        if (versionNumber >= MinVersionNumber) return;
+        throw new StorageException(
+            $"The SQLite library NetPI loaded ({loadedFrom ?? "unknown location"}) is version {version}, and this build needs {MinVersion} or newer. " +
+            "Set NETPI_SQLITE (or the setting 'database.sqlitePath') to the full path of a newer sqlite3 library.");
+    }
 }
 
 internal sealed class SqliteStorage : IStorage, IStorageSnapshot
 {
     /// <summary>
-    /// The schema, as two steps: this provider's own tables (projects, sessions, messages, kv), then the index the hot
+    /// The schema, as steps: this provider's own tables (projects, sessions, messages, kv), then the indexes the hot
     /// reads seek. A session's project is a plain value (the
     /// session service checks it exists, and a deleted project's sessions are cleared first): no foreign key ties the two, as in every provider.
     /// A message id is never reused, even after the newest message is deleted (AUTOINCREMENT). A database written by an earlier
@@ -97,6 +120,13 @@ internal sealed class SqliteStorage : IStorage, IStorageSnapshot
         // cold on 12k messages with 500 live); this partial index holds only the live rows (0.95 ms).
         """
         CREATE INDEX IF NOT EXISTS ix_messages_live ON messages(session_id, seq) WHERE compacted = 0;
+        """,
+        // The session list is read in one order only, pinned first, then newest, then id (ListSessions). The index on
+        // updated_at alone served no query (the list was a scan and a temp sort, and every append maintained it for
+        // nothing); this one is that order, so the list walks it and stops at its page.
+        """
+        DROP INDEX IF EXISTS ix_sessions_updated;
+        CREATE INDEX IF NOT EXISTS ix_sessions_list ON sessions(pinned DESC, updated_at DESC, id DESC);
         """,
     ];
 

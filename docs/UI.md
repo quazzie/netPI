@@ -17,7 +17,9 @@ npm run dev              # Vite dev server on :5173, proxies /ws /api /plugins �
 npm run mock             # mock host on :7431 (serves the built UI + the sample plugin), token "dev"
 npm run e2e              # the whole Playwright walkthrough (starts its own mock on :7432; ~2.5 min): the gate before a merge,
                          # not a loop. Screenshots → web/mock/screenshots. (playwright-core devDependency, or a local/global
-                         # `playwright`; see web/mock/pw.mjs)
+                         # `playwright`; see web/mock/pw.mjs). NETPI_BROWSER=<path of a Chromium-based executable> runs every
+                         # browser check (e2e, web/scripts/check-*.mjs) in that browser instead of Playwright's own build
+                         # or the Edge/Chrome fallback — a preinstalled Chromium of another revision, say
 npm run e2e -- --list    # its sections (one per log('…') header)
 npm run e2e -- --only "plugin tab: Work"   # just that section, 8-20 s: a part of a name is enough ("Work" is exact-or-substring),
                          # several with |; everything else is skipped with its setup. --with <section> adds a silent prerequisite,
@@ -197,7 +199,8 @@ a `project` notice, and the AGENTS.md plugin an `instructions` notice if other i
 **Ideas on the start screen** (`Welcome.svelte`, idea-ky14bu). Above "Recent sessions" the welcome screen offers at
 most three ideas from the backlog, read from the Ideas plugin with `ideas.picks { projectId, limit: 3 }` — the project's
 own open/planned ideas first, then the global ones (`state/welcomeIdeas.svelte.js` holds the list; it reads once per
-window and again on `ideas.changed`, and switches itself off when the method is unknown, so a NetPI without the plugin
+window and again on `ideas.changed` while the screen shows — behind a chat, a change only marks the list stale and the
+screen reads again when it is shown — and switches itself off when the method is unknown, so a NetPI without the plugin
 — or with an older one — shows exactly the screen it always did). The host does no ranking of its own: it owns neither
 the backlog nor the notion of "relevant". A row's project name is shown only when it is not the project the screen
 targets, and a click starts a session in the idea's own project with the idea attached (`ideas.attach`, as the
@@ -490,7 +493,11 @@ ctx = {
   on(pattern, (data, evt) => void): () => void,          // 'agent.status', 'agent.*', '*'
   app: {
     activeSessionId, activeSession, activeProject,        // plain snapshots (getters)
-    onChange(cb): () => void,                             // active session / its project changed
+    activeWorkspace,                                      // { sessionId, workspaceId, identity, version, root, branch } | null: the active
+                                                          // session's workspace as the host knows it (files.scope read on activation,
+                                                          // session.workspace since); identity is null until a files.scope answered
+    sessionTitle(id): string | null,                      // from the host's session list; reactive in a $derived
+    onChange(cb): () => void,                             // active session, its project or its workspace changed (and only then)
     openSession(id), newSession({ projectId? }), insertText(text), openTab('pluginId/tabId'),
     toast(text, level?: 'info'|'warn'|'error'),
   }
@@ -500,7 +507,7 @@ ctx = {
 ### Narrow panels
 
 Side panels are often narrow: a user's layout might be 230–340px wide, and the minimum is 200px. Every panel
-tab (Sessions, Projects, Files, Work, Ideas, Diagnostics) is designed for 220px first, looks right at a typical
+tab (Sessions, Projects, Files, Work, Ideas, Diagnostics, MCP) is designed for 220px first, looks right at a typical
 280–320px, and uses wider containers for extra detail. The rules:
 
 - **Never scroll sideways.** Plugin tab hosts clip `overflow-x`, and e2e checks that no panel tab overflows at
@@ -586,7 +593,9 @@ versioned `work.v2.*` so the defaults of this layout apply).
   and the commands that ended (the same rows as Background, output on demand), newest first, **Show all** past 6 each.
 - Updates: `agent.status`, `agents.changed` and `process.started/exited` are applied in place, and a debounced
   `work.snapshot` (250ms; 400ms after `usage.recorded` and `usage.changed`) reconciles them. A 30s timer refreshes the snapshot
-  while the tab is visible; while it is hidden, events only mark it dirty and it refreshes on show.
+  while the tab is visible; while it is hidden, events only mark it dirty and it refreshes on show. The chat titles the
+  rows show come from the host's own session list (`ctx.app.sessionTitle`), so the tab keeps no `sessions.list` copy
+  and no `session.*` handlers of its own.
 
 **Ideas** (`netpi.ideas`, right). Shows the one backlog, which lives in NetPI's own database (every idea carrying a
 `project`), with `ideas.list` (no parameters) and `projects.list` for the filter.
@@ -674,7 +683,19 @@ set, uptime, threads, framework; the full details are in its tooltip). A segment
   tree's files (a deleted one only takes `@`). It reloads with the tree, 0.8s after a tool call ends (`tool.end`),
   and when the window gets the focus back (a commit made in a terminal); while the tab is hidden, a tool call only
   marks it for a reload when the tab is shown.
-- The tree reloads when the active session's project changes (`ctx.app.onChange`).
+- The tree reloads when the active session, its workspace or its project changes (`ctx.app.onChange`, compared against
+  `ctx.app.activeSessionId`, `activeWorkspace` and `activeProject.path`): then one `files.scope` gives the new generation
+  (the workspace identity and version), and the loads of the old one are dropped. An `onChange` that moves none of these
+  (a message appended, which is a `session.updated` of the chat) costs nothing; while the tab is hidden a change only
+  marks it, and it re-keys when shown.
+
+**MCP** (`netpi.mcp`, right). The configured MCP servers from `mcp.list` (id, status, tool count; a failed server's
+error and the tools the plugin rejected), each with a ⋯ menu (edit the configuration as JSON, enable/disable, reconnect,
+refresh tools, remove: `mcp.save`, `mcp.setEnabled`, `mcp.reconnect`, `mcp.refresh`, `mcp.remove`). Clicking a server
+lists its tools from `mcp.tools { serverId }` with a filter; a tool opens to its description, registered id, three
+switches that write the server's configuration through `mcp.save` (exposed → `config.tools`, pinned schema →
+`config.pinned`, read-only → `config.readOnly`) and its schema. Kit classes and tokens throughout, one column that
+shrinks, nothing sideways.
 
 ### Writing a tab in Svelte
 
@@ -791,7 +812,7 @@ Icon names: `sessions folder folder-open plus x chevron-* arrow-* stop image pap
 terminal file file-text file-plus files pencil rename brain list-tree bot copy check alert alert-circle info
 refresh trash archive more external cpu branch clock sun moon puzzle work activity idea bug list zap layers
 message-circle steer queue panel-left panel-right command home corner-up drive sliders circle-check circle-x ban
-globe wrench kill history expand process sparkle keyboard link grip play pause`. A `UiTabInfo.icon` can use any of these
+globe wrench kill history expand process sparkle keyboard link grip play pause plug`. A `UiTabInfo.icon` can use any of these
 names or an inline `<svg …>` string.
 
 ### CSS

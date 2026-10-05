@@ -92,7 +92,9 @@ public sealed record MessageStub(long Id, long Seq, MessageRole Role, bool Compa
 /// <summary>
 /// Persistence of projects, sessions and messages, and nothing else: events, transient (message-less) sessions, the
 /// context cache, titles and fork rules belong to the session service in the kernel, which drives these primitives.
-/// Times are stored with millisecond precision. Strings compare ordinally unless a method says otherwise.
+/// Times are stored with millisecond precision. Strings compare ordinally unless a method says otherwise. A stored row
+/// that no longer parses (a message's parts, a row's meta) reads as <see cref="System.IO.InvalidDataException"/> naming
+/// the row and the column: a data error, never a row with less in it that the next update would write back.
 /// </summary>
 public interface ISessionRepository
 {
@@ -156,9 +158,10 @@ public interface ISessionRepository
     /// </summary>
     IReadOnlyList<ChatMessage> GetMessagesAfter(string sessionId, long afterSeq, int limit);
     /// <summary>
-    /// The session's uncompacted messages ascending, and the highest uncompacted seq (0 when none) read <b>after</b> the rows, so it is never
-    /// lower than the last row's seq. A message that committed between the two reads shows as Newest > the last row's seq, which the session
-    /// service takes as "this view is already stale: do not cache it".
+    /// The session's uncompacted messages ascending, and the highest uncompacted seq (0 when none). Both come from one consistent view of
+    /// the session, so Newest is never lower than the last row's seq: a compaction that lands alongside the read cannot take the newest row
+    /// out of it. (Newest > the last row's seq, which the session service takes as "this view is already stale: do not cache it", is what
+    /// a provider reports when it reads Newest after the rows and a message landed in between.)
     /// </summary>
     (IReadOnlyList<ChatMessage> Rows, long Newest) ReadContext(string sessionId);
     /// <summary>Mark every message of the session with <c>Seq</c> &lt;= <paramref name="upToSeq"/> compacted.</summary>
@@ -189,7 +192,8 @@ public enum DataFieldType { Text, Integer, Real }
 /// <summary>
 /// A collection's declared <b>index fields</b>: the only fields a query may filter or order by. A field's value is read from the
 /// document's top-level property of that name (missing or JSON null: no value). A provider applies a changed declaration
-/// (a new field is back-filled from the stored documents).
+/// (a new field is back-filled from the stored documents). A field's type never changes: declared again as another type, even
+/// after a declaration that dropped it, the declaration is refused (<see cref="StorageException"/>).
 /// </summary>
 public sealed class CollectionSpec
 {
@@ -207,7 +211,8 @@ public enum DataOp { Eq, Ne, Lt, Le, Gt, Ge, In, NotIn, IsNull, NotNull }
 /// for <see cref="DataOp.In"/> and <see cref="DataOp.NotIn"/> an <c>IEnumerable</c> of those; ignored for <see cref="DataOp.IsNull"/>
 /// and <see cref="DataOp.NotNull"/>. A comparison never matches a field with no value (including <c>Ne</c> and <c>NotIn</c>): ask for it with
 /// <c>IsNull</c>. A null <see cref="Value"/> on a comparison, or a value of the wrong type for the field, throws <see cref="ArgumentException"/>;
-/// an empty <c>In</c> matches nothing and an empty <c>NotIn</c> matches every document that has a value.
+/// an empty <c>In</c> matches nothing and an empty <c>NotIn</c> matches every document that has a value. A list holds at most 1,000
+/// values (more throws <see cref="ArgumentException"/>, on every provider): a bigger set is a join a collection does not have.
 /// </summary>
 public sealed record DataFilter(string Field, DataOp Op, object? Value = null);
 

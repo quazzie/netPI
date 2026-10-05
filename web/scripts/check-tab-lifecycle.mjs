@@ -15,10 +15,11 @@
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { compile, compileModule } from 'svelte/compiler';
 import { loadPlaywright, launchBrowser } from '../mock/pw.mjs';
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname).replace(/^\//, ''), '../..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const KIT = path.join(root, 'web/src/lib/kit');
 
 const PROBE = `<script>

@@ -41,7 +41,7 @@ internal sealed class MemorySnapshot(MemoryStorage store) : IStorageSnapshot
                 ["createdAt"] = row.CreatedAt,
                 ["updatedAt"] = row.UpdatedAt,
                 ["lastUsedAt"] = row.LastUsedAt,
-                ["meta"] = Row.Object(row.Meta),
+                ["meta"] = Row.Object(row.Meta, "project " + row.Id),
             };
         root["projects"] = projects;
 
@@ -62,7 +62,7 @@ internal sealed class MemorySnapshot(MemoryStorage store) : IStorageSnapshot
                 ["pinned"] = row.Pinned,
                 ["messageCount"] = row.MessageCount,
                 ["contextTokens"] = row.ContextTokens,
-                ["meta"] = Row.Object(row.Meta),
+                ["meta"] = Row.Object(row.Meta, "session " + row.Id),
             };
         root["sessions"] = sessions;
 
@@ -84,7 +84,7 @@ internal sealed class MemorySnapshot(MemoryStorage store) : IStorageSnapshot
                     ["usage"] = row.Usage is null ? null : JsonNode.Parse(row.Usage),
                     ["durationMs"] = row.DurationMs,
                     ["compacted"] = row.Compacted,
-                    ["meta"] = Row.Object(row.Meta),
+                    ["meta"] = Row.Object(row.Meta, Row.Message(row.Id)),
                 });
             messages[sessionId] = list;
         }

@@ -17,6 +17,8 @@ public static class SubagentWorkspaceTests
         t.Add("subagent workspaces: a workspace that does not exist fails the spawn, and no child is created", UnknownWorkspace);
         t.Add("subagent workspaces: a batch with one bad workspace starts none of them", BatchWorkspaceRefused);
         t.Add("subagent workspaces: a failed provisioning leaves no runnable child", ProvisioningFailure);
+        t.Add("subagent workspaces: a batch provisions every writing worker's worktree before the first one starts", BatchProvisionsWriters);
+        t.Add("subagent workspaces: a batch whose second worktree cannot be made starts neither and releases the first", BatchProvisioningFailure);
         t.Add("subagent workspaces: without the workspace plugin a spawn behaves exactly as before", NoPlugin);
     }
 
@@ -28,6 +30,19 @@ public static class SubagentWorkspaceTests
         var store = h.Services.Get<IWorkspaceStore>()!;
         // The plugin's own manager and provisioner do the work (real git, real worktrees), the store is the real one.
         repo.Bind(h);   // the project the sessions of these tests belong to
+        return (h, store);
+    }
+
+    /// <summary>
+    /// The host with the workspace plugin, as production sees a writer: the tool registry is a service (the host kernel
+    /// registers it; the test host does not) and a write tool is registered, so the provisioner's rule isolates a worker
+    /// whose tools can write — which is every child spawned without a tools list.
+    /// </summary>
+    private static async Task<(TestHost Host, IWorkspaceStore Store)> HostWithWritersAsync(GitRepo repo)
+    {
+        var (h, store) = await HostAsync(repo);
+        h.Services.Register<IToolRegistry>(h.Tools);
+        h.AddTool(new FakeTool("write", (ctx, args, ct) => Task.FromResult(ToolResult.Ok("written"))));
         return (h, store);
     }
 
@@ -157,6 +172,84 @@ public static class SubagentWorkspaceTests
         Check.Contains(refused ?? "", "no room for a worktree");
         Check.Equal(0, h.Sessions.ListSessions(new SessionQuery { IncludeSubagents = true, Limit = 500 }).Count(s => s.Kind == "subagent"),
             "a failed provisioning still created a runnable child");
+    }
+
+    private static async Task BatchProvisionsWriters()
+    {
+        using var repo = new GitRepo();
+        if (!repo.Available) Check.Skip("no git on PATH");
+        var (h, store) = await HostWithWritersAsync(repo);
+        await using var _ = h;
+        var parent = h.NewSession(projectId: repo.ProjectId);
+        var worktreesAtFirstChildCall = -1;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r))
+            {
+                // what a child sees at its first model call: the batch made every worktree before any child started
+                if (Volatile.Read(ref worktreesAtFirstChildCall) < 0)
+                    Volatile.Write(ref worktreesAtFirstChildCall, store.ListWorkspaces().Count(w => w.Kind == "worktree"));
+                return Reply.Text("child done");
+            }
+            if (Reply.HasToolResult(r)) return Reply.Text("parent done");
+            return Reply.Tool("agent_spawn", new
+            {
+                subagents = new object[]
+                {
+                    new { task = "write one", name = "one", agent = "a" },
+                    new { task = "write two", name = "two", agent = "a" },
+                },
+            });
+        };
+        await h.SendAsync(parent.Id, "go");
+        await h.IdleAsync(parent.Id);
+        Check.Equal("parent done", h.Messages(parent.Id)[^1].Text);
+        var one = await ChildNamed(h, "one");
+        var two = await ChildNamed(h, "two");
+        Check.True(SessionWorkspace.Of(one) is { Length: > 0 } && SessionWorkspace.Of(two) is { Length: > 0 }, "a default child that can write got a workspace of its own");
+        var w1 = store.GetWorkspace(SessionWorkspace.Of(one)!)!;
+        var w2 = store.GetWorkspace(SessionWorkspace.Of(two)!)!;
+        Check.Equal("worktree", w1.Kind, "a writer's own checkout is a worktree");
+        Check.Equal("worktree", w2.Kind);
+        NotEqual(w1.Path, w2.Path, "each writer has its own checkout");
+        Check.True(Directory.Exists(w1.Path) && Directory.Exists(w2.Path), "the worktrees exist");
+        Check.Equal(one!.Id, w1.OwnerSessionId, "the worker session owns its workspace");
+        Check.Equal(two!.Id, w2.OwnerSessionId);
+        Check.Equal(2, worktreesAtFirstChildCall, "both worktrees were there before the first child's first model call");
+    }
+
+    private static async Task BatchProvisioningFailure()
+    {
+        using var repo = new GitRepo();
+        if (!repo.Available) Check.Skip("no git on PATH");
+        var (h, store) = await HostWithWritersAsync(repo);
+        await using var _ = h;
+        var parent = h.NewSession(projectId: repo.ProjectId);
+        // The second worker's worktree folder is taken: its provisioning fails after the first worker's worktree was made.
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, ".worktrees", "two"));
+        string? refused = null;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r)) return Reply.Text("child done");
+            if (Reply.HasToolResult(r)) { refused = r.Messages[^1].ToolResults.Last().Content; return Reply.Text("gave up"); }
+            return Reply.Tool("agent_spawn", new
+            {
+                subagents = new object[]
+                {
+                    new { task = "write one", name = "one", agent = "a" },
+                    new { task = "write two", name = "two", agent = "a" },
+                },
+            });
+        };
+        await h.SendAsync(parent.Id, "go");
+        await h.IdleAsync(parent.Id);
+        Check.Contains(refused ?? "", "subagents[1]");
+        Check.Contains(refused ?? "", "already exists");
+        Check.Contains(refused ?? "", "None of them was started");
+        Check.Equal(0, h.Sessions.ListSessions(new SessionQuery { IncludeSubagents = true, Limit = 500 }).Count(s => s.Kind == "subagent"),
+            "a failed provisioning in the batch still started a child");
+        Check.Equal(0, store.ListWorkspaces().Count, "the worktree made for the first worker was released");
+        Check.False(Directory.Exists(Path.Combine(repo.RepoPath, ".worktrees", "one")), "the first worker's worktree is gone from disk");
     }
 
     private static async Task NoPlugin()

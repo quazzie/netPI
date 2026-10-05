@@ -36,8 +36,15 @@ public sealed class LoopsPlugin : INetPiPlugin
             ],
         });
         context.Services.Register<IAgentHook>(new LoopHook(context));
+        context.Services.Register<IDecisionContextConsumer>(new LoopsContextConsumer(context));
         return Task.CompletedTask;
     }
+}
+
+/// <summary>The full-conversation checks read the provider's capture of the conversation: the runtime captures it while <c>loops.contextChecks</c> is on.</summary>
+internal sealed class LoopsContextConsumer(IPluginContext ctx) : IDecisionContextConsumer
+{
+    public bool WantsDecisionContext => ctx.Settings.Get("loops.contextChecks", false);
 }
 
 internal sealed class LoopHook(IPluginContext ctx) : IAgentHook

@@ -232,6 +232,17 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
     await streamAssistant(sid, run, { firstTokenMs: 3000 * SPEED, text: 'Picking up from the summary: the scheduler fix is in, so the tests run next.' });
   }
 
+  /**
+   * "[error]": the model call fails for good (the retry plugin gave up): an error notice with the ids, as the host leaves
+   * them, and the run ends failed — the tab shows the error dot, which the next run clears.
+   */
+  async function errorScript(sid, run) {
+    await streamAssistant(sid, run, { thinking: 'Reading the scheduler before the change.', text: 'Looking at the scheduler first.', fast: true });
+    await sleep(200, run);
+    append(sid, 'notice', [text('Model call failed: HTTP 503 backend_unavailable [x-request-id: req_e2e_503]. Gave up after 5 attempts.')], { meta: { kind: 'error' } });
+    setStatus(sid, { status: 'failed', error: 'HTTP 503 backend_unavailable', activity: null, finishedAt: new Date().toISOString() });
+  }
+
   /** "[web]": a tools notice (a plugin just loaded), then todo_write, web_search, web_fetch and screenshot; file links. */
   async function webScript(sid, run) {
     const setTodo = (items) => {
@@ -749,6 +760,7 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
   }
 
   async function script(sid, run, input) {
+    if (/\[error\]/i.test(input)) return errorScript(sid, run);
     if (/\[planenter\]/i.test(input)) return planEnterScript(sid, run);
     if (/\[plan\]/i.test(input) || planActive(sid)) return planScript(sid, run);
     if (/\[ask2?\]/i.test(input)) return askScript(sid, run, input);

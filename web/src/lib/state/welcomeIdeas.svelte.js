@@ -16,6 +16,7 @@ class WelcomeIdeas {
   enabled = $state(true);
   loaded = $state(false);
   projectId = $state(null); // the project the welcome screen starts sessions in (null: none)
+  shown = false; // the start screen is on (Welcome.svelte sets it): the only time a changed backlog is worth reading now
 
   /** Read once per window, and again for a different target project (or a stale one, when forced). */
   async load(projectId, force = false) {
@@ -37,9 +38,15 @@ class WelcomeIdeas {
     }
   }
 
-  /** ideas.changed: the backlog moved (in this window or another), so the offer moves with it. */
+  /**
+   * ideas.changed: the backlog moved (in this window or another), so the offer moves with it — now while the start
+   * screen is showing; while a chat is in front it only forgets what it has, and the screen reads again when it is
+   * shown (ideas.changed arrives after every write, an agent's too: a screen nobody sees must not cost an ideas.picks each).
+   */
   changed() {
-    if (this.enabled) this.load(this.projectId, true);
+    if (!this.enabled) return;
+    if (this.shown) this.load(this.projectId, true);
+    else this.loaded = false;
   }
 }
 

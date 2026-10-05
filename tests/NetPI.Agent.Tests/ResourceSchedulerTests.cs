@@ -15,6 +15,7 @@ public static class ResourceSchedulerTests
         t.Add("scheduler resource: changing an agent model keeps its old running call counted", Rebind);
         t.Add("scheduler resource: named chats without concurrency metadata never exceed two provider calls", ProviderBound);
         t.Add("scheduler resource: without a scheduler the physical fallback admits the scheduler's local slots default", FallbackDefault);
+        t.Add("scheduler resource: disabling and re-enabling the agents plugin keeps a run in flight counted", SurvivesAgentsPluginToggle);
     }
 
     private static AgentSlotRequest Req(string key, string id, int priority = 0) =>
@@ -222,6 +223,44 @@ public static class ResourceSchedulerTests
             }
         }
         finally { release.TrySetResult(); }
+    }
+
+    /// <summary>
+    /// In production only the plugins register the lease registry (the host kernel cannot reference the contracts): the
+    /// runtime plugin keeps it across a disable and re-enable of the agents plugin, so a run that holds a model's one
+    /// instance stays counted while the plugin is off, and the re-enabled plugin starts from that count, not from zero.
+    /// </summary>
+    private static async Task SurvivesAgentsPluginToggle()
+    {
+        await using var h = await TestHost.StartAsync(x => x.WithoutHostLeases());
+        var active = 0;
+        var maximum = 0;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Catalog.Handler = (_, _) => Reply.Text("done", async ct =>
+        {
+            var n = Interlocked.Increment(ref active);
+            lock (h) maximum = Math.Max(maximum, n);
+            try { await release.Task.WaitAsync(ct); }
+            finally { Interlocked.Decrement(ref active); }
+        });
+        var first = h.NewSession(model: "fake/solo");   // one instance
+        var second = h.NewSession(model: "fake/solo");
+        await h.SendAsync(first.Id, "go");
+        await Wait.Until(() => Volatile.Read(ref active) == 1, "the first run holds the model's one slot");
+
+        await h.StopPluginAsync("netpi.agents");   // off: no scheduler, the runtime admits against the registry itself
+        await h.SendAsync(second.Id, "go");
+        await Wait.Until(() => h.Runtime.GetBySession(second.Id)?.Status == AgentStatus.Queued, "the second run waits for the slot the first still holds");
+        await h.StartPluginAsync(new NetPI.Agents.AgentsPlugin());   // back: it adopts the registry with the first run in it
+        await Task.Delay(300);
+        Check.Equal(AgentStatus.Queued, h.Runtime.GetBySession(second.Id)!.Status, "still waiting: the re-enabled plugin did not start from an empty count");
+        Check.Equal(1, h.Catalog.Calls, "only the admitted call reached the provider");
+
+        release.TrySetResult();
+        await h.IdleAsync(first.Id);
+        await h.IdleAsync(second.Id);
+        Check.Equal(2, h.Catalog.Calls, "the second ran once the first released the slot");
+        Check.Equal(1, maximum, "never two calls on a one-instance model");
     }
 
     private static async Task FallbackDefault()

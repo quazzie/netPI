@@ -469,6 +469,19 @@ internal sealed class AgentRuntime : IAgentRuntime
         return Ctx.Sessions.AppendMessage(s.Info.SessionId, m);
     }
 
+    /// <summary>
+    /// Queued input into the transcript, with the delivery it was queued with ("steer" | "queue"). A drained agent-result
+    /// notice is the parent's copy of the report — unless a wait already returned the report (ResultConsumed): then the
+    /// notice is dropped, not persisted as a second copy.
+    /// </summary>
+    internal void PersistQueued(AgentState s, UserInput input, string delivery)
+    {
+        if (input.NoticeKind == "agent-result" && input.Source.StartsWith("agent:", StringComparison.Ordinal)
+            && !ClaimNoticeForParent(input.Source["agent:".Length..]))
+            return;
+        PersistInput(s, input, delivery);
+    }
+
     internal void AppendNotice(AgentState s, string text, string kind, JsonObject? meta = null)
     {
         try
@@ -501,6 +514,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         if (_stopping) throw new InvalidOperationException("The agent runtime is stopping.");
         RunState? run = null;
         CancellationTokenSource? sig = null;
+        List<QueuedRecord> kept = [];
         lock (s.Gate)
         {
             if (s.Run is not null)
@@ -517,7 +531,15 @@ internal sealed class AgentRuntime : IAgentRuntime
             }
             else
             {
+                // The queue an aborted or failed run kept (its chips are still there) goes into the transcript before this
+                // input, in the order it waited and with the delivery each item was queued with: the user wrote those
+                // first, and a follow-up is not a steer. Taken here, so the run starts with an empty queue instead of
+                // draining them after this input, all as steers.
+                kept = s.QueueRecords();
+                s.Steering.Clear();
+                s.FollowUps.Clear();
                 run = BeginRunLocked(s);
+                if (kept.Count > 0) run.Delivered = true;
             }
         }
 
@@ -532,6 +554,14 @@ internal sealed class AgentRuntime : IAgentRuntime
             return Task.CompletedTask;
         }
 
+        // A kept agent-result notice claims its child's gate (PersistQueued), outside this agent's gate. When this is the
+        // notice of another child finishing (NotifyParent holds that child's gate around this call), the two gates are
+        // siblings', never the reverse pair: a second finish at the same moment finds the run started and steers instead.
+        foreach (var (delivery, queued) in kept)
+        {
+            try { PersistQueued(s, queued, delivery); }
+            catch (Exception ex) { Ctx.Logger.LogError(ex, "Failed to persist queued input for {Session}", s.Info.SessionId); }
+        }
         try
         {
             PersistInput(s, input, null);
@@ -540,6 +570,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         {
             Ctx.Logger.LogError(ex, "Failed to persist input for {Session}", s.Info.SessionId);
         }
+        if (kept.Count > 0) PublishQueue(s);
         LaunchRun(s, run);
         return Task.CompletedTask;
     }

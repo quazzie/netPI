@@ -51,6 +51,14 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
         }
     }
 
+    /// <summary>Whether a plugin wants the provider's capture of this call's conversation (<see cref="IDecisionContextConsumer"/>):
+    /// the consumers declare the need, so the runtime knows none of their settings by name.</summary>
+    private bool CaptureWanted()
+    {
+        try { return Ctx.Services.GetAll<IDecisionContextConsumer>().Any(c => c.WantsDecisionContext); }
+        catch { return false; }
+    }
+
     /// <summary>
     /// Streams one model call and persists what it produced. Returns the assistant message and the context size the
     /// provider reported (0 when it reported none, so the run keeps the last one it knows).
@@ -60,7 +68,7 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
     {
         var request = new ModelRequest
         {
-            CaptureDecisionContext = Ctx.Settings.Get("loops.contextChecks", false) || Ctx.Settings.Get("todo.checkCommits", false),
+            CaptureDecisionContext = CaptureWanted(),
             CorrelationId = Guid.NewGuid().ToString("N"),
             Model = model,
             SystemPrompt = turn.SystemPrompt,

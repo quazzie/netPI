@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -18,12 +19,20 @@ internal static class Row
 
     public static string? Json(JsonObject? node) => node?.ToJsonString();
 
-    public static JsonObject? Object(string? json)
+    /// <summary>
+    /// A meta column back into the object it left as. A column that no longer parses is a data error naming the row and
+    /// the column (as the sqlite provider reads one), never "no meta": read as null, the next update of the row would
+    /// write the null back and the corruption would be gone with whatever the meta held.
+    /// </summary>
+    public static JsonObject? Object(string? json, string row)
     {
         if (string.IsNullOrEmpty(json)) return null;
         try { return JsonNode.Parse(json) as JsonObject; }
-        catch (JsonException) { return null; }
+        catch (JsonException ex) { throw new InvalidDataException($"Stored {row} is corrupted and cannot be read: its meta is not JSON: {ex.Message}", ex); }
     }
+
+    /// <summary>What a message row is called in a data error: its id, like the sqlite provider names it.</summary>
+    public static string Message(long id) => "message " + id.ToString(CultureInfo.InvariantCulture);
 }
 
 /// <summary>A project row. Immutable: a write replaces the record (see <see cref="MemoryStorage"/>'s undo log).</summary>
@@ -35,7 +44,7 @@ internal sealed record ProjectRow(string Id, string Name, string Path, long Crea
     public ProjectInfo ToInfo() => new()
     {
         Id = Id, Name = Name, Path = Path, CreatedAt = Row.Stamp(CreatedAt), UpdatedAt = Row.Stamp(UpdatedAt),
-        LastUsedAt = LastUsedAt is { } l ? Row.Stamp(l) : null, Meta = Row.Object(Meta),
+        LastUsedAt = LastUsedAt is { } l ? Row.Stamp(l) : null, Meta = Row.Object(Meta, "project " + Id),
     };
 }
 
@@ -55,7 +64,7 @@ internal sealed record SessionRow(
     {
         Id = Id, Title = Title, ProjectId = ProjectId, ParentSessionId = ParentSessionId, Kind = Kind, Model = Model,
         Reasoning = Reasoning, CreatedAt = Row.Stamp(CreatedAt), UpdatedAt = Row.Stamp(UpdatedAt), Archived = Archived,
-        Pinned = Pinned, MessageCount = MessageCount, ContextTokens = ContextTokens, Meta = Row.Object(Meta),
+        Pinned = Pinned, MessageCount = MessageCount, ContextTokens = ContextTokens, Meta = Row.Object(Meta, "session " + Id),
     };
 }
 
@@ -75,8 +84,8 @@ internal sealed record MessageRow(
         Parts = JsonSerializer.Deserialize<List<MessagePart>>(Parts, NetPiJson.Options) ?? [],
         CreatedAt = Row.Stamp(CreatedAt), Provider = Provider, Model = Model, StopReason = StopReason,
         Usage = Usage is null ? null : JsonSerializer.Deserialize<Usage>(Usage, NetPiJson.Options),
-        DurationMs = DurationMs, Compacted = Compacted, Meta = Row.Object(Meta),
+        DurationMs = DurationMs, Compacted = Compacted, Meta = Row.Object(Meta, Row.Message(Id)),
     };
 
-    public MessageStub ToStub() => new(Id, Seq, Role, Compacted, Row.Object(Meta));
+    public MessageStub ToStub() => new(Id, Seq, Role, Compacted, Row.Object(Meta, Row.Message(Id)));
 }

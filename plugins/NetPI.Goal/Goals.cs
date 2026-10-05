@@ -122,7 +122,13 @@ internal sealed class Goals(IPluginContext ctx)
         public bool Auto;
         public int Progress;
         public int Runs;
+        /// <summary>What the run's calls cost the goal since the goal was last written (<see cref="FlushUsage"/>).</summary>
+        public long Tokens;
+        public int Calls;
     }
+
+    /// <summary>The goal row is written with the run's tokens every this many model calls, and at the run's end.</summary>
+    private const int FlushEvery = 10;
 
     private readonly ConcurrentDictionary<string, RunTrack> _runs = new(); // session id → the running run (RunEnded removes it)
     // Sessions whose next run is a continuation, and the last run that reached OnRunStart: both are released with the
@@ -387,11 +393,12 @@ internal sealed class Goals(IPluginContext ctx)
         {
             // the executor is back: the goals a reload paused resume of their own; goals the user paused (or that never
             // ran because no executor was loaded) stay where they are, for an explicit goal.resume
+            // the listed rows carry their meta: the goal is read from the row, not with a second read per session
             for (var offset = 0; ; offset += 100)
             {
                 var sessions = ctx.Sessions.ListSessions(new SessionQuery { IncludeArchived = true, Offset = offset, Limit = 100 });
                 foreach (var session in sessions)
-                    if (Get(session.Id) is { Status: Goal.Paused, Reason: ReloadPausedReason } goal) ResumeReloaded(session.Id, goal);
+                    if (Goal.From(session.Meta?[Goal.MetaKey]) is { Status: Goal.Paused, Reason: ReloadPausedReason } goal) ResumeReloaded(session.Id, goal);
                 if (sessions.Count < 100) break;
             }
             return;
@@ -400,7 +407,7 @@ internal sealed class Goals(IPluginContext ctx)
         {
             var sessions = ctx.Sessions.ListSessions(new SessionQuery { IncludeArchived = true, Offset = offset, Limit = 100 });
             foreach (var session in sessions)
-                if (Get(session.Id) is { Status: Goal.Active } goal) Unavailable(session.Id, goal);
+                if (Goal.From(session.Meta?[Goal.MetaKey]) is { Status: Goal.Active } goal) Unavailable(session.Id, goal);
             if (sessions.Count < 100) break;
         }
     }
@@ -479,17 +486,35 @@ internal sealed class Goals(IPluginContext ctx)
         _runs[sid] = new RunTrack { GoalId = Get(sid) is { Status: Goal.Active } g ? g.Id : null, Auto = auto, Runs = run.Agent.Runs };
     }
 
-    /// <summary>Tokens the goal cost: input that was not read from the cache, plus output.</summary>
+    /// <summary>
+    /// Tokens the goal cost: input that was not read from the cache, plus output. Counted on the run and written to the
+    /// goal in batches (every <see cref="FlushEvery"/> calls, and at the run's end, before the budget is read there): a
+    /// session row rewritten, with <c>session.updated</c> published, on every model call of a goal run beside the
+    /// runtime's own per-call write was the price of counting per call.
+    /// </summary>
     public void CountUsage(AgentRunContext run, Usage? usage)
     {
         if (usage is null || !_runs.TryGetValue(run.Session.Id, out var track) || track.GoalId is null) return;
         var tokens = usage.InputTokens + usage.CacheWriteTokens + usage.OutputTokens;
         if (tokens <= 0) return;
-        Update(run.Session.Id, g =>
+        Interlocked.Add(ref track.Tokens, tokens);
+        if (Interlocked.Increment(ref track.Calls) % FlushEvery == 0) FlushUsage(run.Session.Id, track);
+    }
+
+    /// <summary>Write what the run's calls cost since the last write to its goal (a goal that changed meanwhile is left alone).</summary>
+    private void FlushUsage(string sessionId, RunTrack track)
+    {
+        var tokens = Interlocked.Exchange(ref track.Tokens, 0);
+        if (tokens <= 0) return;
+        try
         {
-            if (g is not null && g.Id == track.GoalId) g.TokensUsed += tokens;
-            return g;
-        });
+            Update(sessionId, g =>
+            {
+                if (g is not null && g.Id == track.GoalId) g.TokensUsed += tokens;
+                return g;
+            });
+        }
+        catch (KeyNotFoundException) { }   // the session was deleted: its goal went with it
     }
 
     public void ToolDone(AgentRunContext run, ToolCallPart call, ToolResultPart result)
@@ -503,6 +528,7 @@ internal sealed class Goals(IPluginContext ctx)
     {
         var sid = run.Session.Id;
         _runs.TryRemove(sid, out var track);
+        if (track is { GoalId: not null }) FlushUsage(sid, track);   // the budget below reads the goal with this run's tokens in it
         if (run.Agent.IsSubagent) return;
         var goal = Get(sid);
         if (goal is not { Status: Goal.Active }) return;

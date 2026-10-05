@@ -94,12 +94,17 @@ internal sealed class SubagentPlanner(IPluginContext ctx)
     }
 
     /// <summary>
-    /// The child's checkout. Null when no workspace plugin is loaded (the child shares its parent's project, as it always
-    /// did); otherwise the provisioner answers, and a refusal is an error that stops the spawn <em>before</em> the child's
-    /// session exists, so a failed provisioning cannot leave a runnable child in the parent's checkout.
+    /// The child's checkout. The one the spawner provisioned already, when it did (a batch gives every child its workspace
+    /// before the first one starts: <c>AgentSpawnTool</c>); null when no workspace plugin is loaded (the child shares its
+    /// parent's project, as it always did); otherwise the provisioner answers, and a refusal is an error that stops the
+    /// spawn <em>before</em> the child's session exists, so a failed provisioning cannot leave a runnable child in the
+    /// parent's checkout.
     /// </summary>
     private async Task<WorkspaceBinding?> ProvisionWorkspaceAsync(SpawnRequest request, SessionInfo? parentSession, string childId, string childName, CancellationToken ct)
     {
+        // Provisioned by the spawner: the plan takes the binding as it is. Asking the provisioner again would give a
+        // writer a second worktree (or refuse the name the first one took), since its rule isolates every writing worker.
+        if (request.Features.Get<WorkspaceBinding>() is { } provisioned) return provisioned;
         var provisioner = ctx.Services.Get<IWorkspaceProvisioner>();
         if (provisioner is null) return null;
         WorkspaceOutcome outcome;

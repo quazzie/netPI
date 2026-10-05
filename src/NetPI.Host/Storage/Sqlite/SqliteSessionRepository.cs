@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -213,12 +214,12 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
 
     public (IReadOnlyList<ChatMessage> Rows, long Newest) ReadContext(string sessionId)
     {
-        // Read in this order on purpose: the rows first, then the newest seq, so the newest is never older than the rows. A message
-        // that committed between the two shows up as newest > the last row's seq, which the session service reads as "do not cache".
+        // One statement, one consistent view: the rows are every live message of the session, so the newest live seq is the
+        // last row's (0 when there is none). Read as a second statement it could be lower — a MarkCompacted committed in
+        // between takes the newest row out of the MAX after the rows already carried it — which the port rules out.
         var rows = db.Query($"SELECT {MessageColumns} FROM messages WHERE session_id = @sessionId AND compacted = 0 ORDER BY seq",
             new { sessionId }, ReadMessage);
-        var newest = db.Scalar<long?>("SELECT MAX(seq) FROM messages WHERE session_id = @sessionId AND compacted = 0", new { sessionId }) ?? 0;
-        return (rows, newest);
+        return (rows, rows.Count == 0 ? 0 : rows[^1].Seq);
     }
 
     public void MarkCompacted(string sessionId, long upToSeq) =>
@@ -243,7 +244,8 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
 
     public IReadOnlyList<MessageStub> MessageStubs(string sessionId) =>
         db.Query("SELECT id, seq, role, compacted, meta FROM messages WHERE session_id = @sessionId ORDER BY seq", new { sessionId },
-            r => new MessageStub(r.GetInt64("id"), r.GetInt64("seq"), ParseRole(r.GetString("role")), r.GetInt64("compacted") != 0, ParseObject(r.GetStringOrNull("meta"))));
+            r => new MessageStub(r.GetInt64("id"), r.GetInt64("seq"), ParseRole(r.GetString("role")), r.GetInt64("compacted") != 0,
+                ParseMeta(r.GetStringOrNull("meta"), "message " + r.GetInt64("id").ToString(CultureInfo.InvariantCulture))));
 
     public void SetCompacted(string sessionId, IReadOnlySet<long> compactedSeqs) =>
         db.Transaction(_ =>
@@ -310,7 +312,7 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
             Usage = r.GetStringOrNull("usage") is { } u ? ReadStored<Usage>(u, id) : null,
             DurationMs = r.GetInt64OrNull("duration_ms"),
             Compacted = r.GetInt64("compacted") != 0,
-            Meta = ParseObject(r.GetStringOrNull("meta")),
+            Meta = ParseMeta(r.GetStringOrNull("meta"), "message " + id.ToString(CultureInfo.InvariantCulture)),
         };
     }
 
@@ -340,7 +342,7 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
         Pinned = r.GetInt64("pinned") != 0,
         MessageCount = r.GetInt64("message_count"),
         ContextTokens = r.GetInt64("context_tokens"),
-        Meta = ParseObject(r.GetStringOrNull("meta")),
+        Meta = ParseMeta(r.GetStringOrNull("meta"), "session " + r.GetString("id")),
     };
 
     private static ProjectInfo ReadProject(ISqlRow r) => new()
@@ -351,13 +353,18 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
         CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("created_at")),
         UpdatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("updated_at")),
         LastUsedAt = r.GetInt64OrNull("last_used_at") is { } l ? DateTimeOffset.FromUnixTimeMilliseconds(l) : null,
-        Meta = ParseObject(r.GetStringOrNull("meta")),
+        Meta = ParseMeta(r.GetStringOrNull("meta"), "project " + r.GetString("id")),
     };
 
-    private static JsonObject? ParseObject(string? json)
+    /// <summary>
+    /// A row's meta column, back into the object it left as. Like <see cref="ReadStored{T}"/>: a column that no longer parses
+    /// is a data error naming the row and the column, never "no meta" — read as null, the next update of the row would write
+    /// the null back and the corruption would be gone with whatever the meta held.
+    /// </summary>
+    private static JsonObject? ParseMeta(string? json, string row)
     {
         if (string.IsNullOrEmpty(json)) return null;
         try { return JsonNode.Parse(json) as JsonObject; }
-        catch (JsonException) { return null; }
+        catch (JsonException ex) { throw new InvalidDataException($"Stored {row} is corrupted and cannot be read: its meta is not JSON: {ex.Message}", ex); }
     }
 }

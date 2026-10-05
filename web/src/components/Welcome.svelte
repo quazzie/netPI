@@ -49,6 +49,11 @@
     }
   }
 
+  // While this screen shows, the picks follow ideas.changed; behind a chat, a change only marks them for the next showing.
+  $effect(() => {
+    welcomeIdeas.shown = true;
+    return () => (welcomeIdeas.shown = false);
+  });
   // One read per window, for the project the screen targets; ideas.changed moves it (welcomeIdeas.changed).
   $effect(() => {
     if (app.ready) welcomeIdeas.load(target?.id ?? undefined);

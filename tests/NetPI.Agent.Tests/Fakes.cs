@@ -283,6 +283,44 @@ public static class Reply
     public static bool HasToolResult(ModelRequest r) => r.Messages.LastOrDefault()?.Role == MessageRole.Tool;
 }
 
+// ------------------------------------------------------------------ session store that fails
+
+/// <summary>The real session store with a fault: an append that <see cref="FailAppend"/> picks throws, as a full disk or a
+/// broken database would, so a test can see what a run does with a result it cannot store. Everything else forwards.</summary>
+public sealed class FailingSessionStore(ISessionStore inner) : ISessionStore
+{
+    /// <summary>Which messages the store refuses (null: none); the exception is a <see cref="StorageException"/> with <see cref="Error"/>.</summary>
+    public Func<ChatMessage, bool>? FailAppend { get; set; }
+    public string Error { get; set; } = "disk full";
+
+    public ChatMessage AppendMessage(string sessionId, ChatMessage message)
+    {
+        if (FailAppend?.Invoke(message) == true) throw new StorageException(Error);
+        return inner.AppendMessage(sessionId, message);
+    }
+
+    public IReadOnlyList<ProjectInfo> ListProjects() => inner.ListProjects();
+    public ProjectInfo? GetProject(string id) => inner.GetProject(id);
+    public ProjectInfo CreateProject(string name, string path) => inner.CreateProject(name, path);
+    public ProjectInfo UpdateProject(string id, string? name, string? path) => inner.UpdateProject(id, name, path);
+    public void DeleteProject(string id) => inner.DeleteProject(id);
+    public IReadOnlyList<SessionInfo> ListSessions(SessionQuery query) => inner.ListSessions(query);
+    public SessionInfo? GetSession(string id) => inner.GetSession(id);
+    public SessionInfo CreateSession(SessionInfo template) => inner.CreateSession(template);
+    public SessionInfo UpdateSession(string id, Action<SessionInfo> mutate) => inner.UpdateSession(id, mutate);
+    public void DeleteSession(string id) => inner.DeleteSession(id);
+    public SessionInfo SetSessionProject(string sessionId, string? projectId) => inner.SetSessionProject(sessionId, projectId);
+    public string GetCwd(SessionInfo session) => inner.GetCwd(session);
+    public void DeclareForkReset(params string[] keys) => inner.DeclareForkReset(keys);
+    public void UpdateMessage(ChatMessage message) => inner.UpdateMessage(message);
+    public ChatMessage? GetMessage(long id) => inner.GetMessage(id);
+    public IReadOnlyList<ChatMessage> GetMessages(string sessionId, long? beforeSeq = null, int? limit = null) => inner.GetMessages(sessionId, beforeSeq, limit);
+    public IReadOnlyList<ChatMessage> GetMessagesAfter(string sessionId, long afterSeq, int limit) => inner.GetMessagesAfter(sessionId, afterSeq, limit);
+    public IReadOnlyList<ChatMessage> GetContextMessages(string sessionId) => inner.GetContextMessages(sessionId);
+    public void MarkCompacted(string sessionId, long upToSeq) => inner.MarkCompacted(sessionId, upToSeq);
+    public SessionInfo ForkSession(string sessionId, long upToSeq, SessionInfo template) => inner.ForkSession(sessionId, upToSeq, template);
+}
+
 // ------------------------------------------------------------------ fake tool
 
 public sealed class FakeTool(string name, Func<ToolContext, JsonElement, CancellationToken, Task<ToolResult>> exec, bool readOnly = false, string category = "general",

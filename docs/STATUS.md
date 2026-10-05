@@ -22,19 +22,22 @@
 
 ## Validation
 
-Windows validation on 2026-10-03: the six unit suites (`scripts/test.ps1`) from fresh Release builds in this repository:
+Windows validation on 2026-10-03: the six unit suites (`scripts/test.ps1`) from fresh Release builds in this repository
+were green (Providers 68 passed, 495 checks; Tools 79; Agent 195; Aux 335; Host 170; Storage 104).
 
-| Suite | Result |
+The repository is on GitHub (`quazzie/netPI`) and `.github/workflows/ci.yml` runs on every push, on `windows-latest`:
+the six unit suites, the mock UI suite and the real-server e2e suite (the Linux build and the suites on Linux are not
+run there yet). **The runs on `master` of 2026-10-05 were not green**; the Windows-runner failures are under
+investigation and this page says so until they are fixed:
+
+| Job | Result on 2026-10-05 |
 |---|---|
-| Providers | 68 passed; 495 checks |
-| Tools | 79 passed |
-| Agent | 195 passed |
-| Aux | 335 passed |
-| Host | 170 passed |
-| Storage | 104 passed |
+| Unit suites | Aux 391/395 (four `workspaces:` tests); Host 205/206 (`server: /api/health…` pinned the version `0.1.0`; the test now reads the host's own version) |
+| E2E (real server, mock model) | 63/66: `context.project-switch`, `context.workspace-binding`, `sessions.title-usage-projects` |
+| Mock UI suite | 416/417 once (a harness race, being fixed) |
 
 Coverage and verification scope are in [TESTING.md](TESTING.md). Small changes use focused checks; full gates
-are for shared contracts or cross-cutting behavior. The checked-in CI workflow runs broader jobs when invoked.
+are for shared contracts or cross-cutting behavior.
 
 ## Remaining limits
 
@@ -50,11 +53,18 @@ are for shared contracts or cross-cutting behavior. The checked-in CI workflow r
 - The budget ledger is the Agents plugin's own data (`ctx.Data`), and the core's model catalog refuses no model:
   while that plugin is absent or its store unavailable, paid calls are neither metered nor limited. The Work tab
   refreshes on `usage.changed`, which the plugin publishes after a recorded call and when `budget.*` settings change.
-- Reloading the agents plugin can temporarily exceed configured execution slots for already-running agents;
-  persistent budget reservations are still shared across the old and new plugin instances.
+- The registry of what runs on shared model resources is held by the runtime plugin and adopted by the agents plugin, so a
+  reload, or a disable and re-enable, of the agents plugin keeps runs in flight counted (a new run waits for them; the
+  runtime admits against the same registry while the plugin is off). A reload of both plugins at once (a publish that swaps
+  them together) starts a new registry while the old runs' calls may still be returning, so it can temporarily exceed
+  the configured slots; persistent budget reservations are shared across the old and new plugin instances either way.
 - Linux/macOS and paid/live-provider billing behavior were not validated in this change. The Anthropic provider
-  still needs verification against the real API. A CI workflow (`.github/workflows/ci.yml`) is checked in, but the
-  repository has no remote configured, so nothing runs it.
+  still needs verification against the real API. CI (`.github/workflows/ci.yml`) runs on every push, on Windows
+  only, and its 2026-10-05 runs are not green (see Validation).
+- `src/NetPI.Desktop` references the WebView2 SDK as a floating `1.0.*`: every restore may resolve a newer package,
+  so two desktop builds days apart are not the same bytes and a package regression would arrive unannounced. Pin it
+  to the version a Windows restore resolves (`obj/project.assets.json` names it); the exact version is not known
+  offline, so it is not pinned here.
 - Historical model experiments and earlier verification claims are preserved in
   [the archived status](archive/2026-09-25-status.md); they are not fresh release verification.
 

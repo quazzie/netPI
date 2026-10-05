@@ -1,6 +1,6 @@
 <script>
   import Icon from '../../lib/kit/Icon.svelte';
-  import { planForCall, answerPlan } from '../../lib/state/plans.svelte.js';
+  import { plans, planForCall, answerPlan } from '../../lib/state/plans.svelte.js';
   import { replaceTab, openSession } from '../../lib/state/app.svelte.js';
   import { toast, prefs } from '../../lib/state/ui.svelte.js';
   import { parseArgs } from '../../lib/tools.js';
@@ -53,6 +53,10 @@
     busy = decision + (extra.newChat ? '-new' : '');
     try {
       const res = await answerPlan(live.id, decision, extra);
+      // The answer says what the plan is now ({ planId, status, ideaId? … }): the card shows it at once instead of waiting
+      // for plan.changed → plan.list, which still follows and confirms it (the plugin's record stays canonical).
+      const known = plans.byId.get(live.id);
+      if (known && res?.status) plans.byId.set(live.id, { ...known, status: res.status, ...(res.ideaId ? { ideaId: res.ideaId } : {}) });
       if (decision === 'save') toast(res?.ideaId ? `Saved as idea ${res.ideaId}` : 'Not saved: the ideas plugin is not running', res?.ideaId ? 'info' : 'error');
       else if (decision === 'file') toast(`Saved ${res?.path}`);
       else if (decision === 'revise') {

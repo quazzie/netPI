@@ -33,6 +33,14 @@ public sealed class RuntimePlugin : INetPiPlugin
                 SettingInfo.Int(OutputLimit.Setting, "Output limit for models without one", OutputLimit.Default, null, 256, null, "tokens"),
             ],
         });
+        // The registry of what runs on shared model resources (a local model's slots) outlives the agents plugin, whose
+        // scheduler hands the leases out: registered here too, it stays while that plugin is off (disabled, or between a
+        // reload's stop and start), so the runtime admits local runs against the same counts meanwhile — a run in flight
+        // keeps its slot counted — and the plugin adopts it when it comes back instead of starting from an empty one (its
+        // start takes the registered instance; a reload of this plugin finds the agents plugin's registration the same way).
+        // A plain class in the shared contracts, so the instance is safe to hold across either plugin's reload.
+        var leases = context.Services.Get<IResourceLeases>() as ResourceLeases ?? new ResourceLeases(context.Events);
+        context.Services.Register<IResourceLeases>(leases);
         var runtime = new AgentRuntime(context);
         runtime.Initialize();
         _runtime = runtime;

@@ -256,7 +256,7 @@ public static class BudgetTests
         var l = new Ledger(ctx) { ChangeDelayMs = 100 };
         l.Initialize();
         ModelRequest Req() => new() { Model = new ModelInfo { Provider = "fake", Id = "local", IsLocal = true }, Messages = [ChatMessage.UserText("hi")] };
-        void Record() => l.RecordCall(Req(), new ChatMessage { Usage = new Usage { InputTokens = 1, OutputTokens = 1 } }, null, null);
+        void Record() => l.Settle(l.Reserve(Req(), null, null), new Usage { InputTokens = 1, OutputTokens = 1 }, true, false);
 
         // while alive: the two calls coalesce into one debounced notification
         Record();

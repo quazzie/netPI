@@ -20,23 +20,43 @@
   let listEl = $state();
   let visible = true;
   let dirty = false;
+  let rekey = false; // the workspace may have changed while the tab was hidden: find out when it is shown
+  let keyHint = ''; // what the key was last computed from (hint()): the same hint is the same key, without asking again
   let scopeKey = $state(''); // workspace generation (session + workspace identity/version): an answer applies only while its generation is still current
-  let scope = $state.raw(null); // files.scope: the workspace this tab shows (root, branch, owner), null until loaded
+  let scope = $state.raw(null); // files.scope (or the host's copy of it): the workspace this tab shows (root, branch), null until loaded
+
+  /**
+   * What the key depends on, from what is in hand: the session, its workspace as the host knows it (ctx.app.activeWorkspace:
+   * the files.scope the host read when the tab was activated, or the session.workspace that bound it since) and the
+   * project path. ctx.app.onChange fires for every session.updated of the active chat — each appended message — and only
+   * a change in this is a reason to compute the key again.
+   */
+  function hint() {
+    const ws = ctx.app.activeWorkspace;
+    return `${ctx.app.activeSessionId ?? ''}|${ws?.identity ?? ''}|${ws?.workspaceId ?? ''}|${ws?.version ?? ''}|${ctx.app.activeProject?.path ?? ''}`;
+  }
 
   /**
    * The refresh key. The workspace identity (id + version) rather than the session's project path, because a session can
    * move to another checkout of the same project — the path alone would not change, and answers for the old root would be
-   * merged into the new one. Falls back to the session id when the workspace plugin is not loaded.
+   * merged into the new one. The host's copy answers when it has the identity for this session (no round trip); else
+   * files.scope, and the session with its project path when the workspace plugin is not loaded.
    */
   async function key() {
+    const sid = ctx.app.activeSessionId ?? '';
+    const known = ctx.app.activeWorkspace;
+    if (known && known.sessionId === sid && known.identity) {
+      scope = known;
+      return `${sid}|${known.identity}|${known.version ?? 0}`;
+    }
     try {
       const r = await ctx.rpc('files.scope', loc());
       scope = r ?? null;
-      return `${ctx.app.activeSessionId ?? ''}|${r?.identity ?? (r?.root ?? '')}|${r?.version ?? 0}`;
+      return `${sid}|${r?.identity ?? (r?.root ?? '')}|${r?.version ?? 0}`;
     } catch {
       // No workspace support: the session and its project path are all there is.
       scope = null;
-      return `${ctx.app.activeSessionId ?? ''}|${ctx.app.activeProject?.path ?? ''}`;
+      return `${sid}|${ctx.app.activeProject?.path ?? ''}`;
     }
   }
 
@@ -105,7 +125,34 @@
   export function setVisible(v) {
     visible = v;
     gitTab.setVisible(v);
-    if (v && dirty) refresh();
+    if (!v) return;
+    if (rekey) {
+      rekey = false;
+      void switchWorkspace(); // the tab is visible now, so a changed workspace loads at once
+    } else if (dirty) refresh();
+  }
+
+  /**
+   * The active session or its workspace changed: compute the key, and when it is a new generation, start over for the
+   * new root. The identity is read asynchronously; every load below waits for it, and the generation it yields is what
+   * the in-flight answers of the old workspace are compared against.
+   */
+  async function switchWorkspace() {
+    const next = await key();
+    if (disposed || next === scopeKey) return;
+    scopeKey = next; // new generation: the in-flight answers of the old workspace are stale
+    root = '';
+    entries = new Map();
+    expanded = new Set();
+    loadingDirs = new Set();
+    error = '';
+    results = null;
+    git = null;
+    gitOpen = false;
+    if (visible) {
+      await loadDir('');
+      loadGit();
+    } else dirty = true;
   }
 
   // Set when this instance is torn down. onMount has to stay synchronous for Svelte to register the teardown below
@@ -116,6 +163,7 @@
   let disposed = false;
 
   onMount(() => {
+    keyHint = hint();
     (async () => {
       const k = await key();
       if (disposed) return;
@@ -126,26 +174,16 @@
     const onFocus = () => gitTab.schedule(300);
     window.addEventListener('focus', onFocus);
     const off = ctx.app.onChange(() => {
-      // The new identity is read asynchronously; every load below waits for it, and the generation it yields is what the
-      // in-flight answers of the old workspace are compared against.
-      const switching = (async () => {
-        const next = await key();
-        if (disposed || next === scopeKey) return;
-        scopeKey = next; // new generation: the in-flight answers of the old workspace are stale
-        root = '';
-        entries = new Map();
-        expanded = new Set();
-        loadingDirs = new Set();
-        error = '';
-        results = null;
-        git = null;
-        gitOpen = false;
-        if (visible) {
-          await loadDir('');
-          loadGit();
-        } else dirty = true;
-      })();
-      void switching;
+      // Every session.updated of the active chat lands here (one per appended message): nothing to do unless what the key
+      // depends on changed — and while the tab is hidden, only a note to find out when it is shown.
+      const h = hint();
+      if (h === keyHint) return;
+      keyHint = h;
+      if (!visible) {
+        rekey = true;
+        return;
+      }
+      void switchWorkspace();
     });
     return () => {
       disposed = true;

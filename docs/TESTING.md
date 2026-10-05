@@ -12,16 +12,23 @@ Three layers, all without NuGet packages (console runners, no test framework):
 
 ## Build
 
-`NetPI.slnx` contains the Windows-only desktop shell, so outside Windows build the projects one by one in dependency order
-(`BuildProjectReferences=false` keeps the build fast because every dependency was already built by the loop):
+`NetPI.slnx` contains the Windows-only projects (the desktop shell, the windows tool's helper and the window its tests
+drive, all `net10.0-windows`, which a non-Windows SDK refuses with NETSDK1100), so outside Windows build the projects one
+by one in dependency order, skipping those (`BuildProjectReferences=false` keeps the build fast because every dependency
+was already built by the loop). `./build.sh` is this loop plus the web UI (`--test` runs the suites, `--configuration
+Debug` for a Debug build):
 
 ```bash
-B="dotnet build -nologo -v q -clp:ErrorsOnly -p:BuildProjectReferences=false"
+B="dotnet build -nologo -v q -clp:ErrorsOnly -c Release -p:BuildProjectReferences=false"
 $B src/NetPI.Abstractions/NetPI.Abstractions.csproj
 $B src/NetPI.Contracts/NetPI.Contracts.csproj
 $B src/NetPI.Host/NetPI.Host.csproj
 $B src/NetPI.Server/NetPI.Server.csproj
-for p in plugins/*/*.csproj tests/*/*.csproj; do $B "$p" || break; done
+for p in plugins/*/*.csproj tests/*/*.csproj; do
+  case "$p" in tests/SamplePlugin/*) continue ;; esac                 # the Host suite builds it itself, per variant
+  grep -q '<TargetFramework>net10.0-windows' "$p" && continue        # tests/NetPI.WinTestApp: Windows only
+  $B "$p" || break
+done
 ```
 
 ```powershell
@@ -78,7 +85,7 @@ not a failure — it says what was missing — but it is never counted as a pass
 
 The suites are built **once**, as one generated solution holding just the requested projects (`artifacts/test-speed`),
 so shared dependencies are compiled once instead of once per suite. Up to five suite *processes* then run at a
-time (`-Parallel`, 1–5, default 2; `-Serial` for one). Each suite gets its own temporary root (`NETPI_TEST_ROOT`, under
+time (`-Parallel`, 1–5, default 3; `-Serial` for one). Each suite gets its own temporary root (`NETPI_TEST_ROOT`, under
 the system temp — not the repo, because the git tests create real repositories and a nested one behaves
 differently), so two invocations of the same suite never delete each other's files. A suite still running after
 `-TimeoutMinutes` (default 30) is stopped and fails the run, instead of being waited for. The build test runs `build.ps1`
@@ -93,25 +100,26 @@ it is normal (`-Suite Host,Storage -Only "settings:"`), so the suite is marked i
 run, and the re-run command names the suites that failed. `artifacts/testlogs/<timestamp>.json` holds the same
 numbers machine-readably.
 
-Each suite can also be run directly, which is what the script does:
+Each suite can also be run directly, which is what the script does. The scripts (`scripts/test.ps1`, `build.ps1`,
+`build.sh`) build Release, so the runners are under `bin/Release`; a Debug build puts them under `bin/Debug`:
 
 ```bash
-dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiProxy (Responses/Chat), Anthropic, OpenRouter against a scripted HTTP mock
-dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open, files.git
-dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, agents, persistence, context notices, goals, skills
-dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll               # retry, nudge, tool repair, compaction, ideas, work, diagnostics, todo, web, media, ssh
-dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll ideas        # the ideas flow only: tools and RPC (IdeasTests), the storage and the
+dotnet tests/NetPI.Providers.Tests/bin/Release/NetPI.Providers.Tests.dll # AiProxy (Responses/Chat), Anthropic, OpenRouter against a scripted HTTP mock
+dotnet tests/NetPI.Tools.Tests/bin/Release/NetPI.Tools.Tests.dll         # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open, files.git
+dotnet tests/NetPI.Agent.Tests/bin/Release/NetPI.Agent.Tests.dll         # agent loop, steering/queue/abort, subagents, agents, persistence, context notices, goals, skills
+dotnet tests/NetPI.Aux.Tests/bin/Release/NetPI.Aux.Tests.dll             # retry, nudge, tool repair, compaction, ideas, work, diagnostics, todo, web, media, ssh
+dotnet tests/NetPI.Aux.Tests/bin/Release/NetPI.Aux.Tests.dll ideas      # the ideas flow only: tools and RPC (IdeasTests), the storage and the
                                                                          # answer transaction (IdeasStorageTests, ReviewStorageTests), the cutover,
                                                                          # export and import (IdeasMigrationTests), the chat checks (IdeasCheckTests),
                                                                          # commit tracking (IdeasCommitTests). They run against a real temporary
                                                                          # SQLite database, not a fake; the load tests load the built plugins from
                                                                          # artifacts/dev/app (what a plain build makes), or from NETPI_APP_DIR
-tests/NetPI.Storage.Tests/bin/Debug/NetPI.Storage.Tests.dll            # the storage port: one set of scenarios run against every
+dotnet tests/NetPI.Storage.Tests/bin/Release/NetPI.Storage.Tests.dll     # the storage port: one set of scenarios run against every
                                                                       # provider (memory and sqlite; a provider joins with one line in
                                                                       # Providers.All). It is the port's contract in executable form —
                                                                       # a storage provider that does not pass it is not usable
-tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: storage, settings, bus, registries, sessions, catalog, server, plugins
-dotnet tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests.dll backup  # the snapshot: the WAL copy, retention, manifest verification, an offline restore
+dotnet tests/NetPI.Host.Tests/bin/Release/NetPI.Host.Tests.dll           # kernel: storage, settings, bus, registries, sessions, catalog, server, plugins
+dotnet tests/NetPI.Host.Tests/bin/Release/NetPI.Host.Tests.dll backup  # the snapshot: the WAL copy, retention, manifest verification, an offline restore
                                                     # into a new home, and the SQLite-backed ideas backlog travelling in it and coming
                                                     # back (BackupTests, ReviewBackupTests)
 ```
@@ -157,7 +165,7 @@ issued, a continued tool turn must start with a thinking block when thinking is 
 and prompts larger than `context_window` are rejected (the last one as a llama.cpp-style `exceed_context_size_error`).
 
 ```bash
-dotnet tests/MockLlm/bin/Debug/MockLlm.dll [--port 7479] [--speed 1] [--tiny-ctx 12000] [--anthropic-key KEY] [--verbose] [--init-home DIR]
+dotnet tests/MockLlm/bin/Release/MockLlm.dll [--port 7479] [--speed 1] [--tiny-ctx 12000] [--anthropic-key KEY] [--verbose] [--init-home DIR]
 ```
 
 | endpoint | |
@@ -216,7 +224,7 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 ### Pointing a dev instance at the mock
 
 ```bash
-dotnet tests/MockLlm/bin/Debug/MockLlm.dll --port 7479 --init-home ~/.netpi-mock   # writes the provider settings, keeps running
+dotnet tests/MockLlm/bin/Release/MockLlm.dll --port 7479 --init-home ~/.netpi-mock   # writes the provider settings, keeps running
 dotnet artifacts/app/netpi-server.dll --home ~/.netpi-mock --port 7431 --open
 ```
 

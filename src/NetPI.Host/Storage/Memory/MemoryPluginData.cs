@@ -19,6 +19,12 @@ internal sealed class Collection(string name)
     public string Name { get; } = name;
     /// <summary>The declared index fields, replaced whole by a changed declaration.</summary>
     public Dictionary<string, DataFieldType> Fields = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The index fields a declaration dropped, each with the type it had, replaced whole like <see cref="Fields"/>. A field
+    /// keeps its type even then: declared again as another type it is refused, as the sqlite provider refuses it (there the
+    /// dropped field's column stays, and with it the type).
+    /// </summary>
+    public Dictionary<string, DataFieldType> Retired = new(StringComparer.Ordinal);
     public readonly Dictionary<string, JsonObject> Docs = new(StringComparer.Ordinal);
     /// <summary>The instance handed to callers, so the same name again is the same collection.</summary>
     public IDataCollection? Opened;
@@ -55,8 +61,12 @@ internal sealed class MemoryPluginData(MemoryStorage store, string pluginId, Plu
             {
                 if (data.Collections.TryGetValue(name, out var declared))
                     foreach (var (field, type) in spec.Fields)
+                    {
                         if (declared.Fields.TryGetValue(field, out var was) && was != type)
                             throw new StorageException($"Collection '{name}' of plugin '{pluginId}': field '{field}' was declared {was} and is now {type}; a field's type cannot change");
+                        if (declared.Retired.TryGetValue(field, out var had) && had != type)
+                            throw new StorageException($"Collection '{name}' of plugin '{pluginId}': field '{field}' was declared {had} and is now {type}; a field's type cannot change");
+                    }
                 if (!data.Collections.TryGetValue(name, out var collection))
                 {
                     collection = new Collection(name);
@@ -73,6 +83,13 @@ internal sealed class MemoryPluginData(MemoryStorage store, string pluginId, Plu
                     // no rewrite: a document that does not carry the new field is a field with no value, which is
                     // exactly what a row stored before the column was added reads as.
                     store.Touch(() => (Dictionary<string, DataFieldType>?)collection.Fields, was => { if (was is not null) collection.Fields = was; });
+                    store.Touch(() => (Dictionary<string, DataFieldType>?)collection.Retired, was => { if (was is not null) collection.Retired = was; });
+                    // A field the declaration drops keeps its type (checked above when it is declared again); one it takes back is live again.
+                    var retired = new Dictionary<string, DataFieldType>(collection.Retired, StringComparer.Ordinal);
+                    foreach (var (field, type) in collection.Fields)
+                        if (!spec.Fields.ContainsKey(field)) retired[field] = type;
+                    foreach (var field in spec.Fields.Keys) retired.Remove(field);
+                    collection.Retired = retired;
                     collection.Fields = new Dictionary<string, DataFieldType>(spec.Fields, StringComparer.Ordinal);
                 }
                 if (collection.Opened is null) collection.Opened = new MemoryDataCollection(store, pluginId, collection);
@@ -313,13 +330,17 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
         }
     }
 
-    /// <summary>The value of an In/NotIn list, each entry of the field's type. An empty list is an empty set, not an error.</summary>
+    /// <summary>The value of an In/NotIn list, each entry of the field's type. An empty list is an empty set, not an error; one past the port's cap is.</summary>
     private HashSet<object?> List(DataFilter filter, DataFieldType type)
     {
         if (filter.Value is string || filter.Value is not IEnumerable values)
             throw new ArgumentException($"A {filter.Op} filter on '{filter.Field}' takes a list of values, not '{filter.Value?.GetType().Name ?? "null"}'");
+        var list = values.Cast<object?>().ToList();
+        // The cap is the port's, the same for every provider: a provider that binds every value as a parameter of one statement has a cap of its own.
+        if (list.Count > StorageNames.MaxListValues)
+            throw new ArgumentException($"{filter.Op} on '{filter.Field}' names {list.Count} values; a list holds at most {StorageNames.MaxListValues}");
         var set = new HashSet<object?>();
-        foreach (var value in values) set.Add(One(value, type, filter.Op, filter.Field));
+        foreach (var value in list) set.Add(One(value, type, filter.Op, filter.Field));
         return set;
     }
 

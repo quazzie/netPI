@@ -68,7 +68,8 @@ public static class ReservationTests
         var a = Create(h); var b = Create(h);
         await Task.WhenAll(Enumerable.Range(0, 100).Select(i => Task.Run(() =>
         {
-            (i % 2 == 0 ? a : b).RecordCall(Request(), new ChatMessage { Usage = new Usage { CostUsd = 1 } }, "a", null);
+            var l = i % 2 == 0 ? a : b;
+            l.Settle(l.Reserve(Request(), "a", null), new Usage { CostUsd = 1 }, true, false);
             _ = a.Spent(); _ = b.SpentToday("a");
         })));
         Check.Equal(100.0, a.Spent().Period);
@@ -98,7 +99,7 @@ public static class ReservationTests
         lanes.Put(lane.Key, lane.Doc);
         Check.Equal(0.0, l.Spent().Period);
         Check.Equal(0.0, l.SpentToday("a"));
-        l.RecordCall(req, new ChatMessage { Usage = new Usage { CostUsd = 3 } }, "a", null);
+        l.Settle(l.Reserve(req, "a", null), new Usage { CostUsd = 3 }, true, false);
         Check.Equal(3.0, l.Spent().Today);
     }
 

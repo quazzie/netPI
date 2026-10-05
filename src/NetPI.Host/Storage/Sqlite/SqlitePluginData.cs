@@ -110,44 +110,55 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
 
 internal sealed class SqliteCollection : IDataCollection
 {
+    /// <summary>
+    /// A declaration as one value: which fields a query may name, their column order, and the statements that write them.
+    /// It is swapped whole and read once per call, so a call that began under one declaration finishes under it while a
+    /// hot swap takes on the next (two generations of a plugin may be running, and a redeclaration runs outside the gate
+    /// the statements take).
+    /// </summary>
+    private sealed record Shape(Dictionary<string, DataFieldType> Fields, string[] Order, string PutSql, string InsertSql);
+
     private readonly Database _db;
     private readonly string _table;
-    private Dictionary<string, DataFieldType> _fields = null!;
-    private string[] _order = null!;   // field names in column order
-    private string _putSql = null!;
-    private string _insertSql = null!;
+    private volatile Shape _shape;
 
     private SqliteCollection(Database db, string name, string table, Dictionary<string, DataFieldType> fields)
     {
         _db = db;
         Name = name;
         _table = table;
-        Declare(fields);
+        _shape = Declare(table, fields);
     }
 
-    /// <summary>Take on a declaration: which fields a query may name, and the statements that write them.</summary>
-    private void Declare(Dictionary<string, DataFieldType> fields)
+    /// <summary>A declaration: which fields a query may name, and the statements that write them.</summary>
+    private static Shape Declare(string table, Dictionary<string, DataFieldType> fields)
     {
-        _fields = fields;
-        _order = [.. fields.Keys];
-        var columns = string.Concat(_order.Select(f => ", f_" + f));
-        var values = string.Concat(_order.Select((_, i) => ", @v" + i.ToString(CultureInfo.InvariantCulture)));
-        var updates = string.Concat(_order.Select((f, i) => ", f_" + f + " = @v" + i.ToString(CultureInfo.InvariantCulture)));
-        _putSql = $"INSERT INTO {_table}(k, doc{columns}) VALUES(@k, @doc{values}) ON CONFLICT(k) DO UPDATE SET doc = excluded.doc{updates}";
-        _insertSql = $"INSERT INTO {_table}(k, doc{columns}) VALUES(@k, @doc{values}) ON CONFLICT(k) DO NOTHING";
+        var order = fields.Keys.ToArray();   // field names in column order
+        var columns = string.Concat(order.Select(f => ", f_" + f));
+        var values = string.Concat(order.Select((_, i) => ", @v" + i.ToString(CultureInfo.InvariantCulture)));
+        var updates = string.Concat(order.Select((f, i) => ", f_" + f + " = @v" + i.ToString(CultureInfo.InvariantCulture)));
+        return new Shape(fields, order,
+            $"INSERT INTO {table}(k, doc{columns}) VALUES(@k, @doc{values}) ON CONFLICT(k) DO UPDATE SET doc = excluded.doc{updates}",
+            $"INSERT INTO {table}(k, doc{columns}) VALUES(@k, @doc{values}) ON CONFLICT(k) DO NOTHING");
     }
 
     public string Name { get; }
 
     /// <summary>The declaration the collection has now (what a failed or rolled back change goes back to).</summary>
-    internal Dictionary<string, DataFieldType> Declaration => _fields;
+    internal Dictionary<string, DataFieldType> Declaration => _shape.Fields;
 
-    internal void Redeclare(Dictionary<string, DataFieldType> fields) => Declare(fields);
+    internal void Redeclare(Dictionary<string, DataFieldType> fields) => _shape = Declare(_table, fields);
 
-    internal bool SameFields(Dictionary<string, DataFieldType> other) =>
-        other.Count == _fields.Count && other.All(f => _fields.TryGetValue(f.Key, out var t) && t == f.Value);
+    internal bool SameFields(Dictionary<string, DataFieldType> other)
+    {
+        var fields = _shape.Fields;
+        return other.Count == fields.Count && other.All(f => fields.TryGetValue(f.Key, out var t) && t == f.Value);
+    }
 
     private static string SqlType(DataFieldType t) => t switch { DataFieldType.Text => "TEXT", DataFieldType.Integer => "INTEGER", _ => "REAL" };
+
+    /// <summary>The field type a column was created for (<see cref="SqlType"/> the other way round).</summary>
+    private static DataFieldType FieldType(string sqlType) => sqlType switch { "INTEGER" => DataFieldType.Integer, "REAL" => DataFieldType.Real, _ => DataFieldType.Text };
 
     /// <summary>Creates the collection's table, or brings an existing one to the declared fields: a new field gets a column, an index and a back-fill.</summary>
     internal static SqliteCollection OpenOrUpgrade(Database db, string plugin, string name, Dictionary<string, DataFieldType> fields, SqliteCollection? existing)
@@ -167,18 +178,28 @@ internal sealed class SqliteCollection : IDataCollection
 
         var tableName = "c" + row.Id.ToString(CultureInfo.InvariantCulture);
         var stored = JsonNode.Parse(row.Spec) as JsonObject ?? [];
-        var physical = db.Query($"PRAGMA table_info({tableName})", null, r => r.GetString("name")).ToHashSet(StringComparer.Ordinal);
+        // The field columns the table has, each with the type it was created with. A column outlives the field it was made
+        // for (a dropped field keeps its column), and its type is the type the field has to come back with: declared again as
+        // another type, the values would land in a column of the other affinity, where they neither compare nor order right.
+        var physical = db.Query($"PRAGMA table_info({tableName})", null, r => (Name: r.GetString("name"), Type: r.GetString("type")))
+            .Where(c => c.Name.StartsWith("f_", StringComparison.Ordinal))
+            .ToDictionary(c => c.Name["f_".Length..], c => c.Type, StringComparer.Ordinal);
         var backfill = new List<string>();
         foreach (var (field, type) in fields)
         {
             var wasDeclared = stored[field]?.GetValue<string>();
             if (wasDeclared is not null && wasDeclared != type.ToString())
                 throw new StorageException($"Collection '{name}' of plugin '{plugin}': field '{field}' was declared {wasDeclared} and is now {type}; a field's type cannot change");
-            if (!physical.Contains("f_" + field))
+            if (!physical.TryGetValue(field, out var columnType))
             {
                 db.Execute($"ALTER TABLE {tableName} ADD COLUMN f_{field} {SqlType(type)}");
                 db.Execute($"CREATE INDEX ix_{tableName}_{field} ON {tableName}(f_{field})");
                 backfill.Add(field);
+            }
+            else if (columnType != SqlType(type))
+            {
+                // the column of an earlier declaration (one since dropped): the field keeps the type it had then
+                throw new StorageException($"Collection '{name}' of plugin '{plugin}': field '{field}' was declared {FieldType(columnType)} and is now {type}; a field's type cannot change");
             }
             else if (wasDeclared is null)
             {
@@ -187,8 +208,8 @@ internal sealed class SqliteCollection : IDataCollection
         }
         db.Execute("UPDATE _collections SET spec = @spec WHERE id = @id", new { spec = specJson.ToJsonString(), id = row.Id });
         var collection = existing ?? new SqliteCollection(db, name, tableName, fields);
-        var previous = collection._fields;
-        collection.Declare(fields);
+        var previous = collection._shape;
+        collection._shape = Declare(tableName, fields);
         try
         {
             if (backfill.Count > 0) collection.Backfill(backfill);
@@ -196,7 +217,7 @@ internal sealed class SqliteCollection : IDataCollection
         catch
         {
             // the caller's transaction rolls the columns back; the handle the plugin keeps must not keep the declaration they were for
-            collection.Declare(previous);
+            collection._shape = previous;
             throw;
         }
         return collection;
@@ -204,12 +225,13 @@ internal sealed class SqliteCollection : IDataCollection
 
     private void Backfill(List<string> fields)
     {
+        var shape = _shape;
         foreach (var (key, text) in _db.Query($"SELECT k, doc FROM {_table}", null, r => (r.GetString("k"), r.GetString("doc"))))
         {
             var doc = JsonNode.Parse(text) as JsonObject ?? [];
             var sets = string.Join(", ", fields.Select((f, i) => $"f_{f} = @v{i}"));
             var args = new Dictionary<string, object?> { ["k"] = key };
-            for (var i = 0; i < fields.Count; i++) args["v" + i.ToString(CultureInfo.InvariantCulture)] = FieldValue(fields[i], doc);
+            for (var i = 0; i < fields.Count; i++) args["v" + i.ToString(CultureInfo.InvariantCulture)] = FieldValue(shape, fields[i], doc);
             _db.Execute($"UPDATE {_table} SET {sets} WHERE k = @k", args);
         }
     }
@@ -220,9 +242,19 @@ internal sealed class SqliteCollection : IDataCollection
 
     private JsonObject? Read(string key) => _db.QuerySingle($"SELECT doc FROM {_table} WHERE k = @k", new { k = key }, r => Parse(r.GetString("doc")));
 
-    public void Put(string key, JsonObject doc) { StorageNames.CheckKey(key); _db.Execute(_putSql, WriteArgs(key, doc)); }
+    public void Put(string key, JsonObject doc)
+    {
+        StorageNames.CheckKey(key);
+        var shape = _shape;   // one declaration for the whole call
+        _db.Execute(shape.PutSql, WriteArgs(shape, key, doc));
+    }
 
-    public bool Insert(string key, JsonObject doc) { StorageNames.CheckKey(key); return _db.Execute(_insertSql, WriteArgs(key, doc)) > 0; }
+    public bool Insert(string key, JsonObject doc)
+    {
+        StorageNames.CheckKey(key);
+        var shape = _shape;
+        return _db.Execute(shape.InsertSql, WriteArgs(shape, key, doc)) > 0;
+    }
 
     public bool Delete(string key) { StorageNames.CheckKey(key); return DeleteRow(key); }
 
@@ -230,8 +262,9 @@ internal sealed class SqliteCollection : IDataCollection
 
     public IReadOnlyList<DataDoc> Find(DataQuery? query = null)
     {
+        var shape = _shape;
         var args = new Dictionary<string, object?>();
-        var sql = $"SELECT k, doc FROM {_table}{Where(query, args)}{OrderBy(query)}";
+        var sql = $"SELECT k, doc FROM {_table}{Where(shape, query, args)}{OrderBy(shape, query)}";
         if (query?.Limit is { } limit)
         {
             sql += " LIMIT @limit OFFSET @offset";
@@ -248,28 +281,31 @@ internal sealed class SqliteCollection : IDataCollection
 
     public long Count(DataQuery? query = null)
     {
+        var shape = _shape;
         var args = new Dictionary<string, object?>();
-        return _db.Scalar<long?>($"SELECT COUNT(*) FROM {_table}{Where(query, args)}", args) ?? 0;
+        return _db.Scalar<long?>($"SELECT COUNT(*) FROM {_table}{Where(shape, query, args)}", args) ?? 0;
     }
 
     public double Sum(string field, DataQuery? query = null)
     {
-        if (!_fields.TryGetValue(field, out var type)) throw new ArgumentException($"'{field}' is not an index field of '{Name}'");
+        var shape = _shape;
+        if (!shape.Fields.TryGetValue(field, out var type)) throw new ArgumentException($"'{field}' is not an index field of '{Name}'");
         if (type == DataFieldType.Text) throw new ArgumentException($"'{field}' is a Text field and cannot be summed");
         var args = new Dictionary<string, object?>();
-        return _db.Scalar<double?>($"SELECT TOTAL(f_{field}) FROM {_table}{Where(query, args)}", args) ?? 0;
+        return _db.Scalar<double?>($"SELECT TOTAL(f_{field}) FROM {_table}{Where(shape, query, args)}", args) ?? 0;
     }
 
     public int DeleteWhere(DataQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
+        var shape = _shape;
         var args = new Dictionary<string, object?>();
-        return _db.Execute($"DELETE FROM {_table}{Where(query, args)}", args);
+        return _db.Execute($"DELETE FROM {_table}{Where(shape, query, args)}", args);
     }
 
     // ------------------------------------------------------------------ queries
 
-    private string Where(DataQuery? query, Dictionary<string, object?> args)
+    private string Where(Shape shape, DataQuery? query, Dictionary<string, object?> args)
     {
         if (query is null || query.Where.Count == 0) return "";
         var parts = new List<string>();
@@ -282,7 +318,7 @@ internal sealed class SqliteCollection : IDataCollection
         }
         foreach (var f in query.Where)
         {
-            if (!_fields.TryGetValue(f.Field, out var type)) throw new ArgumentException($"'{f.Field}' is not an index field of '{Name}'");
+            if (!shape.Fields.TryGetValue(f.Field, out var type)) throw new ArgumentException($"'{f.Field}' is not an index field of '{Name}'");
             var col = "f_" + f.Field;
             switch (f.Op)
             {
@@ -296,12 +332,17 @@ internal sealed class SqliteCollection : IDataCollection
                 case DataOp.Ge: parts.Add($"{col} >= {Param(RequireValue(f), type)}"); break;
                 case DataOp.In:
                 case DataOp.NotIn:
+                {
                     var values = (f.Value as System.Collections.IEnumerable ?? throw new ArgumentException($"{f.Op} on '{f.Field}' needs a list of values"))
                         .Cast<object?>().ToList();
+                    // Every value is a parameter of the one statement, and SQLite caps those: the port caps the list the same for every provider.
+                    if (values.Count > StorageNames.MaxListValues)
+                        throw new ArgumentException($"{f.Op} on '{f.Field}' names {values.Count} values; a list holds at most {StorageNames.MaxListValues}");
                     if (values.Count == 0) { parts.Add(f.Op == DataOp.In ? "0" : $"{col} IS NOT NULL"); break; }
                     var list = string.Join(", ", values.Select(v => Param(v ?? throw new ArgumentException($"{f.Op} on '{f.Field}' has a null value"), type)));
                     parts.Add($"{col} {(f.Op == DataOp.In ? "IN" : "NOT IN")} ({list})");
                     break;
+                }
                 default: throw new ArgumentException($"Unknown operator {f.Op}");
             }
         }
@@ -311,13 +352,13 @@ internal sealed class SqliteCollection : IDataCollection
     private static object RequireValue(DataFilter f) =>
         f.Value ?? throw new ArgumentException($"{f.Op} on '{f.Field}' needs a value; use IsNull / NotNull to test for no value");
 
-    private string OrderBy(DataQuery? query)
+    private string OrderBy(Shape shape, DataQuery? query)
     {
         var sb = new StringBuilder(" ORDER BY ");
         if (query is not null)
             foreach (var o in query.OrderBy)
             {
-                if (!_fields.ContainsKey(o.Field)) throw new ArgumentException($"'{o.Field}' is not an index field of '{Name}'");
+                if (!shape.Fields.ContainsKey(o.Field)) throw new ArgumentException($"'{o.Field}' is not an index field of '{Name}'");
                 sb.Append("f_").Append(o.Field).Append(o.Descending ? " DESC, " : " ASC, ");
             }
         return sb.Append('k').ToString();
@@ -325,19 +366,19 @@ internal sealed class SqliteCollection : IDataCollection
 
     // ------------------------------------------------------------------ values
 
-    private Dictionary<string, object?> WriteArgs(string key, JsonObject doc)
+    private Dictionary<string, object?> WriteArgs(Shape shape, string key, JsonObject doc)
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(doc);
         var args = new Dictionary<string, object?> { ["k"] = key, ["doc"] = doc.ToJsonString() };
-        for (var i = 0; i < _order.Length; i++) args["v" + i.ToString(CultureInfo.InvariantCulture)] = FieldValue(_order[i], doc);
+        for (var i = 0; i < shape.Order.Length; i++) args["v" + i.ToString(CultureInfo.InvariantCulture)] = FieldValue(shape, shape.Order[i], doc);
         return args;
     }
 
     /// <summary>The value of an index field in a document, as the column's type: null when the property is missing or JSON null.</summary>
-    private object? FieldValue(string field, JsonObject doc)
+    private object? FieldValue(Shape shape, string field, JsonObject doc)
     {
-        var type = _fields[field];
+        var type = shape.Fields[field];
         if (!doc.TryGetPropertyValue(field, out var node) || node is null || node.GetValueKind() is JsonValueKind.Null or JsonValueKind.Undefined) return null;
         var kind = node.GetValueKind();
         switch (type)
@@ -357,6 +398,7 @@ internal sealed class SqliteCollection : IDataCollection
         throw new ArgumentException($"Field '{field}' of '{Name}' is declared {type}, and the document holds {kind}");
     }
 
+    /// <summary>A filter value as the field's type: a string, a long, a double or a bool (0/1 in an integer field), and an int as the long it is — the same set the memory provider takes, so a query that runs on one provider runs on the other.</summary>
     private static object Coerce(object? value, DataFieldType type)
     {
         switch (type)
@@ -365,11 +407,14 @@ internal sealed class SqliteCollection : IDataCollection
                 if (value is string s) return s;
                 break;
             case DataFieldType.Integer:
-                if (value is long or int or short or byte) return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+                if (value is long l) return l;
+                if (value is int i) return (long)i;
                 if (value is bool b) return b ? 1L : 0L;
                 break;
             case DataFieldType.Real:
-                if (value is double or float or decimal or long or int) return Convert.ToDouble(value, CultureInfo.InvariantCulture);
+                if (value is double d) return d;
+                if (value is long rl) return (double)rl;
+                if (value is int ri) return (double)ri;
                 break;
         }
         throw new ArgumentException($"A {value?.GetType().Name ?? "null"} value does not fit a {type} field");

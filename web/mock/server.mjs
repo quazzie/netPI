@@ -37,6 +37,7 @@ const PLUGIN_UIS = [
   { pluginId: 'netpi.ideas', dir: 'plugins/NetPI.Ideas/wwwroot', tabs: [{ id: 'ideas', title: 'Ideas', panel: 'right', icon: 'idea', order: 20 }] },
   { pluginId: 'netpi.diagnostics', dir: 'plugins/NetPI.Diagnostics/wwwroot', tabs: [{ id: 'diagnostics', title: 'Diagnostics', panel: 'right', icon: 'bug', order: 90 }] },
   { pluginId: 'netpi.tools.files', dir: 'plugins/NetPI.Tools.Files/wwwroot', tabs: [{ id: 'files', title: 'Files', panel: 'left', icon: 'files', order: 30 }] },
+  { pluginId: 'netpi.mcp', dir: 'plugins/NetPI.Mcp/wwwroot', tabs: [{ id: 'mcp', title: 'MCP', panel: 'right', icon: 'plug', order: 65 }] },
   {
     pluginId: 'netpi.sample',
     dir: 'web/mock/sample-plugin/wwwroot',
@@ -383,6 +384,59 @@ let diagCallsDelayMs = 0; // e2e test helper: delay the diag.calls responses so 
 let diagCallsInFlight = 0; // e2e test helper: diag.calls requests in flight right now
 let diagCallsMaxInFlight = 0; // e2e test helper: the peak of the above (single-flight polling must never exceed 1)
 let diagCallsServed = 0; // e2e test helper: diag.calls responses served
+let zoomFactor = 1; // desktop.zoom: the desktop shell's WebView zoom (the mock only remembers the factor)
+
+// ------------------------------------------------------------------------------------------ MCP servers (plugins/NetPI.Mcp)
+// Two configured servers as mcp.list reports them: one connected with a small catalog, one whose command is not on
+// PATH (failed, with a tool the plugin rejected). The catalog is fixed; the configuration is what mcp.save changes.
+const MCP_CATALOG = {
+  ha: [
+    { name: 'ha_search', description: 'Search Home Assistant entities, areas and devices by name or domain.', readOnlyHint: true, deferred: false, schema: { type: 'object', properties: { query: { type: 'string', description: 'Words of the name, or a domain such as light' }, limit: { type: 'integer', default: 20 } }, required: ['query'] } },
+    { name: 'ha_get_state', description: 'Read one entity: its state and attributes.', readOnlyHint: false, deferred: true, schema: { type: 'object', properties: { entity_id: { type: 'string' } }, required: ['entity_id'] } },
+    { name: 'ha_call_service', description: 'Call a service on an entity: turn a light on, set a climate target.', readOnlyHint: false, deferred: true, schema: { type: 'object', properties: { domain: { type: 'string' }, service: { type: 'string' }, entity_id: { type: 'string' }, data: { type: 'object' } }, required: ['domain', 'service'] } },
+  ],
+  docs: [],
+};
+let mcpServers = [];
+function mcpSeed() {
+  mcpServers = [
+    { id: 'ha', status: 'connected', error: null, generation: 3, version: '2025-06-18', rejected: [], config: { enabled: true, transport: 'http', url: 'http://homeassistant.local:8123/mcp', headerEnv: { Authorization: 'HA_TOKEN' }, pinned: [], readOnly: ['ha_get_*'] } },
+    { id: 'docs', status: 'failed', error: 'spawn npx ENOENT: the command is not on PATH', generation: 1, version: null, rejected: [{ name: 'read', error: 'Tool id collides with a tool owned by another plugin.' }], config: { enabled: true, transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/srv/docs'], cwd: '/srv/docs', env: {}, pinned: [], readOnly: [] } },
+  ];
+}
+mcpSeed();
+function mcpServer(id) {
+  const s = mcpServers.find((x) => x.id === id);
+  if (!s) throw notFound(`MCP server ${id}`);
+  return s;
+}
+const mcpView = (s) => ({ id: s.id, status: s.status, error: s.error, generation: s.generation, toolCount: (MCP_CATALOG[s.id] ?? []).length, resourceCount: 0, rejected: s.rejected, version: s.version, config: s.config });
+const mcpSnapshot = () => ({ servers: mcpServers.map(mcpView) });
+const mcpMatches = (pattern, name) => (pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : pattern === name);
+/** mcp.tools for one server: the UI inventory, with exposed (config.tools), pinned and readOnly (the hint, or the configuration's list) applied. */
+const mcpTools = (s) =>
+  (MCP_CATALOG[s.id] ?? []).map((t) => ({
+    id: `mcp_${s.id}_${t.name}`, serverId: s.id, name: t.name, description: t.description, revision: 1,
+    deferred: t.deferred && !(s.config.pinned ?? []).some((p) => mcpMatches(p, t.name)),
+    readOnly: t.readOnlyHint || (s.config.readOnly ?? []).some((p) => mcpMatches(p, t.name)),
+    exposed: !Array.isArray(s.config.tools) || s.config.tools.includes(t.name),
+    schema: t.schema,
+  }));
+const mcpChanged = (s, reason) => {
+  publish('mcp.serverChanged', { serverId: s.id, status: s.status, error: s.error, generation: s.generation });
+  publish('mcp.toolsChanged', { serverId: s.id, reason, added: [], removed: [], updated: [] });
+};
+
+// ------------------------------------------------------------------------------------------ backups (plugins/NetPI.Backup)
+// snapshot manifests, as backup.list returns them: the seed holds one automatic snapshot; backup.create adds a manual one
+const mkBackup = (automatic, at) => {
+  const id = new Date(at).toISOString().replace(/[-:]/g, '').slice(0, 15);
+  return { id, path: path.join(os.homedir(), '.netpi', 'backups', id), version: 1, createdAt: new Date(at).toISOString(), automatic, files: { 'netpi.db': 'ab'.repeat(32), 'settings.json': 'cd'.repeat(32) }, ideaImages: {} };
+};
+let backups = [];
+const backupSeed = () => (backups = [mkBackup(true, Date.now() - 6 * 3600_000)]);
+backupSeed();
+
 const handlers = {
   'app.info': () => ({ version: VERSION, os: `${os.type()} ${os.release()}`, home: os.homedir(), appDir: path.join(REPO, 'artifacts/app'), defaultWorkspace: path.join(os.homedir(), '.netpi', 'workspace'), desktop: false }),
 
@@ -1098,6 +1152,9 @@ ${agent.plan.markdown(id)}` });
     work.start();
     ideas.seed();
     diag.seed();
+    mcpSeed();
+    backupSeed();
+    zoomFactor = 1;
     publish('plugins.changed', {});
     return true;
   },
@@ -1119,6 +1176,115 @@ ${agent.plan.markdown(id)}` });
     return budgetStatus();
   },
   'settings.schema': () => SETTINGS_SCHEMA,
+
+  // --- MCP plugin (plugins/NetPI.Mcp): the two seeded servers above
+  'mcp.list': () => mcpSnapshot(),
+  'mcp.tools': (p = {}) => ({ tools: (p.serverId ? [mcpServer(p.serverId)] : mcpServers).flatMap(mcpTools) }),
+  'mcp.tool': (p) => {
+    const id = need(p, 'id');
+    const t = mcpServers.flatMap(mcpTools).find((x) => x.id === id);
+    if (!t) throw new RpcError('not_found', `No MCP tool ${id}`);
+    return { id: t.id, serverId: t.serverId, name: t.name, readOnly: t.readOnly, annotations: t.readOnly ? { readOnlyHint: true } : null };
+  },
+  'mcp.resources': () => ({ resources: [] }),
+  'mcp.save': (p) => {
+    const id = need(p, 'id');
+    const config = need(p, 'config');
+    if (typeof config !== 'object' || Array.isArray(config)) throw new RpcError('bad_request', 'config must be an object');
+    if (!/^[A-Za-z0-9_-]{1,48}$/.test(id)) throw new RpcError('bad_request', 'Server id: letters, digits, _ and - (1-48 characters)');
+    if (!['stdio', 'http'].includes(config.transport ?? 'stdio')) throw new RpcError('bad_request', `Unknown transport "${config.transport}"`);
+    let s = mcpServers.find((x) => x.id === id);
+    if (!s) mcpServers.push((s = { id, status: 'connecting', error: null, generation: 0, version: null, rejected: [], config }));
+    else s.config = config;
+    s.generation++;
+    s.status = config.enabled === false ? 'disabled' : s.error ? 'failed' : 'connected';
+    mcpChanged(s, 'config');
+    return mcpSnapshot();
+  },
+  'mcp.remove': (p) => {
+    const s = mcpServer(need(p, 'id'));
+    mcpServers = mcpServers.filter((x) => x !== s);
+    publish('mcp.serverChanged', { serverId: s.id, status: 'removed', error: null, generation: s.generation });
+    return mcpSnapshot();
+  },
+  'mcp.setEnabled': (p) => {
+    const s = mcpServer(need(p, 'id'));
+    s.config = { ...s.config, enabled: !!p.enabled };
+    s.status = !p.enabled ? 'disabled' : s.error ? 'failed' : 'connected';
+    s.generation++;
+    mcpChanged(s, p.enabled ? 'enabled' : 'disabled');
+    return mcpSnapshot();
+  },
+  'mcp.reconnect': (p) => {
+    const s = mcpServer(need(p, 'id'));
+    s.generation++;
+    mcpChanged(s, 'reconnect');
+    return mcpSnapshot();
+  },
+  'mcp.refresh': (p) => {
+    const s = mcpServer(need(p, 'id'));
+    publish('mcp.toolsChanged', { serverId: s.id, reason: 'refresh', added: [], removed: [], updated: [] });
+    return mcpSnapshot();
+  },
+
+  // the workspace identity the Files tab keys its refreshes on (plugins/NetPI.Tools.Files): no Workspaces plugin here,
+  // so a session's identity is its project (like the host's resolver when a session is unbound), version 0
+  'files.scope': (p = {}) => {
+    const s = p.sessionId ? store.sessions.get(p.sessionId) : null;
+    const root = p.cwd || sessionCwd(p.sessionId);
+    filesCalls.push({ m: 'files.scope', root });
+    return { sessionId: p.sessionId ?? null, root, workspaceId: null, branch: null, isolated: false, identity: s ? `project:${s.projectId ?? '-'}` : null, version: 0 };
+  },
+
+  // the Ideas plugin's optional parts (docs/PROTOCOL.md): embeddings are on, so the Ideas tab shows its ≈ toggle, and
+  // ideas.similar ranks by word overlap — the mock's stand-in for the cosine similarity of embeddings
+  'ideas.capabilities': () => ({ decisions: false, history: false, catalog: false, embeddings: true }),
+  'ideas.similar': (p = {}) => {
+    const all = ideas.api['ideas.list']().ideas;
+    const words = (s) => String(s ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? [];
+    const base = p.id ? all.find((i) => i.id === p.id) : null;
+    if (p.id && !base) throw notFound(`Idea ${p.id}`);
+    const q = new Set(base ? words(`${base.title} ${base.summary}`) : words(p.text));
+    if (!q.size) throw new RpcError('bad_request', 'Give an id or a text to compare with.');
+    const rows = all
+      .filter((i) => i.id !== base?.id && (!p.status || p.status === 'all' || i.status === p.status) && (!p.projectId || i.project?.id === p.projectId))
+      .map((i) => {
+        const w = words(`${i.title} ${i.summary} ${(i.tags ?? []).join(' ')}`);
+        const hits = w.filter((x) => q.has(x)).length;
+        return { id: i.id, title: i.title, status: i.status, score: Math.round((hits / Math.sqrt(Math.max(1, w.length) * q.size)) * 1000) / 1000 };
+      })
+      .filter((r) => r.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.min(Math.max(1, p.limit ?? 10), 50));
+    return { available: true, ideas: rows };
+  },
+
+  // desktop.zoom (the desktop shell): read, or set when a factor is given
+  'desktop.zoom': (p = {}) => {
+    if (p.factor != null) {
+      const f = Number(p.factor);
+      if (!(f >= 0.5 && f <= 3)) throw new RpcError('bad_request', 'factor must be between 0.5 and 3');
+      zoomFactor = Math.round(f * 100) / 100;
+    }
+    return { factor: zoomFactor };
+  },
+
+  // --- backups (plugins/NetPI.Backup, Settings → Backups)
+  'backup.list': () => backups.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+  'backup.create': async () => {
+    await new Promise((r) => setTimeout(r, 300)); // hashing the database
+    const b = mkBackup(false, Date.now());
+    backups.push(b);
+    return b;
+  },
+  'backup.verify': (p) => {
+    const b = backups.find((x) => x.id === need(p, 'id'));
+    if (!b) throw notFound(`Snapshot ${p.id}`);
+    return b;
+  },
+
+  // the NetPI Chrome extension (plugins/NetPI.Tools.Web, the browser view): where to load it from, not connected here
+  'browser.extension': () => ({ folder: path.join(REPO, 'plugins', 'NetPI.Tools.Web', 'extension'), connected: false, hello: null }),
 };
 
 async function dispatch(m, p) {
@@ -1175,9 +1341,18 @@ function safeJoin(root, rel) {
   return p.startsWith(root) ? p : null;
 }
 
+// The headers the host sends with every response (src/NetPI.Host/Web/WebServer.cs, the same policy verbatim): a UI change
+// the host would block — an inline script, a style sheet or an image fetched from elsewhere — fails against the mock too.
+const CONTENT_SECURITY_POLICY =
+  "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
+  "connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = decodeURIComponent(url.pathname);
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
 
   if (p === '/' && url.searchParams.get('token')) {
     if (url.searchParams.get('token') !== TOKEN && !NO_AUTH) {

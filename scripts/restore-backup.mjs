@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Restore into a NEW home. Does not modify the backup or an existing NetPI home.
 import fs from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -22,6 +24,29 @@ function imageTarget(name) {
   return parts[1];
 }
 
+/** The SHA-256 of a file, streamed: the database in a snapshot is as big as the store, so no file is held in memory whole. */
+async function sha256(file) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+/** The first bytes of a file (fewer when the file is shorter). */
+async function head(file, length) {
+  const handle = await fs.open(file, 'r');
+  try {
+    const { bytesRead, buffer } = await handle.read(Buffer.alloc(length), 0, length, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** A file copied by streaming, created exclusively and readable by the user alone, like every file a restore writes. */
+async function copy(source, target) {
+  await pipeline(createReadStream(source), createWriteStream(target, { flags: 'wx', mode: 0o600 }));
+}
+
 export async function restoreBackup(backup, destination) {
   backup = path.resolve(backup);
   destination = path.resolve(destination);
@@ -36,22 +61,21 @@ export async function restoreBackup(backup, destination) {
   const listed = manifest.files;
   if (!listed || typeof listed !== 'object' || Array.isArray(listed) || Object.keys(listed).length === 0)
     throw new Error('The manifest lists no files');
-  const contents = new Map();
+  const verified = new Set();
   // Whatever the manifest lists, each with a checksum of its own, read from inside the snapshot only. An older
   // snapshot restores exactly what it has (its ideas files, before they became tables in the database).
   for (const [name, expected] of Object.entries(listed)) {
     if (typeof expected !== 'string' || expected.length !== 64) throw new Error(`The manifest has no checksum for ${name}`);
-    const data = await fs.readFile(inside(backup, name));
-    const hash = createHash('sha256').update(data).digest('hex');
+    const hash = await sha256(inside(backup, name));
     if (hash !== expected.toLowerCase()) throw new Error(`Checksum mismatch: ${name}`);
-    contents.set(name, data);
+    verified.add(name);
   }
   if (provider === 'sqlite') {
-    if (!contents.has('netpi.db')) throw new Error('The snapshot has no netpi.db');
-    if (contents.get('netpi.db').subarray(0, 16).toString('ascii') !== 'SQLite format 3\0') throw new Error('Invalid SQLite database');
+    if (!verified.has('netpi.db')) throw new Error('The snapshot has no netpi.db');
+    if ((await head(inside(backup, 'netpi.db'), 16)).toString('ascii') !== 'SQLite format 3\0') throw new Error('Invalid SQLite database');
   }
-  if (!contents.has('settings.json')) throw new Error('The snapshot has no settings.json');
-  const settings = JSON.parse(contents.get('settings.json').toString('utf8'));
+  if (!verified.has('settings.json')) throw new Error('The snapshot has no settings.json');
+  const settings = JSON.parse(await fs.readFile(inside(backup, 'settings.json'), 'utf8'));
   if (!settings || Array.isArray(settings) || typeof settings !== 'object') throw new Error('Invalid settings');
   // The idea images are files under the home, not in the store: the snapshot carries each one as a file of its own and
   // the manifest says which file of the images directory it is, so a restored backlog keeps the pictures its cards show.
@@ -60,16 +84,16 @@ export async function restoreBackup(backup, destination) {
   if (!images || typeof images !== 'object' || Array.isArray(images)) throw new Error('Invalid ideaImages');
   const imageFiles = new Map();
   for (const [name, target] of Object.entries(images)) {
-    if (!contents.has(name)) throw new Error(`The manifest lists an idea image, ${name}, that the snapshot does not have`);
-    imageFiles.set(imageTarget(target), contents.get(name));
+    if (!verified.has(name)) throw new Error(`The manifest lists an idea image, ${name}, that the snapshot does not have`);
+    imageFiles.set(imageTarget(target), inside(backup, name));
   }
   // Exclusive creation rejects existing homes, including symlinks. On a write failure keep the partial directory
   // for inspection; another restore must choose a different destination.
   await fs.mkdir(destination);
-  for (const [name, data] of contents) await fs.writeFile(inside(destination, name), data, { flag: 'wx', mode: 0o600 });
+  for (const name of verified) await copy(inside(backup, name), inside(destination, name));
   if (imageFiles.size) {
     await fs.mkdir(path.join(destination, 'idea-images'), { mode: 0o700 });
-    for (const [target, data] of imageFiles) await fs.writeFile(path.join(destination, 'idea-images', target), data, { flag: 'wx', mode: 0o600 });
+    for (const [target, source] of imageFiles) await copy(source, path.join(destination, 'idea-images', target));
   }
   return destination;
 }

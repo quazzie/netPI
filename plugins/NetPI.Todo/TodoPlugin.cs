@@ -24,6 +24,7 @@ public sealed class TodoPlugin : INetPiPlugin
                 "After a successful commit, use the provider-captured conversation to suggest completed checklist items. Clear answers become a hint to the agent; they never check off unsupported work.")],
         });
         context.Services.Register<IAgentHook>(new TodoCommitCheck(context));
+        context.Services.Register<IDecisionContextConsumer>(new TodoContextConsumer(context));
         context.Services.Register<IAgentHook>(new TodoNotices(context));
         context.Events.Subscribe(EventTypes.SessionForked, e =>
         {
@@ -48,6 +49,12 @@ public sealed class TodoPlugin : INetPiPlugin
         }
         catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException) { } // deleted meanwhile
     }
+}
+
+/// <summary>The commit check reads the provider's capture of the conversation: the runtime captures it while <c>todo.checkCommits</c> is on.</summary>
+internal sealed class TodoContextConsumer(IPluginContext ctx) : IDecisionContextConsumer
+{
+    public bool WantsDecisionContext => ctx.Settings.Get("todo.checkCommits", false);
 }
 
 /// <summary>

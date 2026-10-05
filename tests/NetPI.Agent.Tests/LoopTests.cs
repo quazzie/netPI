@@ -25,6 +25,9 @@ public static class LoopTests
         t.Add("loop: an abort keeps the queue: dequeue it, then send it as the next turn", AbortKeepsQueue);
         t.Add("loop: a run that fails before it takes the queue does not start itself again for it", FailedRunKeepsQueue);
         t.Add("loop: taking a steer back from the queue lifts its cancel, so a wait is not interrupted by nothing", StaleSteerSignal);
+        t.Add("loop: a cancel that lands after the drain took the steer does not interrupt the next wait", LateSteerCancelAfterDrain);
+        t.Add("loop: a new message after an abort takes the kept queue first, each item as it was queued", KeptQueueBeforeNewMessage);
+        t.Add("loop: a tool result the store refuses fails the run instead of being dropped", ToolResultStoreFailure);
         t.Add("loop: unknown tool and invalid JSON arguments", ToolErrors);
         t.Add("loop: {\"help\": true} on any tool returns its manual and does not run it", ToolHelpCall);
         t.Add("loop: tool exceptions and result truncation", ToolExceptionAndTruncation);
@@ -545,13 +548,103 @@ public static class LoopTests
         Check.Equal(2, h.Runtime.GetQueue(s.Id).Count, "the queue is as the user left it: the steer and the follow-up");
         Check.Equal(2, a.QueuedMessages);
 
-        // the cause is fixed and the user writes again: the same run takes what was waiting, in order
+        // the cause is fixed and the user writes again: the new run takes what was waiting first, in the order it was
+        // written, and the new message after it
         h.Sessions.UpdateSession(s.Id, x => x.Model = model);
         await h.SendAsync(s.Id, "try again");
         a = await h.IdleAsync(s.Id);
         Check.Equal(0, h.Runtime.GetQueue(s.Id).Count, "the queue was taken");
         var said = h.Messages(s.Id).Where(m => m.Role == MessageRole.User).Select(m => m.Text).ToList();
-        Check.Equal("go,try again,steer now,later", string.Join(",", said));
+        Check.Equal("go,steer now,later,try again", string.Join(",", said));
+    }
+
+    /// <summary>
+    /// A user's steer cancels its signal after the add, outside the gate. Landing after the run's drain took the steer, that
+    /// cancel used to hit the live signal with nothing queued, and the next agent wait or ask_user returned at once for a
+    /// message that was already read: the drain gives the agent a fresh signal, so a late cancel hits the old one.
+    /// </summary>
+    private static async Task LateSteerCancelAfterDrain()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource();
+        var calls = 0;
+        h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref calls) == 1 ? Reply.Text("first", c => gate.Task.WaitAsync(c)) : Reply.Text("second");
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "first call");
+        var state = ((NetPI.Runtime.AgentRuntime)h.Runtime).FindState(s.Id)!;
+        var signal = state.SteerSignal;
+        // An internal steer is queued without cancelling the signal, so the drain is the only thing that touches it here.
+        await h.Runtime.SendAsync(s.Id, new UserInput { Text = "steer", Source = "agent:test" }, DeliveryMode.Steer);
+        gate.SetResult();   // the first turn ends; the next turn drains the steer before its model call
+        await h.IdleAsync(s.Id);
+        Check.True(h.Messages(s.Id).Any(m => m.Text == "steer"), "the steer was drained into the transcript");
+        Check.False(ReferenceEquals(signal, state.SteerSignal), "the drain gave the agent a fresh signal");
+        signal.Cancel();   // the late cancel of DeliverAsync, landing after the drain
+        Check.False(state.SteerSignal.IsCancellationRequested, "nothing is queued, so nothing is signalled");
+    }
+
+    /// <summary>
+    /// The queue an aborted (or failed) run kept is what the user wrote before the next message: it goes into the transcript
+    /// first, in its order, a steer as a steer and a follow-up as queued — not after the new message, and not all as steers.
+    /// </summary>
+    private static async Task KeptQueueBeforeNewMessage()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource();
+        var calls = 0;
+        h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref calls) == 1 ? Reply.Text("first", c => gate.Task.WaitAsync(c)) : Reply.Text("ok");
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "first call");
+        await h.SendAsync(s.Id, "steered", DeliveryMode.Steer);
+        await h.SendAsync(s.Id, "queued", DeliveryMode.Queue);
+        Check.True(await h.Runtime.AbortAsync(s.Id), "abort");
+        await h.IdleAsync(s.Id);
+        Check.Equal(2, h.Runtime.GetQueue(s.Id).Count, "the abort kept both");
+
+        await h.SendAsync(s.Id, "again");
+        var a = await h.IdleAsync(s.Id);
+        Check.Equal(2, a.Runs);
+        Check.Equal(0, h.Runtime.GetQueue(s.Id).Count, "the new run took the kept queue");
+        Check.Equal(0, a.QueuedMessages);
+        var inputs = h.Messages(s.Id).Where(m => m.Role == MessageRole.User).ToList();
+        Check.Equal("go,steered,queued,again", string.Join(",", inputs.Select(m => m.Text)), "the kept queue goes before the new message, in its order");
+        Check.Equal("steer", inputs[1].MetaString("delivery"), "a kept steer is stored as the steer it was");
+        Check.Equal("queue", inputs[2].MetaString("delivery"), "a kept follow-up is stored as queued, not as a steer");
+        Check.Equal("queued", inputs[2].MetaString("kind"));
+        Check.Equal(null, inputs[3].MetaString("delivery"), "the new message is a plain message");
+        Check.Equal("ok", h.Messages(s.Id)[^1].Text, "the new run answered all of it");
+    }
+
+    /// <summary>
+    /// A result that is not stored closes the call as "not executed" at the next model call, and the model runs a write or a
+    /// shell command again that did run: the run fails instead, with the store's error for the user.
+    /// </summary>
+    private static async Task ToolResultStoreFailure()
+    {
+        await using var h = await TestHost.StartAsync();
+        var store = new FailingSessionStore(h.Sessions);
+        h.UseSessions(store);
+        var ran = 0;
+        h.AddTool(new FakeTool("work", (ctx, args, ct) =>
+        {
+            Interlocked.Increment(ref ran);
+            return Task.FromResult(ToolResult.Ok("did it"));
+        }));
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("ok") : Reply.Tool("work", new { });
+        var s = h.NewSession();
+        store.FailAppend = m => m.Role == MessageRole.Tool;   // the store loses every tool result
+        await h.SendAsync(s.Id, "go");
+        var a = await h.IdleAsync(s.Id);
+        Check.Equal(1, ran, "the tool ran once");
+        Check.Equal(1, h.Catalog.Calls, "no second model call on a transcript without the result");
+        Check.Equal(AgentStatus.Idle, a.Status);
+        Check.Contains(a.Error ?? "", "could not be stored");
+        var notice = h.Messages(s.Id).Last(m => m.Role == MessageRole.Notice && m.MetaString("kind") == "error");
+        Check.Contains(notice.Text, "work");
+        Check.Contains(notice.Text, "disk full", "the store's own error is in the notice");
+        Check.False(h.Messages(s.Id).Any(m => m.Role == MessageRole.Tool), "nothing pretended the result was stored");
     }
 
     /// <summary>A steer cancels the agent's signal so a guard approval, ask_user or agent wait stops waiting for it. Taking the

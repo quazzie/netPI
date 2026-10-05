@@ -19,8 +19,18 @@ export async function loadPlaywright() {
   throw new Error('Playwright not found (npm i -g playwright, or npm i -D playwright-core)');
 }
 
-/** Playwright's own Chromium, else an installed Edge/Chrome when that build is not downloaded (Edge ships with Windows). */
+/**
+ * The browser every check runs in: NETPI_BROWSER (the path of a Chromium-based executable: a preinstalled Chromium of
+ * another revision, a Chrome somewhere unusual) first, else Playwright's own Chromium, else an installed Edge/Chrome
+ * when that build is not downloaded (Edge ships with Windows).
+ */
 export async function launchBrowser(pw) {
+  const executablePath = process.env.NETPI_BROWSER?.trim();
+  if (executablePath) {
+    const b = await pw.chromium.launch({ executablePath });
+    console.log(`  browser: ${executablePath} (NETPI_BROWSER)`);
+    return b;
+  }
   try {
     return await pw.chromium.launch();
   } catch (e) {

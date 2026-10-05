@@ -7,9 +7,9 @@ in `docs/PLUGIN-IDEAS.md`):
 
 | plugin | id | tools | RPC |
 |---|---|---|---|
-| `plugins/NetPI.Tools.Files` | `netpi.tools.files` | `read` `write` `edit` `grep` `find` `ls` | `files.search`, `files.list`, `files.open`, `files.git` |
+| `plugins/NetPI.Tools.Files` | `netpi.tools.files` | `read` `write` `edit` `grep` `find` `ls` `git` | `files.search`, `files.list`, `files.open`, `files.git` |
 | `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process` | `processes.list`, `processes.output`, `processes.kill` |
-| `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` | – |
+| `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` `browser` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
 | `plugins/NetPI.Ask` | `netpi.ask` | `ask_user` | `ask.pending`, `ask.answer` |
 | `plugins/NetPI.Plan` | `netpi.plan` | `plan_submit` `plan_enter` | `plan.*` (see `docs/PROTOCOL.md`), the `/plan` command |
@@ -125,13 +125,14 @@ when you change it.
   a missing file gives an error with “Did you mean” names. An image that reached a request from anywhere else (a paste, a
   tool) and is over the limit is sent as `[image omitted: N MB exceeds the provider limit]` instead of being rejected by
   every later call.
-- Files over 32MB are streamed instead of loaded, and a page of one **stops at the end of the page**: it is not read to
+- Files over 1MB are streamed instead of loaded (a page of a whole-file read decodes the file again, so that bound keeps
+  every page cheap), and a page of one **stops at the end of the page**: it is not read to
   the end to count lines. Such a page reports `totalLines: null` and says `[Showing lines 100-104; more lines follow. Use
   offset=105 to continue.]`; a page that reaches the end of the file knows the exact total, and so does any negative offset.
   The encoding comes from the same sample the small path decodes, so a huge UTF-16 or Latin-1 file reads like its content.
 
 ```ts
-details: { path: string /* absolute */, startLine: number, endLine: number, totalLines: number|null /* null: a page of a file over 32MB that did not reach the end */,
+details: { path: string /* absolute */, startLine: number, endLine: number, totalLines: number|null /* null: a page of a file over 1MB that did not reach the end */,
            truncated: boolean, eol: 'lf'|'crlf', bom: boolean, encoding?: 'latin1' }
 // image:  { path, image: true, mediaType, bytes }
 ```
@@ -311,7 +312,10 @@ The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.
   - stderr is merged into stdout at the source, so the order is exact.
   - Environment: `CHERE_INVOKING=1`, `TERM=dumb`, `NO_COLOR=1`, `GIT_PAGER=cat`, `PAGER=cat`, `GIT_TERMINAL_PROMPT=0` and
     `NETPI=1`. `LANG`/`LC_ALL` are set to `C.UTF-8` (or `en_US.UTF-8` on macOS), and `PYTHONIOENCODING=utf-8` and
-    `PYTHONUNBUFFERED=1` are set, but only when they are not already set.
+    `PYTHONUNBUFFERED=1` are set, but only when they are not already set. The server's own secrets are removed from what
+    a child (bash, pwsh) inherits: `NETPI_TOKEN`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `BRAVE_API_KEY`, every
+    variable a secret setting reads (`env:NAME` / `$NAME` under `providers` and `mcp`, and the variables an MCP server's
+    `env`/`headerEnv` name) and the names in `shell.hideEnv`. Nothing else is hidden: the rest of the environment is the user's.
 - **pwsh**
   - Runs `pwsh -NoLogo -NoProfile -NonInteractive [-ExecutionPolicy Bypass] -EncodedCommand <base64 UTF-16LE>`. Long
     scripts go through a temp `.ps1` file.
@@ -459,8 +463,10 @@ checkout:
   with `workspaces.integrate`, or by hand);
 - a worker's own session is the owner of its workspace, so a worker that is asked for a second task keeps the checkout
   it already has — no new worktree per task;
-- every workspace a batch names is resolved and checked before the first child starts: one that does not exist, is
-  missing on disk or belongs to another project fails the whole call ("None of them was started").
+- every workspace a batch needs is resolved and provisioned before the first child starts — a named one checked, the
+  worktree of every writing worker created: one that does not exist, is missing on disk, belongs to another project or
+  cannot be created fails the whole call ("None of them was started"), and the worktrees the batch had already created
+  are released (`workspaces.delete`).
 
 A project that is not a git repository gets a plain folder (`<parent>/<Project>-<name>`) instead of a worktree, so
 isolation is not imposed on it. Without the plugin, spawn behaves as before: a child shares the project's path.
@@ -474,7 +480,8 @@ repository's — so a relative `../` that climbs out, an absolute path into the 
 spelling, a junction or symlink that points there (at any depth, not only at the end), a long-path (`\\?\`), admin-share
 (`\\localhost\C$\`) or device spelling of a local path all reach the same answer, because every path is resolved to one
 canonical form first — and a share on another machine is a different place, never under a local root. The guardrails' own
-path rules use the same canonical function, so a protected path is reached in no spelling.
+path rules use the same canonical function, so a protected path is reached in no spelling — a Windows 8.3 short name
+(`C:\Users\me\SSH~1`) included, which is expanded to the directory it names.
 
 An isolated workspace has no third answer: when git itself cannot say where a path lives (git missing, timed out, or an
 error — not "not a repository", which is an answer), the write is refused and the refusal says what git could not say.
@@ -819,7 +826,9 @@ named agent's model, otherwise the catalog default. Turns, delegation and manual
 including during manual compaction, rather than silently replaced by the global default.
 
 Several at once: `{ subagents: [{ task, name?, agent?, model?, tools?, instructions? }, …], background?, timeoutSeconds? }`.
-Every entry is checked first (a bad one starts none of them: "subagents[1] (name): …"), then they all start together.
+Every entry is checked first, and every workspace the batch needs is provisioned before the first child starts (a named one
+resolved, the worktree of every worker that writes created, by the same rule a single spawn follows); a bad one starts none of
+them ("subagents[1] (name): …") and releases the worktrees the batch had created. Then they all start together.
 `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
 
 It waits by default: the call returns when all of them have finished, with every report, and while it waits the caller's
@@ -827,7 +836,8 @@ instance is free for its subagents (`agent_choices` marks it: "one is you: free 
 turn's tool calls run one after the other, so separate `agent_spawn` calls each wait before the next starts; to run
 several at the same time, start them in one call. `timeoutSeconds` bounds the wait (the ones still running then report
 later on their own). `background: true` is the explicit choice to keep working meanwhile: the call returns at once and
-each report arrives later as an `agent-result` notice (it wakes an idle caller, or steers a running one), unless the
+each report arrives later as an `agent-result` notice (it wakes an idle caller — a subagent that has already finished
+included: it runs again on the report and reports again to its own parent — or steers a running one), unless the
 caller collects it with `agent` `wait` first. An older `wait: false` means background too.
 
 `agent` is one tool with an action per job below (`{ action, … }`; a call with a `message` and no action is `send`);
@@ -1008,7 +1018,7 @@ under `timeout -k 5`, stdin `/dev/null`, stderr merged into stdout. A timeout (e
 the wrapper recognises by the elapsed time and turns into 124) ends the whole remote process group, background children included; so does stopping
 the run (a second ssh call sends TERM, then KILL, to the group). The temp file is removed. Output and notes like
 `bash`: live output in the UI, progress lines collapsed, the last 2000 lines / 30KB for the model with the whole output
-saved to `<tmp>/netpi/ssh-<host>-….log` when it was cut, `[exit code N]` for a non-zero exit (not `isError`),
+saved to `<tmp>/netpi/ssh-<host>-….log` when it was cut (kept 2 days; the plugin removes its older logs at start), `[exit code N]` for a non-zero exit (not `isError`),
 `[timed out after Ns; …]` and `[aborted; …]` (both `isError`). No background mode.
 
 ```ts

@@ -1,11 +1,30 @@
 // The `ctx` object handed to plugin tab modules: mount(el, ctx). See docs/PROTOCOL.md and docs/UI.md.
 import { rpc } from './rpc.svelte.js';
 import { bus } from './bus.js';
-import { app, openSession, newSession, sendMessage, hasRpc } from './state/app.svelte.js';
+import { app, openSession, newSession, sendMessage, hasRpc, workspaceOf } from './state/app.svelte.js';
 import { composer, toast, modals, openView, openIdeaDialog } from './state/ui.svelte.js';
 import { openPanelTab } from './state/tabs.svelte.js';
 
 const appListeners = new Set();
+
+/**
+ * A session's workspace as the host knows it (app.workspaces): the files.scope it read when the tab was activated, or
+ * the session.workspace that bound the session since — two shapes, reduced to the fields a tab keys on. `identity` is
+ * the host's own refresh key (workspace id + version, or the project when unbound) and is null until a files.scope
+ * answered; a tab that needs it then asks once itself. null while nothing is known.
+ */
+function workspaceSnapshot(s) {
+  const w = workspaceOf(s);
+  if (!w) return null;
+  return {
+    sessionId: w.sessionId ?? s.id,
+    workspaceId: w.workspaceId ?? w.binding?.workspaceId ?? null,
+    identity: w.identity ?? null,
+    version: w.version ?? w.binding?.version ?? 0,
+    root: w.root ?? w.binding?.root ?? w.cwd ?? null,
+    branch: w.branch ?? w.binding?.branch ?? null,
+  };
+}
 
 /** Called by the App whenever the active session / project changes. */
 export function notifyAppChange() {
@@ -57,6 +76,13 @@ export function createPluginCtx(tab, sessionId = null) {
       get activeProject() {
         return plain(app.activeProject);
       },
+      // the active session's workspace as the host knows it (see workspaceSnapshot): what a tab keys a reload on
+      // without a files.scope round trip of its own
+      get activeWorkspace() {
+        return workspaceSnapshot(app.activeSession);
+      },
+      /** A session's title from the host's own session list (reactive: a $derived reading it follows session.updated), or null when the host does not list it. */
+      sessionTitle: (id) => (id ? (app.sessionsById.get(id)?.title ?? null) : null),
       onChange(cb) {
         appListeners.add(cb);
         return track(() => appListeners.delete(cb));

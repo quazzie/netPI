@@ -1,6 +1,6 @@
 # Writing plugins
 
-The agent rework introduces shared `IDecisionService`, `IGitHistory`, `IResourceLeases` and `IBackgroundWork` contracts. Resolve plugin-owned capabilities per operation; a caller may retain one only while that operation runs. Decide and Files implement decision/Git capabilities and preserve their RPC adapters. Ideas, Loops and Guardrails keep their base behavior without optional decision/history providers. Decision admission belongs at the capability boundary; a trusted caller can supply its actual same-model lease. External RPC callers always obtain their own admission.
+The agent rework introduces shared `IDecisionService`, `IGitHistory` and `IResourceLeases` contracts (the Ideas plugin's background-work list, `ideas.work`, is its own: nothing else reads it). Resolve plugin-owned capabilities per operation; a caller may retain one only while that operation runs. Decide and Files implement decision/Git capabilities and preserve their RPC adapters. Ideas, Loops and Guardrails keep their base behavior without optional decision/history providers. Decision admission belongs at the capability boundary; a trusted caller can supply its actual same-model lease. External RPC callers always obtain their own admission.
 
 Profiles writes `SessionPrompt.RevisionKey` alongside identity/tool metadata for explicit switches. Context and Runtime fallback honor it; missing revision is zero for legacy sessions. Ordinary settings, model and project changes keep the sent prefix. The registry of physical leases holds only plain data and host-owned lease handles, so an old scheduler's running requests stay counted without retaining its queues or delegates.
 
@@ -186,8 +186,16 @@ Anthropic's prompt cache alike). So nothing that was sent is ever changed; new i
   Changing the tool set is the one change that re-prefills once, because the definitions sit at the top of the request.
 
 Exceptions by necessity: compaction replaces old messages with a summary when the context is nearly full, tool-call
-repair turns a tool call the model wrote as text into a real call, and a profile switch in a started chat (the user's
-choice) renders the system prompt again (the chat's prompt revision is invalidated; the next call re-reads the conversation once).
+repair turns a tool call the model wrote as text into a real call, a profile switch in a started chat (the user's
+choice) renders the system prompt again (the chat's prompt revision is invalidated; the next call re-reads the conversation once),
+and a tool call whose arguments a policy hook rewrote before it ran (plan mode cutting an `agent_spawn` `tools` list to the
+read-only set, `PlanHook`) is stored with the arguments the tool actually got: the runtime writes them back into the
+assistant message it just received (`ToolBatch`, `UpdateMessage` when a hook changed them), so the transcript, the result and
+every later request agree on what ran, and the model is not shown a call it did not get. That is an edit of a sent assistant
+turn: the next request re-reads from there, and with preserved thinking (Claude 5.x; nInfer's `--preserve-thinking` likewise)
+an edited assistant turn is a history edit — the thinking of that turn and after it no longer binds to the conversation that
+produced it (dropped, or refused outright on newer accounts), not merely re-prefilled once. A hook that only needs to refuse
+a call blocks it instead of rewriting it, which leaves the turn as it was sent.
 
 ## Extension points (`src/NetPI.Abstractions` and `src/NetPI.Contracts`)
 
@@ -330,7 +338,9 @@ with `SpawnRequest.Workspace()` (`SpawnWorkspace`). These extensions are in `src
 **Hot-reload rule:** don't hand your plugin's own types to long-lived host caches. Event payloads and RPC results may
 be anonymous objects, records or `JsonObject`s — but don't put your types inside `object`-typed containers
 (`Dictionary<string, object>`, `List<object>`), and use `NetPiJson.ToElement/ToNode/For(type)` instead of
-`NetPiJson.Options` for your own types. The Diagnostics tab shows whether an unloaded plugin was really collected.
+`NetPiJson.Options` for your own types. After every unload the host publishes `plugins.unloaded { id, collected }` and, when
+the old load context was not collected, logs the warning `Plugin <id>: the previous load context is still alive after
+unload (something still references plugin objects); its memory is not reclaimed` (no tab shows it yet).
 
 ## Tab UI
 
@@ -355,7 +365,7 @@ A build lands in `artifacts\dev\app` and never in the app folder, which is the o
 from: rebuilding a plugin (or a test project that references one) would otherwise take its tools away from every
 open chat. Installing is `.\build.ps1 -Publish`, into the running app's own folder (its `<home>\server.json` says where
 that is, so a build in a worktree installs into the app that is really running; `-AppDir` overrides it, and
-`NETPI_APP_DIR` does the same for the npm bundle scripts). One install at a time: the app folder's `.install.lock`.
+`NETPI_APP_DIR` does the same for the npm bundle scripts). One install at a time: the app folder's `.install.lock`, which a starting NetPI also takes (waiting up to a minute) while it installs what waits in `.pending`.
 
 **A reload is a swap, not a restart.** The new version starts while the old one is still serving: a registration of the
 same name takes over as soon as the new instance makes it, and only then are the old registrations disposed. So a tool

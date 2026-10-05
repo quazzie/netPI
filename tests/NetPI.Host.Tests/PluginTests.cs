@@ -213,7 +213,7 @@ public static class PluginTests
         r.Add("plugins: failing StartAsync → failed state, registrations removed; new folders are picked up", async () =>
         {
             await SampleBuild.EnsureAsync();
-            var (pluginsRoot, _) = PreparePluginDir("fail");
+            var (pluginsRoot, pluginDir) = PreparePluginDir("fail");
             await using var server = await StartAsync(pluginsRoot);
             var info = server.Plugins.List().Single(p => p.Id == "test.sample");
             Check.Equal("failed", info.State);
@@ -221,6 +221,10 @@ public static class PluginTests
             Check.False(server.Rpc.Exists("sample.value"), "RPC registered before the failure is removed");
             Check.True(server.Kernel.Tools.Get("sample_echo") is null);
             Check.Equal(0, server.Kernel.Ui.Tabs.Count(t => t.PluginId == "test.sample"));
+            // The failed load is unloaded like any other, and nothing on the entry keeps its context alive: a reference
+            // left there would survive every forced collection and read as a leak.
+            await Wait.Until(() => server.Kernel.Plugins.GetLoadState("test.sample").LastUnloadCollected is not null, "unload check finished", 30_000);
+            Check.Equal(true, server.Kernel.Plugins.GetLoadState("test.sample").LastUnloadCollected, "the failed load's context was collected");
 
             // Disabled via settings → stopped; a folder for another plugin appearing later is discovered.
             var second = Path.Combine(pluginsRoot, "Zz.Second");
@@ -232,6 +236,20 @@ public static class PluginTests
             // Same attribute id as the failed plugin: it may run (the first one is not running).
             Check.Equal("running", twin.State, twin.Error);
             Check.Equal("v2", (string?)await server.Rpc.InvokeAsync("sample.value"));
+
+            // A rebuild of the failed folder: its id is taken by the running twin, so the reload is refused rather than
+            // starting a second instance beside it (both would answer the same RPCs and tools)...
+            foreach (var file in Directory.GetFiles(SampleBuild.Dir("v1")))
+                File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
+            await Wait.Until(() => server.Plugins.List().Single(p => p.Directory == PathUtilNormalize(pluginDir)).Error?.Contains("Duplicate plugin id") == true,
+                "the twin's reload was refused", 20_000);
+            Check.Equal("failed", server.Plugins.List().Single(p => p.Directory == PathUtilNormalize(pluginDir)).State);
+            Check.Equal("v2", (string?)await server.Rpc.InvokeAsync("sample.value"), "the running twin is untouched");
+            // ...and the id names the running one: plugins.reload goes to it, not to the first folder under that id
+            await server.Plugins.ReloadAsync("test.sample");
+            twin = server.Plugins.List().Single(p => p.Directory == PathUtilNormalize(second));
+            Check.Equal("running", twin.State, twin.Error);
+            Check.Equal(2, twin.LoadCount, "plugins.reload went to the running twin");
 
             await server.Plugins.SetEnabledAsync("test.sample", false);
             Check.False(server.Rpc.Exists("sample.value"));
@@ -269,6 +287,94 @@ public static class PluginTests
             lock (removals) first = removals[0];
             Check.Contains(first.Ids, "test.sample", "the event names the plugin that went away");
             Check.Equal("removed", first.Kind, "and says why its tools are gone");
+        });
+
+        r.Add("plugins: a failed plugin switched off is disabled and switched on is retried; plugin.json enabled:false stops it on reload", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("fail");
+            await using var server = await StartAsync(pluginsRoot);
+            PluginInfo Info() => server.Plugins.List().Single(p => p.Id == "test.sample");
+            // StartAsync writes a row before it throws, so the rows count its attempts
+            long Starts() => server.Kernel.Storage.Plugins.For("test.sample").Collection("sample_items", new CollectionSpec().Text("variant")).Count();
+            Check.Equal("failed", Info().State);
+            Check.Equal(1L, Starts());
+
+            await server.Plugins.SetEnabledAsync("test.sample", false);
+            Check.Equal("disabled", Info().State, "off is off, also for a plugin that failed");
+            Check.False(Info().Enabled);
+            Check.Equal(1L, Starts(), "nothing was started");
+
+            await server.Plugins.SetEnabledAsync("test.sample", true);
+            Check.Equal("failed", Info().State, "switched on, it was started again (and failed again)");
+            Check.Contains(Info().Error, "sample plugin failure");
+            Check.Equal(2L, Starts(), "StartAsync ran again");
+
+            await server.Plugins.SetEnabledAsync("test.sample", true);   // on already: an explicit enable is the way to retry it
+            Check.Equal(3L, Starts(), "an enable of a failed plugin that is on retries it");
+
+            // a build that fixes it is hot-reloaded like any other: failed → running
+            foreach (var file in Directory.GetFiles(SampleBuild.Dir("v1")))
+                File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
+            await Wait.Until(() => Info() is { State: "running", LoadCount: 1 }, "the fixed build started", 20_000);
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"));
+
+            // plugin.json enabled:false is honoured by the reload it triggers: the plugin is stopped, not hot-reloaded
+            File.WriteAllText(Path.Combine(pluginDir, "plugin.json"), """{ "id": "test.sample", "enabled": false }""");
+            await Wait.Until(() => Info().State == "disabled", "off by its manifest", 20_000);
+            Check.False(server.Rpc.Exists("sample.value"), "stopped: its registrations are gone");
+            Check.False(Info().Enabled);
+            Check.Equal(1, Info().LoadCount, "not loaded again");
+            // switching it on forces it past the manifest (plugins.enabled) and starts it
+            await server.Plugins.SetEnabledAsync("test.sample", true);
+            Check.Equal("running", Info().State, Info().Error);
+            Check.Equal(2, Info().LoadCount);
+        });
+
+        r.Add("plugins: a reload with nothing to load (the assembly deleted) keeps the running version and announces no reload", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            await using var server = await StartAsync(pluginsRoot);
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"));
+
+            // One subscriber for both events, so they arrive in publish order: a reload that was attempted says
+            // plugins.reloaded before plugins.changed; one that was not says plugins.changed alone. The marker is
+            // delivered after whatever the start published, so from it on only the reload speaks.
+            var seen = new List<string>();
+            using var sub = server.Events.Subscribe("plugins.*", e => { lock (seen) seen.Add(e.Type); });
+            server.Events.Publish("plugins.test-marker");
+            await Wait.Until(() => { lock (seen) return seen.Contains("plugins.test-marker"); }, "marker delivered");
+            lock (seen) seen.Clear();
+
+            File.Delete(Path.Combine(pluginDir, "SamplePlugin.dll"));   // the watcher schedules a reload for the dll change
+            await Wait.Until(() => { lock (seen) return seen.Contains(EventTypes.PluginsChanged); }, "the reload reported what it found", 20_000);
+            var info = server.Plugins.List().Single(p => p.Id == "test.sample");
+            Check.Equal("running", info.State, "the running version keeps serving");
+            Check.Contains(info.Error, "not found", "and the plugin says what is missing");
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"));
+            lock (seen) Check.False(seen.Contains(EventTypes.PluginsReloaded), "no reload was attempted, so none is announced: " + string.Join(",", seen));
+        });
+
+        r.Add("plugins: a rescan reloads a plugin whose assembly changed without the watcher seeing it (folder swapped in whole)", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            await using var server = await StartAsync(pluginsRoot);
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"));
+
+            // A deploy that swaps the folder as a whole (staged outside the watched root): no file inside changes in
+            // place, so the watcher sees at most the folder, which a rescan finds present. What a lost event looks like.
+            var staged = Path.Combine(T.TempDir("staged"), "SamplePlugin");
+            T.CopyDir(SampleBuild.Dir("v2"), staged);
+            File.SetLastWriteTimeUtc(Path.Combine(staged, "SamplePlugin.dll"), DateTime.UtcNow);   // a rebuilt file is newer, whatever the build did
+            Directory.Move(pluginDir, Path.Combine(T.TempDir("retired"), "SamplePlugin"));
+            Directory.Move(staged, pluginDir);
+            await server.Plugins.RescanAsync();
+
+            await Wait.Until(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running" } p && p.LoadCount >= 2,
+                "reloaded by the rescan", 20_000);
+            Check.Equal("v2", (string?)await server.Rpc.InvokeAsync("sample.value"), "the swapped-in build serves");
         });
 
         // build.ps1 while NetPI runs: what the running NetPI must not load yet waits in .pending, replaced host files in .old
@@ -316,6 +422,48 @@ public static class PluginTests
 
             PendingBuild.Install(app, log); // nothing pending: nothing changes
             Check.Equal("new A", Text("plugins/A/A.dll"));
+        });
+
+        r.Add("plugins: the next start waits for a publish that holds the install lock, and takes over a stale one", () =>
+        {
+            var app = T.TempDir("pending-lock");
+            void Put(string rel, string text)
+            {
+                var path = Path.Combine(app, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, text);
+            }
+            string Text(string rel) => File.ReadAllText(Path.Combine(app, rel));
+            Put("plugins/A/A.dll", "old A");
+            Put(".pending/plugins/A/A.dll", "new A");
+            var lockFile = Path.Combine(app, PendingBuild.LockName);
+            var log = Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
+
+            // build.ps1 holds the lock for the whole install (CreateNew, no sharing): a start under it waits, and past
+            // its wait leaves the pending build alone rather than move a half-written folder into place
+            using (new FileStream(lockFile, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                var sw = Stopwatch.StartNew();
+                PendingBuild.Install(app, log, TimeSpan.FromMilliseconds(1200));
+                Check.True(sw.ElapsedMilliseconds >= 1000, "it waited for the lock");
+                Check.Equal("old A", Text("plugins/A/A.dll"), "nothing was installed under the publish");
+                Check.Equal("new A", Text(".pending/plugins/A/A.dll"), "still pending");
+                Check.True(File.Exists(lockFile), "a lock it did not take is left alone");
+            }
+            // the publisher released it (build.ps1 deletes the file after): the next start installs
+            File.Delete(lockFile);
+            PendingBuild.Install(app, log, TimeSpan.FromSeconds(5));
+            Check.Equal("new A", Text("plugins/A/A.dll"));
+            Check.False(Directory.Exists(Path.Combine(app, ".pending")), "nothing left pending");
+            Check.False(File.Exists(lockFile), "the lock is released and removed");
+
+            // a lock a publisher left behind when it died (older than a minute) is taken over, as build.ps1 does
+            Put(".pending/plugins/B/B.dll", "new B");
+            File.WriteAllText(lockFile, "pid 1, since long ago");
+            File.SetLastWriteTimeUtc(lockFile, DateTime.UtcNow.AddMinutes(-2));
+            PendingBuild.Install(app, log, TimeSpan.FromSeconds(5));
+            Check.Equal("new B", Text("plugins/B/B.dll"), "installed past the stale lock");
+            Check.False(File.Exists(lockFile));
         });
 
         r.Add("plugins: real built plugins (tools + providers) load from the build output", async () =>

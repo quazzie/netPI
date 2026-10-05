@@ -94,6 +94,17 @@ public static class ToolArgsTests
             Check.Equal(null, new ToolArgs(El("{}")).List("a"));
         });
 
+        r.Add("args: a huge property name is read without touching the stack (a model or an MCP server may send one)", () =>
+        {
+            var big = new string('k', 1_000_000);
+            var a = new ToolArgs(El($"{{\"{big}\":1}}"));
+            Check.True(a.Has(big), "found under its own name");
+            Check.Equal("1", a.Str(big.ToUpperInvariant()), "matched like any other name");
+            Check.False(a.Has("k"), "and not under a short one");
+            var longKey = new string('a', 300) + "_x";
+            Check.Equal("y", new ToolArgs(El($"{{\"{longKey}\":\"y\"}}")).Str(new string('A', 300) + "X"), "past the stack limit, separators and case still fold");
+        });
+
         r.Add("args: Parse(string) — the hooks' view of a call's raw arguments", () =>
         {
             Check.Equal(JsonValueKind.Object, ToolArgs.Parse(null).Raw.ValueKind, "no arguments is an empty object");

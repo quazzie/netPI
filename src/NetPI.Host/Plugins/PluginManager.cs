@@ -11,7 +11,7 @@ namespace NetPI.Host.Plugins;
 /// Discovers, loads, starts, hot-reloads and unloads plugins.
 /// <list type="bullet">
 /// <item>Discovery: every sub-folder <c>X/</c> of a plugin directory containing <c>X.dll</c> (or a <c>plugin.json</c> naming its assembly).</item>
-/// <item>Each load shadow-copies the folder (except <c>wwwroot</c>) to <c>TempDir/shadow/&lt;name&gt;/&lt;pid&gt;_&lt;n&gt;/</c> and loads it into a
+/// <item>Each load shadow-copies the folder (except <c>wwwroot</c>) to <c>&lt;home&gt;/shadow/&lt;name&gt;/&lt;pid&gt;_&lt;n&gt;/</c> and loads it into a
 /// collectible <see cref="PluginLoadContext"/>, so a build can overwrite the originals while the plugin runs.</item>
 /// <item>Plugins start in (Order, Name) sequence with a 30 s timeout. Failures leave the plugin <c>failed</c> with its registrations removed.</item>
 /// <item>A watcher per plugin directory reloads a plugin ~800 ms after its dll/pdb/json files change; <c>wwwroot</c> changes only bump its UI version.</item>
@@ -44,13 +44,19 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     private readonly Debouncer _applyEnabled;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly string _shadowRoot;
+    /// <summary>Unloaded contexts whose collection is still being watched (see <see cref="WatchCollection"/>); guards itself.</summary>
+    private readonly List<PendingUnload> _pendingUnloads = [];
+    /// <summary>Whether <see cref="CollectLoopAsync"/> runs (guarded by <see cref="_pendingUnloads"/>).</summary>
+    private bool _collecting;
     private volatile bool _disposed;
 
     public PluginManager(HostKernel kernel, ILogger log)
     {
         _k = kernel;
         _log = log;
-        _shadowRoot = Path.Combine(kernel.Paths.TempDir, "shadow");
+        // The copies are code this process loads and runs: they live in the home, which is owner-only on Unix, and not
+        // in the system temp folder, where another local user could swap a copy before it is loaded.
+        _shadowRoot = Path.Combine(kernel.Paths.Home, "shadow");
         _rescan = new Debouncer(ReloadDelay, () => _ = Guard(RescanAsync(_shutdown.Token), "rescan"));
         _applyEnabled = new Debouncer(TimeSpan.FromMilliseconds(200), () => _ = Guard(ApplyEnabledStateAsync(_shutdown.Token), "apply enabled state"));
     }
@@ -90,7 +96,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         }
         _k.Settings.Set("plugins.disabled", new JsonArray(disabled.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()));
         if (forcedChanged) _k.Settings.Set("plugins.enabled", new JsonArray(forced.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()));
-        await ApplyEnabledStateAsync(ct).ConfigureAwait(false);
+        await ApplyEnabledStateAsync(ct, retry: enabled ? e : null).ConfigureAwait(false);
     }
 
     public async Task RescanAsync(CancellationToken ct = default)
@@ -121,6 +127,15 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         }
         finally { _op.Release(); }
         EnsureWatchers();
+        // A change the watcher did not report (its buffer overflowed, or the folder was swapped in whole): a plugin whose
+        // assembly on disk is no longer the one it loaded is reloaded as if the change had been seen.
+        foreach (var e in Snapshot())
+        {
+            if (e.SourceStamp is not { } loaded) continue;   // never loaded here (disabled from the start): nothing to compare
+            if (FileStamp.Of(Path.Combine(e.Folder, e.AssemblyFile)) is not { } current || current == loaded) continue;
+            _log.LogInformation("Plugin {Id}: {File} changed unseen (watcher events lost or the folder replaced); reloading", e.Id, e.AssemblyFile);
+            ScheduleReload(e);
+        }
         // A plugin whose folder went away takes its tools with it, so say so like every other removal: otherwise the cause
         // of a vanished tool falls back to unknown and the model is told a tool is gone with nothing to explain it.
         if (removed.Count > 0) PublishReloaded(removed, "removed");
@@ -162,8 +177,9 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         if (e.Data is JsonObject o && o["path"] is JsonValue v && v.TryGetValue<string>(out var path) &&
             !path.StartsWith("plugins", StringComparison.Ordinal))
             return;
-        // plugins.quiet switched off: the reloads it held back are the point of switching it off
-        if (!Quiet() && Deferred().Count > 0) _ = Guard(ApplyDeferredAsync(_shutdown.Token), "apply deferred reloads");
+        // plugins.quiet switched off: the reloads it held back are the point of switching it off. Off the bus's line
+        // (like the timer-driven reloads): the reloads load and start plugins, which must not run inside a settings.changed delivery.
+        if (!Quiet() && Deferred().Count > 0) _ = Task.Run(() => Guard(ApplyDeferredAsync(_shutdown.Token), "apply deferred reloads"));
         _applyEnabled.Trigger();
     }
 
@@ -281,9 +297,10 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             }
             enabled.Add(e);
         }
-        // Assembly loads are independent per plugin (its own shadow copy and load context), so they run in parallel;
+        // Assembly loads are independent per plugin (its own shadow copy and load context), so they run in parallel,
+        // each on the pool (the copy, the load and the type scan have no await to hand the caller back before them);
         // the start below stays in (Order, Name) sequence.
-        var loads = await Task.WhenAll(enabled.Select(async e => (Entry: e, Ok: await LoadAssemblyAsync(e).ConfigureAwait(false))));
+        var loads = await Task.WhenAll(enabled.Select(e => Task.Run(async () => (Entry: e, Ok: await LoadAssemblyAsync(e).ConfigureAwait(false)))));
         var loaded = loads.Where(p => p.Ok).Select(p => p.Entry).ToList();
         foreach (var e in loaded.OrderBy(e => e.Order).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ThenBy(e => e.Id, StringComparer.Ordinal))
         {
@@ -294,8 +311,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                 e.State = "disabled";
                 continue;
             }
-            var twin = Snapshot().FirstOrDefault(o => !ReferenceEquals(o, e) && o.Instance is not null && o.Id.Equals(e.Id, StringComparison.OrdinalIgnoreCase));
-            if (twin is not null)
+            if (RunningTwin(e) is { } twin)
             {
                 await UnloadContextAsync(e, CurrentLoad(e), track: true).ConfigureAwait(false);
                 e.State = "failed";
@@ -318,6 +334,8 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             PluginLoadContext? alc = null;
             try
             {
+                // what this attempt copies: a rescan compares the file on disk against it (see RescanAsync)
+                e.SourceStamp = FileStamp.Of(Path.Combine(e.Folder, e.AssemblyFile));
                 shadow = ShadowCopy(e);
                 var main = Path.Combine(shadow, e.AssemblyFile);
                 alc = new PluginLoadContext(main, $"plugin:{e.FolderName}#{e.LoadCount + 1}");
@@ -440,7 +458,9 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     {
         if (load.Alc is null) return;
         var shadow = load.ShadowDir;
-        if (ReferenceEquals(e.Alc, load.Alc)) { e.PluginType = null; e.ShadowDir = null; }
+        // The entry's own load (a start that failed, a disabled or duplicate id): nothing of it may stay on the entry,
+        // the context least of all - a reference there would keep it alive through every collection.
+        if (ReferenceEquals(e.Alc, load.Alc)) ClearLoad(e);
         // Deliver queued events (they may carry plugin payloads) before snapshotting the ring buffer.
         try { await _k.Bus.FlushAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
         catch (TimeoutException) { }
@@ -450,7 +470,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         ClearJsonCaches();
         e.LastUnloaded = weak;
         e.LastUnloadCollected = null;
-        if (track) _ = Task.Run(() => WatchCollectionAsync(e, weak, shadow));
+        if (track) WatchCollection(e, weak, shadow);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -469,28 +489,92 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         catch { /* best effort */ }
     }
 
-    private async Task WatchCollectionAsync(PluginEntry e, WeakReference weak, string? shadow)
+    /// <summary>How long an unloaded context is given to be collected before it is reported as leaking.</summary>
+    private const int CollectBudgetMs = 18_000;
+
+    /// <summary>
+    /// Watch whether an unloaded context is collected. One loop serves every unload in flight: each round is a forced
+    /// collection and a check of them all, so a publish that reloads eight plugins costs one series of collections and
+    /// not eight. The rounds back off (the first after 20 ms, then every 200 ms, after five of those every 2 s) within
+    /// <see cref="CollectBudgetMs"/> per unload; the outcome is recorded on the entry and published (<see cref="UnloadedEvent"/>).
+    /// </summary>
+    private void WatchCollection(PluginEntry e, WeakReference weak, string? shadow)
     {
-        for (var i = 0; i < 25 && weak.IsAlive; i++)
+        lock (_pendingUnloads)
         {
-            await Task.Delay(i == 0 ? 20 : Math.Min(100 * i, 1000)).ConfigureAwait(false);
-            _k.Bus.DetachCollectible();
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
+            _pendingUnloads.Add(new PendingUnload(e, weak, shadow));
+            if (_collecting) return;
+            _collecting = true;
         }
-        var collected = !weak.IsAlive;
-        if (ReferenceEquals(e.LastUnloaded, weak)) e.LastUnloadCollected = collected;
+        _ = Task.Run(CollectLoopAsync);
+    }
+
+    private async Task CollectLoopAsync()
+    {
+        try
+        {
+            while (true)
+            {
+                int delay;
+                lock (_pendingUnloads)
+                {
+                    if (_disposed) _pendingUnloads.Clear();
+                    if (_pendingUnloads.Count == 0) { _collecting = false; return; }
+                    // the newest unload sets the pace: its first checks come quickly, the rest are spaced out
+                    delay = _pendingUnloads.Min(p => p.Rounds == 0 ? 20 : p.Rounds <= 5 ? 200 : 2000);
+                }
+                await Task.Delay(delay).ConfigureAwait(false);
+                _k.Bus.DetachCollectible();
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                var done = new List<PendingUnload>();
+                lock (_pendingUnloads)
+                {
+                    var now = Environment.TickCount64;
+                    foreach (var p in _pendingUnloads)
+                    {
+                        p.Rounds++;
+                        if (!p.Weak.IsAlive || now - p.Since >= CollectBudgetMs) done.Add(p);
+                    }
+                    foreach (var p in done) _pendingUnloads.Remove(p);
+                }
+                foreach (var p in done) ReportUnload(p);
+            }
+        }
+        catch (Exception ex)
+        {
+            // the loop must not die with its flag set, or no unload would be checked again
+            lock (_pendingUnloads) { _pendingUnloads.Clear(); _collecting = false; }
+            _log.LogError(ex, "Plugin manager: the unload check failed");
+        }
+    }
+
+    private void ReportUnload(PendingUnload p)
+    {
+        var e = p.Entry;
+        var collected = !p.Weak.IsAlive;
+        if (ReferenceEquals(e.LastUnloaded, p.Weak)) e.LastUnloadCollected = collected;
         _k.Bus.Publish(new BusEvent { Type = UnloadedEvent, Data = new { id = e.Id, collected }, Source = "host" });
         if (collected)
         {
             _log.LogDebug("Plugin {Id}: previous load context unloaded", e.Id);
-            PathUtil.TryDeleteDirectory(shadow);
+            PathUtil.TryDeleteDirectory(p.Shadow);
         }
         else
         {
             _log.LogWarning("Plugin {Id}: the previous load context is still alive after unload (something still references plugin objects); its memory is not reclaimed", e.Id);
         }
+    }
+
+    /// <summary>An unloaded context the collection loop watches: which entry it belonged to, since when, and how many rounds it had.</summary>
+    private sealed class PendingUnload(PluginEntry entry, WeakReference weak, string? shadow)
+    {
+        public PluginEntry Entry { get; } = entry;
+        public WeakReference Weak { get; } = weak;
+        public string? Shadow { get; } = shadow;
+        public long Since { get; } = Environment.TickCount64;
+        public int Rounds { get; set; }
     }
 
     /// <summary>
@@ -536,11 +620,45 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         }
         await _op.WaitAsync(ct).ConfigureAwait(false);
         var swapped = false;
+        var attempted = false;   // a load was tried: only then is a reload, or its failure, announced
+        string? kind = null;     // what to announce otherwise: "disabled" when a running version was stopped
+        var changed = false;
         try
         {
             if (_disposed) return;
-            lock (_gate) if (!_entries.Contains(e)) return;
+            lock (_gate) if (!_entries.Contains(e)) return;   // a rescan removed it meanwhile
+            changed = true;
+            var manifestFile = Path.Combine(e.Folder, "plugin.json");
+            e.Manifest = File.Exists(manifestFile) ? PluginManifest.TryLoad(manifestFile, _log) : null;
+            e.AssemblyFile = AssemblyFileName(e.Manifest, e.FolderName);
+            if (!IsEnabled(e, EnabledSets.Read(_k.Settings)))
+            {
+                // plugin.json says enabled:false (or the settings do): a plugin that is off is stopped, not hot-reloaded
+                if (e.Instance is not null) kind = "disabled";
+                _log.LogInformation("Plugin {Id}: off by its plugin.json or the settings; {What}", e.Id, kind is null ? "not loading it" : "stopping the running version");
+                await StopInstanceAsync(e, track: true).ConfigureAwait(false);
+                e.State = "disabled";
+                e.Error = null;
+                return;
+            }
+            if (e.Instance is null && RunningTwin(e) is { } twin)
+            {
+                // its id is taken: a second instance would answer the same RPCs and tools (LoadAndStartAsync refuses the same)
+                e.State = "failed";
+                e.Error = $"Duplicate plugin id '{e.Id}' (already loaded from {twin.Folder})";
+                _log.LogWarning("Plugin in {Folder}: {Error}", e.Folder, e.Error);
+                return;
+            }
+            if (!File.Exists(Path.Combine(e.Folder, e.AssemblyFile)))
+            {
+                // nothing to load: the running version keeps serving, and when the folder is gone the rescan the same
+                // change triggers removes the plugin (and says so)
+                e.Error = $"{e.AssemblyFile} not found";
+                _log.LogWarning("Plugin {Id}: {Error}; still on the running version", e.Id, e.Error);
+                return;
+            }
             _log.LogInformation("Reloading plugin {Id}", e.Id);
+            attempted = true;
 
             // A swap, not a restart. The old load keeps serving while the next one starts: a registration of the same
             // name and priority takes over the moment the new instance makes it (ties go to the latest), so a tool is
@@ -552,16 +670,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             e.Error = null;
             try
             {
-                var manifestFile = Path.Combine(e.Folder, "plugin.json");
-                e.Manifest = File.Exists(manifestFile) ? PluginManifest.TryLoad(manifestFile, _log) : null;
-                e.AssemblyFile = AssemblyFileName(e.Manifest, e.FolderName);
-                var file = Path.Combine(e.Folder, e.AssemblyFile);
-                if (!File.Exists(file))
-                {
-                    e.State = "unloaded";
-                    e.Error = $"{e.AssemblyFile} not found";
-                }
-                else if (await LoadAssemblyAsync(e).ConfigureAwait(false))
+                if (await LoadAssemblyAsync(e).ConfigureAwait(false))
                 {
                     await StartInstanceAsync(e, ct).ConfigureAwait(false);
                     swapped = e.State == "running";
@@ -593,8 +702,9 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         finally
         {
             _op.Release();
-            PublishReloaded([e.Id], swapped ? "reload" : "reload-failed");
-            PublishChanged();
+            if (attempted) kind = swapped ? "reload" : "reload-failed";
+            if (kind is not null) PublishReloaded([e.Id], kind);
+            if (changed) PublishChanged();
         }
     }
 
@@ -618,7 +728,11 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         await UnloadContextAsync(e, load, track).ConfigureAwait(false);
     }
 
-    private async Task ApplyEnabledStateAsync(CancellationToken ct)
+    /// <summary>
+    /// Stop what is switched off and start what is switched on. <paramref name="retry"/> is the plugin an explicit
+    /// <see cref="SetEnabledAsync"/> switched on: if it failed or stopped while on, that is the one way to start it again.
+    /// </summary>
+    private async Task ApplyEnabledStateAsync(CancellationToken ct, PluginEntry? retry = null)
     {
         await _op.WaitAsync(ct).ConfigureAwait(false);
         var changed = false;
@@ -636,7 +750,18 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                 stopped.Add(e.Id);
                 changed = true;
             }
-            var toStart = Snapshot().Where(e => e.State == "disabled" && IsEnabled(e, sets)).ToList();
+            // One that failed (or stopped) and is switched off is off like any other: nothing to stop, but its switch
+            // must say so, and switching it on again is what starts it.
+            foreach (var e in Snapshot().Where(e => e.State is ("failed" or "stopped") && !IsEnabled(e, sets)))
+            {
+                e.State = "disabled";
+                e.Error = null;
+                changed = true;
+            }
+            // Switching on starts what is off. A failed or stopped one that is on already is started again only when
+            // asked for by name, not on every other change of a plugins.* setting.
+            var toStart = Snapshot().Where(e => IsEnabled(e, sets) &&
+                (e.State == "disabled" || (ReferenceEquals(e, retry) && e.State is ("failed" or "stopped")))).ToList();
             if (toStart.Count > 0)
             {
                 await LoadAndStartAsync(toStart, ct).ConfigureAwait(false);
@@ -678,6 +803,8 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                     };
                     w.Error += (_, a) =>
                     {
+                        // an overflow lost events: the rescan finds folders that came or went, and reloads every plugin
+                        // whose assembly is no longer the one it loaded (RescanAsync)
                         _log.LogWarning(a.GetException(), "Plugin watcher error on {Dir}", r);
                         _rescan.Trigger();
                     };
@@ -728,12 +855,16 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         if (ext.Equals(".dll", StringComparison.OrdinalIgnoreCase) || ext.Equals(".pdb", StringComparison.OrdinalIgnoreCase) ||
             file.Equals("plugin.json", StringComparison.OrdinalIgnoreCase) ||
             file.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase))
-        {
-            // Same race as the UI timer above, same guard.
-            Debouncer timer;
-            lock (e) timer = e.ReloadTimer ??= new Debouncer(ReloadDelay, () => _ = Guard(ReloadEntryAsync(e, _shutdown.Token), "reload " + e.Id));
-            timer.Trigger();
-        }
+            ScheduleReload(e);
+    }
+
+    /// <summary>Reload the plugin once its files have been quiet for <see cref="ReloadDelay"/>: one timer per entry, the entry guarding it.</summary>
+    private void ScheduleReload(PluginEntry e)
+    {
+        // Same race as the UI timer in OnFileEvent, same guard.
+        Debouncer timer;
+        lock (e) timer = e.ReloadTimer ??= new Debouncer(ReloadDelay, () => _ = Guard(ReloadEntryAsync(e, _shutdown.Token), "reload " + e.Id));
+        timer.Trigger();
     }
 
     private void BumpUiVersion(PluginEntry e)
@@ -861,12 +992,20 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         return e.Manifest?.Enabled != false || sets.Forced.Contains(e.Id) || sets.Forced.Contains(e.FolderName);
     }
 
+    /// <summary>The entry with this id (else this folder name). Of two folders under one id, the running one: it is the one that answers.</summary>
     private PluginEntry? FindById(string id)
     {
         lock (_gate)
-            return _entries.FirstOrDefault(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase))
+        {
+            var byId = _entries.Where(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase)).ToList();
+            return byId.FirstOrDefault(e => e.Instance is not null) ?? byId.FirstOrDefault()
                    ?? _entries.FirstOrDefault(e => e.FolderName.Equals(id, StringComparison.OrdinalIgnoreCase));
+        }
     }
+
+    /// <summary>Another entry running under this one's id: two folders with one plugin id, of which only one may run.</summary>
+    private PluginEntry? RunningTwin(PluginEntry e) =>
+        Snapshot().FirstOrDefault(o => !ReferenceEquals(o, e) && o.Instance is not null && o.Id.Equals(e.Id, StringComparison.OrdinalIgnoreCase));
 
     private List<PluginEntry> Snapshot()
     {
@@ -935,6 +1074,8 @@ internal sealed class PluginEntry
     public required string Root { get; init; }
     public required string AssemblyFile { get; set; }
     public PluginManifest? Manifest { get; set; }
+    /// <summary>The main assembly on disk as it was when last copied for a load; a rescan reloads the plugin when it differs.</summary>
+    public FileStamp? SourceStamp { get; set; }
 
     public required string Id { get; set; }
     public required string Name { get; set; }
@@ -971,5 +1112,23 @@ internal sealed class PluginEntry
     {
         ReloadTimer?.Dispose();
         UiTimer?.Dispose();
+    }
+}
+
+/// <summary>Size and last write of a file: enough to tell a rebuilt plugin assembly from the one that was loaded.</summary>
+internal readonly record struct FileStamp(DateTime LastWriteUtc, long Length)
+{
+    /// <summary>The file's stamp, or null when there is no such file (or it cannot be read).</summary>
+    public static FileStamp? Of(string file)
+    {
+        try
+        {
+            var info = new FileInfo(file);
+            return info.Exists ? new FileStamp(info.LastWriteTimeUtc, info.Length) : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

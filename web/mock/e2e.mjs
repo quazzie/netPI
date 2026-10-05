@@ -398,6 +398,9 @@ await page.waitForSelector('.banner', { timeout: 8000 }).catch(() => {});
 await shot(page, '05-steer-queue-retry');
 var banner = await page.locator('.banner').count();
 check('retry banner (agent.notice)', banner > 0);
+// stream.reset came just before the banner: the words streamed before the retry are discarded, not shown in front of the
+// second attempt (the mock streams "Now I will build the solution to make sure", then resets)
+check('stream.reset drops the text streamed before the retry', !(await page.locator('.content:visible').innerText()).includes('Now I will build the solution'));
 
 // live bash output
 await page.locator('.tool[data-status="running"]', { hasText: 'Bash' }).waitFor({ timeout: 20000 }).catch(() => {});
@@ -412,6 +415,7 @@ await page.waitForFunction(() => !document.querySelector('.composer.running'), n
 await page.waitForTimeout(600);
 await shot(page, '07-run-finished');
 check('retry banner cleared after run', (await page.locator('.banner').count()) === 0);
+check('the text discarded by stream.reset is in no message', !(await page.locator('.content:visible').innerText()).includes('Now I will build the solution'));
 var pinned = await page.locator('.scroller').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
 check('stayed pinned to bottom during run', pinned < 60, `${Math.round(pinned)}px from bottom`);
 var collapsed = await page.locator('.group.collapsible').count();
@@ -681,6 +685,61 @@ await firstTab.click({ button: 'middle' });
 await page.waitForTimeout(150);
 var tabsAfter = await page.locator('.topbar .tab').count();
 check('middle-click closes tab', tabsAfter === tabsBefore - 1, `${tabsBefore} → ${tabsAfter}`);
+
+}
+// ------------------------------------------------------------------ tab dots: a run that ends (or fails) while another tab is in front
+if (want('tab dots: a run that ends behind another tab')) {
+log('tab dots: a run that ends behind another tab');
+{
+  // the dot on a background tab: unread when its run ended, error when the run failed (an error notice, agent.status failed)
+  const TITLE = 'hi, a quick check of the dots'; // the first words title the chat; "hi"/"quick" make the mock answer at once
+  const tabOf = (title) => page.locator('.topbar .tab', { has: page.locator('.tab-title', { hasText: title }) }).first();
+  const dotOf = async (title) => (await tabOf(title).locator('.np-dot').getAttribute('data-status')) ?? 'none';
+  const dotIs = (title, status) =>
+    page
+      .waitForFunction(
+        ([t, s]) => [...document.querySelectorAll('.topbar .tab')].find((x) => x.querySelector('.tab-title')?.textContent.includes(t))?.querySelector('.np-dot')?.dataset.status === s,
+        [title, status],
+        { timeout: 15_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+  const closeEmptyTabs = async () => {
+    for (let i = 0; i < 4 && (await page.locator('.topbar .tab', { hasText: 'New session' }).count()); i++) await page.locator('.topbar .tab', { hasText: 'New session' }).first().locator('.tab-close').click();
+  };
+  await rpcCall('mock.thinkDelay', { ms: 1500 }); // the thinking phase lasts long enough to bring another tab in front
+  try {
+    await newTab();
+    await ta.fill(TITLE);
+    await ta.press('Enter');
+    await page.waitForSelector('.thinking.live', { timeout: 5000 }).catch(() => {});
+    await newTab(); // an empty chat in front: the first one runs behind it
+    check('tab dots: a chat running behind another tab shows running', (await dotOf('quick check of the dots')) === 'running', await dotOf('quick check of the dots'));
+    await rpcCall('mock.thinkDelay', { ms: 0 });
+    await dotIs('quick check of the dots', 'unread');
+    check('tab dots: a run that ended behind another tab leaves the unread dot', (await dotOf('quick check of the dots')) === 'unread', await dotOf('quick check of the dots'));
+    await tabOf('quick check of the dots').click();
+    await page.waitForTimeout(300);
+    check('tab dots: opening the tab clears it', (await dotOf('quick check of the dots')) === 'idle', await dotOf('quick check of the dots'));
+    // a run that fails behind another tab: the error dot (the run stays the failed one, so opening the tab keeps it)
+    await rpcCall('mock.thinkDelay', { ms: 1500 });
+    await ta.fill('[error] once more');
+    await ta.press('Enter');
+    await page.waitForSelector('.thinking.live', { timeout: 5000 }).catch(() => {});
+    await newTab();
+    await rpcCall('mock.thinkDelay', { ms: 0 });
+    await dotIs('quick check of the dots', 'error');
+    check('tab dots: a run that failed behind another tab shows the error dot', (await dotOf('quick check of the dots')) === 'error', await dotOf('quick check of the dots'));
+    await tabOf('quick check of the dots').click();
+    await page.waitForTimeout(300);
+    const notice = page.locator('.content:visible .item[data-kind="notice"]', { hasText: 'HTTP 503' });
+    check('tab dots: the failure is an error notice in the chat, request id and all', (await notice.count()) === 1 && /req_e2e_503/.test(await notice.innerText()));
+    await shot(page, '10b-tab-dots');
+  } finally {
+    await rpcCall('mock.thinkDelay', { ms: 0 });
+    await closeEmptyTabs();
+  }
+}
 
 }
 // ------------------------------------------------------------------ panels + plugin tabs
@@ -969,6 +1028,25 @@ log('plugin tab: Ideas');
   const cards = () => page.locator('.ideas .card');
   const n0 = await cards().count();
   check('ideas: project backlog listed', n0 >= 4, `${n0} active ideas`);
+  // Meaning search (≈): the toggle shows because ideas.capabilities says the server has embeddings; with it on, the list
+  // is what ideas.similar ranked (word overlap in the mock) instead of the cards that match every word.
+  {
+    const meaning = page.locator('.ideas .fchip.meaning');
+    await meaning.waitFor({ timeout: 3000 }).catch(() => {});
+    check('ideas: the meaning-search toggle shows when the server has embeddings (ideas.capabilities)', (await meaning.count()) === 1);
+    const search = page.locator('.ideas .np-search input');
+    await search.fill('cache the model list zzzz');
+    await page.waitForTimeout(400);
+    const byWords = await cards().count();
+    await meaning.click();
+    await page.waitForFunction(() => document.querySelectorAll('.ideas .card').length > 0, null, { timeout: 4000 }).catch(() => {});
+    const top = (await cards().count()) ? (await cards().first().innerText()).split('\n')[0] : '';
+    check('ideas: by meaning, a word nobody has does not empty the list, and the closest idea comes first (ideas.similar)',
+      byWords === 0 && /Cache the model list/.test(top), `${byWords} by words, ${await cards().count()} by meaning, first: ${top || '∅'}`);
+    await meaning.click();
+    await search.fill('');
+    await page.waitForTimeout(300);
+  }
   // a short list still fills the panel: the footer sits at its bottom, not under the last card
   const footGap = await page.evaluate(() => {
     const foot = document.querySelector('.plugin-root .ideas .foot');
@@ -1427,6 +1505,19 @@ log('plugin tab: Files');
   await page.locator('.files .np-search input').fill('');
   await ta.fill('');
 
+  // One files.scope per workspace, not per message: a run appends messages (a session.updated each) while the tab shows,
+  // and none of them is a reason to ask the server for the workspace identity again.
+  {
+    const scopeCalls = () => pageRpc.filter((r) => r.m === 'files.scope').length;
+    const before = scopeCalls();
+    await ta.fill('hi');
+    await ta.press('Enter');
+    await page.waitForFunction(() => document.querySelector('.composer.running'), null, { timeout: 5000 }).catch(() => {});
+    await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(400);
+    check('files: a run that appends messages costs no files.scope', scopeCalls() === before, `${scopeCalls() - before} files.scope call(s) during the run`);
+  }
+
   // A workspace switch mid-fetch: the old workspace's late answers must not apply, and an open search must rerun
   log('  files: a workspace switch drops late answers from the old workspace'); // indented: see the Calls sub-headers
   {
@@ -1445,6 +1536,7 @@ log('plugin tab: Files');
       await page.locator('.files .head button[title="Refresh"]').click();
       await page.waitForTimeout(300); // inside the 2500 ms window
       await rpcCall('mock.filesDelay', { ms: 100 }); // read when the new workspace's requests are handled
+      const nScope = (await calls()).length; // the project change is the tab's cue to ask for the workspace identity again
       await rpcCall('sessions.setProject', { id: sid, projectId: alt.id }); // the tab's workspace → web/mock
       const n0 = (await calls()).length;
       for (let i = 0; i < 60; i++) {
@@ -1462,6 +1554,8 @@ log('plugin tab: Files');
       );
       check("files: the old workspace's late answer really arrived, after the new one's",
         iRepo > iAlt >= 0, `served: new @${iAlt}, late old @${iRepo} of ${(await calls()).length}`);
+      check('files: the project change re-keyed the tab through files.scope (the workspace identity)',
+        (await calls()).slice(nScope).some((c) => c.m === 'files.scope'), (await calls()).slice(nScope).map((c) => c.m).join(', ') || 'no files.* call');
       // (2) the search the user left open: a workspace switch reruns it for the new workspace, not drops it
       await rpcCall('mock.filesDelay', { ms: 0 });
       await page.locator('.files .np-search input').fill('readme');
@@ -1485,6 +1579,51 @@ log('plugin tab: Files');
     await rpcCall('projects.delete', { id: alt.id }); // keep the later project sections on the seeded state
   }
   await openStripTab('left', 'Sessions');
+}
+
+}
+if (want('plugin tab: MCP')) {
+log('plugin tab: MCP');
+{
+  // the configured MCP servers (mcp.list), a server's tools (mcp.tools) and a switch that writes the configuration (mcp.save)
+  await openStripTab('right', 'MCP');
+  await page.waitForSelector('.plugin-root .mcp .server', { timeout: 10_000 });
+  const servers = page.locator('.mcp .server');
+  const text = async (loc) => (await loc.innerText()).replace(/\s+/g, ' ');
+  check('mcp: the configured servers are listed with their state and tool count (mcp.list)',
+    (await servers.count()) === 2 && /ha connected · 3 tools/.test(await text(servers.nth(0))), (await servers.allInnerTexts()).map((t) => t.replace(/\s+/g, ' ')).join(' | '));
+  check('mcp: a failed server shows its error and the tool the plugin rejected',
+    /failed · 0 tools/.test(await text(servers.nth(1))) && /ENOENT/.test(await text(servers.nth(1))) && /read: Tool id collides/.test(await text(servers.nth(1))));
+  await servers.nth(0).locator('button.pick').click();
+  await page.waitForSelector('.mcp details.tool', { timeout: 5000 }).catch(() => {});
+  check("mcp: clicking a server lists its tools (mcp.tools)", (await page.locator('.mcp details.tool').count()) === 3);
+  const tool = (name) => page.locator('.mcp details.tool', { has: page.locator('summary', { hasText: name }) });
+  await tool('ha_call_service').locator('summary').click();
+  await page.waitForTimeout(150);
+  check('mcp: a tool opens to its description, id, the three switches and its schema',
+    (await tool('ha_call_service').locator('.schema').isVisible()) && /mcp_ha_ha_call_service/.test(await text(tool('ha_call_service'))) && (await tool('ha_call_service').locator('.np-check input').count()) === 3);
+  // read-only: the tool's own hint (ha_search) or the server's readOnly list (ha_get_*), and neither for the service call
+  const readOnly = async (name) => {
+    await tool(name).locator('summary').click();
+    const on = await tool(name).locator('.np-check', { hasText: 'read-only' }).locator('input').isChecked();
+    await tool(name).locator('summary').click();
+    return on;
+  };
+  check('mcp: read-only follows the tool hint and the server list', (await readOnly('ha_search')) && (await readOnly('ha_get_state')) && !(await readOnly('ha_call_service')));
+  await page.locator('.mcp .np-search input').fill('state');
+  await page.waitForTimeout(150);
+  check('mcp: the filter narrows the tools', (await page.locator('.mcp details.tool').count()) === 1 && (await tool('ha_get_state').count()) === 1);
+  await page.locator('.mcp .np-search input').fill('');
+  await page.waitForTimeout(150);
+  // switching a tool off writes the server's configuration (mcp.save with a tools list) and the list is read again
+  const expose = tool('ha_call_service').locator('.np-check', { hasText: 'Expose tool' }).locator('input');
+  await expose.click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.mcp details.tool')].some((d) => d.textContent.includes('ha_call_service') && !d.querySelector('.np-check input').checked), null, { timeout: 5000 }).catch(() => {});
+  const cfg = (await rpcCall('mcp.list')).servers.find((s) => s.id === 'ha')?.config;
+  check('mcp: switching a tool off saves the server configuration (mcp.save) and the row follows',
+    Array.isArray(cfg?.tools) && !cfg.tools.includes('ha_call_service') && cfg.tools.includes('ha_search') && !(await expose.isChecked()), JSON.stringify(cfg?.tools));
+  await shot(page, '31b-mcp-tab');
+  await openStripTab('right', 'Work');
 }
 
 }
@@ -1560,6 +1699,11 @@ log('plan mode: the pill, the plan card and its decisions');
   check('plan: save as idea does not decide', (await page.locator('.item[data-kind="plan"] .card').count()) === 1);
   await second.locator('.foot button', { hasText: /^Approve$/ }).click();
   await settled();
+  // the card is a line once the plan's record says approved (the answer, then plan.changed → plan.list), which is not
+  // what the run's end says: wait for the line itself
+  await page
+    .waitForFunction(() => [...document.querySelectorAll('.item[data-kind="plan"] button.line')].at(-1)?.textContent.includes('approved'), null, { timeout: 5000 })
+    .catch(() => {});
   const approved = page.locator('.item[data-kind="plan"] button.line').last();
   check('plan: approved, the card is one line', (await approved.innerText()).includes('approved'));
   check('plan: the pill says the plan was approved', (await pill.getAttribute('data-state')) === 'approved');
@@ -1690,7 +1834,7 @@ log('narrow side panels');
     );
   const w = Math.round((await page.locator('.panel.right > .body').boundingBox()).width);
   const bad = [];
-  for (const [side, tab] of [['right', 'Work'], ['right', 'Ideas'], ['right', 'Diagnostics'], ['left', 'Sessions'], ['left', 'Projects'], ['left', 'Files']]) {
+  for (const [side, tab] of [['right', 'Work'], ['right', 'Ideas'], ['right', 'Diagnostics'], ['right', 'MCP'], ['left', 'Sessions'], ['left', 'Projects'], ['left', 'Files']]) {
     await openStripTab(side, tab);
     await page.waitForTimeout(tab === 'Diagnostics' ? 600 : 300);
     const o = await overflow();
