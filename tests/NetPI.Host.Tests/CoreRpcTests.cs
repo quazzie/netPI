@@ -23,7 +23,7 @@ public static class CoreRpcTests
         ("projects.create", "Create a project: { name, path, create? } → ProjectInfo", false),
         ("projects.delete", "Delete a project (its sessions are detached): { id } → true", false),
         ("projects.list", "All projects → ProjectInfo[]", true),
-        ("projects.update", "Update a project: { id, name?, path?, meta? } → ProjectInfo (meta is merged key by key; a null value removes a key)", false),
+        ("projects.update", "Update a project: { id, name?, path?, create?, meta? } → ProjectInfo (meta is merged key by key; a null value removes a key; create makes a path that does not exist)", false),
         ("rpc.list", "RPC methods → { method, description, pluginId }[]", true),
         ("sessions.create", "Create a session: { title?, projectId?, model?, reasoning? } → SessionInfo", false),
         ("sessions.delete", "Delete a session and its subagent sessions: { id } → true", false),

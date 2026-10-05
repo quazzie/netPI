@@ -84,6 +84,13 @@ internal sealed class WsClient
     /// <summary>Queued bytes per client, besides the message count: a client that never reads is cut off by whichever
     /// limit it reaches first, so a few large messages cannot sit in the queue for nothing.</summary>
     private const int MaxPendingBytes = 32 * 1024 * 1024;
+    /// <summary>
+    /// RPC frames one connection may have unanswered at once. Every frame runs its handler on the pool with no end to
+    /// it (a flush that waits, a plugin method that blocks), so without a cap a client in a retry loop grows the pool's
+    /// queue without bound; past it a frame is answered at once with <c>busy</c>, and the client waits for answers
+    /// before it sends more.
+    /// </summary>
+    internal const int MaxInFlight = 64;
 
     private readonly WebSocket _ws;
     private readonly HostKernel _k;
@@ -94,6 +101,7 @@ internal sealed class WsClient
     private volatile bool _aborted;
     private int _pending;
     private long _pendingBytes;
+    private int _inFlight;
 
     public WsClient(WebSocket ws, HostKernel kernel, ILogger log)
     {
@@ -110,6 +118,9 @@ internal sealed class WsClient
 
     /// <summary>For tests: what the backlog is right now.</summary>
     internal (int Pending, long Bytes) Backlog => (Volatile.Read(ref _pending), Interlocked.Read(ref _pendingBytes));
+
+    /// <summary>For tests: the RPC frames whose handlers have not answered yet.</summary>
+    internal int InFlight => Volatile.Read(ref _inFlight);
 
     public bool WantsSession(string sessionId)
     {
@@ -268,6 +279,13 @@ internal sealed class WsClient
                         Enqueue(Wire.Error(id, "bad_request", "Missing method 'm'"));
                         return;
                     }
+                    if (Interlocked.Increment(ref _inFlight) > MaxInFlight)
+                    {
+                        var inFlight = Interlocked.Decrement(ref _inFlight);
+                        Enqueue(Wire.Error(id, "busy",
+                            $"{inFlight} requests are in flight on this connection, the most it takes at once ({MaxInFlight}): wait for their answers before sending more"));
+                        return;
+                    }
                     _ = Task.Run(() => InvokeAsync(id, method, p));
                     break;
                 case "sub":
@@ -282,26 +300,33 @@ internal sealed class WsClient
 
     private async Task InvokeAsync(JsonElement id, string method, JsonElement p)
     {
-        byte[] response;
         try
         {
-            var result = await _k.Rpc.InvokeAsync(method, p, Id, _cts.Token).ConfigureAwait(false);
-            response = Wire.Result(id, result);
-            if (response.Length > MaxPendingBytes)
+            byte[] response;
+            try
             {
-                // One message bigger than the whole queue: it would make the byte cap trip on the next message of a
-                // reading client and never fit into a client that is not. The caller gets an error it can act on
-                // (request less: a shorter page, an earlier beforeSeq) instead of a socket that dies.
-                response = Wire.Error(id, "too_large",
-                    $"The response is {response.Length / (1024 * 1024)} MB, over the {MaxPendingBytes / (1024 * 1024)} MB a client can take in one message: request less (an earlier or shorter page)");
+                var result = await _k.Rpc.InvokeAsync(method, p, Id, _cts.Token).ConfigureAwait(false);
+                response = Wire.Result(id, result);
+                if (response.Length > MaxPendingBytes)
+                {
+                    // One message bigger than the whole queue: it would make the byte cap trip on the next message of a
+                    // reading client and never fit into a client that is not. The caller gets an error it can act on
+                    // (request less: a shorter page, an earlier beforeSeq) instead of a socket that dies.
+                    response = Wire.Error(id, "too_large",
+                        $"The response is {response.Length / (1024 * 1024)} MB, over the {MaxPendingBytes / (1024 * 1024)} MB a client can take in one message: request less (an earlier or shorter page)");
+                }
             }
+            catch (Exception ex)
+            {
+                var (code, message, _) = Wire.MapError(ex, _log, method);
+                response = Wire.Error(id, code, message);
+            }
+            Enqueue(response);
         }
-        catch (Exception ex)
+        finally
         {
-            var (code, message, _) = Wire.MapError(ex, _log, method);
-            response = Wire.Error(id, code, message);
+            Interlocked.Decrement(ref _inFlight);   // counted in Handle, whatever the handler did
         }
-        Enqueue(response);
     }
 
     private sealed class SessionFilter

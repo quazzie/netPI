@@ -6,6 +6,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging.Abstractions;
+using NetPI.Host.Events;
+using NetPI.Host.Rpc;
 using NetPI.Host.Web;
 
 namespace NetPI.Host.Tests;
@@ -197,7 +199,11 @@ public static class ServerTests
             var info = await SendAsync(http, HttpMethod.Post, url + "/api/rpc/app.info", "", q => q.Headers.Add(WebServer.TokenHeader, server.Token));
             Check.Equal(HttpStatusCode.OK, info.Status);
             var infoJson = JsonNode.Parse(info.Body)!;
-            Check.Equal("0.1.0", infoJson["version"]!.GetValue<string>());
+            // what the host itself reports: its informational version (Directory.Build.props's <Version>) without any +build part, read
+            // from the assembly here so a version bump cannot break this test again
+            var expectedVersion = ((System.Reflection.AssemblyInformationalVersionAttribute)Attribute.GetCustomAttribute(typeof(WebServer).Assembly, typeof(System.Reflection.AssemblyInformationalVersionAttribute))!).InformationalVersion;
+            if (expectedVersion.IndexOf('+') is var plus && plus > 0) expectedVersion = expectedVersion[..plus];
+            Check.Equal(expectedVersion, infoJson["version"]!.GetValue<string>());
             Check.Equal(server.Paths.Home, infoJson["home"]!.GetValue<string>());
             Check.False(infoJson["desktop"]!.GetValue<bool>());
 
@@ -578,6 +584,71 @@ public static class ServerTests
             int seen;
             lock (ws.Received) seen = ws.Received.Count(n => n["t"]?.GetValue<string>() == "ev" && n["type"]?.GetValue<string>() == "e2e.burst");
             Check.Equal(burst, seen, "every event published before the call had reached the client when the answer did");
+        });
+
+        r.Add("events.flush: a line that does not pass the marker in time is a busy error (try again), not an internal one (a crash)", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance);
+            var inside = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            using var _ = bus.Subscribe("t", e => { inside.Set(); release.Wait(5000); });
+            bus.Publish("t");
+            Check.True(inside.Wait(5000), "the subscriber is wedged inside its handler");
+            try
+            {
+                var ex = await Check.ThrowsAsync<RpcException>(() => CoreRpc.FlushAsync(bus, TimeSpan.FromMilliseconds(100), CancellationToken.None));
+                Check.Equal("busy", ex.Code, "a caller can tell a flush that is still waiting from a crash");
+                Check.Equal(409, Wire.StatusFor(ex.Code));
+                Check.Contains(ex.Message, "flush marker");
+            }
+            finally
+            {
+                release.Set();
+            }
+            Check.Equal(true, (bool?)await CoreRpc.FlushAsync(bus, TimeSpan.FromSeconds(5), CancellationToken.None), "once the line passes the marker it answers true");
+        });
+
+        r.Add("ws: a connection with its cap of RPC frames in flight has the next one answered busy at once, and takes more once they answer", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot());
+            await using var ws = await WsTestClient.ConnectAsync(server);
+            // A wedged subscriber holds every events.flush: as many frames as the connection takes stay in flight.
+            var inside = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            using var wedge = server.Events.Subscribe("e2e.wedge", _ => { inside.Set(); release.Wait(30_000); });
+            server.Events.Publish("e2e.wedge");
+            Check.True(inside.Wait(5000), "the subscriber is inside its handler");
+            const int extra = 3;
+            int Answered(Func<int, bool> ids)
+            {
+                lock (ws.Received)
+                    return ws.Received.Count(n => n["t"]?.GetValue<string>() == "res" && n["id"] is { } id && ids(id.GetValue<int>()));
+            }
+            try
+            {
+                for (var id = 1; id <= WsClient.MaxInFlight + extra; id++)
+                    await ws.SendAsync(new { t = "rpc", id, m = "events.flush", p = (object?)null });
+                await Wait.Until(() => Answered(id => id > WsClient.MaxInFlight) == extra, "the frames past the cap are answered at once");
+                List<JsonNode> refused;
+                lock (ws.Received) refused = ws.Received.Where(n => n["t"]?.GetValue<string>() == "res" && n["id"] is { } id && id.GetValue<int>() > WsClient.MaxInFlight).ToList();
+                foreach (var res in refused)
+                {
+                    Check.Equal("busy", res["e"]?["code"]?.GetValue<string>(), "a frame past the cap is refused, not queued: " + res.ToJsonString());
+                    Check.Contains(res["e"]?["message"]?.GetValue<string>(), WsClient.MaxInFlight.ToString(), "and told how many are in flight");
+                }
+                Check.Equal(0, Answered(id => id <= WsClient.MaxInFlight), "the frames under the cap still wait for the bus");
+            }
+            finally
+            {
+                release.Set();
+            }
+            await Wait.Until(() => Answered(id => id <= WsClient.MaxInFlight) == WsClient.MaxInFlight, "every frame under the cap answered once the bus drained");
+            lock (ws.Received)
+                Check.True(ws.Received.Where(n => n["t"]?.GetValue<string>() == "res" && n["id"] is { } id && id.GetValue<int>() <= WsClient.MaxInFlight)
+                    .All(n => n["r"]?.GetValue<bool>() == true), "each of them with the flush's answer");
+            // The slots are free again: the next frame runs instead of being refused.
+            var after = await ws.RpcAsync("events.flush");
+            Check.True(after["r"]?.GetValue<bool>() == true, "a frame after the burst runs: " + after.ToJsonString());
         });
 
         r.Add("server: a busy port falls back to a random free port; server.json says where; stop is idempotent", async () =>

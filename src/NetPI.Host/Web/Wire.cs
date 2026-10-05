@@ -1,9 +1,30 @@
 using System.Buffers;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Host.Web;
+
+/// <summary>
+/// JSON that is already serialized, written into an envelope as it is: a value that was serialized once to be measured
+/// (a message page weighs its messages against its byte budget) goes out as those bytes instead of being serialized
+/// again. The converter rides on the type, so it applies under every options instance the envelopes are written with.
+/// </summary>
+[JsonConverter(typeof(RawJsonConverter))]
+internal sealed class RawJson(byte[] utf8)
+{
+    public byte[] Utf8 { get; } = utf8;
+}
+
+internal sealed class RawJsonConverter : JsonConverter<RawJson>
+{
+    public override RawJson Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        throw new NotSupportedException("RawJson is written, never read");
+
+    public override void Write(Utf8JsonWriter writer, RawJson value, JsonSerializerOptions options) =>
+        writer.WriteRawValue(value.Utf8, skipInputValidation: true);   // our own serializer's output: valid by construction
+}
 
 /// <summary>JSON envelopes of the UI protocol and RPC error mapping (see docs/PROTOCOL.md).</summary>
 internal static class Wire

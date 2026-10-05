@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetPI.Host.Events;
 using NetPI.Host.Logging;
 using NetPI.Host.Sessions;
 using NetPI.Host.Web;
@@ -129,7 +130,7 @@ internal static class CoreRpc
             return a.K.Sessions.CreateProject(req.Str("name") ?? "", path);
         });
 
-        a.Add("projects.update", "Update a project: { id, name?, path?, meta? } → ProjectInfo (meta is merged key by key; a null value removes a key)", req =>
+        a.Add("projects.update", "Update a project: { id, name?, path?, create?, meta? } → ProjectInfo (meta is merged key by key; a null value removes a key; create makes a path that does not exist)", req =>
         {
             var path = req.Str("path") is { Length: > 0 } p ? ExistingDirectory(p, req.Bool("create") == true) : null;
             var meta = req.Prop("meta") is { ValueKind: JsonValueKind.Object } m ? JsonNode.Parse(m.GetRawText()) as JsonObject : null;
@@ -220,10 +221,13 @@ internal static class CoreRpc
             var before = req.Int64("beforeSeq");
             var after = req.Int64("afterSeq");
             if (before is not null && after is not null) throw new RpcException("bad_request", "sessions.messages: beforeSeq and afterSeq page in opposite directions; give one of them");
-            var (messages, hasMore) = after is { } from
-                ? MessagePageForward((seq, take) => a.K.Sessions.GetMessagesAfter(id, seq, take), from, limit)
-                : MessagePage((b, take) => a.K.Sessions.GetMessages(id, b, take), before, limit);
-            return new { messages, hasMore };
+            // Each message is serialized once, to weigh the page, and those bytes are the answer (a megabytes-wide
+            // page of images used to be serialized a second time on its way into the envelope).
+            var serialized = new List<RawJson>(limit);
+            var (_, hasMore) = after is { } from
+                ? MessagePageForward((seq, take) => a.K.Sessions.GetMessagesAfter(id, seq, take), from, limit, serialized)
+                : MessagePage((b, take) => a.K.Sessions.GetMessages(id, b, take), before, limit, serialized);
+            return new { messages = serialized, hasMore };
         }, readOnly: true, parameters:
         [
             RpcParam.Req("id", RpcParamType.String, "the session"),
@@ -250,8 +254,12 @@ internal static class CoreRpc
     /// hand back the one message the budget takes instead of materializing (and measuring) all 60 to drop 59 — 1.2 GB of
     /// garbage for a 5 MB answer. The first message is always kept, however big it is: a chat that shows it must not show nothing.
     /// </para>
+    /// <para>
+    /// Measuring a message is serializing it; <paramref name="serialized"/>, when given, collects those bytes in the page's
+    /// order, so the handler answers with them instead of serializing the page a second time.
+    /// </para>
     /// </summary>
-    internal static (List<ChatMessage> Messages, bool HasMore) MessagePage(Func<long?, int, IReadOnlyList<ChatMessage>> read, long? beforeSeq, int limit)
+    internal static (List<ChatMessage> Messages, bool HasMore) MessagePage(Func<long?, int, IReadOnlyList<ChatMessage>> read, long? beforeSeq, int limit, List<RawJson>? serialized = null)
     {
         var taken = new List<ChatMessage>(limit);
         var size = 0;
@@ -265,9 +273,11 @@ internal static class CoreRpc
             for (var i = batch.Count - 1; i >= 0 && taken.Count < limit; i--)
             {
                 var m = batch[i];
-                var len = Wire.SerializeValue(m).Length;
+                var json = Wire.SerializeValue(m);
+                var len = json.Length;
                 if (taken.Count > 0 && size + len > MaxPageBytes) { hasMore = true; more = false; break; }
                 taken.Add(m);
+                serialized?.Add(new RawJson(json));
                 size += len;
             }
             if (!more) break;
@@ -281,15 +291,17 @@ internal static class CoreRpc
         // the limit itself cut the page and there are older messages left: the client asks for the next beforeSeq
         if (taken.Count == limit && more) hasMore = true;
         taken.Reverse();
+        serialized?.Reverse();
         return (taken, hasMore);
     }
 
     /// <summary>
     /// The forward page (idea-t6odez): the OLDEST whole messages after <paramref name="afterSeq"/> while they fit
     /// <see cref="MaxPageBytes"/>, ascending, and whether newer ones are left. Read in growing windows like
-    /// <see cref="MessagePage"/>, so a run of big messages is not materialized to be dropped; the first message is always kept.
+    /// <see cref="MessagePage"/>, so a run of big messages is not materialized to be dropped; the first message is always
+    /// kept, and <paramref name="serialized"/> collects the measured bytes the same way.
     /// </summary>
-    internal static (List<ChatMessage> Messages, bool HasMore) MessagePageForward(Func<long, int, IReadOnlyList<ChatMessage>> readAfter, long afterSeq, int limit)
+    internal static (List<ChatMessage> Messages, bool HasMore) MessagePageForward(Func<long, int, IReadOnlyList<ChatMessage>> readAfter, long afterSeq, int limit, List<RawJson>? serialized = null)
     {
         var taken = new List<ChatMessage>(limit);
         var size = 0;
@@ -303,9 +315,11 @@ internal static class CoreRpc
             foreach (var m in batch)
             {
                 if (taken.Count >= limit) break;
-                var len = Wire.SerializeValue(m).Length;
+                var json = Wire.SerializeValue(m);
+                var len = json.Length;
                 if (taken.Count > 0 && size + len > MaxPageBytes) { hasMore = true; more = false; break; }
                 taken.Add(m);
+                serialized?.Add(new RawJson(json));
                 size += len;
             }
             if (!more || batch.Count == 0) break;
@@ -438,11 +452,8 @@ internal static class CoreRpc
 
         a.Add("services.list", "Registered services (diagnostics)", _ => a.K.Services.List(), readOnly: true);
 
-        a.AddAsync("events.flush", "Wait until every event published before this call has been delivered: its answer follows them on the same socket → true", async (_, ct) =>
-        {
-            await a.K.Bus.FlushAsync().WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
-            return true;
-        }, readOnly: true);
+        a.AddAsync("events.flush", "Wait until every event published before this call has been delivered: its answer follows them on the same socket → true",
+            (_, ct) => FlushAsync(a.K.Bus, FlushTimeout, ct), readOnly: true);
 
         a.Add("events.recent", "Recent bus events: { max? } → { type, sid, d, seq, ts, source }[]", req =>
         {
@@ -461,6 +472,24 @@ internal static class CoreRpc
                 time = e.Time, level = LogSink.LevelTag(e.Level).ToLowerInvariant(), category = e.Category, message = e.Message, exception = e.Exception,
             }).ToList();
         }, readOnly: true);
+    }
+
+    /// <summary>How long <c>events.flush</c> waits for every line to pass its marker before it answers <c>busy</c>.</summary>
+    private static readonly TimeSpan FlushTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The <c>events.flush</c> answer: true once every subscriber's line has passed the marker, or <c>busy</c> (409) when
+    /// one has not within <paramref name="timeout"/>. That is a wedged subscriber, which the log names, and worth trying
+    /// again — a plain timeout mapped to <c>internal</c> (500) read as a crash.
+    /// </summary>
+    internal static async Task<object?> FlushAsync(EventBus bus, TimeSpan timeout, CancellationToken ct)
+    {
+        try { await bus.FlushAsync().WaitAsync(timeout, ct).ConfigureAwait(false); }
+        catch (TimeoutException)
+        {
+            throw new RpcException("busy", $"The event bus has not delivered every earlier event within {timeout.TotalSeconds:0} s: a subscriber's line has not passed the flush marker (the log names it); try again");
+        }
+        return true;
     }
 
     private static string ExistingDirectory(string path, bool create)
