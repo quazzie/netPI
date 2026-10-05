@@ -31,6 +31,7 @@
     { "path": "plugins/NetPI.Providers.Anthropic/", "tags": ["provider", "usage"] },
     { "path": "plugins/NetPI.Providers.OpenRouter/", "tags": ["provider"] },
     { "path": "shared/ProviderKit/", "tags": ["provider", "usage"] },
+    { "path": "shared/GitKit/", "tags": ["tools", "subagents"] },
     { "path": "plugins/NetPI.Retry/", "tags": ["retry"] },
     { "path": "plugins/NetPI.Runtime/", "tags": ["smoke", "control", "chat", "scheduling", "sessions"] },
     { "path": "plugins/NetPI.Schedules/", "tags": ["smoke"] },
@@ -50,6 +51,7 @@
 
     { "path": "web/", "tags": ["ui"] },
     { "path": "tests/MockLlm/", "tags": ["smoke"] },
+    { "path": "tests/Shared/", "tags": ["smoke"] },
     { "path": "tests/NetPI.E2E/ui/", "tags": ["ui"] },
     { "path": "tests/NetPI.E2E/McpTests.cs", "tags": ["mcp"] },
     { "path": "tests/NetPI.E2E/CoreTests.cs", "tags": ["startup", "chat", "tools", "provider"] },

@@ -119,17 +119,43 @@ public sealed class Env : IAsyncDisposable
 
     public static async Task<Env> StartAsync(E2EOptions o)
     {
-        if (o.Port == 0 || o.MockPort == 0)
-        {
-            var p = Ports.Pick(2);
-            o = o.ForServer(o.Port == 0 ? p[0] : o.Port, o.MockPort == 0 ? p[1] : o.MockPort);
-        }
         var repo = FindRepoRoot();
-        var root = Path.Combine(Path.GetTempPath(), "netpi-e2e", DateTime.Now.ToString("MMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..4]);
-        Directory.CreateDirectory(root);
-        var env = new Env { Options = o, RepoRoot = repo, Root = root };
-        try { await env.StartCoreAsync(); return env; }
-        catch { await env.DisposeAsync(); throw; }
+        // A picked port is probed, released and bound by the server a moment later; Given is per process, so another
+        // run on this machine can take it in between, and a shard that cannot bind is a whole shard reported as not run.
+        // So a bind failure on picked ports gets fresh ones, up to three times. A port the caller fixed is never swapped.
+        var picked = o.Port == 0 || o.MockPort == 0;
+        for (var attempt = 1; ; attempt++)
+        {
+            var options = o;
+            if (picked)
+            {
+                var p = Ports.Pick(2);
+                options = o.ForServer(o.Port == 0 ? p[0] : o.Port, o.MockPort == 0 ? p[1] : o.MockPort);
+            }
+            var root = Path.Combine(Path.GetTempPath(), "netpi-e2e", DateTime.Now.ToString("MMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..4]);
+            Directory.CreateDirectory(root);
+            var env = new Env { Options = options, RepoRoot = repo, Root = root };
+            try { await env.StartCoreAsync(); return env; }
+            catch (Exception ex)
+            {
+                await env.DisposeAsync();
+                if (!picked || attempt >= 3 || !IsBindFailure(ex)) throw;
+                Log($"ports {options.Port}/{options.MockPort} were taken before the server could bind them ({ex.Message.Split('\n')[0]}); fresh ones, attempt {attempt + 1} of 3");
+            }
+        }
+    }
+
+    /// <summary>The server or the mock could not bind its port: taken by another process between the probe and the bind.</summary>
+    private static bool IsBindFailure(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.AddressAlreadyInUse }) return true;
+            if (e.Message.Contains("is busy (the server fell back to", StringComparison.Ordinal)) return true;   // netpi-server moved to a free port
+            if (e.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase)) return true;   // Kestrel (the mock)
+            if (e.Message.Contains("Failed to bind to address", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     private async Task StartCoreAsync()

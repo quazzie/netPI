@@ -309,7 +309,12 @@ public sealed class Orchestrator
             if (empty.Count > 0) Locked(() => Console.WriteLine($"  evidence incomplete for {c.Id}: empty section(s) {string.Join(", ", empty)} (a bug in the runner)"));
             return file;
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            // the failure is still reported; only its evidence file is missing, and that must not be silent
+            Locked(() => Console.WriteLine($"  could not write the evidence file for {c.Id}: {ex.Message.Split('\n')[0]}"));
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------ output

@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- End-to-end suite: runs the real netpi-server (a copy of artifacts/app) against tests/MockLlm and drives it over
        HTTP/WebSocket like the UI does, then runs the Playwright UI smoke (ui/smoke.mjs). See docs/TESTING.md.
-       Run: dotnet tests/NetPI.E2E/bin/Debug/NetPI.E2E.dll [name filter...] (options: see Program.cs) -->
+       Run: dotnet tests/NetPI.E2E/bin/Release/NetPI.E2E.dll [name filter...] (options: see Program.cs; the scripts build
+       Release, so that is where the runner is - bin/Debug after a Debug build) -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>

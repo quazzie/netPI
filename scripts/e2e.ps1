@@ -142,16 +142,37 @@ try {
     $dev = 'artifacts\dev\app'
     $e2eBin = "tests\NetPI.E2E\bin\$Config"
     $shared = @('Directory.Build.props', 'plugins\Directory.Build.props')
-    $projects = [System.Collections.Generic.List[object]]::new()
-    $projects.Add(@{ Name = 'NetPI.Abstractions'; Dir = 'src\NetPI.Abstractions'; Out = "$dev\NetPI.Abstractions.dll"; Inputs = @('src\NetPI.Abstractions') + $shared; Core = $true })
-    $projects.Add(@{ Name = 'NetPI.Contracts'; Dir = 'src\NetPI.Contracts'; Out = "$dev\NetPI.Contracts.dll"; Inputs = @('src\NetPI.Contracts') + $shared; Core = $true })
-    $projects.Add(@{ Name = 'NetPI.Host'; Dir = 'src\NetPI.Host'; Out = "$dev\NetPI.Host.dll"; Inputs = @('src\NetPI.Host') + $shared; Core = $true })
-    $projects.Add(@{ Name = 'NetPI.Server'; Dir = 'src\NetPI.Server'; Out = "$dev\netpi-server.dll"; Inputs = @('src\NetPI.Server', 'web\dist') + $shared })
-    foreach ($d in Get-ChildItem plugins -Directory) {
-        $projects.Add(@{ Name = $d.Name; Dir = "plugins\$($d.Name)"; Out = "$dev\plugins\$($d.Name)\$($d.Name).dll"; Inputs = @("plugins\$($d.Name)") + $shared })
+    # What a project compiles or imports from outside its own folder, read from its csproj: the <Compile Include> and
+    # <Import Project> entries that leave it ($(RepoRoot)shared/ProviderKit/*.cs in the three providers, shared/GitKit in
+    # the file, shell and workspace tools, ../Shared/Harness.cs in the tests, build/WebRoot.targets in the server). A
+    # wildcard names its folder, a file names itself. Read from the project, so a new shared folder cannot be forgotten
+    # here and a change in it stale the projects that compile it.
+    function Get-ExternalInputs([string]$projectDir) {
+        $csproj = Get-ChildItem (Join-Path $repo $projectDir) -Filter *.csproj | Select-Object -First 1
+        if (-not $csproj) { return }
+        $repoRoot = $repo.TrimEnd('\') + '\'
+        $projectRoot = (Resolve-Path -LiteralPath (Join-Path $repo $projectDir)).Path.TrimEnd('\') + '\'
+        $text = Get-Content -LiteralPath $csproj.FullName -Raw
+        foreach ($m in [regex]::Matches($text, '<(?:Compile\s+Include|Import\s+Project)\s*=\s*"([^"]+)"')) {
+            $include = $m.Groups[1].Value.Replace('$(RepoRoot)', $repoRoot).Replace('/', '\')
+            if ($include -match '[\*\?]') { $include = Split-Path $include -Parent }   # a wildcard: the folder it is in
+            if (-not [IO.Path]::IsPathRooted($include)) { $include = Join-Path $projectRoot $include }
+            $full = [IO.Path]::GetFullPath($include)
+            if ($full.StartsWith($projectRoot, [StringComparison]::OrdinalIgnoreCase)) { continue }   # the project's own
+            if (-not $full.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase)) { continue }   # an SDK import
+            $full.Substring($repoRoot.Length)
+        }
     }
-    $projects.Add(@{ Name = 'MockLlm'; Dir = 'tests\MockLlm'; Out = "$e2eBin\MockLlm.dll"; Inputs = @('tests\MockLlm') + $shared })
-    $projects.Add(@{ Name = 'NetPI.E2E'; Dir = 'tests\NetPI.E2E'; Out = "$e2eBin\NetPI.E2E.dll"; Inputs = @('tests\NetPI.E2E', 'tests\NetPI.Aux.Tests\McpFixture.cs') + $shared })
+    $projects = [System.Collections.Generic.List[object]]::new()
+    $projects.Add(@{ Name = 'NetPI.Abstractions'; Dir = 'src\NetPI.Abstractions'; Out = "$dev\NetPI.Abstractions.dll"; Inputs = @('src\NetPI.Abstractions') + @(Get-ExternalInputs 'src\NetPI.Abstractions') + $shared; Core = $true })
+    $projects.Add(@{ Name = 'NetPI.Contracts'; Dir = 'src\NetPI.Contracts'; Out = "$dev\NetPI.Contracts.dll"; Inputs = @('src\NetPI.Contracts') + @(Get-ExternalInputs 'src\NetPI.Contracts') + $shared; Core = $true })
+    $projects.Add(@{ Name = 'NetPI.Host'; Dir = 'src\NetPI.Host'; Out = "$dev\NetPI.Host.dll"; Inputs = @('src\NetPI.Host') + @(Get-ExternalInputs 'src\NetPI.Host') + $shared; Core = $true })
+    $projects.Add(@{ Name = 'NetPI.Server'; Dir = 'src\NetPI.Server'; Out = "$dev\netpi-server.dll"; Inputs = @('src\NetPI.Server', 'web\dist', 'build') + @(Get-ExternalInputs 'src\NetPI.Server') + $shared })
+    foreach ($d in Get-ChildItem plugins -Directory) {
+        $projects.Add(@{ Name = $d.Name; Dir = "plugins\$($d.Name)"; Out = "$dev\plugins\$($d.Name)\$($d.Name).dll"; Inputs = @("plugins\$($d.Name)") + @(Get-ExternalInputs "plugins\$($d.Name)") + $shared })
+    }
+    $projects.Add(@{ Name = 'MockLlm'; Dir = 'tests\MockLlm'; Out = "$e2eBin\MockLlm.dll"; Inputs = @('tests\MockLlm') + @(Get-ExternalInputs 'tests\MockLlm') + $shared })
+    $projects.Add(@{ Name = 'NetPI.E2E'; Dir = 'tests\NetPI.E2E'; Out = "$e2eBin\NetPI.E2E.dll"; Inputs = @('tests\NetPI.E2E', 'tests\Shared') + @(Get-ExternalInputs 'tests\NetPI.E2E') + $shared })
 
     if (-not $SkipBuild) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
