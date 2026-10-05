@@ -126,11 +126,17 @@ const { browser, page, errors } = await openApp({ url: `${BASE}/?token=dev` });
 // that showed (an error toast is gone long before the failure screenshot is taken)
 const pageWs = [];
 const stamp = () => new Date().toISOString().slice(11, 23);
+// the page's own rpc calls, answered or not: a check waits for the reload an event caused (pageRpcDone) instead of guessing a delay
+const pageRpc = [];
 page.on('websocket', (ws) => {
   pageWs.push(`${stamp()} socket opened ${ws.url()}`);
   ws.on('framesent', (f) => {
     const p = String(f.payload);
-    if (p.includes('"t":"rpc"')) { try { const m = JSON.parse(p); pageWs.push(`${stamp()} sent rpc ${m.id} ${m.m}`); } catch {} }
+    if (p.includes('"t":"rpc"')) { try { const m = JSON.parse(p); pageWs.push(`${stamp()} sent rpc ${m.id} ${m.m}`); pageRpc.push({ id: m.id, m: m.m, answered: false }); } catch {} }
+  });
+  ws.on('framereceived', (f) => {
+    const p = String(f.payload);
+    if (p.includes('"t":"res"')) { try { const id = JSON.parse(p).id; const c = pageRpc.findLast((r) => r.id === id); if (c) c.answered = true; } catch {} }
   });
   ws.on('close', () => pageWs.push(`${stamp()} socket closed`));
   ws.on('socketerror', (e) => pageWs.push(`${stamp()} socket error ${e}`));
@@ -187,6 +193,32 @@ async function newTab() {
   await page.keyboard.press('Control+t');
   await page.waitForFunction((n) => document.querySelectorAll('.topbar .tab').length > n, before, { timeout: 10_000 });
   await page.waitForSelector('.intro');
+}
+/** The Sessions tab's search box (the Projects tab, once visited, stays in the panel with a search box of its own). */
+const sessionSearch = () => page.locator('.panel.left').getByPlaceholder('Search sessions');
+/**
+ * A chat's row in the Sessions list, shown. Only Today's group is open by default (Yesterday, Previous 7 days and Earlier are folded), so a
+ * row that is not shown is found through the session search, which shows matches inside folded groups. clearSessionSearch() undoes that.
+ */
+async function sessionRow(title) {
+  await openStripTab('left', 'Sessions');
+  const row = page.locator('.panel.left .srow', { hasText: title }).first();
+  if (await row.isVisible()) return row;
+  await sessionSearch().fill(title);
+  await row.waitFor({ timeout: 5_000 });
+  return row;
+}
+const clearSessionSearch = () => sessionSearch().fill('');
+/** Wait until the page has called `method` since `since` (pageRpc.length taken before the change) and had its answer. */
+async function pageRpcDone(method, since, timeout = 10_000) {
+  for (const end = Date.now() + timeout; Date.now() < end; await sleep(50))
+    if (pageRpc.slice(since).some((r) => r.m === method && r.answered)) return true;
+  return false;
+}
+/** Open a chat by its title from the Sessions list (see sessionRow), leaving the search empty. */
+async function openSession(title) {
+  await (await sessionRow(title)).click();
+  await clearSessionSearch();
 }
 const right = page.locator('.panel.right > .body');
 
@@ -944,24 +976,38 @@ log('plugin tab: Ideas');
     return foot && mount ? Math.round(mount.getBoundingClientRect().bottom - foot.getBoundingClientRect().bottom) : null;
   });
   check('ideas: the tab fills the panel (footer at the bottom)', footGap !== null && Math.abs(footGap) <= 4, `gap ${footGap}px`);
-  await cards().first().locator('.main').click();
-  await page.waitForTimeout(250);
-  check('ideas: expanded idea renders sections', (await cards().first().locator('.sec').count()) > 0);
-  await shot(page, '27-ideas-tab');
-  // status via the pill menu. The pill lives in the card's open body (idea-43oruq: a closed card is a title and
-  // nothing else), so the card has to be open before the pill exists. This step had been clicking it on a closed
-  // card, which is why the mock e2e died here: nothing in CI runs `npm run e2e`.
-  if ((await cards().nth(1).locator('.main').getAttribute('aria-expanded')) !== 'true') await cards().nth(1).locator('.main').click();
-  await cards().nth(1).locator('.status').click();
-  await page.locator('.np-menu .np-menu-item', { hasText: 'in-progress' }).click();
-  await page.waitForTimeout(500);
-  check('ideas: status change', /in-progress/.test(await cards().nth(1).locator('.status').innerText()));
-  // New idea, then a section on it. The list is grouped by status (in-progress, planned, open — idea-43oruq), so
-  // "on top" means first *in its own group*, and every step below names the card instead of taking cards().first():
-  // the step above just moved a card into the group that renders above open, which is what made this block rot.
-  const cardTitled = (t) => page.locator('.ideas .card', { hasText: t }).first();
-  // Filing is the host's idea dialog (the Ideas tab's "+", Ctrl+I and /idea all open it), on the project the tab shows.
+  // A card is the idea's title and a short summary; a click opens the whole idea in the host's idea dialog (67c5a97): its
+  // sections, images and the chats and commits recorded on it are there, not in a card that expands. The card's ⋯ menu
+  // ("Status and actions") holds the status and every action.
   const dlg = page.locator('.idea-dialog');
+  const openCard = async (card) => {
+    await card.locator('.main').click();
+    await dlg.waitFor({ timeout: 3000 }).catch(() => {});
+    await page.waitForTimeout(300); // past the dialog's fade-in
+  };
+  const closeDialog = async () => {
+    await page.keyboard.press('Escape');
+    await dlg.waitFor({ state: 'detached', timeout: 3000 }).catch(() => {});
+  };
+  const moreMenu = async (card, item) => {
+    await card.locator('button[title="Status and actions"]').click();
+    await page.locator('.np-menu .np-menu-item', { hasText: item }).first().click();
+  };
+  // The list is grouped by status (in-progress, planned, open — idea-43oruq), so every step below names its card
+  // instead of taking cards().first(): a status change moves a card into another group.
+  const cardTitled = (t) => page.locator('.ideas .card', { hasText: t }).first();
+  const firstTitle = (await cards().first().locator('.title').innerText()).trim();
+  check('ideas: a card is its title and a short summary, nothing to expand', (await cards().first().locator('.blurb').count()) === 1 && (await cards().first().locator('.sec').count()) === 0);
+  await openCard(cards().first());
+  check('ideas: a click opens the idea dialog with its sections', (await dlg.count()) === 1 && (await dlg.locator('.i-title').inputValue()) === firstTitle && (await dlg.locator('.sec').count()) > 0, firstTitle);
+  await shot(page, '27-ideas-tab');
+  await closeDialog();
+  check('ideas: Escape closes it again', (await dlg.count()) === 0);
+  const statusTitle = (await cards().nth(1).locator('.title').innerText()).trim();
+  await moreMenu(cards().nth(1), 'Status: in-progress');
+  await page.waitForTimeout(500);
+  check('ideas: status change (the card menu)', (await cardTitled(statusTitle).getAttribute('data-status')) === 'in-progress', statusTitle);
+  // Filing is the host's idea dialog (the Ideas tab's "+", Ctrl+I and /idea all open it), on the project the tab shows.
   const activeProjectId = (await rpcCall('projects.list')).find((p) => p.name === 'netpi')?.id;
   await page.locator('.ideas .scope button[title^="New idea"]').click();
   await dlg.waitFor({ timeout: 3000 }).catch(() => {});
@@ -1007,34 +1053,33 @@ log('plugin tab: Ideas');
     return open?.querySelector('.title')?.textContent?.trim() ?? null;
   });
   check('ideas: new idea added on top of the open ones', (await newCard.count()) === 1 && firstOpen === 'Keyboard shortcuts cheat sheet', `first open: ${firstOpen}`);
-  // It joins the list collapsed, so filing several in a row does not push the previous one out of view (idea-qrp60h).
-  check('ideas: the new card joins the list collapsed', (await newCard.locator('.main').getAttribute('aria-expanded')) === 'false');
-  if ((await newCard.locator('.main').getAttribute('aria-expanded')) !== 'true') await newCard.locator('.main').click();
-  // Open now, so the card's body exists; its thumbnails are fetched from the host as it opens.
-  await newCard.locator('.shots img').first().waitFor({ timeout: 4000 }).catch(() => {});
-  check('ideas: the card shows the attached image once open', (await newCard.locator('.shots img').count()) === 1);
-  const shotSrc = (await newCard.locator('.shots img').getAttribute('src').catch(() => '')) ?? '';
+  // The image is the idea's: the dialog fetches it back from the host as it opens, and removing it there (and saving)
+  // takes it off the idea.
+  await openCard(newCard);
+  await dlg.locator('.thumbs img').first().waitFor({ timeout: 4000 }).catch(() => {});
+  check('ideas: the idea dialog shows the attached image', (await dlg.locator('.thumbs img').count()) === 1);
+  const shotSrc = (await dlg.locator('.thumbs img').first().getAttribute('src').catch(() => '')) ?? '';
   check('ideas: the image is fetched back from the host, not kept in the list', shotSrc.startsWith('data:image/'), shotSrc.slice(0, 24));
-  const prompt = await rpcCall('ideas.toPrompt', { id: (await newCard.locator('.info').innerText()).trim().split(' ')[0] });
+  const ideaId = (await dlg.locator('.idnote').innerText()).trim();
+  const prompt = await rpcCall('ideas.toPrompt', { id: ideaId });
   check('ideas: the full text hands the image to whoever works on it', /idea-images\/img-/.test(prompt), prompt?.split('\n').find((l) => l.startsWith('- ')) ?? 'no image line');
-  await newCard.locator('.shots button[title="Remove image"]').click();
+  await dlg.locator('.thumbs button[aria-label="Remove image"]').click();
+  await dlg.locator('.i-submit').click();
+  await dlg.waitFor({ state: 'detached', timeout: 3000 }).catch(() => {});
   await page.waitForTimeout(400);
-  check('ideas: removing the image takes it off the card', (await newCard.locator('.shots').count()) === 0);
-  await newCard.locator('.actions button[title="Add section"]').click();
-  await newCard.locator('.sed select').selectOption('todo');
-  await newCard.locator('.sed textarea').fill('- [ ] list shortcuts\n- [ ] render a table');
-  await newCard.locator('.sed button', { hasText: 'Add section' }).click();
-  await page.waitForTimeout(500);
-  check('ideas: section added', (await newCard.locator('.sec').count()) === 1);
-  // reorder, then delete through the host confirm dialog (both in the ⋯ menu)
-  const moreMenu = async (card, item) => {
-    await card.locator('.actions button[title="More actions"]').click();
-    await page.locator('.np-menu .np-menu-item', { hasText: item }).click();
-  };
+  check('ideas: removing the image in the dialog takes it off the idea', ((await rpcCall('ideas.get', { id: ideaId })).images ?? []).length === 0);
+  // Sections are what agents write (the ideas tool, ideas.update): the dialog shows them, read-only. It shows the card's copy of
+  // the idea, which the tab refetches on ideas.changed (debounced), so the step waits for that reload.
+  const listsBefore = pageRpc.length;
+  await rpcCall('ideas.update', { id: ideaId, patch: { addSections: [{ kind: 'todo', content: '- [ ] list shortcuts\n- [ ] render a table' }] } });
+  const reloaded = await pageRpcDone('ideas.list', listsBefore);
+  await openCard(cardTitled('Keyboard shortcuts cheat sheet'));
+  check('ideas: a section an agent added shows in the dialog', (await dlg.locator('.sec').count()) === 1 && /list shortcuts/.test(await dlg.locator('.sec').innerText()),
+    reloaded ? `${await dlg.locator('.sec').count()} sections` : 'the tab never reloaded the list after ideas.changed');
+  await closeDialog();
   // send to chat → a pointer in the composer, not the idea's text (the agent reads the idea itself)
-  await newCard.locator('.actions button[title^="Stage a pointer"]').click();
+  await moreMenu(cardTitled('Keyboard shortcuts cheat sheet'), 'Send to chat');
   await page.waitForTimeout(300);
-  const ideaId = (await newCard.locator('.info').innerText()).trim().split(' ')[0];
   const staged = await ta.inputValue();
   check('ideas: send to chat stages a pointer, not the idea', staged.includes(ideaId) && !staged.includes('# Keyboard shortcuts cheat sheet'), staged);
   // …and the full text is one menu item away
@@ -1094,11 +1139,9 @@ log('plugin tab: Ideas');
   const edited = await rpcCall('ideas.add', { projectId: activeProjectId ?? 'global', idea: { title: 'Dialog edit target', summary: 'before', tags: ['t1'] } });
   const edCard = cardTitled('Dialog edit target');
   await edCard.waitFor({ timeout: 4000 }).catch(() => {});
-  if ((await edCard.locator('.main').getAttribute('aria-expanded')) !== 'true') await edCard.locator('.main').click();
-  await edCard.locator('.actions button[title^="Edit the idea"]').click();
-  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
+  await openCard(edCard);
   check(
-    'ideas: Edit opens the same dialog, filled in',
+    'ideas: the card opens the same dialog, filled in',
     (await dlg.locator('.i-title').inputValue()) === 'Dialog edit target' && (await dlg.locator('.i-summary').inputValue()) === 'before' && (await dlg.locator('.i-tags').inputValue()) === 't1',
   );
   await page.waitForTimeout(400); // past the dialog's fade-in
@@ -1130,7 +1173,6 @@ log('plugin tab: Ideas');
   // the agent task: from the card's menu, with a focus, on any available agent
   const refCard = cardTitled('Dialog edit target (edited)');
   await refCard.waitFor({ timeout: 4000 }).catch(() => {});
-  if ((await refCard.locator('.main').getAttribute('aria-expanded')) !== 'true') await refCard.locator('.main').click();
   await moreMenu(refCard, 'Refine with an agent');
   await dlg.waitFor({ timeout: 3000 }).catch(() => {});
   check('ideas: "Refine with an agent" opens the dialog with the task on', (await dlg.locator('.refine').count()) === 1 && /Save and refine/.test(await dlg.locator('.i-submit').innerText()));
@@ -1142,7 +1184,10 @@ log('plugin tab: Ideas');
   const asked = (await rpcCall('mock.ideaRefines')).at(-1);
   check('ideas: refining starts a chat on the idea, on any agent, with the focus', asked?.id === edited.id && asked.agent === 'any' && asked.hint === 'check the Files plugin first', JSON.stringify(asked));
   await page.waitForTimeout(600);
-  check('ideas: the refine chat is on the card under Chats', (await refCard.locator('.ev-link', { hasText: 'Refine idea: Dialog edit target' }).count()) === 1);
+  await openCard(refCard);
+  check('ideas: the refine chat is recorded on the idea (its dialog lists it)', (await dlg.locator('.elink', { hasText: 'Refine idea: Dialog edit target' }).count()) === 1,
+    (await dlg.locator('.elink').allInnerTexts()).join(' | '));
+  await closeDialog();
 
   // tag filter (menu; the selected tag shows as a removable chip) + an external change (ideas.changed) refetches
   await page.locator('.ideas .filters button[title="Filter by tag"]').click();
@@ -1670,7 +1715,7 @@ log('project picker + new session project');
 {
   const projects = await rpcCall('projects.list');
   const idOf = (name) => projects.find((p) => p.name === name)?.id;
-  await page.locator('.srow', { hasText: 'Scratch' }).first().click();
+  await openSession('Scratch');
   await page.waitForTimeout(400);
   const pick = async (chip, name) => {
     await chip.click();
@@ -1718,13 +1763,17 @@ log('start screen: the project new sessions start in');
   const idOf = (name) => projects.find((p) => p.name === name)?.id;
   while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
   await page.waitForSelector('.welcome .target');
-  const chip = page.locator('.welcome .target');
+  // a split button: the name half starts a session in the project shown, the chevron half picks another one
+  const chip = page.locator('.welcome .split .target');
+  const more = page.locator('.welcome .split .target-more');
   const last = await page.evaluate(() => JSON.parse(localStorage.getItem('netpi.lastProject') ?? 'null'));
   const lastName = projects.find((p) => p.id === last)?.name ?? 'No project';
   check('start screen shows the project last worked in', (await chip.innerText()).includes(lastName), (await chip.innerText()) + ' vs ' + lastName);
-  await chip.click();
+  const tabsBefore = await page.locator('.topbar .tab').count();
+  await more.click();
   await page.waitForSelector('.popover .item');
   await page.waitForTimeout(300);
+  check('the chevron opens the picker without starting a session', (await page.locator('.topbar .tab').count()) === tabsBefore);
   await shot(page, '12b-start-project-picker');
   await page.locator('.popover .item', { hasText: 'website' }).first().click();
   await page.waitForTimeout(500);
@@ -1736,6 +1785,16 @@ log('start screen: the project new sessions start in');
   await page.locator('.topbar .tab .tab-close').first().click();
   await page.waitForSelector('.welcome .target');
   check('the last project is still remembered', await page.evaluate(() => JSON.parse(localStorage.getItem('netpi.lastProject') ?? 'null')) === idOf('website'), await page.evaluate(() => localStorage.getItem('netpi.lastProject')));
+  check('the name half shows the project picked', (await chip.innerText()).includes('website'), await chip.innerText());
+  // the name half starts in the project shown, without the picker
+  await chip.click();
+  await page.waitForTimeout(500);
+  check('the name half opens no picker', (await page.locator('.popover').count()) === 0);
+  const idN = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const sN = idN ? await rpcCall('sessions.get', { id: idN }) : null;
+  check('the name half starts a session in the project shown', sN?.projectId === idOf('website'), String(sN?.projectId));
+  await page.locator('.topbar .tab .tab-close').first().click();
+  await page.waitForSelector('.welcome .target');
   await page.locator('.welcome .np-btn-primary').click();
   await page.waitForTimeout(500);
   const idA = await page.locator('.topbar .tab.active').getAttribute('data-tab');
@@ -1748,10 +1807,11 @@ log('start screen: the project new sessions start in');
   const id2 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   const s2 = id2 ? await rpcCall('sessions.get', { id: id2 }) : null;
   check('a new session with no tab open starts without a project', s2?.projectId === null, String(s2?.projectId));
-  // the next section works from the "website" session: close this one and recreate it from the start screen
+  // the next section works from the "website" session: close this one and recreate it from the start screen (with the chevron:
+  // the chat just closed had no project, so the name half now shows none)
   await page.locator('.topbar .tab .tab-close').first().click();
   await page.waitForSelector('.welcome .target');
-  await chip.click();
+  await more.click();
   await page.waitForSelector('.popover .item');
   await page.locator('.popover .item', { hasText: 'website' }).first().click();
   await page.waitForTimeout(500);
@@ -1833,7 +1893,7 @@ log('welcome screen: ideas to work on');
   // the next section works from the "website" session: close everything and recreate it from the start screen
   while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
   await page.waitForSelector('.welcome .target');
-  await page.locator('.welcome .target').click();
+  await page.locator('.welcome .target-more').click();
   await page.waitForSelector('.popover .item');
   await page.locator('.popover .item', { hasText: 'website' }).first().click();
   await page.waitForTimeout(500);
@@ -2188,7 +2248,7 @@ log('profiles: settings, a project default, per chat');
   // default arrives with it); the picker is free before it
   while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
   await page.waitForSelector('.welcome .target');
-  await page.locator('.welcome .target').first().click();
+  await page.locator('.welcome .target-more').click();
   await page.waitForSelector('.popover .item');
   await page.locator('.popover .item', { hasText: 'netpi' }).first().click();
   await page.waitForTimeout(500);
@@ -2820,7 +2880,7 @@ if (!EXTERNAL && want('reconnect')) {
     check('…and the persisted final answer is shown', (await page.locator('.content .item[data-kind="text"]', { hasText: 'unknown-pool handling' }).count()) > 0);
     await shot(page, '24a-run-ended-while-offline');
   }
-  await page.locator('.panel.left .strip-tab', { hasText: 'Sessions' }).click();
+  await openStripTab('left', 'Sessions');
   // Forks sort ahead of the original, and disappear from the mock's memory when it restarts.
   await page.locator('.srow', { has: page.locator('.title', { hasText: /^Fix streaming reconnect bug$/ }) }).click();
   await page.waitForTimeout(300);
@@ -2847,10 +2907,18 @@ if (!EXTERNAL && !argv.includes('--no-dev') && want('vite dev server')) {
     env: { ...process.env, NETPI_URL: BASE },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // its own words when it does not start (a second suite run on this machine holds the fixed port 5199, for one)
+  let viteErr = '';
+  vite.stderr.on('data', (d) => (viteErr += d));
+  const why = () => {
+    const lines = viteErr.replace(/\x1b\[[0-9;]*m/g, '').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('at '));
+    return lines.length ? `: ${lines.slice(0, 2).join(' ')}` : '';
+  };
   try {
     await new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('vite did not start')), 20_000);
+      const t = setTimeout(() => reject(new Error(`vite did not start${why()}`)), 20_000);
       vite.stdout.on('data', (d) => /Local:|ready in/.test(String(d)) && (clearTimeout(t), resolve()));
+      vite.on('exit', (code) => (clearTimeout(t), reject(new Error(`vite exited (${code})${why()}`))));
     });
     const dev = await openApp({ url: 'http://127.0.0.1:5199/?token=dev' });
     await dev.page.waitForSelector('.srow', { timeout: 15_000 }).catch(() => {});
@@ -2879,14 +2947,13 @@ log('a snapshot answer must not undo what it missed');
   // and replacing the window with it loses the message (and everything the run streamed after it).
   // mock.messagesHold is that window: the page is read, a message is published while the answer is held, and
   // the page answers last. This chat is opened for the first time here, so opening it is what reads the page.
-  await openStripTab('left', 'Sessions');
   const target = (await rpcCall('sessions.list', { includeSubagents: true })).find((s) => s.title === 'AiProxy model catalog aliases');
-  const row = page.locator('.srow', { hasText: 'AiProxy model catalog aliases' }).first();
-  await row.waitFor({ timeout: 10_000 });
+  const row = await sessionRow('AiProxy model catalog aliases');
   const loads = async () => ((await rpcCall('mock.msgLoads')) ?? {})[target.id] ?? 0;
   const before = await loads();
   await rpcCall('mock.messagesHold', { id: target.id, ms: 700, text: 'Committed while the page was being read.' });
   await row.click();
+  await clearSessionSearch();
   const late = page.locator('.content:visible .item[data-kind="text"]', { hasText: 'Committed while the page was being read' });
   await late.waitFor({ timeout: 10_000 }).catch(() => {});
   check('a message published while the page loads is not dropped by the older page', (await late.count()) === 1,
@@ -2997,7 +3064,7 @@ log('sessions: collapsible groups (defaults, persistence, search)');
   check('after a reload, the collapsed group is still collapsed', (await collapsed('Today').count()) === 1);
 
   // a search shows its matches inside closed groups, without touching the stored state
-  const search = page.locator('.panel.left .search-input');
+  const search = sessionSearch();
   await search.fill('Scratch');
   await page.locator('.srow', { hasText: 'Scratch' }).waitFor({ timeout: 5_000 });
   check('a match inside a closed group is shown',
