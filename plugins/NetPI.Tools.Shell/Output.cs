@@ -84,6 +84,8 @@ public sealed class OutputCapture : IDisposable
 
     public long TotalChars { get; private set; }
     public long TotalBytes { get; private set; }
+    /// <summary>When the last output arrived (the capture's creation before any): how long a process has been silent.</summary>
+    public DateTimeOffset LastOutputAt { get; private set; } = DateTimeOffset.UtcNow;
     /// <summary>Path of the spill file once created.</summary>
     public string? SpillFile { get; private set; }
 
@@ -101,6 +103,7 @@ public sealed class OutputCapture : IDisposable
         if (chunk.Length == 0) return;
         lock (_lock)
         {
+            LastOutputAt = DateTimeOffset.UtcNow;
             TotalChars += chunk.Length;
             TotalBytes += Encoding.UTF8.GetByteCount(chunk);
             _buf.Append(chunk);

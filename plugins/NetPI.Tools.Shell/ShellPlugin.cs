@@ -30,11 +30,15 @@ public sealed class ShellPlugin : INetPiPlugin
                 SettingInfo.FilePath("shell.bashPath", "bash", "Git Bash on Windows, never WSL. Empty: the one found.", ShellLocator.FindBash(null) ?? "none found (install Git for Windows)"),
                 SettingInfo.FilePath("shell.pwshPath", "PowerShell", "Empty: the one found.", ShellLocator.FindPwsh(null, out _) ?? "none found"),
                 SettingInfo.Bool("shell.pwshAlways", "Offer pwsh even when none was found", false),
+                SettingInfo.Number("shell.idleMinutes", "Report a silent command after", 5,
+                    "A running command that has printed nothing this long raises process.idle once (it may wait on an editor or a prompt); 0 = off.", 0, 240, "min"),
                 SettingInfo.Bool("shell.trackChanges", "Report the files a command changed", true,
                     "Compares git status before and after a command that may write, and tells the model and the chat which files in its repository changed."),
             ],
         });
         _registry = new ProcessRegistry(context.Events);
+        var settings = context.Settings;
+        _registry.WatchSilence(() => settings.GetOr("shell.idleMinutes", 5.0) is var m and > 0 ? TimeSpan.FromMinutes(m) : null);
         var service = new ShellService(_registry, context.Settings);
         _ = Task.Run(service.CleanupTempFiles, CancellationToken.None);
         var hasPwsh = ShellLocator.FindPwsh(context.Settings, out _) is not null;
@@ -76,6 +80,7 @@ public sealed class ShellPlugin : INetPiPlugin
 
     public async Task StopAsync(CancellationToken ct)
     {
+        _registry?.StopWatching();
         if (_registry is not null) await _registry.KillAllAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
     }
 }

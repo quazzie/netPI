@@ -234,6 +234,60 @@ public static class ShellTests
             Check.NotContains(res.Content, "[Files changed", "shell.trackChanges off");
         });
 
+        r.Add("shell: cmd /c with a .ps1 is refused with the pwsh line to use instead (it would open an editor and hang)", async () =>
+        {
+            var (svc, registry, _) = NewService();
+            var dir = T.TempDir("ps1");
+            foreach (var command in (string[])["cmd /c \".\\build.ps1 -Engine -Test\"", "cmd.exe /C build.ps1", "cd x && cmd /k scripts\\run.ps1 arg"])
+            {
+                var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command }), default);
+                ToolCheck.Error(res, "cmd does not run a PowerShell script");
+                Check.Contains(res.Content, "pwsh -NoProfile -File");
+            }
+            Check.Equal(0, registry.List().Count, "nothing was started");
+            var ok = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "echo pwsh -NoProfile -File build.ps1" }), default);
+            ToolCheck.Ok(ok);
+        });
+
+        r.Add("shell: a running command that prints nothing for shell.idleMinutes raises process.idle, once per silence", async () =>
+        {
+            var every = ProcessRegistry.IdleCheckEvery;
+            ProcessRegistry.IdleCheckEvery = TimeSpan.FromHours(1); // the test drives the checks
+            try
+            {
+                var (svc, registry, bus) = NewService();
+                registry.WatchSilence(() => TimeSpan.FromMilliseconds(1500));
+                var dir = T.TempDir("idle");
+                // every wait below is measured from output the test has seen, not from the start: bash's start-up time
+                // on a loaded machine is not part of what is tested
+                var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "echo started; sleep 5; echo again; sleep 30", background = true }), default);
+                var id = T.D(res).Str("processId")!;
+                List<BusEvent> Idle() => bus.Events.Where(e => e.Type == "process.idle").ToList();
+                await Wait.Until(() => registry.Get(id)!.Output.Snapshot().Contains("started"), "it printed", 10_000);
+
+                registry.CheckSilence();
+                Check.Equal(0, Idle().Count, "not silent long enough yet");
+                await Task.Delay(2000);
+                registry.CheckSilence();
+                registry.CheckSilence();
+                Check.Equal(1, Idle().Count, "one silence, one event");
+                var d = (System.Text.Json.Nodes.JsonObject)NetPiJson.ToNode(Idle()[0].Data)!;
+                Check.Equal(id, d["process"]!["id"]!.GetValue<string>());
+                Check.True(d["idleSeconds"]!.GetValue<int>() >= 0);
+                Check.True(registry.Get(id)!.ToInfo().IdleSeconds is >= 0, "processes.list shows the silence");
+
+                await Wait.Until(() => registry.Get(id)!.Output.Snapshot().Contains("again"), "it printed again", 15_000);
+                registry.CheckSilence();
+                Check.Equal(1, Idle().Count, "output ended the silence: nothing new to report yet");
+                await Task.Delay(2000);
+                registry.CheckSilence();
+                Check.Equal(2, Idle().Count, "output ended the first silence; the next one is reported again");
+                registry.Get(id)!.Kill();
+                registry.StopWatching();
+            }
+            finally { ProcessRegistry.IdleCheckEvery = every; }
+        });
+
         r.Add("bash: foreground output, stderr merged, exit code, cwd, live streaming", async () =>
         {
             var (svc, registry, bus) = NewService();

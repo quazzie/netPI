@@ -334,6 +334,10 @@ The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.
   - `[exit code N]` for a non-zero exit. This is **not** `isError`.
   - `[timed out after Ns; the process tree was killed…]` or `[aborted…]`. Both set `isError: true`.
   - A spawn failure is also `isError: true`.
+- `cmd /c <file>.ps1` (also `/k`, `cmd.exe`) is refused before anything runs, with the `pwsh -NoProfile -File` line to
+  use instead: cmd does not run a PowerShell script, it opens it in the file's default program (an editor) and waits for
+  that program, so the call would hang until its timeout. A running command silent for `shell.idleMinutes` raises
+  `process.idle` (PROTOCOL.md), and `processes.list` shows each running command's `idleSeconds`.
 - **Background** (`background: true`): starts and returns within about 0.5s, with the id `proc_…`. If the command exits
   within that window, its output and exit code are reported instead. Background processes have no timeout unless
   `timeout` is given.

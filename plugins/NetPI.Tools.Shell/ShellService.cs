@@ -1,10 +1,15 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace NetPI.Tools.Shell;
 
 /// <summary>Runs bash/pwsh commands (foreground or background) and formats results for the model.</summary>
-public sealed class ShellService(ProcessRegistry registry, ISettings? settings, string? tempDir = null)
+public sealed partial class ShellService(ProcessRegistry registry, ISettings? settings, string? tempDir = null)
 {
+    // `cmd /c <file>.ps1` (or /k, cmd.exe, quoted): cmd hands the script to its default program and waits for it.
+    [GeneratedRegex(@"\bcmd(?:\.exe)?\s+/[cCkK]\s+(?:""\s*)?(?<file>[^\s""&|;]+\.ps1)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex CmdRunsPs1();
+
     public const int DefaultTimeoutSeconds = 120;
     public const int MaxTimeoutSeconds = 1800;
     /// <summary>How long a background start waits to catch immediate failures.</summary>
@@ -74,6 +79,12 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         var command = args.Str("command", "cmd", "script", "code", "commands", "input");
         if (string.IsNullOrWhiteSpace(command))
             return ToolResult.Error($"Missing required argument 'command'. Example: {{\"command\": \"{(shell == "pwsh" ? "Get-ChildItem" : "ls -la")}\"}}");
+        // cmd does not run a .ps1: it hands the file to its default program (an editor) and waits for that program, so the
+        // call sits silent until its timeout (a worker lost nine minutes to `cmd /c ".\build.ps1 …"`). Say so instead.
+        if (CmdRunsPs1().Match(command) is { Success: true } ps1)
+            return ToolResult.Error($"Not run: cmd does not run a PowerShell script. It opens {ps1.Groups["file"].Value} in the file's default " +
+                "program (usually an editor) and waits for that program to close, so the command would hang until its timeout. " +
+                $"Run it with PowerShell instead: pwsh -NoProfile -File {ps1.Groups["file"].Value} <arguments> (or the pwsh tool).");
 
         var cwdArg = args.Str("cwd", "workdir", "working_directory", "workingDirectory", "directory", "dir");
         var cwd = string.IsNullOrWhiteSpace(cwdArg) ? ctx.Cwd : ctx.ResolvePath(cwdArg);

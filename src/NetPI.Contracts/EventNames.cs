@@ -23,4 +23,6 @@ public static class ProcessEvents
     public const string Started = "process.started";
     public const string Exited = "process.exited";
     public const string Output = "process.output";
+    /// <summary>A running process has printed nothing for <c>shell.idleMinutes</c>: maybe hung (once per silence).</summary>
+    public const string Idle = "process.idle";
 }

@@ -244,7 +244,8 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 
 ```ts
 interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?; agentId?; background: boolean;
-  status: 'running'|'exited'|'killed'|'timeout'; exitCode?; startedAt; endedAt?; outputBytes }
+  status: 'running'|'exited'|'killed'|'timeout'; exitCode?; startedAt; endedAt?; outputBytes;
+  idleSeconds? /* running: seconds since it last printed anything (or since it started) */ }
 ```
 
 ## Events
@@ -292,6 +293,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `usage.recorded` | no | `{ provider, model, usage }` (agent turns) |
 | `usage.changed` | no | `BudgetStatus`, after model calls were recorded (debounced), or immediately after a `budget` / `budget.*` setting change or whole-file settings reload/replacement |
 | `process.started` / `process.exited` | no | `{ process: ProcessInfo }` |
+| `process.idle` | no | `{ process: ProcessInfo, idleSeconds }` – a running shell command has printed nothing for `shell.idleMinutes` (5): maybe hung (a file handed to its default program, an editor, a prompt), maybe just quiet. Once per silence; output starts a new one. Checked every 15 s |
 | `ideas.changed` | no | `{ backend: 'sqlite', database, scope, schemaVersion, file, reason? }` – after every write that committed (never one that rolled back), so every window re-reads canonical state; `file` is the legacy name, `reason` what wrote it. A notification, not exactly-once delivery |
 | `ideas.suggested` | no | `{ suggestion }` – a card a closed chat (or a commit sweep) left waiting for the user |
 | `ideas.resolved` | no | `{ id, action?, card? }` – a card was answered, discarded, or finished. A window that still shows the card drops it; both the composer and the Ideas tab re-read the cards with `ideas.suggestions` on reconnect and when they become visible |

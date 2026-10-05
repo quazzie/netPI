@@ -26,6 +26,9 @@ public sealed class ProcessInfo
     public DateTimeOffset StartedAt { get; init; }
     public DateTimeOffset? EndedAt { get; init; }
     public long OutputBytes { get; init; }
+    /// <summary>Running: seconds since it last printed anything (or since it started). A long silence is how a command
+    /// waiting on something that will never come (an editor, a prompt) looks from outside.</summary>
+    public int? IdleSeconds { get; init; }
 }
 
 /// <summary>What to launch: executable + arguments (+ environment tweaks and a temp script to delete afterwards).</summary>
@@ -79,6 +82,10 @@ public sealed class ManagedProcess : IDisposable
     /// </summary>
     public bool OutputReachedEof { get; private set; }
     public TimeSpan Elapsed => (EndedAt ?? DateTimeOffset.UtcNow) - StartedAt;
+    /// <summary>How long it has printed nothing: since its last output, or since it started.</summary>
+    public TimeSpan Silence => DateTimeOffset.UtcNow - (Output.TotalChars > 0 && Output.LastOutputAt > StartedAt ? Output.LastOutputAt : StartedAt);
+    /// <summary>The silence the registry last reported as <c>process.idle</c> (its start), so one silence is reported once.</summary>
+    internal DateTimeOffset? IdleReported { get; set; }
 
     /// <summary>Called once when the process has finished (status set, output drained).</summary>
     internal Action<ManagedProcess>? OnExited { get; set; }
@@ -259,6 +266,7 @@ public sealed class ManagedProcess : IDisposable
                 WorkspaceId = WorkspaceId, WorkspaceBranch = WorkspaceBranch,
                 Background = Background, Status = _status, ExitCode = ExitCode, StartedAt = StartedAt, EndedAt = EndedAt,
                 OutputBytes = Output.TotalBytes,
+                IdleSeconds = _status == "running" ? (int)Silence.TotalSeconds : null,
             };
         }
     }
@@ -329,6 +337,47 @@ public sealed class ProcessRegistry(IEventBus? events = null)
     private void Publish(string type, ManagedProcess p)
     {
         try { Events?.Publish(type, new { process = p.ToInfo() }); } catch { }
+    }
+
+    // ------------------------------------------------------------------ silence (process.idle)
+
+    /// <summary>How often running processes are checked for a long silence.</summary>
+    public static TimeSpan IdleCheckEvery { get; set; } = TimeSpan.FromSeconds(15);
+
+    private Timer? _idleTimer;
+    private Func<TimeSpan?>? _idleAfter;
+
+    /// <summary>
+    /// Report a running process that has printed nothing for <paramref name="idleAfter"/> (read on every check; null or
+    /// zero: off) with a <c>process.idle</c> event, once per silence: output starts a new one. A command waiting on
+    /// something that never comes (a .ps1 handed to its default program, an editor, a prompt) is silent until its
+    /// timeout, which can be half an hour; this is how a coordinator, the Work tab or diag hears of it sooner.
+    /// </summary>
+    public void WatchSilence(Func<TimeSpan?> idleAfter)
+    {
+        _idleAfter = idleAfter;
+        _idleTimer ??= new Timer(_ => CheckSilence(), null, IdleCheckEvery, IdleCheckEvery);
+    }
+
+    internal void CheckSilence()
+    {
+        if (_idleAfter?.Invoke() is not { } after || after <= TimeSpan.Zero) return;
+        foreach (var p in _all.Values)
+        {
+            if (!p.IsRunning) continue;
+            var silence = p.Silence;
+            if (silence < after) continue;
+            var since = DateTimeOffset.UtcNow - silence;
+            if (p.IdleReported is { } reported && reported >= since - TimeSpan.FromSeconds(1)) continue; // this silence was reported
+            p.IdleReported = since;
+            try { Events?.Publish(ProcessEvents.Idle, new { process = p.ToInfo(), idleSeconds = (int)silence.TotalSeconds }); } catch { }
+        }
+    }
+
+    public void StopWatching()
+    {
+        _idleTimer?.Dispose();
+        _idleTimer = null;
     }
 
     /// <summary>Kill every process whose tree may still be alive (running, or a shell that exited leaving descendants holding the pipes). Best effort, bounded by <paramref name="wait"/> (plugin stop).</summary>
