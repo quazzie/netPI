@@ -266,5 +266,54 @@ public static class SqliteTests
                 Check.Equal(1L, db.Scalar<long>("SELECT version FROM _migrations WHERE scope = 'gamma'"), "failed step rolled back, first kept");
             }
         });
+
+        r.Add("sqlite: a library older than the minimum is refused at open, naming the library and the minimum", () =>
+        {
+            SqliteStorageProvider.CheckVersion(3_035_000, "3.35.0", "(bundled)");
+            SqliteStorageProvider.CheckVersion(3_041_000, "3.41.0", "(bundled)");
+            var failure = Check.Throws<StorageException>(() => SqliteStorageProvider.CheckVersion(3_034_999, "3.34.9", "C:\\old\\sqlite3.dll"));
+            Check.Contains(failure.Message, "3.34.9", "it names the version found: " + failure.Message);
+            Check.Contains(failure.Message, "3.35.0", "and the one needed");
+            Check.Contains(failure.Message, "sqlite3.dll", "and where the library came from");
+        });
+
+        r.Add("sqlite: the session list seeks its own index (EXPLAIN QUERY PLAN)", () =>
+        {
+            using var db = Open(out _);
+            SqliteStorage.EnsureSchema(db);
+            db.Execute("INSERT INTO sessions(id, title, created_at, updated_at) VALUES('s1', 't', 1, 1)");
+            db.Execute("INSERT INTO sessions(id, title, created_at, updated_at, pinned) VALUES('s2', 't', 2, 2, 1)");
+            var plan = string.Join(" | ", db.Query(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT id, title, project_id, parent_session_id, kind, model, reasoning, created_at, updated_at, archived, pinned, message_count, context_tokens, meta
+                FROM sessions ORDER BY pinned DESC, updated_at DESC, id DESC
+                """, null, r => r.GetString("detail")));
+            // No WHERE: the whole point is the order, and the index is in that order, so the read walks the index itself
+            // (a scan of it, not of the table) instead of scanning the table and sorting.
+            Check.Contains(plan, "USING INDEX ix_sessions_list", "the list read walks the list index: " + plan);
+            Check.NotContains(plan, "TEMP B-TREE", "the ordered index means no sort: " + plan);
+        });
+
+        r.Add("sqlite: an idle checkpoint leaves an empty WAL alone, and takes a non-empty one only when quiet", () =>
+        {
+            using var db = Open(out var file);
+            db.Execute("CREATE TABLE t(x)");
+            db.Execute("INSERT INTO t VALUES(1)");
+            db.Execute("PRAGMA wal_checkpoint(TRUNCATE)");
+            Check.Equal(0, new FileInfo(file + "-wal").Length, "the WAL is empty");
+
+            db.LastActivity = 0;   // long quiet
+            db.IdleCheckpoint(null);
+            Check.Equal(0, db.LastActivity, "an empty WAL is not activity: the checkpoint that would refresh it is the one that never comes");
+            Check.Equal(0, new FileInfo(file + "-wal").Length, "and nothing was written into it");
+
+            db.Execute("INSERT INTO t VALUES(2)");
+            Check.True(new FileInfo(file + "-wal").Length > 0, "the write left the WAL non-empty");
+            db.LastActivity = 0;
+            db.IdleCheckpoint(null);
+            Check.Equal(0, new FileInfo(file + "-wal").Length, "a quiet database with a WAL to empty is checkpointed");
+            Check.Equal(0, db.LastActivity, "the checkpoint itself counts as no activity: only statements make the database busy");
+        });
     }
 }

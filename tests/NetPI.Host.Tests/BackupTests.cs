@@ -317,6 +317,164 @@ public static class BackupTests
             }
             finally { await plugin.StopAsync(default); scope.DisposeAll(); }
         });
+
+        r.Add("backup: retention lets go of the idea images a snapshot carried, once the home has none", async () =>
+        {
+            var home = T.TempDir("backup-images");
+            await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
+            var scope = new PluginScope("netpi.backup", kernel.Log);
+            var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
+            var plugin = new BackupPlugin();
+            kernel.Settings.Set("backup.keepCount", JsonValue.Create(1));
+            await plugin.StartAsync(ctx, default);
+            try
+            {
+                // A snapshot taken while the home holds an idea image: the image travels in it as a file of its own.
+                var images = Path.Combine(home, "idea-images");
+                Directory.CreateDirectory(images);
+                File.WriteAllBytes(Path.Combine(images, "pic.png"), [1, 2, 3]);
+                var withImage = await plugin.CreateAsync(ctx, true, default);
+                Check.True(withImage["files"]!.AsObject().ContainsKey("idea-images.pic.png"), "the snapshot carries the image");
+
+                // The picture is deleted and a newer snapshot taken: the old one is past the count, and its one extra
+                // file is an image the home no longer has — exactly what retention lets go of, not a reason to keep it.
+                File.Delete(Path.Combine(images, "pic.png"));
+                var after = await plugin.CreateAsync(ctx, true, default);
+                Check.False(Directory.Exists(withImage["path"]!.GetValue<string>()),
+                    "the image the home no longer has does not keep its snapshot");
+                Check.True(Directory.Exists(after["path"]!.GetValue<string>()), "and the newer one stays");
+            }
+            finally { await plugin.StopAsync(default); scope.DisposeAll(); }
+        });
+
+        r.Add("backup: a snapshot holding a name that is not a file is kept whole, and the backup that meets it completes", async () =>
+        {
+            var home = T.TempDir("backup-guard");
+            await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
+            var scope = new PluginScope("netpi.backup", kernel.Log);
+            var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
+            var plugin = new BackupPlugin();
+            kernel.Settings.Set("backup.keepCount", JsonValue.Create(1));
+            await plugin.StartAsync(ctx, default);
+            try
+            {
+                var first = await plugin.CreateAsync(ctx, true, default);
+                var path = first["path"]!.GetValue<string>();
+                File.Delete(Path.Combine(path, "netpi.db"));
+                Directory.CreateDirectory(Path.Combine(path, "netpi.db"));   // the store's own name, as a directory
+                var second = await plugin.CreateAsync(ctx, true, default);
+                Check.True(Directory.Exists(second["path"]!.GetValue<string>()), "the new snapshot lands");
+                Check.True(Directory.Exists(Path.Combine(path, "netpi.db")),
+                    "the old snapshot is kept whole (a half-deletion is not a deletion), not removed");
+            }
+            finally { await plugin.StopAsync(default); scope.DisposeAll(); }
+        });
+
+        r.Add("backup: retention keeps the newest of the automatic snapshots, the oldest goes first", async () =>
+        {
+            var home = T.TempDir("backup-order");
+            await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
+            var scope = new PluginScope("netpi.backup", kernel.Log);
+            var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
+            var plugin = new BackupPlugin();
+            kernel.Settings.Set("backup.keepCount", JsonValue.Create(2));
+            await plugin.StartAsync(ctx, default);
+            try
+            {
+                var a = await plugin.CreateAsync(ctx, true, default);
+                var b = await plugin.CreateAsync(ctx, true, default);
+                var c = await plugin.CreateAsync(ctx, true, default);
+                Check.False(Directory.Exists(a["path"]!.GetValue<string>()), "the oldest is past the count");
+                Check.True(Directory.Exists(b["path"]!.GetValue<string>()), "the middle one stays");
+                Check.True(Directory.Exists(c["path"]!.GetValue<string>()), "and the newest one");
+                Check.Equal(2, BackupPlugin.List(home).Count(), "two snapshots left");
+            }
+            finally { await plugin.StopAsync(default); scope.DisposeAll(); }
+        });
+
+        r.Add("backup: two backups at once both complete: the gate serializes them, and neither snapshot is damaged", async () =>
+        {
+            var home = T.TempDir("backup-concurrent");
+            await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
+            var scope = new PluginScope("netpi.backup", kernel.Log);
+            var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
+            var plugin = new BackupPlugin();
+            kernel.Settings.Set("backup.keepCount", JsonValue.Create(2));
+            await plugin.StartAsync(ctx, default);
+            try
+            {
+                var first = Task.Run(() => plugin.CreateAsync(ctx, true, default));
+                var second = Task.Run(() => plugin.CreateAsync(ctx, true, default));
+                var both = await Task.WhenAll(first, second);
+                Check.True(both[0]["id"]!.GetValue<string>() != both[1]["id"]!.GetValue<string>(), "two distinct snapshots");
+                foreach (var snapshot in both)
+                {
+                    BackupPlugin.Verify(home, snapshot["id"]!.GetValue<string>());
+                    Check.True(Directory.Exists(snapshot["path"]!.GetValue<string>()), "it is still there");
+                }
+            }
+            finally { await plugin.StopAsync(default); scope.DisposeAll(); }
+        });
+
+        r.Add("backup: the restore checks the folder against its manifest before it writes anything", async () =>
+        {
+            var repo = FindRepo();
+            var home = T.TempDir("restore-folder");
+
+            // A snapshot made by hand: the manifest names exactly the files in the folder, with their checksums.
+            string Make(string folder, string manifestId, string? extraFile = null)
+            {
+                var path = Path.Combine(home, folder);
+                Directory.CreateDirectory(path);
+                var files = new JsonObject();
+                foreach (var (name, content) in new[] { ("netpi.db", "the store"), ("settings.json", "{}") })
+                {
+                    File.WriteAllText(Path.Combine(path, name), content);
+                    files[name] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
+                }
+                if (extraFile is not null) File.WriteAllText(Path.Combine(path, extraFile), "not in the manifest");
+                File.WriteAllText(Path.Combine(path, "manifest.json"), new JsonObject
+                {
+                    ["version"] = 1, ["id"] = manifestId, ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"), ["automatic"] = true,
+                    ["provider"] = "memory", ["files"] = files,
+                }.ToJsonString());
+                return path;
+            }
+            async Task<(int Exit, string Error)> Restore(string snapshot, string destination)
+            {
+                var info = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+                info.ArgumentList.Add(Path.Combine(repo, "scripts", "restore-backup.mjs"));
+                info.ArgumentList.Add(snapshot);
+                info.ArgumentList.Add(destination);
+                using var process = Process.Start(info)!;
+                var output = process.StandardOutput.ReadToEndAsync();
+                var error = process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                var stderr = await error;
+                await output;
+                return (process.ExitCode, stderr.Trim());
+            }
+
+            // The complete snapshot: the manifest is the folder's own, and it names every file in it. It restores.
+            var ok = Make("ok", "ok");
+            var (exit0, _) = await Restore(ok, Path.Combine(home, "restored-ok"));
+            Check.Equal(0, exit0, "a snapshot that is what its manifest says restores");
+            Check.True(File.Exists(Path.Combine(home, "restored-ok", "netpi.db")), "with its files");
+
+            // A folder that is not the one its manifest describes: a mix-up is refused before anything is written.
+            var mixed = Make("mixed", "another");
+            var (exit1, err1) = await Restore(mixed, Path.Combine(home, "restored-mixed"));
+            Check.Equal(1, exit1, "a manifest that is not the folder's own is refused: " + err1);
+            Check.Contains(err1, "does not match", err1);
+            Check.False(Directory.Exists(Path.Combine(home, "restored-mixed")), "and nothing was written");
+
+            // A file in the folder that the manifest does not name: not part of the snapshot, and the restore says so.
+            var stray = Make("stray", "stray", extraFile: "evil.bin");
+            var (exit2, err2) = await Restore(stray, Path.Combine(home, "restored-stray"));
+            Check.Equal(1, exit2, "a file nobody names is refused: " + err2);
+            Check.Contains(err2, "evil.bin", err2);
+            Check.False(Directory.Exists(Path.Combine(home, "restored-stray")), "and nothing was written");
+        });
     }
 
     /// <summary>
