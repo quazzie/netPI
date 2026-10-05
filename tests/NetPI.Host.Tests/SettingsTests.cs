@@ -84,6 +84,29 @@ public static class SettingsTests
             Check.True(s.GetNode("providers") is null);
         });
 
+        r.Add("settings: a value on the path is not replaced by an object: a set below it is refused, a removal below it is a no-op", () =>
+        {
+            var file = Path.Combine(T.TempDir("settings"), "settings.json");
+            File.WriteAllText(file, """{ "plugins": { "disabled": ["a"] }, "providers": { "anthropic": { "apiKey": "sk-1" } } }""");
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            var before = File.ReadAllText(file);
+
+            // Used to be replaced by {} without a word, the list (or the key) gone with it.
+            var ex = Check.Throws<ArgumentException>(() => s.Set("plugins.disabled.0", JsonValue.Create("b")), "an array on the path");
+            Check.Contains(ex.Message, "'disabled'", "it names the segment that is not an object");
+            Check.Throws<ArgumentException>(() => s.Set("providers.anthropic.apiKey.x", JsonValue.Create(1)), "a string on the path");
+            Check.Equal("a", s.Get<List<string>>("plugins.disabled")![0], "the list is as it was");
+            Check.Equal("sk-1", s.Get<string>("providers.anthropic.apiKey"), "and so is the key");
+            Check.Equal(before, File.ReadAllText(file), "nothing reached the disk");
+
+            // Nothing can be below a value, so there is nothing to remove: no error, no change.
+            s.Set("providers.anthropic.apiKey.x", null);
+            s.Set("plugins.disabled.0", null);
+            Check.Equal("sk-1", s.Get<string>("providers.anthropic.apiKey"));
+            Check.Equal(1, s.Get<List<string>>("plugins.disabled")!.Count);
+            Check.Equal(before, File.ReadAllText(file));
+        });
+
         r.Add("settings: changes publish settings.changed; external edits reload; invalid JSON keeps the last good doc", async () =>
         {
             var file = Path.Combine(T.TempDir("settings"), "settings.json");

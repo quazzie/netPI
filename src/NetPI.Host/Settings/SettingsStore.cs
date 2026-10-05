@@ -136,12 +136,17 @@ internal sealed class SettingsStore : ISettings, IDisposable
                 var parent = _root;
                 for (var i = 0; i < segments.Length - 1; i++)
                 {
-                    if (parent[segments[i]] is JsonObject child)
+                    var node = parent[segments[i]];
+                    if (node is JsonObject child)
                     {
                         parent = child;
                         continue;
                     }
-                    if (value is null) return; // removing below a missing branch: nothing to do
+                    if (value is null) return; // removing below a missing branch (or a value, which has no keys): nothing to do
+                    // A string or an array on the path (plugins.disabled.0, providers.x.apiKey.y) is the caller's mistake: it
+                    // used to be replaced by {} without a word, taking the value with it.
+                    if (node is not null)
+                        throw new ArgumentException($"Settings path '{path}': '{segments[i]}' is not an object (it is {node.GetValueKind().ToString().ToLowerInvariant()}), so nothing can be set below it");
                     var created = new JsonObject();
                     parent[segments[i]] = created;
                     parent = created;
