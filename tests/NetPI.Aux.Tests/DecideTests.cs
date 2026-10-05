@@ -205,6 +205,22 @@ public static class DecideTests
             Check.Equal(0.97, answers["bad"]!["noul"]!.GetValue<double>());
         });
 
+        r.Add("decide: decide.ask refuses a malformed question as a bad request naming it, and sends nothing", async () =>
+        {
+            var seen = new List<JsonObject>();
+            await using var kev = await FakeKev(seen);
+            var env = new Env();
+            await env.StartAsync(kev.Url);
+            var bad = await Check.ThrowsAsync<RpcException>(() => env.Ctx.Rpc.InvokeAsync("decide.ask",
+                new { state = "ERR boom", questions = new { pick = new { type = "choice", options = new[] { "only" } } } }));
+            Check.Equal("bad_request", bad.Code);
+            Check.Contains(bad.Message, "'pick'", "the bad question is named");
+            Check.Contains(bad.Message, "needs at least 2 options");
+            var notObject = await Check.ThrowsAsync<RpcException>(() => env.Ctx.Rpc.InvokeAsync("decide.ask", new { state = "x", questions = "not an object" }));
+            Check.Equal("bad_request", notObject.Code);
+            Check.Equal(0, seen.Count, "nothing reached the server");
+        });
+
         r.Add("decide: the RPC decide.decision posts NInfer's /v1/decision as given and keeps errors with their request id", async () =>
         {
             var seen = new List<JsonObject>();

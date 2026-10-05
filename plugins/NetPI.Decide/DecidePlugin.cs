@@ -42,12 +42,17 @@ public sealed class DecidePlugin : INetPiPlugin
         {
             var questions = r.Prop("questions") ?? throw new RpcException("bad_request", "Missing parameter 'questions'");
             var state = r.Prop("state") ?? throw new RpcException("bad_request", "Missing parameter 'state'");
+            if (state.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) throw new RpcException("bad_request", "Missing parameter 'state'");
+            // A malformed question is the caller's mistake, named before anything is sent (the same check the tool makes).
+            try { DecideTool.NormalizeQuestions(questions); }
+            catch (ArgumentException ex) { throw new RpcException("bad_request", ex.Message); }
             try
             {
                 return await client.EvaluateAsync(new DecisionRequest { Model = r.Str("model"), Body = new JsonObject
                     { ["state"] = JsonNode.Parse(state.GetRawText()), ["questions"] = JsonNode.Parse(questions.GetRawText()) } }, rct).ConfigureAwait(false);
             }
             catch (DecisionException ex) { throw new RpcException(ex.Code, ex.Message); }
+            catch (ArgumentException ex) { throw new RpcException("bad_request", ex.Message); }
         }, "Ask a decision model typed questions about one state: { state, questions, model? } → answers (TypeSafe shape)");
         context.Rpc.Register("decide.decision", async (r, rct) =>
         {
