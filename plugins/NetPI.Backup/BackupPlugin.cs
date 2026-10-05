@@ -188,8 +188,11 @@ public sealed class BackupPlugin : INetPiPlugin
                 // deleted: an older snapshot's ideas files are still the only copy of anything, if the user is on one.
                 // The idea images it carries do not count: a picture deleted since is exactly what retention lets go of,
                 // or every snapshot taken while it existed would be kept past the count, each a full copy of the store.
+                // A name that is not a regular file at all (a directory, a broken link) counts as a file the build
+                // would not write, so the snapshot is kept rather than half-deleted and the backup that would delete
+                // it is not interrupted in the middle of one.
                 if (Directory.EnumerateFileSystemEntries(path).Select(p => Path.GetFileName(p))
-                    .Any(f => !expected.Contains(f) && !f.StartsWith(IdeaImagesPrefix, StringComparison.Ordinal))) continue;
+                    .Any(f => !File.Exists(Path.Combine(path, f)) || (!expected.Contains(f) && !f.StartsWith(IdeaImagesPrefix, StringComparison.Ordinal)))) continue;
                 foreach (var file in Directory.EnumerateFiles(path)) File.Delete(file);
                 Directory.Delete(path);
             }
