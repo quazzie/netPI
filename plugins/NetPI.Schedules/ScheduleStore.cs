@@ -29,6 +29,19 @@ internal sealed class ScheduleStore(IPluginData data)
 
     public void Put(JsonObject doc) => _schedules.Put(doc["id"]!.GetValue<string>(), doc);
 
+    /// <summary>
+    /// Read, change and write a schedule as one unit (the compare-and-set of the port): a tick's <see cref="ClaimDue"/>
+    /// cannot slip between the read and the write, so its claim is never overwritten. <paramref name="change"/> runs
+    /// inside the transaction and must not await or call into other plugins.
+    /// </summary>
+    public JsonObject Change(string id, Action<JsonObject> change) => data.Transaction(() =>
+    {
+        var doc = _schedules.Get(id) ?? throw new RpcException("not_found", $"Schedule {id} not found");
+        change(doc);
+        _schedules.Put(id, doc);
+        return doc;
+    });
+
     public bool Delete(string id) => data.Transaction(() =>
     {
         _runs.DeleteWhere(new DataQuery().Eq("scheduleId", id));

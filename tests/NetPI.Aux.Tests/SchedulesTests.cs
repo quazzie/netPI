@@ -297,6 +297,46 @@ public static class SchedulesTests
             Check.Equal(1, env.Ctx.SessionsFake.Sessions.Count, "the chat its run started stays");
         });
 
+        r.Add("schedules: an update that waits on agents.list while a tick claims the due run keeps the claim — the run is not claimed twice", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var agents = new JsonArray { new JsonObject { ["key"] = "home", ["available"] = true, ["free"] = true } };
+            var asked = 0;
+            // the first agents.list (the update's own check) runs a tick before it answers: the due run is claimed meanwhile
+            env.Ctx.Rpc.Register("agents.list", async (_, _) =>
+            {
+                if (asked++ == 0) await env.Tick();
+                return agents.DeepClone();
+            });
+            env.Ctx.Rpc.Register("agents.use", (_, _) => Task.FromResult<object?>(null));
+            var id = S((await env.Add(new { kind = "every", minutes = 30 }))["id"])!;
+            env.Time.Advance(TimeSpan.FromMinutes(30));   // due now
+
+            var updated = (await env.Ctx.RpcFake.CallAsync("schedules.update", new { id, agent = "home" }))!;
+            Check.Equal(1, env.Runtime.Sent.Count, "the tick inside the update's wait started the due run");
+            Check.Equal("home", S(updated["agent"]), "the update landed");
+            Check.Equal(ScheduleStoreIso(env.Time.Now.AddMinutes(30)), S(updated["nextRunAt"]), "with the next run the claim moved on to, not the stale one");
+            Check.Equal("ran", S(updated["lastStatus"]), "and the run the tick recorded");
+            Check.Equal(0, await env.Tick(), "the same due time is not claimed again");
+            Check.Equal(1, env.Runtime.Sent.Count);
+        });
+
+        r.Add("schedules: missedGraceHours 0 still allows the minute the timer needs; later than that is missed", async () =>
+        {
+            var env = await new Env().StartAsync();
+            env.Ctx.SettingsFake.Set("schedules.missedGraceHours", 0);
+            var id = S((await env.Add(new { kind = "every", minutes = 30 }))["id"])!;
+            env.Time.Advance(TimeSpan.FromMinutes(30) + TimeSpan.FromSeconds(5));   // the loop woke five seconds late
+            Check.Equal(1, await env.Tick(), "a run a few seconds late is a late loop, not downtime");
+            Check.Equal("ran", S((await env.Get(id))["lastStatus"]));
+
+            env.Time.Advance(TimeSpan.FromHours(2));   // the next run fell due an hour and a half ago
+            Check.Equal(0, await env.Tick(), "past the minute it is missed");
+            var missed = await env.Get(id);
+            Check.Equal("missed", S(missed["lastStatus"]));
+            Check.Contains(S(missed["lastReason"]), "1 min", "the reason names the grace that applied");
+        });
+
         r.Add("schedules: requests are checked against the declared parameters", async () =>
         {
             var env = await new Env().StartAsync();

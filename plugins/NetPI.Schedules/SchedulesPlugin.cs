@@ -39,7 +39,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Bool("schedules.enabled", "Run schedules", true, "Off: nothing starts; due runs wait, and the missed-run rule applies when it is switched back on."),
-                SettingInfo.Int("schedules.missedGraceHours", "Late runs within", 24, "A run that fell due while NetPI was not running still starts if it is at most this late; later, it is recorded as missed.", 0, 720, "hours"),
+                SettingInfo.Int("schedules.missedGraceHours", "Late runs within", 24, "A run that fell due while NetPI was not running still starts if it is at most this late; later, it is recorded as missed. 0 still allows the minute the timer needs.", 0, 720, "hours"),
                 SettingInfo.Int("schedules.minIntervalMinutes", "Shortest interval", 5, "The smallest N an every-N-minutes schedule may have.", 1, 1440, "min"),
                 SettingInfo.Int("schedules.maxRunsPerDay", "Runs per schedule per day", 48, "A schedule that started this many runs in the last 24 hours skips until the oldest is a day old.", 1, 1440),
             ],
@@ -146,34 +146,43 @@ public sealed class SchedulesPlugin : INetPiPlugin
             ]),
             async (req, ct) =>
             {
-                var now = _time.GetUtcNow();
-                var doc = Require(store, req.Required("id"));
-                var wasEnabled = ScheduleStore.Enabled(doc);
-                if (req.Str("prompt") is { } prompt)
+                var id = req.Required("id");
+                Require(store, id);
+                // What the request names is resolved first (an agent is checked over an awaited RPC, and nothing may await
+                // inside a transaction); the schedule is then read, changed and written as one unit, so a tick that
+                // claims a due run meanwhile is not overwritten with the document from before the claim — which would
+                // have the same due time claimed again.
+                var project = req.Str("projectId") is { } p ? (p.Length == 0 ? null : await ProjectAsync(ctx, p).ConfigureAwait(false)) : null;
+                var agent = req.Str("agent") is { } a ? (a.Length == 0 ? null : await AgentAsync(ctx, a, ct).ConfigureAwait(false)) : null;
+                var updated = store.Change(id, doc =>
                 {
-                    if (prompt.Trim().Length == 0) throw new RpcException("bad_request", "the prompt cannot be empty");
-                    doc["prompt"] = prompt.Trim();
-                }
-                if (req.Str("name") is { } name && name.Trim().Length > 0) doc["name"] = name.Trim();
-                if (req.Str("projectId") is { } project) doc["projectId"] = project.Length == 0 ? null : await ProjectAsync(ctx, project).ConfigureAwait(false);
-                if (req.Str("agent") is { } agent) doc["agent"] = agent.Length == 0 ? null : await AgentAsync(ctx, agent, ct).ConfigureAwait(false);
-                var cadenceChanged = req.Prop("cadence") is not null;
-                var cadence = cadenceChanged ? Cadence.Parse(NetPiJson.ToNode(req.Prop("cadence")), MinMinutes(ctx)) : ScheduleStore.CadenceOf(doc);
-                if (cadenceChanged)
-                {
-                    if (cadence.Kind == Cadence.Once && cadence.At <= now) throw new RpcException("bad_request", "a once cadence must be in the future");
-                    doc["cadence"] = cadence.ToJson();
-                    doc["finishedAt"] = null;
-                }
-                var enabled = req.Bool("enabled") ?? (cadenceChanged || wasEnabled);
-                if (enabled && doc["finishedAt"] is not null) throw new RpcException("bad_request", "this once schedule has run; give it a new cadence to run again");
-                doc["enabled"] = enabled;
-                // a new cadence or a resume counts from now: a paused schedule does not owe the runs it slept through
-                if (cadenceChanged || (enabled && !wasEnabled)) ScheduleStore.SetNext(doc, cadence.First(now));
-                doc["updatedAt"] = ScheduleStore.Iso(now);
-                store.Put(doc);
-                Changed(ctx, doc["id"]!.GetValue<string>());
-                return Shown(doc);
+                    var now = _time.GetUtcNow();
+                    var wasEnabled = ScheduleStore.Enabled(doc);
+                    if (req.Str("prompt") is { } prompt)
+                    {
+                        if (prompt.Trim().Length == 0) throw new RpcException("bad_request", "the prompt cannot be empty");
+                        doc["prompt"] = prompt.Trim();
+                    }
+                    if (req.Str("name") is { } name && name.Trim().Length > 0) doc["name"] = name.Trim();
+                    if (req.Str("projectId") is not null) doc["projectId"] = project;
+                    if (req.Str("agent") is not null) doc["agent"] = agent;
+                    var cadenceChanged = req.Prop("cadence") is not null;
+                    var cadence = cadenceChanged ? Cadence.Parse(NetPiJson.ToNode(req.Prop("cadence")), MinMinutes(ctx)) : ScheduleStore.CadenceOf(doc);
+                    if (cadenceChanged)
+                    {
+                        if (cadence.Kind == Cadence.Once && cadence.At <= now) throw new RpcException("bad_request", "a once cadence must be in the future");
+                        doc["cadence"] = cadence.ToJson();
+                        doc["finishedAt"] = null;
+                    }
+                    var enabled = req.Bool("enabled") ?? (cadenceChanged || wasEnabled);
+                    if (enabled && doc["finishedAt"] is not null) throw new RpcException("bad_request", "this once schedule has run; give it a new cadence to run again");
+                    doc["enabled"] = enabled;
+                    // a new cadence or a resume counts from now: a paused schedule does not owe the runs it slept through
+                    if (cadenceChanged || (enabled && !wasEnabled)) ScheduleStore.SetNext(doc, cadence.First(now));
+                    doc["updatedAt"] = ScheduleStore.Iso(now);
+                });
+                Changed(ctx, id);
+                return Shown(updated);
             });
 
         ctx.Rpc.Register(new RpcMethod("schedules.delete", "Delete a schedule and its history: { id } → true. The chats its runs started stay", Params: [RpcParam.Req("id")]),

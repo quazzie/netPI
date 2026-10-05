@@ -15,12 +15,16 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
 {
     public const string Ran = "ran", Skipped = "skipped", Failed = "failed", Missed = "missed";
     public const string ChangedEvent = "schedules.changed", RanEvent = "schedules.ran";
+    /// <summary>The least a run may be late before it is missed: the loop wakes up to a minute after a due time, and
+    /// a run that is a second late was not missed because the host was down.</summary>
+    public static readonly TimeSpan MinGrace = TimeSpan.FromMinutes(1);
 
     /// <summary>Claim what is due and start or skip each one; the number started.</summary>
     public async Task<int> TickAsync(CancellationToken ct)
     {
         var now = time.GetUtcNow();
         var grace = TimeSpan.FromHours(Math.Clamp(ctx.Settings.Get("schedules.missedGraceHours", 24), 0, 24 * 30));
+        if (grace < MinGrace) grace = MinGrace;
         var claims = store.ClaimDue(now, grace);
         if (claims.Count == 0) return 0;
         var started = 0;
@@ -29,7 +33,8 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
             ct.ThrowIfCancellationRequested();
             if (claim.Missed)
             {
-                Finish(claim.Schedule, now, Missed, $"due at {ScheduleStore.Iso(claim.Due)}, more than {grace.TotalHours:0} h ago (schedules.missedGraceHours): the host was not running", null);
+                var late = grace.TotalHours >= 1 ? $"{grace.TotalHours:0} h" : $"{grace.TotalMinutes:0} min";
+                Finish(claim.Schedule, now, Missed, $"due at {ScheduleStore.Iso(claim.Due)}, more than {late} ago (schedules.missedGraceHours): the host was not running", null);
                 continue;
             }
             if ((await StartAsync(claim.Schedule, ct).ConfigureAwait(false)).Status == Ran) started++;
