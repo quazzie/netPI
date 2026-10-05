@@ -15,7 +15,7 @@ kernel knows none of it; `node scripts/core-size.mjs` checks that mechanically. 
 that port (`ctx.Data`), so a second storage provider is a class that implements it and passes the conformance suite.
 See [the plan that made it so](docs/archive/2026-10-02-replaceable-parts.md).
 
-![netPI running three subagents on a local model that serves two at once](docs/images/netpi-subagents.png)
+![netPI: a chat that runs subagents, with the Work panel showing the agents, their queue and this month's spend](docs/images/netpi-subagents.png)
 
 ## Highlights
 
