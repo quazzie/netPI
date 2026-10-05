@@ -1011,7 +1011,7 @@ public sealed class IdeasRepository
             if (edit["title"] is JsonValue t && t.TryGetValue<string>(out var edited) && edited.Trim().Length > 0) title = edited.Trim();
             if (edit["summary"] is JsonValue sv && sv.TryGetValue<string>(out var editedSummary)) summary = editedSummary.Trim();
         }
-        if (string.IsNullOrEmpty(title)) throw new RpcException("bad_request", "An idea needs a title.");
+        if (string.IsNullOrEmpty(title)) throw new IdeaInputException("An idea needs a title.");
 
         var project = card["project"] as JsonObject;
         var sessionId = IdeaOps.Str(card["sessionId"]);

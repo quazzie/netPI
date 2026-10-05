@@ -71,7 +71,7 @@ public sealed partial class IdeaCommitNoticeHook(
 
         // A commit while another one is still waiting to be announced: one notice, naming both, beats two.
         var subject = CommitMessage(IdeaOps.Str(args, "command"), result.Content);
-        run.Items[PendingKey] = Combine(AsPending(run), new Pending(project.Name, Titles(open), subject, project.Id));
+        run.Items[PendingKey] = Combine(AsPending(run), new Pending(project.Name, Titles(open), subject, project.Id)).ToJson();
         return ValueTask.CompletedTask;
     }
 
@@ -379,15 +379,15 @@ public sealed partial class IdeaCommitNoticeHook(
     private static string Unquote(string s) =>
         s.Length >= 2 && ((s[0] == '"' && s[^1] == '"') || (s[0] == '\'' && s[^1] == '\'')) ? s[1..^1] : s;
 
-    private static Pending? AsPending(AgentRunContext run) => run.Items.TryGetValue(PendingKey, out var v) ? v as Pending : null;
+    private static Pending? AsPending(AgentRunContext run) => run.Items.TryGetValue(PendingKey, out var v) && v is JsonObject o ? Pending.FromJson(o) : null;
 
     /// <summary>A pending commit is consumed once: the notice is asked for once, and a lost run does not repeat it.</summary>
     private static bool TakePending(AgentRunContext run, out Pending pending)
     {
         pending = null!;
-        if (!run.Items.TryGetValue(PendingKey, out var v) || v is not Pending found) return false;
+        if (!run.Items.TryGetValue(PendingKey, out var v) || v is not JsonObject found) return false;
         run.Items.Remove(PendingKey);
-        pending = found;
+        pending = Pending.FromJson(found);
         return true;
     }
 
@@ -448,8 +448,24 @@ public sealed partial class IdeaCommitNoticeHook(
     }
 
     /// <summary>The project(s) a pending notice is about, the open ideas it names, and what the commit said (for the
-    /// nearest ideas when there are too many to name).</summary>
-    public sealed record Pending(string Project, List<string> Titles, string? Subject = null, string? ProjectId = null);
+    /// nearest ideas when there are too many to name). The run's flag holds it as plain JSON, never as this record: the
+    /// run context is the host's, and a plugin type kept there would pin this assembly after a reload (docs/PLUGINS.md).</summary>
+    public sealed record Pending(string Project, List<string> Titles, string? Subject = null, string? ProjectId = null)
+    {
+        public JsonObject ToJson() => new()
+        {
+            ["project"] = Project,
+            ["titles"] = new JsonArray(Titles.Select(t => (JsonNode)JsonValue.Create(t)!).ToArray()),
+            ["subject"] = Subject,
+            ["projectId"] = ProjectId,
+        };
+
+        public static Pending FromJson(JsonObject o) => new(
+            IdeaOps.Str(o["project"]) ?? "",
+            (o["titles"] as JsonArray ?? []).Select(t => IdeaOps.Str(t)).OfType<string>().ToList(),
+            IdeaOps.Str(o["subject"]),
+            IdeaOps.Str(o["projectId"]));
+    }
 
     /// <summary>The global options that take a value, so the value is not mistaken for the subcommand.</summary>
     private static readonly HashSet<string> GlobalValueOptions = new(StringComparer.OrdinalIgnoreCase)

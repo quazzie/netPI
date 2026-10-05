@@ -109,6 +109,18 @@ public static class IdeasStorageTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("cards: a bad edit on ideas.resolve is refused the way a bad patch on ideas.update is (bad_request), and nothing is saved", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var card = env.AddCard(title: "");   // a card without a title: the edit has to supply one
+            var (code, message) = await env.Try("ideas.resolve", new JsonObject { ["id"] = card, ["action"] = "save", ["edit"] = new JsonObject { ["title"] = "   " } });
+            Check.Equal("bad_request", code);
+            Check.Contains(message, "needs a title");
+            Check.Equal(0, (await env.Titles()).Count, "nothing was saved");
+            Check.Equal(1, (await env.CardIds()).Count, "and the card is still waiting");
+        });
+
         // ---------------------------------------------------------------- the review's three gaps, as they are now
 
         r.Add("review: a rejected patch leaves no trace, and no later write commits it", async () =>

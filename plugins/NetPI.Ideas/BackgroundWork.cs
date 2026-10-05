@@ -1,6 +1,8 @@
-namespace NetPI;
+namespace NetPI.Ideas;
 
-public sealed class BackgroundWorkInfo
+/// <summary>One background check as <c>ideas.work</c> lists it. Only this plugin reads and writes the list (the Work
+/// tab asks over RPC), so it is the plugin's own, not a shared contract.</summary>
+internal sealed class BackgroundWorkInfo
 {
     public string Id { get; set; } = "";
     public string Purpose { get; set; } = "";
@@ -13,7 +15,7 @@ public sealed class BackgroundWorkInfo
     public DateTimeOffset? FinishedAt { get; set; }
 }
 
-public interface IBackgroundWork
+internal interface IBackgroundWork
 {
     string Begin(string purpose, string? model, string? sessionId, string? projectId);
     void Set(string id, string status, string? reason = null);

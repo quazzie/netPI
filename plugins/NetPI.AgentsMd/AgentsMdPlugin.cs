@@ -246,7 +246,8 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
         public bool Any => Changed.Count > 0 || Removed.Count > 0;
     }
 
-    private readonly ConcurrentDictionary<string, object> _gates = new(StringComparer.Ordinal);
+    /// <summary>One gate per session, released with the session (a deleted session is announced to no one).</summary>
+    private readonly SessionState<object> _gates = new(ctx.Events);
 
     /// <summary>After compaction (-100) and the working-directory notice (500).</summary>
     public int Order => 510;
@@ -270,7 +271,7 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
     /// <summary>Re-reads the session under a per-session lock (the event and the hook can race) and appends a notice if needed.</summary>
     internal bool Announce(string sessionId)
     {
-        lock (_gates.GetOrAdd(sessionId, _ => new object()))
+        lock (_gates.GetOrAdd(sessionId, static _ => new object()))
         {
             var session = ctx.Sessions.GetSession(sessionId);
             if (session is null) return false;

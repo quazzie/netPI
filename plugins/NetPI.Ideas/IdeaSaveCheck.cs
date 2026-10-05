@@ -116,9 +116,9 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
         var claim = ClaimAsync(sessionId, users, rev, ct);
         if (!claim.Started) return Result(claim.Reason);
 
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
-        ctx.Track(cts);
-        _ = Task.Run(() => DeferredRunAsync(session, messages, turn, claim.Token, cts.Token), CancellationToken.None);
+        // The plugin's own stop token is the only cancellation there is: a linked source would be one more tracked
+        // object per closed tab, and nothing would ever dispose it.
+        _ = Task.Run(() => DeferredRunAsync(session, messages, turn, claim.Token, ctx.Stopping), CancellationToken.None);
         return Result(turn == Turn.Open ? "running" : "started");
     }
 
@@ -509,14 +509,9 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
         });
     });
 
-    /// <summary>A storage failure is the caller's answer, not a crash.</summary>
-    private static async Task<object?> Guard(Func<Task<object?>> body)
-    {
-        try { return await body().ConfigureAwait(false); }
-        catch (RpcException) { throw; }
-        catch (IdeasConflictException ex) { throw new RpcException("conflict", ex.Message); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new RpcException("io_error", ex.Message); }
-    }
+    /// <summary>The one mapping of the repository's exceptions to RPC codes (<see cref="IdeasRpc.Guard"/>): a bad edit on a
+    /// card is refused the way a bad patch on an idea is.</summary>
+    private static Task<object?> Guard(Func<Task<object?>> body) => IdeasRpc.Guard(body);
 
     private void PublishResolved(string? id, string? action, JsonNode? card) =>
         ctx.Events.Publish(ResolvedEvent, new JsonObject { ["id"] = id, ["action"] = action, ["card"] = card?.DeepClone() });

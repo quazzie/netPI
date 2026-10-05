@@ -286,7 +286,9 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
             "Take a snapshot in: { json | path, mode?: \"merge\" (default) | \"replace\" | \"validate\" } → { ideas, cards, conflicts, imported? } — merge never overwrites what is already here");
     }
 
-    private static async Task<object?> Guard(Func<Task<object?>> body)
+    /// <summary>The repository's exceptions as RPC codes: a storage failure or a bad input is the caller's answer, not a crash.
+    /// The card answers (<see cref="IdeaSaveCheck"/>) go through the same mapping.</summary>
+    internal static async Task<object?> Guard(Func<Task<object?>> body)
     {
         try { return await body().ConfigureAwait(false); }
         catch (IdeaInputException ex) { throw new RpcException("bad_request", ex.Message); }
