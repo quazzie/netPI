@@ -52,6 +52,9 @@ export async function restoreBackup(backup, destination) {
   destination = path.resolve(destination);
   const manifest = JSON.parse(await fs.readFile(path.join(backup, 'manifest.json'), 'utf8'));
   if (manifest.version !== 1) throw new Error('Unsupported backup version');
+  // The snapshot's own name: the id the store gave it. A folder whose manifest is not its own is a mix-up, not a restore.
+  if (typeof manifest.id !== 'string' || manifest.id !== path.basename(backup))
+    throw new Error(`The manifest's id ${JSON.stringify(manifest.id ?? null)} does not match the snapshot folder ${JSON.stringify(path.basename(backup))}`);
   // Which store wrote the snapshot decides what is checked below: the provider named the files it wrote, and only the
   // one that ships netpi.db can be checked for its header here. A manifest without it is from a build that did not
   // name the provider, and nothing here can say what reads its files.
@@ -70,6 +73,12 @@ export async function restoreBackup(backup, destination) {
     if (hash !== expected.toLowerCase()) throw new Error(`Checksum mismatch: ${name}`);
     verified.add(name);
   }
+  // Every name in the folder is the manifest's, each verified above. A file nobody names is not part of the snapshot,
+  // and it has nothing to do with a home being built from it.
+  const named = new Set(Object.keys(listed));
+  named.add('manifest.json');
+  for (const entry of await fs.readdir(backup))
+    if (!named.has(entry)) throw new Error(`The snapshot contains ${JSON.stringify(entry)}, which the manifest does not name`);
   if (provider === 'sqlite') {
     if (!verified.has('netpi.db')) throw new Error('The snapshot has no netpi.db');
     if ((await head(inside(backup, 'netpi.db'), 16)).toString('ascii') !== 'SQLite format 3\0') throw new Error('Invalid SQLite database');
