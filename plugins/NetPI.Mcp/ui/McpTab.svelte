@@ -51,13 +51,14 @@
     finally { busy = false; }
   }
   async function exposure(server, tool, enabled) {
-    const config = structuredClone(server.config);
+    // the servers state is a $state proxy, which structuredClone cannot take: the config is JSON either way
+    const config = JSON.parse(JSON.stringify(server.config));
     const current = config.tools ?? tools.map(t => t.name);
     config.tools = enabled ? [...new Set([...current, tool.name])] : current.filter(n => n !== tool.name);
     await action('mcp.save', { id: server.id, config });
   }
   async function override(server, tool, key, enabled) {
-    const config = structuredClone(server.config);
+    const config = JSON.parse(JSON.stringify(server.config)); // a $state proxy, see exposure()
     config[key] = [...new Set(enabled ? [...(config[key] ?? []), tool.name] : (config[key] ?? []).filter(n => n !== tool.name))];
     await action('mcp.save', { id: server.id, config });
   }
@@ -84,7 +85,7 @@
       <div class="head">
         <button class="pick" onclick={() => choose(server)}>
           <span class="np-strong np-ellipsis">{server.id}</span>
-          <span class="np-meta"><span>{server.status ?? 'invalid'}</span><span>{server.toolCount ?? 0} tools</span></span>
+          <span class="np-meta">{server.status ?? 'invalid'} · {server.toolCount ?? 0} tools</span>
         </button>
         <Menu items={actions(server)} minWidth={172}>
           {#snippet trigger({ toggle })}
