@@ -265,8 +265,7 @@ public static class SubagentWorkspaceTests
         Check.Equal(null, SessionWorkspace.Of(child!), "without the workspace plugin nothing should be bound");
     }
 
-    private static bool IsChild(ModelRequest r) =>
-        r.Messages.Any(m => m.Role == MessageRole.User && m.Text.Contains("You are \""));
+    private static bool IsChild(ModelRequest r) => r.SystemPrompt?.Contains("a subagent working for") == true;
 
     /// <summary>The same as <see cref="Check.Equal"/> for values that must differ.</summary>
     private static void NotEqual<T>(T unexpected, T actual, string? message = null) => Check.False(EqualityComparer<T>.Default.Equals(unexpected, actual), message ?? $"should differ from: {actual}");
