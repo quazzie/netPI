@@ -1,5 +1,5 @@
 <script>
-  import { Menu, IconButton, useRefresh } from '@netpi/kit';
+  import { Menu, IconButton, SearchInput, useRefresh } from '@netpi/kit';
   let { ctx } = $props();
   let servers = $state([]), tools = $state([]), selected = $state(''), error = $state(''), busy = $state(false);
   let editing = $state(false), id = $state(''), draft = $state(''), query = $state('');
@@ -63,43 +63,51 @@
   }
 </script>
 
-<div class="mcp">
-  <header><strong>MCP servers</strong><button onclick={() => edit(null)} disabled={busy}>Add server</button></header>
-  <p class="hint">External tools are discovered on demand. Only search and call schemas enter a chat by default.</p>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+<div class="mcp np-scroll">
+  <div class="np-section-title">
+    <span class="np-section-label">MCP servers</span>
+    <span class="np-section-actions"><button class="np-btn np-btn-sm" onclick={() => edit(null)} disabled={busy}>Add server</button></span>
+  </div>
+  <p class="np-dim np-small hint">External tools are discovered on demand. Only search and call schemas enter a chat by default.</p>
+  {#if error}<p class="err np-small" role="alert">{error}</p>{/if}
   {#if editing}
-    <form onsubmit={(e) => { e.preventDefault(); save(); }}>
-      <label>Server id<input bind:value={id} required pattern={'[A-Za-z0-9_-]{1,48}'} /></label>
-      <label>Configuration<textarea bind:value={draft} rows="16" spellcheck="false"></textarea></label>
-      <p class="hint">stdio: command, args and absolute cwd. HTTP: transport "http" and url. env and headerEnv map names to environment-variable names; credentials stay outside settings. tools restricts remote tool names; pinned and readOnly contain remote tool names.</p>
-      <div class="actions"><button type="submit" disabled={busy}>Save</button><button type="button" onclick={() => editing = false} disabled={busy}>Cancel</button></div>
+    <form class="np-stack" onsubmit={(e) => { e.preventDefault(); save(); }}>
+      <label class="field">Server id<input class="np-input" bind:value={id} required pattern={'[A-Za-z0-9_-]{1,48}'} /></label>
+      <label class="field">Configuration<textarea class="np-input np-mono" bind:value={draft} rows="16" spellcheck="false"></textarea></label>
+      <p class="np-dim np-small hint">stdio: command, args and absolute cwd. HTTP: transport "http" and url. env and headerEnv map names to environment-variable names; credentials stay outside settings. tools restricts remote tool names; pinned and readOnly contain remote tool names.</p>
+      <div class="np-hstack-sm"><button class="np-btn np-btn-sm np-btn-primary" type="submit" disabled={busy}>Save</button><button class="np-btn np-btn-sm" type="button" onclick={() => editing = false} disabled={busy}>Cancel</button></div>
     </form>
   {/if}
-  {#if !servers.length && !editing}<p>No servers configured.</p>{/if}
+  {#if !servers.length && !editing}<p class="np-empty">No servers configured.</p>{/if}
   {#each servers as server (server.id)}
-    <section class:chosen={selected === server.id}>
+    <section class="server" class:chosen={selected === server.id}>
       <div class="head">
-        <button class="server" onclick={() => choose(server)}><strong>{server.id}</strong><span>{server.status ?? 'invalid'} · {server.toolCount ?? 0} tools</span></button>
+        <button class="pick" onclick={() => choose(server)}>
+          <span class="np-strong np-ellipsis">{server.id}</span>
+          <span class="np-meta"><span>{server.status ?? 'invalid'}</span><span>{server.toolCount ?? 0} tools</span></span>
+        </button>
         <Menu items={actions(server)} minWidth={172}>
           {#snippet trigger({ toggle })}
             <IconButton icon="more" size="sm" title="Actions for {server.id}" onclick={toggle} disabled={busy} />
           {/snippet}
         </Menu>
       </div>
-      {#if server.error}<p class="error">{server.error}</p>{/if}
-      {#each server.rejected ?? [] as rejected}<p class="error">{rejected.name}: {rejected.error}</p>{/each}
+      {#if server.error}<p class="err np-small">{server.error}</p>{/if}
+      {#each server.rejected ?? [] as rejected (rejected.name)}<p class="err np-small">{rejected.name}: {rejected.error}</p>{/each}
       {#if selected === server.id}
-        <input aria-label="Filter tools" placeholder="Filter tools" bind:value={query} />
+        <SearchInput bind:value={query} placeholder="Filter tools" aria-label="Filter tools" />
         {#each filtered as tool (tool.id)}
-          <details>
+          <details class="tool">
             <summary>{tool.name}</summary>
-            <p>{tool.description}</p>
-            <code>{tool.id}</code>
-            <label class="check"><input type="checkbox" checked={tool.exposed} disabled={busy} onchange={(e) => exposure(server, tool, e.currentTarget.checked)} />Expose tool</label>
-            <label class="check"><input type="checkbox" checked={!tool.deferred} disabled={busy} onchange={(e) => override(server, tool, 'pinned', e.currentTarget.checked)} />Pin schema in chat ({JSON.stringify(tool.schema).length} chars)</label>
-            <label class="check"><input type="checkbox" checked={tool.readOnly} disabled={busy} onchange={(e) => override(server, tool, 'readOnly', e.currentTarget.checked)} />Allow concurrent read-only calls</label>
-            <pre>{JSON.stringify(tool.schema, null, 2)}</pre>
+            <p class="np-small desc">{tool.description}</p>
+            <code class="np-mono np-small np-dim">{tool.id}</code>
+            <label class="np-check np-small"><input type="checkbox" checked={tool.exposed} disabled={busy} onchange={(e) => exposure(server, tool, e.currentTarget.checked)} />Expose tool</label>
+            <label class="np-check np-small"><input type="checkbox" checked={!tool.deferred} disabled={busy} onchange={(e) => override(server, tool, 'pinned', e.currentTarget.checked)} />Pin schema in chat ({JSON.stringify(tool.schema).length} chars)</label>
+            <label class="np-check np-small"><input type="checkbox" checked={tool.readOnly} disabled={busy} onchange={(e) => override(server, tool, 'readOnly', e.currentTarget.checked)} />Allow concurrent read-only calls</label>
+            <pre class="np-mono schema">{JSON.stringify(tool.schema, null, 2)}</pre>
           </details>
+        {:else}
+          <p class="np-empty">{query ? 'No tool matches' : 'No tools'}</p>
         {/each}
       {/if}
     </section>
@@ -107,23 +115,24 @@
 </div>
 
 <style>
-  .mcp { padding:12px; overflow:auto; min-width:0; font-size:13px; }
-  button { padding:5px 8px; color:inherit; background:var(--bg-2); border:1px solid var(--border, #555); border-radius:4px; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:default; }
-  header,.actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
-  header { justify-content:space-between; }
-  .head { display:flex; align-items:flex-start; gap:6px; }
-  .hint { opacity:.7; line-height:1.5; }
-  .error { color:var(--err); overflow-wrap:anywhere; }
-  label { display:block; margin:8px 0; }
-  input:not([type=checkbox]),textarea { display:block; box-sizing:border-box; width:100%; padding:6px; margin-top:4px; color:inherit; background:var(--bg-2); border:1px solid var(--border, #555); border-radius:4px; }
-  textarea,code,pre { font-family:monospace; font-size:11px; }
-  section { padding:9px 0; border-top:1px solid var(--border, #555); }
-  .server { flex:1 1 auto; min-width:0; text-align:left; border:0; background:transparent; padding:0 0 8px; display:flex; flex-direction:column; gap:3px; }
-  .server span { opacity:.7; }
-  details { border-top:1px solid var(--border, #555); padding:8px 0; }
-  summary { cursor:pointer; overflow-wrap:anywhere; }
-  code { display:block; overflow-wrap:anywhere; }
-  pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; }
-  .check { display:flex; gap:6px; align-items:center; }
+  /* the tab fills the panel and scrolls inside it; everything is one column that shrinks (min-width: 0), never sideways */
+  .mcp { flex: 1 1 auto; min-height: 0; min-width: 0; padding: 8px 12px 12px; font-size: var(--fs-sm); }
+  .hint { margin: 0 0 8px; line-height: 1.5; }
+  .err { margin: 4px 0; color: var(--err); overflow-wrap: anywhere; }
+  .field { display: block; min-width: 0; font-size: var(--fs-xs); color: var(--fg-muted); }
+  .field .np-input { margin-top: 4px; }
+  textarea.np-input { font-size: 11px; }
+  .server { padding: 8px 0; border-top: 1px solid var(--border); min-width: 0; }
+  .head { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+  /* the server line is a button (click to list its tools) with no chrome of its own: two lines, each ellipsized */
+  .pick { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 0 0 4px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .pick .np-strong { display: block; }
+  .chosen .pick .np-strong { color: var(--accent); }
+  .server :global(.np-search) { margin: 4px 0 2px; }
+  .tool { padding: 6px 0; border-top: 1px solid var(--border); min-width: 0; }
+  .tool summary { cursor: pointer; overflow-wrap: anywhere; }
+  .desc { margin: 4px 0; line-height: 1.4; overflow-wrap: anywhere; }
+  code { display: block; margin: 2px 0 6px; overflow-wrap: anywhere; }
+  .np-check { margin: 4px 0; }
+  .schema { margin: 6px 0 0; padding: 6px 8px; max-height: 240px; overflow: auto; border-radius: var(--radius-sm); background: var(--code-bg, var(--bg-2)); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

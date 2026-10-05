@@ -15,6 +15,7 @@ internal sealed class HttpTransport : IMcpTransport
     private readonly HttpClient _client = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
     private readonly ServerConfig _config;
     private readonly int _limit;
+    private readonly Action<string>? _log;
     private readonly CancellationTokenSource _stop = new();
     private string? _session;
     private long _next;
@@ -23,7 +24,8 @@ internal sealed class HttpTransport : IMcpTransport
     public event Action<Exception>? Closed;
     public string Version { get; set; } = Protocol.Modern;
 
-    public HttpTransport(ServerConfig config, int limit) { _config = config; _limit = limit; }
+    /// <param name="log">The server's debug log line (what the stdio transport gets for stderr); null: nothing is logged.</param>
+    public HttpTransport(ServerConfig config, int limit, Action<string>? log = null) { _config = config; _limit = limit; _log = log; }
     private HttpRequestMessage Http(HttpMethod method, JsonObject? message = null, JsonObject? parameterHeaders = null)
     {
         var request = new HttpRequestMessage(method, _config.Url);
@@ -102,7 +104,11 @@ internal sealed class HttpTransport : IMcpTransport
         {
             using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false));
             var body = await ReadBodyAsync(reader, ct).ConfigureAwait(false);
-            try { Protocol.Result(Protocol.Parse(body, _limit)); } catch (McpException) { throw; } catch { }
+            // A JSON-RPC error in the body is the server's own message (rethrown as such); a body that is not one is
+            // still worth a line, so a failing endpoint is not a silent HTTP code.
+            try { Protocol.Result(Protocol.Parse(body, _limit)); }
+            catch (McpException) { throw; }
+            catch (Exception ex) { _log?.Invoke($"HTTP {(int)response.StatusCode} body is not a JSON-RPC message ({ex.GetType().Name}): {_config.Redact(body)}"); }
         }
         throw new McpHttpException(response.StatusCode, $"MCP endpoint returned HTTP {(int)response.StatusCode}. No tool call was replayed.");
     }
@@ -143,10 +149,13 @@ internal sealed class HttpTransport : IMcpTransport
                 {
                     if (message["id"] is not null)
                     {
-                        if (Version == Protocol.Modern) throw new McpException("Modern MCP streams must not contain server requests.");
+                        // A ping is the base protocol's liveness check, answered with an empty result in either revision.
+                        var ping = message["method"]!.GetValue<string>() == "ping";
+                        if (!ping && Version == Protocol.Modern) throw new McpException("Modern MCP streams must not contain server requests.");
                         using var reply = Http(HttpMethod.Post);
-                        reply.Content = new StringContent(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = message["id"]!.DeepClone(),
-                            ["error"] = new JsonObject { ["code"] = -32601, ["message"] = "Client method not supported." } }.ToJsonString(), Encoding.UTF8, "application/json");
+                        var answer = ping ? Protocol.Pong(message) : new JsonObject { ["jsonrpc"] = "2.0", ["id"] = message["id"]!.DeepClone(),
+                            ["error"] = new JsonObject { ["code"] = -32601, ["message"] = "Client method not supported." } };
+                        reply.Content = new StringContent(answer.ToJsonString(), Encoding.UTF8, "application/json");
                         using var ignored = await _client.SendAsync(reply, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
                     }
                     else if (Version == Protocol.Legacy || listening && subscription.Accept(message, id.ToString(System.Globalization.CultureInfo.InvariantCulture)))

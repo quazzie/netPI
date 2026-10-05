@@ -18,7 +18,7 @@ internal sealed class McpConnection : IAsyncDisposable
     public McpConnection(ServerConfig config, int limit, Action<string> log)
     {
         _config = config;
-        Transport = config.Transport == "stdio" ? new StdioTransport(config, limit, log) : new HttpTransport(config, limit);
+        Transport = config.Transport == "stdio" ? new StdioTransport(config, limit, log) : new HttpTransport(config, limit, log);
     }
     public async Task InitializeAsync(CancellationToken ct)
     {

@@ -89,6 +89,19 @@ public static class McpTests
             await Check.ThrowsAsync<OperationCanceledException>(()=>c.CallAsync("weather",T.Args(new {city="slow"}),schema,cancel.Token));
             Check.Contains((await c.CallAsync("weather",T.Args(new {city="after"}),schema,timeout.Token)).ToJsonString(),"after");
         });
+        r.Add("mcp: a server's ping is answered with an empty result, not a method-not-found error", async () => {
+            await using var c=new McpConnection(Config("ping"),100000,_=>{});
+            using var timeout=new CancellationTokenSource(10000);
+            await c.InitializeAsync(timeout.Token);
+            var schema=Tool()["inputSchema"]!.AsObject();
+            var result=await c.CallAsync("weather",T.Args(new {city="Oslo"}),schema,timeout.Token);
+            var text=result["content"]![0]!["text"]!.GetValue<string>();
+            Check.True(text.StartsWith("pong: ",StringComparison.Ordinal),"the server saw a reply: "+text);
+            var answer=JsonNode.Parse(text["pong: ".Length..])!.AsObject();
+            Check.Equal("srv-ping",answer["id"]!.GetValue<string>());
+            Check.True(answer["result"] is JsonObject {Count:0},"an empty result object: "+answer.ToJsonString());
+            Check.True(answer["error"] is null,"no error");
+        });
         r.Add("mcp: bounded framing malformed stdout and catalog limits fail explicitly", async () => {
             await Check.ThrowsAsync<McpException>(()=>Protocol.ReadLineAsync(new StringReader(new string('x',100)),50,CancellationToken.None));
             await using var c=new McpConnection(Config("large"),1000000,_=>{});

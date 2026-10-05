@@ -12,6 +12,8 @@ internal static class McpFixture
         var jobs = new List<Task>();
         bool changed = false;
         var counter = args.Length > 1 ? args[1] : null;
+        // "ping": the server pings the client before it answers the first tools/call, and echoes the client's reply in the result.
+        var pong = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         async Task Send(JsonObject message) { await write.WaitAsync(); try { await Console.Out.WriteLineAsync(message.ToJsonString()); } finally { write.Release(); } }
         JsonObject Reply(JsonObject request, JsonObject result) => new() { ["jsonrpc"]="2.0", ["id"]=request["id"]?.DeepClone(), ["result"]=result };
         // A tool whose arguments are typed the way a remote schema usually types them.
@@ -28,6 +30,7 @@ internal static class McpFixture
         while (await Console.In.ReadLineAsync() is { } line)
         {
             var request = JsonNode.Parse(line)!.AsObject();
+            if (request["method"] is null) { pong.TrySetResult(line); continue; }   // the client's answer to a request of ours
             var method = request["method"]!.GetValue<string>();
             if (request["id"] is null) continue;
             if (method == "server/discover")
@@ -112,6 +115,13 @@ internal static class McpFixture
             {
                 if (counter is not null) await File.AppendAllTextAsync(counter, request["params"]!["arguments"]!.ToJsonString()+"\n");
                 jobs.Add(Task.Run(async () => {
+                    if (mode == "ping")
+                    {
+                        await Send(new JsonObject { ["jsonrpc"]="2.0", ["id"]="srv-ping", ["method"]="ping" });
+                        var answer = await pong.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                        await Send(Reply(request, new JsonObject { ["content"]=new JsonArray(new JsonObject { ["type"]="text", ["text"]="pong: "+answer }) }));
+                        return;
+                    }
                     var city = request["params"]?["arguments"]?["city"]?.GetValue<string>() ?? "";
                     if (city == "slow") await Task.Delay(300);
                     if (city == "malformed") { await write.WaitAsync(); try { await Console.Out.WriteLineAsync("garbage"); } finally { write.Release(); } return; }

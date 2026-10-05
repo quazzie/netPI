@@ -99,9 +99,12 @@ internal sealed class StdioTransport : IMcpTransport
                 {
                     if (m["id"] is not null)
                     {
+                        // A ping is the base protocol's liveness check, answered with an empty result in either revision.
+                        if (m["method"]!.GetValue<string>() == "ping")
+                            await SendAsync(Protocol.Pong(m), _stop.Token).ConfigureAwait(false);
                         // We advertise no client-request capabilities. Legacy servers still get a definitive reply.
-                        if (Version == Protocol.Modern) throw new McpException("Modern MCP servers must not send JSON-RPC requests.");
-                        await SendAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = m["id"]!.DeepClone(),
+                        else if (Version == Protocol.Modern) throw new McpException("Modern MCP servers must not send JSON-RPC requests.");
+                        else await SendAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = m["id"]!.DeepClone(),
                             ["error"] = new JsonObject { ["code"] = -32601, ["message"] = "Client method is not supported." } }, _stop.Token).ConfigureAwait(false);
                     }
                     else if (Version == Protocol.Legacy) Notification?.Invoke(m);

@@ -45,6 +45,8 @@ internal static class Protocol
         return result;
     }
     public static string Id(JsonNode? id) => id?.ToJsonString() ?? "";
+    /// <summary>The reply to a server's <c>ping</c> request: an empty result, as the protocol requires.</summary>
+    public static JsonObject Pong(JsonObject request) => new() { ["jsonrpc"] = "2.0", ["id"] = request["id"]!.DeepClone(), ["result"] = new JsonObject() };
     public static async Task<string?> ReadLineAsync(TextReader reader, int limit, CancellationToken ct)
     {
         var text = new System.Text.StringBuilder();
