@@ -1,5 +1,8 @@
 # netPI
 
+> **Beta.** 0.1.0-beta.1 is the first public release: it works daily on its author's machine, but expect rough edges
+> and contract changes between versions. Windows is the main platform; the headless server also builds on Linux/macOS.
+
 A fast, minimal LLM agent harness in the spirit of [pi](https://pi.dev): a small .NET 10 core where **everything is a
 runtime-reloadable plugin** — model providers, tools, the agent loop, agents, compaction, retries, the panel tabs —
 and a Svelte UI shown in a WebView2 window. The desktop app starts its own server; the same server also runs
@@ -43,8 +46,8 @@ See [the plan that made it so](docs/archive/2026-10-02-replaceable-parts.md).
 - **Goals.** `/goal <what must be true>` keeps the agent working: after every run it is started again until it marks
   the goal complete (`goal_update`) or needs you; stopping, a failure, runs without progress and limits pause it.
 - **Tools as plugins:** `read`, `write`, `edit` (multi-edit, replace-all), `grep`, `find`, `ls` — all CRLF/LF
-  agnostic, preserving each file's line endings and BOM — plus `bash` (Git Bash on Windows), `pwsh` and background
-  processes; `web_fetch` (pages as Markdown), `web_search` (SearXNG or Brave), `screenshot` (headless Edge/Chrome, or
+  agnostic, preserving each file's line endings and BOM — plus `git`, `bash` (Git Bash on Windows), `pwsh` and background
+  processes (`process`); `web_fetch` (pages as Markdown), `web_search` (SearXNG or Brave), `screenshot` (headless Edge/Chrome, or
   the NetPI window), `browser` (a browser tab per chat — the agents' own browser, or your Chrome through the NetPI extension, where you can also share a tab with a chat — acting on pages without your mouse or focus; you watch it or log in through the chat's Browser view), `windows` (native Windows apps through UI Automation), `todo_write` (a checklist shown above the composer), `ask_user` (the agent asks you in the chat,
   with options to pick, and waits without holding its instance), `show_image` (the agent shows you an image), `decide` (yes/no, pick-one and score questions over one text or every line of a
   file, answered by a local decision model such as Kev on the nuc) and
@@ -69,8 +72,8 @@ See [the plan that made it so](docs/archive/2026-10-02-replaceable-parts.md).
   implement, and the agent closes it when done. The cards a closed chat leaves and the per-repository commit cursors
   travel in that same store, so a backup carries the whole backlog without the Ideas plugin. Moving a backlog to
   another machine is a deliberate `ideas.export` / `ideas.import` of a portable snapshot.
-- **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Ideas,
-  Diagnostics), collapsible thinking/tool blocks, diffs, live shell output, pruned chat history with "load earlier",
+- **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Usage, Ideas,
+  MCP, Diagnostics), collapsible thinking/tool blocks, diffs, live shell output, pruned chat history with "load earlier",
   slash commands and `@` file mentions. Window size and position are remembered.
 - **Backups:** automatic snapshots of what the storage provider writes plus the settings (the ideas backlog travels
   inside the store's files), manual backup and verification in Settings → Data & backups, plus [restore into a new
@@ -80,11 +83,16 @@ See [the plan that made it so](docs/archive/2026-10-02-replaceable-parts.md).
 
 ## Quick start (Windows)
 
-Requirements: **.NET 10 SDK**, the **WebView2 runtime** (built into Windows 11), **Git for Windows** (for the `bash`
+**From a release:** download `NetPI-<version>-win-x64.zip` from [Releases](https://github.com/quazzie/netPI/releases),
+unzip it anywhere and start `NetPI.exe` (or `netpi-server.exe --open` for the browser UI). It needs the
+**.NET 10 Desktop and ASP.NET Core runtimes** and the WebView2 runtime (built into Windows 11).
+
+**From source:** requirements: **.NET 10 SDK**, the **WebView2 runtime** (built into Windows 11), **Git for Windows** (for the `bash`
 tool). Optional: PowerShell 7 (`pwsh` tool), Node.js 22 (only to change the UI — built bundles are committed).
 
 ```powershell
-cd C:\AI\Projects\NetPI
+git clone https://github.com/quazzie/netPI.git
+cd netPI
 .\build.ps1 -Run          # builds, installs into artifacts\app and starts artifacts\app\NetPI.exe
 ```
 
@@ -92,7 +100,7 @@ From cmd: `build -Run` (`build.cmd` runs `build.ps1` with the same options; `bui
 
 On first start `%USERPROFILE%\.netpi\settings.json` is created with the core keys only (port, plugin folders, quiet,
 disabled tools); everything else appears with the default its own plugin declares — AiProxy at
-`http://127.0.0.1:8090` (Responses transport), `aiproxy/qwen3.8-27b` as the default model. For Claude set
+`http://127.0.0.1:8090` (Responses transport); the default model is the first available one (set `defaultModel`). For Claude set
 `providers.anthropic.apiKey` (or the `ANTHROPIC_API_KEY` environment variable), for OpenRouter
 `providers.openrouter.apiKey` (or `OPENROUTER_API_KEY`).
 All keys: [docs/SETTINGS.md](docs/SETTINGS.md).
@@ -106,15 +114,16 @@ Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized 
 |---|---|
 | *Enter* / *Shift+Enter* | send / newline |
 | *Enter* while running · *Alt+Enter* · *Esc* | steer · queue a follow-up · stop |
-| `/` | commands: `/new /rename /agent /project /compact /idea /reload /settings /help /abort` |
+| `/` | commands: `/new /rename /agent /project /goal /plan /compact /idea /reload /settings /help /abort`, `/skill:name` |
 | `@` | mention a file of the session's workspace |
-| *Ctrl+T*, *Ctrl+W*, *Ctrl+Tab*, *Ctrl+1…9* | new, close, cycle, pick session tabs |
-| *Ctrl+B* / *Ctrl+Alt+B* | toggle left / right panel · *Ctrl+K* command palette |
+| *Ctrl+T*, *Ctrl+W*, *Ctrl+Tab*, *Ctrl+1…8* / *Ctrl+9* | new, close, cycle, pick session tabs / the last one |
+| *Ctrl+B* / *Ctrl+Alt+B* | toggle left / right panel · *Ctrl+K* command palette · *Ctrl+I* new idea · *Ctrl+/* help |
 
 The agent, reasoning-effort and tools pickers, the chat's cost and the context meter sit in the composer. Settings
 (*Ctrl+,*) has real controls for the host's and every plugin's settings, the agents and the budget. The **Work** tab shows
 the agents (state, busy/instances, queues, an on/off switch), runs (active and recent), processes (with live output and
-kill) and this month's spend; **Diagnostics** shows
+kill); **Usage** shows spend per period, agent, model and chat against the budget; **MCP** the external MCP servers;
+**Diagnostics** shows
 plugins (reload/enable/disable), tools, RPC methods, the live event bus, logs and the exact system prompt.
 
 ## Architecture
@@ -128,7 +137,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
    tool/UI registries · settings ·              │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices
                                                 │   NetPI.Skills       Agent Skills: the catalog notice, the skill tool, /skill:name
    storage port (sqlite or memory) · catalog    │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
-                                                │   NetPI.Tools.*      files, shell, agents, web, media, ssh · NetPI.Todo · NetPI.Goal
+                                                │   NetPI.Tools.*      files, shell, agents, web, media, ssh, windows · NetPI.Todo · NetPI.Goal
                                                 │   NetPI.Ask          ask_user: questions for you, inline in the chat
                                                 │   NetPI.Plan         /plan: a read-only chat that submits a plan for you to approve
                                                 │   NetPI.Guardrails   blocks dangerous commands and protected paths, or asks you first
@@ -136,6 +145,9 @@ NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.
 NetPI.Contracts: the higher abstractions'       │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics · NetPI.Schedules
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Workspaces   checkouts, bindings, worktrees (the plugin that owns them)
                                                 │   NetPI.Coordinator  one-call dispatch and run results for an outside coordinator
+                                                │   NetPI.Mcp          external MCP servers: mcp_search, mcp_call, mcp_resource
+                                                │   NetPI.Memory · NetPI.Embeddings   memory_search over past chats
+                                                │   NetPI.Decide · NetPI.Backup
                                                 └─ ~/.netpi/plugins/ (your own)
 ```
 
@@ -172,6 +184,11 @@ swaps under a running chat while you work.
 | [docs/PLUGIN-SKILLS.md](docs/PLUGIN-SKILLS.md) | skills: where they are found, what agents get, `/skill:name` |
 | [docs/AIPROXY-AGENT-GUIDE.md](docs/AIPROXY-AGENT-GUIDE.md) | the local AiProxy server |
 | [docs/HANDOFF.md](docs/HANDOFF.md), [docs/STATUS.md](docs/STATUS.md) | current state, decisions and next steps; what is verified, known limitations |
+| [docs/DEBUGGING.md](docs/DEBUGGING.md) | inspecting a running NetPI: `diag`, `node scripts/netpi.mjs` |
 | [docs/archive/](docs/archive/) | records of completed plans |
 
 External MCP servers: [configuration, deferred discovery and lifecycle](docs/PLUGIN-MCP.md).
+
+## License
+
+[MIT](LICENSE)

@@ -15,7 +15,7 @@
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <NoWarn>$(NoWarn);CS1591;CA2255</NoWarn>
-    <Version>0.1.0</Version>
+    <Version>0.1.0-beta.1</Version>
     <Authors>NetPI</Authors>
     <Deterministic>true</Deterministic>
     <!-- Every DLL carries the path of its PDB, which is absolute - so the same commit built in two checkouts (two
