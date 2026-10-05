@@ -170,8 +170,15 @@ public static class AdvancedTests
             Check.True((await env.Rpc("sessions.delete", new { id = sid })).GetBoolean());
             await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)) is var p && p.L("busy") == 0 && p.L("queued") == 0 ? "ok" : null, "qwen pool empty", 15_000);
             await Wait.UntilAsync(async () => (await env.MockStats()).P("models").P("qwen3.8-27b").L("inflight") == 0 ? "ok" : null, "no request in flight", 10_000);
-            var busy = (await env.Rpc("runs.list", new { includeFinished = false })).Arr().ToList();
-            Check.False(busy.Any(a => a.S("id") == parentId || kids.Any(k => k.S("id") == a.S("id"))), "no agent of the deleted tree still busy: " + string.Join(",", busy.Select(a => a.S("name") + ":" + a.S("status"))));
+            // The parent was yielded in its agent wait: the delete cancels the children, the wait returns, and the parent's
+            // run ends on its own deleted session a moment later. Under load that moment can outlast the pool emptying, so
+            // the run is waited for (bounded), not sampled once: the claim is that it stops, not that it had already stopped.
+            await Wait.UntilAsync(async () =>
+            {
+                var tree = (await env.Rpc("runs.list", new { includeFinished = false })).Arr()
+                    .Where(a => a.S("id") == parentId || kids.Any(k => k.S("id") == a.S("id"))).ToList();
+                return tree.Count == 0 ? "ok" : null;
+            }, "no agent of the deleted tree still busy", 10_000);
             foreach (var k in kids) await Assert404(env, "sessions.get", new { id = k.S("sessionId") });
             var log = env.ReadServerLog();
             Check.NotContains(log, "Unhandled exception");

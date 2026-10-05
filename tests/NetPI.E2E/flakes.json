@@ -3,9 +3,9 @@
   "flakes": [
     {
       "id": "context.workspace-binding",
-      "runs": 5,
+      "runs": 7,
       "failures": 3,
-      "rate": 0.6,
+      "rate": 0.4286,
       "firstSeen": "20261002-212304-85ab",
       "lastFailure": "20261002-212332-b31e",
       "cause": "timed out after 30000ms waiting for session.workspace after the delete. Last events: \u2014 responsive",
@@ -13,19 +13,29 @@
     },
     {
       "id": "ui.idea-image",
-      "runs": 8,
+      "runs": 10,
       "failures": 3,
-      "rate": 0.375,
+      "rate": 0.3,
       "firstSeen": "20261002-164209-c9ca",
       "lastFailure": "20261002-164357-4982",
       "cause": "3 ui check(s) failed: \u2014 responsive",
       "quiet": true
     },
     {
+      "id": "sessions.delete-orchestrator",
+      "runs": 17,
+      "failures": 1,
+      "rate": 0.0588,
+      "firstSeen": "20261005-160936-f110",
+      "lastFailure": "20261005-160936-f110",
+      "cause": "no agent of the deleted tree still busy: main:running (busy.Any(a =\u003E a.S(\u0022id\u0022) == parentId || kids.Any(k =\u003E k.S(\u0022id\u0022) == a.S(\u0022id\u0022)))) \u2014 responsive",
+      "quiet": true
+    },
+    {
       "id": "ui.start-project",
-      "runs": 99,
+      "runs": 101,
       "failures": 2,
-      "rate": 0.0202,
+      "rate": 0.0198,
       "firstSeen": "20261003-233752-1c67",
       "lastFailure": "20261003-233827-7563",
       "cause": "1 ui check(s) failed: \u2014 responsive",
