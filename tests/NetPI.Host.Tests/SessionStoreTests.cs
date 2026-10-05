@@ -53,6 +53,74 @@ public static class SessionStoreTests
         }
     }
 
+    /// <summary>
+    /// The fixture's storage with a hook in front of the session repository's atomic step: a write that takes the store's
+    /// lock just before the step (a delete that commits first) is staged deterministically, where a race would only be sampled.
+    /// </summary>
+    private sealed class HookedStorage : IStorage
+    {
+        private readonly IStorage _inner;
+
+        public HookedStorage(IStorage inner)
+        {
+            _inner = inner;
+            Sessions = new HookedRepository(inner.Sessions, this);
+        }
+
+        /// <summary>Runs once, right before the next atomic step of the session repository opens (null again after it ran).</summary>
+        public Action? BeforeNextAtomic;
+
+        public string ProviderId => _inner.ProviderId;
+        public ISessionRepository Sessions { get; }
+        public IKeyValueStore Values => _inner.Values;
+        public IPluginDataStore Plugins => _inner.Plugins;
+        public IStorageSnapshot Snapshot => _inner.Snapshot;
+        public object Lock => _inner.Lock;
+        public StorageInfo Info => _inner.Info;
+        public void Dispose() => _inner.Dispose();
+    }
+
+    /// <summary>Delegates everything to the real repository; the atomic step runs the owner's one-shot hook first.</summary>
+    private sealed class HookedRepository(ISessionRepository inner, HookedStorage owner) : ISessionRepository
+    {
+        public T Atomic<T>(Func<ISessionRepository, T> work)
+        {
+            Interlocked.Exchange(ref owner.BeforeNextAtomic, null)?.Invoke();
+            return inner.Atomic(work);
+        }
+
+        public void Atomic(Action<ISessionRepository> work)
+        {
+            Interlocked.Exchange(ref owner.BeforeNextAtomic, null)?.Invoke();
+            inner.Atomic(work);
+        }
+
+        public IReadOnlyList<ProjectInfo> ListProjects() => inner.ListProjects();
+        public ProjectInfo? GetProject(string id) => inner.GetProject(id);
+        public void InsertProject(ProjectInfo project) => inner.InsertProject(project);
+        public bool UpdateProject(ProjectInfo project) => inner.UpdateProject(project);
+        public void TouchProject(string id, DateTimeOffset at) => inner.TouchProject(id, at);
+        public bool DeleteProject(string id) => inner.DeleteProject(id);
+        public int ClearProject(string projectId, DateTimeOffset at) => inner.ClearProject(projectId, at);
+        public IReadOnlyList<SessionInfo> ListSessions(SessionQuery query) => inner.ListSessions(query);
+        public SessionInfo? GetSession(string id) => inner.GetSession(id);
+        public void InsertSession(SessionInfo session) => inner.InsertSession(session);
+        public bool UpdateSession(SessionInfo session) => inner.UpdateSession(session);
+        public IReadOnlyList<string> DeleteSessionTree(string id) => inner.DeleteSessionTree(id);
+        public ChatMessage AppendMessage(ChatMessage message) => inner.AppendMessage(message);
+        public void RecordAppend(string sessionId, DateTimeOffset at, string title) => inner.RecordAppend(sessionId, at, title);
+        public bool UpdateMessage(ChatMessage message) => inner.UpdateMessage(message);
+        public ChatMessage? GetMessage(long id) => inner.GetMessage(id);
+        public IReadOnlyList<ChatMessage> GetMessages(string sessionId, long? beforeSeq = null, int? limit = null) => inner.GetMessages(sessionId, beforeSeq, limit);
+        public IReadOnlyList<ChatMessage> GetMessagesAfter(string sessionId, long afterSeq, int limit) => inner.GetMessagesAfter(sessionId, afterSeq, limit);
+        public (IReadOnlyList<ChatMessage> Rows, long Newest) ReadContext(string sessionId) => inner.ReadContext(sessionId);
+        public void MarkCompacted(string sessionId, long upToSeq) => inner.MarkCompacted(sessionId, upToSeq);
+        public int CopyMessages(string fromSessionId, string toSessionId, long upToSeq) => inner.CopyMessages(fromSessionId, toSessionId, upToSeq);
+        public IReadOnlyList<MessageStub> MessageStubs(string sessionId) => inner.MessageStubs(sessionId);
+        public void SetCompacted(string sessionId, IReadOnlySet<long> compactedSeqs) => inner.SetCompacted(sessionId, compactedSeqs);
+        public void UpdateMessageMeta(long id, JsonObject? meta) => inner.UpdateMessageMeta(id, meta);
+    }
+
     private static ChatMessage Assistant(string text) => new()
     {
         Role = MessageRole.Assistant,
@@ -840,6 +908,30 @@ public static class SessionStoreTests
             Check.Equal(2, fork2.MessageCount);
             Check.Equal(1, (await f.EventsAsync(EventTypes.SessionCreated)).Count);
             Check.Equal(1, (await f.EventsAsync(EventTypes.SessionForked)).Count);
+        });
+
+        r.Add("sessions: a fork checks its source inside its atomic step, so a delete that lands just before it is not_found, not an empty fork", async () =>
+        {
+            await using var f = new Fixture();
+            var hooked = new HookedStorage(f.Storage);
+            var store = new SessionService(hooked, f.Bus, Path.Combine(f.Dir, "workspace"));
+            var src = store.CreateSession(new SessionInfo { Title = "Chat" });
+            store.AppendMessage(src.Id, ChatMessage.UserText("one"));
+            store.AppendMessage(src.Id, Assistant("two"));
+            await f.Bus.FlushAsync();
+            lock (f.Events) f.Events.Clear();
+
+            // The source is deleted right before the fork's atomic step opens: what a sessions.delete that takes the store's
+            // lock first looks like to a fork that read its source before taking it. It used to copy nothing into a
+            // materialized fork and announce session.created and session.forked for a source that was gone.
+            hooked.BeforeNextAtomic = () => store.DeleteSession(src.Id);
+            Check.Throws<KeyNotFoundException>(() => store.ForkSession(src.Id, 2, new SessionInfo { Title = "Chat (fork)" }), "the fork finds its source gone");
+            Check.True(hooked.BeforeNextAtomic is null, "the delete ran, right before the fork's step");
+            Check.True(store.GetSession(src.Id) is null, "the source is gone");
+            var all = store.ListSessions(new SessionQuery { IncludeArchived = true, IncludeSubagents = true, IncludeUnmaterialized = true });
+            Check.False(all.Any(s => s.Title == "Chat (fork)"), "no fork of a deleted source, stored or transient: " + string.Join(",", all.Select(s => s.Title)));
+            Check.Equal(0, (await f.EventsAsync(EventTypes.SessionCreated)).Count, "no session.created");
+            Check.Equal(0, (await f.EventsAsync(EventTypes.SessionForked)).Count, "no session.forked naming a deleted source");
         });
 
         r.Add("sessions: deleting a project detaches its sessions — transient ones in memory too", async () =>

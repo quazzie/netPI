@@ -542,8 +542,27 @@ internal sealed class SessionService : ISessionStore
     {
         ArgumentNullException.ThrowIfNull(template);
         var fork = NewSession(template, Now());
-        if (GetSession(sessionId) is null) throw new KeyNotFoundException($"Session {sessionId} not found");
-        if (!_repo.MessageStubs(sessionId).Any(m => m.Seq <= upToSeq))
+        // The source is checked inside the atomic step, not before it: a delete of the source that committed in between
+        // left a materialized fork with nothing in it, and session.created / session.forked naming a session that was gone.
+        var copied = _repo.Atomic(r =>
+        {
+            if (TransientSession(sessionId) is null && r.GetSession(sessionId) is null) throw new KeyNotFoundException($"Session {sessionId} not found");
+            var originals = r.MessageStubs(sessionId);
+            if (!originals.Any(m => m.Seq <= upToSeq)) return false;
+            if (fork.ProjectId is not null)
+            {
+                if (r.GetProject(fork.ProjectId) is null) throw new KeyNotFoundException($"Project {fork.ProjectId} not found");
+                r.TouchProject(fork.ProjectId, fork.CreatedAt);
+            }
+            r.InsertSession(fork);
+            fork.MessageCount = r.CopyMessages(sessionId, fork.Id, upToSeq);
+            var copies = r.MessageStubs(fork.Id);   // read once for both the compaction flags and the id map
+            CompactionAsOfEnd(r, fork.Id, copies);
+            MapMessageIds(r, originals, copies);
+            r.UpdateSession(fork);
+            return true;
+        });
+        if (!copied)
         {
             // Nothing to copy: the fork stays transient, like a fresh empty chat — no row, no session.created, no session.forked.
             lock (_transientLock)
@@ -553,19 +572,6 @@ internal sealed class SessionService : ISessionStore
             }
             return fork;
         }
-        _repo.Atomic(r =>
-        {
-            if (fork.ProjectId is not null)
-            {
-                if (r.GetProject(fork.ProjectId) is null) throw new KeyNotFoundException($"Project {fork.ProjectId} not found");
-                r.TouchProject(fork.ProjectId, fork.CreatedAt);
-            }
-            r.InsertSession(fork);
-            fork.MessageCount = r.CopyMessages(sessionId, fork.Id, upToSeq);
-            CompactionAsOfEnd(r, fork.Id);
-            MapMessageIds(r, sessionId, fork.Id);
-            r.UpdateSession(fork);
-        });
         Publish(EventTypes.SessionCreated, new { session = fork });
         _bus.Publish(new BusEvent { Type = EventTypes.SessionForked, Source = "host", Data = new { sessionId = fork.Id, fromSessionId = sessionId, upToSeq } });
         return fork;
@@ -575,11 +581,10 @@ internal sealed class SessionService : ISessionStore
     /// The compaction flags of a copy as they were at its last message: the latest summary in it covers what its
     /// <c>meta.coversUpToSeq</c> says and the summaries before it are superseded; anything after it is not compacted (a
     /// later compaction of the original, past the copy's end, does not count). A summary without that range (written
-    /// before it was recorded) keeps the flags before it.
+    /// before it was recorded) keeps the flags before it. <paramref name="stubs"/> are the session's messages as stored.
     /// </summary>
-    private static void CompactionAsOfEnd(ISessionRepository r, string sessionId)
+    private static void CompactionAsOfEnd(ISessionRepository r, string sessionId, IReadOnlyList<MessageStub> stubs)
     {
-        var stubs = r.MessageStubs(sessionId);
         var latest = stubs.LastOrDefault(m => m.Role == MessageRole.Summary);
         if (latest is null)
         {
@@ -594,12 +599,11 @@ internal sealed class SessionService : ISessionStore
     }
 
     /// <summary>A copied message whose <c>meta.for</c> names a message of the original (a skill notice's user message) names the copy.</summary>
-    private static void MapMessageIds(ISessionRepository r, string from, string to)
+    private static void MapMessageIds(ISessionRepository r, IReadOnlyList<MessageStub> originals, IReadOnlyList<MessageStub> copies)
     {
-        var copies = r.MessageStubs(to);
         var refs = copies.Where(m => m.Meta?["for"] is not null).ToList();
         if (refs.Count == 0) return;
-        var seqOf = r.MessageStubs(from).ToDictionary(m => m.Id, m => m.Seq);
+        var seqOf = originals.ToDictionary(m => m.Id, m => m.Seq);
         var idAt = copies.ToDictionary(m => m.Seq, m => m.Id);
         foreach (var m in refs)
         {
