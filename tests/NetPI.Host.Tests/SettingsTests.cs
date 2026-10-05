@@ -168,7 +168,8 @@ public static class SettingsTests
                 if (i % 3 == 0)
                 {
                     var doc = s.Snapshot();
-                    doc["mix"] = JsonValue.Create(i);   // a whole-document write racing the single-key ones
+                    doc["whole"] = JsonValue.Create(i);   // a whole-document write racing the single-key ones; on distinct keys -
+                    // a set below a value of another shape is the defined refusal (its own test), not part of the mix
                     s.Replace(doc);
                 }
                 else s.Set($"mix.{i}", JsonValue.Create(i));
