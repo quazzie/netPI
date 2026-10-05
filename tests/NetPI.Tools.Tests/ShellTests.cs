@@ -719,7 +719,17 @@ public static class ShellTests
         {
             var (svc, registry, _) = NewService();
             var dir = T.TempDir("bg");
-            var res = await T.Run(Bash(svc), dir, new { command = "echo oops; exit 2", background = true });
+            // The start waits up to BackgroundStartupWait (0.5 s) for an early exit and returns the moment the process
+            // ends, so a generous window costs nothing here; at 0.5 s a loaded machine (other suites, a build) started
+            // bash too slowly for "exit 2" to land inside it, and the call reported a running process instead.
+            var startupWait = ShellService.BackgroundStartupWait;
+            ToolResult res;
+            try
+            {
+                ShellService.BackgroundStartupWait = TimeSpan.FromSeconds(15);
+                res = await T.Run(Bash(svc), dir, new { command = "echo oops; exit 2", background = true });
+            }
+            finally { ShellService.BackgroundStartupWait = startupWait; }
             Check.Contains(res.Content, "exited immediately with code 2");
             Check.Contains(res.Content, "oops");
 

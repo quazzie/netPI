@@ -902,7 +902,9 @@ public static class SshTests
 
             // what a call printed before it was stopped is in its result: ssh_run reads its process group id from there to
             // end the remote work, and a short last line was once held back as a possible end marker and lost
-            var stopped = (await Run("printf '__netpi_pgid=4242\\n'; " + Ticking.Replace("echo tick", "echo tick >&2", StringComparison.Ordinal), 2, seconds: 1))!;
+            // (3 s: the line must arrive before the timeout stops the call; at 1 s a loaded machine sometimes had not
+            // delivered it yet, and the result was empty for a reason that is not the one under test)
+            var stopped = (await Run("printf '__netpi_pgid=4242\\n'; " + Ticking.Replace("echo tick", "echo tick >&2", StringComparison.Ordinal), 2, seconds: 3))!;
             Check.True(stopped.TimedOut);
             Check.Equal("__netpi_pgid=4242\n", stopped.Stdout);
 
