@@ -224,6 +224,12 @@ public static class WorkspaceTests
         Check.True(WorkspaceGuard.PathArg(A("""{"path":"","file":"f"}""")) is null, "a blank first name is the tool's refusal, not a reason to look at the next");
         Check.Equal("a\nb", WorkspaceGuard.PathArg(A("""{"path":["a","b"]}""")), "an array is its lines, as the tools join it");
 
+        // an edit of several files writes every files[].path, read by the tool's own names
+        Check.Equal("a.txt|b.txt", string.Join("|", WorkspaceGuard.WriteTargets("edit", A("""{"files":[{"path":"a.txt","edits":[]},{"file_path":"b.txt","oldText":"x","newText":"y"}]}"""))));
+        Check.Equal("a.txt|b.txt", string.Join("|", WorkspaceGuard.WriteTargets("Edit", A("""{"files":"[{\"path\":\"a.txt\"},{\"path\":\"b.txt\"}]"}"""))), "files as a JSON string, tool-name case");
+        Check.Equal("p", string.Join("|", WorkspaceGuard.WriteTargets("write", A("""{"path":"p","files":[{"path":"a.txt"}]}"""))), "write has no several-files form");
+        Check.Equal(0, WorkspaceGuard.WriteTargets("edit", A("""{"oldText":"x"}""")).Count);
+
         Check.Equal("/w", A("""{"Working-Directory":"/w"}""").Str(WorkspaceGuard.CwdArgs));
         Check.Equal("a", A("""{"dir":"b","cwd":"a"}""").Str(WorkspaceGuard.CwdArgs), "cwd comes before dir");
 

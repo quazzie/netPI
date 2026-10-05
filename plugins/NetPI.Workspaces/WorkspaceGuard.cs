@@ -64,8 +64,9 @@ internal sealed class WorkspaceGuard(IPluginContext ctx, IWorkspaceRepoProbe git
             if (binding is null || !binding.Isolated) return ValueTask.FromResult<ToolCallDecision?>(null);
             if (mutation || download is not null)
             {
-                var target = mutation ? PathArg(args) : download;
-                if (target is not null)
+                // Every file the call writes: an edit of several files is all or nothing, so one file in another
+                // checkout refuses the whole call.
+                foreach (var target in mutation ? WriteTargets(name, args) : [download!])
                 {
                     var full = turn.Resolve(call, target);
                     var verdict = WorkspacePaths.CheckMutation(binding, full, git);
@@ -112,6 +113,25 @@ internal sealed class WorkspaceGuard(IPluginContext ctx, IWorkspaceRepoProbe git
 
     /// <summary>The tool's own path argument, by its own names first and then the shared ones.</summary>
     internal static string? PathArg(ToolArgs args) => args.Str(PathArgs)?.Trim() is { Length: > 0 } s ? s : null;
+
+    /// <summary>The names the edit tool reads its several files by (Tools.Files EditTool.FilesNames).</summary>
+    internal static readonly string[] EditFilesArgs = ["files", "fileEdits"];
+
+    /// <summary>
+    /// The paths a mutating call writes: its path argument, or for an edit of several files every <c>files[].path</c>
+    /// (read as Tools.Files EditTool.TargetPaths reads them; plugins do not share code).
+    /// </summary>
+    internal static List<string> WriteTargets(string tool, ToolArgs args)
+    {
+        if (tool.Equals("edit", StringComparison.OrdinalIgnoreCase) && args.List(EditFilesArgs) is { Count: > 0 } files)
+        {
+            var paths = new List<string>();
+            foreach (var f in files)
+                if (f.ValueKind == System.Text.Json.JsonValueKind.Object && PathArg(new ToolArgs(f)) is { } p) paths.Add(p);
+            return paths;
+        }
+        return PathArg(args) is { } one ? [one] : [];
+    }
 
     /// <summary>
     /// The local path an ssh download writes, routed as the ssh tool routes it: the action is <c>copy</c> (or scp, upload,

@@ -73,6 +73,11 @@ public static class GuardrailsTests
         foreach (var name in (string[])["path", "file_path", "filePath", "file", "filename", "fileName", "target", "File-Path", "FILE"])
             Check.True(Blocks("write", new Dictionary<string, string> { [name] = key, ["content"] = "x" }), $"write path read from '{name}'");
         Check.True(Blocks("edit", new { path = new[] { key }, oldText = "a", newText = "b" }), "an array path");
+        // an edit of several files is all or nothing: one protected file holds the whole call, wherever it is in the list
+        Check.True(Blocks("edit", new { files = new object[] { new { path = "/tmp/a", edits = new[] { new { oldText = "a", newText = "b" } } }, new { file_path = key, oldText = "a", newText = "b" } } }),
+            "the second of several files is protected");
+        Check.True(Judge(rules, "edit", new { files = new object[] { new { path = "/tmp/a", oldText = "a", newText = "b" }, new { path = "/tmp/b", oldText = "a", newText = "b" } } }) is null,
+            "several unprotected files run");
         Check.True(Blocks("write", new { target = "/tmp/x", path = key, content = "x" }), "path comes before target");
         Check.True(Judge(rules, "write", new { path = "/tmp/x", file = key, content = "x" }) is null, "/tmp/x is what is written");
 

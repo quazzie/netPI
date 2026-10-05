@@ -73,13 +73,15 @@ public abstract class FileToolBase(ISettings? settings) : IAgentTool
     protected static ToolResult MissingArg(string name, string example) =>
         ToolResult.Error($"Missing required argument '{name}'. Example: {example}");
 
-    protected static ToolResult NotFound(ToolContext ctx, string full, string? extra = null)
+    protected static ToolResult NotFound(ToolContext ctx, string full, string? extra = null) => ToolResult.Error(NotFoundText(full, extra));
+
+    protected static string NotFoundText(string full, string? extra = null)
     {
         var msg = $"File not found: {full}";
         if (PathDisplay.Suggest(full) is { } s) msg += ". " + s;
         else msg += ".";
         if (extra is not null) msg += " " + extra;
-        return ToolResult.Error(msg);
+        return msg;
     }
 
     /// <summary>EOL for new files from settings (files.newFileEol: lf | crlf | auto).</summary>

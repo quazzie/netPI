@@ -57,6 +57,7 @@ internal sealed partial class RuleSet
     private static readonly string[] ShellCommandNames = ["command", "cmd", "script", "code", "commands", "input"];
     private static readonly string[] SshCommandNames = ["script", "command", "cmd", "code"];
     private static readonly string[] WritePathNames = ["path", "file_path", "filePath", "file", "filename", "fileName", "target"];
+    private static readonly string[] EditFilesNames = ["files", "fileEdits"];
     private static readonly string[] SshDownloadTargetNames = ["to", "destination", "dest", "target"];
 
     private static string[] CommandNames(string tool) => tool.Equals("ssh", StringComparison.OrdinalIgnoreCase) ? SshCommandNames : ShellCommandNames;
@@ -141,8 +142,9 @@ internal sealed partial class RuleSet
                         return new Verdict(r.Action, r.Text, "path", r.Root);
         }
 
-        // Independent of the command above: an ssh call can carry a script and still be a download.
-        if (LocalWriteTarget(tool, args) is { Length: > 0 } path)
+        // Independent of the command above: an ssh call can carry a script and still be a download. An edit of several
+        // files is judged on every one of them: one protected file holds the whole call, which is all or nothing.
+        foreach (var path in LocalWriteTargets(tool, args))
         {
             string full;
             try { full = resolve(path); }
@@ -161,11 +163,26 @@ internal sealed partial class RuleSet
     /// <summary>The host an ssh call runs on, when it names one.</summary>
     internal static string? HostOf(ToolArgs args) => args.Str("host", "server", "alias");
 
-    /// <summary>The local path a call writes: the file of write and edit, the destination of an ssh download (scp writes it).</summary>
-    internal static string? LocalWriteTarget(string tool, ToolArgs args)
+    /// <summary>
+    /// The local paths a call writes: the file of write and edit (every <c>files[].path</c> of an edit of several files,
+    /// as Tools.Files EditTool.TargetPaths reads them), the destination of an ssh download (scp writes it).
+    /// </summary>
+    internal static List<string> LocalWriteTargets(string tool, ToolArgs args)
     {
-        if (WriteTools.Contains(tool)) return args.Str(WritePathNames);
-        return IsSshDownload(tool, args) ? args.Str(SshDownloadTargetNames)?.Trim() : null;
+        var paths = new List<string>();
+        if (WriteTools.Contains(tool))
+        {
+            if (tool.Equals("edit", StringComparison.OrdinalIgnoreCase) && args.List(EditFilesNames) is { Count: > 0 } files)
+            {
+                foreach (var f in files)
+                    if (f.ValueKind == System.Text.Json.JsonValueKind.Object && new ToolArgs(f).Str(WritePathNames) is { Length: > 0 } p) paths.Add(p);
+                return paths;
+            }
+            if (args.Str(WritePathNames) is { Length: > 0 } one) paths.Add(one);
+            return paths;
+        }
+        if (IsSshDownload(tool, args) && args.Str(SshDownloadTargetNames)?.Trim() is { Length: > 0 } to) paths.Add(to);
+        return paths;
     }
 
     /// <summary>

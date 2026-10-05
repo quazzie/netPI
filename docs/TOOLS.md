@@ -156,7 +156,15 @@ details: { path, created: boolean, bytes: number, lines: number, eol: 'lf'|'crlf
 ### `edit` (summary arg `path`)
 
 `{ path, edits: [{ oldText, newText, replaceAll? }] }`, or the single-edit shorthand `{ path, oldText, newText, replaceAll? }`
-(aliases: `old_string`/`new_string`, `replace_all`; `edits` may also be a JSON string).
+(aliases: `old_string`/`new_string`, `replace_all`; `edits` may also be a JSON string). Several files in one call:
+`{ files: [{ path, edits } | { path, oldText, newText, replaceAll? }] }` (at most 50; `files` may be a JSON string too).
+
+- **Several files** are all or nothing: every file is read and every edit matched in memory first, and nothing is written
+  unless all of them match. A refusal names the file by its place in the list (`File 2 of 3, edit 1 of 2 failed in
+  src/b.cs: …  No files were changed (all-or-nothing).`). A file listed twice, `path` together with `files`, or more than
+  50 files are refused before anything is read. If a write fails midway (a locked file), the files already written are
+  put back from their originals. Guardrails and the workspace guard judge every path: one protected path or one file in
+  another checkout refuses the whole call. Each file keeps its own line endings, BOM and encoding.
 
 - Edits run in order in memory (a later edit sees the result of earlier ones) and are **all-or-nothing**. If any edit fails,
   nothing is written, and the error names the edit that failed: `Edit 2 of 3 failed in src/x.cs: …`.
@@ -175,13 +183,17 @@ details: { path, created: boolean, bytes: number, lines: number, eol: 'lf'|'crlf
   an error.
 - When nothing is found, the error points at the most similar line.
 - Model-facing content: `Applied 2 edits to src/x.cs (+5 −3)`, followed by notes about fuzzy matches or mixed line endings,
-  then a compact unified diff (hunks only, 3 lines of context, at most 80 lines).
+  then a compact unified diff (hunks only, 3 lines of context, at most 80 lines). Several files: `Applied 3 edits to 2
+  files (+6 −3)`, then each file's line and diff, the 80 lines and 6000 characters shared out between the files (at
+  least 20 lines and 1500 characters each).
 
 ```ts
 details: { path, diff: string /* full unified diff with ---/+++ header, ≤ 2000 lines */, added: number, removed: number,
            edits: number, firstChangedLine: number, eol: 'lf'|'crlf', bom: boolean,
            fuzzy?: { edit: number /* 1-based */, strategy: 'trailing-whitespace'|'unicode'|'indentation', line: number }[] }
 // failure: { path, failedEdit: number, edits: number }
+// several files: { files: <the one-file details>[], diff /* every changed file's diff, each with its header */,
+//                  added, removed, edits /* totals */ }; failure: { path, failedFile, files, failedEdit?, edits? }
 ```
 
 Diffs are standard unified diffs (`@@ -a,b +c,d @@`, ` `/`-`/`+` lines, `\ No newline at end of file`). The UI diff viewer can

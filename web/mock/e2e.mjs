@@ -445,6 +445,15 @@ await shot(page, '09-subagents-notices');
   await report.locator('.sent .tb', { hasText: 'As sent' }).click();
   check('…and as sent on request', (await report.locator('.sent .raw').innerText()).startsWith('<system-notice kind="agent-result">'));
   await shot(page, '09c-notice-as-sent');
+
+  // an edit of several files: the row says how many and which, the diff has a header per file
+  const multi = page.locator('.content:visible .tool', { hasText: '2 files' }).first();
+  check('an edit of several files names them on its row', (await multi.count()) === 1 && (await multi.locator('.line').innerText()).includes('rpc.svelte.js'));
+  await multi.locator('.line').click();
+  await page.waitForTimeout(150);
+  const heads = await multi.locator('.dl.file').allInnerTexts();
+  check('…and its diff has a header per file', heads.length === 2 && heads[0].includes('rpc.svelte.js') && heads[1].includes('PROTOCOL.md'), heads.join(' | '));
+  await shot(page, '09d-edit-several-files');
 }
 
 }

@@ -63,8 +63,27 @@ export function parseDiff(text) {
   return { rows, added, removed };
 }
 
+/** The files of an edit of several files (`files: [{ path, edits }]`), or null for the one-file form. */
+export function editFiles(args) {
+  if (!args || typeof args !== 'object') return null;
+  let files = args.files ?? args.fileEdits;
+  if (typeof files === 'string') {
+    try {
+      files = JSON.parse(files);
+    } catch {
+      files = null;
+    }
+  }
+  if (!Array.isArray(files) || !files.length) return null;
+  return files
+    .filter((f) => f && typeof f === 'object')
+    .map((f) => ({ path: String(f.path ?? f.file_path ?? f.filePath ?? f.file ?? ''), args: f }));
+}
+
 /** Build a pseudo diff from edit tool arguments (used while the result is pending or has no diff). */
 export function editsToDiff(args) {
+  const files = editFiles(args);
+  if (files) return files.map((f) => `--- a/${f.path}\n+++ b/${f.path}\n${editsToDiff(f.args)}`).join('\n');
   const edits = normalizeEdits(args);
   const out = [];
   edits.forEach((e, i) => {

@@ -1,5 +1,6 @@
 // Tool metadata for the chat view: labels, icons, summary arguments and argument parsing.
 import { firstLine, relPath, truncate } from './format.js';
+import { editFiles } from './diff.js';
 
 const META = {
   read: { label: 'Read', icon: 'file-text', arg: 'path', view: 'read' },
@@ -175,8 +176,13 @@ export function toolSummary(name, args, base) {
       }
       return p;
     }
+    case 'edit': {
+      // several files in one call: how many, and which
+      const files = editFiles(args);
+      if (files) return truncate(`${files.length} files · ${files.map((f) => relPath(f.path, base)).join(', ')}`, 160);
+      return relPath(pathArg(args), base);
+    }
     case 'write':
-    case 'edit':
       return relPath(pathArg(args), base);
     case 'ls':
       return relPath(pathArg(args), base) || '.';

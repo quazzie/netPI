@@ -129,6 +129,12 @@ public static class FileLists
             if (m.Role != MessageRole.Assistant) continue;
             foreach (var call in m.ToolCalls)
             {
+                // An edit of several files names them in files[].path.
+                if (call.Name == "edit" && EditFiles(call.Arguments) is { Count: > 0 } several)
+                {
+                    foreach (var p in several) modified.Add(p);
+                    continue;
+                }
                 var (path, host, action) = PathOf(call.Arguments);
                 if (path is null) continue;
                 // a tool with actions counts as <tool>_<action>: ssh + read is ssh_read, the older name still in older chats
@@ -168,6 +174,24 @@ public static class FileLists
             return (path, Str(o["host"])?.Trim(), Str(o["action"])?.Trim().ToLowerInvariant());
         }
         catch (JsonException) { return (null, null, null); }
+    }
+
+    /// <summary>The paths of an edit of several files (<c>files: [{ path, edits }]</c>); empty for the one-file form.</summary>
+    private static List<string> EditFiles(string arguments)
+    {
+        var paths = new List<string>();
+        try
+        {
+            if (JsonNode.Parse(arguments) is not JsonObject o || (o["files"] ?? o["fileEdits"]) is not JsonArray files) return paths;
+            foreach (var f in files)
+            {
+                if (f is not JsonObject entry) continue;
+                foreach (var name in PathArgs)
+                    if (Str(entry[name]) is { Length: > 0 } p) { paths.Add(p.Trim()); break; }
+            }
+        }
+        catch (JsonException) { }
+        return paths;
     }
 
     private static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s : null;

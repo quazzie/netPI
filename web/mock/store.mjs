@@ -402,6 +402,25 @@ export function seed() {
   pushMessage(show.id, 'tool', [{ ...result(e1, 'edit', "Edit 1 of 1 failed in web/src/lib/rpc.svelte.js: oldText not found. The most similar line is 62: \"    conn.status = 'open';\" — include more surrounding context or re-read the file.", { path: `${REPO}/web/src/lib/rpc.svelte.js`, failedEdit: 1, edits: 1 }, { durationMs: 9 }), isError: true }], {}, (t += 40));
   pushMessage(show.id, 'notice', [text('You tried to edit a file you only partially read. Re-read the surrounding lines before editing again.')], { meta: { kind: 'nudge' } }, (t += 200));
   pushMessage(show.id, 'notice', [text('**explorer** finished:\n\n- `WsEndpoint.HandleAsync` (src/NetPI.Server/WsEndpoint.cs:41) owns the socket loop.\n- Subscriptions live in `ClientConnection.Subscriptions` and are **dropped** when the socket closes (line 88).\n- There is no replay: events published while disconnected are lost.\n\nRecommendation: the client must re-send `sub` on every (re)connect and refetch the active session.')], { meta: { kind: 'agent-result', sessionId: sub.id, agentName: 'explorer' } }, (t += 60_000));
+  // an edit of several files in one call: the client fix and the protocol note, all or nothing
+  const e2 = newId('call');
+  const multiEdit = {
+    files: [
+      { path: 'web/src/lib/rpc.svelte.js', edits: [{ oldText: "  sock.onopen = () => {\n    conn.status = 'open';\n    flushOutbox();", newText: "  sock.onopen = () => {\n    conn.status = 'open';\n    resubscribe();\n    flushOutbox();" }] },
+      { path: 'docs/PROTOCOL.md', oldText: 'Subscriptions belong to a connection.', newText: 'Subscriptions belong to a connection: a client re-sends `sub` after it reconnects.' },
+    ],
+  };
+  const multiDiff =
+    "--- a/web/src/lib/rpc.svelte.js\n+++ b/web/src/lib/rpc.svelte.js\n@@ -60,4 +60,5 @@\n   sock.onopen = () => {\n     conn.status = 'open';\n+    resubscribe();\n     flushOutbox();\n   };\n" +
+    '--- a/docs/PROTOCOL.md\n+++ b/docs/PROTOCOL.md\n@@ -88,1 +88,1 @@\n-Subscriptions belong to a connection.\n+Subscriptions belong to a connection: a client re-sends `sub` after it reconnects.';
+  pushMessage(show.id, 'assistant', [call(e2, 'edit', multiEdit)], { provider: 'aiproxy', model: 'qwen3.8-27b', stopReason: 'tool_use', usage: usage(10500, 160, 9800), durationMs: 1400, meta: { ttftMs: 230 } }, (t += 1500));
+  pushMessage(show.id, 'tool', [result(e2, 'edit', 'Applied 2 edits to 2 files (+2 −1)\n\nApplied 1 edit to web/src/lib/rpc.svelte.js (+1 −0)\n\nApplied 1 edit to docs/PROTOCOL.md (+1 −1)', {
+    files: [
+      { path: `${REPO}/web/src/lib/rpc.svelte.js`, added: 1, removed: 0, edits: 1, firstChangedLine: 62, eol: 'lf', bom: false },
+      { path: `${REPO}/docs/PROTOCOL.md`, added: 1, removed: 1, edits: 1, firstChangedLine: 88, eol: 'lf', bom: false },
+    ],
+    diff: multiDiff, added: 2, removed: 1, edits: 2,
+  }, { durationMs: 14 })], {}, (t += 60));
   const b1 = newId('call');
   pushMessage(show.id, 'assistant', [thinking('The subagent confirms subscriptions are per-connection. Run the reconnect test script.', 900), call(b1, 'bash', { command: 'node web/mock/reconnect-test.mjs --drop-after 2s' })], { provider: 'aiproxy', model: 'qwen3.8-27b', stopReason: 'tool_use', usage: usage(11000, 100, 10000), durationMs: 1500, meta: { ttftMs: 260 } }, (t += 1600));
   pushMessage(show.id, 'tool', [result(b1, 'bash', 'connecting ws://127.0.0.1:7431/ws\nsubscribed ses_show\nstream.delta × 41\n-- dropping socket --\nreconnected in 412ms\nwaiting for events… (timeout 5s)\nFAIL: no events after reconnect\n[exit code 1]', shellDetails('node web/mock/reconnect-test.mjs --drop-after 2s', 1, 6120, REPO), { durationMs: 6120 })], {}, (t += 6200));

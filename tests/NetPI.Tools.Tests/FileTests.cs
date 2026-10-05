@@ -158,6 +158,97 @@ public static class FileTests
             Check.Equal(original, T.ReadRaw(f));
         });
 
+        // ------------------------------------------------ edit: several files in one call
+        r.Add("edit: several files in one call are all applied, each keeping its line endings", async () =>
+        {
+            var dir = T.TempDir("edit-many");
+            var a = T.WriteText(dir, "a.cs", "class A { int x; }\r\n");
+            var b = T.WriteText(dir, "sub/b.md", "Use x here.\nAnd x there.\n");
+            var c = T.WriteText(dir, "c.txt", "untouched\n");
+            var res = await T.Run(Edit, dir, new
+            {
+                files = new object[]
+                {
+                    new { path = "a.cs", edits = new[] { new { oldText = "int x;", newText = "int y;" } } },
+                    new { file_path = "sub/b.md", oldText = "x", newText = "y", replaceAll = true },
+                    new { path = "c.txt", edits = new[] { new { oldText = "untouched", newText = "untouched" } } },
+                },
+            });
+            ToolCheck.Error(res, "identical");
+            Check.Contains(res.Content, "File 3 of 3", "the failing file is named by its place in the list");
+            Check.Contains(res.Content, "No files were changed");
+            Check.Equal("class A { int x; }\r\n", T.ReadRaw(a), "a refused call changes nothing, not even the files before the failing one");
+
+            res = await T.Run(Edit, dir, new
+            {
+                files = new object[]
+                {
+                    new { path = "a.cs", edits = new[] { new { oldText = "int x;", newText = "int y;" } } },
+                    new { file_path = "sub/b.md", oldText = "x", newText = "y", replaceAll = true },
+                },
+            });
+            ToolCheck.Ok(res);
+            Check.Equal("class A { int y; }\r\n", T.ReadRaw(a), "CRLF kept");
+            Check.Equal("Use y here.\nAnd y there.\n", T.ReadRaw(b));
+            Check.Equal("untouched\n", T.ReadRaw(c));
+            Check.Contains(res.Content, "Applied 2 edits to 2 files");
+            Check.Contains(res.Content, "Applied 1 edit to a.cs");
+            Check.Contains(res.Content, "sub/b.md");
+            var d = T.D(res);
+            Check.Equal(2, d.GetProperty("files").GetArrayLength());
+            Check.Equal(2, d.Int("edits"));
+            Check.Contains(d.Str("diff")!, "+++ b/a.cs");
+            Check.Contains(d.Str("diff")!, "+++ b/sub/b.md", "one diff with a header per file");
+            Check.Equal(2, d.GetProperty("files")[1].Int("added"));
+        });
+
+        r.Add("edit: several files: a missing oldText in any file leaves every file as it was", async () =>
+        {
+            var dir = T.TempDir("edit-many");
+            var a = T.WriteText(dir, "a.txt", "one\n");
+            var b = T.WriteText(dir, "b.txt", "two\n");
+            var res = await T.Run(Edit, dir, new
+            {
+                files = new object[]
+                {
+                    new { path = "a.txt", oldText = "one", newText = "ONE" },
+                    new { path = "b.txt", edits = new[] { new { oldText = "two", newText = "TWO" }, new { oldText = "three", newText = "THREE" } } },
+                },
+            });
+            ToolCheck.Error(res, "File 2 of 2, edit 2 of 2 failed in b.txt");
+            Check.Equal("one\n", T.ReadRaw(a));
+            Check.Equal("two\n", T.ReadRaw(b));
+            Check.Equal(2, T.D(res).Int("failedFile"));
+            Check.Equal(2, T.D(res).Int("failedEdit"));
+        });
+
+        r.Add("edit: several files: a missing file, a duplicate, path with files and too many files are refused before writing", async () =>
+        {
+            var dir = T.TempDir("edit-many");
+            var a = T.WriteText(dir, "a.txt", "one\n");
+            var res = await T.Run(Edit, dir, new { files = new object[] { new { path = "a.txt", oldText = "one", newText = "ONE" }, new { path = "nope.txt", oldText = "x", newText = "y" } } });
+            ToolCheck.Error(res, "File 2 of 2: File not found");
+            Check.Contains(res.Content, "write tool");
+            res = await T.Run(Edit, dir, new { files = new object[] { new { path = "a.txt", oldText = "one", newText = "ONE" }, new { path = "./A.txt", oldText = "x", newText = "y" } } });
+            if (OperatingSystem.IsWindows()) ToolCheck.Error(res, "listed twice (files 1 and 2)");
+            res = await T.Run(Edit, dir, new { path = "a.txt", files = new object[] { new { path = "a.txt", oldText = "one", newText = "ONE" } } });
+            ToolCheck.Error(res, "either path (one file) or files (several)");
+            res = await T.Run(Edit, dir, new { files = Enumerable.Range(0, EditTool.MaxFiles + 1).Select(i => new { path = $"f{i}.txt", oldText = "a", newText = "b" }).ToArray() });
+            ToolCheck.Error(res, $"more than one edit call takes ({EditTool.MaxFiles})");
+            res = await T.Run(Edit, dir, new { files = new object[] { new { oldText = "one", newText = "ONE" } } });
+            ToolCheck.Error(res, "File 1 of 1: missing path");
+            Check.Equal("one\n", T.ReadRaw(a), "nothing was written by any of them");
+        });
+
+        r.Add("edit: TargetPaths reads path, or every files[].path (the rule the guards copy)", () =>
+        {
+            Check.Equal("a.cs", string.Join("|", EditTool.TargetPaths(ToolArgs.Parse("""{"file_path":"a.cs","oldText":"x"}"""))));
+            Check.Equal("a.cs|b.cs", string.Join("|", EditTool.TargetPaths(ToolArgs.Parse("""{"files":[{"path":"a.cs"},{"filePath":"b.cs"}]}"""))));
+            Check.Equal("a.cs", string.Join("|", EditTool.TargetPaths(ToolArgs.Parse("""{"files":"[{\"path\":\"a.cs\"}]"}"""))), "files as a JSON string");
+            Check.Equal(0, EditTool.TargetPaths(ToolArgs.Parse("{}")).Count);
+            return Task.CompletedTask;
+        });
+
         r.Add("edit: ambiguous match reports count and line numbers; replaceAll replaces all", async () =>
         {
             var dir = T.TempDir("edit");

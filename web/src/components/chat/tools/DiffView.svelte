@@ -9,7 +9,16 @@
   const d = $derived(result?.details ?? null);
   const diffText = $derived(d?.diff ?? (name === 'edit' || name === 'ssh_edit' ? editsToDiff(args) : null));
   const parsed = $derived(diffText ? parseDiff(diffText) : null);
-  const visibleRows = $derived(parsed ? parsed.rows.filter((r) => r.t !== 'file') : []);
+  // One file: its ---/+++ header says nothing the row does not. Several (an edit of several files): each file's
+  // "+++ b/<path>" becomes a header row, so the diff says where each change is.
+  const several = $derived(parsed ? parsed.rows.filter((r) => r.t === 'file' && r.text.startsWith('+++ ')).length > 1 : false);
+  const visibleRows = $derived(
+    parsed
+      ? parsed.rows
+          .filter((r) => r.t !== 'file' || (several && r.text.startsWith('+++ ')))
+          .map((r) => (r.t === 'file' ? { ...r, text: r.text.replace(/^\+\+\+ (b\/)?/, '') } : r))
+      : [],
+  );
   let showAll = $state(false);
   const rows = $derived(showAll ? visibleRows : visibleRows.slice(0, LIMIT));
   const pseudo = $derived(!d?.diff && (name === 'edit' || name === 'ssh_edit'));
@@ -26,7 +35,9 @@
   {#if pseudo && !result}<div class="note">pending — showing requested edits</div>{/if}
   <div class="diff np-mono np-scroll">
     {#each rows as r, i (i)}
-      {#if r.t === 'hunk' || r.t === 'meta'}
+      {#if r.t === 'file'}
+        <div class="dl file" title={r.text}><span class="code">{r.text}</span></div>
+      {:else if r.t === 'hunk' || r.t === 'meta'}
         <div class="dl {r.t}"><span class="gut"></span><span class="code">{r.text}</span></div>
       {:else}
         <div class="dl {r.t}">
@@ -123,6 +134,21 @@
   .dl.hunk {
     background: var(--diff-hunk);
     margin: 2px 0;
+  }
+  .dl.file {
+    position: sticky;
+    left: 0;
+    padding: 2px 8px;
+    margin-top: 4px;
+    border-top: 1px solid var(--border);
+    font-weight: 600;
+  }
+  .dl.file:first-child {
+    margin-top: 0;
+    border-top: none;
+  }
+  .dl.file .code {
+    color: var(--fg);
   }
   .dl.hunk .code,
   .dl.meta .code {
