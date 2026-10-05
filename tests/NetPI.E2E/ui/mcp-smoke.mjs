@@ -38,7 +38,7 @@ try {
   for(const width of [230,380,1000]) {
     await page.setViewportSize({width:Math.max(width,PANEL+40),height:420});
     await page.goto('http://127.0.0.1:'+server.address().port);
-    await page.locator('button.server').click();
+    await page.locator('button.pick').click();
     await page.getByText('weather',{exact:true}).click();
     await page.getByLabel('Expose tool').waitFor();
     const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
