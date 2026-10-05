@@ -1,6 +1,7 @@
 name: CI
 
-# Build and run the six unit suites (Providers, Tools, Agent, Aux, Host, Storage) on every push and pull request.
+# Build and run the six unit suites (Providers, Tools, Agent, Aux, Host, Storage), the mock UI suite and the real-server
+# end-to-end suite on every push.
 #
 # The suites run on windows-latest on purpose:
 #   - the Aux suite drives a real browser (the screenshot test renders a page in a headless Edge/Chrome, and the
@@ -9,45 +10,58 @@ name: CI
 #     only exercised on a machine with a browser, so that is where the suite runs.
 #   - the shell tests run pwsh and bash, and the desktop shell (net10.0-windows, WebView2) is Windows-only.
 #
-# The repo also builds on Linux/macOS (./build.sh builds everything except the Windows desktop shell), but the
+# The repo also builds on Linux/macOS (./build.sh builds everything except the Windows-only projects), but the
 # unit suites are not run there yet: add a Linux job once the suites are green there, keeping the Aux browser
 # tests in mind (they need a browser, or they skip).
 #
 # No publishing, no secrets, no deployment: scripts/test.ps1 builds the six test projects (Release) into
 # artifacts/dev/app and runs each suite, exiting non-zero when any test fails. The e2e job runs the real-server suite
 # (scripts/e2e.ps1) the same way.
+#
+# When it runs: every push, to any branch. A pull request from a branch of this repository is already covered by that
+# branch's push, so the pull_request trigger only runs for pull requests from forks (whose pushes land elsewhere); each
+# job's `if` says so. A new push to a branch cancels the run still going for its previous one.
 on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: build + unit suites (windows)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up .NET 10
-        # every project targets net10.0 (Directory.Build.props); there is no global.json pin
+        # every project targets net10.0 (Directory.Build.props); global.json pins the SDK to 10.0.100 with
+        # rollForward latestFeature, so the newest installed 10.0.xxx band is what builds here and on a dev machine
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0'
 
-      - name: Restore the six test projects
-        # the test projects pull in the plugins they exercise; the desktop shell is not in their graph
-        run: |
-          foreach ($suite in 'Providers', 'Tools', 'Agent', 'Aux', 'Host', 'Storage') {
-            dotnet restore "tests/NetPI.$suite.Tests/NetPI.$suite.Tests.csproj"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-
+      # scripts/test.ps1 generates one solution of the six suite projects and builds it (an implicit restore pulls in
+      # the plugins they exercise; the desktop shell is not in their graph), then runs each suite and prints, for every
+      # failed test, its message and the last lines it printed. The full output is kept in artifacts/testlogs.
       - name: Build and run the suites
-        # builds each suite (Release) and runs its runner; the full output is kept in artifacts/testlogs
         run: pwsh -File ./scripts/test.ps1
+
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-logs
+          path: artifacts/testlogs
+          retention-days: 7
 
   ui:
     name: web UI end-to-end (mock server)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -61,10 +75,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
 
+      # pwsh runs a multi-line step as one script and only the last command's exit code fails the step, so each
+      # command checks its own
       - name: Install and build the UI
         run: |
           npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build
 
       # The bundles are committed and `dotnet build` ships them, so a fresh build that differs from what is committed
@@ -74,6 +92,7 @@ jobs:
       - name: The committed bundles are what a fresh build produces
         run: |
           git diff --exit-code -- web/dist "plugins/*/wwwroot"
+          if ($LASTEXITCODE) { Write-Error "the committed bundles differ from a fresh build (the diff is above)"; exit 1 }
           $new = git status --porcelain -- web/dist "plugins/*/wwwroot"
           if ($new) { Write-Error "fresh bundle files that are not committed:`n$new" }
 
@@ -84,17 +103,33 @@ jobs:
       - name: The host-shim boundary a plugin tab is built against
         run: node web/scripts/check-host-shims.mjs
 
+      # The other Node checks, each its own step so the job log names the one that failed: the kernel references only
+      # the contracts and names no plugin-owned type; every plugin tab's mount and refresh loop; the projects module and
+      # the dialog views on it; rpc's one deadline per call; where a streaming answer may be cut for rendering.
+      - name: The core stays small
+        run: node scripts/core-size.mjs
+      - name: The tab lifecycle
+        run: node web/scripts/check-tab-lifecycle.mjs
+      - name: The projects module
+        run: node web/scripts/check-projects.mjs
+      - name: The rpc deadline
+        run: node web/scripts/check-rpc-deadline.mjs
+      - name: The live split
+        run: node web/scripts/check-live-split.mjs
+
       - name: Run the mock e2e
         run: npm run e2e
 
   e2e:
     name: end-to-end (real server, mock model)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up .NET 10
+        # global.json: 10.0.100, rollForward latestFeature (see the test job)
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0'

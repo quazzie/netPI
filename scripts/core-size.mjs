@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // The mechanical check that the core stays small (AGENTS.md: "Keep the core small; new behaviour goes into a plugin").
 // Two rules, both about src/NetPI.Host and src/NetPI.Abstractions:
-//   1. the host kernel references only the contracts — one <ProjectReference>, to NetPI.Abstractions;
+//   1. neither project pulls in anything from outside its own folder — no <ProjectReference>, <Reference> (a path or a
+//      HintPath) or <Compile Include> that leaves it — except the kernel's one reference to the contracts,
+//      NetPI.Abstractions; a plugin's code compiled or referenced into the core would be a dependency all the same;
 //   2. neither project names a type that belongs to a plugin. A name that must not come back is listed in FORBIDDEN
 //      with why, so adding one is a one-line edit.
 // Comments and string literals are stripped first: a word in a comment or in a message is not a dependency.
@@ -180,19 +182,42 @@ async function sources(dir) {
 
 const violations = [];
 
-/** Rule 1: the kernel references the contracts and nothing else. */
+/**
+ * Rule 1: neither project pulls in anything from outside its own folder. Every <ProjectReference>, <Reference> and
+ * <Compile> Include (and every <HintPath>) is resolved against the project folder; one that leaves it is a violation,
+ * except the kernel's reference to the contracts. A <Reference> without a path is a framework assembly by name and is
+ * not a dependency on this repository's code.
+ */
 async function references() {
-  const file = path.join(ROOT, KERNEL, 'NetPI.Host.csproj');
-  const text = await fs.readFile(file, 'utf8');
-  for (const match of text.matchAll(/<ProjectReference\b[^>]*?\bInclude\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
-    const include = match[1] ?? match[2];
-    const name = path.basename(include, path.extname(include));
-    if (name !== ALLOWED_REFERENCE) {
-      const line = text.slice(0, match.index).split('\n').length;
+  for (const project of [KERNEL, CONTRACTS]) {
+    const name = path.basename(project);
+    const dir = path.join(ROOT, project);
+    const csproj = `${project}/${name}.csproj`;
+    const text = await fs.readFile(path.join(ROOT, csproj), 'utf8');
+    const entries = [];
+    for (const match of text.matchAll(/<(ProjectReference|Reference|Compile)\b[^>]*?\bInclude\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+      entries.push({ kind: match[1], include: match[2] ?? match[3], index: match.index });
+    }
+    for (const match of text.matchAll(/<HintPath\s*>([^<]*)<\/HintPath\s*>/g)) {
+      entries.push({ kind: 'HintPath', include: match[1].trim(), index: match.index });
+    }
+    for (const { kind, include, index } of entries) {
+      const line = text.slice(0, index).split('\n').length;
+      const where = `${csproj}:${line}`;
+      const isPath = /[\\/]|\$\(/.test(include);
+      if (kind === 'Reference' && !isPath) continue; // a framework assembly by name
+      // $(RepoRoot) is the repository; any other property is a path this check cannot see through, so it counts as outside
+      const expanded = include.replace(/\$\(RepoRoot\)/g, `${ROOT}${path.sep}`);
+      const target = path.resolve(dir, expanded.replace(/[\\/]/g, path.sep));
+      const inside = !/\$\(/.test(expanded) && (target === dir || target.startsWith(dir + path.sep));
+      if (inside) continue;
+      if (kind === 'ProjectReference' && project === KERNEL && path.basename(include, path.extname(include)) === ALLOWED_REFERENCE) continue;
       violations.push({
-        where: `${KERNEL}/NetPI.Host.csproj:${line}`,
-        what: `ProjectReference ${include}`,
-        why: `the host kernel may reference only ${ALLOWED_REFERENCE}`,
+        where,
+        what: `${kind} ${include}`,
+        why: project === KERNEL && kind === 'ProjectReference'
+          ? `the host kernel may reference only ${ALLOWED_REFERENCE}`
+          : `${name} compiles and references nothing from outside its own folder`,
       });
     }
   }

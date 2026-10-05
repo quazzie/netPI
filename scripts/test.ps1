@@ -73,6 +73,7 @@ try {
     $env:NETPI_APP_DIR = Join-Path (Get-Location) 'artifacts\dev\app'
     $results = New-Object System.Collections.Generic.List[object]
     $failures = New-Object System.Collections.Generic.List[object]
+    $suiteOutput = @{}   # each suite's console lines, for the evidence printed per failure at the end
 
     "NetPI unit tests, $(Get-Date -Format s) ($Config$scope, run $runId)" | Set-Content $log
 
@@ -188,6 +189,7 @@ try {
 
             "== NetPI.$s.Tests (exit $code, $([math]::Round($entry.Sw.Elapsed.TotalSeconds, 1))s) ==" | Add-Content $log
             $out | Add-Content $log
+            $suiteOutput[$s] = @($out)
 
             # The runner's result file is the authority: per-test outcomes, the skip count, and the time the
             # runner itself reports — the process-gap column used to be blind to the providers suite, whose
@@ -289,6 +291,34 @@ try {
     # Only real test names make a usable filter: the "(suite process exited ...)" and "(no test matched ...)"
     # entries are the script's own remarks about the run.
     $realFailures = @($failures | Where-Object { -not $_.Name.StartsWith('(') })
+
+    # Each failure with its evidence, from the suite's own output: the runner's FAIL line and the message under it, after
+    # the last lines the test printed before it failed. A CI job log shows only what is printed here (artifacts\testlogs
+    # is an upload, not the log), and "[Aux] workspaces: …" alone says nothing about why.
+    foreach ($f in $realFailures) {
+        $lines = @($suiteOutput[$f.Suite])
+        $at = -1
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^\s*FAIL\s+' -and $lines[$i].Contains($f.Name)) { $at = $i; break }
+        }
+        if ($at -lt 0) { continue }   # a failure the runner reported without a FAIL line (a crash): the log has it
+        # the test's own output: everything since the previous test's PASS/FAIL/SKIP line, the last 40 lines of it
+        $from = $at - 1
+        while ($from -ge 0 -and $lines[$from] -notmatch '^\s*(PASS|FAIL|SKIP)\s+') { $from-- }
+        $own = @(); if ($at - 1 -ge $from + 1) { $own = @($lines[($from + 1)..($at - 1)]) }
+        $own = @($own | Where-Object { $_ -ne '' })
+        $cut = 0
+        if ($own.Count -gt 40) { $cut = $own.Count - 40; $own = @($own[$cut..($own.Count - 1)]) }
+        # the failure text: the FAIL line and the indented message lines under it, up to the next test or the summary
+        $to = $at
+        while ($to + 1 -lt $lines.Count -and $to - $at -lt 60 -and $lines[$to + 1] -match '^\s{8}' -and $lines[$to + 1] -notmatch '^\s*(PASS|FAIL|SKIP)\s+') { $to++ }
+        Write-Host ''
+        Write-Host ("---- [{0}] {1}" -f $f.Suite, $f.Name) -ForegroundColor Red
+        if ($cut) { Write-Host ("     ({0} earlier line(s) of this test's output are in the log)" -f $cut) -ForegroundColor DarkGray }
+        foreach ($l in $own) { Write-Host "     $l" -ForegroundColor DarkGray }
+        foreach ($l in $lines[$at..$to]) { Write-Host "  $l" -ForegroundColor Red }
+    }
+
     $quoted = ($realFailures | Select-Object -ExpandProperty Name -Unique |
         ForEach-Object { '"{0}"' -f ($_ -replace '"', '""') }) -join ' '
     $suiteArgs = (@($realFailures | ForEach-Object { $_.Suite }) | Sort-Object -Unique) -join ','
