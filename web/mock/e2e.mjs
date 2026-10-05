@@ -1617,6 +1617,7 @@ log('plugin tab: MCP');
   await page.waitForTimeout(150);
   // switching a tool off writes the server's configuration (mcp.save with a tools list) and the list is read again
   const expose = tool('ha_call_service').locator('.np-check', { hasText: 'Expose tool' }).locator('input');
+  if (!(await tool('ha_call_service').locator('.schema').isVisible())) await tool('ha_call_service').locator('summary').click(); // the row is closed (the read-only check above left it so)
   await expose.click();
   await page.waitForFunction(() => [...document.querySelectorAll('.mcp details.tool')].some((d) => d.textContent.includes('ha_call_service') && !d.querySelector('.np-check input').checked), null, { timeout: 5000 }).catch(() => {});
   const cfg = (await rpcCall('mcp.list')).servers.find((s) => s.id === 'ha')?.config;
