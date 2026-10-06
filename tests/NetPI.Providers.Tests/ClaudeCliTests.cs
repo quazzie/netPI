@@ -166,6 +166,18 @@ internal static class ClaudeCliTests
             var models = await p.ListModelsAsync(true, CancellationToken.None);
             t.Eq(3, models.Count, "default models");
             t.Check(models.All(m => m.Provider == "claude-cli" && m.Reasoning is { Supported: true }), "models carry the provider and efforts");
+
+            // Enabling it (or editing the models) after the catalog listed it must be reported, or no agent can pick it.
+            var cfg = Cfg(enabled: false);
+            var live = new CL.ClaudeCliProvider(() => cfg, null, (_, ct) => Lines([], ct));
+            t.Check(!live.ModelsChangedSinceLastList(), "nothing listed yet: nothing changed");
+            await live.ListModelsAsync(true, CancellationToken.None);
+            t.Check(!live.ModelsChangedSinceLastList(), "unchanged since the list");
+            cfg["enabled"] = true;
+            t.Check(live.ModelsChangedSinceLastList(), "enabling changes the catalog");
+            await live.ListModelsAsync(true, CancellationToken.None);
+            cfg["models"] = new JsonArray("claude-opus-5-5");
+            t.Check(live.ModelsChangedSinceLastList(), "editing the models changes the catalog");
         });
 
         await t.Run("claude-cli: live call through the installed CLI (set NETPI_CLAUDE_CLI_LIVE=1; uses the subscription)", async () =>

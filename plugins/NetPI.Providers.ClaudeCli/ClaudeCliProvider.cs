@@ -39,9 +39,17 @@ public sealed class ClaudeCliProvider : IModelProvider
         catch (Exception ex) { _log.LogWarning(ex, "claude-cli: could not read settings"); return ClaudeCliOptions.Parse(null); }
     }
 
+    private string? _listed;
+
+    private static string Fingerprint(ClaudeCliOptions o) => o.Enabled ? string.Join('|', o.Models) : "disabled";
+
+    /// <summary>True when the settings now list other models than the last list did (so the catalog must be told).</summary>
+    internal bool ModelsChangedSinceLastList() => _listed is not null && _listed != Fingerprint(Options());
+
     public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(bool refresh, CancellationToken ct)
     {
         var o = Options();
+        _listed = Fingerprint(o);
         IReadOnlyList<ModelInfo> list = !o.Enabled ? [] : o.Models.Select(id => new ModelInfo
         {
             Provider = Id,

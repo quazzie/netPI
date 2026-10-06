@@ -13,6 +13,8 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
 {
     public const string SettingsPath = "providers.claudeCli";
 
+    private IDisposable? _settingsSub;
+
     public ClaudeCliProvider? Provider { get; private set; }
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
@@ -31,8 +33,19 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         });
         Provider = new ClaudeCliProvider(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger);
         context.Services.Register<IModelProvider>(Provider);
+        // Enabling the provider or editing its models changes the catalog: say so, as the other providers do.
+        _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, _ =>
+        {
+            if (Provider is { } p && p.ModelsChangedSinceLastList())
+                context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = p.Id });
+        });
         return Task.CompletedTask;
     }
 
-    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+    public Task StopAsync(CancellationToken ct)
+    {
+        _settingsSub?.Dispose();
+        _settingsSub = null;
+        return Task.CompletedTask;
+    }
 }
