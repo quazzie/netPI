@@ -12,7 +12,7 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 | Old NetPI v1 | its data was moved to `%USERPROFILE%\.netpi\legacy-netpi-v1\`. Reference only; don't run it against the new data folder |
 | Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\archived\apps\AiSwitcher-legacy`) → nInfer `:8080` (source `C:\AI\Projects\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
 | Claude | Anthropic Messages API with an API key (`providers.anthropic.apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far (no API key available) |
-| Claude CLI | `providers.claudeCli` runs `claude -p` on the owner's subscription, text only (no tools). Needs the standalone CLI (`irm https://claude.ai/install.ps1 | iex`, then `claude auth login`). Verified live 2026-10-06 (Sonnet, Max login); `NETPI_CLAUDE_CLI_LIVE=1` runs the live test |
+| Claude CLI | `providers.claudeCli` runs `claude -p` on the owner's subscription, text only (no tools). Needs the standalone CLI (`irm https://claude.ai/install.ps1 \| iex`, then `claude auth login`). Verified live 2026-10-06 (Sonnet, Max login); `NETPI_CLAUDE_CLI_LIVE=1` runs the live test |
 | OpenRouter | `providers.openrouter.apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
 | Plans | `docs/plans/`: active plans (open questions at the end); `docs/archive/`: one dated record per completed plan (what was done, results, commits) |
 
