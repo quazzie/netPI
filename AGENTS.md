@@ -29,6 +29,9 @@
 - Full gates only for shared contracts, cross-cutting behavior or explicit requests—never merely for merging.
 - Fix flaky tests; a passing retry is not a fix. Read saved evidence and rerun only affected tests. Do not merge unresolved failures.
 - Commands, selection, mocks and failure evidence: [TESTING](docs/TESTING.md).
+- Deterministic builds are load-bearing (hot-reload + the contracts check in build.ps1): unchanged sources must rebuild
+  byte-identical, same commit in two checkouts included. If a dll's bytes start changing with no source change, diff the
+  PDBs (SourceLink, line endings and checkout paths are the known leaks) before touching anything else.
 
 ## Architecture and conventions
 
