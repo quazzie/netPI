@@ -907,3 +907,5 @@ names or an inline `<svg …>` string.
 - The Ideas tab expects `ideas.changed { backend: 'sqlite', database, scope, schemaVersion, file, reason? }` after every
   committed write, including writes made by agents, and reads `ideas.list().storage` for where the backlog lives. It
   sends `expectedRevision` on an edit and shows a refused one as a conflict instead of losing the text.
+
+Local model/profile switches refresh the catalog and model controls through `models.changed`, without opening a picker or requesting a manual refresh. Backend metadata changes count even when the public model ID and limits stay the same.

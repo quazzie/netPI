@@ -79,6 +79,28 @@ public static class CoreTests
             Check.False(pools.Arr().Any(p => p.B("configured")), "the suite's settings set up no agents: " + pools.GetRawText());
         });
 
+        r.Add("models.background-refresh", "models: a backend restart under the same ID updates automatically without a UI refresh", async () =>
+        {
+            var model = env.Mock.Catalog.FindAiProxy("qwen3.8-27b")!;
+            var original = model.Created;
+            await env.Rpc("models.list", new { refresh = true });
+            var mark = env.Client.Mark();
+            try
+            {
+                model.Created = original + 100;
+                await env.Client.WaitFor(mark, e => e.Type == "models.changed",
+                    "background catalog refresh after backend restart", 15_000);
+                var listed = (await env.Rpc("models.list")).Arr("models").Single(m => m.S("ref") == Qwen);
+                Check.Equal(original + 100, listed.P("extra").L("created"));
+                Check.Equal("loaded", listed.S("status"));
+            }
+            finally
+            {
+                model.Created = original;
+                await env.Rpc("models.list", new { refresh = true });
+            }
+        });
+
         r.Add("chat.stream", "chat: default model streams thinking + markdown, events in order, message persisted", async () =>
         {
             var s = await env.NewSession();

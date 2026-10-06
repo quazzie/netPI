@@ -112,7 +112,7 @@ internal sealed class ModelListCache(string providerId, ILogger log, IEventBus? 
             sb.Append(m.Id).Append('|').Append(m.Status).Append('|').Append(m.ContextWindow).Append('|').Append(m.MaxOutputTokens)
               .Append('|').Append(m.Concurrency).Append('|').Append(string.Join(',', m.InputModalities)).Append('|')
               .Append(m.Reasoning is null ? "-" : $"{m.Reasoning.Supported}:{string.Join(',', m.Reasoning.Efforts)}:{m.Reasoning.Default}")
-              .Append('|').Append(m.DisplayName).Append('\n');
+              .Append('|').Append(m.DisplayName).Append('|').Append(m.IsLocal).Append('|').Append(m.Extra?.ToJsonString()).Append('\n');
         }
         var sig = sb.ToString();
         if (sig == _signature) return;

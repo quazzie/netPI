@@ -17,6 +17,10 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 ## Current state (2026-09-28)
 
+### Local catalog refresh (2026-10-06)
+
+Local OpenAI-compatible providers now refresh in the background, and backend metadata changes publish models.changed even under the same model ID. Validation and staging details: [catalog refresh](archive/2026-10-06-catalog-refresh.md).
+
 ### Storage port and the core diet (2026-10-02)
 
 The swap-over of [docs/archive/2026-10-02-replaceable-parts.md](archive/2026-10-02-replaceable-parts.md) is written and

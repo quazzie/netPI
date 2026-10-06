@@ -28,6 +28,8 @@ public sealed class AiProxyPlugin : INetPiPlugin
     private HttpClient? _http;
     private OpenAiCompatibleProvider? _aiproxy;
     private IDisposable? _settingsSub;
+    private CancellationTokenSource? _pollCts;
+    private Task? _poll;
 
     /// <summary>All providers currently registered by this plugin (aiproxy first).</summary>
     public IReadOnlyList<OpenAiCompatibleProvider> Providers
@@ -71,11 +73,22 @@ public sealed class AiProxyPlugin : INetPiPlugin
         context.Services.Register<IModelProvider>(_aiproxy);
         ReconcileExtras();
         _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, _ => OnSettingsChanged());
+        _pollCts = CancellationTokenSource.CreateLinkedTokenSource(context.Stopping);
+        _poll = PollLocalModelsAsync(_pollCts.Token);
         return Task.CompletedTask;
     }
 
-    public Task StopAsync(CancellationToken ct)
+    public async Task StopAsync(CancellationToken ct)
     {
+        _pollCts?.Cancel();
+        if (_poll is not null)
+        {
+            try { await _poll.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+        }
+        _pollCts?.Dispose();
+        _pollCts = null;
+        _poll = null;
         _settingsSub?.Dispose();
         _settingsSub = null;
         lock (_gate)
@@ -85,7 +98,20 @@ public sealed class AiProxyPlugin : INetPiPlugin
         }
         _http?.Dispose();
         _http = null;
-        return Task.CompletedTask;
+    }
+
+    // Local backend/profile changes occur outside NetPI settings. Keep the provider cache current
+    // even when no UI requests the catalog; its existing TTL limits network traffic.
+    private async Task PollLocalModelsAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            foreach (var p in Providers.Where(p => p.IsLocal))
+            {
+                try { await p.ListModelsAsync(refresh: false, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+                catch { /* provider logs listing failures and publishes offline status */ }
+            }
     }
 
     private void OnSettingsChanged()

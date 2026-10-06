@@ -256,6 +256,24 @@ await t.Run("model list cache: one fetch per fingerprint, the last good list off
     served = await cache.ListAsync(true, fallback, Fetch, default);
     t.Eq(2, served.Count, "and the policy does not change a good list");
 });
+await t.Run("model list cache: backend restart metadata changes publish once even for the same loaded model", async () =>
+{
+    using var ctx = new FakePluginContext(new JsonObject());
+    var cache = new Kit.ModelListCache("test", ctx.Log, ctx.Bus);
+    var model = M("test", "m");
+    model.Status = "loaded";
+    model.Extra = new JsonObject { ["created"] = 123 };
+    var policy = new Kit.ModelListCache.Policy { Fingerprint = "k", CanFetch = true, Ttl = TimeSpan.Zero };
+    Task<IReadOnlyList<ModelInfo>> Fetch(CancellationToken _) => Task.FromResult<IReadOnlyList<ModelInfo>>([model]);
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(1, ctx.Bus.Count(EventTypes.ModelsChanged), "first listing");
+    model.Extra["created"] = 456;
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "backend replacement under the same public model ID");
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "unchanged metadata is quiet");
+});
+
 await t.Run("Effort mapping to catalog efforts", () =>
 {
     var r = new ReasoningInfo { Supported = true, Efforts = ["none", "low", "medium", "xhigh"], Default = "medium" };
@@ -964,7 +982,7 @@ await t.Run("chat: a tool name split across chunks is not truncated to its first
 
 await t.Run("chat: request body (system, tool_calls, tool results, images, stream_options, auth headers)", async () =>
 {
-    var model = M("vllm", "gemma-4");
+    var model = M("vllm", "ornith15-9b-mtp-128k");
     model.Reasoning = new ReasoningInfo { Supported = true, Efforts = ["none", "max"], Default = "max" };
     await Collect(apPlugin.Providers[1], Req(model, Conversation("vllm"), effort: "low"));
     var req = mock.Last("/v1/chat/completions");
@@ -978,7 +996,7 @@ await t.Run("chat: request body (system, tool_calls, tool results, images, strea
     t.Eq("read", b["tools"]![0]!["function"]!["name"]!.GetValue<string>(), "tool function name");
     var msgs = b["messages"]!.AsArray();
     t.Eq("system,user,assistant,tool,tool,user,user", string.Join(",", msgs.Select(m => m!["role"]!.GetValue<string>())), "roles");
-    t.Eq("image_url", msgs[1]!["content"]![1]!["type"]!.GetValue<string>(), "user image (modalities unknown for extra endpoint)");
+    t.Eq("image_url", msgs[1]!["content"]![1]!["type"]!.GetValue<string>(), "user image on a vision-capable extra endpoint");
     var asst = msgs[2]!;
     t.Eq("Reading", asst["content"]!.GetValue<string>(), "assistant content");
     t.Check(asst["reasoning_content"] is null, "no reasoning replay by default");

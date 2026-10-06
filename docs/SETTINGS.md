@@ -69,7 +69,7 @@ no SQL outside `src/NetPI.Host/Storage/Sqlite`, and nothing a plugin stores leav
 | `dumpFailedRequests` | `true` | save the request **and response** body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30, response capped at 16k chars) and add the server's `x-request-id` / response id to the error, for reproducing backend bugs. A rate limit or an overloaded backend is not saved: it repeats on every attempt and its dumps rotate the useful ones out |
 | `parseThinkTags` | `true` | split a leading inline `<think>…</think>` into thinking blocks; a tag after visible text stays text (it is content the model wrote) |
 | `defaultMaxOutputTokens` | `16384` | when the catalog says `max_output_tokens: null`. Every provider also cuts the value down to what the model's `contextWindow` has left beside the request, so it never sends more output than the window can hold |
-| `modelsCacheSeconds` | `10` | `/v1/models` cache |
+| `modelsCacheSeconds` | `10` | `/v1/models` cache; local endpoints are checked every 2 s in the provider background loop, respecting this TTL |
 | `reasoningSummary` | – | Responses `reasoning.summary` (nInfer rejects it with HTTP 400; leave unset for AiProxy/nInfer) |
 | `headers` | – | extra HTTP headers |
 | `enabled`, `local` | `true` | a local model's `concurrency` is how many runs its agents share |
@@ -185,7 +185,7 @@ where a chat runs, the profile who it is.
 
 - **Active:** an agent takes work only while it can without disturbing anything: a local agent while AiProxy reports its
   model **loaded** (NetPI never loads a model: loading one could evict what another agent runs; switch in AiSwitcher and
-  the agents follow within `models.refreshSeconds`), a cloud agent while its provider answers, and neither while
+  local OpenAI-compatible providers refresh in the background within their model-cache TTL plus 2 s; the agents follow `models.changed`), a cloud agent while its provider answers, and neither while
   switched off. An inactive agent stays listed with the reason; a chat on it stops at once with a notice, and waiting
   runs are told too. Runs already going finish.
 - **Instances:** default the model's slots for a local model, 1 for a cloud one. A local model's shared capacity is its
