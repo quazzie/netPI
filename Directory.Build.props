@@ -29,6 +29,11 @@
     <!-- No commit hash in the informational version: after a commit, unchanged projects stay byte-identical, so a running
          NetPI does not hot-reload every plugin, and build.ps1 can tell whether the host really changed. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <!-- The SDK turns SourceLink on by default, and it writes the git commit SHA (keyed by the absolute checkout path)
+         into every PDB - so every commit changed every DLL's bytes (MVID, PDB id, PE timestamp) even when the sources
+         did not, and the "contracts changed" check in build.ps1 fired on every publish. Off: the output depends on the
+         sources alone. Trade-off: debuggers can no longer fetch sources from a crash dump's symbols. -->
+    <EnableSourceLink>false</EnableSourceLink>
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 </Project>
