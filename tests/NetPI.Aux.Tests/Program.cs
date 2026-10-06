@@ -31,6 +31,7 @@ DecisionReworkTests.Register(runner);
 LoopTests.Register(runner);
 SshTests.Register(runner);
 SchedulesTests.Register(runner);
+SchedulesToolTests.Register(runner);
 PlanStoreTests.Register(runner);
 SkillsCacheTests.Register(runner);
 PanelTests.Register(runner);

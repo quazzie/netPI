@@ -35,7 +35,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
         ctx.Services.Register(new SettingsSection
         {
             Id = "schedules", Title = "Schedules", Group = "Agents", Order = 60,
-            Help = "Prompts that start on their own as a new chat: once, every N minutes, or daily at a time (schedules.add).",
+            Help = "Prompts that start on their own as a new chat: once, every N minutes, or daily at a time. The agent's schedules tool and the Schedules tab manage them.",
             Settings =
             [
                 SettingInfo.Bool("schedules.enabled", "Run schedules", true, "Off: nothing starts; due runs wait, and the missed-run rule applies when it is switched back on."),
@@ -47,6 +47,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
         var store = Store = new ScheduleStore(ctx.Data);
         var runner = Runner = new ScheduleRunner(ctx, store, _time);
         Register(ctx, store, runner);
+        ctx.Tools.Register(new SchedulesTool(ctx));
         if (_loop)
         {
             _stop = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);

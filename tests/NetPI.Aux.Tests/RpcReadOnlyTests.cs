@@ -1,4 +1,5 @@
 using NetPI.Diagnostics;
+using NetPI.Schedules;
 using NetPI.Tools.Files;
 using NetPI.Tools.Shell;
 
@@ -26,6 +27,18 @@ public static class RpcReadOnlyTests
             foreach (var m in views.Where(m => m != "diag.reload"))
                 Check.True(flags[m], $"{m} only reads, so it is marked read-only");
             Check.False(flags["diag.reload"], "diag.reload reloads plugins — it changes the app, so the tools may not call it");
+        });
+
+        r.Add("rpc: the schedules views are read-only; add, update, delete and run are not", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("rpc-readonly"));
+            await new SchedulesPlugin().StartAsync(ctx, CancellationToken.None);
+            var flags = ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
+
+            foreach (var m in new[] { "schedules.list", "schedules.get", "schedules.history" })
+                Check.True(flags[m], $"{m} only reads, so it is marked read-only");
+            foreach (var m in new[] { "schedules.add", "schedules.update", "schedules.delete", "schedules.run" })
+                Check.False(flags[m], $"{m} changes the schedules, so the read-only tools may not call it");
         });
 
         r.Add("rpc: the process views are read-only; killing a process and opening a path are not", async () =>
