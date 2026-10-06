@@ -9,24 +9,26 @@ namespace NetPI.Providers.ClaudeCli;
 
 /// <summary>
 /// Claude through the installed Claude Code CLI (<c>claude -p</c>), signed in with the owner's subscription. One call
-/// is one process: the prompt goes in on stdin, the CLI runs with no tools and no saved session, and its stream-json
-/// output is turned into the usual stream events. The request's tools are not offered to the model.
+/// is one process: the prompt goes in on stdin and the CLI works on its own, with its own tools, in the session's
+/// workspace; its stream-json output is turned into the usual stream events. NetPI's tools are not offered to it.
 /// </summary>
 public sealed class ClaudeCliProvider : IModelProvider
 {
     private readonly Func<JsonObject?> _config;
     private readonly ILogger _log;
     private readonly CliRunner _runner;
+    private readonly Func<string?, string?> _cwdOf;
     private readonly string _workDir = Path.Combine(Path.GetTempPath(), "netpi-claude-cli");
 
-    public ClaudeCliProvider(Func<JsonObject?> config, ILogger? logger = null)
-        : this(config, logger, ProcessRunner.Run) { }
+    public ClaudeCliProvider(Func<JsonObject?> config, ILogger? logger = null, Func<string?, string?>? cwdOf = null)
+        : this(config, logger, ProcessRunner.Run, cwdOf) { }
 
-    internal ClaudeCliProvider(Func<JsonObject?> config, ILogger? logger, CliRunner runner)
+    internal ClaudeCliProvider(Func<JsonObject?> config, ILogger? logger, CliRunner runner, Func<string?, string?>? cwdOf = null)
     {
         _config = config;
         _log = logger ?? NullLogger.Instance;
         _runner = runner;
+        _cwdOf = cwdOf ?? (_ => null);
     }
 
     public string Id => "claude-cli";
@@ -71,18 +73,24 @@ public sealed class ClaudeCliProvider : IModelProvider
         var o = Options();
         if (!o.Enabled) throw new ModelException("Claude CLI: provider is disabled in settings (providers.claudeCli.enabled).", false, null, "provider_disabled");
 
+        var tools = o.Tools.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : o.Tools;
+        // The CLI works where the session works; without a session folder it has only an empty scratch folder.
+        var cwd = _cwdOf(request.SessionId);
+        var workDir = cwd is { Length: > 0 } && Directory.Exists(cwd) ? cwd : _workDir;
         if (request.Tools.Count > 0)
-            yield return new StreamNotice($"Claude CLI gives the model no tools: the {request.Tools.Count} tools of this request are not offered.", "warning");
+            yield return new StreamNotice(
+                $"Claude CLI does not use NetPI's tools (the {request.Tools.Count} of this request): it works with its own" +
+                (tools.Length == 0 ? " (none enabled)." : $" in {workDir}."), "info");
 
         // The system prompt goes through a file: NetPI's can outgrow the 32k command line of Windows.
         Directory.CreateDirectory(_workDir);
         var promptFile = Path.Combine(_workDir, $"system-{Guid.NewGuid():N}.md");
-        await File.WriteAllTextAsync(promptFile, SystemPromptWithNote(request.SystemPrompt), ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(promptFile, SystemPromptWithNote(request.SystemPrompt, tools.Length > 0), ct).ConfigureAwait(false);
         var asm = new MessageAssembler();
         var stream = new ClaudeCliStream(asm);
         try
         {
-            var call = new CliCall(o.Executable, BuildArgs(request, promptFile), RenderPrompt(request), _workDir, TimeSpan.FromSeconds(o.TimeoutSeconds));
+            var call = new CliCall(o.Executable, BuildArgs(request, o, promptFile), RenderPrompt(request), workDir, TimeSpan.FromSeconds(o.TimeoutSeconds));
             var warned = false;
             await foreach (var line in _runner(call, ct).ConfigureAwait(false))
             {
@@ -92,6 +100,7 @@ public sealed class ClaudeCliProvider : IModelProvider
                     warned = true;
                     yield return new StreamNotice($"Claude CLI is signed in with an API key ({src}), not the subscription: this call is billed to the API.", "warning");
                 }
+                foreach (var n in stream.TakeActivity()) yield return new StreamNotice(n);
                 foreach (var ev in asm.Drain()) yield return ev;
                 if (stream.Finished) break;
             }
@@ -110,19 +119,28 @@ public sealed class ClaudeCliProvider : IModelProvider
         "Never write tool calls, <invoke> blocks or function-call markup: they are not executed and only clutter the answer. " +
         "Work from the conversation alone, and when you need something you cannot see, say exactly what is missing.";
 
-    /// <summary>NetPI's system prompt describes its tools; the model is told they are not available, or it writes their calls as text.</summary>
-    internal static string SystemPromptWithNote(string? system) =>
-        string.IsNullOrWhiteSpace(system) ? NoToolsNote : system.TrimEnd() + "\n\n" + NoToolsNote;
+    internal const string CliToolsNote =
+        "# Tools in this call\n" +
+        "The tools described above (NetPI's) are not available here and are never executed: do not write their calls or <invoke> markup. " +
+        "Use your own tools (read, search, edit, shell) in the working folder to do the work, then answer in plain text.";
 
-    /// <summary>The CLI arguments: no tools, no saved session, no settings files; the system prompt is read from a file.</summary>
-    internal static List<string> BuildArgs(ModelRequest request, string systemPromptFile)
+    /// <summary>NetPI's system prompt describes its tools; the model is told which tools it really has, or it writes the others' calls as text.</summary>
+    internal static string SystemPromptWithNote(string? system, bool cliTools)
     {
-        var args = new List<string>
-        {
-            "-p", "--model", request.Model.Id, "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands",
-            "--setting-sources", "", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-            "--system-prompt-file", systemPromptFile,
-        };
+        var note = cliTools ? CliToolsNote : NoToolsNote;
+        return string.IsNullOrWhiteSpace(system) ? note : system.TrimEnd() + "\n\n" + note;
+    }
+
+    /// <summary>The CLI arguments: no saved session, no skills; its tools and permissions as the settings say; the system prompt is read from a file.</summary>
+    internal static List<string> BuildArgs(ModelRequest request, ClaudeCliOptions o, string systemPromptFile)
+    {
+        var args = new List<string> { "-p", "--model", request.Model.Id };
+        var tools = o.Tools.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : o.Tools;
+        args.AddRange(["--tools", tools]);
+        if (tools.Length > 0) args.AddRange(["--permission-mode", o.PermissionMode]);
+        if (!o.Connectors) args.Add("--strict-mcp-config");
+        args.AddRange(["--no-session-persistence", "--disable-slash-commands", "--setting-sources", o.SettingSources,
+            "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--system-prompt-file", systemPromptFile]);
         if (request.ReasoningEffort is { } e && ClaudeCliOptions.Efforts.Contains(e, StringComparer.OrdinalIgnoreCase))
             args.AddRange(["--effort", e.ToLowerInvariant()]);
         return args;

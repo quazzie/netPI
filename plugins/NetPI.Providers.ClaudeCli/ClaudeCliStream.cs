@@ -13,10 +13,23 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     private readonly Dictionary<int, MessagePart> _blocks = [];
     private readonly Usage _usage = new();
     private bool _streamed;
+    private bool _sawUsage;
     public bool Finished { get; private set; }
     /// <summary>The init line's apiKeySource: anything but "none" means the CLI would bill an API key.</summary>
     public string? ApiKeySource { get; private set; }
     public string? AssistantError { get; private set; }
+
+    private readonly Dictionary<int, (string Name, System.Text.StringBuilder Json)> _toolBlocks = [];
+    private readonly List<string> _activity = [];
+
+    /// <summary>What the CLI's own tools did since the last call ("Read src/x.cs"): shown as notices, not as tool calls of the agent.</summary>
+    public IReadOnlyList<string> TakeActivity()
+    {
+        if (_activity.Count == 0) return [];
+        var list = _activity.ToList();
+        _activity.Clear();
+        return list;
+    }
 
     public void Handle(string line)
     {
@@ -47,11 +60,13 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
                 var type = e.Obj("content_block").Str("type");
                 if (type == "text") _blocks[index] = asm.BeginText();
                 else if (type == "thinking") _blocks[index] = asm.BeginThinking();
+                else if (type == "tool_use") _toolBlocks[index] = (e.Obj("content_block").Str("name") ?? "tool", new System.Text.StringBuilder());
                 break;
             }
             case "content_block_delta":
             {
                 var d = e.Obj("delta");
+                if (d.Str("type") == "input_json_delta" && _toolBlocks.TryGetValue(e.Int("index") ?? 0, out var tb)) { tb.Json.Append(d.Str("partial_json")); break; }
                 if (!_blocks.TryGetValue(e.Int("index") ?? 0, out var part)) break;
                 switch (d.Str("type"))
                 {
@@ -61,6 +76,9 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
                 }
                 break;
             }
+            case "content_block_stop" when _toolBlocks.Remove(e.Int("index") ?? 0, out var tool):
+                _activity.Add(Describe(tool.Name, tool.Json.ToString()));
+                break;
             case "content_block_stop":
                 if (_blocks.TryGetValue(e.Int("index") ?? 0, out var p) && p is ThinkingPart tp) asm.EndThinking(tp);
                 break;
@@ -69,6 +87,22 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
                 if (e.Obj("delta").Str("stop_reason") == "max_tokens") asm.StopReason = "length";
                 break;
         }
+    }
+
+    /// <summary>"Read src/x.cs", "Bash: git status": the tool and the one argument that says what it did.</summary>
+    internal static string Describe(string tool, string json)
+    {
+        string? arg = null;
+        try
+        {
+            if (JsonNode.Parse(json) is JsonObject args)
+                foreach (var key in new[] { "file_path", "path", "pattern", "command", "url", "query", "description" })
+                    if (args.Str(key) is { Length: > 0 } v) { arg = v; break; }
+        }
+        catch (JsonException) { /* cut-off arguments: the tool name alone */ }
+        if (arg is null) return $"Claude CLI: {tool}";
+        arg = arg.ReplaceLineEndings(" ");
+        return $"Claude CLI: {tool} {(arg.Length > 160 ? arg[..160] + "…" : arg)}";
     }
 
     private void Assistant(JsonObject o)
@@ -92,13 +126,15 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
             throw new ModelException($"Claude CLI: {msg}", status is >= 500, status, AssistantError ?? o.Str("terminal_reason") ?? o.Str("subtype"));
         }
         if (!asm.HasContent && !string.IsNullOrEmpty(text)) asm.AddText(text);
-        ApplyUsage(o.Obj("usage"));
+        // The result's usage adds up every turn of the CLI's own tool loop; the last turn's, from the stream, is the size of the context.
+        if (!_sawUsage) ApplyUsage(o.Obj("usage"));
     }
 
     // CostUsd stays null on purpose: total_cost_usd is what the call would cost on the API, not what a subscription pays.
     private void ApplyUsage(JsonObject? u)
     {
         if (u is null) return;
+        _sawUsage = true;
         if (u.Int("input_tokens") is { } i) _usage.InputTokens = i;
         if (u.Int("output_tokens") is { } o && o > 0) _usage.OutputTokens = o;
         if (u.Int("cache_read_input_tokens") is { } r) _usage.CacheReadTokens = r;

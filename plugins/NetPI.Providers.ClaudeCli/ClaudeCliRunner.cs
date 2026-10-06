@@ -27,6 +27,7 @@ internal static class ProcessRunner
         };
         foreach (var a in call.Args) psi.ArgumentList.Add(a);
         foreach (var v in BillingVariables) psi.Environment.Remove(v);
+        psi.Environment["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"; // the owner's own Claude Code notes are not this agent's memory
 
         using var proc = new Process { StartInfo = psi };
         try { proc.Start(); }

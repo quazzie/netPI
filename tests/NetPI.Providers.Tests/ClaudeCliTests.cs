@@ -18,7 +18,7 @@ internal static class ClaudeCliTests
     private static readonly string[] Streamed =
     [
         Init,
-        Ev("""{"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":1}}}"""),
+        Ev("""{"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":3,"cache_creation_input_tokens":2,"output_tokens":1}}}"""),
         Ev("""{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"""),
         Ev("""{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Plan it."}}"""),
         Ev("""{"type":"content_block_stop","index":0}"""),
@@ -111,34 +111,84 @@ internal static class ClaudeCliTests
             t.Check(e is { Transient: true, ErrorType: "cli_incomplete" }, "a run without a result line is reported, not an empty answer");
         });
 
-        await t.Run("claude-cli: the call is text only: no tools, no session, no settings, the system prompt from a file, effort passed", async () =>
+        await t.Run("claude-cli: the CLI runs with its own tools in the session folder: no session, no skills, no connectors, the system prompt from a file, effort passed", async () =>
         {
             SeenCall? seen = null;
             string? promptText = null;
+            var sessionDir = Path.Combine(Path.GetTempPath(), "netpi-claude-cli-cwd-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(sessionDir);
+            string? workDir = null;
             var p = new CL.ClaudeCliProvider(() => Cfg(), null, (call, ct) =>
             {
                 var args = call.Args.ToList();
                 var file = args[args.IndexOf("--system-prompt-file") + 1];
                 promptText = File.ReadAllText(file);
+                workDir = call.WorkDir;
                 seen = new SeenCall(args, call.Stdin, File.Exists(file));
                 return Lines([Init, Result], ct);
-            });
+            }, sid => sid == "ses_1" ? sessionDir : null);
             var req = Req("claude-opus-5-5");
             req.ReasoningEffort = "high";
             req.Tools = [new ToolDefinition { Name = "read", Description = "d", Parameters = new JsonObject { ["type"] = "object" } }];
             var events = await Collect(p, req);
             var a = seen!.Args;
             t.Eq("claude-opus-5-5", a[a.IndexOf("--model") + 1], "model id");
-            t.Eq("", a[a.IndexOf("--tools") + 1], "tools switched off");
+            t.Eq("default", a[a.IndexOf("--tools") + 1], "every tool of the CLI");
+            t.Eq("bypassPermissions", a[a.IndexOf("--permission-mode") + 1], "no prompts in a print-mode call");
+            t.Eq(sessionDir, workDir, "the CLI works in the session's folder");
             t.Check(a.Contains("--no-session-persistence") && a.Contains("--disable-slash-commands") && a.Contains("--strict-mcp-config"), "no session, no skills, no account connectors");
             t.Eq("", a[a.IndexOf("--setting-sources") + 1], "no settings files");
             t.Eq("high", a[a.IndexOf("--effort") + 1], "effort");
             t.Check(!a.Contains("--system-prompt"), "the system prompt is not on the command line");
-            t.Check(promptText!.StartsWith("You are a planner.") && promptText.EndsWith(CL.ClaudeCliProvider.NoToolsNote), "the system prompt file carries the prompt, then the no-tools note");
-            t.Check(promptText.Contains("Never write tool calls"), "the model is told not to write tool-call markup");
+            t.Check(promptText!.StartsWith("You are a planner.") && promptText.EndsWith(CL.ClaudeCliProvider.CliToolsNote), "the system prompt file carries the prompt, then which tools it has");
+            t.Check(promptText.Contains("do not write their calls"), "the model is told not to write NetPI tool-call markup");
             t.Eq("Plan a thing.", seen.Stdin, "a single user message goes in as it is");
-            t.Check(events.OfType<StreamNotice>().Any(n => n.Text.Contains("no tools")), "a request with tools says they are not offered");
+            t.Check(events.OfType<StreamNotice>().Any(n => n.Text.Contains("does not use NetPI's tools") && n.Text.Contains(sessionDir)), "a request with tools says they are not used, and where the CLI works");
             t.Check(!File.Exists(a[a.IndexOf("--system-prompt-file") + 1]), "the prompt file is removed after the call");
+            Directory.Delete(sessionDir, true);
+
+            // tools "none": text only, as before
+            var none = new JsonObject { ["enabled"] = true, ["tools"] = "none" };
+            var noneArgs = new List<string>();
+            string? nonePrompt = null;
+            p = new CL.ClaudeCliProvider(() => none, null, (call, ct) =>
+            {
+                noneArgs.AddRange(call.Args);
+                nonePrompt = File.ReadAllText(call.Args[call.Args.ToList().IndexOf("--system-prompt-file") + 1]);
+                return Lines([Init, Result], ct);
+            });
+            await Collect(p, Req());
+            t.Eq("", noneArgs[noneArgs.IndexOf("--tools") + 1], "tools none: switched off");
+            t.Check(!noneArgs.Contains("--permission-mode"), "no tools: no permission mode");
+            t.Check(nonePrompt!.EndsWith(CL.ClaudeCliProvider.NoToolsNote), "no tools: the model is told it has none");
+        });
+
+        await t.Run("claude-cli: the CLI's own tool use is shown as activity, and usage is the last turn's, not the total", async () =>
+        {
+            var lines = new[]
+            {
+                Init,
+                Ev("""{"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":1000,"output_tokens":1}}}"""),
+                Ev("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"Read","input":{}}}"""),
+                Ev("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"src/x"}}"""),
+                Ev("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":".cs\"}"}}"""),
+                Ev("""{"type":"content_block_stop","index":0}"""),
+                Ev("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":3,"cache_read_input_tokens":1000,"output_tokens":20}}"""),
+                Ev("""{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":2000,"output_tokens":1}}}"""),
+                Ev("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"""),
+                Ev("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Done."}}"""),
+                Ev("""{"type":"content_block_stop","index":0}"""),
+                Ev("""{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":5,"cache_read_input_tokens":2000,"output_tokens":7}}"""),
+                """{"type":"result","subtype":"success","is_error":false,"result":"Done.","usage":{"input_tokens":8,"output_tokens":27,"cache_read_input_tokens":3000}}""",
+            };
+            var p = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines(lines, ct));
+            var events = await Collect(p, Req());
+            t.Check(events.OfType<StreamNotice>().Any(n => n.Text == "Claude CLI: Read src/x.cs"), "the Read is announced with its path");
+            var done = events.OfType<StreamCompleted>().Single().Message;
+            t.Eq("Done.", done.Text, "answer text");
+            t.Check(done.Parts.OfType<ToolCallPart>().Count() == 0, "the CLI's tool calls are not tool calls of the agent");
+            t.Eq(2000L, done.Usage!.CacheReadTokens, "context size is the last turn's");
+            t.Eq(7L, done.Usage!.OutputTokens, "output of the last turn");
         });
 
         await t.Run("claude-cli: a history is sent as a labelled transcript; an API-key login is called out", async () =>
@@ -185,16 +235,25 @@ internal static class ClaudeCliTests
         {
             if (Environment.GetEnvironmentVariable("NETPI_CLAUDE_CLI_LIVE") != "1") t.Skip("NETPI_CLAUDE_CLI_LIVE is not 1");
             var exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe");
-            var p = new CL.ClaudeCliProvider(() => Cfg(exe: File.Exists(exe) ? exe : null), null);
+            var dir = Path.Combine(Path.GetTempPath(), "netpi-claude-cli-live-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+            File.WriteAllText(Path.Combine(dir, "planet.txt"), "The red planet is Mars.");
+            var p = new CL.ClaudeCliProvider(() => Cfg(exe: File.Exists(exe) ? exe : null), null, cwdOf: _ => dir);
             var req = Req("claude-sonnet-5-5");
-            req.SystemPrompt = "You are terse. Answer with one word.";
-            req.Messages = [ChatMessage.UserText("Which planet is called the red planet?")];
+            req.SystemPrompt = "You are terse.";
+            req.Messages = [ChatMessage.UserText("Read planet.txt, then create result.txt containing only the name of the planet it mentions. Reply with that name.")];
             var events = await Collect(p, req);
             var done = events.OfType<StreamCompleted>().Single().Message;
             t.Check(done.Text.Contains("Mars", StringComparison.OrdinalIgnoreCase), $"answer: {done.Text}");
+            t.Check(File.Exists(Path.Combine(dir, "result.txt")) && File.ReadAllText(Path.Combine(dir, "result.txt")).Contains("Mars"), "the CLI wrote the file in the session folder");
+            t.Check(events.OfType<StreamNotice>().Any(n => n.Text.StartsWith("Claude CLI: ")), "its tool use was reported");
             t.Check(events.OfType<TextDelta>().Any(), "text streamed as deltas");
             t.Check(done.Usage is { OutputTokens: > 0 }, "usage reported");
             t.Check(!events.OfType<StreamNotice>().Any(n => n.Text.Contains("billed")), "subscription login, not an API key");
+            }
+            finally { try { Directory.Delete(dir, true); } catch { /* temp */ } }
         });
 
         await t.Run("claude-cli: the real process runner reports a missing executable and reads a real process", async () =>

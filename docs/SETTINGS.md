@@ -127,12 +127,15 @@ turned off; models without effort levels only get on/off. Free models are limite
 ### `providers.claudeCli` (Claude through the Claude Code CLI)
 
 Runs the installed `claude -p` as a subprocess, signed in with the owner's subscription (`claude auth login` once, in a
-terminal; the CLI bundled with the Claude desktop app has its own login and does not share it). It is for planner and
-designer agents: text in, text out. The model gets **no tools** (`--tools ""`), no saved session, no settings files and no
-skills, and the request's own tools are not offered (a notice says so). Images are not sent. `ANTHROPIC_API_KEY` and
-`ANTHROPIC_AUTH_TOKEN` are removed from the child's environment, so a call is never billed to an API key by accident; if the
-CLI still reports an API-key sign-in, the stream carries a warning. The cost is left unreported (`total_cost_usd` is the API
-price, not what a subscription pays), so budgets do not count it. Subscription usage limits apply.
+terminal; the CLI bundled with the Claude desktop app has its own login and does not share it). Give an agent a
+`claude-cli/…` model and that agent **is** Claude Code for the run: it works in the session's workspace with the CLI's own
+tools (read, search, edit, write, shell, web) and answers in text. NetPI's tools are not used; a notice names the folder the
+CLI works in, and its tool use shows as "Claude CLI: Read src/x.cs" notices, not as tool calls of the agent. The CLI's tools
+act on the disk directly: NetPI's workspace guard and permission rules do not apply to them. Images are not sent.
+`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from the child's environment, so a call is never billed to an API
+key by accident; if the CLI still reports an API-key sign-in, the stream carries a warning. The cost is left unreported
+(`total_cost_usd` is the API price, not what a subscription pays), so budgets do not count it. Subscription usage limits
+apply, and a run that works through many files uses a lot of them.
 
 | key | default | |
 |---|---|---|
@@ -140,9 +143,15 @@ price, not what a subscription pays), so budgets do not count it. Subscription u
 | `executable` | `claude` | name on PATH or a full path |
 | `models` | `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-4-5` | ids passed to `--model` |
 | `timeoutSeconds` | `900` | a longer call is killed |
+| `tools` | `default` | `default`: every built-in tool of the CLI; `none`: text only; or a list for `--tools`, e.g. `Read,Grep,Glob` for read-only |
+| `permissionMode` | `bypassPermissions` | a print-mode call cannot answer a prompt, so the CLI's tools run unasked; `acceptEdits`, `plan` and `default` limit them (what is not allowed then fails) |
+| `settingSources` | – | which settings files the CLI loads (`user`, `project`, `local`); none by default, because they bring hooks and permission rules |
+| `connectors` | `false` | let the CLI load the account's MCP connectors |
 
 Each call is one process with the prompt on stdin (a history is sent as a labelled transcript, the system prompt through a
-temporary `--system-prompt-file`); its working folder is `%TEMP%\netpi-claude-cli`, so no project `CLAUDE.md` is read.
+temporary `--system-prompt-file` that also tells the model which tools it really has). The working folder is the session's
+workspace (else its project folder, else `%TEMP%\netpi-claude-cli`). The reported usage is the last turn of the CLI's own
+loop, so the context size stays the size of one prompt, not the sum of all turns.
 
 ## Agents
 
