@@ -101,7 +101,7 @@ public sealed class ClaudeCliProvider : IModelProvider
     {
         var args = new List<string>
         {
-            "-p", "--model", request.Model.Id, "--tools", "", "--no-session-persistence", "--disable-slash-commands",
+            "-p", "--model", request.Model.Id, "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands",
             "--setting-sources", "", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--system-prompt-file", systemPromptFile,
         };

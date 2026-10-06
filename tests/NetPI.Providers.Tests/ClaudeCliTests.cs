@@ -130,7 +130,7 @@ internal static class ClaudeCliTests
             var a = seen!.Args;
             t.Eq("claude-opus-5-5", a[a.IndexOf("--model") + 1], "model id");
             t.Eq("", a[a.IndexOf("--tools") + 1], "tools switched off");
-            t.Check(a.Contains("--no-session-persistence") && a.Contains("--disable-slash-commands"), "no session, no skills");
+            t.Check(a.Contains("--no-session-persistence") && a.Contains("--disable-slash-commands") && a.Contains("--strict-mcp-config"), "no session, no skills, no account connectors");
             t.Eq("", a[a.IndexOf("--setting-sources") + 1], "no settings files");
             t.Eq("high", a[a.IndexOf("--effort") + 1], "effort");
             t.Check(!a.Contains("--system-prompt"), "the system prompt is not on the command line");
@@ -166,6 +166,22 @@ internal static class ClaudeCliTests
             var models = await p.ListModelsAsync(true, CancellationToken.None);
             t.Eq(3, models.Count, "default models");
             t.Check(models.All(m => m.Provider == "claude-cli" && m.Reasoning is { Supported: true }), "models carry the provider and efforts");
+        });
+
+        await t.Run("claude-cli: live call through the installed CLI (set NETPI_CLAUDE_CLI_LIVE=1; uses the subscription)", async () =>
+        {
+            if (Environment.GetEnvironmentVariable("NETPI_CLAUDE_CLI_LIVE") != "1") t.Skip("NETPI_CLAUDE_CLI_LIVE is not 1");
+            var exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe");
+            var p = new CL.ClaudeCliProvider(() => Cfg(exe: File.Exists(exe) ? exe : null), null);
+            var req = Req("claude-sonnet-5-5");
+            req.SystemPrompt = "You are terse. Answer with one word.";
+            req.Messages = [ChatMessage.UserText("Which planet is called the red planet?")];
+            var events = await Collect(p, req);
+            var done = events.OfType<StreamCompleted>().Single().Message;
+            t.Check(done.Text.Contains("Mars", StringComparison.OrdinalIgnoreCase), $"answer: {done.Text}");
+            t.Check(events.OfType<TextDelta>().Any(), "text streamed as deltas");
+            t.Check(done.Usage is { OutputTokens: > 0 }, "usage reported");
+            t.Check(!events.OfType<StreamNotice>().Any(n => n.Text.Contains("billed")), "subscription login, not an API key");
         });
 
         await t.Run("claude-cli: the real process runner reports a missing executable and reads a real process", async () =>
