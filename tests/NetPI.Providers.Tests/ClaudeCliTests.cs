@@ -134,7 +134,8 @@ internal static class ClaudeCliTests
             t.Eq("", a[a.IndexOf("--setting-sources") + 1], "no settings files");
             t.Eq("high", a[a.IndexOf("--effort") + 1], "effort");
             t.Check(!a.Contains("--system-prompt"), "the system prompt is not on the command line");
-            t.Eq("You are a planner.", promptText, "system prompt file content");
+            t.Check(promptText!.StartsWith("You are a planner.") && promptText.EndsWith(CL.ClaudeCliProvider.NoToolsNote), "the system prompt file carries the prompt, then the no-tools note");
+            t.Check(promptText.Contains("Never write tool calls"), "the model is told not to write tool-call markup");
             t.Eq("Plan a thing.", seen.Stdin, "a single user message goes in as it is");
             t.Check(events.OfType<StreamNotice>().Any(n => n.Text.Contains("no tools")), "a request with tools says they are not offered");
             t.Check(!File.Exists(a[a.IndexOf("--system-prompt-file") + 1]), "the prompt file is removed after the call");

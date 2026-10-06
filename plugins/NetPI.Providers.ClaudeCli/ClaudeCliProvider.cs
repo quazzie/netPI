@@ -77,7 +77,7 @@ public sealed class ClaudeCliProvider : IModelProvider
         // The system prompt goes through a file: NetPI's can outgrow the 32k command line of Windows.
         Directory.CreateDirectory(_workDir);
         var promptFile = Path.Combine(_workDir, $"system-{Guid.NewGuid():N}.md");
-        await File.WriteAllTextAsync(promptFile, request.SystemPrompt ?? "", ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(promptFile, SystemPromptWithNote(request.SystemPrompt), ct).ConfigureAwait(false);
         var asm = new MessageAssembler();
         var stream = new ClaudeCliStream(asm);
         try
@@ -103,6 +103,16 @@ public sealed class ClaudeCliProvider : IModelProvider
         var ms = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         yield return new StreamCompleted(asm.Build(Id, request.Model.Id, request.SessionId, ms));
     }
+
+    internal const string NoToolsNote =
+        "# This call has no tools\n" +
+        "In this call you cannot run commands, read files or call any tool, whatever the instructions above say about tools. " +
+        "Never write tool calls, <invoke> blocks or function-call markup: they are not executed and only clutter the answer. " +
+        "Work from the conversation alone, and when you need something you cannot see, say exactly what is missing.";
+
+    /// <summary>NetPI's system prompt describes its tools; the model is told they are not available, or it writes their calls as text.</summary>
+    internal static string SystemPromptWithNote(string? system) =>
+        string.IsNullOrWhiteSpace(system) ? NoToolsNote : system.TrimEnd() + "\n\n" + NoToolsNote;
 
     /// <summary>The CLI arguments: no tools, no saved session, no settings files; the system prompt is read from a file.</summary>
     internal static List<string> BuildArgs(ModelRequest request, string systemPromptFile)
