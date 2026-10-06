@@ -403,7 +403,11 @@ Timings from `npm run e2e` against the mock (headless Chromium):
   re-reads the chat (with its size). **All on** undoes every switch.
 - What the chat cost on paid models (`usage.session`, with its subagents) shows next to the context ring once it is more
   than nothing, refreshed on `usage.changed`; the tooltip splits the chat from its subagents.
-- The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`. Hover reads
+- The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`. In a **Claude CLI
+  session the ring is replaced by the compact `ClaudeUsagePill`** (the subscription's session/week percentages, the
+  same component as the top bar's, borderless and opening upward): the ring's reading there is the CLI's own last
+  call against a nominal window, not this chat, so the subscription's usage is the number that is true there. The
+  pill hides itself while the provider's reading is absent (the top bar's pill does too). Hover reads
   it in one line; **pressing it opens a popout** (idea-kp4fq5) with used / window / free, how often this chat was
   compacted and what the prompt is made of — `context.preview { sessionId }` gives the system prompt (≈ tokens,
   chars / 3.6) and the tools, with a line when the prompt is frozen. It fails soft: no Context plugin, and the rows
@@ -907,7 +911,8 @@ names or an inline `<svg …>` string.
   A click opens a popover with every window (percent, bar, reset time), the extra-usage credits, the week's breakdown
   by surface, when the reading was fetched (a failed fetch keeps the last good one, flagged stale), and a
   **Refresh now** (`claudecli.usage.refresh`). It updates on `usage.claude` (the provider's background fetch,
-  `providers.claudeCli.usageRefreshMinutes`).
+  `providers.claudeCli.usageRefreshMinutes`). The same component, `compact`, sits in the composer's row in place of
+  the context ring in a Claude CLI session (see above).
 - Assistant messages that stop with `stopReason: 'error'` may carry `meta.error`, which is shown in the error
   row.
 - `agent_*` tool results carry `details.sessionId` (and `name`, `status`) for the subagent link, or

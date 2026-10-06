@@ -89,6 +89,20 @@ export const MODELS = [
     status: 'available',
     isLocal: false,
   },
+  {
+    // the Claude CLI provider: its session's composer shows the subscription usage pill in place of the context ring
+    provider: 'claude-cli',
+    id: 'claude-sonnet-5-5',
+    ref: 'claude-cli/claude-sonnet-5-5',
+    displayName: 'Claude CLI: claude-sonnet-5-5',
+    contextWindow: 200000,
+    maxOutputTokens: 32000,
+    stallTimeoutSeconds: 1800,
+    inputModalities: ['text'],
+    reasoning: { supported: true, efforts: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'medium' },
+    status: 'available',
+    isLocal: false,
+  },
 ];
 export const DEFAULT_MODEL = 'aiproxy/qwen3.8-27b';
 

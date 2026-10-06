@@ -11,6 +11,12 @@
   import { bus } from '../lib/bus.js';
   import { duration, timeAgo, usd, toMs } from '../lib/format.js';
 
+  /**
+   * compact: the composer's row (in place of the context ring in a Claude CLI session, where the ring's
+   * reading is the CLI's own last call, not this chat): smaller, borderless, the popover opens upward.
+   */
+  let { compact = false } = $props();
+
   let s = $state(null);
   let open = $state(false);
   let refreshing = $state(false);
@@ -70,14 +76,14 @@
 </script>
 
 {#if show}
-  <button bind:this={el} class="cu-pill" class:warn={tone === 'warn'} class:err={tone === 'err'} {tip}
+  <button bind:this={el} class="cu-pill" class:compact class:warn={tone === 'warn'} class:err={tone === 'err'} {tip}
     aria-expanded={open} aria-haspopup="dialog" onclick={() => (open = !open)}>
-    <Icon name="zap" size={13} />
+    <Icon name="zap" size={compact ? 12 : 13} />
     <span>{pillText || '—'}</span>
   </button>
 
   {#if open}
-    <Popover anchor={el} placement="bottom-end" width={300} onclose={() => (open = false)}>
+    <Popover anchor={el} placement={compact ? 'top-end' : 'bottom-end'} width={300} onclose={() => (open = false)}>
       <div class="cu">
         <div class="head np-line">
           <span class="h">Claude usage</span>
@@ -173,6 +179,28 @@
   .cu-pill.err {
     border-color: color-mix(in srgb, var(--err) 45%, var(--border));
     background: color-mix(in srgb, var(--err) 8%, transparent);
+    color: var(--err);
+  }
+  /* the composer's row: the ring's own look (borderless, a hover background), so it sits where the ring sat */
+  .cu-pill.compact {
+    height: 22px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 11px;
+    background: transparent;
+    font-size: 11px;
+  }
+  .cu-pill.compact:hover,
+  .cu-pill.compact[aria-expanded='true'] {
+    filter: none;
+    background: var(--bg-2);
+  }
+  .cu-pill.compact.warn:hover,
+  .cu-pill.compact.warn[aria-expanded='true'] {
+    color: var(--warn);
+  }
+  .cu-pill.compact.err:hover,
+  .cu-pill.compact.err[aria-expanded='true'] {
     color: var(--err);
   }
 
