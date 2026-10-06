@@ -149,6 +149,8 @@ apply, and a run that works through many files uses a lot of them.
 | `permissionMode` | `bypassPermissions` | a print-mode call cannot answer a prompt, so the CLI's tools run unasked; `acceptEdits`, `plan` and `default` limit them (what is not allowed then fails) |
 | `settingSources` | – | which settings files the CLI loads (`user`, `project`, `local`); none by default, because they bring hooks and permission rules |
 | `connectors` | `false` | let the CLI load the account's MCP connectors |
+| `usage` | `true` | show the owner's Claude subscription usage in the top bar: the monitor reads the CLI's login (`~/.claude/.credentials.json`, or `$CLAUDE_CONFIG_DIR`) and fetches the same data the CLI's `/usage` shows (session and weekly windows, extra-usage credits) |
+| `usageRefreshMinutes` | `5` | minutes between usage fetches (2–60); the endpoint is rate-limited, and a failed fetch keeps the last good reading, flagged stale |
 
 Each call is one process with the prompt on stdin (a history is sent as a labelled transcript, the system prompt through a
 temporary `--system-prompt-file` that also tells the model which tools it really has). The working folder is the session's

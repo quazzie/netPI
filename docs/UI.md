@@ -90,7 +90,7 @@ web/
       state/tabs.svelte.js     side-panel tab registry (core + plugin tabs)
       kit/                     @netpi/kit: Svelte components shared with plugin tabs
     components/
-      TopBar.svelte  BudgetPill.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
+      TopBar.svelte  BudgetPill.svelte  ClaudeUsagePill.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
       ModelMenu.svelte (the searchable model list)  ModelSelect.svelte (a model field that opens it)
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
       (the projects panel and the projects dialog share lib/projects.js: counts, filter/order, remove)
@@ -902,6 +902,12 @@ names or an inline `<svg …>` string.
   latest budget notice; after a confirm it calls `budget.allow`. The top bar shows the budget (`BudgetPill`:
   `budget.status`, then `usage.changed`) only once it needs attention, amber from `budget.warnPercent`, red when spent;
   a click opens Settings on Agents & budget (`modals.settings = 'agents'`).
+- The top bar also shows the owner's Claude subscription usage (`ClaudeUsagePill`, beside the budget pill) when the
+  Claude CLI provider is loaded and a reading exists: the session and weekly percentages, amber at 75 %, red at 90 %.
+  A click opens a popover with every window (percent, bar, reset time), the extra-usage credits, the week's breakdown
+  by surface, when the reading was fetched (a failed fetch keeps the last good one, flagged stale), and a
+  **Refresh now** (`claudecli.usage.refresh`). It updates on `usage.claude` (the provider's background fetch,
+  `providers.claudeCli.usageRefreshMinutes`).
 - Assistant messages that stop with `stopReason: 'error'` may carry `meta.error`, which is shown in the error
   row.
 - `agent_*` tool results carry `details.sessionId` (and `name`, `status`) for the subagent link, or

@@ -4,6 +4,7 @@
   import IconButton from '../lib/kit/IconButton.svelte';
   import Menu from '../lib/kit/Menu.svelte';
   import BudgetPill from './BudgetPill.svelte';
+  import ClaudeUsagePill from './ClaudeUsagePill.svelte';
   import { app, activate, closeTab, moveTab, newSession, sessionStatus, waitingOn, projectOf } from '../lib/state/app.svelte.js';
   import { modals, prefs } from '../lib/state/ui.svelte.js';
   import { conn, reconnectNow } from '../lib/rpc.svelte.js';
@@ -154,6 +155,7 @@
 
   <div class="right">
     <BudgetPill />
+    <ClaudeUsagePill />
     <button
       class="conn"
       data-status={conn.status}

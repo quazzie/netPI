@@ -204,6 +204,32 @@ function mockCalls() {
   ];
 }
 
+// A plausible Claude subscription reading (the shape the provider's monitor normalizes to); the
+// percentages drift a little on each refresh so "Refresh now" shows a change.
+let claudeUsagePct = 30;
+function claudeUsageSnapshot() {
+  claudeUsagePct = (claudeUsagePct + 1) % 100;
+  const inMs = (n) => new Date(Date.now() + n).toISOString();
+  return {
+    plan: 'max',
+    tier: 'default_claude_max_20x',
+    limits: [
+      { key: 'session', label: 'Session (5-hour window)', percent: claudeUsagePct, resetsAt: inMs(3 * 3600e3), active: true, severity: 'normal' },
+      { key: 'weekly_all', label: 'Week (all models)', percent: 8, resetsAt: inMs(3 * 86400e3), active: false, severity: 'normal' },
+      { key: 'weekly_fable', label: 'Week (Fable)', percent: 0, resetsAt: inMs(3 * 86400e3), active: false, severity: 'normal' },
+    ],
+    spend: { enabled: false, percent: 0, usedUsd: 0, limitUsd: null },
+    breakdown: [
+      { key: 'claude_code', label: 'Claude Code', percent: 100 },
+      { key: 'chat', label: 'Chats', percent: 0 },
+      { key: 'cowork', label: 'Cowork', percent: 0 },
+      { key: 'other', label: 'Other', percent: 0 },
+    ],
+    fetchedAt: new Date().toISOString(),
+    stale: false,
+  };
+}
+
 function budgetStatus() {
   const b = store.settings.budget ?? {};
   const now = new Date();
@@ -1166,6 +1192,13 @@ ${agent.plan.markdown(id)}` });
     const s = getSession(need(p, 'sessionId'));
     const paid = s.title === 'Lane scheduler hardening';
     return { sessionId: s.id, costUsd: paid ? 0.42 : 0, calls: paid ? 7 : 0, withSubagentsUsd: paid ? 0.675 : 0, withSubagentsCalls: paid ? 12 : 0 };
+  },
+  // the Claude CLI provider's subscription usage monitor (shape: ClaudeUsageMonitor.Normalize)
+  'claudecli.usage': () => claudeUsageSnapshot(),
+  'claudecli.usage.refresh': () => {
+    const snap = claudeUsageSnapshot();
+    publish('usage.claude', snap);
+    return snap;
   },
   'budget.status': () => budgetStatus(),
   'budget.allow': (p) => {

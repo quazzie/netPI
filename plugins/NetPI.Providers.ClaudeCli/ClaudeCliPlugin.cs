@@ -37,11 +37,26 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
                 SettingInfo.Str("providers.claudeCli.settingSources", "Settings files", "",
                     "Which settings the CLI loads: user, project, local (comma-separated). Empty loads none; they bring hooks and permission rules."),
                 SettingInfo.Bool("providers.claudeCli.connectors", "Account connectors", false, "Let the CLI load the account's MCP connectors."),
+                SettingInfo.Bool("providers.claudeCli.usage", "Usage monitor", true,
+                    "Shows the owner's Claude subscription usage (session and weekly windows, extra-usage credits) in the top bar, read from the Claude CLI's login."),
+                SettingInfo.Int("providers.claudeCli.usageRefreshMinutes", "Usage refresh", 5,
+                    "Minutes between usage fetches. The endpoint is rate-limited, so keep it at a few minutes.", 2, 60, "min"),
             ],
         });
         Provider = new ClaudeCliProvider(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,
             sessionId => CwdOf(context, sessionId));
         context.Services.Register<IModelProvider>(Provider);
+
+        // The subscription usage monitor: the CLI's login, the CLI's own /usage data source.
+        var usage = new ClaudeUsageMonitor(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger);
+        usage.OnFetched = snap => context.Events.Publish(EventTypes.UsageClaude, snap);
+        context.Rpc.RegisterReadOnly("claudecli.usage", async (_, ct) => await usage.GetAsync(false, ct).ConfigureAwait(false),
+            "The owner's Claude subscription usage from the Claude CLI's login (session/weekly windows, extra-usage credits); a stale reading is flagged");
+        context.Rpc.Register("claudecli.usage.refresh", async (_, ct) => await usage.GetAsync(true, ct).ConfigureAwait(false),
+            "Fetch the Claude subscription usage now");
+        var usageCts = new CancellationTokenSource();
+        var usageTask = Task.Run(() => usage.WatchAsync(usageCts.Token));
+        context.Track(new UsageStopper(usageCts, usageTask));
         // Enabling the provider or editing its models changes the catalog: say so, as the other providers do.
         _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, _ =>
         {
@@ -73,5 +88,16 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         _settingsSub?.Dispose();
         _settingsSub = null;
         return Task.CompletedTask;
+    }
+
+    /// <summary>Stops the usage monitor's background loop (tracked, so it dies with the plugin).</summary>
+    private sealed class UsageStopper(CancellationTokenSource cts, Task task) : IDisposable
+    {
+        public void Dispose()
+        {
+            cts.Cancel();
+            try { task.Wait(TimeSpan.FromSeconds(2)); } catch { /* it is gone or stuck on the cancel */ }
+            cts.Dispose();
+        }
     }
 }

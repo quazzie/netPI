@@ -4,7 +4,8 @@ namespace NetPI.Providers.ClaudeCli;
 
 /// <summary>
 /// Snapshot of <c>providers.claudeCli</c>: enabled, executable, models [ids], timeoutSeconds, tools ("default" = every
-/// built-in tool of the CLI, or a list, or "none"), permissionMode, settingSources, connectors.
+/// built-in tool of the CLI, or a list, or "none"), permissionMode, settingSources, connectors, usage (the subscription
+/// usage monitor), usageRefreshMinutes.
 /// </summary>
 internal sealed class ClaudeCliOptions
 {
@@ -24,6 +25,10 @@ internal sealed class ClaudeCliOptions
     public string SettingSources { get; init; } = "";
     /// <summary>Let the CLI load the account's MCP connectors (claude.ai) as well.</summary>
     public bool Connectors { get; init; }
+    /// <summary>Show the owner's Claude subscription usage in the top bar (the CLI's login, not an API key).</summary>
+    public bool Usage { get; init; } = true;
+    /// <summary>Minutes between usage fetches; the endpoint is rate-limited, so keep it at a few minutes.</summary>
+    public int UsageRefreshMinutes { get; init; } = 5;
 
     public static ClaudeCliOptions Parse(JsonObject? o)
     {
@@ -42,6 +47,8 @@ internal sealed class ClaudeCliOptions
             PermissionMode = PermissionModes.Contains(mode, StringComparer.OrdinalIgnoreCase) ? mode! : "bypassPermissions",
             SettingSources = (o.Str("settingSources") ?? "").Trim(),
             Connectors = o.Bool("connectors", false),
+            Usage = o.Bool("usage", true),
+            UsageRefreshMinutes = Math.Clamp(o.Int("usageRefreshMinutes") ?? 5, 2, 60),
         };
     }
 }
