@@ -29,6 +29,12 @@ internal sealed class ClaudeCliOptions
     public bool Usage { get; init; } = true;
     /// <summary>Minutes between usage fetches; the endpoint is rate-limited, so keep it at a few minutes.</summary>
     public int UsageRefreshMinutes { get; init; } = 5;
+    /// <summary>
+    /// Max silence between the CLI's stream events, in seconds (0 = no stall detection). The CLI works with its own
+    /// tools and subagents, and a long Bash command or a subagent can stay silent for minutes, so the default is far
+    /// above the retry plugin's global one; a dead process ends the stream, which the provider already reports.
+    /// </summary>
+    public int StallTimeoutSeconds { get; init; } = 1800;
 
     public static ClaudeCliOptions Parse(JsonObject? o)
     {
@@ -49,6 +55,7 @@ internal sealed class ClaudeCliOptions
             Connectors = o.Bool("connectors", false),
             Usage = o.Bool("usage", true),
             UsageRefreshMinutes = Math.Clamp(o.Int("usageRefreshMinutes") ?? 5, 2, 60),
+            StallTimeoutSeconds = Math.Clamp(o.Int("stallTimeoutSeconds") ?? 1800, 0, 7200),
         };
     }
 }

@@ -246,6 +246,35 @@ public static class RetryTests
             Check.True(events[^1] is StreamCompleted);
         });
 
+        r.Add("retry: a model's own stall tolerance of 0 disables the stall (a silent CLI is not reset)", async () =>
+        {
+            // The global stall is 250 ms, but this model declares 0 (the Claude CLI: its own tools and subagents
+            // can be silent for minutes): a provider that is silent for 700 ms between events completes, it is not
+            // reset and retried.
+            var req = new ModelRequest { Model = new ModelInfo { Provider = "claude-cli", Id = "c", StallTimeoutSeconds = 0 }, Messages = [T.User("hi")] };
+            static async IAsyncEnumerable<ModelStreamEvent> SilentThenDone([EnumeratorCancellation] CancellationToken ct)
+            {
+                yield return new TextDelta("a");
+                await Task.Delay(700, ct);
+                yield return Done();
+            }
+            var script = new Script((_, ct) => SilentThenDone(ct));
+            var events = await Collect(new RetryMiddleware(() => Fast(firstMs: 5000, stallMs: 250)).InvokeAsync(req, script.Next, CancellationToken.None));
+            Check.Equal(1, script.Calls, "no retry: the model's 0 disables the stall detection");
+            Check.False(events.Any(e => e is StreamReset));
+            Check.True(events[^1] is StreamCompleted);
+        });
+
+        r.Add("retry: a model's stall timeout can be shorter than the global, and the notice says its own number", async () =>
+        {
+            var req = new ModelRequest { Model = new ModelInfo { Provider = "claude-cli", Id = "c", StallTimeoutSeconds = 1 }, Messages = [T.User("hi")] };
+            var script = new Script((n, ct) => n == 1 ? Hang(ct, true, new TextDelta("partial")) : Events(Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast(firstMs: 5000, stallMs: 5000)).InvokeAsync(req, script.Next, CancellationToken.None));
+            Check.Equal(2, script.Calls);
+            Check.True(events[1] is StreamReset { Reason: var reason } && reason.Contains("stalled for 1s"), "the reset says the model's own 1 s, not the global 5 s");
+            Check.Equal("Stream stalled for 1s. Retrying in 1s (attempt 2/4)…", ((StreamNotice)events[2]).Text);
+        });
+
         r.Add("retry: time spent by the consumer does not count as a stall", async () =>
         {
             var script = new Script((_, _) => Events(new TextDelta("a"), new TextDelta("b"), new TextDelta("c"), Done()));

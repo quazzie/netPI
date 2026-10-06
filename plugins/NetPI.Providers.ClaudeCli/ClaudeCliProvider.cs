@@ -61,6 +61,7 @@ public sealed class ClaudeCliProvider : IModelProvider
             MaxOutputTokens = 32_000,
             InputModalities = ["text"],
             Reasoning = new ReasoningInfo { Supported = true, Efforts = [.. ClaudeCliOptions.Efforts], Default = "medium" },
+            StallTimeoutSeconds = o.StallTimeoutSeconds,
             Status = "available",
             IsLocal = false,
         }).ToList();

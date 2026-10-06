@@ -79,7 +79,11 @@ interface ProjectInfo { id; name; path; createdAt; updatedAt; lastUsedAt?; meta?
 interface WorkspaceInfo { id; name; path /* the checkout root */; projectId?; kind: 'folder'|'worktree'|'attached'; branch?; baseCommit?; repoCommonDir?;
   ownerSessionId?; ownerAgentId?; managed: boolean /* NetPI created it, and may therefore retire it */; createdAt; updatedAt; meta? }
 interface ModelInfo { provider; id; ref /* "provider/id" */; displayName?; contextWindow?; maxOutputTokens?; concurrency?;
-  inputModalities: string[]; reasoning?: { supported: boolean; efforts: string[]; default?: string }; status?; isLocal: boolean }
+  inputModalities: string[]; reasoning?: { supported: boolean; efforts: string[]; default?: string };
+  stallTimeoutSeconds? /* max silence between stream events for this model, in seconds; overrides the retry plugin's
+  retry.stallTimeoutSeconds (0 disables the stall detection); a provider whose calls can be legitimately silent for a
+  long time (the Claude CLI works with its own tools and subagents) sets it */;
+  status?; isLocal: boolean }
 type AgentStatus = 'idle'|'queued'|'running'|'yielded'|'completed'|'failed'|'cancelled';
 interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isSubagent; depth; status: AgentStatus; model?; agent? /* the agent (agents.<id>) it runs on, or the model's slot key */;
   activity?; createdAt; startedAt?; finishedAt?; runs; turns; toolCalls; inputTokens; outputTokens; queuedMessages; task?; result?; error?; children: string[] }

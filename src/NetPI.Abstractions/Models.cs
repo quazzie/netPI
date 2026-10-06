@@ -23,6 +23,13 @@ public sealed class ModelInfo
     public int? Concurrency { get; set; }
     public List<string> InputModalities { get; set; } = ["text"];
     public ReasoningInfo? Reasoning { get; set; }
+    /// <summary>
+    /// Max silence between stream events for this model, in seconds, overriding the retry plugin's global
+    /// <c>retry.stallTimeoutSeconds</c> (null = the global). 0 disables the stall detection. A provider whose calls
+    /// can be legitimately silent for a long time (the Claude CLI works with its own tools and subagents) sets this;
+    /// the process dying is detected by the stream ending, not by silence.
+    /// </summary>
+    public int? StallTimeoutSeconds { get; set; }
     /// <summary>loaded | unloaded | stopped | offline | available</summary>
     public string? Status { get; set; }
     public bool IsLocal { get; set; }

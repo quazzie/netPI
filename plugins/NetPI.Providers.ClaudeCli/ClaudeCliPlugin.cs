@@ -41,6 +41,8 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
                     "Shows the owner's Claude subscription usage (session and weekly windows, extra-usage credits) in the top bar, read from the Claude CLI's login."),
                 SettingInfo.Int("providers.claudeCli.usageRefreshMinutes", "Usage refresh", 5,
                     "Minutes between usage fetches. The endpoint is rate-limited, so keep it at a few minutes.", 2, 60, "min"),
+                SettingInfo.Int("providers.claudeCli.stallTimeoutSeconds", "Silence tolerance", 1800,
+                    "How long the CLI may stay silent (its own tools and subagents can run for minutes) before the call is declared stalled and retried. 0 never declares a stall: a dead CLI ends the stream on its own.", 0, 7200, "s"),
             ],
         });
         Provider = new ClaudeCliProvider(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,

@@ -151,6 +151,7 @@ apply, and a run that works through many files uses a lot of them.
 | `connectors` | `false` | let the CLI load the account's MCP connectors |
 | `usage` | `true` | show the owner's Claude subscription usage in the top bar: the monitor reads the CLI's login (`~/.claude/.credentials.json`, or `$CLAUDE_CONFIG_DIR`) and fetches the same data the CLI's `/usage` shows (session and weekly windows, extra-usage credits) |
 | `usageRefreshMinutes` | `5` | minutes between usage fetches (2–60); the endpoint is rate-limited, and a failed fetch keeps the last good reading, flagged stale |
+| `stallTimeoutSeconds` | `1800` | how long the CLI may stay silent before the retry plugin declares the call stalled and retries it. The CLI's own tools and subagents can run for minutes without a line of output (the global `retry.stallTimeoutSeconds` is 180 s, which would kill a running subagent and wipe the chat's in-flight answer); 0 never declares a stall — a dead CLI ends the stream on its own |
 
 Each call is one process with the prompt on stdin (a history is sent as a labelled transcript, the system prompt through a
 temporary `--system-prompt-file` that also tells the model which tools it really has). The working folder is the session's
@@ -368,7 +369,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `retry.enabled` / `retry.maxAttempts` | `true` / `6` | retries what the provider calls transient — lost connections, stalled streams, rate limits and overload (429/529) and 5xx/server-error responses — up to this many attempts, with a notice in the chat each time; after that the error surfaces unchanged, with its request id |
 | `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter; when the server says how long to wait (`Retry-After`, e.g. with a 429 or 529), at least that long |
 | `retry.firstEventTimeoutSeconds` | `600` | silence before the first token (slow prefill) |
-| `retry.stallTimeoutSeconds` | `180` | silence between tokens |
+| `retry.stallTimeoutSeconds` | `180` | silence between tokens; a model can override it for its own calls with `ModelInfo.stallTimeoutSeconds` (the Claude CLI ships 1800 s, since its own tools and subagents can be silent for minutes) |
 | `retry.maxTotalSeconds` | `300` | give up once this much of the waiting between attempts (the backoff and any Retry-After) has passed: the time an attempt ran or stalled does not count against it, so a full first-token stall still gets its retry whatever this is set to |
 
 ## Tools

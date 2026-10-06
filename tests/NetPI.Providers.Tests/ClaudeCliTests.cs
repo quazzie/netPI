@@ -240,6 +240,13 @@ internal static class ClaudeCliTests
             var models = await p.ListModelsAsync(true, CancellationToken.None);
             t.Eq(3, models.Count, "default models");
             t.Check(models.All(m => m.Provider == "claude-cli" && m.Reasoning is { Supported: true }), "models carry the provider and efforts");
+            t.Check(models.All(m => m.StallTimeoutSeconds == 1800), "models carry the CLI's silence tolerance (the global 180 s would reset a running subagent)");
+
+            var cfgStall = Cfg();
+            cfgStall["stallTimeoutSeconds"] = 600;
+            p = new CL.ClaudeCliProvider(() => cfgStall, null, (_, ct) => Lines([], ct));
+            models = await p.ListModelsAsync(true, CancellationToken.None);
+            t.Check(models.All(m => m.StallTimeoutSeconds == 600), "a configured tolerance is carried");
 
             // Enabling it (or editing the models) after the catalog listed it must be reported, or no agent can pick it.
             var cfg = Cfg(enabled: false);
