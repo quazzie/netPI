@@ -106,7 +106,14 @@
 </script>
 
 <div class="form">
-  <div class="f-title np-strong">{editing ? 'Edit schedule' : 'New schedule'}</div>
+  <div class="f-head">
+    <div class="f-title np-strong">{editing ? 'Edit schedule' : 'New schedule'}</div>
+    <label class="np-check f-enabled"
+      title={schedule?.finishedAt ? 'This one-time schedule has run; it stays off until you give it a new time' : ''}>
+      <input type="checkbox" bind:checked={f.enabled} />
+      <span>Enabled</span>
+    </label>
+  </div>
 
   <label class="fld">
     <span class="f-label">Name</span>
@@ -184,11 +191,6 @@
     {/if}
   </label>
 
-  <label class="fld np-check">
-    <input type="checkbox" bind:checked={f.enabled} />
-    <span>Enabled{schedule?.finishedAt ? ' (a finished once needs a new time)' : ''}</span>
-  </label>
-
   {#if editing}
     <div class="np-small np-dim">Changing the schedule counts the next run from now.</div>
   {/if}
@@ -211,6 +213,15 @@
   }
   .f-title {
     font-size: 13px;
+  }
+  .f-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .f-enabled {
+    font-size: 12px;
   }
   .fld {
     display: flex;

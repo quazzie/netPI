@@ -566,7 +566,7 @@ Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like 
 Work 48KB, Ideas 34KB, Schedules 28KB, Files 29KB, Agents 23KB, Web 17KB, Mcp 16KB. `build:plugins` prints the current sizes; they
 move with the tabs, so treat this list as the shape, not as numbers to keep in step.
 
-**Schedules** (`netpi.schedules`, right, order 25). The schedules, each a prompt that starts a fresh chat on its own:
+**Schedules** (`netpi.schedules`, left, order 25 — between Projects and Files). The schedules, each a prompt that starts a fresh chat on its own:
 list, run now, pause/resume, edit (an inline form that replaces the list), history and a two-step delete. Reads
 `schedules.*` (its own plugin) plus `runs.list`, `projects.list` and `agents.list` (absent ones degrade their own
 feature); refreshes on `schedules.changed` (unscoped) and a 30 s poll — `schedules.ran` is only a hint, because it is
