@@ -8,7 +8,6 @@
   import ToolsPicker from './ToolsPicker.svelte';
   import ChatCost from './ChatCost.svelte';
   import ContextRing from './ContextRing.svelte';
-  import ClaudeUsagePill from '../ClaudeUsagePill.svelte';
   import QueueChips from './QueueChips.svelte';
   import TodoStrip from './TodoStrip.svelte';
   import RunStatus from './RunStatus.svelte';
@@ -40,8 +39,7 @@
   const ctxInfo = $derived(app.context.get(session.id));
   const used = $derived(ctxInfo?.used ?? session.contextTokens ?? 0);
   const win = $derived(ctxInfo?.window ?? model?.contextWindow ?? 0);
-  // A Claude CLI session's ring would show the CLI's own last call against a nominal window, not this chat: the
-  // subscription's usage (session/week) is the number that is true there, so the pill takes the ring's place.
+  // A Claude CLI session keeps its own conversation: the ring is the CLI's real context, and its popout carries the subscription's usage.
   const claudeCli = $derived(model?.provider === 'claude-cli');
   // every compaction appends a summary message (meta.kind 'compaction'), so the loaded history is the count;
   // chat.hasMore means older messages sit outside the window, so the count is a lower bound
@@ -465,10 +463,9 @@
         <PlanPill {session} />
         <span class="spacer"></span>
         <ChatCost sessionId={session.id} />
-        {#if claudeCli}
-          <ClaudeUsagePill compact />
-        {:else if used || win}
-          <ContextRing {used} window={win} sessionId={session.id} {compactions} historyTruncated={chat.hasMore} />
+        {#if used || win}
+          <ContextRing {used} window={win} sessionId={session.id} {compactions} historyTruncated={chat.hasMore}
+            ownContext={!!model?.managesOwnContext} claudeUsage={claudeCli} />
         {/if}
         {#if running && !canSend}
           <button class="send stop" title="Stop (Esc)" aria-label="Stop" onclick={() => abortAgent(session.id)}>

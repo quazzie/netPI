@@ -156,7 +156,8 @@ apply, and a run that works through many files uses a lot of them.
 Each call is one process with the prompt on stdin (the system prompt through a temporary `--system-prompt-file` that also
 tells the model which tools it really has). The working folder is the session's workspace (else its project folder, else
 `%TEMP%\netpi-claude-cli`). The reported usage is the last turn of the CLI's own loop, so the context size is the size of the
-CLI's real context.
+CLI's real context, shown by the context ring against the model's real window: the CLI reports it with each answer (1M for the Claude 5
+models, 200k for the earlier ones), and the catalog takes it up. The CLI compacts its own session, so NetPI's compaction leaves these chats alone.
 
 **A chat keeps one CLI session.** The first turn starts it (`--session-id`, with the conversation so far as the prompt); every
 later turn resumes it (`--resume`) and sends only what is new to it: the messages after the point it had, without its own answers
@@ -367,7 +368,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 
 | key | default | |
 |---|---|---|
-| `compaction.enabled` | `true` | |
+| `compaction.enabled` | `true` | a model that keeps its own context (`managesOwnContext`, the Claude CLI) is never auto-compacted: summarizing NetPI's copy of the messages would not shrink what its backend holds |
 | `compaction.reserveTokens` | `16384` | compact when fewer tokens than this are left (at most half the window) |
 | `compaction.thresholdPercent` | `1` | also compact at this share of the window (1 = only by the reserve) |
 | `compaction.keepRecentTokens` | `20000` | recent messages kept verbatim |

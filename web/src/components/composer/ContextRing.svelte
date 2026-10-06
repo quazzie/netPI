@@ -2,6 +2,7 @@
   import { stamp, tokens } from '../../lib/format.js';
   import Icon from '../../lib/kit/Icon.svelte';
   import Popover from '../Popover.svelte';
+  import ClaudeUsage from '../ClaudeUsage.svelte';
   import { rpc } from '../../lib/rpc.svelte.js';
   import { hasRpc, isBusy } from '../../lib/state/app.svelte.js';
   import { openPanelTab } from '../../lib/state/tabs.svelte.js';
@@ -12,8 +13,11 @@
    * now and a way into the Diagnostics context view.
    *   compactions       the chat's compaction summaries (role summary, meta.kind compaction), oldest first
    *   historyTruncated  older messages are not loaded, so the count is a lower bound
+   *   ownContext        the model's backend keeps and compacts the conversation itself (a Claude CLI session): the reading is
+   *                     the backend's own, NetPI's compaction and prompt breakdown do not describe it, and the popout adds
+   *                     the subscription's usage when `claudeUsage` is set
    */
-  let { used = 0, window: win = 0, sessionId = null, compactions = [], historyTruncated = false } = $props();
+  let { used = 0, window: win = 0, sessionId = null, compactions = [], historyTruncated = false, ownContext = false, claudeUsage = false } = $props();
   const R = 7;
   const C = 2 * Math.PI * R;
   const frac = $derived(win ? Math.min(1, Math.max(0, used / win)) : 0);
@@ -29,7 +33,7 @@
 
   async function show() {
     open = !open;
-    if (!open || !sessionId) return;
+    if (!open || !sessionId || ownContext) return; // a backend that keeps its own context has no NetPI prompt to break down
     // every time it is opened, not once per mount: the breakdown describes the prompt as it is now, and a session that
     // has run a while sends a different one than the ring was mounted with (a reload or a new tool changes it too)
     previewState = 'loading';
@@ -151,13 +155,20 @@
         {:else}
           <div class="row"><span>Window</span><b class="np-dim">unknown</b></div>
         {/if}
-        <div class="row" title={countTitle}>
-          <span>Compactions</span>
-          <b class="np-mono">{countText}</b>
-        </div>
-        {#if lastReading}<div class="read np-dim tiny">{lastReading}</div>{/if}
+        {#if !ownContext}
+          <div class="row" title={countTitle}>
+            <span>Compactions</span>
+            <b class="np-mono">{countText}</b>
+          </div>
+          {#if lastReading}<div class="read np-dim tiny">{lastReading}</div>{/if}
+        {/if}
       </div>
 
+      {#if claudeUsage}
+        <div class="sec"><ClaudeUsage /></div>
+      {/if}
+
+      {#if !ownContext}
       <div class="sec">
         <div class="sec-h">The prompt this session is sent</div>
         {#if previewState === 'loading'}
@@ -193,6 +204,11 @@
         </button>
         <div class="np-dim tiny">The ring is the last prompt the model was sent; the rows above are estimates.</div>
       </div>
+      {:else}
+        <div class="foot">
+          <div class="np-dim tiny">The Claude CLI keeps this chat's conversation itself and compacts it when it fills up: the ring is its own context, not NetPI's copy of the messages.</div>
+        </div>
+      {/if}
     </div>
   </Popover>
 {/if}

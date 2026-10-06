@@ -30,6 +30,12 @@ public sealed class ModelInfo
     /// the process dying is detected by the stream ending, not by silence.
     /// </summary>
     public int? StallTimeoutSeconds { get; set; }
+    /// <summary>
+    /// The model's backend keeps and compacts the conversation itself (the Claude CLI resumes its own session): NetPI's compaction leaves such
+    /// a chat alone, because summarizing NetPI's copy of the messages would not shrink what the backend holds. <see cref="ContextWindow"/> and the
+    /// context size the provider reports are the backend's own.
+    /// </summary>
+    public bool ManagesOwnContext { get; set; }
     /// <summary>loaded | unloaded | stopped | offline | available</summary>
     public string? Status { get; set; }
     public bool IsLocal { get; set; }

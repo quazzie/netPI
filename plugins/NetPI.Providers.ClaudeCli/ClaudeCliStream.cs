@@ -39,6 +39,8 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     public JsonObject? RateLimit { get; private set; }
     /// <summary>The <c>num_turns</c> and <c>duration_ms</c> of the result line, for the log.</summary>
     public int? Turns { get; private set; }
+    /// <summary>The model's real context window and output limit, from the result's <c>modelUsage</c> (the CLI knows them, NetPI's table does not).</summary>
+    public (int Window, int MaxOutput)? Limits { get; private set; }
     /// <summary>True once the CLI has started a tool: from then on its run did work (it may have written files, spent a long time), so a failure
     /// is reported, never retried from the top by the retry middleware.</summary>
     public bool RanTools { get; private set; }
@@ -194,6 +196,13 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     {
         Finished = true;
         Turns = o.Int("num_turns");
+        if (o.Obj("modelUsage") is { } perModel)
+            foreach (var (_, usage) in perModel)
+                if (usage?["contextWindow"] is JsonValue w && w.TryGetValue<int>(out var window) && window > 0)
+                {
+                    Limits = (window, usage["maxOutputTokens"] is JsonValue m && m.TryGetValue<int>(out var max) && max > 0 ? max : 0);
+                    break;
+                }
         var text = o.Str("result");
         if (o.Bool("is_error", false))
         {

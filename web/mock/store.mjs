@@ -90,13 +90,14 @@ export const MODELS = [
     isLocal: false,
   },
   {
-    // the Claude CLI provider: its session's composer shows the subscription usage pill in place of the context ring
+    // the Claude CLI provider: it keeps its own context (the ring is its real one; the popout adds the subscription's usage)
     provider: 'claude-cli',
     id: 'claude-sonnet-5-5',
     ref: 'claude-cli/claude-sonnet-5-5',
     displayName: 'Claude CLI: claude-sonnet-5-5',
-    contextWindow: 200000,
-    maxOutputTokens: 32000,
+    contextWindow: 1000000,
+    maxOutputTokens: 128000,
+    managesOwnContext: true,
     stallTimeoutSeconds: 1800,
     inputModalities: ['text'],
     reasoning: { supported: true, efforts: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'medium' },

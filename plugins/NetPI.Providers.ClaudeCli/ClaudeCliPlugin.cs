@@ -64,6 +64,8 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         catch (Exception ex) { context.Logger.LogDebug(ex, "claude-cli: could not prune the stored sessions"); }
         Provider = new ClaudeCliProvider(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,
             sessionId => CwdOf(context, sessionId), () => HiddenEnvironment(context.Settings), usage, sessions);
+        // the CLI reports each model's real window with its first answer: the catalog (and the context ring) take it up
+        Provider.OnModelsLearned = () => context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = "claude-cli" });
         context.Services.Register<IModelProvider>(Provider);
         // Enabling the provider or editing its models changes the catalog: say so, as the other providers do.
         _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, _ =>

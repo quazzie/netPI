@@ -57,6 +57,17 @@ public sealed class ClaudeCliProvider : IModelProvider
     }
 
     private string? _listed;
+    // what the CLI said about each model's limits (its result line), over the table below
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int Window, int MaxOutput)> _limits = new();
+
+    /// <summary>Fires when a call taught the provider another limit than the one it listed (the plugin tells the catalog).</summary>
+    public Action? OnModelsLearned { get; set; }
+
+    /// <summary>What is known of a model before the CLI has said: the Claude 5 models have a 1M window, the earlier ones 200k.</summary>
+    internal static (int Window, int MaxOutput) DefaultLimits(string id) =>
+        System.Text.RegularExpressions.Regex.IsMatch(id, @"^claude-[a-z]+-5(-|$)") ? (1_000_000, 128_000) : (200_000, 64_000);
+
+    private (int Window, int MaxOutput) LimitsOf(string id) => _limits.TryGetValue(id, out var l) ? l : DefaultLimits(id);
 
     private static string Fingerprint(ClaudeCliOptions o) => o.Enabled ? string.Join('|', o.Models) + "|" + o.StallTimeoutSeconds + "|" + o.MaxConcurrent : "disabled";
 
@@ -72,8 +83,9 @@ public sealed class ClaudeCliProvider : IModelProvider
             Provider = Id,
             Id = id,
             DisplayName = "Claude CLI: " + id,
-            ContextWindow = 200_000,
-            MaxOutputTokens = 32_000,
+            ContextWindow = LimitsOf(id).Window,
+            MaxOutputTokens = LimitsOf(id).MaxOutput,
+            ManagesOwnContext = true,
             Concurrency = o.MaxConcurrent,
             InputModalities = ["text"],
             Reasoning = new ReasoningInfo { Supported = true, Efforts = [.. ClaudeCliOptions.Efforts], Default = "medium" },
@@ -197,6 +209,11 @@ public sealed class ClaudeCliProvider : IModelProvider
             throw new ModelException(message, !stream.RanTools, null, "cli_incomplete");
         }
         foreach (var ev in asm.Drain()) yield return ev;
+        if (stream.Limits is { } learned && LimitsOf(request.Model.Id) != learned)
+        {
+            _limits[request.Model.Id] = learned;
+            try { OnModelsLearned?.Invoke(); } catch { /* a catalog refresh is never worth a failed call */ }
+        }
         var ms = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         _log.LogInformation("claude-cli: {Model} ({Purpose}{Resume}) in {WorkDir}: {Seconds:0.0}s, {Turns} turns, tools {Tools}", request.Model.Id, request.Purpose,
             attempt.Resume ? ", resumed" : "", workDir, ms / 1000.0, stream.Turns, tools.Length == 0 ? "none" : tools);

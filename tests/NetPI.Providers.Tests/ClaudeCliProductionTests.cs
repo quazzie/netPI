@@ -83,6 +83,30 @@ internal static class ClaudeCliProductionTests
             t.Eq(0, off.Get()["limits"]!.AsArray().Count, "usage off: nothing recorded");
         });
 
+        await t.Run("claude-cli: the models carry the CLI's real window, learned from its result line, and say they keep their own context", async () =>
+        {
+            var learned = 0;
+            var withLimits = """{"type":"result","subtype":"success","is_error":false,"result":"ok","modelUsage":{"claude-haiku-4-5":{"contextWindow":400000,"maxOutputTokens":50000}}}""";
+            var p = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines([Init, withLimits], ct)) { OnModelsLearned = () => learned++ };
+            var before = (await p.ListModelsAsync(true, CancellationToken.None)).ToDictionary(m => m.Id);
+            t.Eq(1_000_000, before["claude-sonnet-5-5"].ContextWindow, "a Claude 5 model: 1M");
+            t.Eq(200_000, before["claude-haiku-4-5"].ContextWindow, "an earlier one: 200k");
+            t.Check(before.Values.All(m => m.ManagesOwnContext), "NetPI's compaction leaves these chats alone");
+
+            var req = new ModelRequest
+            {
+                Model = new ModelInfo { Provider = "claude-cli", Id = "claude-haiku-4-5" }, SystemPrompt = "x",
+                Messages = [ChatMessage.UserText("hi")], SessionId = "ses_1", Purpose = "agent",
+            };
+            await Collect(p, req);
+            var after = (await p.ListModelsAsync(true, CancellationToken.None)).ToDictionary(m => m.Id);
+            t.Eq(400_000, after["claude-haiku-4-5"].ContextWindow, "what the CLI said replaces the table");
+            t.Eq(50_000, after["claude-haiku-4-5"].MaxOutputTokens, "and the output limit");
+            t.Eq(1, learned, "the catalog was told once");
+            await Collect(p, req);
+            t.Eq(1, learned, "not again for the same limits");
+        });
+
         await t.Run("claude-cli: a title or compaction call through the model is text only, in no project", async () =>
         {
             var seen = new List<(List<string> Args, string WorkDir, string Prompt)>();

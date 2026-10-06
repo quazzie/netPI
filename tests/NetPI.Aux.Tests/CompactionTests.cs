@@ -348,6 +348,18 @@ public static class CompactionTests
             Check.True(CompactionHook.EstimateContext(stale, 0) < 20_000, "stale usage ignored");
         });
 
+        r.Add("compaction: a model that keeps its own context is left alone, by the hook and by /compact", async () =>
+        {
+            var env = new Env();
+            env.Model.ManagesOwnContext = true;
+            env.Conversation(4);
+            var turn = env.Turn(lastContextTokens: 0);
+            turn.Messages.Last(m => m.Role == MessageRole.Assistant).Usage = new Usage { InputTokens = 39_000, OutputTokens = 200 };
+            turn.LastContextTokens = 39_200; // far over the threshold of a 40k window
+            await env.Hook.OnBeforeModelCallAsync(turn);
+            Check.Equal(0, env.Ctx.ModelsFake.Requests.Count, "no summarizer call for a backend that compacts itself");
+        });
+
         r.Add("compaction: settings (disabled, threshold, reserve)", async () =>
         {
             var o = new CompactionOptions();

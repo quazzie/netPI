@@ -90,7 +90,7 @@ web/
       state/tabs.svelte.js     side-panel tab registry (core + plugin tabs)
       kit/                     @netpi/kit: Svelte components shared with plugin tabs
     components/
-      TopBar.svelte  BudgetPill.svelte  ClaudeUsagePill.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
+      TopBar.svelte  BudgetPill.svelte  ClaudeUsage.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
       ModelMenu.svelte (the searchable model list)  ModelSelect.svelte (a model field that opens it)
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
       (the projects panel and the projects dialog share lib/projects.js: counts, filter/order, remove)
@@ -404,10 +404,12 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - What the chat cost on paid models (`usage.session`, with its subagents) shows next to the context ring once it is more
   than nothing, refreshed on `usage.changed`; the tooltip splits the chat from its subagents.
 - The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`. In a **Claude CLI
-  session the ring is replaced by the compact `ClaudeUsagePill`** (the subscription's session/week percentages, the
-  same component as the top bar's, borderless and opening upward): the ring's reading there is the CLI's own last
-  call against a nominal window, not this chat, so the subscription's usage is the number that is true there. The
-  pill hides itself while the provider's reading is absent (the top bar's pill does too). Hover reads
+  session** (a model with `managesOwnContext`) the ring is the CLI's own context against the model's real window (the CLI
+  reports it; 1M for the Claude 5 models): the chat resumes one CLI session, which holds and compacts the conversation
+  itself. Its popout then shows used / window / free, and the **Claude subscription usage** (`ClaudeUsage`: the session
+  and weekly windows as percent, bar and reset time, from `claudecli.usage`, updated on `usage.claude`, with when the
+  Claude CLI last reported it), and leaves out what describes NetPI's own prompt: the compaction count, the prompt
+  breakdown, **Compact now** (`compaction.run` answers that the backend compacts itself) and the Diagnostics link. Hover reads
   it in one line; **pressing it opens a popout** (idea-kp4fq5) with used / window / free, how often this chat was
   compacted and what the prompt is made of — `context.preview { sessionId }` gives the system prompt (≈ tokens,
   chars / 3.6) and the tools, with a line when the prompt is frozen. It fails soft: no Context plugin, and the rows
@@ -906,13 +908,9 @@ names or an inline `<svg …>` string.
   latest budget notice; after a confirm it calls `budget.allow`. The top bar shows the budget (`BudgetPill`:
   `budget.status`, then `usage.changed`) only once it needs attention, amber from `budget.warnPercent`, red when spent;
   a click opens Settings on Agents & budget (`modals.settings = 'agents'`).
-- The top bar also shows the owner's Claude subscription usage (`ClaudeUsagePill`, beside the budget pill) when the
-  Claude CLI provider is loaded and a reading exists: the session and weekly percentages, amber at 75 %, red at 90 %.
-  A click opens a popover with every window (percent, bar, reset time), the extra-usage credits, the week's breakdown
-  by surface (when the endpoint sent them), and when the reading was taken. The reading is what the Claude CLI printed after its
-  last call, so it is as fresh as the last call (it is kept across restarts, and marked old after six hours). It updates on
-  `usage.claude`. The same component, `compact`, sits in the composer's row in place of
-  the context ring in a Claude CLI session (see above).
+- The Claude subscription usage is not in the top bar: it is in the context ring's popout of a Claude CLI chat (above). The reading
+  is what the Claude CLI printed after its last call, so it is as fresh as the last call (kept across restarts, marked old after
+  six hours).
 - Assistant messages that stop with `stopReason: 'error'` may carry `meta.error`, which is shown in the error
   row.
 - `agent_*` tool results carry `details.sessionId` (and `name`, `status`) for the subagent link, or
