@@ -80,7 +80,7 @@ public sealed class ClaudeCliProvider : IModelProvider
         if (request.Tools.Count > 0)
             yield return new StreamNotice(
                 $"Claude CLI does not use NetPI's tools (the {request.Tools.Count} of this request): it works with its own" +
-                (tools.Length == 0 ? " (none enabled)." : $" in {workDir}."), "info");
+                (tools.Length == 0 ? " (none enabled)." : $" in {workDir}; its tool calls show in the chat."), "info");
 
         // The system prompt goes through a file: NetPI's can outgrow the 32k command line of Windows.
         Directory.CreateDirectory(_workDir);
@@ -100,7 +100,6 @@ public sealed class ClaudeCliProvider : IModelProvider
                     warned = true;
                     yield return new StreamNotice($"Claude CLI is signed in with an API key ({src}), not the subscription: this call is billed to the API.", "warning");
                 }
-                foreach (var n in stream.TakeActivity()) yield return new StreamNotice(n);
                 foreach (var ev in asm.Drain()) yield return ev;
                 if (stream.Finished) break;
             }
@@ -153,11 +152,13 @@ public sealed class ClaudeCliProvider : IModelProvider
     internal static string RenderPrompt(ModelRequest request)
     {
         var turns = new List<(string Role, string Text)>();
+        // what the CLI's own tools returned stays out: the next call has its own tools to look again
+        var ranByCli = request.Messages.SelectMany(m => m.ToolCalls).Where(c => c.ProviderExecuted).Select(c => c.Id).ToHashSet();
         foreach (var m in request.Messages)
         {
             if (m.Compacted) continue;
             var text = m.Role == MessageRole.Tool
-                ? string.Join("\n", m.ToolResults.Select(r => $"[{r.Name} result]\n{r.Content}"))
+                ? string.Join("\n", m.ToolResults.Where(r => !ranByCli.Contains(r.CallId)).Select(r => $"[{r.Name} result]\n{r.Content}"))
                 : m.Text;
             if (string.IsNullOrWhiteSpace(text)) continue;
             turns.Add((m.Role == MessageRole.Assistant ? "Assistant" : "User", text));

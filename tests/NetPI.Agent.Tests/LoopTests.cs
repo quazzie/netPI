@@ -21,6 +21,7 @@ public static class LoopTests
         t.Add("loop: abort persists partial message", AbortPartial);
         t.Add("loop: abort during a tool call", AbortDuringTool);
         t.Add("loop: abort during a tool that swallows cancellation stops the batch", AbortDuringSwallowingTool);
+        t.Add("loop: a call the provider ran itself is recorded, not executed, and the run ends", ProviderExecutedCallIsRecordedNotRun);
         t.Add("loop: a run cancelled in an after-tool hook keeps one result per call id", OneResultWhenCancelledInAfterHook);
         t.Add("loop: an abort keeps the queue: dequeue it, then send it as the next turn", AbortKeepsQueue);
         t.Add("loop: a run that fails before it takes the queue does not start itself again for it", FailedRunKeepsQueue);
@@ -459,6 +460,44 @@ public static class LoopTests
     /// A call's result is persisted before its after-hooks run: a run cancelled in an after-hook must not write a second,
     /// contradictory result ("aborted") for the same call id - the transcript keeps the one real result (idea-3coif8).
     /// </summary>
+    /// <summary>A provider that ran a call itself (the Claude CLI's tools): recorded and shown like a tool call, never executed, and the run ends.</summary>
+    private static async Task ProviderExecutedCallIsRecordedNotRun()
+    {
+        await using var h = await TestHost.StartAsync();
+        var echo = Echo();
+        h.AddTool(echo);
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            // a call named like a registered tool, to prove that the flag, not the name, decides
+            var ran = Reply.Call("echo", new { text = "by the cli" }, id: "tu_1");
+            ran.ProviderData = new JsonObject
+            {
+                [ToolCallPart.ExecutedKey] = true,
+                [ToolCallPart.ResultKey] = new JsonObject { ["content"] = "cli says hi", ["isError"] = false },
+            };
+            return Reply.Stream(Reply.Message(ran, new TextPart { Text = "all done" }));
+        };
+        await h.SendAsync(s.Id, "go");
+        var a = await h.IdleAsync(s.Id);
+
+        var msgs = h.Messages(s.Id);
+        Check.Equal("User,Notice,Assistant,Tool", string.Join(",", msgs.Select(m => m.Role)), "no second model call");
+        Check.Equal(0, echo.Calls, "the tool did not run");
+        Check.Equal(1, h.Catalog.Calls, "one model call: the loop ended");
+        var result = msgs[3].ToolResults.Single();
+        Check.Equal("tu_1", result.CallId);
+        Check.Equal("cli says hi", result.Content);
+        Check.False(result.IsError);
+        Check.Equal(true, result.Details!["providerExecuted"]!.GetValue<bool>());
+        var call = msgs[2].ToolCalls.Single();
+        Check.True(call.ProviderExecuted, "the call stays marked");
+        Check.True(call.ProviderData![ToolCallPart.ResultKey] is null, "the result is stored once, as the tool message");
+        Check.Equal(1, a.ToolCalls, "counted");
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolStart).Count, "tool.start for the chat");
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolEnd).Count, "tool.end for the chat");
+    }
+
     private static async Task OneResultWhenCancelledInAfterHook()
     {
         await using var h = await TestHost.StartAsync();

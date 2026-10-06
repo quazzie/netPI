@@ -130,7 +130,9 @@ Runs the installed `claude -p` as a subprocess, signed in with the owner's subsc
 terminal; the CLI bundled with the Claude desktop app has its own login and does not share it). Give an agent a
 `claude-cli/…` model and that agent **is** Claude Code for the run: it works in the session's workspace with the CLI's own
 tools (read, search, edit, write, shell, web) and answers in text. NetPI's tools are not used; a notice names the folder the
-CLI works in, and its tool use shows as "Claude CLI: Read src/x.cs" notices, not as tool calls of the agent. The CLI's tools
+CLI works in, and its tool use shows in the chat as ordinary tool-call blocks (named as the CLI names them, `Read`, `Bash`,
+`Edit`…), already run: the agent loop records them and never executes them (see "Calls the provider ran itself" in
+[PROTOCOL.md](PROTOCOL.md)). The CLI's tools
 act on the disk directly: NetPI's workspace guard and permission rules do not apply to them. Images are not sent.
 `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from the child's environment, so a call is never billed to an API
 key by accident; if the CLI still reports an API-key sign-in, the stream carries a warning. The cost is left unreported

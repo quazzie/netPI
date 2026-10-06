@@ -163,7 +163,7 @@ internal static class ClaudeCliTests
             t.Check(nonePrompt!.EndsWith(CL.ClaudeCliProvider.NoToolsNote), "no tools: the model is told it has none");
         });
 
-        await t.Run("claude-cli: the CLI's own tool use is shown as activity, and usage is the last turn's, not the total", async () =>
+        await t.Run("claude-cli: the CLI's own tool use becomes tool-call parts with their results, and usage is the last turn's, not the total", async () =>
         {
             var lines = new[]
             {
@@ -174,6 +174,8 @@ internal static class ClaudeCliTests
                 Ev("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":".cs\"}"}}"""),
                 Ev("""{"type":"content_block_stop","index":0}"""),
                 Ev("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":3,"cache_read_input_tokens":1000,"output_tokens":20}}"""),
+                """{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"file text","is_error":false}]},"parent_tool_use_id":null}""",
+                """{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"parent_tool_use_id":"tu_other"}""",
                 Ev("""{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":2000,"output_tokens":1}}}"""),
                 Ev("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"""),
                 Ev("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Done."}}"""),
@@ -183,10 +185,13 @@ internal static class ClaudeCliTests
             };
             var p = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines(lines, ct));
             var events = await Collect(p, Req());
-            t.Check(events.OfType<StreamNotice>().Any(n => n.Text == "Claude CLI: Read src/x.cs"), "the Read is announced with its path");
+            t.Check(events.OfType<ToolCallStarted>().Any(c => c.Id == "tu_1" && c.Name == "Read"), "the call streams as a tool call");
             var done = events.OfType<StreamCompleted>().Single().Message;
-            t.Eq("Done.", done.Text, "answer text");
-            t.Check(done.Parts.OfType<ToolCallPart>().Count() == 0, "the CLI's tool calls are not tool calls of the agent");
+            t.Eq("Done.", done.Text, "answer text: a subagent's lines are not part of it");
+            var call = done.Parts.OfType<ToolCallPart>().Single();
+            t.Check(call.ProviderExecuted && call.Name == "Read" && call.Arguments == "{\"file_path\":\"src/x.cs\"}", $"the call is marked as run by the CLI, with its arguments: {call.Arguments}");
+            t.Eq("file text", call.ProviderData![ToolCallPart.ResultKey]!["content"]!.GetValue<string>(), "its result travels with the call");
+            t.Eq("stop", done.StopReason, "the message is an answer, not a request for tools");
             t.Eq(2000L, done.Usage!.CacheReadTokens, "context size is the last turn's");
             t.Eq(7L, done.Usage!.OutputTokens, "output of the last turn");
         });
@@ -205,6 +210,24 @@ internal static class ClaudeCliTests
             var events = await Collect(p, Req(messages: messages));
             t.Eq("The conversation so far:\n\nUser:\nFirst?\n\nAssistant:\nAnswer.\n\nUser:\nSecond?\n\nReply to the last user message.", stdin, "transcript");
             t.Check(events.OfType<StreamNotice>().Any(n => n.Text.Contains("billed to the API")), "API-key sign-in is announced");
+        });
+
+        await t.Run("claude-cli: results of the CLI's own tools stay out of the next prompt", async () =>
+        {
+            string? stdin = null;
+            var p = new CL.ClaudeCliProvider(() => Cfg(), null, (call, ct) => { stdin = call.Stdin; return Lines([Init, Result], ct); });
+            var ran = new ToolCallPart { Id = "tu_1", Name = "Read", Arguments = "{}", ProviderData = new JsonObject { [ToolCallPart.ExecutedKey] = true } };
+            var other = new ToolCallPart { Id = "c_2", Name = "peek", Arguments = "{}" };
+            var messages = new List<ChatMessage>
+            {
+                ChatMessage.UserText("Look."),
+                new() { Role = MessageRole.Assistant, Parts = [ran, other, new TextPart { Text = "Looked." }] },
+                new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "tu_1", Name = "Read", Content = "HUGE FILE" }] },
+                new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c_2", Name = "peek", Content = "peeked" }] },
+                ChatMessage.UserText("And?"),
+            };
+            await Collect(p, Req(messages: messages));
+            t.Check(stdin!.Contains("peeked") && !stdin.Contains("HUGE FILE"), "only the results of calls NetPI ran are in the transcript");
         });
 
         await t.Run("claude-cli: models only while enabled; a disabled provider fails with the setting named", async () =>
@@ -248,7 +271,7 @@ internal static class ClaudeCliTests
             var done = events.OfType<StreamCompleted>().Single().Message;
             t.Check(done.Text.Contains("Mars", StringComparison.OrdinalIgnoreCase), $"answer: {done.Text}");
             t.Check(File.Exists(Path.Combine(dir, "result.txt")) && File.ReadAllText(Path.Combine(dir, "result.txt")).Contains("Mars"), "the CLI wrote the file in the session folder");
-            t.Check(events.OfType<StreamNotice>().Any(n => n.Text.StartsWith("Claude CLI: ")), "its tool use was reported");
+            t.Check(done.Parts.OfType<ToolCallPart>().Any(c => c.ProviderExecuted), "its tool use came back as tool calls run by the CLI");
             t.Check(events.OfType<TextDelta>().Any(), "text streamed as deltas");
             t.Check(done.Usage is { OutputTokens: > 0 }, "usage reported");
             t.Check(!events.OfType<StreamNotice>().Any(n => n.Text.Contains("billed")), "subscription login, not an API key");

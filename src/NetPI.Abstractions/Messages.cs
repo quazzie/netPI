@@ -103,6 +103,16 @@ public sealed class ToolCallPart : MessagePart
     public string Name { get; set; } = "";
     /// <summary>Raw JSON arguments exactly as produced by the model (may be invalid JSON).</summary>
     public string Arguments { get; set; } = "{}";
+
+    /// <summary><see cref="MessagePart.ProviderData"/> key: the provider ran this call itself (the Claude CLI works with its own tools).</summary>
+    public const string ExecutedKey = "executed";
+    /// <summary><see cref="MessagePart.ProviderData"/> key of such a call's result: <c>{ content, isError }</c>. The runner stores it as the
+    /// call's tool result and removes it from the message.</summary>
+    public const string ResultKey = "result";
+
+    /// <summary>True when the provider already ran this call: the runner records it (events, result message) and never executes it.</summary>
+    [JsonIgnore]
+    public bool ProviderExecuted => ProviderData?[ExecutedKey] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
 }
 
 public sealed class ToolResultPart : MessagePart

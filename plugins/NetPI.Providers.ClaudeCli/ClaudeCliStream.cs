@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -6,11 +7,18 @@ namespace NetPI.Providers.ClaudeCli;
 /// <summary>
 /// Reads the CLI's <c>--output-format stream-json --include-partial-messages</c> lines into the shared assembler:
 /// <c>stream_event</c> lines carry the Messages API's own streaming events; <c>assistant</c> is the whole message
-/// (used when nothing streamed); <c>result</c> ends the run, with usage and the error state.
+/// (used when nothing streamed); <c>user</c> lines carry the results of the CLI's own tools; <c>result</c> ends the run,
+/// with usage and the error state. The CLI's tool uses become tool-call parts marked as run by the provider
+/// (<see cref="ToolCallPart.ProviderExecuted"/>), each with its result, so the chat shows them like any tool call.
 /// </summary>
 internal sealed class ClaudeCliStream(MessageAssembler asm)
 {
+    /// <summary>A longer tool result is cut: the agent's own transcript is not where a whole file belongs.</summary>
+    internal const int MaxResultChars = 20_000;
+
     private readonly Dictionary<int, MessagePart> _blocks = [];
+    private readonly Dictionary<int, ToolCallPart> _toolBlocks = [];
+    private readonly Dictionary<string, ToolCallPart> _toolsById = [];
     private readonly Usage _usage = new();
     private bool _streamed;
     private bool _sawUsage;
@@ -19,29 +27,21 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     public string? ApiKeySource { get; private set; }
     public string? AssistantError { get; private set; }
 
-    private readonly Dictionary<int, (string Name, System.Text.StringBuilder Json)> _toolBlocks = [];
-    private readonly List<string> _activity = [];
-
-    /// <summary>What the CLI's own tools did since the last call ("Read src/x.cs"): shown as notices, not as tool calls of the agent.</summary>
-    public IReadOnlyList<string> TakeActivity()
-    {
-        if (_activity.Count == 0) return [];
-        var list = _activity.ToList();
-        _activity.Clear();
-        return list;
-    }
-
     public void Handle(string line)
     {
         JsonNode? node;
         try { node = JsonNode.Parse(line); }
         catch (JsonException) { return; } // not a protocol line (a warning printed to stdout)
         if (node is not JsonObject o) return;
-        switch (o.Str("type"))
+        var type = o.Str("type");
+        // what a subagent of the CLI does is its own: only the top level conversation is this call's answer
+        if (type is "stream_event" or "assistant" or "user" && o["parent_tool_use_id"] is not null) return;
+        switch (type)
         {
             case "system" when o.Str("subtype") == "init": ApiKeySource = o.Str("apiKeySource"); break;
             case "stream_event": StreamEvent(o.Obj("event")); break;
             case "assistant": Assistant(o); break;
+            case "user": ToolResults(o); break;
             case "result": Result(o); break;
         }
     }
@@ -57,17 +57,25 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
             case "content_block_start":
             {
                 var index = e.Int("index") ?? 0;
-                var type = e.Obj("content_block").Str("type");
+                var block = e.Obj("content_block");
+                var type = block.Str("type");
                 if (type == "text") _blocks[index] = asm.BeginText();
                 else if (type == "thinking") _blocks[index] = asm.BeginThinking();
-                else if (type == "tool_use") _toolBlocks[index] = (e.Obj("content_block").Str("name") ?? "tool", new System.Text.StringBuilder());
+                else if (type == "tool_use")
+                {
+                    var call = asm.StartToolCall(block.Str("id"), block.Str("name"));
+                    call.ProviderData = new JsonObject { [ToolCallPart.ExecutedKey] = true };
+                    _toolBlocks[index] = call;
+                    if (!string.IsNullOrEmpty(call.Id)) _toolsById[call.Id] = call;
+                }
                 break;
             }
             case "content_block_delta":
             {
                 var d = e.Obj("delta");
-                if (d.Str("type") == "input_json_delta" && _toolBlocks.TryGetValue(e.Int("index") ?? 0, out var tb)) { tb.Json.Append(d.Str("partial_json")); break; }
-                if (!_blocks.TryGetValue(e.Int("index") ?? 0, out var part)) break;
+                var index = e.Int("index") ?? 0;
+                if (d.Str("type") == "input_json_delta" && _toolBlocks.TryGetValue(index, out var call)) { asm.AppendToolArgs(call, d.Str("partial_json")); break; }
+                if (!_blocks.TryGetValue(index, out var part)) break;
                 switch (d.Str("type"))
                 {
                     case "text_delta" when part is TextPart t: asm.AppendText(t, d.Str("text")); _streamed = true; break;
@@ -76,9 +84,6 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
                 }
                 break;
             }
-            case "content_block_stop" when _toolBlocks.Remove(e.Int("index") ?? 0, out var tool):
-                _activity.Add(Describe(tool.Name, tool.Json.ToString()));
-                break;
             case "content_block_stop":
                 if (_blocks.TryGetValue(e.Int("index") ?? 0, out var p) && p is ThinkingPart tp) asm.EndThinking(tp);
                 break;
@@ -89,20 +94,36 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         }
     }
 
-    /// <summary>"Read src/x.cs", "Bash: git status": the tool and the one argument that says what it did.</summary>
-    internal static string Describe(string tool, string json)
+    /// <summary>The results of the CLI's own tools: <c>{ type: user, message: { content: [{ type: tool_result, tool_use_id, content, is_error }] } }</c>.</summary>
+    private void ToolResults(JsonObject o)
     {
-        string? arg = null;
-        try
+        foreach (var block in o.Obj("message").Arr("content") ?? [])
         {
-            if (JsonNode.Parse(json) is JsonObject args)
-                foreach (var key in new[] { "file_path", "path", "pattern", "command", "url", "query", "description" })
-                    if (args.Str(key) is { Length: > 0 } v) { arg = v; break; }
+            if (block.Str("type") != "tool_result" || block.Str("tool_use_id") is not { } id || !_toolsById.TryGetValue(id, out var call)) continue;
+            call.ProviderData![ToolCallPart.ResultKey] = new JsonObject
+            {
+                ["content"] = ResultText(block?["content"]),
+                ["isError"] = block.Bool("is_error", false),
+            };
         }
-        catch (JsonException) { /* cut-off arguments: the tool name alone */ }
-        if (arg is null) return $"Claude CLI: {tool}";
-        arg = arg.ReplaceLineEndings(" ");
-        return $"Claude CLI: {tool} {(arg.Length > 160 ? arg[..160] + "…" : arg)}";
+    }
+
+    private static string ResultText(JsonNode? content)
+    {
+        string text;
+        if (content is JsonValue v && v.TryGetValue<string>(out var s)) text = s;
+        else if (content is JsonArray arr)
+        {
+            var sb = new StringBuilder();
+            foreach (var part in arr)
+            {
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(part.Str("type") == "text" ? part.Str("text") : $"[{part.Str("type") ?? "content"}]");
+            }
+            text = sb.ToString();
+        }
+        else text = "";
+        return text.Length <= MaxResultChars ? text : text[..MaxResultChars] + $"\n… ({text.Length - MaxResultChars} more characters cut)";
     }
 
     private void Assistant(JsonObject o)
@@ -128,6 +149,8 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         if (!asm.HasContent && !string.IsNullOrEmpty(text)) asm.AddText(text);
         // The result's usage adds up every turn of the CLI's own tool loop; the last turn's, from the stream, is the size of the context.
         if (!_sawUsage) ApplyUsage(o.Obj("usage"));
+        // the calls were run by the CLI: this message is the answer, not a request for tools
+        asm.StopReason ??= "stop";
     }
 
     // CostUsd stays null on purpose: total_cost_usd is what the call would cost on the API, not what a subscription pays.
