@@ -124,6 +124,26 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `fallbackModels` | built-in list | used when `/v1/models` can't be listed |
 | `modelsCacheSeconds` | `600` | |
 
+### `providers.claudeCli` (Claude through the Claude Code CLI)
+
+Runs the installed `claude -p` as a subprocess, signed in with the owner's subscription (`claude auth login` once, in a
+terminal; the CLI bundled with the Claude desktop app has its own login and does not share it). It is for planner and
+designer agents: text in, text out. The model gets **no tools** (`--tools ""`), no saved session, no settings files and no
+skills, and the request's own tools are not offered (a notice says so). Images are not sent. `ANTHROPIC_API_KEY` and
+`ANTHROPIC_AUTH_TOKEN` are removed from the child's environment, so a call is never billed to an API key by accident; if the
+CLI still reports an API-key sign-in, the stream carries a warning. The cost is left unreported (`total_cost_usd` is the API
+price, not what a subscription pays), so budgets do not count it. Subscription usage limits apply.
+
+| key | default | |
+|---|---|---|
+| `enabled` | `false` | models are listed only while enabled |
+| `executable` | `claude` | name on PATH or a full path |
+| `models` | `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-4-5` | ids passed to `--model` |
+| `timeoutSeconds` | `900` | a longer call is killed |
+
+Each call is one process with the prompt on stdin (a history is sent as a labelled transcript, the system prompt through a
+temporary `--system-prompt-file`); its working folder is `%TEMP%\netpi-claude-cli`, so no project `CLAUDE.md` is read.
+
 ## Agents
 
 | key | default | |

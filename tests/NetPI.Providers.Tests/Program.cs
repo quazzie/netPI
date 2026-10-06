@@ -193,7 +193,7 @@ await t.Run("provider kit: one shared source set, compiled into all three provid
     foreach (var file in kitFiles)
         t.Eq(0, Directory.GetFiles(plugins, file, SearchOption.AllDirectories).Length, $"{file}: no copy under plugins/, only in shared/ProviderKit");
 
-    foreach (var provider in new[] { "AiProxy", "Anthropic", "OpenRouter" })
+    foreach (var provider in new[] { "AiProxy", "Anthropic", "ClaudeCli", "OpenRouter" })
     {
         var csproj = Path.Combine(plugins, $"NetPI.Providers.{provider}", $"NetPI.Providers.{provider}.csproj");
         var compiles = System.Xml.Linq.XDocument.Load(csproj).Descendants().Where(n => n.Name.LocalName == "Compile").ToArray();
@@ -1913,5 +1913,7 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
     t.Check(r3 is { PluginId: "netpi.providers.openrouter", Providers: 1, Models: 5, StreamedText: "Reading it.", AbstractionsShared: true }, $"openrouter ran in ALC ({r3})");
     t.Check(await PluginLoadTest.WaitCollectedAsync(r3.Alc), "openrouter ALC collected after unload");
 });
+
+await ClaudeCliTests.RunAsync(t);
 
 return t.Summary();

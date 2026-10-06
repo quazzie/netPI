@@ -29,6 +29,7 @@
     { "path": "plugins/NetPI.Profiles/", "tags": ["profiles"] },
     { "path": "plugins/NetPI.Providers.AiProxy/", "tags": ["provider", "usage"] },
     { "path": "plugins/NetPI.Providers.Anthropic/", "tags": ["provider", "usage"] },
+    { "path": "plugins/NetPI.Providers.ClaudeCli/", "tags": ["provider"] },
     { "path": "plugins/NetPI.Providers.OpenRouter/", "tags": ["provider"] },
     { "path": "shared/ProviderKit/", "tags": ["provider", "usage"] },
     { "path": "shared/GitKit/", "tags": ["tools", "subagents"] },

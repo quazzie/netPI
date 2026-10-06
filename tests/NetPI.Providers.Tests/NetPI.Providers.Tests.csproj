@@ -18,6 +18,7 @@
     <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.csproj" Aliases="aiproxy" />
     <ProjectReference Include="../../plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.csproj" Aliases="anthropic" />
+    <ProjectReference Include="../../plugins/NetPI.Providers.ClaudeCli/NetPI.Providers.ClaudeCli.csproj" Aliases="claudecli" />
     <ProjectReference Include="../../plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.csproj" Aliases="openrouter" />
   </ItemGroup>
 </Project>

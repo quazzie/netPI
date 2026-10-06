@@ -103,6 +103,7 @@ disabled tools); everything else appears with the default its own plugin declare
 `http://127.0.0.1:8090` (Responses transport); the default model is the first available one (set `defaultModel`). For Claude set
 `providers.anthropic.apiKey` (or the `ANTHROPIC_API_KEY` environment variable), for OpenRouter
 `providers.openrouter.apiKey` (or `OPENROUTER_API_KEY`).
+To use Claude on a subscription instead (planner and designer agents, no tools), sign in with `claude auth login` and enable `providers.claudeCli.enabled`.
 All keys: [docs/SETTINGS.md](docs/SETTINGS.md).
 
 Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized URL). Linux/macOS: `./build.sh`, then
