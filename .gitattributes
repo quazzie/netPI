@@ -1,4 +1,8 @@
 * text=auto
+# C# sources must be byte-stable across checkouts: the PDB checksums the raw source bytes, so a line-ending flip
+# (autocrlf on, a tool writing LF) would change every DLL with no visible source change and break the
+# byte-identical-rebuild guarantee the hot-reload and the contracts check in build.ps1 rely on.
+*.cs text eol=crlf
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
 *.sh text eol=lf
