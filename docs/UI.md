@@ -508,7 +508,7 @@ ctx = {
 ### Narrow panels
 
 Side panels are often narrow: a user's layout might be 230–340px wide, and the minimum is 200px. Every panel
-tab (Sessions, Projects, Files, Work, Ideas, Diagnostics, MCP) is designed for 220px first, looks right at a typical
+tab (Sessions, Projects, Files, Work, Schedules, Ideas, Diagnostics, MCP) is designed for 220px first, looks right at a typical
 280–320px, and uses wider containers for extra detail. The rules:
 
 - **Never scroll sideways.** Plugin tab hosts clip `overflow-x`, and e2e checks that no panel tab overflows at
@@ -547,6 +547,10 @@ Per-tab narrow layouts:
   `off`, `not loaded`). Under it one fixed-height row per instance: a busy one has the chat title (a subagent: its name, a
   `sub` mark and `for <parent chat>`), then the activity and elapsed time; a free one says `free`. A process shows its
   command + elapsed/exit, then pid · bg · size · cwd … time ago.
+- **Schedules:** a row reads a status dot · name · right-aligned next-run label (`in 3 h`, `tomorrow 07:30`, `paused`,
+  `finished`, `overdue`); line 2 is one meta line (when · project · agent · last-run chip). The hover actions are
+  run now, pause/resume, edit, history and a two-step delete; expanding a row shows the prompt, the ids, **Open last
+  chat** and the run history. The add/edit form replaces the list (no modal), stacked fields.
 - **Ideas:** a full-width title, a 2-line summary, then one meta line: status pill · project badge · priority · tags ·
   sections · time. In an expanded card the actions are **Send to chat**, **+ Section**, edit, and ⋯ (move
   up/down, copy id, delete).
@@ -558,9 +562,15 @@ Per-tab narrow layouts:
 ### Built-in plugin tabs
 
 Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle sizes
-(minified, Svelte and the kit shared with the host rather than copied in, seven tabs 229KB): Diagnostics 61KB,
-Work 48KB, Ideas 34KB, Files 29KB, Agents 23KB, Web 17KB, Mcp 16KB. `build:plugins` prints the current sizes; they
+(minified, Svelte and the kit shared with the host rather than copied in, eight tabs 257KB): Diagnostics 61KB,
+Work 48KB, Ideas 34KB, Schedules 28KB, Files 29KB, Agents 23KB, Web 17KB, Mcp 16KB. `build:plugins` prints the current sizes; they
 move with the tabs, so treat this list as the shape, not as numbers to keep in step.
+
+**Schedules** (`netpi.schedules`, right, order 25). The schedules, each a prompt that starts a fresh chat on its own:
+list, run now, pause/resume, edit (an inline form that replaces the list), history and a two-step delete. Reads
+`schedules.*` (its own plugin) plus `runs.list`, `projects.list` and `agents.list` (absent ones degrade their own
+feature); refreshes on `schedules.changed` (unscoped) and a 30 s poll — `schedules.ran` is only a hint, because it is
+session-scoped to the chat a run started.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,
 Finished), each with a count. The open or closed state of each section is remembered (`storageKey`,

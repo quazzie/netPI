@@ -35,7 +35,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
         ctx.Services.Register(new SettingsSection
         {
             Id = "schedules", Title = "Schedules", Group = "Agents", Order = 60,
-            Help = "Prompts that start on their own as a new chat: once, every N minutes, or daily at a time (schedules.add).",
+            Help = "Prompts that start on their own as a new chat: once, every N minutes, or daily at a time. The agent's schedules tool and the Schedules tab manage them.",
             Settings =
             [
                 SettingInfo.Bool("schedules.enabled", "Run schedules", true, "Off: nothing starts; due runs wait, and the missed-run rule applies when it is switched back on."),
@@ -47,6 +47,13 @@ public sealed class SchedulesPlugin : INetPiPlugin
         var store = Store = new ScheduleStore(ctx.Data);
         var runner = Runner = new ScheduleRunner(ctx, store, _time);
         Register(ctx, store, runner);
+        ctx.Tools.Register(new SchedulesTool(ctx));
+        ctx.Ui.AddTab(new UiTabInfo
+        {
+            Id = "schedules", Title = "Schedules", Panel = UiPanel.Right, Order = 25, Module = "ui.js",
+            // the host icon set has no clock; UiTabInfo.Icon takes an inline SVG (docs/UI.md)
+            Icon = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round'><circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/></svg>",
+        });
         if (_loop)
         {
             _stop = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);

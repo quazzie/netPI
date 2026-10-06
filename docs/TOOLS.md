@@ -910,6 +910,50 @@ details: { goal: { id, objective, status, reason, tokenBudget, tokensUsed, conti
 
 ---
 
+## Schedules (`category: "schedules"`)
+
+`plugins/NetPI.Schedules`. Prompts that start on their own as a fresh chat on a project, once, every N minutes or daily
+at a time in a zone (the backend: idea-1y1174 — the `schedules.*` RPCs, the skip checks, the missed-run rule; the user
+sees them in the Schedules tab). The tool is the model's half of that surface: it calls the plugin's own RPCs, so there
+is one validation path, and it adds the model-facing guards the RPCs leave to the tab.
+
+### `schedules` (summary arg `action`)
+
+`{ action: list | get | history | add | update | run, id?, prompt?, name?, cadence?, projectId?, agent?, enabled?, limit? }`
+
+Synonyms: `create`/`new` → add, `pause`/`resume` → update (with `enabled` forced), `edit`/`change` → update, `show` → get.
+With no action: an id plus a change means update, an id alone means get, a prompt plus a cadence means add, otherwise list.
+
+- `list`: every schedule (or `projectId`'s), one plain-text line each — `id · name · when · enabled|paused|finished · next <local time> · last <status: reason> <ago>` —
+  with `now` in the machine's local time and offset (a `once` time is computed from it). Capped at 100 lines.
+- `get`: one schedule plus its full prompt, project and agent.
+- `history`: a schedule's runs, newest first (`limit`, default 20): time · status · reason · chat.
+- `add`: `prompt` + `cadence` (`{ kind: once, at }` a future ISO 8601 time with offset · `{ kind: every, minutes }` ·
+  `{ kind: daily, time, tz? }` an IANA zone, default the machine's). The project defaults to the calling chat's;
+  `""` means none. The result echoes the machine's now.
+- `update`: change any field, or pause/resume with `enabled` false/true. A cadence change counts the next run from now
+  (and, server-side, resumes a paused schedule — the form sends `enabled` explicitly).
+- `run`: start a run now, beside the cadence; a skip or failure is an error result, so the model reads it as a refusal.
+
+**Guards (tool-side; the RPCs stay unconstrained for the user's tab):** a chat a schedule started (its `meta.schedule`)
+cannot `add` or `run`, and may `update` only its own schedule to `enabled: false` (a digest run can pause itself); the
+set is capped at 50 schedules. `delete` is not an action: “Deleting a schedule is up to the user, in the Schedules tab.
+Pause it with action update, enabled false.”
+
+`list`, `get` and `history` are read-only (`IReadOnlyCalls`); `add`, `update` and `run` are not. Runs start a fresh chat
+(`meta.schedule`, `Source = "system"`), so the Work tab, `runs.list` and the budget see them like any run; they are
+skipped without a chat when the previous run is going, the per-day cap is hit, the agent is unavailable, or the budget
+is exhausted (a free agent runs on a spent budget), and a run missed while the host was down is recorded, not replayed.
+
+```ts
+details: { kind: "schedules", schedules: Schedule[], now }          // list
+          | { kind: "schedule", schedule, created? }                // get / add / update
+          | { kind: "schedule-history", scheduleId, runs }          // history
+          | { kind: "schedule-run", id, status, reason?, sessionId? } // run
+```
+
+---
+
 ## Skills (`category: "skills"`)
 
 `plugins/NetPI.Skills`; how skills are found and announced: [PLUGIN-SKILLS.md](PLUGIN-SKILLS.md).
