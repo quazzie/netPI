@@ -18,6 +18,8 @@
 - One commit per piece. Merge into `master` from the main checkout, verify ancestry, remove your merged tree/branch.
 - Plain builds use `artifacts/dev/app`; they must never touch the installed app.
 - Merge before publishing app changes: `.\build.ps1 -Publish`. Use `-NextStart` during an active turn or when requested.
+  Web-only changes need no deferral: a plain `-Publish` swaps `wwwroot` in place (the server reads it from disk per
+  request) and a window refresh picks the new UI up — no restart. `-NextStart` matters when host files or plugins change.
 - App changes are done when installed or staged in the live app's `.pending`. A restart does not install Git changes.
 - Docs-only changes need no build/publish. Ask before stopping the owner's app.
 - Commands and install details: `Get-Help .\build.ps1 -Full`, [HANDOFF](docs/HANDOFF.md). UI: `npm ci`, `npm run build`; Git handles LF.
