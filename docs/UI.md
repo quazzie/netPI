@@ -182,17 +182,17 @@ dismisses one — a chat that grows re-pins its list to the bottom on every stre
 the top bar's favorites menu down mid-reply.
 
 **Tab bar.** Tabs scroll sideways with the wheel, drag to reorder, middle-click or the × to close. The `+` starts a
-new session in the project new sessions start in; next to it a chevron (`TopBar.svelte`) opens the **favorites**
-menu — one entry per starred project, a new session in it (idea-xzsy6z; they used to be buttons beside the `+`, and
-took the space of the tab bar). The chevron only appears when there is at least one favorite; starring happens in the
-Projects tab (`prefs.favorites`).
+new session in the project new sessions start in; next to it a chevron (`TopBar.svelte`) opens `ProjectPicker` in
+select mode — every project under a search box, the starred ones (`prefs.favorites`, starred in the Projects tab) in
+a **Favorites** section at the top — and a pick starts a session in it (idea-xzsy6z; the favorites used to be
+buttons beside the `+`, and took the space of the tab bar). The chevron appears when there is at least one project.
 
 **New sessions and projects.** `newSession({ projectId? })` takes the explicit `projectId` (`null`/absent = no
 project): a new session never inherits one, so Ctrl+T, the + tab and the start screen's "New session" always start
 unattached. The start screen's project button is a split button: the name half starts a session in the project shown
 (its folder underneath is the hint), the chevron opens `ProjectPicker` in select mode (`{ select: true }`), which
 starts a session in the project picked and remembers it as `app.lastProjectId` (the project last worked in, read from
-`netpi.lastProject`) — "No project" starts unattached. The project button in the composer bar (after the profile picker) and
+`netpi.lastProject`) — the "No project" row is the attach mode's, so a pick always lands in a project. The project button in the composer bar (after the profile picker) and
 `/project` open `ProjectPicker` for a session, which calls `sessions.setProject`; the context plugin then appends
 a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
 
