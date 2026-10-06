@@ -21,6 +21,7 @@ public sealed class ClaudeCliProvider : IModelProvider
     private readonly Func<string?, string?> _cwdOf;
     private readonly Func<IReadOnlyCollection<string>> _hiddenEnv;
     private readonly ClaudeUsageTracker? _usage;
+    private readonly ICliSessions _sessions;
     private readonly CallGate _gate = new();
     private readonly string _workDir = Path.Combine(Path.GetTempPath(), "netpi-claude-cli");
 
@@ -28,9 +29,14 @@ public sealed class ClaudeCliProvider : IModelProvider
         Func<IReadOnlyCollection<string>>? hiddenEnv = null, ClaudeUsageTracker? usage = null)
         : this(config, logger, ProcessRunner.Run, cwdOf, hiddenEnv, usage) { }
 
+    internal ClaudeCliProvider(Func<JsonObject?> config, ILogger? logger, Func<string?, string?>? cwdOf,
+        Func<IReadOnlyCollection<string>>? hiddenEnv, ClaudeUsageTracker? usage, ICliSessions sessions)
+        : this(config, logger, ProcessRunner.Run, cwdOf, hiddenEnv, usage, sessions) { }
+
     internal ClaudeCliProvider(Func<JsonObject?> config, ILogger? logger, CliRunner runner, Func<string?, string?>? cwdOf = null,
-        Func<IReadOnlyCollection<string>>? hiddenEnv = null, ClaudeUsageTracker? usage = null)
+        Func<IReadOnlyCollection<string>>? hiddenEnv = null, ClaudeUsageTracker? usage = null, ICliSessions? sessions = null)
     {
+        _sessions = sessions ?? new MemoryCliSessions();
         _config = config;
         _log = logger ?? NullLogger.Instance;
         _runner = runner;
@@ -78,19 +84,68 @@ public sealed class ClaudeCliProvider : IModelProvider
         return Task.FromResult(list);
     }
 
+    /// <summary>One try of a call: resume the CLI session of this chat, or start one (the whole conversation as the prompt).</summary>
+    internal sealed record CliAttempt(bool Resume, string CliId, string Prompt, bool Persist);
+
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
     {
-        var started = Stopwatch.GetTimestamp();
         var o = Options();
         if (!o.Enabled) throw new ModelException("Claude CLI: provider is disabled in settings (providers.claudeCli.enabled).", false, null, "provider_disabled");
+        var agentTurn = request.Purpose == "agent";
+        var attempt = Plan(request, agentTurn);
+        while (true)
+        {
+            var retry = false;
+            await using var run = RunAsync(request, o, agentTurn, attempt, ct).GetAsyncEnumerator(ct);
+            while (true)
+            {
+                ModelStreamEvent current;
+                try
+                {
+                    if (!await run.MoveNextAsync().ConfigureAwait(false)) yield break;
+                    current = run.Current;
+                }
+                // the CLI no longer has the session (its files were cleaned, or the chat came from another machine): start over with the conversation
+                catch (ModelException ex) when (attempt.Resume && ex.ErrorType == ClaudeCliStream.SessionNotFound)
+                {
+                    _log.LogWarning("claude-cli: session {Cli} of {Session} is gone; starting a new one", attempt.CliId, request.SessionId);
+                    _sessions.Remove(request.SessionId!);
+                    retry = true;
+                    break;
+                }
+                yield return current;
+            }
+            if (!retry) yield break;
+            attempt = new CliAttempt(false, Guid.NewGuid().ToString(), RenderPrompt(request), true);
+            yield return new StreamNotice("The Claude CLI session of this chat is gone: continuing in a new one with the conversation so far.", "warning");
+        }
+    }
 
+    /// <summary>
+    /// A chat's later turns resume its CLI session and send only what is new; the first turn, a chat whose history was cut back
+    /// (the stored point is newer than the newest message) and a call that belongs to no chat start a session with the whole
+    /// conversation. A side call (title, compaction) never touches a session.
+    /// </summary>
+    internal CliAttempt Plan(ModelRequest request, bool agentTurn)
+    {
+        if (!agentTurn || string.IsNullOrEmpty(request.SessionId)) return new CliAttempt(false, "", RenderPrompt(request), false);
+        var maxId = MaxId(request);
+        if (_sessions.Get(request.SessionId) is { LastSeenId: > 0 } stored && stored.LastSeenId <= maxId)
+            return new CliAttempt(true, stored.CliId, RenderDelta(request, stored.LastSeenId), true);
+        return new CliAttempt(false, Guid.NewGuid().ToString(), RenderPrompt(request), true);
+    }
+
+    private static long MaxId(ModelRequest request) => request.Messages.Count == 0 ? 0 : request.Messages.Max(m => m.Id);
+
+    private async IAsyncEnumerable<ModelStreamEvent> RunAsync(ModelRequest request, ClaudeCliOptions o, bool agentTurn, CliAttempt attempt, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var started = Stopwatch.GetTimestamp();
         // an agent's own turn gets the CLI's tools and its working folder; a title, a compaction summary or any other side call
         // through this model is text in, text out (a full CLI session for a title would work in the project with no permission prompts)
-        var agentTurn = request.Purpose == "agent";
         var tools = !agentTurn || o.Tools.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : o.Tools;
         var cwd = agentTurn ? _cwdOf(request.SessionId) : null;
         var workDir = cwd is { Length: > 0 } && Directory.Exists(cwd) ? cwd : _workDir;
-        if (agentTurn && request.Tools.Count > 0)
+        if (agentTurn && request.Tools.Count > 0 && !attempt.Resume)
             yield return new StreamNotice(
                 $"Claude CLI does not use NetPI's tools (the {request.Tools.Count} of this request): it works with its own" +
                 (tools.Length == 0 ? " (none enabled)." : $" in {workDir}; its tool calls show in the chat."), "info");
@@ -108,14 +163,21 @@ public sealed class ClaudeCliProvider : IModelProvider
         var stream = new ClaudeCliStream(asm);
         if (_usage is not null && o.Usage) stream.OnRateLimit = _usage.Observe;
         var executable = ResolveExecutable(o.Executable);
+        var recorded = false;
         try
         {
-            var call = new CliCall(executable, BuildArgs(request, o, tools, promptFile), RenderPrompt(request), workDir,
+            var call = new CliCall(executable, BuildArgs(request, o, tools, promptFile, attempt), attempt.Prompt, workDir,
                 TimeSpan.FromSeconds(o.TimeoutSeconds), _hiddenEnv());
             var warned = false;
             await foreach (var line in _runner(call, ct).ConfigureAwait(false))
             {
                 stream.Handle(line);
+                // the CLI took the session up: from here on it has the messages up to this one
+                if (!recorded && attempt.Persist && stream.Started)
+                {
+                    recorded = true;
+                    _sessions.Put(request.SessionId!, new CliSession(attempt.CliId, MaxId(request)));
+                }
                 if (!warned && stream.ApiKeySource is { } src && src != "none")
                 {
                     warned = true;
@@ -136,8 +198,8 @@ public sealed class ClaudeCliProvider : IModelProvider
         }
         foreach (var ev in asm.Drain()) yield return ev;
         var ms = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-        _log.LogInformation("claude-cli: {Model} ({Purpose}) in {WorkDir}: {Seconds:0.0}s, {Turns} turns, tools {Tools}", request.Model.Id, request.Purpose,
-            workDir, ms / 1000.0, stream.Turns, tools.Length == 0 ? "none" : tools);
+        _log.LogInformation("claude-cli: {Model} ({Purpose}{Resume}) in {WorkDir}: {Seconds:0.0}s, {Turns} turns, tools {Tools}", request.Model.Id, request.Purpose,
+            attempt.Resume ? ", resumed" : "", workDir, ms / 1000.0, stream.Turns, tools.Length == 0 ? "none" : tools);
         yield return new StreamCompleted(asm.Build(Id, request.Model.Id, request.SessionId, ms));
     }
 
@@ -196,16 +258,50 @@ public sealed class ClaudeCliProvider : IModelProvider
     }
 
     /// <summary>The CLI arguments: no saved session, no skills; its tools and permissions as the settings say; the system prompt is read from a file.</summary>
-    internal static List<string> BuildArgs(ModelRequest request, ClaudeCliOptions o, string tools, string systemPromptFile)
+    internal static List<string> BuildArgs(ModelRequest request, ClaudeCliOptions o, string tools, string systemPromptFile, CliAttempt attempt)
     {
         var args = new List<string> { "-p", "--model", request.Model.Id, "--tools", tools };
         if (tools.Length > 0) args.AddRange(["--permission-mode", o.PermissionMode]);
         if (!o.Connectors) args.Add("--strict-mcp-config");
-        args.AddRange(["--no-session-persistence", "--disable-slash-commands", "--setting-sources", o.SettingSources,
+        // a chat's CLI session is kept (it is what the next turn resumes); anything else leaves no session behind
+        if (!attempt.Persist) args.Add("--no-session-persistence");
+        else args.AddRange(attempt.Resume ? ["--resume", attempt.CliId] : ["--session-id", attempt.CliId]);
+        args.AddRange(["--disable-slash-commands", "--setting-sources", o.SettingSources,
             "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--system-prompt-file", systemPromptFile]);
         if (request.ReasoningEffort is { } e && ClaudeCliOptions.Efforts.Contains(e, StringComparer.OrdinalIgnoreCase))
             args.AddRange(["--effort", e.ToLowerInvariant()]);
         return args;
+    }
+
+    /// <summary>
+    /// What is new to a resumed CLI session: the messages after the point it had (<paramref name="lastSeenId"/>), without its own
+    /// answers and its own tools' results, which it already holds. An answer another model gave in between is passed on as such; a
+    /// compaction summary is left out (the CLI has the real history). Nothing new at all (a retry): a nudge to carry on.
+    /// </summary>
+    internal static string RenderDelta(ModelRequest request, long lastSeenId)
+    {
+        var ranByCli = request.Messages.SelectMany(m => m.ToolCalls).Where(c => c.ProviderExecuted).Select(c => c.Id).ToHashSet();
+        var blocks = new List<(string Label, string Text)>();
+        foreach (var m in request.Messages)
+        {
+            if (m.Id <= lastSeenId || m.Compacted) continue;
+            switch (m.Role)
+            {
+                case MessageRole.User or MessageRole.Notice:
+                    if (!string.IsNullOrWhiteSpace(m.Text)) blocks.Add(("", m.Text));
+                    break;
+                case MessageRole.Assistant when m.Provider != "claude-cli":
+                    if (!string.IsNullOrWhiteSpace(m.Text)) blocks.Add(("[An earlier answer, from another model]", m.Text));
+                    break;
+                case MessageRole.Tool:
+                    foreach (var r in m.ToolResults.Where(r => !ranByCli.Contains(r.CallId)))
+                        blocks.Add(($"[{r.Name} result]", r.Content));
+                    break;
+            }
+        }
+        if (blocks.Count == 0) return "Continue.";
+        if (blocks.Count == 1 && blocks[0].Label.Length == 0) return blocks[0].Text;
+        return string.Join("\n\n", blocks.Select(b => b.Label.Length == 0 ? b.Text : b.Label + "\n" + b.Text));
     }
 
     /// <summary>

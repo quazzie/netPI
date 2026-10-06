@@ -153,10 +153,19 @@ apply, and a run that works through many files uses a lot of them.
 | `usage` | `true` | show the Claude subscription usage (session and weekly windows) in the top bar. It is the utilization the CLI prints after each call: nothing is read from the CLI's login, no token is used, and nothing is fetched |
 | `stallTimeoutSeconds` | `1800` | how long the CLI may stay silent before the retry plugin declares the call stalled and retries it. The CLI's own tools and subagents can run for minutes without a line of output (the global `retry.stallTimeoutSeconds` is 180 s, which would kill a running subagent and wipe the chat's in-flight answer); 0 never declares a stall — a dead CLI ends the stream on its own |
 
-Each call is one process with the prompt on stdin (a history is sent as a labelled transcript, the system prompt through a
-temporary `--system-prompt-file` that also tells the model which tools it really has). The working folder is the session's
-workspace (else its project folder, else `%TEMP%\netpi-claude-cli`). The reported usage is the last turn of the CLI's own
-loop, so the context size stays the size of one prompt, not the sum of all turns.
+Each call is one process with the prompt on stdin (the system prompt through a temporary `--system-prompt-file` that also
+tells the model which tools it really has). The working folder is the session's workspace (else its project folder, else
+`%TEMP%\netpi-claude-cli`). The reported usage is the last turn of the CLI's own loop, so the context size is the size of the
+CLI's real context.
+
+**A chat keeps one CLI session.** The first turn starts it (`--session-id`, with the conversation so far as the prompt); every
+later turn resumes it (`--resume`) and sends only what is new to it: the messages after the point it had, without its own answers
+and its own tools' results (it holds those), an answer another model gave in between (labelled), and no compaction summary (the CLI
+has the real history, and compacts it itself). Nothing new (a retry) sends "Continue.". The pointer (NetPI chat → CLI session, and
+the newest message the CLI has) is kept in the plugin's data across restarts and dropped after 60 days without use. A CLI session
+that no longer exists, or a chat whose history was cut back, starts a new session with the whole conversation (and says so). A title
+or compaction call through the model uses no session. The CLI keeps its sessions as files under `~/.claude/projects`, so a chat's
+sessions also show in `claude --resume`; NetPI never deletes them.
 
 Only an agent's own turns get the CLI's tools and its folder: a title, a compaction summary or any other side call through a
 `claude-cli` model is text only and runs outside every project. The child process does not inherit `ANTHROPIC_API_KEY`,

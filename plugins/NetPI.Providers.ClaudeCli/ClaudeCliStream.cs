@@ -15,6 +15,8 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
 {
     /// <summary>A longer tool result is cut: the agent's own transcript is not where a whole file belongs.</summary>
     internal const int MaxResultChars = 20_000;
+    /// <summary><see cref="ModelException.ErrorType"/> of a resume of a CLI session that no longer exists.</summary>
+    internal const string SessionNotFound = "session_not_found";
 
     private readonly Dictionary<int, MessagePart> _blocks = [];
     private readonly Dictionary<int, ToolCallPart> _toolBlocks = [];
@@ -26,6 +28,8 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     public bool Finished { get; private set; }
     /// <summary>The init line's apiKeySource: anything but "none" means the CLI would bill an API key.</summary>
     public string? ApiKeySource { get; private set; }
+    /// <summary>The init line was seen: the CLI took the session up and will work on the prompt.</summary>
+    public bool Started { get; private set; }
     public string? AssistantError { get; private set; }
     /// <summary>What the CLI printed on stderr, when the process ended (the runner's last line).</summary>
     public string? Stderr { get; private set; }
@@ -55,7 +59,7 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         }
         switch (type)
         {
-            case "system" when o.Str("subtype") == "init": ApiKeySource = o.Str("apiKeySource"); break;
+            case "system" when o.Str("subtype") == "init": ApiKeySource = o.Str("apiKeySource"); Started = true; break;
             case "stream_event": StreamEvent(o.Obj("event")); break;
             case "assistant": Assistant(o); break;
             case "user": ToolResults(o); break;
@@ -194,7 +198,11 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         if (o.Bool("is_error", false))
         {
             var status = o.Int("api_error_status");
-            var msg = string.IsNullOrWhiteSpace(text) ? $"Claude CLI reported an error ({o.Str("subtype")})" : text!;
+            // a failure before any work (a session that is gone) puts its reason in errors[], with an empty result
+            var errors = o.Arr("errors") is { } arr ? string.Join("; ", arr.Select(e => e?.GetValue<string>()).Where(e => !string.IsNullOrWhiteSpace(e))) : "";
+            var msg = !string.IsNullOrWhiteSpace(text) ? text! : errors.Length > 0 ? errors : $"Claude CLI reported an error ({o.Str("subtype")})";
+            if (errors.Contains("No conversation found", StringComparison.OrdinalIgnoreCase))
+                throw new ModelException($"Claude CLI: {msg}", false, null, SessionNotFound);
             var auth = AssistantError == "authentication_failed" || msg.Contains("Not logged in", StringComparison.OrdinalIgnoreCase);
             if (auth) msg += " Run `claude auth login` once, in the account that holds the subscription.";
             var limited = RateLimit?.Str("status") == "rejected" || msg.Contains("limit reached", StringComparison.OrdinalIgnoreCase);

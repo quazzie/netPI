@@ -136,7 +136,7 @@ internal static class ClaudeCliTests
             t.Eq("default", a[a.IndexOf("--tools") + 1], "every tool of the CLI");
             t.Eq("bypassPermissions", a[a.IndexOf("--permission-mode") + 1], "no prompts in a print-mode call");
             t.Eq(sessionDir, workDir, "the CLI works in the session's folder");
-            t.Check(a.Contains("--no-session-persistence") && a.Contains("--disable-slash-commands") && a.Contains("--strict-mcp-config"), "no session, no skills, no account connectors");
+            t.Check(a.Contains("--session-id") && !a.Contains("--no-session-persistence") && a.Contains("--disable-slash-commands") && a.Contains("--strict-mcp-config"), "a session the chat can resume, no skills, no account connectors");
             t.Eq("", a[a.IndexOf("--setting-sources") + 1], "no settings files");
             t.Eq("high", a[a.IndexOf("--effort") + 1], "effort");
             t.Check(!a.Contains("--system-prompt"), "the system prompt is not on the command line");

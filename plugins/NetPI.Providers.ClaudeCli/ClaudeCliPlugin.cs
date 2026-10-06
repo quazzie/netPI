@@ -59,8 +59,11 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
             "The Claude subscription usage as the Claude CLI reported it after its last call (session and weekly windows); empty before the first call");
         _ = Task.Run(() => LoadPlanAsync(context, usage), ct);
 
+        var sessions = new DataCliSessions(context.Data.Collection("cli_sessions", new CollectionSpec().Integer("updatedAt")));
+        try { sessions.Prune(); }
+        catch (Exception ex) { context.Logger.LogDebug(ex, "claude-cli: could not prune the stored sessions"); }
         Provider = new ClaudeCliProvider(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,
-            sessionId => CwdOf(context, sessionId), () => HiddenEnvironment(context.Settings), usage);
+            sessionId => CwdOf(context, sessionId), () => HiddenEnvironment(context.Settings), usage, sessions);
         context.Services.Register<IModelProvider>(Provider);
         // Enabling the provider or editing its models changes the catalog: say so, as the other providers do.
         _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, _ =>
