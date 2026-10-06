@@ -1915,7 +1915,7 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
 });
 
 await ClaudeCliTests.RunAsync(t);
+await ClaudeCliProductionTests.RunAsync(t);
 
-await ClaudeUsageTests.RunAsync(t);
 
 return t.Summary();

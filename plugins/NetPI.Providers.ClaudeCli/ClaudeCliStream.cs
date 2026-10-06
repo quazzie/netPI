@@ -27,6 +27,14 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     /// <summary>The init line's apiKeySource: anything but "none" means the CLI would bill an API key.</summary>
     public string? ApiKeySource { get; private set; }
     public string? AssistantError { get; private set; }
+    /// <summary>What the CLI printed on stderr, when the process ended (the runner's last line).</summary>
+    public string? Stderr { get; private set; }
+    /// <summary>The CLI's <c>rate_limit_event</c>: the utilization of the subscription's windows, as of this call.</summary>
+    public Action<JsonObject>? OnRateLimit { get; set; }
+    /// <summary>The last <c>rate_limit_info</c> seen: a refusal names when the window opens again.</summary>
+    public JsonObject? RateLimit { get; private set; }
+    /// <summary>The <c>num_turns</c> and <c>duration_ms</c> of the result line, for the log.</summary>
+    public int? Turns { get; private set; }
     /// <summary>True once the CLI has started a tool: from then on its run did work (it may have written files, spent a long time), so a failure
     /// is reported, never retried from the top by the retry middleware.</summary>
     public bool RanTools { get; private set; }
@@ -51,6 +59,11 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
             case "stream_event": StreamEvent(o.Obj("event")); break;
             case "assistant": Assistant(o); break;
             case "user": ToolResults(o); break;
+            case "rate_limit_event" when o.Obj("rate_limit_info") is { } info:
+                RateLimit = info;
+                try { OnRateLimit?.Invoke(info); } catch { /* a usage reading is never worth a failed call */ }
+                break;
+            case ProcessRunner.StderrLine: Stderr = o.Str("text"); break;
             case "result": Result(o); break;
         }
     }
@@ -176,6 +189,7 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     private void Result(JsonObject o)
     {
         Finished = true;
+        Turns = o.Int("num_turns");
         var text = o.Str("result");
         if (o.Bool("is_error", false))
         {
@@ -183,8 +197,11 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
             var msg = string.IsNullOrWhiteSpace(text) ? $"Claude CLI reported an error ({o.Str("subtype")})" : text!;
             var auth = AssistantError == "authentication_failed" || msg.Contains("Not logged in", StringComparison.OrdinalIgnoreCase);
             if (auth) msg += " Run `claude auth login` once, in the account that holds the subscription.";
+            var limited = RateLimit?.Str("status") == "rejected" || msg.Contains("limit reached", StringComparison.OrdinalIgnoreCase);
+            if (limited && RateLimit?["resetsAt"] is JsonValue ra && ra.TryGetValue<long>(out var epoch))
+                msg += $" The window opens again at {DateTimeOffset.FromUnixTimeSeconds(epoch).ToLocalTime():yyyy-MM-dd HH:mm}.";
             // a failure after the CLI did work is reported, not retried: a retry would run (and bill) the whole job again
-            throw new ModelException($"Claude CLI: {msg}", status is >= 500 && !RanTools, status, AssistantError ?? o.Str("terminal_reason") ?? o.Str("subtype"));
+            throw new ModelException($"Claude CLI: {msg}", status is >= 500 && !RanTools && !limited, status, limited ? "rate_limit" : AssistantError ?? o.Str("terminal_reason") ?? o.Str("subtype"));
         }
         if (!asm.HasContent && !string.IsNullOrEmpty(text)) asm.AddText(text);
         // The result's usage adds up every turn of the CLI's own tool loop; the last turn's, from the stream, is the size of the context.

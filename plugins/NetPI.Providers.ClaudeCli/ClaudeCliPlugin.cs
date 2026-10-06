@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -13,6 +14,8 @@ namespace NetPI.Providers.ClaudeCli;
 public sealed class ClaudeCliPlugin : INetPiPlugin
 {
     public const string SettingsPath = "providers.claudeCli";
+    private const string UsageCollection = "usage";
+    private const string UsageKey = "latest";
 
     private IDisposable? _settingsSub;
 
@@ -27,38 +30,38 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
             [
                 SettingInfo.Bool("providers.claudeCli.enabled", "Enabled", false,
                     "Runs the official `claude` CLI as a subprocess, signed in once with `claude auth login` (subscription, not an API key). The CLI works with its own tools (read, edit, shell, search) in the session's workspace; NetPI's tools are not used."),
-                SettingInfo.Str("providers.claudeCli.executable", "Executable", "claude", "Name on PATH or a full path."),
+                SettingInfo.Str("providers.claudeCli.executable", "Executable", "claude",
+                    "Name on PATH or a full path. A bare `claude` that is not on PATH is looked for in ~/.local/bin, where the installer puts it."),
                 SettingInfo.List("providers.claudeCli.models", "Models", [.. ClaudeCliOptions.DefaultModels], "Ids passed to `claude --model`."),
-                SettingInfo.Int("providers.claudeCli.timeoutSeconds", "Timeout", 900, "A call that runs longer is killed.", 10, 7200, "s"),
+                SettingInfo.Int("providers.claudeCli.timeoutSeconds", "Timeout", 3600,
+                    "The longest one call may run before it is killed. A backstop only: a CLI that makes progress should not be stopped, and a dead one ends by itself.", 10, 14400, "s"),
+                SettingInfo.Int("providers.claudeCli.maxConcurrent", "Concurrent runs", 2,
+                    "How many CLI processes run at once (each is a full Claude Code, and the subscription's rate limits are shared); the rest wait.", 1, 16),
                 SettingInfo.Str("providers.claudeCli.tools", "CLI tools", "default",
-                    "default: every built-in tool of the CLI. none: text only. Or a comma-separated list for --tools, e.g. Read,Grep,Glob for read-only."),
+                    "default: every built-in tool of the CLI. none: text only. Or a comma-separated list for --tools, e.g. Read,Grep,Glob for read-only. Only an agent's own turns get tools; a title or a compaction summary is always text only."),
                 SettingInfo.Choice("providers.claudeCli.permissionMode", "Permissions", "bypassPermissions", [.. ClaudeCliOptions.PermissionModes],
                     "A print-mode call cannot ask, so bypassPermissions lets the CLI's tools run without prompts; the workspace guard of NetPI does not apply to them."),
                 SettingInfo.Str("providers.claudeCli.settingSources", "Settings files", "",
                     "Which settings the CLI loads: user, project, local (comma-separated). Empty loads none; they bring hooks and permission rules."),
                 SettingInfo.Bool("providers.claudeCli.connectors", "Account connectors", false, "Let the CLI load the account's MCP connectors."),
-                SettingInfo.Bool("providers.claudeCli.usage", "Usage monitor", true,
-                    "Shows the owner's Claude subscription usage (session and weekly windows, extra-usage credits) in the top bar, read from the Claude CLI's login."),
-                SettingInfo.Int("providers.claudeCli.usageRefreshMinutes", "Usage refresh", 5,
-                    "Minutes between usage fetches. The endpoint is rate-limited, so keep it at a few minutes.", 2, 60, "min"),
+                SettingInfo.Bool("providers.claudeCli.usage", "Usage pill", true,
+                    "Shows the Claude subscription usage (session and weekly windows) in the top bar. It comes from the CLI's own output after each call; nothing is read from the CLI's login."),
                 SettingInfo.Int("providers.claudeCli.stallTimeoutSeconds", "Silence tolerance", 1800,
                     "How long the CLI may stay silent (its own tools and subagents can run for minutes) before the call is declared stalled and retried. 0 never declares a stall: a dead CLI ends the stream on its own.", 0, 7200, "s"),
             ],
         });
-        Provider = new ClaudeCliProvider(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,
-            sessionId => CwdOf(context, sessionId));
-        context.Services.Register<IModelProvider>(Provider);
 
-        // The subscription usage monitor: the CLI's login, the CLI's own /usage data source.
-        var usage = new ClaudeUsageMonitor(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger);
-        usage.OnFetched = snap => context.Events.Publish(EventTypes.UsageClaude, snap);
-        context.Rpc.RegisterReadOnly("claudecli.usage", async (_, ct) => await usage.GetAsync(false, ct).ConfigureAwait(false),
-            "The owner's Claude subscription usage from the Claude CLI's login (session/weekly windows, extra-usage credits); a stale reading is flagged");
-        context.Rpc.Register("claudecli.usage.refresh", async (_, ct) => await usage.GetAsync(true, ct).ConfigureAwait(false),
-            "Fetch the Claude subscription usage now");
-        var usageCts = new CancellationTokenSource();
-        var usageTask = Task.Run(() => usage.WatchAsync(usageCts.Token));
-        context.Track(new UsageStopper(usageCts, usageTask));
+        var usage = new ClaudeUsageTracker(snap => SaveUsage(context, snap), context.Logger);
+        try { usage.Restore(context.Data.Collection(UsageCollection, new CollectionSpec()).Get(UsageKey)); }
+        catch (Exception ex) { context.Logger.LogDebug(ex, "claude-cli: no stored usage reading"); }
+        usage.OnChanged = snap => context.Events.Publish(EventTypes.UsageClaude, snap);
+        context.Rpc.RegisterReadOnly("claudecli.usage", (_, _) => Task.FromResult<object?>(Options(context).Usage ? usage.Get() : new JsonObject { ["limits"] = new JsonArray() }),
+            "The Claude subscription usage as the Claude CLI reported it after its last call (session and weekly windows); empty before the first call");
+        _ = Task.Run(() => LoadPlanAsync(context, usage), ct);
+
+        Provider = new ClaudeCliProvider(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,
+            sessionId => CwdOf(context, sessionId), () => HiddenEnvironment(context.Settings), usage);
+        context.Services.Register<IModelProvider>(Provider);
         // Enabling the provider or editing its models changes the catalog: say so, as the other providers do.
         _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, _ =>
         {
@@ -66,6 +69,64 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
                 context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = p.Id });
         });
         return Task.CompletedTask;
+    }
+
+    private static ClaudeCliOptions Options(IPluginContext context) => ClaudeCliOptions.Parse(context.Settings.GetNode(SettingsPath) as JsonObject);
+
+    private static void SaveUsage(IPluginContext context, JsonObject snap) =>
+        context.Data.Collection(UsageCollection, new CollectionSpec()).Put(UsageKey, snap.DeepClone().AsObject());
+
+    /// <summary>The plan (<c>max</c>, <c>pro</c>…) from <c>claude auth status</c>: no tokens involved, and no usage spent.</summary>
+    private static async Task LoadPlanAsync(IPluginContext context, ClaudeUsageTracker usage)
+    {
+        try
+        {
+            var exe = ClaudeCliProvider.ResolveExecutable(Options(context).Executable);
+            var psi = new ProcessStartInfo(exe, "auth status") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            using var p = Process.Start(psi);
+            if (p is null) return;
+            var outText = await p.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            usage.SetPlan((JsonNode.Parse(outText) as JsonObject)?.Str("subscriptionType"));
+        }
+        catch (Exception ex) { context.Logger.LogDebug(ex, "claude-cli: could not read the plan from `claude auth status`"); }
+    }
+
+    /// <summary>
+    /// The variables of NetPI's environment the CLI (and the shell commands it runs) must not inherit, besides the ones that would
+    /// redirect it away from the subscription: every variable a secret setting reads (<c>env:NAME</c> / <c>$NAME</c> under
+    /// <c>providers</c> and <c>mcp</c>) and <c>shell.hideEnv</c>, the same policy as NetPI's own shell tool.
+    /// </summary>
+    internal static IReadOnlyCollection<string> HiddenEnvironment(ISettings settings)
+    {
+        var hidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var root = settings.Snapshot();
+            foreach (var section in new[] { "providers", "mcp" })
+                if (root[section] is { } node) CollectSecretSources(node, hidden);
+            foreach (var name in settings.GetStrings("shell.hideEnv")) hidden.Add(name);
+        }
+        catch { /* the fixed list still applies */ }
+        return hidden;
+    }
+
+    private static void CollectSecretSources(JsonNode node, HashSet<string> into)
+    {
+        switch (node)
+        {
+            case JsonObject o:
+                foreach (var (_, child) in o) if (child is not null) CollectSecretSources(child, into);
+                break;
+            case JsonArray a:
+                foreach (var child in a) if (child is not null) CollectSecretSources(child, into);
+                break;
+            case JsonValue v when v.TryGetValue<string>(out var text):
+                var value = text.Trim();
+                var name = value.StartsWith("env:", StringComparison.OrdinalIgnoreCase) ? value[4..].Trim()
+                    : value.StartsWith('$') && value.Length > 1 ? value[1..].Trim() : null;
+                if (!string.IsNullOrEmpty(name)) into.Add(name);
+                break;
+        }
     }
 
     /// <summary>The folder the session works in (its workspace, else its project), or null when there is none.</summary>
@@ -90,16 +151,5 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         _settingsSub?.Dispose();
         _settingsSub = null;
         return Task.CompletedTask;
-    }
-
-    /// <summary>Stops the usage monitor's background loop (tracked, so it dies with the plugin).</summary>
-    private sealed class UsageStopper(CancellationTokenSource cts, Task task) : IDisposable
-    {
-        public void Dispose()
-        {
-            cts.Cancel();
-            try { task.Wait(TimeSpan.FromSeconds(2)); } catch { /* it is gone or stuck on the cancel */ }
-            cts.Dispose();
-        }
     }
 }

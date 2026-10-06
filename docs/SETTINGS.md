@@ -142,21 +142,29 @@ apply, and a run that works through many files uses a lot of them.
 | key | default | |
 |---|---|---|
 | `enabled` | `false` | models are listed only while enabled |
-| `executable` | `claude` | name on PATH or a full path |
+| `executable` | `claude` | name on PATH or a full path. A bare `claude` that is not on PATH is looked for in `~/.local/bin`, where the installer puts it |
 | `models` | `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-4-5` | ids passed to `--model` |
-| `timeoutSeconds` | `900` | a longer call is killed |
+| `timeoutSeconds` | `3600` | the longest one call may run before it is killed (10–14400). A backstop: a CLI that makes progress is not stuck, and a dead one ends by itself |
+| `maxConcurrent` | `2` | CLI processes at once (1–16): each is a full Claude Code, and the subscription's rate limits are shared; the other calls wait, and say so |
 | `tools` | `default` | `default`: every built-in tool of the CLI; `none`: text only; or a list for `--tools`, e.g. `Read,Grep,Glob` for read-only |
 | `permissionMode` | `bypassPermissions` | a print-mode call cannot answer a prompt, so the CLI's tools run unasked; `acceptEdits`, `plan` and `default` limit them (what is not allowed then fails) |
 | `settingSources` | – | which settings files the CLI loads (`user`, `project`, `local`); none by default, because they bring hooks and permission rules |
 | `connectors` | `false` | let the CLI load the account's MCP connectors |
-| `usage` | `true` | show the owner's Claude subscription usage in the top bar: the monitor reads the CLI's login (`~/.claude/.credentials.json`, or `$CLAUDE_CONFIG_DIR`) and fetches the same data the CLI's `/usage` shows (session and weekly windows, extra-usage credits) |
-| `usageRefreshMinutes` | `5` | minutes between usage fetches (2–60); the endpoint is rate-limited, and a failed fetch keeps the last good reading, flagged stale |
+| `usage` | `true` | show the Claude subscription usage (session and weekly windows) in the top bar. It is the utilization the CLI prints after each call: nothing is read from the CLI's login, no token is used, and nothing is fetched |
 | `stallTimeoutSeconds` | `1800` | how long the CLI may stay silent before the retry plugin declares the call stalled and retries it. The CLI's own tools and subagents can run for minutes without a line of output (the global `retry.stallTimeoutSeconds` is 180 s, which would kill a running subagent and wipe the chat's in-flight answer); 0 never declares a stall — a dead CLI ends the stream on its own |
 
 Each call is one process with the prompt on stdin (a history is sent as a labelled transcript, the system prompt through a
 temporary `--system-prompt-file` that also tells the model which tools it really has). The working folder is the session's
 workspace (else its project folder, else `%TEMP%\netpi-claude-cli`). The reported usage is the last turn of the CLI's own
 loop, so the context size stays the size of one prompt, not the sum of all turns.
+
+Only an agent's own turns get the CLI's tools and its folder: a title, a compaction summary or any other side call through a
+`claude-cli` model is text only and runs outside every project. The child process does not inherit `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, the cloud-provider switches, NetPI's own secrets, any variable a secret setting
+reads (`env:NAME`) or `shell.hideEnv`, the same policy as NetPI's shell tool; the user's other variables stay. On Windows the
+CLI and everything it starts are in a job object that dies with NetPI, so a killed or crashed NetPI leaves no CLI running. A
+failure after the CLI ran tools is reported and never retried automatically, and a refusal for the subscription's limit says when
+the window opens again.
 
 ## Agents
 

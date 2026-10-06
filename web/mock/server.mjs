@@ -1193,13 +1193,8 @@ ${agent.plan.markdown(id)}` });
     const paid = s.title === 'Lane scheduler hardening';
     return { sessionId: s.id, costUsd: paid ? 0.42 : 0, calls: paid ? 7 : 0, withSubagentsUsd: paid ? 0.675 : 0, withSubagentsCalls: paid ? 12 : 0 };
   },
-  // the Claude CLI provider's subscription usage monitor (shape: ClaudeUsageMonitor.Normalize)
+  // the Claude CLI provider's subscription usage (shape: ClaudeUsageTracker.Normalize: what the CLI printed after its last call)
   'claudecli.usage': () => claudeUsageSnapshot(),
-  'claudecli.usage.refresh': () => {
-    const snap = claudeUsageSnapshot();
-    publish('usage.claude', snap);
-    return snap;
-  },
   'budget.status': () => budgetStatus(),
   'budget.allow': (p) => {
     const s = getSession(need(p, 'sessionId'));

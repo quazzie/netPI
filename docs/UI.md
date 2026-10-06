@@ -909,9 +909,9 @@ names or an inline `<svg …>` string.
 - The top bar also shows the owner's Claude subscription usage (`ClaudeUsagePill`, beside the budget pill) when the
   Claude CLI provider is loaded and a reading exists: the session and weekly percentages, amber at 75 %, red at 90 %.
   A click opens a popover with every window (percent, bar, reset time), the extra-usage credits, the week's breakdown
-  by surface, when the reading was fetched (a failed fetch keeps the last good one, flagged stale), and a
-  **Refresh now** (`claudecli.usage.refresh`). It updates on `usage.claude` (the provider's background fetch,
-  `providers.claudeCli.usageRefreshMinutes`). The same component, `compact`, sits in the composer's row in place of
+  by surface (when the endpoint sent them), and when the reading was taken. The reading is what the Claude CLI printed after its
+  last call, so it is as fresh as the last call (it is kept across restarts, and marked old after six hours). It updates on
+  `usage.claude`. The same component, `compact`, sits in the composer's row in place of
   the context ring in a Claude CLI session (see above).
 - Assistant messages that stop with `stopReason: 'error'` may carry `meta.error`, which is shown in the error
   row.

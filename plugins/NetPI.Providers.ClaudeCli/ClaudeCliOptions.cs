@@ -5,7 +5,7 @@ namespace NetPI.Providers.ClaudeCli;
 /// <summary>
 /// Snapshot of <c>providers.claudeCli</c>: enabled, executable, models [ids], timeoutSeconds, tools ("default" = every
 /// built-in tool of the CLI, or a list, or "none"), permissionMode, settingSources, connectors, usage (the subscription
-/// usage monitor), usageRefreshMinutes.
+/// usage pill), stallTimeoutSeconds, maxConcurrent.
 /// </summary>
 internal sealed class ClaudeCliOptions
 {
@@ -16,7 +16,9 @@ internal sealed class ClaudeCliOptions
     public bool Enabled { get; init; }
     public string Executable { get; init; } = "claude";
     public List<string> Models { get; init; } = [.. DefaultModels];
-    public int TimeoutSeconds { get; init; } = 900;
+    /// <summary>The longest one call may run. A CLI that works for an hour on a big task is not stuck: the stall timeout and the
+    /// process ending are what detect a dead one, so this is a backstop, and killing a run that was making progress wastes it.</summary>
+    public int TimeoutSeconds { get; init; } = 3600;
     /// <summary>"default" (all built-in tools), "none", or the tool names handed to <c>--tools</c>.</summary>
     public string Tools { get; init; } = "default";
     /// <summary>A print-mode call cannot answer a permission prompt, so the default lets its tools run.</summary>
@@ -25,16 +27,17 @@ internal sealed class ClaudeCliOptions
     public string SettingSources { get; init; } = "";
     /// <summary>Let the CLI load the account's MCP connectors (claude.ai) as well.</summary>
     public bool Connectors { get; init; }
-    /// <summary>Show the owner's Claude subscription usage in the top bar (the CLI's login, not an API key).</summary>
+    /// <summary>Show the owner's Claude subscription usage in the top bar (read from the CLI's own output).</summary>
     public bool Usage { get; init; } = true;
-    /// <summary>Minutes between usage fetches; the endpoint is rate-limited, so keep it at a few minutes.</summary>
-    public int UsageRefreshMinutes { get; init; } = 5;
     /// <summary>
     /// Max silence between the CLI's stream events, in seconds (0 = no stall detection). The CLI works with its own
     /// tools and subagents, and a long Bash command or a subagent can stay silent for minutes, so the default is far
     /// above the retry plugin's global one; a dead process ends the stream, which the provider already reports.
     /// </summary>
     public int StallTimeoutSeconds { get; init; } = 1800;
+    /// <summary>How many CLI processes run at once: each is a full Claude Code (memory, and the subscription's rate limits), and
+    /// the calls beyond it wait.</summary>
+    public int MaxConcurrent { get; init; } = 2;
 
     public static ClaudeCliOptions Parse(JsonObject? o)
     {
@@ -48,14 +51,14 @@ internal sealed class ClaudeCliOptions
             Enabled = o.Bool("enabled", false),
             Executable = string.IsNullOrWhiteSpace(o.Str("executable")) ? "claude" : o.Str("executable")!.Trim(),
             Models = models.Count > 0 ? models : [.. DefaultModels],
-            TimeoutSeconds = Math.Clamp(o.Int("timeoutSeconds") ?? 900, 10, 7200),
+            TimeoutSeconds = Math.Clamp(o.Int("timeoutSeconds") ?? 3600, 10, 14400),
             Tools = string.IsNullOrWhiteSpace(o.Str("tools")) ? "default" : o.Str("tools")!.Trim(),
             PermissionMode = PermissionModes.Contains(mode, StringComparer.OrdinalIgnoreCase) ? mode! : "bypassPermissions",
             SettingSources = (o.Str("settingSources") ?? "").Trim(),
             Connectors = o.Bool("connectors", false),
             Usage = o.Bool("usage", true),
-            UsageRefreshMinutes = Math.Clamp(o.Int("usageRefreshMinutes") ?? 5, 2, 60),
             StallTimeoutSeconds = Math.Clamp(o.Int("stallTimeoutSeconds") ?? 1800, 0, 7200),
+            MaxConcurrent = Math.Clamp(o.Int("maxConcurrent") ?? 2, 1, 16),
         };
     }
 }

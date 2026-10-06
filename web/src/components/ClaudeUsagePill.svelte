@@ -2,8 +2,8 @@
   /**
    * The owner's Claude subscription usage in the top bar (the Claude CLI provider's monitor): the session
    * and weekly windows with a detail popover — every window with its reset time, extra-usage credits,
-   * the week's breakdown by surface, and a way to refresh now. Hidden while the provider plugin is not
-   * loaded (the RPC is absent) or no reading exists.
+   * the week's breakdown by surface. The reading is the one the Claude CLI printed after its last call (it is not fetched
+   * from anywhere). Hidden while the provider plugin is not loaded (the RPC is absent) or no call has produced a reading yet.
    */
   import Icon from '../lib/kit/Icon.svelte';
   import Popover from './Popover.svelte';
@@ -19,7 +19,6 @@
 
   let s = $state(null);
   let open = $state(false);
-  let refreshing = $state(false);
   let el = $state();
 
   const load = () =>
@@ -62,17 +61,6 @@
     return ms > 0 ? `resets in ${duration(ms)}` : 'resets soon';
   }
 
-  async function refresh() {
-    if (refreshing) return;
-    refreshing = true;
-    try {
-      s = await rpc('claudecli.usage.refresh');
-    } catch {
-      /* keep what we have; the pill's title says when it was fetched */
-    } finally {
-      refreshing = false;
-    }
-  }
 </script>
 
 {#if show}
@@ -135,15 +123,8 @@
         {/if}
 
         <div class="foot">
-          {#if refreshing}
-            <div class="np-dim small"><span class="np-spinner"></span> refreshing…</div>
-          {:else}
-            <button class="np-chip link" onclick={refresh} title="Fetch the usage now">
-              <Icon name="refresh" size={12} /><span>Refresh now</span>
-            </button>
-          {/if}
           <div class="np-dim tiny">
-            {s.stale ? 'Stale reading — ' : ''}fetched {timeAgo(s.fetchedAt)}{s.error ? ` · ${s.error}` : ''}
+            {s.stale ? 'Old reading — ' : ''}as of the last Claude CLI call, {timeAgo(s.fetchedAt)}{s.error ? ` · ${s.error}` : ''}
           </div>
         </div>
       </div>
