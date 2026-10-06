@@ -8,6 +8,8 @@
 - `src/NetPI.Host`: kernel; references only Abstractions. `Server`: headless; `Desktop`: WinForms/WebView2.
 - `plugins/<Name>`: independent plugins; `shared/`: compiled-in source, not shared assemblies.
 - `web/src`, `plugins/*/ui`: Svelte sources. Commit their generated bundles with source changes only.
+  Svelte 5 trap: `$state(fn)` stores the function as the value (no lazy init) — call the initializer
+  and pass the result; a bound `f.name` on a function reads the function's own name.
 - `tests/`: console runners, MockLlm, E2E. No NuGet packages except WebView2.
 
 ## Work and delivery
