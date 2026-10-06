@@ -107,7 +107,9 @@ public sealed class ClaudeCliProvider : IModelProvider
         }
         finally { try { File.Delete(promptFile); } catch { /* the temp folder is cleaned by the OS */ } }
         if (!stream.Finished)
-            throw new ModelException("Claude CLI ended without a result line (the process stopped early).", true, null, "cli_incomplete");
+            throw new ModelException("Claude CLI ended without a result line (the process stopped early)." +
+                (stream.RanTools ? " It had already run tools, so the call is not repeated automatically: look at what it changed before sending the task again." : ""),
+                !stream.RanTools, null, "cli_incomplete");
         foreach (var ev in asm.Drain()) yield return ev;
         var ms = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         yield return new StreamCompleted(asm.Build(Id, request.Model.Id, request.SessionId, ms));

@@ -110,7 +110,14 @@ public sealed class ToolCallPart : MessagePart
     /// call's tool result and removes it from the message.</summary>
     public const string ResultKey = "result";
 
+    /// <summary><see cref="MessagePart.ProviderData"/> key: the provider reported this call live (<see cref="ProviderToolRunning"/>), so the runner
+    /// does not announce it a second time when it records the result.</summary>
+    public const string LiveKey = "live";
+
     /// <summary>True when the provider already ran this call: the runner records it (events, result message) and never executes it.</summary>
+    [JsonIgnore]
+    public bool ProviderLive => ProviderData?[LiveKey] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+
     [JsonIgnore]
     public bool ProviderExecuted => ProviderData?[ExecutedKey] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
 }

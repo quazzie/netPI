@@ -71,6 +71,13 @@ public sealed record TextDelta(string Text) : ModelStreamEvent;
 public sealed record ThinkingDelta(string Text) : ModelStreamEvent;
 public sealed record ToolCallStarted(string Id, string Name) : ModelStreamEvent;
 public sealed record ToolCallArgsDelta(string Id, string Delta) : ModelStreamEvent;
+/// <summary>A call the provider runs itself (<see cref="ToolCallPart.ProviderExecuted"/>) has its arguments and is now being worked on:
+/// the chat shows it as running (<c>tool.start</c>), not as still being written.</summary>
+public sealed record ProviderToolRunning(string Id, string Name, string Arguments) : ModelStreamEvent;
+/// <summary>Progress of such a call (a subagent's own tool use): live output of the call's row (<c>tool.output</c>).</summary>
+public sealed record ProviderToolOutput(string Id, string Text) : ModelStreamEvent;
+/// <summary>Such a call has finished (<c>tool.end</c>); its result follows with the assistant message.</summary>
+public sealed record ProviderToolDone(string Id, bool IsError) : ModelStreamEvent;
 public sealed record UsageUpdate(Usage Usage) : ModelStreamEvent;
 /// <summary>Discard everything streamed so far in this call (used by retry middleware).</summary>
 public sealed record StreamReset(string Reason) : ModelStreamEvent;

@@ -174,6 +174,7 @@ internal static class ClaudeCliTests
                 Ev("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":".cs\"}"}}"""),
                 Ev("""{"type":"content_block_stop","index":0}"""),
                 Ev("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":3,"cache_read_input_tokens":1000,"output_tokens":20}}"""),
+                """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"sub_1","name":"Grep","input":{"pattern":"foo"}}]},"parent_tool_use_id":"tu_1"}""",
                 """{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"file text","is_error":false}]},"parent_tool_use_id":null}""",
                 """{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"parent_tool_use_id":"tu_other"}""",
                 Ev("""{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":2000,"output_tokens":1}}}"""),
@@ -192,6 +193,17 @@ internal static class ClaudeCliTests
             t.Check(call.ProviderExecuted && call.Name == "Read" && call.Arguments == "{\"file_path\":\"src/x.cs\"}", $"the call is marked as run by the CLI, with its arguments: {call.Arguments}");
             t.Eq("file text", call.ProviderData![ToolCallPart.ResultKey]!["content"]!.GetValue<string>(), "its result travels with the call");
             t.Eq("stop", done.StopReason, "the message is an answer, not a request for tools");
+
+            // the lifecycle is reported while the CLI works, so the chat does not show the call as still being written
+            var order = events.Select(e => e switch
+            {
+                ProviderToolRunning r when r.Id == "tu_1" && r.Name == "Read" && r.Arguments == "{\"file_path\":\"src/x.cs\"}" => "running",
+                ProviderToolOutput o when o.Id == "tu_1" && o.Text == "↳ Grep foo\n" => "output",
+                ProviderToolDone d when d.Id == "tu_1" && !d.IsError => "done",
+                _ => null,
+            }).Where(x => x is not null).ToList();
+            t.Eq("running,output,done", string.Join(",", order), "running, then a subagent's progress, then done");
+            t.Check(call.ProviderLive, "the call is marked as reported live");
             t.Eq(2000L, done.Usage!.CacheReadTokens, "context size is the last turn's");
             t.Eq(7L, done.Usage!.OutputTokens, "output of the last turn");
         });
@@ -210,6 +222,23 @@ internal static class ClaudeCliTests
             var events = await Collect(p, Req(messages: messages));
             t.Eq("The conversation so far:\n\nUser:\nFirst?\n\nAssistant:\nAnswer.\n\nUser:\nSecond?\n\nReply to the last user message.", stdin, "transcript");
             t.Check(events.OfType<StreamNotice>().Any(n => n.Text.Contains("billed to the API")), "API-key sign-in is announced");
+        });
+
+        await t.Run("claude-cli: a failure after the CLI ran tools is reported, never retried from the top", async () =>
+        {
+            var tool = new[]
+            {
+                Init,
+                Ev("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"Bash","input":{}}}"""),
+                Ev("""{"type":"content_block_stop","index":0}"""),
+            };
+            var overloaded = tool.Append("""{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Overloaded","api_error_status":529}""");
+            var p = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines(overloaded, ct));
+            var e = await Fails(p, Req());
+            t.Check(e is { Transient: false, StatusCode: 529 }, "a 529 after tool use is not transient: a retry would run and bill the job again");
+            p = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines(tool, ct));
+            e = await Fails(p, Req());
+            t.Check(e is { Transient: false, ErrorType: "cli_incomplete" } && e.Message.Contains("already run tools"), $"a CLI that died mid-job: {e?.Message}");
         });
 
         await t.Run("claude-cli: results of the CLI's own tools stay out of the next prompt", async () =>

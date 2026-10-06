@@ -369,20 +369,24 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
             var res = call.ProviderData?[ToolCallPart.ResultKey] as JsonObject;
             var content = res?["content"] is JsonValue c && c.TryGetValue<string>(out var text) ? text : "(the provider recorded no result for this call)";
             var isError = res is null || (res["isError"] is JsonValue e && e.TryGetValue<bool>(out var flag) && flag);
-            rt.Emit(EventTypes.ToolStart, new JsonObject
-            {
-                ["sessionId"] = SessionId, ["agentId"] = AgentId, ["callId"] = call.Id, ["name"] = call.Name,
-                ["label"] = call.Name, ["arguments"] = call.Arguments,
-            }, SessionId);
+            // reported live while the provider worked (ProviderToolRunning/Done): only a call it never finished needs its end here
+            var live = call.ProviderLive;
+            if (!live)
+                rt.Emit(EventTypes.ToolStart, new JsonObject
+                {
+                    ["sessionId"] = SessionId, ["agentId"] = AgentId, ["callId"] = call.Id, ["name"] = call.Name,
+                    ["label"] = call.Name, ["arguments"] = call.Arguments,
+                }, SessionId);
             Persist(new ToolResultPart
             {
                 CallId = call.Id, Name = call.Name, Content = content, IsError = isError,
                 Details = new JsonObject { ["providerExecuted"] = true },
             }, required: false);
-            rt.Emit(EventTypes.ToolEnd, new JsonObject
-            {
-                ["sessionId"] = SessionId, ["callId"] = call.Id, ["name"] = call.Name, ["isError"] = isError,
-            }, SessionId);
+            if (!live || res is null)
+                rt.Emit(EventTypes.ToolEnd, new JsonObject
+                {
+                    ["sessionId"] = SessionId, ["callId"] = call.Id, ["name"] = call.Name, ["isError"] = isError,
+                }, SessionId);
             rt.Update(state, i => i.ToolCalls++);
             rc.ToolCallCount++;
             call.ProviderData?.Remove(ToolCallPart.ResultKey);

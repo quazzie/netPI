@@ -19,6 +19,7 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     private readonly Dictionary<int, MessagePart> _blocks = [];
     private readonly Dictionary<int, ToolCallPart> _toolBlocks = [];
     private readonly Dictionary<string, ToolCallPart> _toolsById = [];
+    private readonly Dictionary<int, StringBuilder> _toolArgs = [];
     private readonly Usage _usage = new();
     private bool _streamed;
     private bool _sawUsage;
@@ -26,6 +27,9 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     /// <summary>The init line's apiKeySource: anything but "none" means the CLI would bill an API key.</summary>
     public string? ApiKeySource { get; private set; }
     public string? AssistantError { get; private set; }
+    /// <summary>True once the CLI has started a tool: from then on its run did work (it may have written files, spent a long time), so a failure
+    /// is reported, never retried from the top by the retry middleware.</summary>
+    public bool RanTools { get; private set; }
 
     public void Handle(string line)
     {
@@ -34,8 +38,13 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         catch (JsonException) { return; } // not a protocol line (a warning printed to stdout)
         if (node is not JsonObject o) return;
         var type = o.Str("type");
-        // what a subagent of the CLI does is its own: only the top level conversation is this call's answer
-        if (type is "stream_event" or "assistant" or "user" && o["parent_tool_use_id"] is not null) return;
+        // what a subagent of the CLI does is its own: only the top level conversation is this call's answer, and its tool use is
+        // progress on the call that started it
+        if (type is "stream_event" or "assistant" or "user" && o.Str("parent_tool_use_id") is { } parent)
+        {
+            if (type == "assistant") SubagentProgress(parent, o);
+            return;
+        }
         switch (type)
         {
             case "system" when o.Str("subtype") == "init": ApiKeySource = o.Str("apiKeySource"); break;
@@ -52,6 +61,8 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         switch (e.Str("type"))
         {
             case "message_start":
+                // block indices restart with every API turn of the CLI's own loop
+                _blocks.Clear(); _toolBlocks.Clear(); _toolArgs.Clear();
                 ApplyUsage(e.Obj("message").Obj("usage"));
                 break;
             case "content_block_start":
@@ -64,8 +75,11 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
                 else if (type == "tool_use")
                 {
                     var call = asm.StartToolCall(block.Str("id"), block.Str("name"));
-                    call.ProviderData = new JsonObject { [ToolCallPart.ExecutedKey] = true };
+                    // executed: the CLI runs it; live: it is reported while it runs (ProviderToolRunning/Done), not only at the end
+                    call.ProviderData = new JsonObject { [ToolCallPart.ExecutedKey] = true, [ToolCallPart.LiveKey] = true };
+                    RanTools = true;
                     _toolBlocks[index] = call;
+                    _toolArgs[index] = new StringBuilder();
                     if (!string.IsNullOrEmpty(call.Id)) _toolsById[call.Id] = call;
                 }
                 break;
@@ -74,7 +88,7 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
             {
                 var d = e.Obj("delta");
                 var index = e.Int("index") ?? 0;
-                if (d.Str("type") == "input_json_delta" && _toolBlocks.TryGetValue(index, out var call)) { asm.AppendToolArgs(call, d.Str("partial_json")); break; }
+                if (d.Str("type") == "input_json_delta" && _toolBlocks.TryGetValue(index, out var call)) { asm.AppendToolArgs(call, d.Str("partial_json")); _toolArgs[index].Append(d.Str("partial_json")); break; }
                 if (!_blocks.TryGetValue(index, out var part)) break;
                 switch (d.Str("type"))
                 {
@@ -85,8 +99,14 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
                 break;
             }
             case "content_block_stop":
-                if (_blocks.TryGetValue(e.Int("index") ?? 0, out var p) && p is ThinkingPart tp) asm.EndThinking(tp);
+            {
+                var index = e.Int("index") ?? 0;
+                if (_blocks.TryGetValue(index, out var p) && p is ThinkingPart tp) asm.EndThinking(tp);
+                // the arguments are complete: the CLI is now running the tool
+                else if (_toolBlocks.TryGetValue(index, out var call))
+                    asm.Pending.Add(new ProviderToolRunning(call.Id, call.Name, _toolArgs.TryGetValue(index, out var args) && args.Length > 0 ? args.ToString() : "{}"));
                 break;
+            }
             case "message_delta":
                 ApplyUsage(e.Obj("usage"));
                 if (e.Obj("delta").Str("stop_reason") == "max_tokens") asm.StopReason = "length";
@@ -100,12 +120,31 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         foreach (var block in o.Obj("message").Arr("content") ?? [])
         {
             if (block.Str("type") != "tool_result" || block.Str("tool_use_id") is not { } id || !_toolsById.TryGetValue(id, out var call)) continue;
-            call.ProviderData![ToolCallPart.ResultKey] = new JsonObject
-            {
-                ["content"] = ResultText(block?["content"]),
-                ["isError"] = block.Bool("is_error", false),
-            };
+            var isError = block.Bool("is_error", false);
+            call.ProviderData![ToolCallPart.ResultKey] = new JsonObject { ["content"] = ResultText(block?["content"]), ["isError"] = isError };
+            asm.Pending.Add(new ProviderToolDone(id, isError));
         }
+    }
+
+    /// <summary>A subagent's tool use ("↳ Read src/x.cs"): live output of the call that started the subagent.</summary>
+    private void SubagentProgress(string parentId, JsonObject o)
+    {
+        if (!_toolsById.ContainsKey(parentId)) return;
+        foreach (var block in o.Obj("message").Arr("content") ?? [])
+            if (block.Str("type") == "tool_use")
+                asm.Pending.Add(new ProviderToolOutput(parentId, "↳ " + Describe(block.Str("name") ?? "tool", block.Obj("input")) + "\n"));
+    }
+
+    /// <summary>"Read src/x.cs", "Bash git status": the tool and the one argument that says what it does.</summary>
+    internal static string Describe(string tool, JsonObject? input)
+    {
+        string? arg = null;
+        if (input is not null)
+            foreach (var key in new[] { "file_path", "path", "pattern", "command", "url", "query", "description", "prompt" })
+                if (input.Str(key) is { Length: > 0 } v) { arg = v; break; }
+        if (arg is null) return tool;
+        arg = arg.ReplaceLineEndings(" ");
+        return $"{tool} {(arg.Length > 140 ? arg[..140] + "…" : arg)}";
     }
 
     private static string ResultText(JsonNode? content)
@@ -144,7 +183,8 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
             var msg = string.IsNullOrWhiteSpace(text) ? $"Claude CLI reported an error ({o.Str("subtype")})" : text!;
             var auth = AssistantError == "authentication_failed" || msg.Contains("Not logged in", StringComparison.OrdinalIgnoreCase);
             if (auth) msg += " Run `claude auth login` once, in the account that holds the subscription.";
-            throw new ModelException($"Claude CLI: {msg}", status is >= 500, status, AssistantError ?? o.Str("terminal_reason") ?? o.Str("subtype"));
+            // a failure after the CLI did work is reported, not retried: a retry would run (and bill) the whole job again
+            throw new ModelException($"Claude CLI: {msg}", status is >= 500 && !RanTools, status, AssistantError ?? o.Str("terminal_reason") ?? o.Str("subtype"));
         }
         if (!asm.HasContent && !string.IsNullOrEmpty(text)) asm.AddText(text);
         // The result's usage adds up every turn of the CLI's own tool loop; the last turn's, from the stream, is the size of the context.
