@@ -292,6 +292,10 @@ public static class IdeasCommitTests
             var idea = await env.AddIdea("Finished somewhere else", "- move the writer\n- keep the reader working");
             env.Repo.Commit($"first {idea}");
             await env.Check!.SweepNowAsync();
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "the first commit is read");
+
+            // The completion evidence is read in the repository the sweep is on, and this hash is not in it: an
+            // unavailable patch is missing evidence, not a failure of the check (idea-g6siz0).
             env.Unreadable.Add(env.Repo.Commits[0].Hash);   // a commit made in another repository
             env.Repo.Commit($"second {idea}");
 
@@ -303,6 +307,10 @@ public static class IdeasCommitTests
             Check.Equal(2, (review["requirements"] as JsonArray)!.Count, "with what a reviewer has to support");
             Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "and the sweep still moves on: missing evidence is not a failure that pins it");
             Check.Equal(0, await env.Cards(), "nothing is offered on evidence that is not there");
+            Check.Equal(0, IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home).Unread().Count,
+                "and the commit is not recorded unread either: it was read, only its patch was missing");
+            Check.Contains(IdeaOps.Str((await env.Rpc("ideas.get", new JsonObject { ["id"] = idea }))["commits"]![0]!["repo"]), env.Repo.Path,
+                "every commit entry says which repository it was made in");
             env.Ctx.Unload();
         });
 
@@ -751,29 +759,6 @@ public static class IdeasCommitTests
             Check.Equal(env.Repo.Commits[0].Hash, env.Repo.Asked[^1].Since, "the sweep continued from the cursor, not from the start of the history");
             Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "and it read only what came after it");
             Check.Equal(2, (await env.CommitsOn(idea)).Count);
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas commits: a linked commit this repository cannot read is skipped, not read again for ever", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var idea = await env.AddIdea("Finished somewhere else", "The commit that finishes it was made in another repository.");
-            env.Repo.Commit($"first {idea}");
-            await env.Check!.SweepNowAsync();
-            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "the first commit is linked");
-
-            // The completion evidence is read in the repository the sweep is on, and this hash is not in it: an
-            // unavailable patch is missing evidence, not a failure of the check (idea-g6siz0).
-            env.Unreadable.Add(env.Repo.Commits[0].Hash);
-            env.Repo.Commit($"second {idea}");
-            await env.Check.SweepNowAsync();
-            Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "the cursor moved past it instead of pinning the sweep");
-            Check.Equal(0, await env.Cards(), "no offer was made on evidence we do not have");
-            Check.Equal(0, IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home).Unread().Count,
-                "and the commit is not recorded unread either: it was read, only its patch was missing");
-            Check.Contains(IdeaOps.Str((await env.Rpc("ideas.get", new JsonObject { ["id"] = idea }))["commits"]![0]!["repo"]), env.Repo.Path,
-                "every commit entry says which repository it was made in");
             env.Ctx.Unload();
         });
 
