@@ -7,8 +7,7 @@ public static class ResourceSchedulerTests
     public static void Register(TestRunner t)
     {
         t.Add("scheduler resource: missing concurrency shares the fallback across named and plain calls", () => Fallback(null));
-        t.Add("scheduler resource: zero concurrency uses the fallback instead of blocking every call", () => Fallback(0));
-        t.Add("scheduler resource: negative concurrency uses the fallback", () => Fallback(-1));
+        t.Add("scheduler resource: zero or negative concurrency uses the fallback instead of blocking every call", InvalidConcurrency);
         t.Add("scheduler resource: waiters across pools follow priority then FIFO", Fairness);
         t.Add("scheduler resource: a pool at its own cap does not block an eligible peer", SkipCappedPool);
         t.Add("scheduler resource: catalog and fallback changes refresh a plain pool without another resolve", RefreshCapacity);
@@ -62,6 +61,17 @@ public static class ResourceSchedulerTests
         Blocked(s, "b", "still-extra", "granting a plain call keeps total occupancy at two");
         a.Dispose();
         Blocked(s, "a", "double-release", "releasing the old lease twice cannot free another slot");
+    }
+
+    /// <summary>Zero and a negative number are no concurrency at all: each falls back like a missing one, instead of
+    /// making a pool that admits nothing. A failure names the value it failed for.</summary>
+    private static async Task InvalidConcurrency()
+    {
+        foreach (var concurrency in (int[])[0, -1])
+        {
+            try { await Fallback(concurrency); }
+            catch (AssertException ex) { throw new AssertException($"concurrency {concurrency}: {ex.Message}"); }
+        }
     }
 
     private static async Task Fairness()
