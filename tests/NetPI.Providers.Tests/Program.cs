@@ -512,10 +512,9 @@ await t.Run("aiproxy: server down -> last good list marked offline; unreachable 
     var back = await aiproxy.ListModelsAsync(true, CancellationToken.None);
     t.Check(back.Any(m => m.Status == "loaded"), "back online");
 
-    using var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-    l.Start(); var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port; l.Stop();
-    using var http = new HttpClient();
-    var dead = new AP.OpenAiCompatibleProvider("dead", "Dead", http, () => new JsonObject { ["baseUrl"] = $"http://127.0.0.1:{port}" });
+    var deadUrl = DeadEndpoint.Url();
+    using var http = DeadEndpoint.Client(); // the real refusal, without Windows' two seconds of SYN retries
+    var dead = new AP.OpenAiCompatibleProvider("dead", "Dead", http, () => new JsonObject { ["baseUrl"] = deadUrl });
     var empty = await dead.ListModelsAsync(false, CancellationToken.None);
     t.Eq(0, empty.Count, "unreachable -> empty list, no throw");
 });
@@ -917,10 +916,9 @@ await t.Run("responses: errors (503, context overflow, cut-off, EOF, response.fa
     t.Check(e5b is { ErrorType: "context_length_exceeded", ContextOverflow: true } && e5b.Message.Contains("context length exceeded"),
         "a data-only error frame is the server's own error: " + e5b?.Message);
 
-    using var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-    l.Start(); var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port; l.Stop();
-    using var http = new HttpClient();
-    var dead = new AP.OpenAiCompatibleProvider("dead", "Dead", http, () => new JsonObject { ["baseUrl"] = $"http://127.0.0.1:{port}" });
+    var deadUrl = DeadEndpoint.Url();
+    using var http = DeadEndpoint.Client(); // the real refusal, without Windows' two seconds of SYN retries
+    var dead = new AP.OpenAiCompatibleProvider("dead", "Dead", http, () => new JsonObject { ["baseUrl"] = deadUrl });
     var e6 = await Fails(dead, Req(M("dead", "x")));
     t.Check(e6 is { Transient: true, ErrorType: "network_error" }, "connection refused -> transient");
 });
