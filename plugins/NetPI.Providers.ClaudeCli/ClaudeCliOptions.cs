@@ -27,6 +27,12 @@ internal sealed class ClaudeCliOptions
     public string SettingSources { get; init; } = "";
     /// <summary>Let the CLI load the account's MCP connectors (claude.ai) as well.</summary>
     public bool Connectors { get; init; }
+    /// <summary>
+    /// NetPI's own tools the CLI gets over MCP (idea-0qo9xb): "auto" (every tool the run is offered that no CLI tool it keeps
+    /// covers, without the ones that wait on the user or start agents), "off", or tool names (those of them the run is offered).
+    /// Off until a live run has proven the path end to end: every Claude CLI chat goes through it once it is on.
+    /// </summary>
+    public string NetpiTools { get; init; } = "off";
     /// <summary>Show the owner's Claude subscription usage in the top bar (read from the CLI's own output).</summary>
     public bool Usage { get; init; } = true;
     /// <summary>
@@ -56,6 +62,7 @@ internal sealed class ClaudeCliOptions
             PermissionMode = PermissionModes.Contains(mode, StringComparer.OrdinalIgnoreCase) ? mode! : "bypassPermissions",
             SettingSources = (o.Str("settingSources") ?? "").Trim(),
             Connectors = o.Bool("connectors", false),
+            NetpiTools = string.IsNullOrWhiteSpace(o.Str("netpiTools")) ? "off" : o.Str("netpiTools")!.Trim(),
             Usage = o.Bool("usage", true),
             StallTimeoutSeconds = Math.Clamp(o.Int("stallTimeoutSeconds") ?? 1800, 0, 7200),
             MaxConcurrent = Math.Clamp(o.Int("maxConcurrent") ?? 2, 1, 16),

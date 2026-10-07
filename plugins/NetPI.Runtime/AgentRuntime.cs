@@ -26,6 +26,8 @@ internal sealed class AgentRuntime : IAgentRuntime
     private volatile bool _stopping;
     private int _spawnCounter;
     internal string Generation { get; } = Guid.NewGuid().ToString("N");
+    /// <summary>The model calls in flight that a provider may relay NetPI tool calls into (IToolRelay, idea-0qo9xb).</summary>
+    internal ToolRelays Relays { get; } = new();
 
     /// <summary>How long StopAsync waits for in-flight runs to finish after it cancels them. The production ceiling
     /// is 5 s; a run that honours cancellation stops far sooner, so tests set this to 300 ms to skip the wait.</summary>

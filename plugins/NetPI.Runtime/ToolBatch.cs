@@ -159,7 +159,22 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
             && (p.Gateway is null || eligible.Any(t => ReferenceEquals(t, p.Gateway)));
     }
 
-    private async Task<(PreparedCall Call, bool ArgsChanged)> PrepareAsync(AgentTurnContext turn, ToolCallPart call, List<IAgentTool> tools, CancellationToken ct)
+    /// <summary>
+    /// One call a provider relays from inside its own loop (<see cref="IToolRelay"/>, idea-0qo9xb): prepared (the
+    /// before-call hooks: guardrails and their approvals, plan mode, the workspace guard) and invoked like a call of this
+    /// batch, with its live output under the provider's call id. Not announced and not finished here: the provider's own
+    /// stream reports the call (tool.start/tool.end) and records it with its message, where the after-call hooks see it.
+    /// </summary>
+    public async Task<ToolResult> RunRelayedAsync(AgentTurnContext turn, ToolCallPart call, CancellationToken ct)
+    {
+        var tools = ActiveTools(Ctx.Sessions.GetSession(SessionId) ?? rc.Session);
+        var (prepared, _) = await PrepareAsync(turn, call, tools, ct, announce: false).ConfigureAwait(false);
+        var part = await InvokeAsync(prepared, ct).ConfigureAwait(false);
+        return new ToolResult { Content = part.Content ?? "", IsError = part.IsError, Images = part.Images, Details = part.Details };
+    }
+
+    private async Task<(PreparedCall Call, bool ArgsChanged)> PrepareAsync(AgentTurnContext turn, ToolCallPart call, List<IAgentTool> tools, CancellationToken ct,
+        bool announce = true)
     {
         var tool = FindTool(tools, call.Name);
         var prepared = new PreparedCall { Call = call, Tool = tool };
@@ -196,12 +211,13 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
         catch (Exception ex) { prepared.Early = ToolResult.Error(ex.Message); }
 
         var effective = prepared.EffectiveCall ?? call;
-        rt.Emit(EventTypes.ToolStart, new JsonObject
-        {
-            ["sessionId"] = SessionId, ["agentId"] = AgentId, ["callId"] = call.Id, ["name"] = call.Name,
-            ["label"] = prepared.Tool?.Definition.Label ?? call.Name, ["arguments"] = call.Arguments,
-            ["resolvedTool"] = prepared.EffectiveCall?.Name, ["serverId"] = prepared.ServerId,
-        }, SessionId);
+        if (announce)
+            rt.Emit(EventTypes.ToolStart, new JsonObject
+            {
+                ["sessionId"] = SessionId, ["agentId"] = AgentId, ["callId"] = call.Id, ["name"] = call.Name,
+                ["label"] = prepared.Tool?.Definition.Label ?? call.Name, ["arguments"] = call.Arguments,
+                ["resolvedTool"] = prepared.EffectiveCall?.Name, ["serverId"] = prepared.ServerId,
+            }, SessionId);
         rt.SetActivity(state, $"tool: {effective.Name}");
         if (prepared.Early is not null) return (prepared, false);
         if (!StillEligible(prepared)) { prepared.Early = ToolResult.Error("The tool was disabled or replaced before execution."); return (prepared, false); }
@@ -380,10 +396,14 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
                     ["sessionId"] = SessionId, ["agentId"] = AgentId, ["callId"] = call.Id, ["name"] = call.Name,
                     ["label"] = call.Name, ["arguments"] = call.Arguments,
                 }, SessionId);
+            // a NetPI tool the provider relayed (IToolRelay) brings the details the tool returned: mcp_search's disclosure is
+            // what a later mcp_call checks, so they are kept, with the flag beside them
+            var details = res?["details"] is JsonObject relayed ? relayed.DeepClone().AsObject() : new JsonObject();
+            details["providerExecuted"] = true;
             var result = new ToolResultPart
             {
                 CallId = call.Id, Name = call.Name, Content = content, IsError = isError,
-                Details = new JsonObject { ["providerExecuted"] = true },
+                Details = details,
             };
             Persist(result, required: false);
             if (!live || res is null)

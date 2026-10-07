@@ -22,6 +22,13 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     private readonly Dictionary<int, ToolCallPart> _toolBlocks = [];
     private readonly Dictionary<string, ToolCallPart> _toolsById = [];
     private readonly Dictionary<int, StringBuilder> _toolArgs = [];
+    // NetPI's own tools the CLI calls over MCP (NetpiMcp, idea-0qo9xb): the blocks that are such calls, the calls whose
+    // arguments are complete and that the endpoint has not claimed yet (it runs them under these ids), and the details each
+    // relayed call's tool returned, which its record keeps. Handle runs on the reader, the endpoint on a request thread.
+    private readonly HashSet<int> _relayBlocks = [];
+    private readonly List<(string Id, string Name, string Args)> _relayPending = [];
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, JsonObject> _relayDetails = new(StringComparer.Ordinal);
+    private readonly Lock _relayGate = new();
     private readonly Usage _usage = new();
     private bool _streamed;
     private bool _sawUsage;
@@ -83,7 +90,7 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         {
             case "message_start":
                 // block indices restart with every API turn of the CLI's own loop
-                _blocks.Clear(); _toolBlocks.Clear(); _toolArgs.Clear();
+                _blocks.Clear(); _toolBlocks.Clear(); _toolArgs.Clear(); _relayBlocks.Clear();
                 ApplyUsage(e.Obj("message").Obj("usage"));
                 break;
             case "content_block_start":
@@ -95,12 +102,17 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
                 else if (type == "thinking") _blocks[index] = asm.BeginThinking();
                 else if (type == "tool_use")
                 {
-                    var call = asm.StartToolCall(block.Str("id"), block.Str("name"));
+                    // a NetPI tool the CLI calls over MCP (mcp__netpi__ideas) is that tool: recorded under its own name, so the chat,
+                    // the after-call hooks and a later mcp_call's disclosure check read it as the NetPI call it is (idea-0qo9xb)
+                    var named = block.Str("name");
+                    var relayed = named?.StartsWith(NetpiMcp.ToolPrefix, StringComparison.Ordinal) == true && named.Length > NetpiMcp.ToolPrefix.Length;
+                    var call = asm.StartToolCall(block.Str("id"), relayed ? named![NetpiMcp.ToolPrefix.Length..] : named);
                     // executed: the CLI runs it; live: it is reported while it runs (ProviderToolRunning/Done), not only at the end;
                     // as: the NetPI tool it stands for, so the after-call hooks read the CLI's Bash as bash (idea-hghbmg)
                     call.ProviderData = new JsonObject { [ToolCallPart.ExecutedKey] = true, [ToolCallPart.LiveKey] = true };
-                    if (call.Name is { Length: > 0 } cliName && ClaudeCliProvider.Counterparts.TryGetValue(cliName, out var netpi))
+                    if (!relayed && call.Name is { Length: > 0 } cliName && ClaudeCliProvider.Counterparts.TryGetValue(cliName, out var netpi))
                         call.ProviderData[ToolCallPart.AsKey] = netpi[0];
+                    if (relayed) _relayBlocks.Add(index);
                     RanTools = true;
                     _toolBlocks[index] = call;
                     _toolArgs[index] = new StringBuilder();
@@ -128,7 +140,11 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
                 if (_blocks.TryGetValue(index, out var p) && p is ThinkingPart tp) asm.EndThinking(tp);
                 // the arguments are complete: the CLI is now running the tool
                 else if (_toolBlocks.TryGetValue(index, out var call))
-                    asm.Pending.Add(new ProviderToolRunning(call.Id, call.Name, _toolArgs.TryGetValue(index, out var args) && args.Length > 0 ? args.ToString() : "{}"));
+                {
+                    var complete = _toolArgs.TryGetValue(index, out var args) && args.Length > 0 ? args.ToString() : "{}";
+                    asm.Pending.Add(new ProviderToolRunning(call.Id, call.Name, complete));
+                    if (_relayBlocks.Remove(index)) lock (_relayGate) _relayPending.Add((call.Id, call.Name, complete));
+                }
                 break;
             }
             case "message_delta":
@@ -145,9 +161,45 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         {
             if (block.Str("type") != "tool_result" || block.Str("tool_use_id") is not { } id || !_toolsById.TryGetValue(id, out var call)) continue;
             var isError = block.Bool("is_error", false);
-            call.ProviderData![ToolCallPart.ResultKey] = new JsonObject { ["content"] = ResultText(block?["content"]), ["isError"] = isError };
+            var result = new JsonObject { ["content"] = ResultText(block?["content"]), ["isError"] = isError };
+            if (_relayDetails.TryRemove(id, out var details)) result["details"] = details;
+            call.ProviderData![ToolCallPart.ResultKey] = result;
             asm.Pending.Add(new ProviderToolDone(id, isError));
         }
+    }
+
+    /// <summary>
+    /// The id the CLI streams a call to a NetPI tool with (idea-0qo9xb): the endpoint asks when the call reaches it, and gets
+    /// the oldest unclaimed one of that tool, the one with the same arguments first. The CLI writes the call's stream line
+    /// before it calls, but the reader may not have read it yet, so this waits a little; null when no such call shows up.
+    /// </summary>
+    internal async Task<string?> TakeRelayIdAsync(string name, string arguments, CancellationToken ct)
+    {
+        for (var waited = 0; ; waited += 25)
+        {
+            lock (_relayGate)
+            {
+                var at = _relayPending.FindIndex(p => p.Name == name && SameJson(p.Args, arguments));
+                if (at < 0) at = _relayPending.FindIndex(p => p.Name == name);
+                if (at >= 0)
+                {
+                    var id = _relayPending[at].Id;
+                    _relayPending.RemoveAt(at);
+                    return id;
+                }
+            }
+            if (waited >= 1000) return null;
+            await Task.Delay(25, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The details a relayed call's tool returned, for the call's record (the CLI's own result carries only text).</summary>
+    internal void KeepRelayDetails(string callId, JsonObject details) => _relayDetails[callId] = details;
+
+    private static bool SameJson(string a, string b)
+    {
+        try { return JsonNode.DeepEquals(JsonNode.Parse(a), JsonNode.Parse(b)); }
+        catch (JsonException) { return a == b; }
     }
 
     /// <summary>A subagent's tool use ("↳ Read src/x.cs"): live output of the call that started the subagent.</summary>
