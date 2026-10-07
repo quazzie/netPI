@@ -19,7 +19,7 @@ public sealed class CoordinatorPlugin : INetPiPlugin
     {
         var c = new Coordinator(context);
         context.Rpc.Register("sessions.dispatch", (req, token) => c.DispatchAsync(req, token),
-            "Start a worker in one call, validated first: { project, title?, workspace?: name | id | { name|id, create?, base? }, agent?, profile?, " +
+            "Start a worker in one call, validated first: { project, title?, workspace?: name | id | { name|id, create?, base? }, agent?, profile? (default: the automatic profile, settings profiles.autoProfile), " +
             "text? | textFile?, send? } → { sessionId, title, project, workspace, agent, profile, sent, status }. Nothing is left behind when a step fails. " +
             "{{workspacePath}}, {{branch}}, {{workspaceName}}, {{sessionId}}, {{projectPath}} in the text are filled in");
         context.Rpc.RegisterReadOnly("runs.result", (req, token) => c.ResultAsync(req, token),
@@ -103,6 +103,7 @@ internal sealed class Coordinator(IPluginContext ctx)
             if (workspace is not null) await Call("sessions.setWorkspace", new { id = sessionId, workspaceId = Str(workspace, "id") }, ct).ConfigureAwait(false);
             if (agent is not null) await Call("agents.use", new { sessionId, agent }, ct).ConfigureAwait(false);
             if (profile is not null) await Call("profiles.apply", new { sessionId, profile }, ct).ConfigureAwait(false);
+            else if (req.Str("profile") is not { Length: > 0 } && ctx.Rpc.Exists("profiles.applyAuto")) await Call("profiles.applyAuto", new { sessionId }, ct).ConfigureAwait(false);
             JsonNode? status = null;
             if (send) status = await Call("agent.send", new { sessionId, text = Fill(text!, workspace, project, sessionId), mode = "auto" }, ct).ConfigureAwait(false);
             return new

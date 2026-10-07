@@ -196,10 +196,14 @@ A profile is the opening of a chat's system prompt and the tools it gets (Settin
 project's default profile (the Projects dialog; `project.meta.profile`, `"none"` for none), else `profiles.defaultProfile`;
 each chat can pick another next to the model: free before the first message, later the chat is read again once.
 Subagents don't use profiles: the agent that starts one chooses its tools.
+Chats NetPI starts by itself (idea work from the Ideas tab, the start screen or the idea dialog, a plan approved in a
+new chat, idea refinement, schedule runs, `sessions.dispatch` without a profile) get `profiles.autoProfile` in place of
+the global default; a project's own default still wins. Such starters call `profiles.applyAuto` ([PROTOCOL](PROTOCOL.md)).
 
 ```jsonc
 "profiles": {
   "defaultProfile": "coder",
+  "autoProfile": "coder",      // "none": no profile; unset: the same as defaultProfile
   "coder": { "name": "Coder" },
   "admin": { "name": "Admin", "prompt": "You are a system administrator for the hosts in ~/.ssh/config. …",
              "toolsOff": ["bash", "pwsh", "write", "edit"] }
@@ -212,6 +216,7 @@ Subagents don't use profiles: the agent that starts one chooses its tools.
 | `profiles.<id>.prompt` | replaces the opening of the system prompt (the built-in "You are a coding agent…", or `context.customPrompt`); empty keeps it |
 | `profiles.<id>.toolsOff` | tools the chat starts without (checkboxes in the dialog); the chat's tools button can still change them |
 | `profiles.defaultProfile` | the profile of new chats whose project has none |
+| `profiles.autoProfile` | the profile of chats NetPI starts by itself whose project has none: a profile id, `"none"`, or unset for `defaultProfile` |
 
 ## Agents
 
