@@ -597,7 +597,10 @@ public static class SshTests
         r.Add("ssh: on Windows no client is asked to multiplex, whatever it claims", async () =>
         {
             // The Git/MSYS build creates a real socket and keeps the master up, and still resets the first session over
-            // it, so the question cannot be answered by asking the client: on Windows the answer is always no.
+            // it, so the question cannot be answered by asking the client: on Windows the answer is always no. Elsewhere
+            // the client's own answer decides, and with this one (it can) the call does multiplex: that is "ssh: one
+            // master connection per host...", so this test is about Windows only.
+            if (!OperatingSystem.IsWindows()) Check.Skip("about Windows; elsewhere the client's answer decides (\"ssh: one master connection per host\")");
             var asked = 0;
             var real = SshClient.Probe;
             SshClient.Probe = (_, args) => { if (args.Contains("-O")) asked++; return args.Contains("-O") ? (1, MuxYes) : (0, ""); };
@@ -609,8 +612,8 @@ public static class SshTests
                 var r = await env.Run("ssh_run", new { host = "nuc", script = "ls" });
                 Check.False(r.IsError, "the call runs: " + r.Content);
                 var args = string.Join(" ", env.Fake.Calls.Single().Args);
-                Check.NotContains(args, "ControlMaster", OperatingSystem.IsWindows() ? "Windows cannot multiplex" : "a client that cannot multiplex");
-                Check.Equal(OperatingSystem.IsWindows() ? 0 : 1, asked, "and the client is not asked a question the platform already answers");
+                Check.NotContains(args, "ControlMaster", "Windows cannot multiplex, whatever the client says");
+                Check.Equal(0, asked, "and the client is not asked a question the platform already answers");
             }
             finally { SshClient.Probe = real; SshClient.Forget(); }
         });
