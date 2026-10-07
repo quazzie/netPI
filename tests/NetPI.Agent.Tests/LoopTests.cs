@@ -457,11 +457,7 @@ public static class LoopTests
         Check.Equal(1, h.Bus.OfType(EventTypes.ToolStart).Count, "no tool.start for the skipped calls");
         Check.Equal(1, h.Catalog.Calls);
     }
- 
-    /// <summary>
-    /// A call's result is persisted before its after-hooks run: a run cancelled in an after-hook must not write a second,
-    /// contradictory result ("aborted") for the same call id - the transcript keeps the one real result (idea-3coif8).
-    /// </summary>
+
     /// <summary>A provider that ran a call itself (the Claude CLI's tools): recorded and shown like a tool call, never executed, and the run ends.</summary>
     private static async Task ProviderExecutedCallIsRecordedNotRun()
     {
@@ -553,6 +549,10 @@ public static class LoopTests
         yield return new StreamCompleted(Reply.Message(call, new TextPart { Text = "ok" }));
     }
 
+    /// <summary>
+    /// A call's result is persisted before its after-hooks run: a run cancelled in an after-hook must not write a second,
+    /// contradictory result ("aborted") for the same call id - the transcript keeps the one real result (idea-3coif8).
+    /// </summary>
     private static async Task OneResultWhenCancelledInAfterHook()
     {
         await using var h = await TestHost.StartAsync();
@@ -597,10 +597,6 @@ public static class LoopTests
         public ValueTask OnRunEndAsync(AgentRunContext run) => ValueTask.CompletedTask;
     }
 
-    // A stop leaves the queued input with no run left to run in: the UI's chip send action dequeues it and
-    // sends the same text as the next turn. The queue must survive the abort, the removal is what authorizes
-    // the send (a second removal reports "gone", so the text is never sent twice), and the resent text starts
-    // its own run.
     /// <summary>
     /// The steps of a turn that can fail (the model is gone, the budget is spent, no slot) come before the queue is taken, so
     /// a run that failed there still holds the input. It used to start the next run for it at once, which failed the same
@@ -772,6 +768,10 @@ public static class LoopTests
         Check.True(h.Messages(s.Id).Any(m => m.Text == "three"), "the steer was delivered");
     }
 
+    // A stop leaves the queued input with no run left to run in: the UI's chip send action dequeues it and
+    // sends the same text as the next turn. The queue must survive the abort, the removal is what authorizes
+    // the send (a second removal reports "gone", so the text is never sent twice), and the resent text starts
+    // its own run.
     private static async Task AbortKeepsQueue()
     {
         await using var h = await TestHost.StartAsync();
