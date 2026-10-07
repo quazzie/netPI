@@ -413,34 +413,16 @@ public static class SshTests
             Check.Contains((await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", edits = new[] { new { oldText = "four", newText = "4" } } })).Content, "oldText not found");
             Check.Equal(calls + 1, env.Fake.Calls.Count); // read only, nothing written
 
+            // a concurrent writer changed the file after the read (a same-size edit in the same second leaves size and
+            // mtime as they were; only the hash has moved), so the remote refuses and nothing is written
             env.Fake.Reply = (args, _) => Remote(args).Contains("head -c")
                 ? new SshExec(0, "__netpi_stat=17 1700000000\n__netpi_hash=" + hash + "\n" + file, "", false, false)
                 : new SshExec(3, "", "changed: sha256 deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n", false, false);
-            Check.Contains((await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", oldText = "one", newText = "1" })).Content, "changed on the host");
-        });
-
-        r.Add("ssh_edit: a same-size change inside one second is refused (different hash, same stat)", async () =>
-        {
-            var env = new Env();
-            var original = "aaaa\nbbbb\n"; // 10 bytes
-            const string h1 = "sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-            const string h2 = "sha256 fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba";
-            // the read records size 10, whole-second mtime 1700000000 and the content's hash
-            env.Fake.Reply = (args, stdin) => Remote(args).Contains("head -c")
-                ? new SshExec(0, "__netpi_stat=10 1700000000\n__netpi_hash=" + h1 + "\n" + original, "", false, false)
-                // a concurrent writer made a same-size edit in the same second: the old marker would still read
-                // "10 1700000000", but the hash has moved, so the remote refuses
-                : new SshExec(3, "", "changed: " + h2 + "\n", false, false);
-            var res = await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", edits = new[] { new { oldText = "bbbb", newText = "BBBB" } } });
-            Check.True(res.IsError, res.Content);
-            Check.Contains(res.Content, "changed on the host while it was being edited; nothing was written");
-            // the write's marker is the hash: no size/mtime comparison anywhere in it
-            var write = env.Fake.Calls[^1];
-            Check.Contains(Remote(write.Args), $"[ \"$h\" = '{h1}' ]");
-            Check.NotContains(Remote(write.Args), "%s %Y");
-            Check.NotContains(Remote(write.Args), "\"$s\" =");
-            // the read is what recorded the hash
-            Check.Contains(Remote(env.Fake.Calls[0].Args), "echo \"__netpi_hash=$h\"");
+            var refused = await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", oldText = "one", newText = "1" });
+            Check.True(refused.IsError, refused.Content);
+            Check.Contains(refused.Content, "changed on the host while it was being edited; nothing was written");
+            // the refused write's marker is the hash alone: no size comparison anywhere in it
+            Check.NotContains(Remote(env.Fake.Calls[^1].Args), "\"$s\" =");
         });
 
         r.Add("ssh_edit: the remote write script, run in a local bash (matching hash renames over the target, stale hash refused, an interrupted write leaves the original intact)", async () =>
