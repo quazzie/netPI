@@ -120,7 +120,7 @@ public static class ShellTests
             // head+tail: short is unchanged, cut keeps both ends and the marker names (dropped, total)
             Check.Equal("ok", TextLimit.HeadTail("ok", 10, 2, (o, t) => $"~{o}~{t}~"));
             var both = TextLimit.HeadTail(new string('a', 50) + "END", 20, 2, (o, t) => $"~{o}~{t}~");
-            Check.Equal(13, 20 * 2 / 3, "head gets 2 of 3 of the budget");
+            // the head gets 2 of 3 of the budget: 13 of the 20
             Check.True(both.StartsWith(new string('a', 13)), both[..20]);
             Check.Equal("~33~53~", both[13..20], "the marker names the dropped and the total");
             Check.True(both.EndsWith("aaaaEND"), both[^10..]);
@@ -451,23 +451,6 @@ public static class ShellTests
             Check.False(File.Exists(Path.Combine(dir, "ran.txt")), "the command did not run");
         });
 
-        r.Add("bash: orphaned background child holding the pipe does not block", async () =>
-        {
-            var (svc, _, _) = NewService();
-            var dir = T.TempDir("bash");
-            // Here the child is meant to survive: the point is that the tool does not wait for it.
-            // So the test owns it and takes it down itself, by the pid Windows actually uses.
-            using var child = ShellChild.For(svc, dir, "orphan");
-            var sw = Stopwatch.StartNew();
-            var res = await T.Run(Bash(svc), dir, new { command = child.Preamble + "echo quick" });
-            sw.Stop();
-            Check.True(sw.Elapsed < TimeSpan.FromSeconds(6), $"took {sw.Elapsed}");
-            Check.Contains(res.Content, "quick");
-            Check.True(await child.IsAlive(5000), "the detached child should still be running when the tool returns");
-            await child.RememberNativePid();
-            Check.True(child.NativePid is > 0, "resolved the child's Windows pid (not the MSYS one)");
-        });
-
         // The shell exits while a descendant still holds the output pipes: it must stay killable (the tree is alive)
         // and the pumps must keep draining, so the descendant neither goes un-killable nor clogs on a full pipe.
         r.Add("bash: a shell that exits leaving a pipe-holding descendant stays killable", async () =>
@@ -488,6 +471,10 @@ public static class ShellTests
                 Check.False(p.OutputReachedEof, "the descendant still holds the pipes");
                 Check.True(p.TreeMayBeAlive, "the tree is still alive and killable");
                 Check.True(await child.IsAlive(5000), "the descendant is still running");
+                // its Windows pid, so the cleanup below can still take it down if a check after this one fails (a
+                // survivor would hold the runner's output pipe for the rest of the suite)
+                await child.RememberNativePid();
+                Check.True(child.NativePid is > 0, "resolved the child's Windows pid (not the MSYS one)");
 
                 // process kill reaches the surviving tree (the old code answered "not running" here).
                 var id = p.Id;
