@@ -60,46 +60,6 @@ public sealed class ClaudeCliProvider : IModelProvider
     /// <summary>Where the prompt files are written and side calls run.</summary>
     internal string WorkDir => _workDir;
 
-    /// <summary>The endpoint that serves an agent turn NetPI's own tools over MCP (idea-0qo9xb); null: no NetPI tools.</summary>
-    internal NetpiMcp? Mcp { get; init; }
-    /// <summary>This process's server address (the MCP endpoint is on it); null while the server does not listen yet.</summary>
-    internal Func<string?>? ServerUrl { get; init; }
-
-    /// <summary>The NetPI tools an "auto" run does not hand the CLI: they wait on the user, start agents or plan the chat.</summary>
-    internal static readonly string[] NotRelayed = ["agent_spawn", "agent", "ask_user", "plan_enter", "plan_submit"];
-
-    /// <summary>
-    /// The NetPI tools an agent turn gives the CLI over MCP (<see cref="ClaudeCliOptions.NetpiTools"/>): with "auto", every tool the
-    /// run is offered that no CLI tool it keeps covers (the CLI's Bash does bash's job, so bash is not offered twice; with the
-    /// CLI's tools off, NetPI's own bash, read and edit are its tools, under NetPI's guard), without <see cref="NotRelayed"/>;
-    /// with names, those of them the run is offered; "off", none. A run that may only read keeps only reading tools.
-    /// </summary>
-    internal static IReadOnlyList<ToolDefinition> NetpiTools(ModelRequest request, ClaudeCliOptions o, string cliTools, IReadOnlyList<string> disallowed)
-    {
-        if (o.NetpiTools.Equals("off", StringComparison.OrdinalIgnoreCase) || request.Tools.Count == 0) return [];
-        IEnumerable<ToolDefinition> offered = request.Tools.Where(t => !t.Deferred);
-        if (request.ReadOnlyTools) offered = offered.Where(t => t.ReadOnly);
-        if (!o.NetpiTools.Equals("auto", StringComparison.OrdinalIgnoreCase))
-        {
-            var named = o.NetpiTools.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            return [.. offered.Where(t => named.Contains(t.Name))];
-        }
-        var kept = cliTools.Length == 0 ? []
-            : cliTools.Equals("default", StringComparison.OrdinalIgnoreCase) ? Counterparts.Keys.Except(disallowed, StringComparer.OrdinalIgnoreCase)
-            : cliTools.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var covered = kept.SelectMany(t => Counterparts.TryGetValue(t, out var netpi) ? netpi : []).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return [.. offered.Where(t => !covered.Contains(t.Name) && !NotRelayed.Contains(t.Name, StringComparer.OrdinalIgnoreCase))];
-    }
-
-    /// <summary>What the model is told when some of NetPI's tools are its MCP tools: which ones, how they are named, where they run.</summary>
-    internal static string NetpiNote(IReadOnlyList<string> netpi, bool cliTools) =>
-        "# Tools in this call\n" +
-        $"Of the tools described above (NetPI's), these are available here: {string.Join(", ", netpi)}. They are your MCP tools named " +
-        $"mcp__netpi__<name> (mcp__netpi__{netpi[0]}): call them that way, never as written calls or <invoke> markup. They run inside NetPI: " +
-        "its guard may block a call or ask the user first, and in plan mode they only read. " +
-        (cliTools ? "For everything else use your own tools (read, search, edit, shell) in the working folder" : "You have no other tools in this call") +
-        "; the other NetPI tools above are not available. Then answer in plain text.";
-
     public string Id => "claude-cli";
     public string DisplayName => "Claude CLI";
     public bool IsLocal => false;
@@ -212,16 +172,10 @@ public sealed class ClaudeCliProvider : IModelProvider
         var (tools, disallowed, policy) = agentTurn ? ToolPolicy(request, o, _knownTools?.Invoke()) : NoTools;
         var cwd = agentTurn ? _cwdOf(request.SessionId) : null;
         var workDir = cwd is { Length: > 0 } && Directory.Exists(cwd) ? cwd : _workDir;
-        // NetPI's own tools for this turn, over MCP on NetPI's own port (idea-0qo9xb)
-        var relayed = agentTurn && Mcp is not null && request.SessionId is not null ? NetpiTools(request, o, tools, disallowed) : [];
-        var serverUrl = relayed.Count > 0 ? ServerUrl?.Invoke() : null;
-        if (serverUrl is null) relayed = [];
         if (agentTurn && request.Tools.Count > 0 && !attempt.Resume)
-            yield return new StreamNotice(relayed.Count > 0
-                ? $"Claude CLI gets NetPI's {string.Join(", ", relayed.Select(t => t.Name))} as its MCP tools (NetPI runs them, under its guard)" +
-                  (tools.Length == 0 ? "; its own tools are off." : $", and works with its own in {workDir}; its tool calls show in the chat.")
-                : $"Claude CLI does not use NetPI's tools (the {request.Tools.Count} of this request): it works with its own" +
-                  (tools.Length == 0 ? " (none enabled)." : $" in {workDir}; its tool calls show in the chat."), "info");
+            yield return new StreamNotice(
+                $"Claude CLI does not use NetPI's tools (the {request.Tools.Count} of this request): it works with its own" +
+                (tools.Length == 0 ? " (none enabled)." : $" in {workDir}; its tool calls show in the chat."), "info");
         if (agentTurn && policy is not null) yield return new StreamNotice($"Claude CLI works {policy} in this turn.", "info");
 
         // every call is a full Claude Code process: the ones beyond the limit wait (memory, and the subscription's rate limits)
@@ -232,25 +186,15 @@ public sealed class ClaudeCliProvider : IModelProvider
         // The system prompt goes through a file: NetPI's can outgrow the 32k command line of Windows.
         Directory.CreateDirectory(_workDir);
         var promptFile = Path.Combine(_workDir, $"system-{Guid.NewGuid():N}.md");
-        await File.WriteAllTextAsync(promptFile, SystemPromptWithNote(request.SystemPrompt, tools.Length > 0, [.. relayed.Select(t => t.Name)]), ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(promptFile, SystemPromptWithNote(request.SystemPrompt, tools.Length > 0), ct).ConfigureAwait(false);
         var asm = new MessageAssembler();
         var stream = new ClaudeCliStream(asm) { ModelId = request.Model.Id };
         if (_usage is not null && o.Usage) stream.OnRateLimit = _usage.Observe;
         var executable = ResolveExecutable(o.Executable);
         var recorded = false;
-        string? mcpConfig = null;
-        IDisposable? mcpRun = null;
         try
         {
-            if (relayed.Count > 0)
-            {
-                // the run's token goes into a file in NetPI's own folder (owner-only), read by the CLI and deleted after it
-                var (token, registration) = Mcp!.Open(new NetpiMcp.Run { SessionId = request.SessionId!, Tools = relayed, Stream = stream });
-                mcpRun = registration;
-                mcpConfig = Path.Combine(_workDir, $"mcp-{Guid.NewGuid():N}.json");
-                await File.WriteAllTextAsync(mcpConfig, NetpiMcp.Config(serverUrl!, token).ToJsonString(), ct).ConfigureAwait(false);
-            }
-            var call = new CliCall(executable, BuildArgs(request, o, tools, promptFile, attempt, disallowed, mcpConfig), attempt.Prompt, workDir,
+            var call = new CliCall(executable, BuildArgs(request, o, tools, promptFile, attempt, disallowed), attempt.Prompt, workDir,
                 TimeSpan.FromSeconds(o.TimeoutSeconds), _hiddenEnv());
             var warned = false;
             await foreach (var line in _runner(call, ct).ConfigureAwait(false))
@@ -271,12 +215,7 @@ public sealed class ClaudeCliProvider : IModelProvider
                 if (stream.Finished) break;
             }
         }
-        finally
-        {
-            try { File.Delete(promptFile); } catch { /* the temp folder is cleaned by the OS */ }
-            if (mcpConfig is not null) try { File.Delete(mcpConfig); } catch { /* swept with the prompt files */ }
-            mcpRun?.Dispose();
-        }
+        finally { try { File.Delete(promptFile); } catch { /* the temp folder is cleaned by the OS */ } }
         if (!stream.Finished)
         {
             var message = "Claude CLI ended without a result line (the process stopped early)." +
@@ -327,8 +266,7 @@ public sealed class ClaudeCliProvider : IModelProvider
         try
         {
             if (!Directory.Exists(_workDir)) return;
-            // a run's MCP config holds its (dead) token: it goes with the prompt files a crash left behind
-            foreach (var f in Directory.EnumerateFiles(_workDir, "system-*.md").Concat(Directory.EnumerateFiles(_workDir, "mcp-*.json")))
+            foreach (var f in Directory.EnumerateFiles(_workDir, "system-*.md"))
                 if (DateTime.UtcNow - File.GetLastWriteTimeUtc(f) > TimeSpan.FromDays(1)) File.Delete(f);
         }
         catch { /* best effort */ }
@@ -346,9 +284,9 @@ public sealed class ClaudeCliProvider : IModelProvider
         "Use your own tools (read, search, edit, shell) in the working folder to do the work, then answer in plain text.";
 
     /// <summary>NetPI's system prompt describes its tools; the model is told which tools it really has, or it writes the others' calls as text.</summary>
-    internal static string SystemPromptWithNote(string? system, bool cliTools, IReadOnlyList<string>? netpi = null)
+    internal static string SystemPromptWithNote(string? system, bool cliTools)
     {
-        var note = netpi is { Count: > 0 } ? NetpiNote(netpi, cliTools) : cliTools ? CliToolsNote : NoToolsNote;
+        var note = cliTools ? CliToolsNote : NoToolsNote;
         return string.IsNullOrWhiteSpace(system) ? note : system.TrimEnd() + "\n\n" + note;
     }
 
@@ -407,14 +345,11 @@ public sealed class ClaudeCliProvider : IModelProvider
 
     /// <summary>The CLI arguments: no saved session, no skills; its tools and permissions as the settings and the run say; the system prompt is read from a file.</summary>
     internal static List<string> BuildArgs(ModelRequest request, ClaudeCliOptions o, string tools, string systemPromptFile, CliAttempt attempt,
-        IReadOnlyList<string>? disallowed = null, string? mcpConfigFile = null)
+        IReadOnlyList<string>? disallowed = null)
     {
         var args = new List<string> { "-p", "--model", request.Model.Id, "--tools", tools };
         if (tools.Length > 0) args.AddRange(["--permission-mode", o.PermissionMode]);
         if (tools.Length > 0 && disallowed is { Count: > 0 }) args.AddRange(["--disallowedTools", string.Join(",", disallowed)]);
-        // NetPI's own tools (idea-0qo9xb): the one server of this run's config file (its token is in the file, not here), and
-        // allowed whatever the permission mode, since NetPI's guard is what judges their calls
-        if (mcpConfigFile is not null) args.AddRange(["--mcp-config", mcpConfigFile, "--allowedTools", "mcp__" + NetpiMcp.ServerName]);
         if (!o.Connectors) args.Add("--strict-mcp-config");
         // a chat's CLI session is kept (it is what the next turn resumes); anything else leaves no session behind
         if (!attempt.Persist) args.Add("--no-session-persistence");

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
@@ -9,12 +8,11 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Providers.ClaudeCli;
 
 /// <summary>Registers the <c>claude-cli</c> provider (settings <c>providers.claudeCli</c>).</summary>
-[NetPiPlugin(PluginId, Name = "Claude CLI provider",
+[NetPiPlugin("netpi.providers.claudecli", Name = "Claude CLI provider",
     Description = "Claude models through the installed Claude Code CLI (claude -p) on the owner's subscription, working in the session's workspace with the CLI's own tools.",
     Order = 12)]
 public sealed class ClaudeCliPlugin : INetPiPlugin
 {
-    public const string PluginId = "netpi.providers.claudecli";
     public const string SettingsPath = "providers.claudeCli";
     private const string UsageCollection = "usage";
     private const string UsageKey = "latest";
@@ -24,17 +22,6 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
     private IDisposable? _settingsSub;
 
     public ClaudeCliProvider? Provider { get; private set; }
-
-    /// <summary>This process's server address, from <c>&lt;home&gt;/server.json</c> (null until the server listens).</summary>
-    internal static string? ServerUrl(IPluginContext context)
-    {
-        try
-        {
-            var doc = JsonNode.Parse(File.ReadAllText(Path.Combine(context.Paths.Home, "server.json")));
-            return doc?["pid"]?.GetValue<int>() == Environment.ProcessId ? doc["url"]?.GetValue<string>() : null;
-        }
-        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or InvalidOperationException or FormatException) { return null; }
-    }
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
@@ -59,8 +46,6 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
                 SettingInfo.Str("providers.claudeCli.settingSources", "Settings files", "",
                     "Which settings the CLI loads: user, project, local (comma-separated). Empty loads none; they bring hooks and permission rules."),
                 SettingInfo.Bool("providers.claudeCli.connectors", "Account connectors", false, "Let the CLI load the account's MCP connectors."),
-                SettingInfo.Str("providers.claudeCli.netpiTools", "NetPI tools", "off",
-                    "NetPI's own tools the CLI gets as MCP tools (mcp__netpi__<name>), run by NetPI under its guard, approvals and plan mode. auto: every tool the chat is offered that none of the CLI's own tools covers (ideas, mcp_call, ssh, memory_search, ...; with the CLI's tools off, NetPI's bash, read and edit too), except agent_spawn, ask_user and the plan tools. off: none. Or a comma-separated list of tool names."),
                 SettingInfo.Bool("providers.claudeCli.usage", "Usage pill", true,
                     "Shows the Claude subscription usage (session and weekly windows) in the context ring's popout. It comes from the CLI's own output after each call; pressing the ring also asks Anthropic for the live figure with the CLI's login token (at most once a minute)."),
                 SettingInfo.Int("providers.claudeCli.stallTimeoutSeconds", "Silence tolerance", 1800,
@@ -93,20 +78,12 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         try { sessions.Prune(); }
         catch (Exception ex) { context.Logger.LogDebug(ex, "claude-cli: could not prune the stored sessions"); }
         // the prompt files and a side call's folder live in NetPI's home (owner-only), not in a temp folder other users share
-        var mcp = new NetpiMcp(() => context.Services.Get<IToolRelay>(), context.Logger);
         Provider = new ClaudeCliProvider(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,
             sessionId => CwdOf(context, sessionId), () => HiddenEnvironment(context.Settings), usage, sessions,
             Path.Combine(context.Paths.Home, "claude-cli"),
             // a CLI tool is held back only where NetPI has its counterpart (registered, even if disabled in tools.disabled) and does
             // not offer it to the run (idea-hghbmg)
-            () => [.. context.Tools.Registrations.Select(r => r.Tool.Definition.Name).Distinct(StringComparer.OrdinalIgnoreCase)])
-        {
-            // NetPI's own tools for the CLI's agent turns, over MCP on NetPI's loopback port; the endpoint is open to the host's
-            // token check and authenticates each run's own token itself (idea-0qo9xb)
-            Mcp = mcp,
-            ServerUrl = () => ServerUrl(context),
-        };
-        context.Http.Map(NetpiMcp.Path, mcp.HandleAsync, open: true);
+            () => [.. context.Tools.Registrations.Select(r => r.Tool.Definition.Name).Distinct(StringComparer.OrdinalIgnoreCase)]);
         // the CLI reports each model's real window with its first answer: the catalog (and the context ring) take it up
         Provider.OnModelsLearned = () => context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = "claude-cli" });
         context.Services.Register<IModelProvider>(Provider);

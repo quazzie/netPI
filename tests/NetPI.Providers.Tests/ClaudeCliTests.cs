@@ -330,93 +330,6 @@ internal static class ClaudeCliTests
             t.Check(live.ModelsChangedSinceLastList(), "editing the models changes the catalog");
         });
 
-        await t.Run("claude-cli: NetPI's own tools over MCP: the run's endpoint answers initialize, lists its tools, relays a call under the id the CLI streams it with, and the record keeps the tool's details", async () =>
-        {
-            var relay = new FakeRelay();
-            var mcp = new CL.NetpiMcp(() => relay, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
-            var asm = new claudecli::NetPI.Providers.Kit.MessageAssembler();
-            var stream = new CL.ClaudeCliStream(asm);
-            var ideas = new ToolDefinition { Name = "ideas", Description = "The ideas backlog", Parameters = JsonNode.Parse("""{"type":"object","properties":{"action":{"type":"string"}}}""")!.AsObject() };
-            var run = new CL.NetpiMcp.Run { SessionId = "ses_1", Tools = [ideas], Stream = stream };
-            static JsonObject Msg(string json) => JsonNode.Parse(json)!.AsObject();
-
-            var init = await mcp.HandleMessageAsync(run, Msg("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}"""), CancellationToken.None);
-            t.Eq("2025-06-18", init!["result"]!["protocolVersion"]!.GetValue<string>(), "the client's protocol version");
-            t.Check(init["result"]!["capabilities"]!["tools"] is JsonObject, "a tools server");
-            t.Check(await mcp.HandleMessageAsync(run, Msg("""{"jsonrpc":"2.0","method":"notifications/initialized"}"""), CancellationToken.None) is null, "a notification has no answer");
-            var list = await mcp.HandleMessageAsync(run, Msg("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}"""), CancellationToken.None);
-            var listed = list!["result"]!["tools"]!.AsArray().Single()!;
-            t.Eq("ideas", listed["name"]!.GetValue<string>(), "as expected");
-            t.Eq("object", listed["inputSchema"]!["type"]!.GetValue<string>(), "the tool's own schema");
-
-            // the CLI streams its call to mcp__netpi__ideas, then calls the endpoint
-            foreach (var line in new[]
-            {
-                Ev("""{"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}"""),
-                Ev("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_9","name":"mcp__netpi__ideas","input":{}}}"""),
-                Ev("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"action\":\"list\"}"}}"""),
-                Ev("""{"type":"content_block_stop","index":0}"""),
-            }) stream.Handle(line);
-            var called = await mcp.HandleMessageAsync(run, Msg("""{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ideas","arguments":{"action":"list"}}}"""), CancellationToken.None);
-            var seen = relay.Calls.Single();
-            t.Eq("ses_1", seen.Session, "as expected");
-            t.Eq("toolu_9", seen.Call.Id, "run under the id the CLI streamed the call with");
-            t.Eq("ideas", seen.Call.Name, "as expected");
-            t.Eq("""{"action":"list"}""", seen.Call.Arguments, "as expected");
-            t.Eq("2 open ideas", called!["result"]!["content"]![0]!["text"]!.GetValue<string>(), "as expected");
-            t.Eq(false, called["result"]!["isError"]!.GetValue<bool>(), "as expected");
-
-            // the CLI reports the result: the record is the NetPI tool's, with the details the tool returned
-            stream.Handle("""{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"2 open ideas","is_error":false}]},"parent_tool_use_id":null}""");
-            var part = asm.Build("claude-cli", "m", "ses_1", 1).Parts.OfType<ToolCallPart>().Single();
-            t.Eq("ideas", part.Name, "recorded as the NetPI tool, not as mcp__netpi__ideas");
-            t.Check(part.ProviderAs is null, "no stand-in name: it is the NetPI tool");
-            t.Eq(2, part.ProviderData![ToolCallPart.ResultKey]!["details"]!["count"]!.GetValue<int>(), "the tool's details travel with the result");
-
-            // a tool the run was not offered, a call after the model call ended, a method the server does not have
-            var unknown = await mcp.HandleMessageAsync(run, Msg("""{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"bash","arguments":{}}}"""), CancellationToken.None);
-            t.Eq(true, unknown!["result"]!["isError"]!.GetValue<bool>(), "not offered: refused");
-            relay.Gone = true;
-            var late = await mcp.HandleMessageAsync(run, Msg("""{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ideas","arguments":{}}}"""), CancellationToken.None);
-            t.Check(late!["result"]!["isError"]!.GetValue<bool>() && late["result"]!["content"]![0]!["text"]!.GetValue<string>().Contains("no model call"), "no model call in flight: refused");
-            t.Eq(-32601, (await mcp.HandleMessageAsync(run, Msg("""{"jsonrpc":"2.0","id":6,"method":"resources/list"}"""), CancellationToken.None))!["error"]!["code"]!.GetValue<int>(), "as expected");
-        });
-
-        await t.Run("claude-cli: which NetPI tools a run gets over MCP: auto leaves out what a kept CLI tool covers and the interactive ones; off; a list; plan mode reads only; the config and the flags", () =>
-        {
-            static ToolDefinition T(string n, bool ro = false) => new() { Name = n, Description = "d", Parameters = new JsonObject { ["type"] = "object" }, ReadOnly = ro };
-            var req = new ModelRequest
-            {
-                Model = new ModelInfo { Provider = "claude-cli", Id = "claude-sonnet-5-5" }, Purpose = "agent", SessionId = "ses_1", Messages = [],
-                Tools = [T("bash"), T("read", true), T("ideas"), T("mcp_call"), T("agent_spawn"), T("ask_user"), T("memory_search", true)],
-            };
-            static string Names(IReadOnlyList<ToolDefinition> l) => string.Join(",", l.Select(x => x.Name));
-            t.Eq("off", CL.ClaudeCliOptions.Parse(new JsonObject()).NetpiTools, "off unless switched on");
-            var auto = CL.ClaudeCliOptions.Parse(new JsonObject { ["netpiTools"] = "auto" });
-            t.Eq("ideas,mcp_call,memory_search", Names(CL.ClaudeCliProvider.NetpiTools(req, auto, "default", [])),
-                "the CLI's Bash and Read do bash's and read's job; agent_spawn and ask_user stay out");
-            t.Eq("bash,read,ideas,mcp_call,memory_search", Names(CL.ClaudeCliProvider.NetpiTools(req, auto, "", [])),
-                "with the CLI's own tools off, NetPI's bash and read are its tools (under NetPI's guard)");
-            t.Eq("", Names(CL.ClaudeCliProvider.NetpiTools(req, CL.ClaudeCliOptions.Parse(new JsonObject { ["netpiTools"] = "off" }), "default", [])), "off");
-            t.Eq("ideas,ask_user", Names(CL.ClaudeCliProvider.NetpiTools(req, CL.ClaudeCliOptions.Parse(new JsonObject { ["netpiTools"] = "ideas, ask_user, nope" }), "default", [])),
-                "a list: those of them the run is offered");
-            var plan = new ModelRequest { Model = req.Model, Purpose = "agent", SessionId = "ses_1", Messages = [], Tools = req.Tools, ReadOnlyTools = true };
-            t.Eq("memory_search", Names(CL.ClaudeCliProvider.NetpiTools(plan, auto, "Read,Grep,Glob", [])), "plan mode: reading tools only");
-
-            var args = CL.ClaudeCliProvider.BuildArgs(req, auto, "default", "p.md", new CL.ClaudeCliProvider.CliAttempt(false, "", "", false), [], "mcp.json");
-            var at = args.IndexOf("--mcp-config");
-            t.Check(at >= 0 && args[at + 1] == "mcp.json", "the run's config file, its token inside");
-            t.Check(args.Contains("--allowedTools") && args[args.IndexOf("--allowedTools") + 1] == "mcp__netpi", "its tools allowed whatever the permission mode");
-            t.Check(args.Contains("--strict-mcp-config"), "and no other server is loaded");
-            t.Check(!CL.ClaudeCliProvider.BuildArgs(req, auto, "default", "p.md", new CL.ClaudeCliProvider.CliAttempt(false, "", "", false), []).Contains("--mcp-config"),
-                "no NetPI tools: no config");
-            var config = CL.NetpiMcp.Config("http://127.0.0.1:7431/", "tok");
-            t.Eq("http://127.0.0.1:7431/api/p/netpi.providers.claudecli/mcp", config["mcpServers"]!["netpi"]!["url"]!.GetValue<string>(), "as expected");
-            t.Eq("Bearer tok", config["mcpServers"]!["netpi"]!["headers"]!["Authorization"]!.GetValue<string>(), "as expected");
-            t.Check(CL.ClaudeCliProvider.SystemPromptWithNote("S", true, ["ideas", "mcp_call"]).Contains("mcp__netpi__ideas"), "the model is told how they are named");
-            return Task.CompletedTask;
-        });
-
         await t.Run("claude-cli: live call through the installed CLI (set NETPI_CLAUDE_CLI_LIVE=1; uses the subscription)", async () =>
         {
             if (Environment.GetEnvironmentVariable("NETPI_CLAUDE_CLI_LIVE") != "1") t.Skip("NETPI_CLAUDE_CLI_LIVE is not 1");
@@ -465,18 +378,4 @@ internal static class ClaudeCliTests
     }
 
     private sealed record SeenCall(List<string> Args, string Stdin, bool PromptFileExisted);
-
-    /// <summary>The runtime's side of a relayed call: records it and answers with a result and details, or refuses when gone.</summary>
-    private sealed class FakeRelay : IToolRelay
-    {
-        public List<(string Session, ToolCallPart Call)> Calls { get; } = [];
-        public bool Gone { get; set; }
-
-        public Task<ToolResult?> RunAsync(string sessionId, ToolCallPart call, CancellationToken ct)
-        {
-            if (Gone) return Task.FromResult<ToolResult?>(null);
-            Calls.Add((sessionId, call));
-            return Task.FromResult<ToolResult?>(ToolResult.Ok("2 open ideas", new JsonObject { ["count"] = 2 }));
-        }
-    }
 }

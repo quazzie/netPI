@@ -45,7 +45,6 @@ public sealed class RuntimePlugin : INetPiPlugin
         runtime.Initialize();
         _runtime = runtime;
         context.Services.Register<IAgentRuntime>(runtime);
-        context.Services.Register<IToolRelay>(runtime.Relays);
 
         context.Rpc.Register("agent.send", async (req, token) =>
         {

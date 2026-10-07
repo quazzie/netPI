@@ -52,44 +52,6 @@ public static class LoopTests
         t.Add("rpc: agent.send / queue / dequeue / get / list / abort", Rpcs);
         t.Add("rpc: agent.promote turns a queued follow-up into a steer the run takes at its next step", Promote);
         t.Add("runtime: stopping the agent plugin cancels runs", PluginStop);
-        t.Add("relay: a provider relays a NetPI tool call from inside its stream: it runs with the before-call hooks, unannounced, and only while that call is in flight", Relay);
-    }
-
-    /// <summary>
-    /// IToolRelay (idea-0qo9xb): a provider whose model works in its own loop (the Claude CLI over MCP) hands a call to a NetPI
-    /// tool back while its stream is open. The runtime runs it like its own — the before-call hooks decide, the tool runs under
-    /// the provider's call id — but does not announce it (the provider's stream does), and refuses once the call has ended.
-    /// </summary>
-    private static async Task Relay()
-    {
-        await using var h = await TestHost.StartAsync();
-        var ran = new List<string>();
-        h.AddTool(new FakeTool("probe", (ctx, args, ct) =>
-        {
-            lock (ran) ran.Add(ctx.CallId + ":" + args.GetRawText());
-            return Task.FromResult(ToolResult.Ok("probed", new JsonObject { ["seen"] = true }));
-        }));
-        h.Services.Register<IAgentHook>(new Hook { BeforeTool = c => c.Arguments.Contains("forbidden") ? new ToolCallDecision { Block = true, Reason = "not that one" } : null });
-        var relay = h.Services.Get<IToolRelay>()!;
-        var s = h.NewSession();
-        ToolResult? allowed = null, blocked = null;
-        h.Catalog.Handler = (r, ct) => Reply.Text("done", async c =>
-        {
-            allowed = await relay.RunAsync(s.Id, new ToolCallPart { Id = "toolu_1", Name = "probe", Arguments = """{"x":1}""" }, c);
-            blocked = await relay.RunAsync(s.Id, new ToolCallPart { Id = "toolu_2", Name = "probe", Arguments = """{"x":"forbidden"}""" }, c);
-        });
-        await h.SendAsync(s.Id, "go");
-        await h.IdleAsync(s.Id);
-
-        Check.Equal("probed", allowed?.Content);
-        Check.False(allowed!.IsError);
-        Check.Equal(true, (bool?)(NetPiJson.ToNode(allowed.Details) as JsonObject)?["seen"], "the tool's details come back with its result");
-        Check.Equal("toolu_1:{\"x\":1}", string.Join("|", ran), "run once, under the provider's call id; the blocked call never ran");
-        Check.True(blocked!.IsError && blocked.Content.Contains("not that one"), blocked.Content);
-        Check.Equal(0, h.Bus.OfType(EventTypes.ToolStart).Count, "the provider's stream announces its calls, not the relay");
-        Check.Equal(null, await relay.RunAsync(s.Id, new ToolCallPart { Id = "late", Name = "probe", Arguments = "{}" }, CancellationToken.None),
-            "no model call in flight: refused");
-        Check.Equal(null, await relay.RunAsync("ses_none", new ToolCallPart { Id = "x", Name = "probe", Arguments = "{}" }, CancellationToken.None));
     }
 
     private static FakeTool Echo() => new("echo", (ctx, args, ct) =>

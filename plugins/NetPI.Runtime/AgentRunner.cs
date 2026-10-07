@@ -289,13 +289,6 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 var afterSeq = Ctx.Sessions.GetMessages(SessionId, null, 1).LastOrDefault()?.Seq ?? 0;
                 Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq));
             }
-            // A provider whose model works in its own loop may relay calls to NetPI's tools from inside this call (IToolRelay,
-            // idea-0qo9xb): they run against this turn, and end with it
-            using var relay = rt.Relays.Open(SessionId, async (relayed, token) =>
-            {
-                using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, ct);
-                return await new ToolBatch(rt, state, _rc!, HasSteering).RunRelayedAsync(turn, relayed, linked.Token).ConfigureAwait(false);
-            });
             var (assistant, contextTokens) = await new ModelCall(rt, state, run).RunAsync(turn, model, session, ct).ConfigureAwait(false);
             return new ModelCallOutcome(assistant, contextTokens);
         }
