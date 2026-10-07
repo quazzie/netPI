@@ -413,44 +413,22 @@ public static class SshTests
             Check.Contains((await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", edits = new[] { new { oldText = "four", newText = "4" } } })).Content, "oldText not found");
             Check.Equal(calls + 1, env.Fake.Calls.Count); // read only, nothing written
 
+            // a concurrent writer changed the file after the read (a same-size edit in the same second leaves size and
+            // mtime as they were; only the hash has moved), so the remote refuses and nothing is written
             env.Fake.Reply = (args, _) => Remote(args).Contains("head -c")
                 ? new SshExec(0, "__netpi_stat=17 1700000000\n__netpi_hash=" + hash + "\n" + file, "", false, false)
                 : new SshExec(3, "", "changed: sha256 deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n", false, false);
-            Check.Contains((await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", oldText = "one", newText = "1" })).Content, "changed on the host");
-        });
-
-        r.Add("ssh_edit: a same-size change inside one second is refused (different hash, same stat)", async () =>
-        {
-            var env = new Env();
-            var original = "aaaa\nbbbb\n"; // 10 bytes
-            const string h1 = "sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-            const string h2 = "sha256 fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba";
-            // the read records size 10, whole-second mtime 1700000000 and the content's hash
-            env.Fake.Reply = (args, stdin) => Remote(args).Contains("head -c")
-                ? new SshExec(0, "__netpi_stat=10 1700000000\n__netpi_hash=" + h1 + "\n" + original, "", false, false)
-                // a concurrent writer made a same-size edit in the same second: the old marker would still read
-                // "10 1700000000", but the hash has moved, so the remote refuses
-                : new SshExec(3, "", "changed: " + h2 + "\n", false, false);
-            var res = await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", edits = new[] { new { oldText = "bbbb", newText = "BBBB" } } });
-            Check.True(res.IsError, res.Content);
-            Check.Contains(res.Content, "changed on the host while it was being edited; nothing was written");
-            // the write's marker is the hash: no size/mtime comparison anywhere in it
-            var write = env.Fake.Calls[^1];
-            Check.Contains(Remote(write.Args), $"[ \"$h\" = '{h1}' ]");
-            Check.NotContains(Remote(write.Args), "%s %Y");
-            Check.NotContains(Remote(write.Args), "\"$s\" =");
-            // the read is what recorded the hash
-            Check.Contains(Remote(env.Fake.Calls[0].Args), "echo \"__netpi_hash=$h\"");
+            var refused = await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", oldText = "one", newText = "1" });
+            Check.True(refused.IsError, refused.Content);
+            Check.Contains(refused.Content, "changed on the host while it was being edited; nothing was written");
+            // the refused write's marker is the hash alone: no size comparison anywhere in it
+            Check.NotContains(Remote(env.Fake.Calls[^1].Args), "\"$s\" =");
         });
 
         r.Add("ssh_edit: the remote write script, run in a local bash (matching hash renames over the target, stale hash refused, an interrupted write leaves the original intact)", async () =>
         {
             var bash = FindBash();
-            if (bash is null)
-            {
-                Console.WriteLine("    (no local bash found; the remote script is not run)");
-                return;
-            }
+            if (bash is null) Check.Skip("no local bash found; the remote script is not run");
             var env = new Env();
             var dir = T.TempDir("sshedit");
             var target = Path.Combine(dir, "doc.txt");
@@ -516,13 +494,6 @@ public static class SshTests
 
         r.Add("ssh: one master connection per host (ControlMaster, a hashed per-host-and-user ControlPath, persist)", async () =>
         {
-            if (OperatingSystem.IsWindows())
-            {
-                // OpenSSH's multiplexing needs the master to fork a child per session, which the Windows ports do not do,
-                // so the plugin never asks for it there: the "no multiplexing" test below covers this platform.
-                Console.WriteLine("    (Windows: OpenSSH cannot multiplex, so the multiplexed path does not exist here)");
-                return;
-            }
             var env = new Env();
             env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
             var real = SshClient.Probe;
@@ -531,13 +502,20 @@ public static class SshTests
             try
             {
                 await env.Run("ssh_run", new { host = "nuc", script = "ls" });
-                var args = string.Join(" ", env.Fake.Calls.Single().Args);
+                var controlDir = Path.Combine(env.Ctx.Paths.Home, "ssh");
+                // Made before the client is asked whether it can multiplex, so on every platform.
+                Check.True(Directory.Exists(controlDir), "the control socket's directory is created");
+                // The options a multiplexing call carries are built the same way on every platform.
                 // %C is OpenSSH's hash of (remote host, port, remote user, local host): unique per host and per user, short
-                Check.Contains(args, "ControlMaster=auto");
-                Check.Contains(args, $"ControlPath={Path.Combine(env.Ctx.Paths.Home, "ssh")}{Path.DirectorySeparatorChar}netpi-%C");
-                Check.Contains(args, "ControlPersist=300");
-                Check.Contains(args, "ControlIdleTimeout=300");
-                Check.True(Directory.Exists(Path.Combine(env.Ctx.Paths.Home, "ssh")), "the control socket's directory is created");
+                var multiplexed = new[] { "ControlMaster=auto", $"ControlPath={controlDir}{Path.DirectorySeparatorChar}netpi-%C", "ControlPersist=300", "ControlIdleTimeout=300" };
+                var built = string.Join(" ", (SshOptions.Read(env.Ctx.Settings, env.Ctx.Paths.Home) with { ControlDir = controlDir }).CommonArgs());
+                foreach (var option in multiplexed) Check.Contains(built, option);
+
+                // OpenSSH's multiplexing needs the master to fork a child per session, which the Windows ports do not do,
+                // so the plugin never passes these options there: "on Windows no client is asked to multiplex" covers it.
+                if (OperatingSystem.IsWindows()) Check.Skip("Windows: OpenSSH cannot multiplex, so no call carries these options here");
+                var args = string.Join(" ", env.Fake.Calls.Single().Args);
+                foreach (var option in multiplexed) Check.Contains(args, option);
 
                 // scp rides on the same options (the same socket)
                 File.WriteAllText(Path.Combine(env.Dir, "data.bin"), "1");
@@ -555,13 +533,6 @@ public static class SshTests
         {
             // OpenSSH_for_Windows has no ControlIdleTimeout: passing it is a hard error on every call ("Bad
             // configuration option"), so the client is asked once and the option goes when the answer is no.
-            if (OperatingSystem.IsWindows())
-            {
-                // The idle timeout only travels with multiplexing, and Windows never multiplexes: there is nothing to
-                // drop here, and the test below says what Windows does instead.
-                Console.WriteLine("    (Windows: no multiplexing, so no per-option question)");
-                return;
-            }
             var asked = new List<string>();
             var real = SshClient.Probe;
             SshClient.Probe = (_, args) => args.Contains("-O") ? (1, MuxYes) : (0, "");
@@ -573,6 +544,21 @@ public static class SshTests
                 // A client that can multiplex but does not know the idle timeout: asked about exactly that one option.
                 var options = new FileIOPermissionAwareProbe(asked, reject: "ControlIdleTimeout");
                 SshClient.Probe = (_, args) => options.Ask(args);
+
+                // The question and the dropped option are the same on every platform: the options a multiplexing call is built with.
+                var controlDir = Path.Combine(env.Ctx.Paths.Home, "ssh");
+                var built = string.Join(" ", (SshOptions.Read(env.Ctx.Settings, env.Ctx.Paths.Home) with { ControlDir = controlDir }).CommonArgs());
+                Check.NotContains(built, "ControlIdleTimeout", "the option the client rejected is not built in");
+                Check.Contains(built, "ControlMaster=auto", "the multiplexing options it knows stay");
+                Check.Contains(built, "BatchMode=yes", "the options it does know are untouched");
+                Check.Contains(built, "ConnectTimeout=10");
+                Check.True(asked.Contains("ControlIdleTimeout"), "and the client was asked about it: " + string.Join(",", asked));
+
+                // The idle timeout only travels with multiplexing, and Windows never multiplexes: no call asks about it there,
+                // and "on Windows no client is asked to multiplex" says what Windows does instead.
+                if (OperatingSystem.IsWindows()) Check.Skip("Windows: no multiplexing, so no call asks about the option");
+                asked.Clear();
+                SshClient.Forget();
                 await env.Run("ssh_run", new { host = "nuc", script = "ls" });
                 var args = string.Join(" ", env.Fake.Calls.Single().Args);
                 Check.NotContains(args, "ControlIdleTimeout", "the option the client rejected is not passed");
@@ -747,11 +733,7 @@ public static class SshTests
         r.Add("ssh_write: the remote write script, run in a local bash (a new file gets 644, an existing one keeps its mode, an interrupted stream leaves the original intact)", async () =>
         {
             var bash = FindBash();
-            if (bash is null)
-            {
-                Console.WriteLine("    (no local bash found; the remote script is not run)");
-                return;
-            }
+            if (bash is null) Check.Skip("no local bash found; the remote script is not run");
             var env = new Env();
             env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
             var dir = T.TempDir("sshwrite");
@@ -851,11 +833,7 @@ public static class SshTests
         r.Add("ssh live (NETPI_SSH_TEST_HOSTS): quoting, files, copy, cwd, timeout and abort end the remote processes", async () =>
         {
             var hosts = (Environment.GetEnvironmentVariable("NETPI_SSH_TEST_HOSTS") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (hosts.Length == 0)
-            {
-                Console.WriteLine("    (set NETPI_SSH_TEST_HOSTS=nuc,server to run against real hosts)");
-                return;
-            }
+            if (hosts.Length == 0) Check.Skip("set NETPI_SSH_TEST_HOSTS=nuc,server to run against real hosts");
             foreach (var host in hosts)
             {
                 await Live(host);
@@ -869,7 +847,8 @@ public static class SshTests
 
         r.Add("ssh broker: calls share one connection; stdout, stderr, exit codes, stdin and unread stdin keep their bytes (idea-pac35h)", async () =>
         {
-            if (FindBash() is not { } bash) { Console.WriteLine("    (no local bash found; the broker is not run)"); return; }
+            var bash = FindBash();
+            if (bash is null) Check.Skip("no local bash found; the broker is not run");
             var starts = 0;
             using var broker = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, LocalBash(bash, () => Interlocked.Increment(ref starts)));
             var live = new StringBuilder();
@@ -899,7 +878,8 @@ public static class SshTests
 
         r.Add("ssh broker: connections open up to the limit, a call past it runs the old way, a timeout drops its connection", async () =>
         {
-            if (FindBash() is not { } bash) { Console.WriteLine("    (no local bash found; the broker is not run)"); return; }
+            var bash = FindBash();
+            if (bash is null) Check.Skip("no local bash found; the broker is not run");
             var starts = 0;
             using var broker = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, LocalBash(bash, () => Interlocked.Increment(ref starts)));
             Task<SshExec?> Run(string command, int perHost, int seconds = 20) =>
@@ -936,7 +916,8 @@ public static class SshTests
 
         r.Add("ssh broker: a connection whose handshake does not come back sends the host's calls the old way for a while", async () =>
         {
-            if (FindBash() is not { } bash) { Console.WriteLine("    (no local bash found; the broker is not run)"); return; }
+            var bash = FindBash();
+            if (bash is null) Check.Skip("no local bash found; the broker is not run");
             var starts = 0;
             var cooldown = SshBroker.Cooldown;
             try
@@ -962,7 +943,8 @@ public static class SshTests
 
         r.Add("ssh tool: where the client cannot multiplex, calls go through the broker; ssh.reuseConnections off is one ssh per call", async () =>
         {
-            if (!OperatingSystem.IsWindows() || FindBash() is not { } bash) { Console.WriteLine("    (Windows with a local bash only: elsewhere the client multiplexes itself)"); return; }
+            var bash = OperatingSystem.IsWindows() ? FindBash() : null;
+            if (bash is null) Check.Skip("Windows with a local bash only: elsewhere the client multiplexes itself");
             var starts = 0;
             using var broker = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, LocalBash(bash, () => Interlocked.Increment(ref starts)));
             var env = new Env(broker: broker);

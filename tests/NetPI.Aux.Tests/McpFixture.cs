@@ -108,13 +108,21 @@ internal static class McpFixture
             }
             else if (method == "subscriptions/listen")
             {
-                var notice = mode == "resources-subscribe" ? "notifications/resources/list_changed" : "notifications/tools/list_changed";
-                JsonObject Notice(string name, JsonNode id) => new() { ["jsonrpc"]="2.0", ["method"]=name, ["params"]=new JsonObject { ["notifications"]=new JsonObject { ["toolsListChanged"]=true }, ["_meta"]=new JsonObject { ["io.modelcontextprotocol/subscriptionId"]=id.DeepClone() } } };
+                // A strict server: it acknowledges the list it publishes only when it was asked about it, and sends nothing
+                // it was not asked for. The resources-only one acknowledges no tools.
+                var resources = mode == "resources-subscribe";
+                var flag = resources ? "resourcesListChanged" : "toolsListChanged";
+                var asked = request["params"]?["notifications"]?[flag]?.GetValue<bool>() == true;
+                var notice = resources ? "notifications/resources/list_changed" : "notifications/tools/list_changed";
+                JsonObject Notice(string name, JsonNode id) => new() { ["jsonrpc"]="2.0", ["method"]=name, ["params"]=new JsonObject { ["notifications"]=new JsonObject { [flag]=asked }, ["_meta"]=new JsonObject { ["io.modelcontextprotocol/subscriptionId"]=id.DeepClone() } } };
                 await Send(Notice("notifications/subscriptions/acknowledged",request["id"]!));
-                await Send(Notice(notice,JsonValue.Create(9999)!));
-                changed=true;
-                await Send(Notice(notice,request["id"]!));
-                await Send(Notice(notice,request["id"]!));
+                if (asked)
+                {
+                    await Send(Notice(notice,JsonValue.Create(9999)!));
+                    changed=true;
+                    await Send(Notice(notice,request["id"]!));
+                    await Send(Notice(notice,request["id"]!));
+                }
             }
             else if (method == "tools/call")
             {

@@ -7,6 +7,8 @@ internal sealed class Subscription
     private bool _acknowledged;
     private long _window = Environment.TickCount64;
     private int _count;
+    /// <summary>The listen request: both lists, so a server that publishes only resources is heard too.</summary>
+    public static JsonObject Request() => new() { ["notifications"] = new JsonObject { ["toolsListChanged"] = true, ["resourcesListChanged"] = true } };
     public bool Accept(JsonObject message, string id)
     {
         if (Environment.TickCount64 - _window >= 1000) { _window = Environment.TickCount64; _count = 0; }
@@ -18,11 +20,13 @@ internal sealed class Subscription
         if (Protocol.Id(message["params"]?["_meta"]?[Protocol.MetaPrefix + "subscriptionId"]) != id) return false;
         if (method == "notifications/subscriptions/acknowledged")
         {
-            if (_acknowledged || message["params"]?["notifications"]?["toolsListChanged"]?.GetValue<bool>() != true)
+            // The server confirms what it publishes of what was asked: tools, resources or both.
+            var confirmed = message["params"]?["notifications"];
+            if (_acknowledged || (confirmed?["toolsListChanged"]?.GetValue<bool>() != true && confirmed?["resourcesListChanged"]?.GetValue<bool>() != true))
                 throw new McpException("Invalid MCP subscription acknowledgement.");
             _acknowledged = true; return false;
         }
         if (!_acknowledged) throw new McpException("MCP subscription notification arrived before acknowledgement.");
-        return method == "notifications/tools/list_changed";
+        return method is "notifications/tools/list_changed" or "notifications/resources/list_changed";
     }
 }
