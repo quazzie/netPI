@@ -369,8 +369,21 @@ public static class IdeasCheckTests
             Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
             var cards = await env.WaitForCards(1);
             Check.Equal("Recovered", cards[0]!["title"].Str());
-            Check.Equal("done", env.Mark(env.Session.Id)["state"]!.Str(), "a check that worked is done");
-            Check.Equal(0, (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str() == "already" ? 0 : 1, "a done check is not repeated");
+            // The card is added just before the mark is finished: wait for the mark, not only for the card.
+            Check.Equal("done", (await env.WaitForMark(env.Session.Id))["state"]!.Str(), "a check that worked is done");
+            Check.Equal("already", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str(), "a done check is not repeated");
+
+            // A new turn is a new conversation revision, with tries of its own. A model that stays down gets
+            // IdeaSaveCheck.MaxTries of them, and then the conversation is left alone.
+            env.Talk("and one more thing", "Noted.");
+            env.Ctx.ModelsFake.Responder = _ => throw new InvalidOperationException("the model is down for good");
+            for (var attempt = 1; attempt <= IdeaSaveCheck.MaxTries; attempt++)
+            {
+                Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str(), $"try {attempt} runs");
+                Check.Equal("failed", (await env.WaitForMark(env.Session.Id))["state"]!.Str(), $"try {attempt} failed");
+            }
+            Check.Equal("already", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str(),
+                $"after {IdeaSaveCheck.MaxTries} failed tries the conversation is not checked again");
             env.Ctx.Unload();
         });
 
@@ -643,11 +656,17 @@ public static class IdeasCheckTests
 
             await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
             await env.WaitForCards(1);
-            // A retry on the same conversation revision (a reload, a restart) does not stack a second card.
+            // The chat gets one more answer: a new conversation revision, so the next close really checks it again, and
+            // the second check drafts the same plan. It does not stack a second card. (No Unload/StartAsync in between:
+            // an unloaded FakePluginContext keeps its Stopping token cancelled, so a check after it never runs. Cards
+            // outliving a reload, and the store's duplicate rule, are in IdeasStorageTests.)
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "Done." }] });
-            env.Ctx.Unload();
-            await env.StartAsync();
-            Check.Equal(1, (await env.Cards()).Count);
+            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str(), "the changed chat is checked again");
+            var mark = await env.WaitForMark(env.Session.Id);
+            Check.Equal("done", mark["state"].Str(), "and the second check ran to its end: " + mark.ToJsonString());
+            Check.Equal(2, env.Ctx.ModelsFake.Requests.Count(q => q.SystemPrompt?.StartsWith("Independently verify", StringComparison.Ordinal) != true),
+                "the plan was drafted twice, once per check");
+            Check.Equal(1, (await env.Cards()).Count, "and it is still one card");
             env.Ctx.Unload();
         });
     }
