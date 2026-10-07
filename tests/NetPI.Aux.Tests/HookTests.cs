@@ -190,13 +190,6 @@ public static class NudgeTests
             Check.True(await After(hook, turn, empty) is not null, "nudged again after the recovery");
         });
 
-        r.Add("nudge: nudge.enabled=false disables it", async () =>
-        {
-            var (hook, turn, ctx) = Setup();
-            ctx.SettingsFake.Set("nudge.enabled", false);
-            Check.True(await After(hook, turn, new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop" }) is null);
-        });
-
         r.Add("nudge: plugin registers the hook", async () =>
         {
             var ctx = new FakePluginContext();
@@ -476,7 +469,7 @@ public static class ToolRepairTests
             Check.Equal("A  B", ToolCallTextParser.RemoveSpans(text, [(calls[0].Start, calls[0].End)]));
         });
 
-        r.Add("toolrepair: hook returns Replace, respects toolRepair.enabled, runs before nudge", async () =>
+        r.Add("toolrepair: hook returns Replace, runs before nudge", async () =>
         {
             var ctx = new FakePluginContext();
             await new ToolRepairPlugin().StartAsync(ctx, CancellationToken.None);
@@ -488,8 +481,6 @@ public static class ToolRepairTests
             var d = await hook.OnAfterModelCallAsync(turn, T.Assistant("<function=agent_choices></function>"));
             Check.Equal(TurnAction.Replace, d!.Action);
             Check.Equal("agent_choices", d.Replacement!.ToolCalls.Single().Name);
-            ctx.SettingsFake.Set("toolRepair.enabled", false);
-            Check.True(await hook.OnAfterModelCallAsync(turn, T.Assistant("<function=agent_choices></function>")) is null);
         });
     }
 }

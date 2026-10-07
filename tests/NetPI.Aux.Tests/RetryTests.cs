@@ -348,14 +348,6 @@ public static class RetryTests
             Check.True(events[^1] is StreamCompleted);
         });
 
-        r.Add("retry: disabled → pass-through, errors propagate", async () =>
-        {
-            var script = new Script((_, _) => Fail(new IOException("x"), new TextDelta("a")));
-            var mw = new RetryMiddleware(() => new RetryOptions { Enabled = false });
-            await Check.ThrowsAsync<IOException>(() => Collect(mw.InvokeAsync(Request, script.Next, CancellationToken.None)));
-            Check.Equal(1, script.Calls);
-        });
-
         r.Add("retry: backoff doubles with jitter and is capped", () =>
         {
             var o = new RetryOptions { BaseDelay = TimeSpan.FromMilliseconds(1000), MaxDelay = TimeSpan.FromMilliseconds(30_000) };

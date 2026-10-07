@@ -22,8 +22,6 @@ public sealed class LoopsPlugin : INetPiPlugin
             Id = "loops", Title = "Loops", Group = "Agents", Order = 32,
             Settings =
             [
-                SettingInfo.Bool("loops.enabled", "Hint when an agent repeats itself", true,
-                    "Before the next model call: the same tool call again after identical results, the same failing call retried, or two steps that undo each other. A hint to the agent, nothing is stopped."),
                 SettingInfo.Int("loops.repeats", "Calls before a hint", 3, "The same call with the same result this many times (counting the one about to run).", 2, 10),
                 SettingInfo.Int("loops.maxHintsPerRun", "Hints per run", 3, null, 0, 20),
                 SettingInfo.Str("loops.model", "Decision model for other loops", "",
@@ -77,7 +75,7 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
     public async ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
     {
         var run = turn.Run;
-        if (!ctx.Settings.GetOr("loops.enabled", true) || run.CancellationToken.IsCancellationRequested) return null;
+        if (run.CancellationToken.IsCancellationRequested) return null;
         if (ctx.Settings.GetOr("loops.contextChecks", false) && Hinted(run).Count < Math.Clamp(ctx.Settings.GetOr("loops.maxHintsPerRun", 3), 0, 20))
         {
             var hint = await AskContextAsync(turn).ConfigureAwait(false);

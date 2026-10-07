@@ -20,12 +20,6 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
         [EnumeratorCancellation] CancellationToken ct)
     {
         var o = options();
-        if (!o.Enabled)
-        {
-            await foreach (var ev in next(request, ct).WithCancellation(ct).ConfigureAwait(false)) yield return ev;
-            yield break;
-        }
-
         var maxAttempts = Math.Max(1, o.MaxAttempts);
         var dirty = false; // something the consumer must discard was emitted since the last reset
         var waited = TimeSpan.Zero; // the retry budget spent so far: the waiting between attempts. Time the model

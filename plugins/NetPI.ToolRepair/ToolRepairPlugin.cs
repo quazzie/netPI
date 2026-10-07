@@ -5,22 +5,13 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.ToolRepair;
 
-/// <summary>Registers <see cref="ToolRepairHook"/>. Setting: <c>toolRepair.enabled</c> (true).</summary>
+/// <summary>Registers <see cref="ToolRepairHook"/>. No settings: the plugin's own on/off switch is the only one.</summary>
 [NetPiPlugin("netpi.toolrepair", Name = "Tool-call repair", Description = "Converts textual tool calls into real ones", Order = 70)]
 public sealed class ToolRepairPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
-        context.Services.Register(new SettingsSection
-        {
-            Id = "toolRepair", Title = "Tool repair", Group = "Agents", Order = 40,
-            Settings =
-            [
-                SettingInfo.Bool("toolRepair.enabled", "Run tool calls written as text", true, "e.g. <tool_call>… in an answer instead of a real call."),
-            ],
-        });
-        var settings = context.Settings;
-        context.Services.Register<IAgentHook>(new ToolRepairHook(() => settings, context.Logger));
+        context.Services.Register<IAgentHook>(new ToolRepairHook(context.Logger));
         return Task.CompletedTask;
     }
 }
@@ -31,17 +22,12 @@ public sealed class ToolRepairPlugin : INetPiPlugin
 /// Only a standalone envelope is converted: an answer that also explains, documents or quotes the markup is left as
 /// text, because "here is an example" is not an instruction to run it. The nudge hook then asks for a real call.
 /// </summary>
-public sealed class ToolRepairHook(Func<ISettings?> settings, ILogger? logger = null) : IAgentHook
+public sealed class ToolRepairHook(ILogger? logger = null) : IAgentHook
 {
     public int Order => 100;
 
     public ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
     {
-        var s = settings();
-        bool enabled;
-        try { enabled = s?.Get("toolRepair.enabled", true) ?? true; } catch { enabled = true; }
-        if (!enabled) return ValueTask.FromResult<TurnDecision?>(null);
-
         var repaired = ToolCallRepair.Repair(assistant, turn.Tools);
         if (repaired is null) return ValueTask.FromResult<TurnDecision?>(null);
         logger?.LogInformation("Repaired {Count} textual tool call(s) in session {Session}: {Names}", repaired.ToolCalls.Count(),
