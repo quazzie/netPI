@@ -345,8 +345,12 @@ into locals first, because after the parent clears the modal state or the row re
    - Thinking rows are collapsed by default.
 4. **Streaming.** `stream.delta` appends to plain strings inside `StreamState`; they reach `$state` at most once
    per animation frame (`lib/frame.js`, with a 120ms timer fallback when the window is hidden). The streamed text
-   re-renders its markdown at most every 100ms, is never highlighted, and its caret takes no width. The final
-   `message.added` replaces the stream items with the message's own, which are laid out the same. `tool.output` chunks go to `LiveTool` buffers, which keep the last 200KB, flushed the
+   re-renders its markdown at most every 100ms, is never highlighted, and its caret takes no width. `StreamState`
+   also keeps the answer's runs in arrival order (`segments`: thinking, text, tool calls), and `withStream` lays the
+   stream out from them, so a provider that runs its own loop in one call (the Claude CLI: text, tool, text…) reads
+   like its finished message instead of one wall of text with every tool below it; only the text run still being
+   written shows the caret, and each thinking run has its own timer (idea-xg7ayy, `web/scripts/check-stream-order.mjs`).
+   The final `message.added` replaces the stream items with the message's own, which are laid out the same. `tool.output` chunks go to `LiveTool` buffers, which keep the last 200KB, flushed the
    same way.
 5. **Markdown** (`lib/markdown.js`). Parsing is marked (GFM) followed by DOMPurify, memoized by source text
    with an LRU of 600 entries. A message is model-written text that may have been copied off a page, so raw HTML
@@ -372,6 +376,11 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 ### Composer
 
 - The textarea grows with its content.
+- The bar under it collapses by the composer's own width (a container query: side panels squeeze it): at 760px
+  the profile, project and effort pickers drop their labels, at 520px the separator and the chat cost go, at 400px
+  the `/` and `@` buttons (typing them opens the same popups), and at 340px the gaps close and the agent's label
+  narrows to 52px. Nothing passes the edge and Send stays on screen down to the 286px both open side panels leave
+  (the mock e2e's "composer: narrow widths", idea-ziqr1i).
 - **Enter** sends. While the agent runs, Enter **steers** and **Alt+Enter** **queues**. **Shift+Enter** inserts
   a newline. **Esc** stops the run (`agent.abort`); Esc in another field (a title rename, the session search) only
   leaves that field. Settings can switch sending to **Ctrl+Enter**; the hints follow.

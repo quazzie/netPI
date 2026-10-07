@@ -47,6 +47,7 @@ function resolveOnly(spec) {
 const NEEDS = {
   "composer popups": ["new session + agent run"],
   "popups survive a chat update": ["new session + agent run"],
+  "composer: narrow widths": ["new session + agent run"],
   "tabs": ["new session + agent run"],
   "plugin tab: Files": ["new session + agent run"],
   "plan mode: the pill, the plan card and its decisions": ["new session + agent run"],
@@ -587,7 +588,7 @@ log('popups survive a chat update');
   await favRow.hover();
   await favRow.locator('button[title^="Add to favorites"]').click();
   await page.waitForTimeout(200);
-  check('a favorite project gives the top bar its chevron', (await page.locator('.topbar .quick-more').count()) === 1);
+  check('the top bar has its project chevron', (await page.locator('.topbar .quick-more').count()) === 1);
 
   await ta.fill('Keep the popups open while this answer streams.');
   await ta.press('Enter');
@@ -595,42 +596,43 @@ log('popups survive a chat update');
   await page.waitForTimeout(400);
   const overflows = await page.locator('.scroller').evaluate((el) => el.scrollHeight > el.clientHeight + 4).catch(() => false);
 
-  // the chevron menu (a Menu): open it mid-run, so every streamed chunk re-pins the chat under it
-  await ta.fill('Second answer, streamed under an open menu.');
+  // the chevron's project picker (a Popover, since 7a9d4a1: all projects, search, favorites on top): open it mid-run, so
+  // every streamed chunk re-pins the chat under it
+  await ta.fill('Second answer, streamed under an open picker.');
   await ta.press('Enter');
   await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
   await page.locator('.topbar .quick-more').click();
-  const opened = await page.waitForSelector('.np-menu', { timeout: 3000 }).then(() => true).catch(() => false);
-  check('the chevron menu opens', opened);
+  const opened = await page.waitForSelector('.popover', { timeout: 3000 }).then(() => true).catch(() => false);
+  check('the chevron opens the project picker', opened);
   const anchorGap = async () => {
-    // the gap the menu keeps to its button (null once the menu is gone: every check below reports, not the first one)
+    // where the picker sits against its button (null once it is gone: every check below reports, not the first one)
     const a = await page.locator('.topbar .quick-more').boundingBox();
-    const m = await page.locator('.np-menu').boundingBox().catch(() => null);
+    const m = await page.locator('.popover').first().boundingBox().catch(() => null);
     if (!a || !m) return null;
-    return { dx: Math.round(m.x - (a.x + a.width - 220)), dy: Math.round(m.y - (a.y + a.height)) };
+    return { dx: Math.round(m.x - a.x), dy: Math.round(m.y - (a.y + a.height)) };
   };
   const before = await anchorGap();
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
   await page.waitForTimeout(300);
-  const stillOpen = opened && (await page.locator('.np-menu').count()) === 1;
+  const stillOpen = opened && (await page.locator('.popover').count()) === 1;
   check('the chat list was big enough to scroll (the case the bug needed)', overflows);
-  check('a reply streaming under an open menu does not close it', stillOpen);
+  check('a reply streaming under the open picker does not close it', stillOpen);
   const after = await anchorGap();
-  check('the menu stays attached to the button that opened it', !!after && !!before && Math.abs(after.dx - before.dx) < 4 && Math.abs(after.dy - before.dy) < 4,
-    stillOpen ? `moved ${after.dx - before.dx}px across, ${after.dy - before.dy}px down` : 'the menu was gone');
+  check('the picker stays attached to the button that opened it', !!after && !!before && Math.abs(after.dx - before.dx) < 4 && Math.abs(after.dy - before.dy) < 4,
+    stillOpen ? `moved ${after.dx - before.dx}px across, ${after.dy - before.dy}px down` : 'the picker was gone');
 
-  // a scroll the user makes in the chat keeps it open too, and one that carries the anchor away still closes it
+  // a scroll the user makes in the chat keeps it open too
   if (stillOpen) {
     await page.mouse.move(640, 260);
     await page.mouse.wheel(0, -400);
     await page.waitForTimeout(300);
-    check('scrolling the chat under the menu keeps it open', (await page.locator('.np-menu').count()) === 1);
+    check('scrolling the chat under the picker keeps it open', (await page.locator('.popover').count()) === 1);
     await shot(page, '12b-menu-survives');
     await page.keyboard.press('Escape');
     await page.waitForTimeout(150);
-    check('Esc still closes the menu', (await page.locator('.np-menu').count()) === 0);
+    check('Esc still closes the picker', (await page.locator('.popover').count()) === 0);
   } else {
-    check('scrolling the chat under the menu keeps it open', false, 'the menu had already closed');
+    check('scrolling the chat under the picker keeps it open', false, 'the picker had already closed');
     await shot(page, '12b-menu-survives');
     await page.keyboard.press('Escape');
   }
@@ -669,7 +671,8 @@ log('popups survive a chat update');
   await stillFav.hover();
   await stillFav.locator('button[title^="Remove from favorites"]').click();
   await page.waitForTimeout(200);
-  check('the favorite is given back (the next section stars its own)', (await page.locator('.topbar .quick-more').count()) === 0);
+  await stillFav.hover();
+  check('the favorite is given back (the next section stars its own)', (await stillFav.locator('button[title^="Add to favorites"]').count()) === 1);
   await ta.fill('');
 }
 
@@ -766,7 +769,7 @@ await shot(page, '14-panels');
 await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
 await page.waitForTimeout(200);
 await shot(page, '15-projects');
-// favorites live in the + menu, not as buttons in the top bar
+// favorites live at the top of the chevron's project picker (7a9d4a1), not as buttons in the top bar
 var firstProject = page.locator('.panel.left .prow').first();
 var projectName = (await firstProject.locator('.pname .np-ellipsis').innerText()).trim();
 var toggleFav = async (row, title) => {
@@ -777,14 +780,19 @@ check('no fav buttons in the top bar', (await page.locator('.topbar .fav').count
 await toggleFav(firstProject, 'Add to favorites');
 await page.waitForTimeout(200);
 await page.locator('.topbar .quick-more').click();
-await page.waitForSelector('.np-menu .np-menu-item');
-var favItems = await page.locator('.np-menu .np-menu-item').filter({ hasText: projectName }).count();
-check('favorites are in the + menu', favItems > 0, `${await page.locator('.np-menu .np-menu-header').innerText()}: ${projectName} (${favItems})`);
+var pickerOpened = await page.waitForSelector('.popover .item', { timeout: 5000 }).then(() => true).catch(() => false);
+var pickerHead = pickerOpened ? ((await page.locator('.popover .section').first().textContent().catch(() => '')) ?? '').trim() : ''; // textContent: the header is uppercased by CSS
+var firstPicked = pickerOpened ? (await page.locator('.popover .item .name').first().innerText().catch(() => '')).trim() : '';
+check('favorites head the chevron\'s project picker', pickerHead === 'Favorites' && firstPicked === projectName, `${pickerHead}: ${firstPicked} (starred ${projectName})`);
 await page.keyboard.press('Escape');
 await page.waitForTimeout(150);
 await toggleFav(page.locator('.panel.left .prow').first(), 'Remove from favorites');
 await page.waitForTimeout(200);
-check('no favorites → no chevron', (await page.locator('.topbar .quick-more').count()) === 0);
+await page.locator('.topbar .quick-more').click();
+await page.waitForSelector('.popover .item', { timeout: 5000 }).catch(() => {});
+check('no favorites → no Favorites section in the picker', (await page.locator('.popover .section', { hasText: 'Favorites' }).count()) === 0);
+await page.keyboard.press('Escape');
+await page.waitForTimeout(150);
 
 await openStripTab('left', 'Sessions');
 await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
@@ -1620,7 +1628,13 @@ log('plugin tab: MCP');
   if (!(await tool('ha_call_service').locator('.schema').isVisible())) await tool('ha_call_service').locator('summary').click(); // the row is closed (the read-only check above left it so)
   await expose.click();
   await page.waitForFunction(() => [...document.querySelectorAll('.mcp details.tool')].some((d) => d.textContent.includes('ha_call_service') && !d.querySelector('.np-check input').checked), null, { timeout: 5000 }).catch(() => {});
-  const cfg = (await rpcCall('mcp.list')).servers.find((s) => s.id === 'ha')?.config;
+  // the switch reads the whole configuration first (mcp.config: mcp.list masks secrets) and then saves it, so the save
+  // lands a round trip after the click; the box itself unchecks at once
+  let cfg = null;
+  for (let i = 0; i < 50 && !Array.isArray(cfg?.tools); i++) {
+    if (i) await page.waitForTimeout(100);
+    cfg = (await rpcCall('mcp.list')).servers.find((s) => s.id === 'ha')?.config;
+  }
   check('mcp: switching a tool off saves the server configuration (mcp.save) and the row follows',
     Array.isArray(cfg?.tools) && !cfg.tools.includes('ha_call_service') && cfg.tools.includes('ha_search') && !(await expose.isChecked()), JSON.stringify(cfg?.tools));
   await shot(page, '31b-mcp-tab');
@@ -1809,6 +1823,41 @@ log('fork: a new chat from a message');
   await ta.fill('');
 }
 
+}
+// ------------------------------------------------------------------ the composer's bar as the chat column narrows (idea-ziqr1i)
+if (want('composer: narrow widths')) {
+log('composer: narrow widths');
+{
+  // The bar holds three buttons, five pickers, the plan pill, the cost, the context ring and send: as the composer
+  // narrows they give up their labels, then the typed-command buttons, the cost and the separator. Nothing may push
+  // past the composer's edge, and send stays on screen, at every width a side panel or a small window leaves.
+  const probe = () =>
+    page.evaluate(() => {
+      const bar = document.querySelector('.composer .bar');
+      if (!bar) return null;
+      const box = bar.getBoundingClientRect();
+      const send = bar.querySelector('.send')?.getBoundingClientRect();
+      const clipped = [...bar.children]
+        .filter((c) => c.offsetWidth > 0)
+        .filter((c) => c.getBoundingClientRect().right > box.right + 1 || (c.scrollWidth > c.clientWidth + 1 && !c.matches('.pick, .pick *')))
+        .map((c) => c.getAttribute('aria-label') || c.className.split(' ')[0]);
+      return { width: Math.round(box.width), overflow: bar.scrollWidth - bar.clientWidth, sendInside: !!send && send.right <= box.right + 1 && send.width > 0, clipped };
+    });
+  const rows = [];
+  const bad = [];
+  for (const w of [1100, 900, 760, 640, 560, 480, 420, 380, 340]) {
+    await page.setViewportSize({ width: w, height: 800 });
+    await page.waitForTimeout(200);
+    const r = await probe();
+    if (!r) { bad.push(`${w}px: no composer bar`); continue; }
+    rows.push(`${w}→${r.width}px${r.overflow > 1 ? ` +${r.overflow}` : ''}`);
+    if (r.overflow > 1 || !r.sendInside || r.clipped.length) bad.push(`window ${w}px (bar ${r.width}px): overflow ${r.overflow}px, send ${r.sendInside ? 'in' : 'OUT'}${r.clipped.length ? `, past the edge: ${r.clipped.join(', ')}` : ''}`);
+    if (w === 420) await shot(page, '33-composer-narrow');
+  }
+  check('composer: nothing in the bar overflows, and send stays inside, from a wide window down to 340px', bad.length === 0, bad.join(' | ') || rows.join(', '));
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.waitForTimeout(200);
+}
 }
 if (want('narrow side panels')) {
 log('narrow side panels');

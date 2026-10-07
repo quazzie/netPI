@@ -621,14 +621,16 @@
   .bar > :global(*) {
     flex-shrink: 0;
   }
-  @container (max-width: 640px) {
+  /* collapsing starts early and goes far (idea-ziqr1i): with both side panels open the composer is under 300px wide,
+     and Send was pushed past its edge. Measured by the mock e2e's "composer: narrow widths". */
+  @container (max-width: 760px) {
     .bar > :global(.pick[aria-label='Profile'] > span:not(.np-icon)),
     .bar > :global(.pick[aria-label='Project'] > span:not(.np-icon)),
     .bar > :global(.pick[aria-label='Reasoning effort'] > span:not(.np-icon)) {
       display: none;
     }
   }
-  @container (max-width: 440px) {
+  @container (max-width: 520px) {
     .sep,
     .bar > :global(.cost) {
       display: none;
@@ -637,9 +639,18 @@
       width: 24px;
     }
   }
-  @container (max-width: 340px) {
+  @container (max-width: 400px) {
     .tb.typed {
       display: none; /* typing / or @ opens the same popups */
+    }
+  }
+  @container (max-width: 340px) {
+    .bar {
+      gap: 0;
+      padding: 4px 4px 6px 4px;
+    }
+    .bar > :global(.pick[aria-label='Agent']) {
+      min-width: 52px; /* the model name still shows its start */
     }
   }
   .tb {
