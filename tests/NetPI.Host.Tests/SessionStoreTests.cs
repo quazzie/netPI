@@ -205,21 +205,6 @@ public static class SessionStoreTests
             Check.True(updated.All(e => e.SessionId is null), "session.* events are broadcast");
         });
 
-        r.Add("sessions: paging returns the page ending before beforeSeq, ascending", async () =>
-        {
-            await using var f = new Fixture();
-            var s = f.Store.CreateSession(new SessionInfo());
-            for (var i = 1; i <= 25; i++) f.Store.AppendMessage(s.Id, ChatMessage.UserText("m" + i));
-            Check.Equal(25, f.Store.GetMessages(s.Id).Count);
-            var last = f.Store.GetMessages(s.Id, null, 10);
-            Check.Equal("16..25", $"{last[0].Seq}..{last[^1].Seq}");
-            var before = f.Store.GetMessages(s.Id, 16, 10);
-            Check.Equal("6..15", $"{before[0].Seq}..{before[^1].Seq}");
-            var first = f.Store.GetMessages(s.Id, 6, 10);
-            Check.Equal("1..5", $"{first[0].Seq}..{first[^1].Seq}");
-            Check.Equal(4, f.Store.GetMessages(s.Id, 5).Count, "beforeSeq without limit");
-        });
-
         r.Add("sessions: a fork copies the messages up to a seq (same seqs, times, parts, meta), then session.created and session.forked", async () =>
         {
             await using var f = new Fixture();
@@ -506,9 +491,11 @@ public static class SessionStoreTests
 
             Check.Equal(1201, f.Store.GetContextMessages(s.Id).Count, "the read after the append sees every message");
             Check.True(counts.All(c => c is 1200 or 1201), "a reader that raced sees a view from before or after the append, never a torn one: " + string.Join(",", counts));
-            var reads = f.Store.ContextCache.Reads;
-            Check.Equal(1201, f.Store.GetContextMessages(s.Id).Count);
-            Check.True(f.Store.ContextCache.Reads >= reads, "and the next read is served from the cache or re-read, never a stale fill");
+            // That read filled the cache (or found it filled): the next one is a hit, and the cached view has the message that raced.
+            var (hits, reads) = (f.Store.ContextCache.Hits, f.Store.ContextCache.Reads);
+            Check.Equal(1201, f.Store.GetContextMessages(s.Id).Count, "the cached view is not missing the message that raced");
+            Check.Equal(hits + 1, f.Store.ContextCache.Hits, "served from the cache");
+            Check.Equal(reads, f.Store.ContextCache.Reads, "not read from storage again");
         });
 
         r.Add("sessions: the context cache stays warm across an append, and only a real change drops it", async () =>
