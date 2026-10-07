@@ -30,10 +30,11 @@ public static class NudgeTests
             Check.Equal(200, hook.Order);
         });
 
-        r.Add("nudge: only thinking (cut off while thinking) → nudge", async () =>
+        r.Add("nudge: only thinking, ended with no answer (stop) → still-thinking nudge", async () =>
         {
             var (hook, turn, _) = Setup();
             var msg = new ChatMessage { Role = MessageRole.Assistant, Parts = [new ThinkingPart { Text = "I should read the file" }], StopReason = "stop" };
+            Check.Equal(NudgeReason.EmptyAfterThinking, NudgeHook.Classify(msg, 0), "not a cut-off: that is stop reason length, below");
             var d = await After(hook, turn, msg);
             Check.Contains(d!.Text, "still thinking");
             Check.Contains(d.Text, "if you were about to call a tool, call it now");
