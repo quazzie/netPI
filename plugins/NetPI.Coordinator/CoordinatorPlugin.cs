@@ -19,14 +19,26 @@ public sealed class CoordinatorPlugin : INetPiPlugin
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         var c = new Coordinator(context);
-        context.Rpc.Register("sessions.dispatch", (req, token) => c.DispatchAsync(req, token),
+        // the parameters are declared (idea-yvcy8b): rpc.list shows them, and a mistyped one is a bad_request that names it
+        context.Rpc.Register(new RpcMethod("sessions.dispatch",
             "Start a worker in one call, validated first: { project, title?, workspace?: name | id | { name|id, create?, base? }, agent?, profile? (default: the automatic profile, settings profiles.autoProfile), " +
             "text? | textFile?, send? } → { sessionId, title, project, workspace, agent, profile, sent, status }. Nothing is left behind when a step fails. " +
-            "{{workspacePath}}, {{branch}}, {{workspaceName}}, {{sessionId}}, {{projectPath}} in the text are filled in");
-        context.Rpc.RegisterReadOnly("runs.result", (req, token) => c.ResultAsync(req, token),
+            "{{workspacePath}}, {{branch}}, {{workspaceName}}, {{sessionId}}, {{projectPath}} in the text are filled in",
+            Params:
+            [
+                RpcParam.Opt("project", RpcParamType.String, "the project's name or id"), RpcParam.Opt("projectId"),
+                RpcParam.Opt("title"),
+                RpcParam.Opt("workspace", RpcParamType.Any, "a name, an id, or { name | id, create?, base? }"),
+                RpcParam.Opt("agent", RpcParamType.String, "an agent key, a part of exactly one, or any"),
+                RpcParam.Opt("profile", RpcParamType.String, "a profile id or name, or none"),
+                RpcParam.Opt("text"), RpcParam.Opt("textFile", RpcParamType.String, "an absolute path, up to 1 MB"),
+                RpcParam.Opt("send", RpcParamType.Boolean, "default: when there is text"),
+            ]), (req, token) => c.DispatchAsync(req, token));
+        context.Rpc.Register(new RpcMethod("runs.result",
             "A chat's last run in one answer: { sessionId | runId } → { sessionId, title, status, startedAt, finishedAt, durationMs, turns, toolCalls, " +
             "error, queued, report (the run's last assistant text), lastTool, todo: { done, total, current, items }, commits (made on its workspace since the run started), " +
-            "tests (the latest test tally in the run's tool output: { line, tool, at, failed }), workspace }");
+            "tests (the latest test tally in the run's tool output: { line, tool, at, failed }), workspace }",
+            ReadOnly: true, Params: [RpcParam.Opt("sessionId"), RpcParam.Opt("runId")]), (req, token) => c.ResultAsync(req, token));
         return Task.CompletedTask;
     }
 }

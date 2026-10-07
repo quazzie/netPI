@@ -41,40 +41,52 @@ public sealed class McpPlugin : INetPiPlugin
                 SettingInfo.Int("mcp.refreshSeconds", "Catalog refresh", 60, "Refresh even when a server does not support change notifications.", 5, 3600, "seconds"),
             ],
         });
-        ctx.Rpc.Register("mcp.list", (_, _) => Task.FromResult<object?>(manager.Snapshot()),
-            "MCP server configurations and connection status; a secret in a URL or an argument is masked (secretsMasked), the editor reads mcp.config", readOnly: true);
-        ctx.Rpc.Register("mcp.config", (req, _) =>
+        // every method declares its parameters (idea-yvcy8b): rpc.list shows them, a request with an unknown or mistyped one is
+        // a bad_request that names it, and a handler that reads one it did not declare fails on its first call
+        void Rpc(string name, RpcHandler handler, string description, bool readOnly, params RpcParam[] parameters) =>
+            ctx.Rpc.Register(new RpcMethod(name, description, readOnly, parameters), handler);
+        var serverArg = RpcParam.Req("id", RpcParamType.String, "the server's id");
+        RpcParam[] toolArgs =
+        [
+            RpcParam.Opt("id", RpcParamType.String, "the tool's id from mcp.tools, or \"server/tool\""),
+            RpcParam.Opt("serverId"), RpcParam.Opt("name", RpcParamType.String, "the tool's own name on that server"),
+            RpcParam.Opt("arguments", RpcParamType.Object, "the tool's arguments ({} when omitted)"),
+            RpcParam.Opt("revision", RpcParamType.String, "refuse the call if the schema changed since"),
+        ];
+        Rpc("mcp.list", (_, _) => Task.FromResult<object?>(manager.Snapshot()),
+            "MCP server configurations and connection status; a secret in a URL or an argument is masked (secretsMasked), the editor reads mcp.config", true);
+        Rpc("mcp.config", (req, _) =>
         {
             var id = req.Required("id");
             var config = manager.RawConfig(id) ?? throw new RpcException("not_found", "No MCP server " + id);
             return Task.FromResult<object?>(new JsonObject { ["id"] = id, ["config"] = config });
-        }, "One server's configuration whole, secrets included, for the editor: { id } → { id, config }. It changes nothing, but it is not read-only: it returns what mcp.list masks (idea-3q0uzn)");
-        ctx.Rpc.Register("mcp.read", (req, token) => CallAsync(req, writes: false, token),
+        }, "One server's configuration whole, secrets included, for the editor: { id } → { id, config }. It changes nothing, but it is not read-only: it returns what mcp.list masks (idea-3q0uzn)", false, serverArg);
+        Rpc("mcp.read", (req, token) => CallAsync(req, writes: false, token),
             "Call an MCP tool that only reads (its readOnlyHint, or the server's readOnly list) through NetPI's connection: { id (from mcp.tools, or \"server/tool\") | serverId + name, arguments? ({}), revision? } → { id, serverId, name, isError, content, structuredContent, metadata, images }. A tool that may change something is refused: that is mcp.call",
-            readOnly: true);
-        ctx.Rpc.Register("mcp.call", (req, token) => CallAsync(req, writes: true, token),
-            "Call any exposed MCP tool through NetPI's connection: { id | serverId + name, arguments?, revision? } → as mcp.read. Not read-only (the tool may change things); mcp.read is the read-only way");
-        ctx.Rpc.Register("mcp.tools", (req, _) =>
+            true, toolArgs);
+        Rpc("mcp.call", (req, token) => CallAsync(req, writes: true, token),
+            "Call any exposed MCP tool through NetPI's connection: { id | serverId + name, arguments?, revision? } → as mcp.read. Not read-only (the tool may change things); mcp.read is the read-only way", false, toolArgs);
+        Rpc("mcp.tools", (req, _) =>
         {
             var id = req.Str("serverId");
             return Task.FromResult<object?>(new JsonObject { ["tools"] = new JsonArray(manager.Inventory(id)
                 .Select(t => (JsonNode)new JsonObject { ["id"] = t.Definition.Name, ["serverId"] = t.ServerId, ["name"] = t.RemoteName,
                     ["description"] = t.Definition.Description, ["revision"] = t.Definition.Revision, ["deferred"] = t.Definition.Deferred,
                     ["readOnly"] = t.Definition.ReadOnly, ["exposed"] = manager.Exposed(t), ["schema"] = t.Definition.Parameters.DeepClone() }).ToArray()) });
-        }, "MCP tools for a server (UI catalog, not model context)", readOnly: true);
-        ctx.Rpc.Register("mcp.tool", (req, _) =>
+        }, "MCP tools for a server (UI catalog, not model context): { serverId? } → { tools }", true, RpcParam.Opt("serverId", RpcParamType.String, "one server's; all when omitted"));
+        Rpc("mcp.tool", (req, _) =>
         {
             var id = req.Required("id");
             var tool = manager.Find(id) ?? throw new RpcException("not_found", "No MCP tool " + id);
             return Task.FromResult<object?>(new JsonObject { ["id"] = tool.Definition.Name, ["serverId"] = tool.ServerId, ["name"] = tool.RemoteName,
                 ["readOnly"] = tool.Definition.ReadOnly, ["annotations"] = tool.Raw["annotations"]?.DeepClone() });
-        }, "One MCP tool by its id: { id } → { id, serverId, name, readOnly (the server's readOnlyHint, or the server's readOnly list), annotations }", readOnly: true);
-        ctx.Rpc.Register("mcp.resources", (req, _) =>
+        }, "One MCP tool by its id: { id } → { id, serverId, name, readOnly (the server's readOnlyHint, or the server's readOnly list), annotations }", true, RpcParam.Req("id", RpcParamType.String, "the tool's id"));
+        Rpc("mcp.resources", (req, _) =>
         {
             var id = req.Str("serverId");
             return Task.FromResult<object?>(new JsonObject { ["resources"] = new JsonArray(manager.Resources(id)
                 .Select(r => (JsonNode)r.Summary(manager.Available(r.ServerId))).ToArray()) });
-        }, "MCP resources advertised by a server (what mcp_search can surface)", readOnly: true);
+        }, "MCP resources advertised by a server (what mcp_search can surface): { serverId? } → { resources }", true, RpcParam.Opt("serverId", RpcParamType.String, "one server's; all when omitted"));
         // mcp.read / mcp.call: what a script or an outside agent used to do itself, with the URL (secret path included)
         // taken from mcp.list and a fresh MCP session per call (idea-fhtryf). The tool is found among the exposed ones,
         // its arguments go through the model's own path (schema check, the one repair), and the call is recorded as a
@@ -160,22 +172,22 @@ public sealed class McpPlugin : INetPiPlugin
             await manager.ReconcileAsync(token).ConfigureAwait(false);
             return manager.Snapshot();
         }
-        ctx.Rpc.Register("mcp.save", (req, token) => Write(req, map =>
+        Rpc("mcp.save", (req, token) => Write(req, map =>
         {
             var id = req.Required("id");
             var config = req.Params.TryGetProperty("config", out var node) && node.ValueKind == JsonValueKind.Object
                 ? JsonNode.Parse(node.GetRawText())!.AsObject() : throw new RpcException("bad_request", "config must be an object.");
             map[id] = ServerConfig.Parse(id, config, ctx.Paths.DefaultWorkspace).Json();
-        }, token), "Save one server configuration: {id,config}");
-        ctx.Rpc.Register("mcp.remove", (req, token) => Write(req, map => map.Remove(req.Required("id")), token), "Remove an MCP server: {id}");
-        ctx.Rpc.Register("mcp.setEnabled", (req, token) => Write(req, map =>
+        }, token), "Save one server configuration: {id,config}", false, serverArg, RpcParam.Req("config", RpcParamType.Object, "the whole configuration"));
+        Rpc("mcp.remove", (req, token) => Write(req, map => map.Remove(req.Required("id")), token), "Remove an MCP server: {id}", false, serverArg);
+        Rpc("mcp.setEnabled", (req, token) => Write(req, map =>
         {
             var id = req.Required("id");
             if (map[id] is not JsonObject config) throw new RpcException("not_found", "No MCP server " + id);
             config["enabled"] = req.Bool("enabled") ?? throw new RpcException("bad_request", "enabled is required.");
-        }, token), "Enable or disable an MCP server: {id,enabled}");
-        ctx.Rpc.Register("mcp.reconnect", async (req, token) => { await manager.CommandAsync(req.Required("id"), true, token).ConfigureAwait(false); return manager.Snapshot(); }, "Reconnect an MCP server: {id}");
-        ctx.Rpc.Register("mcp.refresh", async (req, token) => { await manager.CommandAsync(req.Required("id"), false, token).ConfigureAwait(false); return manager.Snapshot(); }, "Refresh an MCP server catalog: {id}");
+        }, token), "Enable or disable an MCP server: {id,enabled}", false, serverArg, RpcParam.Req("enabled", RpcParamType.Boolean));
+        Rpc("mcp.reconnect", async (req, token) => { await manager.CommandAsync(req.Required("id"), true, token).ConfigureAwait(false); return manager.Snapshot(); }, "Reconnect an MCP server: {id}", false, serverArg);
+        Rpc("mcp.refresh", async (req, token) => { await manager.CommandAsync(req.Required("id"), false, token).ConfigureAwait(false); return manager.Snapshot(); }, "Refresh an MCP server catalog: {id}", false, serverArg);
         ctx.Events.SubscribeAsync("settings.changed", async _ =>
         {
             try { await manager.ReconcileAsync(ctx.Stopping).ConfigureAwait(false); }

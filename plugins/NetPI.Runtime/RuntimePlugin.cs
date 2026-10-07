@@ -46,7 +46,14 @@ public sealed class RuntimePlugin : INetPiPlugin
         _runtime = runtime;
         context.Services.Register<IAgentRuntime>(runtime);
 
-        context.Rpc.Register("agent.send", async (req, token) =>
+        // every method declares its parameters (idea-yvcy8b): rpc.list shows them, a request with an unknown or mistyped one is
+        // a bad_request that names it, and a handler that reads one it did not declare fails on its first call
+        void Rpc(string name, RpcHandler handler, string description, bool readOnly, params RpcParam[] parameters) =>
+            context.Rpc.Register(new RpcMethod(name, description, readOnly, parameters), handler);
+        var session = RpcParam.Req("sessionId");
+        var inputId = RpcParam.Req("id", RpcParamType.String, "the queued input's id (agent.queue)");
+
+        Rpc("agent.send", async (req, token) =>
         {
             var sessionId = req.Required("sessionId");
             context.Sessions.Require(sessionId);
@@ -62,46 +69,52 @@ public sealed class RuntimePlugin : INetPiPlugin
             {
                 throw new RpcException("unavailable", ex.Message);
             }
-        }, "Send a message to a session's agent: { sessionId, text, images?, mode?: auto|steer|queue } → AgentInfo");
+        }, "Send a message to a session's agent: { sessionId, text, images?, mode?: auto|steer|queue } → AgentInfo", false,
+            session, RpcParam.Opt("text"), RpcParam.Opt("images", RpcParamType.Array, "{ mediaType, data (base64) }[]"),
+            RpcParam.Opt("mode", RpcParamType.String, "auto (default), steer or queue"));
 
-        context.Rpc.Register("agent.abort", async (req, _) =>
+        Rpc("agent.abort", async (req, _) =>
         {
             var id = req.Str("sessionId") ?? req.Required("id");
             return await runtime.AbortAsync(id).ConfigureAwait(false);
-        }, "Abort the current run of a session's agent: { sessionId } → bool");
+        }, "Abort the current run of a session's agent: { sessionId } → bool", false,
+            RpcParam.Opt("sessionId"), RpcParam.Opt("id", RpcParamType.String, "the session's id, the older name"));
 
-        context.Rpc.RegisterReadOnly("agent.queue", (req, _) =>
+        Rpc("agent.queue", (req, _) =>
             Task.FromResult<object?>(runtime.GetQueue(req.Required("sessionId"))),
-            "Pending steering/follow-up inputs: { sessionId } → QueuedInput[]");
+            "Pending steering/follow-up inputs: { sessionId } → QueuedInput[]", true, session);
 
-        context.Rpc.Register("agent.dequeue", (req, _) =>
+        Rpc("agent.dequeue", (req, _) =>
             Task.FromResult<object?>(runtime.RemoveQueued(req.Required("sessionId"), req.Required("id"))),
-            "Remove a pending input: { sessionId, id } → bool");
+            "Remove a pending input: { sessionId, id } → bool", false, session, inputId);
 
-        context.Rpc.Register("agent.promote", (req, _) =>
+        Rpc("agent.promote", (req, _) =>
             Task.FromResult<object?>(runtime.PromoteQueued(req.Required("sessionId"), req.Required("id"))),
-            "Deliver a queued follow-up at the run's next step instead of after the run (it becomes a steer): { sessionId, id } → bool (false: not a queued follow-up)");
+            "Deliver a queued follow-up at the run's next step instead of after the run (it becomes a steer): { sessionId, id } → bool (false: not a queued follow-up)",
+            false, session, inputId);
 
-        context.Rpc.RegisterReadOnly("runs.list", (req, _) =>
+        Rpc("runs.list", (req, _) =>
             Task.FromResult<object?>(runtime.List(req.Bool("includeFinished") ?? true)),
-            "Agents (active and recent): { includeFinished? } → AgentInfo[]");
+            "Agents (active and recent): { includeFinished? } → AgentInfo[]", true, RpcParam.Opt("includeFinished", RpcParamType.Boolean, "default true"));
 
-        context.Rpc.RegisterReadOnly("agent.get", (req, _) =>
+        Rpc("agent.get", (req, _) =>
         {
             var id = req.Str("id");
             var sessionId = req.Str("sessionId");
             var info = id is not null ? runtime.Get(id) : sessionId is not null ? runtime.GetBySession(sessionId) : null;
             return Task.FromResult<object?>(info);
-        }, "One agent: { id? , sessionId? } → AgentInfo | null");
+        }, "One agent: { id? , sessionId? } → AgentInfo | null", true, RpcParam.Opt("id", RpcParamType.String, "the agent's id"), RpcParam.Opt("sessionId"));
 
-        context.Rpc.RegisterReadOnly("agent.tools", (req, _) =>
+        Rpc("agent.tools", (req, _) =>
             Task.FromResult<object?>(SessionToolSwitches.Info(context, runtime, req.Required("sessionId"))),
-            "A session's tools with their switches: { sessionId } → { sessionId, started, contextTokens, off, tools: { name, label, category, description, readOnly, pluginId, on }[] }");
+            "A session's tools with their switches: { sessionId } → { sessionId, started, contextTokens, off, tools: { name, label, category, description, readOnly, pluginId, on }[] }",
+            true, session);
 
-        context.Rpc.Register("agent.setTools", (req, _) =>
+        Rpc("agent.setTools", (req, _) =>
             Task.FromResult<object?>(SessionToolSwitches.Set(context, runtime, req.Required("sessionId"),
                 SessionToolSwitches.Names(req.Prop("off")), SessionToolSwitches.Names(req.Prop("on")))),
-            "Switch tools off or back on for one session, from its next model call: { sessionId, off?: string[], on?: string[] } → like agent.tools");
+            "Switch tools off or back on for one session, from its next model call: { sessionId, off?: string[], on?: string[] } → like agent.tools",
+            false, session, RpcParam.Opt("off", RpcParamType.Array, "tool names to switch off"), RpcParam.Opt("on", RpcParamType.Array, "tool names to switch back on"));
 
         context.Logger.LogInformation("Agent runtime started ({Count} recent agents)", runtime.List().Count);
         return Task.CompletedTask;
