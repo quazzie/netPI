@@ -21,6 +21,7 @@ const server = {id:'fixture',status:'connected',toolCount:1,config:{enabled:true
 const tool = {id:'mcp_fixture_weather_123456789',name:'weather',description:'City weather',exposed:true,deferred:true,readOnly:false,schema:{type:'object',properties:{city:{type:'string'}}}};
 mount(document.getElementById('fixture'),{on:()=>()=>{},rpc:async(method,args)=>{
   if(method==='mcp.list')return {servers:[server]};
+  if(method==='mcp.config')return {id:server.id,config:server.config};
   if(method==='mcp.tools')return {tools:[tool]};
   if(method==='mcp.save')throw Error('Connection failed; review configuration');
   return {servers:[server]};

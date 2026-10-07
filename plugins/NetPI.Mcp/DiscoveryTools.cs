@@ -203,12 +203,19 @@ internal sealed class McpCallTool(IPluginContext ctx, ServerManager manager) : I
         var a = new ToolArgs(arguments);
         if (!a.TryGet(out var inner, "arguments")) throw new McpException("mcp_call needs 'arguments': the tool's arguments (an object, {} for none).");
         if (inner.ValueKind != JsonValueKind.Object) throw new McpException("arguments must be an object.");
-        var schema = tool.Definition.Parameters;
         var args = JsonNode.Parse(inner.GetRawText()) as JsonObject ?? throw new McpException("arguments must be an object.");
-        JsonElement effective;
-        try { Schema.Validate(schema, args); effective = NetPiJson.ToElement(args); }
-        catch (McpException ex) { effective = Repaired(tool, schema, args, ex); }
+        var effective = Prepare(ctx, tool, args);
         return ValueTask.FromResult(new ResolvedToolCall { ToolName = tool.Definition.Name, Arguments = effective, ServerId = tool.ServerId });
+    }
+    /// <summary>
+    /// The arguments as the server will receive them: checked against the tool's discovered schema, and repaired only the
+    /// way <see cref="Repaired"/> allows. One path for the model's mcp_call and the mcp.read / mcp.call RPCs (idea-fhtryf).
+    /// </summary>
+    internal static JsonElement Prepare(IPluginContext plugin, RemoteTool tool, JsonObject args)
+    {
+        var schema = tool.Definition.Parameters;
+        try { Schema.Validate(schema, args); return NetPiJson.ToElement(args); }
+        catch (McpException ex) { return Repaired(plugin, tool, schema, args, ex); }
     }
     /// <summary>
     /// The arguments as the server will receive them, after the repair a model needs and the schema allows. A model
@@ -217,12 +224,12 @@ internal sealed class McpCallTool(IPluginContext ctx, ServerManager manager) : I
     /// that may re-read such a value, and only when the repaired arguments are the ones the schema accepts. Anything
     /// else keeps the original error, so nothing is guessed on the model's behalf.
     /// </summary>
-    private JsonElement Repaired(RemoteTool tool, JsonObject schema, JsonObject args, McpException error)
+    private static JsonElement Repaired(IPluginContext plugin, RemoteTool tool, JsonObject schema, JsonObject args, McpException error)
     {
         if (Coercion.Repair(schema, args) is not { } repaired) throw error;
         try { Schema.Validate(schema, repaired); }
         catch (McpException) { throw error; }
-        ctx.Logger.LogInformation("MCP {Server}/{Tool}: repaired {Count} argument(s) written as text against the discovered schema",
+        plugin.Logger.LogInformation("MCP {Server}/{Tool}: repaired {Count} argument(s) written as text against the discovered schema",
             tool.ServerId, tool.RemoteName, repaired.Count(p => !JsonNode.DeepEquals(p.Value, args[p.Key])));
         return NetPiJson.ToElement(repaired);
     }

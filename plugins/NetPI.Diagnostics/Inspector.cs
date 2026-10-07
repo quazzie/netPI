@@ -573,6 +573,9 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
         if (uri.UserInfo.Length > 0) return true;
+        // a url-ish setting whose path carries a generated token (ha-mcp's private path, a webhook id): the path is the
+        // credential, with no query and no secret-shaped name anywhere (idea-3q0uzn)
+        if (UrlName().IsMatch(key) && !uri.IsFile && uri.AbsolutePath.Split('/').Any(s => SecretText.TokenShaped(Uri.UnescapeDataString(s)))) return true;
         if (uri.Query.Length == 0) return false;
         if (UrlName().IsMatch(key)) return true;
         return uri.Query.TrimStart('?').Split('&')

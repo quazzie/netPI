@@ -1,11 +1,12 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Mcp;
 
-internal sealed class ServerManager : IAsyncDisposable
+internal sealed partial class ServerManager : IAsyncDisposable
 {
     internal sealed class State(ServerConfig config)
     {
@@ -368,14 +369,60 @@ internal sealed class ServerManager : IAsyncDisposable
         lock (_gate) return _states.Values.Where(s => server is null || s.Config.Id == server)
             .Select(s => s.Resources.GetValueOrDefault(uri)).FirstOrDefault(r => r is not null);
     }
-    public JsonObject Snapshot()
+    /// <summary>
+    /// The servers as <c>mcp.list</c> shows them. <c>mcp.list</c> is read-only, so anything that reads can reach it (a
+    /// script without --write, the diag tool): a secret inside the configuration — a URL's userinfo, its query values, a
+    /// token-shaped path segment such as ha-mcp's private path, a token among a stdio server's arguments — is masked, in
+    /// the configuration and in an error that quotes it, and <c>secretsMasked</c> says so. The editor reads the whole
+    /// configuration through <c>mcp.config</c>, which is not read-only (idea-3q0uzn).
+    /// </summary>
+    public JsonObject Snapshot(bool masked = true)
     {
-        lock (_gate) return new JsonObject { ["servers"] = new JsonArray(_states.Values.OrderBy(s => s.Config.Id, StringComparer.Ordinal).Select(s => (JsonNode)new JsonObject
+        lock (_gate) return new JsonObject { ["servers"] = new JsonArray(_states.Values.OrderBy(s => s.Config.Id, StringComparer.Ordinal).Select(s =>
         {
-            ["id"] = s.Config.Id, ["status"] = s.Status, ["error"] = s.Error, ["generation"] = s.Generation,
-            ["toolCount"] = s.Catalog.Count, ["resourceCount"] = s.Resources.Count, ["rejected"] = s.Rejected.DeepClone(), ["version"] = s.Connection?.Transport.Version, ["config"] = s.Config.Json(),
+            var config = s.Config.Json();
+            var secrets = masked ? Mask(s.Config, config) : [];
+            var server = new JsonObject
+            {
+                ["id"] = s.Config.Id, ["status"] = s.Status, ["error"] = SecretText.Without(s.Error, secrets), ["generation"] = s.Generation,
+                ["toolCount"] = s.Catalog.Count, ["resourceCount"] = s.Resources.Count, ["rejected"] = s.Rejected.DeepClone(), ["version"] = s.Connection?.Transport.Version, ["config"] = config,
+            };
+            if (secrets.Count > 0) server["secretsMasked"] = true;
+            return (JsonNode)server;
         }).Concat(_invalid.Select(p => (JsonNode)new JsonObject { ["id"] = p.Key, ["status"] = "invalid", ["error"] = p.Value })).ToArray()) };
     }
+
+    [GeneratedRegex("^--?[A-Za-z0-9_-]*(token|secret|key|password|passwd|auth|bearer|cookie)[A-Za-z0-9_-]*$", RegexOptions.IgnoreCase)]
+    private static partial Regex SecretFlag();
+
+    /// <summary>Masks <paramref name="config"/>'s url and arguments in place; returns the secrets it hid, longest first.</summary>
+    internal static List<string> Mask(ServerConfig source, JsonObject config)
+    {
+        var secrets = new List<string>(SecretText.UrlSecrets(source.Url));
+        if (SecretText.MaskUrl(source.Url) is { } url) config["url"] = url;
+        if (config["args"] is JsonArray args)
+        {
+            var afterSecretFlag = false;
+            for (var i = 0; i < args.Count; i++)
+            {
+                if (args[i] is not JsonValue v || !v.TryGetValue<string>(out var arg)) { afterSecretFlag = false; continue; }
+                string? hidden = null, shown = null;
+                if (afterSecretFlag && arg.Length > 0 && !arg.StartsWith('-')) (hidden, shown) = (arg, SecretText.Marker(arg.Length));
+                else if (arg.IndexOf('=') is var eq and > 0 && SecretFlag().IsMatch(arg[..eq]) && eq < arg.Length - 1)
+                    (hidden, shown) = (arg[(eq + 1)..], arg[..(eq + 1)] + SecretText.Marker(arg.Length - eq - 1));
+                else if (SecretText.MaskUrl(arg) is { } maskedUrl) { secrets.AddRange(SecretText.UrlSecrets(arg)); shown = maskedUrl; }
+                else if (SecretText.TokenShaped(arg)) (hidden, shown) = (arg, SecretText.Marker(arg.Length));
+                if (hidden is not null) secrets.Add(hidden);
+                if (shown is not null) args[i] = shown;
+                afterSecretFlag = SecretFlag().IsMatch(arg) && !arg.Contains('=');
+            }
+        }
+        return secrets.Where(s => s.Length >= 4).Distinct(StringComparer.Ordinal).OrderByDescending(s => s.Length).ToList();
+    }
+
+    /// <summary>One server's configuration as the settings hold it, for the editor (<c>mcp.config</c>); null when there is none.</summary>
+    public JsonObject? RawConfig(string id) =>
+        (_ctx.Settings.GetNode("mcp.servers") as JsonObject)?[id] is JsonObject config ? config.DeepClone().AsObject() : null;
     public async Task<ToolResult> CallAsync(RemoteTool tool, JsonElement args, CancellationToken ct)
     {
         State state; McpConnection connection;

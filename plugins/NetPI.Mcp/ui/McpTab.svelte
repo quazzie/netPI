@@ -26,10 +26,28 @@
     catch (e) { error = e.message ?? String(e); }
     finally { busy = false; }
   }
-  function edit(server) {
+  /** The server's configuration whole. mcp.list masks a secret in a URL or an argument (idea-3q0uzn), so whatever saves
+   *  the configuration back starts from mcp.config; a masked one is never written back. */
+  async function rawConfig(server) {
+    try {
+      const answer = await ctx.rpc('mcp.config', { id: server.id });
+      if (answer?.config) return answer.config;
+    } catch (e) {
+      if (server.secretsMasked) throw e;
+    }
+    if (server.secretsMasked) throw new Error(`The configuration of ${server.id} could not be read whole; nothing was saved.`);
+    return JSON.parse(JSON.stringify(server.config ?? {})); // a $state proxy, which structuredClone cannot take
+  }
+  async function edit(server) {
+    error = '';
+    let config = null;
+    if (server) {
+      try { config = await rawConfig(server); }
+      catch (e) { error = e.message ?? String(e); return; }
+    }
     id = server?.id ?? '';
-    draft = JSON.stringify(server?.config ?? { enabled: true, transport: 'stdio', command: '', args: [], cwd: '', env: {}, pinned: [], readOnly: [] }, null, 2);
-    editing = true; error = '';
+    draft = JSON.stringify(config ?? { enabled: true, transport: 'stdio', command: '', args: [], cwd: '', env: {}, pinned: [], readOnly: [] }, null, 2);
+    editing = true;
   }
   // The per-server actions, in the one menu every other card uses. The kit's Menu is fixed-position and clamped to the
   // viewport, which is the point: this tab lives in a short, scrolling side panel, and a menu positioned inside that
@@ -51,14 +69,17 @@
     finally { busy = false; }
   }
   async function exposure(server, tool, enabled) {
-    // the servers state is a $state proxy, which structuredClone cannot take: the config is JSON either way
-    const config = JSON.parse(JSON.stringify(server.config));
+    let config;
+    try { config = await rawConfig(server); }
+    catch (e) { error = e.message ?? String(e); return; }
     const current = config.tools ?? tools.map(t => t.name);
     config.tools = enabled ? [...new Set([...current, tool.name])] : current.filter(n => n !== tool.name);
     await action('mcp.save', { id: server.id, config });
   }
   async function override(server, tool, key, enabled) {
-    const config = JSON.parse(JSON.stringify(server.config)); // a $state proxy, see exposure()
+    let config;
+    try { config = await rawConfig(server); }
+    catch (e) { error = e.message ?? String(e); return; }
     config[key] = [...new Set(enabled ? [...(config[key] ?? []), tool.name] : (config[key] ?? []).filter(n => n !== tool.name))];
     await action('mcp.save', { id: server.id, config });
   }

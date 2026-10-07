@@ -12,6 +12,7 @@ public static class InspectTests
     {
         r.Add("inspect: model calls through the middleware (first token, retries, tokens, errors, cancel, running)", ModelCalls);
         r.Add("inspect: the journal leaves out per-token events and sums up messages; tool calls from tool.start/end", JournalAndTools);
+        r.Add("inspect: a tool whose end never came is interrupted: by an interrupted tool.end, or when its agent stops running", ToolsClosedWhenTheAgentStops);
         r.Add("inspect: problems (failed plugin, a broken settings file, waiters on an inactive agent, a long wait, errors in the log)", Problems);
         r.Add("inspect: settings without secrets, saved failed requests, the overview lists the diag methods", SettingsFailuresOverview);
         r.Add("inspect: a saved failed request can be sliced and summarised; no body is out of reach", FailureSlice);
@@ -207,6 +208,7 @@ public static class InspectTests
         const string accept = "application/json";
         const string bearer = "bearer";
         const string githubToken = "ghp-1234567890";
+        const string secretPath = "http://ha.local:9583/private_zctpwlX7ZkIAr7oqdfLF88";
         // The marker carries the length of the whole value, so a hand-written number would not catch a truncated one.
         static string Masked(string value) => $"<secret, {value.Length} chars>";
 
@@ -226,6 +228,8 @@ public static class InspectTests
         ctx.SettingsFake.Set("mcp.uvx.env", new JsonObject { ["MOCK_SPEED"] = "3", ["GITHUB_TOKEN"] = githubToken });
         ctx.SettingsFake.Set("tools.web.proxy", proxyUrl);
         ctx.SettingsFake.Set("tools.web.mirror", "https://mirror.example/list?page=2&limit=200");
+        ctx.SettingsFake.Set("mcp.servers", new JsonObject { ["ha"] = new JsonObject { ["transport"] = "http", ["url"] = secretPath } });
+        ctx.SettingsFake.Set("mcp.servers.plain", new JsonObject { ["transport"] = "http", ["url"] = "http://homeassistant.local:8123/mcp" });
 
         var settings = ((JsonObject)(await ctx.RpcFake.Call("diag.settings"))!)["settings"]!;
         var gateway = settings["providers"]!["gateway"]!;
@@ -241,6 +245,8 @@ public static class InspectTests
         Check.Equal(Masked(searchUrl), settings["tools"]!["web"]!["searxUrl"].Str(), "any query string in a url-ish setting");
         Check.Equal(Masked(proxyUrl), settings["tools"]!["web"]!["proxy"].Str(), "a secret-shaped query parameter anywhere");
         Check.Equal("https://mirror.example/list?page=2&limit=200", settings["tools"]!["web"]!["mirror"].Str(), "an ordinary query is not a secret");
+        Check.Equal(Masked(secretPath), settings["mcp"]!["servers"]!["ha"]!["url"].Str(), "a token-shaped path segment in a url is a secret (ha-mcp, idea-3q0uzn)");
+        Check.Equal("http://homeassistant.local:8123/mcp", settings["mcp"]!["servers"]!["plain"]!["url"].Str(), "a path of words is not");
 
         var env = settings["mcp"]!["uvx"]!["env"]!;
         Check.Equal("3", env["MOCK_SPEED"].Str(), "an env map is not a credentials map: its members are named");
@@ -550,6 +556,29 @@ private static async Task BoundedScans()
         Check.Equal("ls -la", one["arguments"]!["command"].Str());
         Check.Equal(2, (int)one["details"]!["exitCode"]!);
         await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "nope" }));
+    }
+
+    // A provider-run call whose stream died never got its tool.end: it was listed as running, and warned about, until a
+    // restart (idea-7jj4xn). An agent that stops running ends what it still had open; a running one keeps its tools.
+    private static async Task ToolsClosedWhenTheAgentStops()
+    {
+        var ctx = await StartAsync();
+        ctx.Events.Publish(EventTypes.ToolStart, new JsonObject { ["sessionId"] = "ses_1", ["agentId"] = "agt_1", ["callId"] = "cut", ["name"] = "Bash", ["arguments"] = "{}" }, "ses_1");
+        ctx.Events.Publish(EventTypes.ToolStart, new JsonObject { ["sessionId"] = "ses_2", ["agentId"] = "agt_2", ["callId"] = "other", ["name"] = "read", ["arguments"] = "{}" }, "ses_2");
+        ctx.Events.Publish(EventTypes.ToolStart, new JsonObject { ["sessionId"] = "ses_3", ["agentId"] = "agt_3", ["callId"] = "aborted", ["name"] = "Read", ["arguments"] = "{}" }, "ses_3");
+        ctx.Events.Publish(EventTypes.ToolEnd, new JsonObject { ["sessionId"] = "ses_3", ["callId"] = "aborted", ["name"] = "Read", ["isError"] = true, ["interrupted"] = "aborted" }, "ses_3");
+        ctx.Events.Publish(EventTypes.AgentStatus, new JsonObject { ["agent"] = new JsonObject { ["id"] = "agt_2", ["sessionId"] = "ses_2", ["status"] = "running" } });
+        ctx.Events.Publish(EventTypes.AgentStatus, new JsonObject { ["agent"] = new JsonObject { ["id"] = "agt_1", ["sessionId"] = "ses_1", ["status"] = "failed" } });
+
+        var tools = (JsonArray)(await ctx.RpcFake.Call("diag.tools"))!;
+        JsonNode Tool(string id) => tools.Single(t => t!["callId"].Str() == id)!;
+        Check.Equal("interrupted", Tool("cut")["state"].Str(), "its agent failed, so nothing of it still runs");
+        Check.Equal("run ended", Tool("cut")["interrupted"].Str());
+        Check.Equal("running", Tool("other")["state"].Str(), "a running agent's tool stays running");
+        Check.Equal("interrupted", Tool("aborted")["state"].Str());
+        Check.Equal("aborted", Tool("aborted")["interrupted"].Str());
+        var running = (JsonArray)(await ctx.RpcFake.Call("diag.tools", new JsonObject { ["running"] = true }))!;
+        Check.Equal("other", string.Join(",", running.Select(t => t!["callId"].Str())), "only the one still running");
     }
 
     private sealed class FakeScheduler(List<AgentSlots> slots) : IAgentScheduler

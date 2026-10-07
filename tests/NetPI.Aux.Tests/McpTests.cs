@@ -35,6 +35,111 @@ public static class McpTests
             Check.Throws<RpcException>(() => ServerConfig.Parse("a", new JsonObject { ["transport"]="http", ["url"]="https://user:secret@example.com" }, Path.GetTempPath()));
             Check.Throws<RpcException>(() => ServerConfig.Parse("a", new JsonObject { ["transport"]="http", ["url"]="https://example.com", ["headerEnv"]=new JsonObject { ["Mcp-Name"]="TOKEN" } }, Path.GetTempPath()));
         });
+        r.Add("mcp: a token in a URL or an argument is found by its shape; words, versions and model names are not (SecretText)", () => {
+            Check.True(SecretText.TokenShaped("private_zctpwlX7ZkIAr7oqdfLF88"), "ha-mcp's private path");
+            Check.True(SecretText.TokenShaped("private_zctpwl-7ZkIAr7oq_dfLF88"), "split by separators the token may contain");
+            Check.True(SecretText.TokenShaped("550e8400-e29b-41d4-a716-446655440000"), "a UUID");
+            Check.True(SecretText.TokenShaped("3f9a2b7c4d5e6f708192a3b4c5d6e7f8"), "hex");
+            Check.True(SecretText.TokenShaped("ZkqWpLmTrBvHnXcDsQeRfTgY"), "base64 letters without a digit");
+            foreach (var plain in new[] { "server-filesystem", "claude-sonnet-4-5-20250929", "homeassistant", "McpServerIntegration", "v1", "node-v20.11.1-win-x64", "C:\\tools\\server.js" })
+                Check.False(SecretText.TokenShaped(plain), plain);
+            Check.Equal("https://ha.example:8443/<secret, 30 chars>?token=<secret, 11 chars>",
+                SecretText.MaskUrl("https://ha.example:8443/private_zctpwlX7ZkIAr7oqdfLF88?token=abc12345XYZ"));
+            Check.Equal("https://<secret, 4 chars>@ha.example/mcp", SecretText.MaskUrl("https://user@ha.example/mcp"));
+            Check.Equal(null, SecretText.MaskUrl("http://homeassistant.local:8123/mcp"), "nothing to mask: the URL stays as written");
+            Check.Equal(null, SecretText.MaskUrl("not a url"));
+            var error = "POST https://ha.example:8443/private_zctpwlX7ZkIAr7oqdfLF88 failed: 404";
+            Check.Equal("POST https://ha.example:8443/<secret, 30 chars> failed: 404",
+                SecretText.Without(error, SecretText.UrlSecrets("https://ha.example:8443/private_zctpwlX7ZkIAr7oqdfLF88")));
+        });
+        r.Add("mcp: mcp.list masks a secret path, query value or token argument; mcp.config gives the editor the whole configuration", async () => {
+            var ctx=new FakePluginContext();
+            const string secretPath="private_zctpwlX7ZkIAr7oqdfLF88";
+            var url=$"http://127.0.0.1:9/{secretPath}?token=abc12345XYZ";
+            ctx.Settings.Set("mcp.servers",new JsonObject {
+                ["ha"]=new JsonObject {["transport"]="http",["url"]=url,["enabled"]=false},
+                ["cli"]=new JsonObject {["command"]="netpi-no-such-command",["enabled"]=false,["cwd"]=Path.GetTempPath(),
+                    ["args"]=new JsonArray("--api-key","sk-live-0123456789abcdefXYZ","--token=abcDEF1234567890xyz","server-filesystem","claude-sonnet-4-5-20250929")},
+            });
+            var plugin=new McpPlugin();
+            await plugin.StartAsync(ctx,CancellationToken.None);
+            try
+            {
+                Check.True(ctx.RpcFake.ReadOnly["mcp.list"]); Check.False(ctx.RpcFake.ReadOnly["mcp.config"]);
+                var list=(await ctx.RpcFake.CallAsync("mcp.list"))!;
+                var text=list.ToJsonString();
+                foreach (var secret in new[] { secretPath, "abc12345XYZ", "sk-live-0123456789abcdefXYZ", "abcDEF1234567890xyz" })
+                    Check.NotContains(text,secret,"mcp.list without --write hides "+secret);
+                JsonObject Server(string id)=>((JsonArray)list["servers"]!).OfType<JsonObject>().Single(s=>(string?)s["id"]==id);
+                Check.Equal("http://127.0.0.1:9/<secret, 30 chars>?token=<secret, 11 chars>",(string?)Server("ha")["config"]!["url"]);
+                Check.Equal(true,(bool?)Server("ha")["secretsMasked"]);
+                Check.Equal("--api-key|<secret, 27 chars>|--token=<secret, 19 chars>|server-filesystem|claude-sonnet-4-5-20250929",
+                    string.Join("|",((JsonArray)Server("cli")["config"]!["args"]!).Select(a=>(string?)a)),"the flag's value is masked, the names around it stay readable");
+                // the editor's read: the configuration whole, so a save round-trips it unchanged
+                var whole=(await ctx.RpcFake.CallAsync("mcp.config",new {id="ha"}))!;
+                Check.Equal(url,(string?)whole["config"]!["url"]);
+                await ctx.RpcFake.CallAsync("mcp.save",new {id="ha",config=whole["config"]});
+                Check.Equal(url,(string?)ctx.Settings.GetNode("mcp.servers")!["ha"]!["url"],"the saved configuration keeps its secret path");
+                await Check.ThrowsAsync<RpcException>(()=>ctx.RpcFake.CallAsync("mcp.config",new {id="nope"}));
+            }
+            finally { await plugin.StopAsync(CancellationToken.None); ctx.Unload(); }
+        });
+        r.Add("mcp: mcp.read runs a read-only tool and refuses one that may write, mcp.call runs it with typed arguments intact; both are tool calls diag lists", async () => {
+            var ctx=new FakePluginContext();
+            var counter=Path.Combine(ctx.Paths.TempDir,"rpc-typed.txt");
+            ctx.Settings.Set("mcp.servers",new JsonObject {
+                ["ro"]=(Config() with {Id="ro",ReadOnly=["weather"]}).Json(),
+                ["rw"]=(Config("typed") with {Id="rw",Args=[typeof(McpTests).Assembly.Location,"--mcp-fixture","typed",counter]}).Json(),
+            });
+            var plugin=new McpPlugin();
+            await plugin.StartAsync(ctx,CancellationToken.None);
+            try
+            {
+                async Task Up(string id)
+                {
+                    var sw=Stopwatch.StartNew();
+                    while (true)
+                    {
+                        var s=((JsonArray)(await ctx.RpcFake.CallAsync("mcp.list"))!["servers"]!).OfType<JsonObject>().FirstOrDefault(x=>(string?)x["id"]==id);
+                        if ((string?)s?["status"]=="connected") return;
+                        if (sw.ElapsedMilliseconds>15_000) throw new AssertException($"MCP server {id} did not connect: {s?.ToJsonString()}");
+                        await Task.Delay(50);
+                    }
+                }
+                await Up("ro"); await Up("rw");
+                Check.True(ctx.RpcFake.ReadOnly["mcp.read"],"mcp.read only reads"); Check.False(ctx.RpcFake.ReadOnly["mcp.call"],"mcp.call needs --write");
+
+                var read=(await ctx.RpcFake.CallAsync("mcp.read",new {id="ro/weather",arguments=new {city="Oslo"}}))!;
+                Check.Equal("Weather: Oslo",(string?)read["content"]); Check.Equal(false,(bool?)read["isError"]); Check.Equal("ro",(string?)read["serverId"]);
+                var refused=await Check.ThrowsAsync<RpcException>(()=>ctx.RpcFake.CallAsync("mcp.read",new {serverId="rw",name="weather",arguments=new {list_only=true}}));
+                Check.Equal("forbidden",refused.Code); Check.Contains(refused.Message,"mcp.call");
+                Check.Equal(0,File.Exists(counter) ? File.ReadAllLines(counter).Length : 0,"a refused call never reached the server");
+
+                // typed arguments (a list of objects, an integer, a boolean, an object) arrive as they were written
+                var call=(await ctx.RpcFake.CallAsync("mcp.call",new {id="rw/weather",arguments=new {list_only=true,timeout=10,views=new[] {new {title="Probe",max_columns=2}},config=new {patch=new[] {1,2}}}}))!;
+                Check.Equal(false,(bool?)call["isError"]);
+                Check.Equal("""{"list_only":true,"timeout":10,"views":[{"title":"Probe","max_columns":2}],"config":{"patch":[1,2]}}""",
+                    JsonNode.Parse(File.ReadAllLines(counter)[0])!.ToJsonString(),"what the server received");
+                // the model's own repair applies, and a schema mismatch it cannot repair is a bad request
+                await ctx.RpcFake.CallAsync("mcp.call",new {id="rw/weather",arguments=new {timeout="12"}});
+                Check.Equal("""{"timeout":12}""",JsonNode.Parse(File.ReadAllLines(counter)[1])!.ToJsonString());
+                Check.Equal("bad_request",(await Check.ThrowsAsync<RpcException>(()=>ctx.RpcFake.CallAsync("mcp.call",new {id="rw/weather",arguments=new {timeout="soon"}}))).Code);
+                Check.Equal("bad_request",(await Check.ThrowsAsync<RpcException>(()=>ctx.RpcFake.CallAsync("mcp.read",new {id="ro/weather",arguments=new {}}))).Code,"the required city is missing");
+                Check.Equal("not_found",(await Check.ThrowsAsync<RpcException>(()=>ctx.RpcFake.CallAsync("mcp.read",new {id="ro/nope"}))).Code);
+                Check.Equal("conflict",(await Check.ThrowsAsync<RpcException>(()=>ctx.RpcFake.CallAsync("mcp.read",new {id="ro/weather",revision="old",arguments=new {city="x"}}))).Code);
+
+                // recorded like a model's mcp_call, without a chat: tool.start / tool.end with source "rpc"
+                var starts=ctx.Bus.OfType(EventTypes.ToolStart).Select(e=>NetPiJson.ToNode(e.Data)!.AsObject()).ToList();
+                var ends=ctx.Bus.OfType(EventTypes.ToolEnd).Select(e=>NetPiJson.ToNode(e.Data)!.AsObject()).ToList();
+                Check.Equal(3,starts.Count,"the three calls that reached a server"); Check.Equal(3,ends.Count);
+                Check.True(starts.All(s=>(string?)s["source"]=="rpc" && (string?)s["name"]=="mcp_call" && s["sessionId"] is null));
+                Check.Equal((string?)read["id"],(string?)starts[0]["resolvedTool"]);
+                Check.Contains((string?)starts[0]["arguments"] ?? "","Oslo");
+                Check.True(ends.All(e=>(bool?)e["isError"]==false && e["durationMs"] is not null));
+                Check.Equal(string.Join(",",starts.Select(s=>(string?)s["callId"])),string.Join(",",ends.Select(e=>(string?)e["callId"])));
+            }
+            finally { await plugin.StopAsync(CancellationToken.None); ctx.Unload(); }
+        });
         r.Add("mcp: names and revisions remain stable and disambiguate case and punctuation", () => {
             var ctx=new FakePluginContext(); var manager=new ServerManager(ctx); var c=Config();
             var a=new RemoteTool(manager,c,Tool("A-b")); var b=new RemoteTool(manager,c,Tool("a_b"));

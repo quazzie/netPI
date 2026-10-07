@@ -20,6 +20,17 @@ A remote schema arrives after the call envelope has been built, so a model often
 
 So arguments that already validate are never rewritten, a string the schema allows is never re-read, a list of lists keeps its nesting, and anything left over fails with the model's own error. The repair is recorded in the log; the server receives the repaired types.
 
+## Scripts and outside agents
+
+A script or an outside agent calls a tool through NetPI rather than opening its own MCP session with the server's URL
+(idea-fhtryf): `node scripts/netpi.mjs mcp.read --params-file args.json` runs a tool marked read-only (its `readOnlyHint`,
+or the server's `readOnly` list), and `mcp.call --write` runs any exposed tool, with
+`{ "id": "homeassistant/ha_get_state", "arguments": { … } }`. The arguments take the model's path (the schema, then the
+one repair above), the answer is `{ content, structuredContent, isError, … }`, and `diag.tools` lists the call.
+`mcp.list` masks what would let a reader use a server without NetPI: a private URL path, query values, a token among a
+stdio server's arguments (idea-3q0uzn); `mcp.config`, which is not read-only, returns the configuration whole for the
+editor. The methods are in [PROTOCOL.md](PROTOCOL.md#mcp-plugin).
+
 ## Resources
 
 Remote resources are negotiated, listed and read. A server may advertise resources and no tools at all — a skills library, a document set — and connects on that promise alone; `tools` is no longer a required capability.
