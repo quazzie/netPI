@@ -424,6 +424,9 @@ Write-Output 'LOCK-OK'
             psi.ArgumentList.Add(appDir);
             // -NoClean: artifacts\dev\app is what the other suites load plugins from while this runs; emptying it under them fails them
             psi.ArgumentList.Add("-NoClean");
+            // -NoTests: the app only. A full solution build copies into this suite's own bin, whose assemblies this process holds
+            // loaded: those copies fail (MSB3026) whenever the app outputs are newer than the bin's (idea-5kkvlc)
+            psi.ArgumentList.Add("-NoTests");
             using var p = Process.Start(psi)!;
             var outTask = p.StandardOutput.ReadToEndAsync();
             var errTask = p.StandardError.ReadToEndAsync();

@@ -89,7 +89,11 @@ time (`-Parallel`, 1–5, default 3; `-Serial` for one). Each suite gets its own
 the system temp — not the repo, because the git tests create real repositories and a nested one behaves
 differently), so two invocations of the same suite never delete each other's files. A suite still running after
 `-TimeoutMinutes` (default 30) is stopped and fails the run, instead of being waited for. The build test runs `build.ps1`
-with `-NoClean`, so it builds over `artifacts/dev/app` instead of emptying it under the suites that load plugins from it.
+with `-NoClean`, so it builds over `artifacts/dev/app` instead of emptying it under the suites that load plugins from it,
+and with `-NoTests`, so it builds the app alone (src and plugins, from a generated solution): a full build also copies
+into the Host suite's own bin, whose assemblies the running suite holds loaded, and those copies failed (MSB3026)
+whenever the app outputs were newer than the bin's (idea-5kkvlc). The failure summary's re-run line is one PowerShell
+array (`-Only 'a','b'`): names separated by spaces bound the second one to `-Parallel`.
 
 Next to each suite's result the script prints the **process time** and the time the suite's own timers reported, and
 calls out any suite that spent more than three seconds outside its own tests. That gap is not noise: it is the

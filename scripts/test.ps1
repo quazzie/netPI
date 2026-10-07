@@ -319,8 +319,9 @@ try {
         foreach ($l in $lines[$at..$to]) { Write-Host "  $l" -ForegroundColor Red }
     }
 
+    # one PowerShell array: 'a','b' (space-separated names bound the second one to -Parallel, and "…" expanded a $ in a name)
     $quoted = ($realFailures | Select-Object -ExpandProperty Name -Unique |
-        ForEach-Object { '"{0}"' -f ($_ -replace '"', '""') }) -join ' '
+        ForEach-Object { "'{0}'" -f ($_ -replace "'", "''") }) -join ','
     $suiteArgs = (@($realFailures | ForEach-Object { $_.Suite }) | Sort-Object -Unique) -join ','
     $suiteArgs = if ($suiteArgs) { " -Suite $suiteArgs" } else { '' }
     Write-Host "`nRe-run just these:" -ForegroundColor Yellow

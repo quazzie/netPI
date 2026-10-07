@@ -32,6 +32,7 @@
   .\build.ps1 -Run           # publish and start the desktop app
   .\build.ps1 -SkipWeb       # don't run npm even if it is installed
   .\build.ps1 -NoClean       # build over artifacts\dev\app without emptying it first (what the build test does)
+  .\build.ps1 -NoTests       # the app only (src and plugins), no test project (what the build test does, too)
   From cmd: build.cmd runs this script with the same options (build -Run, build /?).
 #>
 param(
@@ -45,7 +46,8 @@ param(
     [switch] $Run,
     [switch] $Test,
     [string] $AppDir,
-    [switch] $NoClean
+    [switch] $NoClean,
+    [switch] $NoTests
 )
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -251,8 +253,28 @@ Step "dotnet build ($Configuration)"
 # nothing stale (a removed plugin, an old wwwroot) survives - unless -NoClean: the test suites load plugins from this tree, so
 # the build test builds over it instead of emptying it under them
 if (-not $NoClean -and (Test-Path $dev)) { Remove-Item -Recurse -Force $dev }
-dotnet build NetPI.slnx -c $Configuration --nologo
-if ($LASTEXITCODE) { throw 'dotnet build failed' }
+# -NoTests: the app alone, from a solution of NetPI.slnx's projects outside tests/. A suite that runs this script (the build
+# test) holds its own bin's assemblies loaded for its whole life, so a full build's copies into the test bins could never
+# succeed while it ran (MSB3026, idea-5kkvlc); the app is all the build test proves.
+$solution = 'NetPI.slnx'
+$buildArgs = @()
+if ($NoTests) {
+    # every project of the app is in the generated solution; this only keeps any project outside it on the same configuration
+    $buildArgs += '-p:ShouldUnsetParentConfigurationAndPlatform=false'
+    $slnDir = Join-Path 'artifacts' 'build-sln'
+    New-Item -ItemType Directory -Path $slnDir -Force | Out-Null
+    $solution = Join-Path $slnDir "netpi-app-$([Guid]::NewGuid().ToString('N').Substring(0, 8)).slnx"
+    $appProjects = @(([xml](Get-Content NetPI.slnx -Raw)).SelectNodes('//Project') | ForEach-Object { $_.Path } | Where-Object { $_ -notlike 'tests/*' })
+    "<Solution>`n" + (($appProjects | ForEach-Object { "  <Project Path=`"../../$_`" />" }) -join "`n") + "`n</Solution>" | Set-Content $solution
+    Write-Host "the app only: $($appProjects.Count) project(s), no test project" -ForegroundColor DarkGray
+}
+try {
+    dotnet build $solution -c $Configuration --nologo @buildArgs
+    if ($LASTEXITCODE) { throw 'dotnet build failed' }
+}
+finally {
+    if ($NoTests) { Remove-Item $solution -Force -ErrorAction SilentlyContinue }
+}
 
 Write-Host "`nBuilt artifacts\dev\app:" -ForegroundColor Green
 Write-Host '  NetPI.exe          desktop app (WebView2 window, starts its own server)'
