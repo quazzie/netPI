@@ -41,6 +41,7 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     private readonly ILogger _log;
     private readonly int _queueCapacity;
     private readonly TimeSpan _slowAfter, _slowEvery, _staleAfter;
+    private readonly TimeSpan _disposeDispatcher, _disposeWorkers;
     private readonly Lock _subsLock = new();
     private readonly Lock _ringLock = new();
     private readonly BusEvent?[] _ring = new BusEvent?[RingSize];
@@ -59,12 +60,16 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     private readonly List<FlushMarker> _flushes = [];
     private readonly Lock _flushLock = new();
 
-    public EventBus(ILogger log, TimeSpan? slowHandler = null, TimeSpan? slowReportEvery = null, int? queueCapacity = null, int? inputCapacity = null, TimeSpan? staleFlushAfter = null)
+    /// <param name="disposeGrace">How long <see cref="DisposeAsync"/> waits for the dispatcher and then for the workers
+    /// before it gives up on a wedged one (default 5 s and 2 s).</param>
+    public EventBus(ILogger log, TimeSpan? slowHandler = null, TimeSpan? slowReportEvery = null, int? queueCapacity = null, int? inputCapacity = null, TimeSpan? staleFlushAfter = null, TimeSpan? disposeGrace = null)
     {
         _log = log;
         _slowAfter = slowHandler ?? SlowHandler;
         _slowEvery = slowReportEvery ?? SlowReportEvery;
         _staleAfter = staleFlushAfter ?? TimeSpan.FromSeconds(5);
+        _disposeDispatcher = disposeGrace ?? TimeSpan.FromSeconds(5);
+        _disposeWorkers = disposeGrace ?? TimeSpan.FromSeconds(2);
         _queueCapacity = queueCapacity ?? DefaultQueueCapacity;
         _queue = Channel.CreateBounded<object>(new BoundedChannelOptions(inputCapacity ?? DefaultInputCapacity) { SingleReader = true });
         _dispatcher = Task.Run(DispatchLoopAsync);
@@ -370,11 +375,11 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _queue.Writer.TryComplete();
-        try { await _dispatcher.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
+        try { await _dispatcher.WaitAsync(_disposeDispatcher).ConfigureAwait(false); }
         catch { /* debt on a wedged subscriber: give up; the process exit reaps it */ }
         foreach (var s in Volatile.Read(ref _subs)) { s.Completed = true; s.Queue.Writer.TryComplete(); }
         var workers = Volatile.Read(ref _subs).Select(s => s.Worker).ToArray();
-        try { await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+        try { await Task.WhenAll(workers).WaitAsync(_disposeWorkers).ConfigureAwait(false); }
         catch { /* a wedged handler holds its worker: give up */ }
         lock (_subsLock) _subs = [];
     }

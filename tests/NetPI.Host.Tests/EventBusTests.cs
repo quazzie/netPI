@@ -174,7 +174,9 @@ public static class EventBusTests
         r.Add("bus: disposing the bus unblocks a flush that is still waiting for its marker", async () =>
         {
             const int input = 2;
-            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 1, inputCapacity: input);
+            // The wedged line keeps the dispatcher retrying the marker and holds its worker: the dispose gives up on
+            // both after its grace, which need not be the production 5 s + 2 s to show that the flush comes back.
+            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 1, inputCapacity: input, disposeGrace: TimeSpan.FromMilliseconds(200));
             var inside = new ManualResetEventSlim();
             var release = new ManualResetEventSlim();
             using var _ = bus.Subscribe("x", e => { inside.Set(); release.Wait(5000); });
