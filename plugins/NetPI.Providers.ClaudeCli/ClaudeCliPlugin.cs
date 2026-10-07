@@ -83,7 +83,13 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
             Path.Combine(context.Paths.Home, "claude-cli"),
             // a CLI tool is held back only where NetPI has its counterpart (registered, even if disabled in tools.disabled) and does
             // not offer it to the run (idea-hghbmg)
-            () => [.. context.Tools.Registrations.Select(r => r.Tool.Definition.Name).Distinct(StringComparer.OrdinalIgnoreCase)]);
+            () => [.. context.Tools.Registrations.Select(r => r.Tool.Definition.Name).Distinct(StringComparer.OrdinalIgnoreCase)])
+        {
+            // a CLI with a shell is told how it reaches NetPI itself (the ideas, memory.search, the MCP servers NetPI holds):
+            // netpi.mjs ships beside the app, so the command works from any project's folder
+            RpcScript = File.Exists(Path.Combine(AppContext.BaseDirectory, "netpi.mjs")) ? Path.Combine(AppContext.BaseDirectory, "netpi.mjs") : null,
+            Home = context.Paths.Home,
+        };
         // the CLI reports each model's real window with its first answer: the catalog (and the context ring) take it up
         Provider.OnModelsLearned = () => context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = "claude-cli" });
         context.Services.Register<IModelProvider>(Provider);

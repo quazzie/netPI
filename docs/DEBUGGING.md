@@ -50,7 +50,8 @@ On Unix that holds because the home and the files that hold the secrets (server.
 owner-only; and a fixed token goes through the `NETPI_TOKEN` environment variable (or `--token`), so it does not sit
 in the process's argv, where every local user on a shared box can read it.
 
-**The CLI** does that for you (Node, no packages):
+**The CLI** does that for you (Node, no packages). It also ships beside the app (`<app>/netpi.mjs`), so an agent working
+in another project's folder reaches NetPI the same way; a Claude CLI turn with a shell is told that command line:
 
 ```bash
 node scripts/netpi.mjs                               # diag.overview: start here

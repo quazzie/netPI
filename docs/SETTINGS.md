@@ -146,7 +146,7 @@ apply, and a run that works through many files uses a lot of them.
 | `models` | `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-4-5` | ids passed to `--model` |
 | `timeoutSeconds` | `3600` | the longest one call may run before it is killed (10–14400). A backstop: a CLI that makes progress is not stuck, and a dead one ends by itself |
 | `maxConcurrent` | `2` | CLI processes at once (1–16): each is a full Claude Code, and the subscription's rate limits are shared; the other calls wait, and say so |
-| `tools` | `default` | `default`: every built-in tool of the CLI; `none`: text only; or a list for `--tools`, e.g. `Read,Grep,Glob` for read-only |
+| `tools` | `default` | `default`: every built-in tool of the CLI; `none`: text only; or a list for `--tools`, e.g. `Read,Grep,Glob` for read-only. NetPI's own tools are not handed to the CLI; a turn that keeps its Bash is told how it reaches NetPI itself instead: `node "<app>/netpi.mjs" --home "<home>" <method>` (`netpi.mjs` ships beside the app), for the ideas, `memory.search` and the MCP servers NetPI holds (`mcp.read`, `mcp.call`), so a session in another project neither rebuilds an MCP client nor reads a server's URL |
 | `permissionMode` | `bypassPermissions` | a print-mode call cannot answer a prompt, so the CLI's tools run unasked; `acceptEdits`, `plan` and `default` limit them (what is not allowed then fails) |
 | `settingSources` | – | which settings files the CLI loads (`user`, `project`, `local`); none by default, because they bring hooks and permission rules |
 | `connectors` | `false` | let the CLI load the account's MCP connectors |

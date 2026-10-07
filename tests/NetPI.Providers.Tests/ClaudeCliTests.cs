@@ -330,6 +330,21 @@ internal static class ClaudeCliTests
             t.Check(live.ModelsChangedSinceLastList(), "editing the models changes the catalog");
         });
 
+        await t.Run("claude-cli: a CLI with a shell is told how it reaches NetPI itself (netpi.mjs beside the app, NetPI's home), one without a shell is not", () =>
+        {
+            var p = new CL.ClaudeCliProvider(() => Cfg()) { RpcScript = @"C:\NetPI\app\netpi.mjs", Home = @"C:\Users\me\.netpi" };
+            t.Eq("node \"C:/NetPI/app/netpi.mjs\" --home \"C:/Users/me/.netpi\"", p.RpcCommand, "forward slashes: one spelling for bash and node");
+            t.Eq(null, new CL.ClaudeCliProvider(() => Cfg()).RpcCommand, "no script beside the app: no command");
+            var noted = CL.ClaudeCliProvider.SystemPromptWithNote("S", true, p.RpcCommand);
+            t.Check(noted.Contains("# NetPI from your shell") && noted.Contains("node \"C:/NetPI/app/netpi.mjs\" --home") && noted.Contains("mcp.read")
+                && noted.Contains("ideas.add"), "the command and what it is for");
+            t.Check(!CL.ClaudeCliProvider.SystemPromptWithNote("S", false, p.RpcCommand).Contains("NetPI from your shell"), "no tools: no shell to run it with");
+            t.Check(CL.ClaudeCliProvider.HasShell("default", []), "every tool: a shell");
+            t.Check(!CL.ClaudeCliProvider.HasShell("default", ["Bash", "BashOutput"]), "Bash held back: none");
+            t.Check(CL.ClaudeCliProvider.HasShell("Read, Bash", []) && !CL.ClaudeCliProvider.HasShell("Read,Grep,Glob", []), "a configured list");
+            return Task.CompletedTask;
+        });
+
         await t.Run("claude-cli: live call through the installed CLI (set NETPI_CLAUDE_CLI_LIVE=1; uses the subscription)", async () =>
         {
             if (Environment.GetEnvironmentVariable("NETPI_CLAUDE_CLI_LIVE") != "1") t.Skip("NETPI_CLAUDE_CLI_LIVE is not 1");

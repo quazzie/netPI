@@ -60,6 +60,11 @@ public sealed class ClaudeCliProvider : IModelProvider
     /// <summary>Where the prompt files are written and side calls run.</summary>
     internal string WorkDir => _workDir;
 
+    /// <summary>netpi.mjs beside the app (shipped with it), for the prompt note on reaching NetPI; null when it is not there.</summary>
+    internal string? RpcScript { get; init; }
+    /// <summary>NetPI's home, which netpi.mjs finds the server through (its server.json).</summary>
+    internal string? Home { get; init; }
+
     public string Id => "claude-cli";
     public string DisplayName => "Claude CLI";
     public bool IsLocal => false;
@@ -186,7 +191,8 @@ public sealed class ClaudeCliProvider : IModelProvider
         // The system prompt goes through a file: NetPI's can outgrow the 32k command line of Windows.
         Directory.CreateDirectory(_workDir);
         var promptFile = Path.Combine(_workDir, $"system-{Guid.NewGuid():N}.md");
-        await File.WriteAllTextAsync(promptFile, SystemPromptWithNote(request.SystemPrompt, tools.Length > 0), ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(promptFile,
+            SystemPromptWithNote(request.SystemPrompt, tools.Length > 0, HasShell(tools, disallowed) ? RpcCommand : null), ct).ConfigureAwait(false);
         var asm = new MessageAssembler();
         var stream = new ClaudeCliStream(asm) { ModelId = request.Model.Id };
         if (_usage is not null && o.Usage) stream.OnRateLimit = _usage.Observe;
@@ -283,12 +289,37 @@ public sealed class ClaudeCliProvider : IModelProvider
         "The tools described above (NetPI's) are not available here and are never executed: do not write their calls or <invoke> markup. " +
         "Use your own tools (read, search, edit, shell) in the working folder to do the work, then answer in plain text.";
 
-    /// <summary>NetPI's system prompt describes its tools; the model is told which tools it really has, or it writes the others' calls as text.</summary>
-    internal static string SystemPromptWithNote(string? system, bool cliTools)
+    /// <summary>
+    /// NetPI's system prompt describes its tools; the model is told which tools it really has, or it writes the others' calls as
+    /// text. With a shell it is also told how it reaches NetPI itself (<paramref name="rpc"/>: the netpi.mjs command line), for
+    /// what only NetPI holds, so a session in another project does not rebuild an MCP client or read a server's URL to call it.
+    /// </summary>
+    internal static string SystemPromptWithNote(string? system, bool cliTools, string? rpc = null)
     {
         var note = cliTools ? CliToolsNote : NoToolsNote;
+        if (cliTools && rpc is not null) note += "\n\n" + RpcNote(rpc);
         return string.IsNullOrWhiteSpace(system) ? note : system.TrimEnd() + "\n\n" + note;
     }
+
+    /// <summary>How a CLI with a shell reaches NetPI: its RPC command line, and the methods for what only NetPI holds.</summary>
+    internal static string RpcNote(string command) =>
+        "# NetPI from your shell\n" +
+        $"NetPI itself answers on its RPC: `{command} <method> --params-file <file.json> --compact` (key=value pairs work instead of the file; " +
+        $"add --write for a method that changes something; `{command} methods` lists them). Use it for what only NetPI holds: the ideas " +
+        "backlog (ideas.list, ideas.get, ideas.add, ideas.update), memory.search, and the MCP servers NetPI is connected to (mcp.tools; " +
+        "mcp.read for a read-only tool, mcp.call --write for any other). Call those servers through NetPI, never with their URL or a client " +
+        "of your own.";
+
+    /// <summary>The netpi.mjs command line beside the app (<see cref="RpcScript"/>), with NetPI's home: null without the script.</summary>
+    internal string? RpcCommand => RpcScript is { } script
+        ? $"node \"{script.Replace('\\', '/')}\"" + (Home is { } home ? $" --home \"{home.Replace('\\', '/')}\"" : "")
+        : null;
+
+    /// <summary>Whether the CLI keeps its Bash in this run: the RPC note is only of use with a shell.</summary>
+    internal static bool HasShell(string tools, IReadOnlyList<string> disallowed) =>
+        tools.Equals("default", StringComparison.OrdinalIgnoreCase)
+            ? !disallowed.Contains("Bash", StringComparer.OrdinalIgnoreCase)
+            : tools.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Contains("Bash", StringComparer.OrdinalIgnoreCase);
 
     /// <summary>A side call's tools: none.</summary>
     private static readonly (string Tools, IReadOnlyList<string> Disallowed, string? Note) NoTools = ("", [], null);
