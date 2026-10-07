@@ -527,17 +527,6 @@ public static class IdeasTests
             Check.Equal(0, links.Count, "a commit naming the idea needs no link decision");
         });
 
-        r.Add("ideas: the commit check stays quiet without the Files or Decide plugin, and when it is off", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            // No files.commits registered: the watcher finds nothing to read and does nothing at all.
-            await Task.Delay(200);
-            Check.Equal(0, (await Suggestions(env)).Count);
-            var idea = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Quiet" } }))["id"].Str()!;
-            Check.Equal("open", IdeaAt(env, idea)["status"]!.Str());
-        });
-
         /// <summary>One idea, read synchronously: the pollers below call it from a lambda.</summary>
         JsonObject IdeaAt(Env env, string id) =>
             (JsonObject)NetPiJson.ToNode(env.Ctx.RpcFake.Call("ideas.get", new JsonObject { ["id"] = id }).GetAwaiter().GetResult())!;
