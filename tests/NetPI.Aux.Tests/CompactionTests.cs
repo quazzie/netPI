@@ -358,6 +358,13 @@ public static class CompactionTests
             turn.LastContextTokens = 39_200; // far over the threshold of a 40k window
             await env.Hook.OnBeforeModelCallAsync(turn);
             Check.Equal(0, env.Ctx.ModelsFake.Requests.Count, "no summarizer call for a backend that compacts itself");
+
+            // /compact (compaction.run) says so instead of summarizing.
+            await new CompactionPlugin().StartAsync(env.Ctx, CancellationToken.None);
+            var said = (string?)await env.Ctx.RpcFake.Call("compaction.run", new JsonObject { ["sessionId"] = env.Session.Id });
+            Check.Contains(said, "keeps and compacts this chat's context itself");
+            Check.Equal(0, env.Ctx.ModelsFake.Requests.Count, "and /compact calls no summarizer either");
+            Check.Equal(0, env.Ctx.SessionsFake.MarkCompactedCalls.Count, "nothing was compacted");
         });
 
         r.Add("compaction: settings (disabled, threshold, reserve)", async () =>
