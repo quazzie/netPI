@@ -311,7 +311,10 @@ internal sealed class BrowserHost : IAsyncDisposable
         if (method == "Browser.downloadWillBegin" && p.TryGetProperty("guid", out var guid))
         {
             var name = p.TryGetProperty("suggestedFilename", out var f) ? f.GetString() ?? "download" : "download";
-            var owner = _lastTab;
+            // the tab whose page started it (a page's main frame id is its target id), not the tab any chat used last:
+            // with two chats browsing, the note went to the wrong one (idea-ic4fr9); a frame of its own falls back
+            var frame = p.TryGetProperty("frameId", out var fid) ? fid.GetString() : null;
+            var owner = (frame is null ? null : _tabs.Values.FirstOrDefault(t => t.IsOpen && t.TargetId == frame)) ?? _lastTab;
             if (owner is null) return;
             owner.DownloadStarted();
             _downloads[guid.GetString()!] = (owner, name);

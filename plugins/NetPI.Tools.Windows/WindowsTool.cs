@@ -82,7 +82,7 @@ internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAge
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
         var a = new ToolArgs(args);
-        var action = (a.Str("action", "verb", "command") ?? "").Trim().ToLowerInvariant();
+        var action = (a.Str(ToolPathArgs.WindowsActionNames) ?? "").Trim().ToLowerInvariant();
         if (action is "attach" or "switch") action = "use";
         if (action is "launch" or "start" or "run") action = "open";
         if (action is "press") action = "key";
@@ -110,9 +110,9 @@ internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAge
                 return await ListAsync(ct).ConfigureAwait(false);
             case "open":
             {
-                var app = a.Str("app", "program", "exe", "path", "uri");
+                var app = a.Str(ToolPathArgs.WindowsAppNames);   // the names the guardrails read too
                 if (string.IsNullOrWhiteSpace(app)) return ToolResult.Error("open needs an app: a name (notepad, calc), a path, or a URI (ms-settings:).");
-                var req = new JsonObject { ["cmd"] = "launch", ["exe"] = app.Trim(), ["args"] = a.Str("args", "arguments") ?? "", ["title"] = a.Str("title") };
+                var req = new JsonObject { ["cmd"] = "launch", ["exe"] = app.Trim(), ["args"] = a.Str(ToolPathArgs.WindowsArgsNames) ?? "", ["title"] = a.Str("title") };
                 var timeout = a.Int("timeout") ?? 20;
                 req["timeout"] = timeout * 1000;
                 var w = await agent.CallAsync(req, ct, timeout + 10).ConfigureAwait(false);

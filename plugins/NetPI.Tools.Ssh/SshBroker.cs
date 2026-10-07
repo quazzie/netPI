@@ -32,17 +32,19 @@ internal sealed class SshBroker(ILogger log, SshBroker.Starter? start = null) : 
     /// <summary>How long a host whose broker would not start runs calls the old way before it is tried again.</summary>
     internal static TimeSpan Cooldown { get; set; } = TimeSpan.FromMinutes(10);
 
-    private const string Hello = "NETPI-BROKER 1 ok";
+    private const string Hello = "NETPI-BROKER 2 ok";
 
     /// <summary>
     /// The remote loop. The handshake line is printed only when the tools it relies on behave: <c>base64 -d</c> decodes, and
-    /// <c>head -c</c> stops at its count on a pipe (a stdio-buffered head would swallow the next frame).
+    /// <c>head -c</c> stops at its count on a pipe (a stdio-buffered head would swallow the next frame). Each call's output
+    /// is framed on both streams: a start line (<c>&lt;nonce&gt; S</c>) before the command and the end line after it, so
+    /// what a job the previous call left running wrote in between is told apart from this call's own (idea-ic4fr9).
     /// </summary>
     internal const string Script = """
         p=$(printf 'abcZZZ\n' | { head -c 3 >/dev/null; IFS= read -r r; printf %s "$r"; })
         d=$(printf aGk= | base64 -d 2>/dev/null)
-        if [ "$p" != ZZZ ] || [ "$d" != hi ]; then echo "NETPI-BROKER 1 unsupported"; exit 3; fi
-        echo "NETPI-BROKER 1 ok"
+        if [ "$p" != ZZZ ] || [ "$d" != hi ]; then echo "NETPI-BROKER 2 unsupported"; exit 3; fi
+        echo "NETPI-BROKER 2 ok"
         while IFS= read -r line; do
           set -f; set -- $line; set +f
           case "$1" in
@@ -51,6 +53,8 @@ internal sealed class SshBroker(ILogger log, SshBroker.Starter? start = null) : 
               t=$(mktemp 2>/dev/null) || t="${TMPDIR:-/tmp}/netpi-broker.$$"
               head -c "$4" >"$t"
               c=$(printf %s "$3" | base64 -d)
+              printf '%s S\n' "$2"
+              printf '%s S\n' "$2" >&2
               (cd && exec "${SHELL:-/bin/sh}" -c "$c") <"$t"; rc=$?
               rm -f "$t"
               printf '\n%s X %s\n' "$2" "$rc"
@@ -59,6 +63,15 @@ internal sealed class SshBroker(ILogger log, SshBroker.Starter? start = null) : 
           esac
         done
         """;
+
+    /// <summary>
+    /// A lone <c>&amp;</c> (not <c>&amp;&amp;</c>, <c>&amp;&gt;</c>, <c>&gt;&amp;</c>, <c>2&gt;&amp;1</c>): the command leaves a job
+    /// running, and whatever it prints later would reach the next call on the same connection, so its connection is not kept.
+    /// Quoted text that merely contains one costs a reconnect, nothing more.
+    /// </summary>
+    internal static bool Backgrounds(string command) => BackgroundAmp.IsMatch(command);
+
+    private static readonly System.Text.RegularExpressions.Regex BackgroundAmp = new(@"(?<![&<>|])&(?![&>])");
 
     private readonly Starter _start = start ?? StartSsh;
     private readonly object _gate = new();
@@ -74,10 +87,12 @@ internal sealed class SshBroker(ILogger log, SshBroker.Starter? start = null) : 
 
     /// <summary>
     /// Run <paramref name="command"/> on a connection to <paramref name="host"/>; null when the call should run the old way
-    /// (every connection busy, or the host is cooling down after a broker that would not start).
+    /// (every connection busy, or the host is cooling down after a broker that would not start). <paramref name="work"/> is
+    /// the text whose background jobs decide whether the connection is kept: the user's script when the command is a fixed
+    /// wrapper that runs it (ssh_run's wrapper backgrounds the script itself, and waits for it), else the command.
     /// </summary>
     public async Task<SshExec?> TryRunAsync(SshOptions o, SshHost host, string command, byte[]? stdin, TimeSpan timeout,
-        int perHost, TimeSpan idle, Action<string>? onStdout, Action<string>? onStderr, CancellationToken ct)
+        int perHost, TimeSpan idle, Action<string>? onStdout, Action<string>? onStderr, CancellationToken ct, string? work = null)
     {
         var key = $"{host.Alias}|{o.Ssh}|{o.Config}";
         var conn = await AcquireAsync(key, o, host, perHost, idle, ct).ConfigureAwait(false);
@@ -85,8 +100,13 @@ internal sealed class SshBroker(ILogger log, SshBroker.Starter? start = null) : 
         var keep = false;
         try
         {
-            var (result, reusable) = await conn.RunAsync(command, stdin ?? [], timeout, onStdout, onStderr, ct).ConfigureAwait(false);
-            keep = reusable;
+            var (result, reusable, stray) = await conn.RunAsync(command, stdin ?? [], timeout, onStdout, onStderr, ct).ConfigureAwait(false);
+            // A call that left a job printing (its output came between the calls, or after this one's end) or that starts
+            // one in the background does not hand its connection to the next call: that output would land in it (idea-ic4fr9).
+            keep = reusable && !stray && !Backgrounds(work ?? command);
+            if (reusable && !keep)
+                log.LogDebug("SSH to {Host}: the connection is not kept after this call ({Why})", host.Alias,
+                    stray ? "output arrived outside the call" : "the command runs a job in the background");
             return result;
         }
         finally
@@ -225,8 +245,9 @@ internal sealed class SshBroker(ILogger log, SshBroker.Starter? start = null) : 
             }
         }
 
-        /// <summary>The call's result, and whether the connection can carry the next one.</summary>
-        public async Task<(SshExec Result, bool Reusable)> RunAsync(string command, byte[] stdin, TimeSpan timeout,
+        /// <summary>The call's result, whether the connection can carry the next one, and whether output arrived outside the call
+        /// (before its start line or after its end line: a job an earlier call left running).</summary>
+        public async Task<(SshExec Result, bool Reusable, bool Stray)> RunAsync(string command, byte[] stdin, TimeSpan timeout,
             Action<string>? onStdout, Action<string>? onStderr, CancellationToken ct)
         {
             var p = _process!;
@@ -243,17 +264,18 @@ internal sealed class SshBroker(ILogger log, SshBroker.Starter? start = null) : 
                 if (stdin.Length > 0) await input.WriteAsync(stdin, both.Token).ConfigureAwait(false);
                 await input.FlushAsync(both.Token).ConfigureAwait(false);
 
-                var outTask = Until(p.StandardOutput, _outBuffer, "\n" + nonce + " X ", stdout, onStdout, both.Token);
-                var errTask = Until(p.StandardError, _errBuffer, "\n" + nonce + " X", stderr, onStderr, both.Token);
-                var code = await outTask.ConfigureAwait(false);
-                var errDone = await errTask.ConfigureAwait(false);
+                var start = nonce + " S\n";
+                var outTask = Until(p.StandardOutput, _outBuffer, start, "\n" + nonce + " X ", stdout, onStdout, both.Token);
+                var errTask = Until(p.StandardError, _errBuffer, start, "\n" + nonce + " X", stderr, onStderr, both.Token);
+                var (code, outStray) = await outTask.ConfigureAwait(false);
+                var (errDone, errStray) = await errTask.ConfigureAwait(false);
                 if (code is null || errDone is null)
                 {
                     stderr.Append((stderr.ToString().Length > 0 ? "\n" : "") + "the ssh connection closed during the call");
-                    return (new SshExec(255, stdout.ToString(), stderr.ToString(), false, false, stdout.Cut), false);
+                    return (new SshExec(255, stdout.ToString(), stderr.ToString(), false, false, stdout.Cut), false, outStray || errStray);
                 }
                 var exit = int.TryParse(code, out var c) ? c : 255;
-                return (new SshExec(exit, stdout.ToString(), stderr.ToString(), false, false, stdout.Cut), true);
+                return (new SshExec(exit, stdout.ToString(), stderr.ToString(), false, false, stdout.Cut), true, outStray || errStray);
             }
             catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
             {
@@ -261,20 +283,24 @@ internal sealed class SshBroker(ILogger log, SshBroker.Starter? start = null) : 
                 var aborted = ct.IsCancellationRequested;
                 var timedOut = !aborted && timer.IsCancellationRequested;
                 if (!aborted && !timedOut) stderr.Append("the ssh connection closed during the call");
-                return (new SshExec(aborted || timedOut ? -1 : 255, stdout.ToString(), stderr.ToString(), timedOut, aborted, stdout.Cut), false);
+                return (new SshExec(aborted || timedOut ? -1 : 255, stdout.ToString(), stderr.ToString(), timedOut, aborted, stdout.Cut), false, false);
             }
         }
 
         /// <summary>
-        /// Pass a stream through to <paramref name="sink"/> and <paramref name="live"/> until the call's end marker; what
-        /// follows the marker on its line (the exit code on stdout, nothing on stderr), or null when the stream ended first.
-        /// The newline the loop prints in front of the marker is not the command's, so it is not passed on; an
-        /// end that could still be the start of the marker is held back (at most the text after the last newline), and flushed
-        /// to the sink when the call is cancelled.
+        /// Pass a stream through to <paramref name="sink"/> and <paramref name="live"/> from the call's start line to its end
+        /// marker; what follows the marker on its line (the exit code on stdout, nothing on stderr), or null when the stream
+        /// ended first. What came before the start line is not this call's (a job an earlier call left running): it is dropped
+        /// and reported as stray, and so is anything already after the end line. The newline the loop prints in front of the
+        /// marker is not the command's, so it is not passed on; an end that could still be the start of the marker is held back
+        /// (at most the text after the last newline), and flushed to the sink when the call is cancelled.
         /// </summary>
-        private static async Task<string?> Until(StreamReader reader, char[] buffer, string marker, ProcessLauncher.Sink sink, Action<string>? live, CancellationToken ct)
+        private static async Task<(string? Tail, bool Stray)> Until(StreamReader reader, char[] buffer, string start, string marker,
+            ProcessLauncher.Sink sink, Action<string>? live, CancellationToken ct)
         {
             var pending = new StringBuilder();
+            var started = false;
+            var stray = false;
             void Emit(string text)
             {
                 if (text.Length == 0) return;
@@ -289,23 +315,42 @@ internal sealed class SshBroker(ILogger log, SshBroker.Starter? start = null) : 
                 {
                     // a timeout or an abort: what was held back is the command's too (ssh_run finds its process group
                     // id in it, to end the remote work), so it goes to the sink before the call gives up
-                    Emit(pending.ToString());
+                    if (started) Emit(pending.ToString());
                     throw;
                 }
                 if (n == 0)
                 {
-                    Emit(pending.ToString());
-                    return null;
+                    if (started) Emit(pending.ToString());
+                    return (null, stray);
                 }
                 pending.Append(buffer, 0, n);
                 var text = pending.ToString();
+                if (!started)
+                {
+                    var s = text.IndexOf(start, StringComparison.Ordinal);
+                    if (s < 0)
+                    {
+                        // keep only an end that could still grow into the start line; the rest is somebody else's output
+                        var keep = 0;
+                        for (var k = Math.Min(text.Length, start.Length - 1); k > 0; k--)
+                            if (text.EndsWith(start[..k], StringComparison.Ordinal)) { keep = k; break; }
+                        if (text.Length > keep) stray = true;
+                        pending.Clear().Append(text[^keep..]);
+                        continue;
+                    }
+                    if (s > 0) stray = true;
+                    started = true;
+                    text = text[(s + start.Length)..];
+                    pending.Clear().Append(text);
+                }
                 var at = text.IndexOf(marker, StringComparison.Ordinal);
                 if (at >= 0)
                 {
                     var eol = text.IndexOf('\n', at + marker.Length);
                     if (eol < 0 && marker.EndsWith(' ')) continue;   // the exit code has not all arrived
                     Emit(text[..at]);
-                    return eol < 0 ? "" : text[(at + marker.Length)..eol].Trim();
+                    if (eol >= 0 && eol + 1 < text.Length) stray = true;   // printed after the call ended: a job it left running
+                    return (eol < 0 ? "" : text[(at + marker.Length)..eol].Trim(), stray);
                 }
                 // hold back only an end that could still grow into the marker (the marker starts with a newline, so
                 // this is at most the text after the last newline), and pass the rest on now

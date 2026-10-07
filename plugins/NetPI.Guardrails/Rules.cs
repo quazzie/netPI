@@ -120,7 +120,7 @@ internal sealed partial class RuleSet
             return false;
         }
 
-        if (CommandTools.Contains(tool) && ToolPathArgs.CommandOf(tool, args) is { Length: > 0 } command)
+        if (CommandOf(tool, args) is { Length: > 0 } command)
         {
             foreach (var part in Parts(command))
             {
@@ -129,7 +129,8 @@ internal sealed partial class RuleSet
                     if (forms.Any(f => IsMatch(r.Pattern, f)) && Note(new Verdict(r.Action, r.Text, "command", part)))
                         return new Verdict(r.Action, r.Text, "command", part);
             }
-            if (LocalShellTools.Contains(tool))
+            // a local shell, or a program the windows tool starts here, may not name a protected path either
+            if (LocalShellTools.Contains(tool) || tool.Equals("windows", StringComparison.OrdinalIgnoreCase))
                 foreach (var r in _paths)
                     if (Names(command, r) && Note(new Verdict(r.Action, r.Text, "path", r.Root)))
                         return new Verdict(r.Action, r.Text, "path", r.Root);
@@ -149,9 +150,10 @@ internal sealed partial class RuleSet
         return ask;
     }
 
-    /// <summary>The command a bash, pwsh or ssh (run) call runs (null for other tools or without one).</summary>
+    /// <summary>The command a bash, pwsh or ssh (run) call runs, or the program and arguments a windows open starts (null for
+    /// other calls or without one).</summary>
     internal static string? CommandOf(string tool, ToolArgs args) =>
-        CommandTools.Contains(tool) ? ToolPathArgs.CommandOf(tool, args) : null;
+        CommandTools.Contains(tool) ? ToolPathArgs.CommandOf(tool, args) : ToolPathArgs.WindowsOpenCommand(tool, args);
 
     /// <summary>The host an ssh call runs on, when it names one.</summary>
     internal static string? HostOf(ToolArgs args) => args.Str("host", "server", "alias");

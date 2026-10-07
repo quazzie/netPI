@@ -203,12 +203,12 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
     /// (no control directory: Windows) and ssh.reuseConnections is on, else one ssh for this call.
     /// </summary>
     protected async Task<SshExec> Ssh(SshOptions o, SshHost host, string remoteCommand, byte[]? stdin, TimeSpan timeout, CancellationToken ct,
-        Action<string>? onStdout = null, Action<string>? onStderr = null)
+        Action<string>? onStdout = null, Action<string>? onStderr = null, string? work = null)
     {
         if (o.ControlDir is null && Broker is { } broker && ctx.Settings.Get("ssh.reuseConnections", true)
             && await broker.TryRunAsync(o, host, remoteCommand, stdin, timeout,
                 Math.Clamp(ctx.Settings.Get("ssh.connectionsPerHost", 3), 1, 8), TimeSpan.FromSeconds(Math.Clamp(ctx.Settings.Get("ssh.idleSeconds", 300), 10, 3600)),
-                onStdout, onStderr, ct).ConfigureAwait(false) is { } kept)
+                onStdout, onStderr, ct, work).ConfigureAwait(false) is { } kept)
             return kept;
         var args = o.CommonArgs();
         args.AddRange(["-T", "--", host.Alias, remoteCommand]);
@@ -308,7 +308,8 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
             if (text.Length > 0) context.Output?.Invoke(text);
         }
         var started = DateTime.UtcNow;
-        var r = await Ssh(o, host, remote, Encoding.UTF8.GetBytes(body), TimeSpan.FromSeconds(timeout + 20), ct, Live, s => context.Output?.Invoke(s))
+        var r = await Ssh(o, host, remote, Encoding.UTF8.GetBytes(body), TimeSpan.FromSeconds(timeout + 20), ct, Live, s => context.Output?.Invoke(s),
+                work: script)
             .ConfigureAwait(false);
         var durationMs = (long)(DateTime.UtcNow - started).TotalMilliseconds;
 

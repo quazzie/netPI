@@ -14,7 +14,7 @@ public static class GuardrailsTests
         t.Add("guardrails: protected paths: write and edit refuse them, shell commands that name them too", ProtectedPaths);
         t.Add("guardrails: ask rules wait for the user's OK with the instance given back (allow, no, a message instead)", AskRules);
         t.Add("guardrails: a pending ask refused by the plugin stopping is a reload, not a user no", RefusedByStop);
-        t.Add("guardrails: an approval given while the provider's budget is spent lets the call run - the failure lands on the next turn", ApprovalSurvivesSlotFailure);
+        t.Add("guardrails: an approval given while the chat's agent is switched off lets the call run - the failure lands on the next turn", ApprovalSurvivesSlotFailure);
         t.Add("guardrails: allowed for this chat, the rule stops asking there (not in other chats, never for a no)", AllowForSession);
         t.Add("guardrails: in a subagent an ask rule blocks; switched off, nothing is checked", SubagentAndOff);
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
@@ -29,6 +29,26 @@ public static class GuardrailsTests
         t.Add("guardrails: a long wait blocks with the alternatives, or asks and is remembered for the chat", LongWait);
         t.Add("guardrails: a long wait in the same command never hides a blocked command or another ask (nor does allowing the wait allow them)", LongWaitBesideRules);
         t.Add("guardrails: an ssh download into a protected path is refused; an upload from it, and a download elsewhere, are not", SshDownload);
+        t.Add("guardrails: a program the windows tool opens is a command: the command rules and the protected paths judge it", WindowsOpen);
+    }
+
+    /// <summary>
+    /// <c>windows open</c> starts any program with any arguments: a second way to run a command, which no rule saw
+    /// (idea-03oyad). The guard reads it by the names the tool reads (ToolPathArgs), and only for the open action.
+    /// </summary>
+    private static Task WindowsOpen()
+    {
+        var rules = RuleSet.Parse(RuleSet.DefaultCommands, RuleSet.DefaultPaths, Home);
+        Check.True(Judge(rules, "windows", new { action = "open", app = "shutdown", args = "/s /t 0" }) is { Action: GuardAction.Block, Kind: "command" },
+            "shutdown through the windows tool");
+        Check.True(Judge(rules, "Windows", new { verb = "launch", program = "shutdown", arguments = "/r" }) is { Action: GuardAction.Block },
+            "any action synonym and argument name the tool reads");
+        Check.True(Judge(rules, "windows", new { action = "open", app = "notepad", args = Path.Combine(Home, ".ssh", "id_rsa") }) is { Kind: "path" },
+            "a program pointed at a protected file");
+        Check.True(Judge(rules, "windows", new { action = "open", app = "notepad", args = "notes.txt" }) is null, "an ordinary program runs");
+        Check.True(Judge(rules, "windows", new { action = "type", n = 3, text = "shutdown /s" }) is null, "typing text is not a command start");
+        Check.Equal("calc /x", ToolPathArgs.WindowsOpenCommand("windows", ToolArgs.Parse("""{"action":"start","exe":"calc","args":"/x"}""")));
+        return Task.CompletedTask;
     }
 
     private static string Home => OperatingSystem.IsWindows() ? @"C:\Users\me" : "/home/me";
@@ -290,9 +310,9 @@ public static class GuardrailsTests
         Check.Equal(0, approvals.List(null).Count);
     }
 
-    private static async Task<TestHost> StartAsync()
+    private static async Task<TestHost> StartAsync(Action<TestHost>? setup = null)
     {
-        var h = await TestHost.StartAsync();
+        var h = await TestHost.StartAsync(setup);
         await h.StartPluginAsync(new GuardrailsPlugin());
         return h;
     }
@@ -494,26 +514,27 @@ public static class GuardrailsTests
     }
 
     /// <summary>
-    /// The guard wait yields the slot the same way an ask does: while the user is deciding, the provider's budget is
-    /// spent, so the slot cannot be re-acquired. The approval must not be lost to that failure: the call the user
+    /// The guard wait yields the slot the same way an ask does: while the user is deciding, the chat's agent is
+    /// switched off, so the slot cannot be re-acquired. The approval must not be lost to that failure: the call the user
     /// approved runs, and the failure is reported by the next turn's slot check, not as a denied-by-omission (idea-633b6n).
     /// </summary>
     private static async Task ApprovalSurvivesSlotFailure()
     {
-        await using var h = await StartAsync();
+        await using var h = await StartAsync(x => x.Settings.SetQuiet("agents.solo", JsonNode.Parse("""{ "model": "fake/solo" }""")));
         h.Settings.Set("guardrails.commands", new JsonArray("ask: ^git push"));
         var ran = new List<string>();
         h.AddTool(Recorder("bash", ran));
         var s = h.NewSession(model: "fake/solo");
+        await h.Rpc.CallAsync("agents.use", new { sessionId = s.Id, agent = "solo" });
         h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tool("bash", new { command = "git push origin main" });
         await h.SendAsync(s.Id, "push");
         await Wait.Until(() => h.Bus.OfType("guard.asked").Count >= 1, "the call waits for the OK");
         var asked = FakeBus.Data(h.Bus.OfType("guard.asked")[0]);
         await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the call waits with the slot given back");
-        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the instance is free meanwhile");
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "solo").Sum(x => x.Busy), "the instance is free meanwhile");
 
-        // the provider's daily budget is spent while the user is deciding (turn 1 already used tokens)
-        h.Settings.Set("budget.providers", new JsonObject { ["fake"] = new JsonObject { ["dailyTokens"] = 1 } });
+        // the chat's agent is switched off while the user is deciding
+        await h.Rpc.CallAsync("agents.setEnabled", new { id = "solo", enabled = false });
         await h.Bus.DrainAsync();
 
         await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)asked["approvalId"]!, allow = true });
@@ -523,8 +544,8 @@ public static class GuardrailsTests
         Check.Contains(ran[0], "git push");
         Check.Equal("allowed", (string?)FakeBus.Data(h.Bus.OfType("guard.closed").Single())["status"]);
         Check.Equal(1, h.Catalog.Calls, "the next turn's slot check failed before a model call");
-        Check.Contains(h.Runtime.GetBySession(s.Id)!.Error ?? "", "daily token budget", "the real failure is reported by the next turn");
-        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the slot is free");
+        Check.Contains(h.Runtime.GetBySession(s.Id)!.Error ?? "", "The agent \"solo\" is disabled.", "the real failure is reported by the next turn");
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "solo").Sum(x => x.Busy), "the slot is free");
     }
 
     private static async Task RefusedByStop()

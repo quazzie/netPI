@@ -24,6 +24,39 @@ public static class WindowsTests
 
     public static void Register(TestRunner r)
     {
+        // The helper starts apps with ShellExecute, so they are its children: killing its process tree on a stop (or a
+        // slow window) closed the app the agent had opened, unsaved work and all (idea-03oyad).
+        r.Add("windows: a stopped call ends the helper, never the app it opened", async () =>
+        {
+            if (!OperatingSystem.IsWindows()) Check.Skip("Windows only");
+            var agentExe = Built("artifacts/dev/app/plugins/NetPI.Tools.Windows/agent/netpi-windows-agent.exe");
+            var testExe = Built("tests/NetPI.WinTestApp/bin/Debug/netpi-wintest.exe", "tests/NetPI.WinTestApp/bin/Release/netpi-wintest.exe");
+            Check.True(agentExe is not null && testExe is not null, "the helper and the test window are built");
+            Environment.SetEnvironmentVariable("NETPI_WINDOWS_AGENT", agentExe);
+            var agent = new WindowsAgent(new FakePluginContext(T.TempDir("windows-stop")));
+            var title = "NetPI stop " + Guid.NewGuid().ToString("N")[..8];
+            var since = DateTime.Now.AddSeconds(-1);
+            bool Ours(Process p) { try { return p.StartTime >= since; } catch { return false; } }
+            try
+            {
+                // the helper opens the app, then waits for a window that never comes: the stop lands while it waits
+                using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await Check.ThrowsAsync<OperationCanceledException>(() => agent.CallAsync(new System.Text.Json.Nodes.JsonObject
+                {
+                    ["cmd"] = "launch", ["exe"] = testExe, ["args"] = $"\"{title}\"", ["title"] = "never-" + Guid.NewGuid().ToString("N"), ["timeout"] = 20_000,
+                }, stop.Token, 30), "the call is stopped");
+                await Task.Delay(500);
+                var apps = Process.GetProcessesByName("netpi-wintest").Where(Ours).ToList();
+                Check.True(apps.Count > 0, "the helper had opened the app");
+                Check.True(apps.All(p => !p.HasExited), "and it still runs after the helper was ended");
+            }
+            finally
+            {
+                foreach (var p in Process.GetProcessesByName("netpi-wintest").Where(Ours)) try { p.Kill(); } catch { /* gone */ }
+                await agent.DisposeAsync();
+            }
+        });
+
         r.Add("windows: open a window; numbered controls; type, click, toggle through patterns; changes only; steps, find, read, an owned dialog, screenshot, use, close, journal", async () =>
         {
             if (!OperatingSystem.IsWindows()) Check.Skip("Windows only");

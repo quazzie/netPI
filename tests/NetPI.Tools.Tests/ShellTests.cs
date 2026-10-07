@@ -152,10 +152,11 @@ public static class ShellTests
         {
             foreach (var ro in (string[])["ls -la", "cat a.txt | head -5", "grep -rn foo src 2>/dev/null", "git log --oneline -3 && git status",
                          "cd /c/x && git diff HEAD~1 -- a.cs", "sed -n '1,40p' a.cs", "find . -name '*.cs'", "echo hi >&2", "Get-ChildItem -Recurse | Select-Object -First 3",
-                         "FOO=1 rg pattern", "git branch --show-current", "wc -l a.txt > /dev/null"])
+                         "FOO=1 rg pattern", "git branch --show-current", "wc -l a.txt > /dev/null", "sort a.txt | uniq -c", "env | sort", "uniq -c a.txt"])
                 Check.False(ChangeTracker.MayWrite(ro), $"reads only: {ro}");
             foreach (var w in (string[])["dotnet build", "echo x > a.txt", "cat a >> b", "sed -i 's/a/b/' f", "find . -name x -delete", "git commit -m x",
-                         "python - <<'PY'\nopen('a','w').write('x')\nPY", "npm install", "Set-Content a.txt x", "git checkout -- a.txt", "ls; rm a.txt"])
+                         "python - <<'PY'\nopen('a','w').write('x')\nPY", "npm install", "Set-Content a.txt x", "git checkout -- a.txt", "ls; rm a.txt",
+                         "env FOO=1 python w.py", "nohup make", "sort -o out.txt in.txt", "sort --output=out.txt in.txt", "uniq in.txt out.txt"])
                 Check.True(ChangeTracker.MayWrite(w), $"may write: {w}");
 
             Check.True(ChangeTracker.LooksLikeEdit("cd /c/r && python - <<'PY'\np='a.cs'\ns=open(p).read().replace('a','b')\nopen(p,'w').write(s)\nPY"));
@@ -178,6 +179,29 @@ public static class ShellTests
                 Check.Equal(Path.GetFullPath(dir), ChangeTracker.ProbeDir($"cd {gitBash} && make", "C:\\"), "Git Bash spells C:\\x as /c/x");
             }
             return Task.CompletedTask;
+        });
+
+        // A repository too slow (or too dirty) to snapshot was asked again before and after every command, each up to the
+        // budget, for a report that never came (idea-stj3mv).
+        r.Add("shell changes: a repository whose snapshot runs over the budget is left alone for a while, then tried again", async () =>
+        {
+            var dir = T.TempDir("changes-slow");
+            if (!await TestGit.RunAsync(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
+            var (budget, tooBigFor) = (ChangeTracker.Budget, ChangeTracker.TooBigFor);
+            try
+            {
+                var first = await ChangeTracker.TakeAsync(dir, CancellationToken.None);
+                Check.True(first is not null, "a small repository is snapshotted, and its root remembered");
+                ChangeTracker.TooBigFor = TimeSpan.FromMilliseconds(500);
+                ChangeTracker.Budget = TimeSpan.FromTicks(1);   // no git answers in that
+                Check.True(await ChangeTracker.TakeAsync(dir, CancellationToken.None) is null, "over the budget: no snapshot");
+                Check.True(ChangeTracker.Skipping(first!.Root), "and the repository is left alone");
+                ChangeTracker.Budget = budget;
+                Check.True(await ChangeTracker.TakeAsync(dir, CancellationToken.None) is null, "for a while, even with time to spare: no git before every command");
+                await Task.Delay(800);
+                Check.True(await ChangeTracker.TakeAsync(dir, CancellationToken.None) is not null, "then it is tried again");
+            }
+            finally { (ChangeTracker.Budget, ChangeTracker.TooBigFor) = (budget, tooBigFor); }
         });
 
         r.Add("shell changes: git status v2 is read as paths with one letter, and the snapshots' difference is what changed", () =>

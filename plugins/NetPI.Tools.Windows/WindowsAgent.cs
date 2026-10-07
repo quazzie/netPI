@@ -106,9 +106,14 @@ internal sealed class WindowsAgent(IPluginContext ctx) : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    /// <summary>
+    /// Ends the helper, and only the helper: the apps it opened are its children (it starts them with ShellExecute), and they
+    /// belong to the user once open. Killing the tree on a stopped run or a slow window closed the editor or installer the agent
+    /// had opened, unsaved work and all (idea-03oyad).
+    /// </summary>
     private void Kill()
     {
-        try { _process?.Kill(entireProcessTree: true); } catch (Exception) { }
+        try { _process?.Kill(entireProcessTree: false); } catch (Exception) { }
         _process?.Dispose();
         _process = null;
     }

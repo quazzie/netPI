@@ -43,6 +43,18 @@ internal static partial class ChangeTracker
 
     private static readonly ConcurrentDictionary<string, (string? Root, DateTime At)> Roots = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
+    /// <summary>
+    /// How long a repository whose snapshot could not be taken (git ran over the budget, the status was cut, too many dirty
+    /// paths) is left alone. It was asked again before and after every command, each up to the budget, for a report that
+    /// never came (idea-stj3mv). A field so a test can shorten it.
+    /// </summary>
+    public static TimeSpan TooBigFor { get; set; } = TimeSpan.FromMinutes(5);
+
+    private static readonly ConcurrentDictionary<string, DateTime> TooBig = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    /// <summary>Whether a repository is being left alone (<see cref="TooBigFor"/>), for the tests.</summary>
+    internal static bool Skipping(string root) => TooBig.TryGetValue(root, out var until) && DateTime.UtcNow < until;
+
     // ------------------------------------------------------------------ which commands, which directory
 
     private static readonly HashSet<string> ReadOnlyCommands = new(StringComparer.OrdinalIgnoreCase)
@@ -80,7 +92,7 @@ internal static partial class ChangeTracker
         {
             var words = raw.Trim().Split((char[])[' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
             var i = 0;
-            while (i < words.Length && (words[i].Contains('=') && !words[i].StartsWith('-') || words[i] is "sudo" or "time" or "command" or "builtin" or "then" or "do" or "!" or "{" or "(")) i++;
+            while (i < words.Length && (words[i].Contains('=') && !words[i].StartsWith('-') || words[i] is "sudo" or "time" or "command" or "builtin" or "env" or "nohup" or "exec" or "then" or "do" or "!" or "{" or "(")) i++;
             if (i >= words.Length) continue;
             var first = words[i].TrimStart('(').Trim('"', '\'');
             var name = Path.GetFileNameWithoutExtension(first.Replace('\\', '/').Split('/')[^1]);
@@ -94,6 +106,17 @@ internal static partial class ChangeTracker
             if (name.Equals("sed", StringComparison.OrdinalIgnoreCase))
             {
                 if (words.Skip(i + 1).Any(w => w.StartsWith("--in-place") || (w.StartsWith('-') && !w.StartsWith("--") && w.Contains('i')))) return true;
+                continue;
+            }
+            // sort and uniq read, unless they are given a file to write: sort -o out, uniq in out (idea-stj3mv)
+            if (name.Equals("sort", StringComparison.OrdinalIgnoreCase))
+            {
+                if (words.Skip(i + 1).Any(w => w is "-o" || w.StartsWith("--output", StringComparison.Ordinal) || (w.Length > 2 && w.StartsWith("-o", StringComparison.Ordinal)))) return true;
+                continue;
+            }
+            if (name.Equals("uniq", StringComparison.OrdinalIgnoreCase))
+            {
+                if (words.Skip(i + 1).Count(w => !w.StartsWith('-')) >= 2) return true;
                 continue;
             }
             if (name.Equals("find", StringComparison.OrdinalIgnoreCase))
@@ -144,22 +167,32 @@ internal static partial class ChangeTracker
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
         budget.CancelAfter(Budget);
+        string? root = null;
         try
         {
-            var root = knownRoot ?? await RootAsync(dir, budget.Token).ConfigureAwait(false);
-            if (root is null) return null;
+            root = knownRoot ?? await RootAsync(dir, budget.Token).ConfigureAwait(false);
+            if (root is null || Skipping(root)) return null;
             var r = await GitRunner.RunAsync(root, budget.Token, StatusMaxChars, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all").ConfigureAwait(false);
-            if (r.StartError is not null || r.TimedOut || r.Aborted || r.Cut || r.ExitCode != 0) return null;
+            if (r.TimedOut || r.Cut || (r.Aborted && budget.IsCancellationRequested && !ct.IsCancellationRequested)) return TooBigNow(root);
+            if (r.StartError is not null || r.Aborted || r.ExitCode != 0) return null;
             var (head, kinds) = ParseStatus(r.Stdout);
-            if (kinds.Count > MaxDirty) return null;
+            if (kinds.Count > MaxDirty) return TooBigNow(root);
             var dirty = new Dictionary<string, Entry>(StringComparer.Ordinal);
             foreach (var (path, kind) in kinds) dirty[path] = Fingerprint(root, path, kind);
             return new Snapshot(root, head, dirty);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return null;
+            // the budget ran out: a repository this slow is left alone for a while, not asked again before every command
+            return root is null ? null : TooBigNow(root);
         }
+    }
+
+    private static Snapshot? TooBigNow(string root)
+    {
+        if (TooBig.Count > 256) TooBig.Clear();
+        TooBig[root] = DateTime.UtcNow + TooBigFor;
+        return null;
     }
 
     private static async Task<string?> RootAsync(string dir, CancellationToken ct)

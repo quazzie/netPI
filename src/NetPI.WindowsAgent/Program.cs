@@ -60,6 +60,8 @@ internal static class Agent
     {
         if (!States.TryGetValue(hwnd, out var s))
         {
+            // a closed window's numbering (and the automation elements it holds) goes with it
+            foreach (var gone in States.Keys.Where(h => !Win.IsWindow(h)).ToList()) States.Remove(gone);
             States[hwnd] = s = new WindowState { Baseline = Win.Top().Select(w => w.Hwnd).ToHashSet() };
             s.Baseline.Remove(hwnd);
         }

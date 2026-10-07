@@ -917,6 +917,38 @@ public static class SshTests
             Check.True(aborted.Aborted && !aborted.TimedOut, "an abort is an abort");
         });
 
+        // A job a call leaves running writes to the connection's own stdout: its later output landed in whatever call came
+        // next on that connection (idea-ic4fr9). Each call's output is framed now, and a connection that carried such a job is
+        // given up.
+        r.Add("ssh broker: a job a call leaves printing never reaches the next call, and its connection is given up", async () =>
+        {
+            var bash = FindBash();
+            if (bash is null) Check.Skip("no local bash found; the broker is not run");
+            var starts = 0;
+            using var broker = new SshBroker(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, LocalBash(bash, () => Interlocked.Increment(ref starts)));
+            Task<SshExec?> Run(string command) =>
+                broker.TryRunAsync(BrokerOptions, BrokerHost, command, null, TimeSpan.FromSeconds(20), 3, TimeSpan.FromMinutes(5), null, null, CancellationToken.None);
+
+            var shown = (await Run("(sleep 0.3; echo late) & echo now"))!;
+            Check.Equal("now\n", shown.Stdout);
+            Check.Equal(0, broker.Open(), "a command with a job in the background does not keep its connection");
+            await Task.Delay(700);
+            Check.Equal("next\n", (await Run("echo next"))!.Stdout, "a fresh connection: the late output is nowhere");
+            Check.Equal(2, starts);
+
+            // a job the command does not show (an & made at run time) is caught by its output instead
+            var hidden = (await Run("eval \"(sleep 0.3; echo late) $(printf '\\046') true\"; echo now"))!;
+            Check.Equal("now\n", hidden.Stdout);
+            Check.Equal(1, broker.Open(), "nothing showed a job: the connection is kept");
+            await Task.Delay(800);
+            Check.Equal("after\n", (await Run("echo after"))!.Stdout, "what it printed between the calls is not this call's");
+            Check.Equal(0, broker.Open(), "and the connection is given up, so no more of it lands in a later call");
+
+            Check.True(SshBroker.Backgrounds("a & b") && SshBroker.Backgrounds("server &"), "a lone & runs a job");
+            Check.False(SshBroker.Backgrounds("a && b") || SshBroker.Backgrounds("x 2>&1") || SshBroker.Backgrounds("y &> log") || SshBroker.Backgrounds("z >&2"),
+                "&&, and the & of a redirection, do not");
+        });
+
         r.Add("ssh broker: a connection whose handshake does not come back sends the host's calls the old way for a while", async () =>
         {
             var bash = FindBash();

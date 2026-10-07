@@ -96,6 +96,13 @@ function parse(sessionId) {
   return m ? { tabId: +m[1], child: m[2] } : null;
 }
 
+// The promise of the header, kept here rather than left to NetPI (idea-ic4fr9): anything holding the relay's key could
+// otherwise attach the debugger to every tab of this Chrome — the user's mail and bank included.
+function allow(tabId) {
+  if (!known.has(tabId)) throw new Error(`tab ${tabId} is not one NetPI opened or the user shared`);
+  return tabId;
+}
+
 async function attach(tabId) {
   if (attached.has(tabId)) return;
   await chrome.debugger.attach({ tabId }, '1.3');
@@ -120,7 +127,7 @@ async function run(method, params, sessionId) {
         return { targetId: String(tab.id) };
       }
       case 'Target.attachToTarget': {
-        const tabId = +params.targetId;
+        const tabId = allow(+params.targetId);
         await attach(tabId);
         return { sessionId: `tab-${tabId}` };
       }
@@ -130,18 +137,18 @@ async function run(method, params, sessionId) {
         return {};
       }
       case 'Target.closeTarget': {
-        const tabId = +params.targetId;
+        const tabId = allow(+params.targetId);
         await detach(tabId);
         await chrome.tabs.remove(tabId).catch(() => {});
         return { success: true };
       }
       case 'Target.activateTarget': {
-        const tab = await chrome.tabs.update(+params.targetId, { active: true });
+        const tab = await chrome.tabs.update(allow(+params.targetId), { active: true });
         await chrome.windows.update(tab.windowId, { focused: true });
         return {};
       }
       case 'Target.getTargetInfo': {
-        const tab = await chrome.tabs.get(+params.targetId);
+        const tab = await chrome.tabs.get(allow(+params.targetId));
         return {
           targetInfo: { targetId: String(tab.id), type: 'page', url: tab.url || tab.pendingUrl || '', title: tab.title || '', attached: attached.has(tab.id) },
         };
@@ -152,6 +159,7 @@ async function run(method, params, sessionId) {
   }
   const t = parse(sessionId);
   if (!t) throw new Error(`unknown session ${sessionId}`);
+  if (!attached.has(t.tabId)) throw new Error(`tab ${t.tabId} is not attached`);
   const target = t.child ? { tabId: t.tabId, sessionId: t.child } : { tabId: t.tabId };
   return await chrome.debugger.sendCommand(target, method, params ?? {});
 }
@@ -212,7 +220,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       await connect();
       return { ok: true };
     }
-    return await request(msg);
+    // the user shares a tab: NetPI attaches to it before it answers, so it is known from now on (and no longer once unshared)
+    if (msg.op === 'share' && Number.isInteger(+msg.tabId)) known.add(+msg.tabId);
+    const answer = await request(msg);
+    if (msg.op === 'unshare' && Number.isInteger(+msg.tabId)) known.delete(+msg.tabId);
+    return answer;
   })().then(
     (result) => reply({ result }),
     (e) => reply({ error: String(e?.message ?? e) }),

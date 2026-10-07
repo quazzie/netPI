@@ -240,6 +240,46 @@ public static class FileTests
             Check.Equal("one\n", T.ReadRaw(a), "nothing was written by any of them");
         });
 
+        // Read, matched, written: a change another writer made in between was overwritten without a word (idea-ic4fr9).
+        r.Add("edit: a file changed between the edit's read and its write is left to the other writer (one file, and a batch)", async () =>
+        {
+            var dir = T.TempDir("edit-stale");
+            var a = T.WriteText(dir, "a.txt", "one\n");
+            var b = T.WriteText(dir, "b.txt", "two\n");
+            var c = T.WriteText(dir, "c.txt", "three\n");
+            // the hook runs once per check, for the test's own files only (other tests may run beside this one)
+            string? changeOnce = null;
+            EditTool.BeforeWriteCheck = path =>
+            {
+                if (string.Equals(path, changeOnce, StringComparison.OrdinalIgnoreCase)) { File.WriteAllText(path, "someone else\n"); changeOnce = null; }
+            };
+            try
+            {
+                changeOnce = a;
+                var res = await T.Run(Edit, dir, new { path = "a.txt", oldText = "one", newText = "uno" });
+                ToolCheck.Error(res, "changed since this edit read it");
+                Check.Equal("someone else\n", T.ReadRaw(a), "the other writer's change stands");
+
+                // a batch: the second file changes under it, so none is written
+                T.WriteText(dir, "a.txt", "one\n");
+                changeOnce = b;
+                res = await T.Run(Edit, dir, new
+                {
+                    files = new object[]
+                    {
+                        new { path = "a.txt", oldText = "one", newText = "uno" },
+                        new { path = "b.txt", oldText = "two", newText = "dos" },
+                        new { path = "c.txt", oldText = "three", newText = "tres" },
+                    },
+                });
+                ToolCheck.Error(res, "No files were changed");
+                Check.Equal("one\n", T.ReadRaw(a), "all or nothing");
+                Check.Equal("someone else\n", T.ReadRaw(b));
+                Check.Equal("three\n", T.ReadRaw(c));
+            }
+            finally { EditTool.BeforeWriteCheck = null; }
+        });
+
         r.Add("edit: TargetPaths reads path, or every files[].path (the rule the guards copy)", () =>
         {
             Check.Equal("a.cs", string.Join("|", EditTool.TargetPaths(ToolArgs.Parse("""{"file_path":"a.cs","oldText":"x"}"""))));

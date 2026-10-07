@@ -27,6 +27,24 @@ public static class ToolPathArgs
     /// <summary>The names <c>ssh</c> (copy) reads its local destination by: the file an ssh download writes on this machine.</summary>
     public static readonly string[] SshDownloadTargetNames = ["to", "destination", "dest", "target"];
 
+    /// <summary>The names the <c>windows</c> tool reads its action, the program it opens and that program's arguments by.</summary>
+    public static readonly string[] WindowsActionNames = ["action", "verb", "command"];
+    public static readonly string[] WindowsAppNames = ["app", "program", "exe", "path", "uri"];
+    public static readonly string[] WindowsArgsNames = ["args", "arguments"];
+
+    /// <summary>
+    /// The command line a <c>windows</c> open starts (the program and its arguments, as the tool reads them), or null for any
+    /// other call. Starting a program is running a command like the shell's, so the command rules judge it too: a program
+    /// and its arguments went past every rule as a second way to run one (idea-03oyad).
+    /// </summary>
+    public static string? WindowsOpenCommand(string tool, ToolArgs args)
+    {
+        if (!tool.Equals("windows", StringComparison.OrdinalIgnoreCase)) return null;
+        if ((args.Str(WindowsActionNames) ?? "").Trim().ToLowerInvariant() is not ("open" or "launch" or "start" or "run")) return null;
+        if (NonBlank(args.Str(WindowsAppNames)) is not { } app) return null;
+        return NonBlank(args.Str(WindowsArgsNames)) is { } rest ? app + " " + rest : app;
+    }
+
     /// <summary>The path argument of a file tool call, trimmed; null when absent or blank.</summary>
     public static string? PathOf(ToolArgs args) => NonBlank(args.Str(PathNames));
 

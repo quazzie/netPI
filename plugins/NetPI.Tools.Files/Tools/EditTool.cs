@@ -118,6 +118,8 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
         if (!p!.Changed)
             return ToolResult.Ok($"No changes: the edits leave {p.Rel} unchanged.", new { path = p.Full, diff = "", added = 0, removed = 0, edits = edits.Count });
 
+        if (ChangedSinceRead(p) is { } changed)
+            return ToolResult.Error(changed + " Nothing was written.", new { path = p.Full, changedSinceRead = true });
         TextCodec.WriteAtomic(p.Full, Encode(p));
         var (line, diff) = Summarize(p);
         var sb = new StringBuilder(line).Append('\n').Append('\n');
@@ -166,12 +168,18 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
             return ToolResult.Ok($"No changes: the edits leave all {prepared.Count} files unchanged.",
                 new { files = prepared.Select(p => new { path = p.Full, diff = "", added = 0, removed = 0, edits = p.Edits }).ToArray(), diff = "", added = 0, removed = 0, edits = prepared.Sum(p => p.Edits) });
 
+        // every file is still what was read, before any of them is written: all or nothing holds for a writer in between too
+        foreach (var p in changed)
+            if (ChangedSinceRead(p) is { } stale)
+                return ToolResult.Error($"{stale} No files were changed (all-or-nothing).", new { path = p.Full, changedSinceRead = true, files = changed.Count });
+
         var written = new List<Prepared>();
         foreach (var p in changed)
         {
             try
             {
                 ct.ThrowIfCancellationRequested();
+                if (ChangedSinceRead(p) is { } stale) throw new IOException(stale);
                 TextCodec.WriteAtomic(p.Full, Encode(p));
                 written.Add(p);
             }
@@ -180,7 +188,12 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
                 var notRestored = new List<string>();
                 foreach (var w in written)
                 {
-                    try { TextCodec.WriteAtomic(w.Full, w.Original); }
+                    try
+                    {
+                        // a file another writer changed after this edit wrote it is theirs now: not put back over them
+                        if (!File.ReadAllBytes(w.Full).AsSpan().SequenceEqual(Encode(w))) { notRestored.Add(w.Rel + " (changed again since)"); continue; }
+                        TextCodec.WriteAtomic(w.Full, w.Original);
+                    }
                     catch (Exception) { notRestored.Add(w.Rel); }
                 }
                 var what = ex is OperationCanceledException ? "was cancelled" : $"failed: {ex.Message}";
@@ -303,6 +316,29 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
     }
 
     private static byte[] Encode(Prepared p) => TextCodec.Encode(p.Text, p.Eol, p.Doc.Bom, p.Doc.Encoding);
+
+    /// <summary>For the tests: called with a file's path just before it is checked against what the edit read (a writer in between).</summary>
+    internal static Action<string>? BeforeWriteCheck { get; set; }
+
+    /// <summary>
+    /// Null while the file on disk is still the bytes this edit read, else why it is not: an edit is read, matched and written,
+    /// and a change another writer made in between (an agent sharing the checkout, a formatter, an editor's autosave) was
+    /// overwritten without a word (idea-ic4fr9). Checked right before the write, so the window is the write itself.
+    /// </summary>
+    private static string? ChangedSinceRead(Prepared p)
+    {
+        BeforeWriteCheck?.Invoke(p.Full);
+        try
+        {
+            return File.ReadAllBytes(p.Full).AsSpan().SequenceEqual(p.Original)
+                ? null
+                : $"{p.Rel} changed since this edit read it (another writer: an agent in the same checkout, a formatter, an editor's autosave): read it again and repeat the edit.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return $"{p.Rel} could not be read again before writing ({ex.Message}).";
+        }
+    }
 
     /// <summary>The file's result line (<c>Applied 2 edits to a.cs (+3 −1)</c> with its notes) and its diff.</summary>
     private static (string Line, UnifiedDiff Diff) Summarize(Prepared p)
