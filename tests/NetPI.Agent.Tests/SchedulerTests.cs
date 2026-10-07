@@ -61,10 +61,13 @@ public static class SchedulerTests
         gate.SetResult();
         foreach (var s in sessions) await h.IdleAsync(s.Id);
         Check.Equal(3, h.Catalog.Calls);
-        await Task.Delay(250);
+        // the coalesced agents.changed is on the scheduler's publish timer: wait until nothing is left on it, and the last
+        // one sent says nothing runs (a slot released after the check schedules one more, so both are asked together)
+        var scheduler = (AgentScheduler)h.Scheduler!;
+        int? Running() => h.Bus.OfType(AgentSchedulerEvents.Changed).LastOrDefault() is { } e ? ((JsonArray)FakeBus.Data(e)["agents"]!).Count : null;
+        await Wait.Until(() => !scheduler.PublishPending && Running() == 0, "the last agents.changed: no agents, nothing running");
         await h.Bus.DrainAsync();
-        var last = FakeBus.Data(h.Bus.OfType(AgentSchedulerEvents.Changed).Last());
-        Check.Equal(0, ((JsonArray)last["agents"]!).Count, "no agents, nothing running");
+        Check.Equal(0, Running(), "no agents, nothing running");
     }
 
     private static JsonNode J(string json) => JsonNode.Parse(json)!;
@@ -339,27 +342,31 @@ public static class SchedulerTests
     {
         await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents);
         var s = h.Scheduler!;
-        await Task.Delay(250);
+        var scheduler = (AgentScheduler)s;
+        // Close the window instead of guessing at it: the coalesced event is on the scheduler's publish timer, which
+        // runs late under load, and a fixed delay sampled before the event arrived made the next assertion count a
+        // straggler it had not seen yet. The scheduler says when nothing is on that timer any more.
+        async Task Settled(string what)
+        {
+            await h.Bus.DrainAsync();
+            await Wait.Until(() => !scheduler.PublishPending, what);
+            await h.Bus.DrainAsync();
+        }
+        await Settled("the start's agents.changed is out");
         var before = h.Bus.OfType(AgentSchedulerEvents.Changed).Count;
         var pool = s.Resolve(TestHost.LocalModel());
         var leases = new List<IAgentSlot>();
         for (var i = 0; i < 2; i++) leases.Add(await s.AcquireAsync(Req(pool, "A" + i), CancellationToken.None));
         foreach (var l in leases) l.Dispose();
-        // Close the window instead of guessing at it: the coalesced event is on the scheduler's publish timer, which
-        // runs late under load, and a fixed delay sampled before the event arrived made the next assertion count a
-        // straggler it had not seen yet.
-        var publishWindowMs = (s as AgentScheduler)?.PublishDelayMs ?? 100;
         await Wait.Until(() => h.Bus.OfType(AgentSchedulerEvents.Changed).Count > before, "the coalesced agents.changed");
-        await Task.Delay(2 * publishWindowMs + 200);
-        await h.Bus.DrainAsync();
+        await Settled("no agents.changed is left on the timer");
         var after = h.Bus.OfType(AgentSchedulerEvents.Changed).Count;
         Check.True(after - before is >= 1 and <= 2, $"coalesced into {after - before} event(s)");
         var pools = (JsonArray)FakeBus.Data(h.Bus.OfType(AgentSchedulerEvents.Changed).Last())["agents"]!;
         Check.Equal(0, pools.Count, "nothing busy");
-        // a settings change that changes nothing here sends nothing
+        // a settings change that changes nothing here sends nothing: once its settings.changed was handled, nothing is on the timer
         h.Settings.Set("ui.theme", "dark");
-        await Task.Delay(2 * publishWindowMs + 200);
-        await h.Bus.DrainAsync();
+        await Settled("the settings change was handled");
         Check.Equal(after, h.Bus.OfType(AgentSchedulerEvents.Changed).Count);
     }
 
@@ -377,7 +384,6 @@ public static class SchedulerTests
 
         var a = await s.AcquireAsync(Req("solo", "A"), CancellationToken.None);
         var w1 = s.AcquireAsync(Req("solo", "W1"), CancellationToken.None).AsTask();
-        await Task.Delay(50);
         Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "one waiter in line");
 
         // beyond the cap: refused at once (the callers handle it and tell the user), not parked
@@ -390,12 +396,13 @@ public static class SchedulerTests
         var lw1 = await w1.WaitAsync(TimeSpan.FromSeconds(3));
         Check.Equal("W1", lw1.AgentId);
 
-        // a waiter that waits longer than queueTimeoutSeconds fails with a clear error instead of waiting forever
+        // a waiter that waits longer than queueTimeoutSeconds fails with a clear error instead of waiting forever (each
+        // of its "seconds" a quarter of one here: the wait is what is tested, not its length in real seconds)
         lw1.Dispose();
+        ((AgentScheduler)s).QueueTimeoutUnit = TimeSpan.FromMilliseconds(250);
         var a2 = await s.AcquireAsync(Req("solo", "A2"), CancellationToken.None);
         var w3 = s.AcquireAsync(Req("solo", "W3"), CancellationToken.None).AsTask();
-        await Task.Delay(50);
-        Check.Equal("queued", s.Snapshot().Single(p => p.Key == "solo").Status);
+        Check.Equal("queued", s.Snapshot().Single(p => p.Key == "solo").Status);   // in line the moment AcquireAsync returns
         try { await w3.WaitAsync(TimeSpan.FromSeconds(10)); throw new AssertException("expected CallRefusedException"); }
         catch (CallRefusedException ex) { Check.Contains(ex.Message, "agents.queueTimeoutSeconds"); Check.Contains(ex.Message, "2 s"); }
         Check.True(s.Snapshot().Single(p => p.Key == "solo").Waiters.Count == 0, "the timed-out waiter is gone");
@@ -450,12 +457,10 @@ public static class SchedulerTests
         var b1 = await s.AcquireAsync(Req("b", "B1"), CancellationToken.None);
 
         // arrival order across the two kinds of waiter: a run queued for a, then one for any agent, then another for a
+        // (a waiter is in line, with its place, when AcquireAsync returns)
         var w1 = s.AcquireAsync(Req("a", "W1"), CancellationToken.None).AsTask();
-        await Task.Delay(30);
         var f = s.AcquireAsync(Any("F", 0, "a", "b"), CancellationToken.None).AsTask();
-        await Task.Delay(30);
         var w2 = s.AcquireAsync(Req("a", "W2"), CancellationToken.None).AsTask();
-        await Task.Delay(30);
         a1.Dispose();
         var lw1 = await w1.WaitAsync(TimeSpan.FromSeconds(2));
         Check.Equal("a", lw1.Key, "the older run queued for a takes a");
@@ -473,9 +478,7 @@ public static class SchedulerTests
         a1 = await s.AcquireAsync(Req("a", "A2"), CancellationToken.None);
         b1 = await s.AcquireAsync(Req("b", "B2"), CancellationToken.None);
         var low = s.AcquireAsync(Req("a", "LOW"), CancellationToken.None).AsTask();
-        await Task.Delay(30);
         var high = s.AcquireAsync(Any("HIGH", 5, "a", "b"), CancellationToken.None).AsTask();
-        await Task.Delay(30);
         a1.Dispose();
         var lhigh = await high.WaitAsync(TimeSpan.FromSeconds(2));
         Check.Equal("a", lhigh.Key);
@@ -489,22 +492,24 @@ public static class SchedulerTests
         b1 = await s.AcquireAsync(Req("b", "B3"), CancellationToken.None);
         using var cts = new CancellationTokenSource();
         var c = s.AcquireAsync(Any("C", 0, "a", "b"), cts.Token).AsTask();
-        await Task.Delay(30);
         Check.Equal(1, s.Unassigned().Count);
         cts.Cancel();
         try { await c.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected cancellation"); }
         catch (OperationCanceledException) { }
         Check.Equal(0, s.Unassigned().Count, "a cancelled run leaves the list");
 
-        // timed out like a queued run (agents.queueTimeoutSeconds = 3)
+        // timed out like a queued run (agents.queueTimeoutSeconds = 3; each of its "seconds" a tenth of one here, and
+        // only for this run: the waiters before and after it must not time out while the test looks at them)
+        var scheduler = (AgentScheduler)s;
+        scheduler.QueueTimeoutUnit = TimeSpan.FromMilliseconds(100);
         var t = s.AcquireAsync(Any("T", 0, "a", "b"), CancellationToken.None).AsTask();
+        scheduler.QueueTimeoutUnit = TimeSpan.FromSeconds(1);
         try { await t.WaitAsync(TimeSpan.FromSeconds(6)); throw new AssertException("expected CallRefusedException"); }
         catch (CallRefusedException ex) { Check.Contains(ex.Message, "No agent had a free instance for 3 s"); }
         Check.Equal(0, s.Unassigned().Count);
 
         // refused when none of its agents can take work any more
         var r = s.AcquireAsync(Any("R", 0, "a", "b"), CancellationToken.None).AsTask();
-        await Task.Delay(30);
         h.Settings.Set("agents.a.disabled", JsonValue.Create(true));
         await h.Bus.DrainAsync();
         Check.False(r.IsCompleted, "b can still take it");
@@ -651,9 +656,12 @@ public static class SchedulerTests
         await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.solo", J("""{ "model": "fake/solo" }""")),
             plugins: TestHost.Plugins.Agents);
         var s = h.Scheduler!;
+        // A "second" of agents.queueTimeoutSeconds lasts a millisecond here: 300 ms of waiting outlasts any default
+        // timeout up to five minutes, where 3 real seconds only showed there was none of 1 or 2 s.
+        ((AgentScheduler)s).QueueTimeoutUnit = TimeSpan.FromMilliseconds(1);
         var a = await s.AcquireAsync(Req("solo", "A"), CancellationToken.None);
         var w = s.AcquireAsync(Req("solo", "W"), CancellationToken.None).AsTask();
-        await Task.Delay(3000); // longer than any timeout a test would set (the explicit one above is 2 s)
+        await Task.Delay(300);
         Check.False(w.IsCompleted, "a waiter is not failed just for waiting");
         Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "it is still in line");
         a.Dispose();
