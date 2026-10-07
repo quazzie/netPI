@@ -185,9 +185,16 @@ public static class BuildTests
         var child = Path.Combine(app, "waiter.ps1");
         var parent = Path.Combine(app, "locktest.ps1");
 
-        // the waiter: a second publisher that tries to take the same lock and records when it finally gets it
+        // the waiter: a second publisher that tries to take the same lock and records when it finally gets it. Every
+        // refused attempt sleeps before the next (InstallRobustness holds the function to that), so a Start-Sleep that
+        // leaves a note first tells the parent the moment the lock has turned the waiter away: no guessing how long a
+        // process takes to start and try.
         File.WriteAllText(child, lockFn + "\r\n" + @"
 $ErrorActionPreference = 'Stop'
+function Start-Sleep([int] $Seconds) {
+    Set-Content -LiteralPath (Join-Path '@APP@' 'refused.txt') 'REFUSED'
+    Microsoft.PowerShell.Utility\Start-Sleep -Seconds $Seconds
+}
 $lock = Join-Path '@APP@' '.install.lock'
 $fs = Enter-InstallLock $lock
 $fs.Dispose()
@@ -199,15 +206,21 @@ $ErrorActionPreference = 'Stop'
 $app = '@APP@'
 $lock = Join-Path $app '.install.lock'
 $marker = Join-Path $app 'acquired.txt'
+$refused = Join-Path $app 'refused.txt'
 
 # 1. an acquire creates the lock and holds it exclusively
 $fs = Enter-InstallLock $lock
 if (-not (Test-Path -LiteralPath $lock)) { throw 'acquire did not create the lock file' }
 try { [IO.File]::Open($lock, 'Open', 'ReadWrite', 'None').Dispose(); throw 'the lock file is not held exclusively' } catch [IO.IOException] {}
 
-# 2. a second publisher (its own process) must wait, not interleave
+# 2. a second publisher (its own process) must wait, not interleave: it is turned away while the lock is held
 $waiter = Start-Process -FilePath '@SHELL@' -ArgumentList @('-NoProfile','-File','@CHILD@') -PassThru -WindowStyle Hidden
-Start-Sleep -Seconds 3
+$deadline = (Get-Date).AddSeconds(60)
+while (-not (Test-Path -LiteralPath $refused) -and -not (Test-Path -LiteralPath $marker)) {
+    if ($waiter.HasExited) { throw ('the waiter ended before it was turned away, exit ' + $waiter.ExitCode) }
+    if ((Get-Date) -gt $deadline) { throw 'the waiter did not try the lock within a minute' }
+    Start-Sleep -Milliseconds 50
+}
 if (Test-Path -LiteralPath $marker) { throw 'the second publisher acquired while the lock was still held' }
 
 # 3. releasing lets the waiter in
