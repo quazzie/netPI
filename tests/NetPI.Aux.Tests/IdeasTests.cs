@@ -904,22 +904,6 @@ public static class IdeasTests
             Check.Equal("x|y", string.Join("|", IdeaOps.ParseTags(JsonValue.Create("[\"x\",\"y\"]"))));
         });
 
-        // Recall on the first message: a fake decide.decision answers with the probabilities set per test and records
-        // what it was asked.
-        static List<JsonObject> FakeDecision(Env env, Func<JsonObject, Dictionary<string, double>> answer)
-        {
-            var seen = new List<JsonObject>();
-            env.Ctx.RpcFake.Register("decide.decision", (req, _) =>
-            {
-                var body = JsonObject.Create(req.Params.Clone())!;
-                seen.Add(body);
-                var probs = new JsonObject();
-                foreach (var (k, v) in answer(body)) probs[k] = v;
-                return Task.FromResult<object?>(new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = probs }) });
-            });
-            return seen;
-        }
-
         async Task<(Env Env, string Mine, string Global, string Other)> RecallEnv()
         {
             var env = new Env();
@@ -971,7 +955,7 @@ public static class IdeasTests
 
         async Task<JsonArray> Suggestions(Env env) => (JsonArray)(await env.Rpc("ideas.suggestions", new JsonObject()))["suggestions"]!.AsArray().DeepClone();
 
-        // The check runs in the background after the tab is gone; wait for its card (or for it to not come).
+        // The check runs in the background after the tab is gone; wait for its card.
         async Task<JsonArray> WaitForSuggestions(Env env, int count, int ms = 4000)
         {
             for (var waited = 0; waited < ms; waited += 25)
@@ -983,28 +967,18 @@ public static class IdeasTests
             throw new AssertException($"expected {count} suggestion(s), got {(await Suggestions(env)).Count}");
         }
 
-        r.Add("ideas: closing a chat attaches it to the idea it worked on, with no question", async () =>
+        // A card that must not come cannot be waited for: wait for the check's own end instead, its mark in the store
+        // leaving "running" (done, or failed with the reason).
+        async Task<JsonObject> WaitForMark(Env env, string sessionId, int ms = 4000)
         {
-            var env = await TalkEnv();
-            var mine = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge reset", ["summary"] = "Reset the counter" } }))["id"].Str()!;
-            FakeDecision(env, _ => new() { ["A"] = 0.94, ["B"] = 0.05, ["C"] = 0.01 });
-            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "NOTHING" }] };
-
-            var res = await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
-            Check.Equal("started", res["reason"].Str());
-            // The attach runs in the background: wait for the entry, not for a card (NOTHING makes no card).
-            var sessions = new List<JsonObject>();
-            for (var waited = 0; waited < 4000 && sessions.Count == 0; waited += 25)
+            for (var waited = 0; waited < ms; waited += 25)
             {
-                var idea = await env.Rpc("ideas.get", new JsonObject { ["id"] = mine });
-                sessions = idea["sessions"]?.AsArray().OfType<JsonObject>().ToList() ?? [];
-                if (sessions.Count == 0) await Task.Delay(25);
+                var mark = env.Repo.Checks().FirstOrDefault(m => m["sessionId"].Str() == sessionId);
+                if (mark?["state"].Str() is "done" or "failed") return mark;
+                await Task.Delay(25);
             }
-            Check.Equal(1, sessions.Count);
-            Check.Equal(env.Session.Id, sessions[0]["sessionId"].Str());
-            Check.Equal("s", sessions[0]["title"].Str());
-            Check.Equal(false, sessions[0]["seen"]!.GetValue<bool>()); // unseen until the user opens the idea
-        });
+            throw new AssertException("the check never finished");
+        }
 
         r.Add("ideas: a plan the closed chat never built becomes a card, and saving it writes the idea with the session", async () =>
         {
@@ -1039,12 +1013,16 @@ public static class IdeasTests
             Check.Equal(1, ((JsonArray)(await env.Rpc("ideas.list", new JsonObject()))["ideas"]!).Count, "and still one idea");
         });
 
-        r.Add("ideas: NOTHING leaves no card, discard is final, and the user's edit is what gets saved", async () =>
+        // That a discarded card is final (the same plan is not offered again) is "ideas storage: a discarded card does
+        // not come back as a new one" in IdeasStorageTests.
+        r.Add("ideas: NOTHING leaves no card, and the user's edit is what gets saved", async () =>
         {
             var env = await TalkEnv();
             env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "NOTHING" }] };
             await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
-            Check.Equal(0, (await WaitForSuggestions(env, 0)).Count);
+            Check.Equal("done", (await WaitForMark(env, env.Session.Id))["state"].Str(), "the check ran to its end");
+            Check.Equal(1, env.Ctx.ModelsFake.Requests.Count, "and asked the model");
+            Check.Equal(0, (await Suggestions(env)).Count, "NOTHING leaves no card");
 
             env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "SAVE\nA plan\nSomething" }] };
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("and one more thing about the deploy steps"));
@@ -1091,8 +1069,9 @@ public static class IdeasTests
             var env = await TalkEnv();
             env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "NOTHING" }] };
             Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
-            await WaitForSuggestions(env, 0);
-            Check.Equal("already", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+            Check.Equal("done", (await WaitForMark(env, env.Session.Id))["state"].Str(), "the first check ran to its end");
+            Check.Equal(1, env.Ctx.ModelsFake.Requests.Count, "with one model call");
+            Check.Equal("already", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str(), "a finished check is not run again");
 
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("one more question about the counter"));
             Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());

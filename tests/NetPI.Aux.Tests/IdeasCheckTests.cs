@@ -239,7 +239,7 @@ public static class IdeasCheckTests
             finally { IdeaSaveCheck.DeferStep = previousStep; env.Ctx.Unload(); }
         });
 
-        r.Add("ideas check: the attach decision is asked about the conversation, not only the option list", async () =>
+        r.Add("ideas check: closing a chat attaches it to the idea it worked on, with no question; the decision is asked about the conversation", async () =>
         {
             var env = new Env();
             await env.StartAsync();
@@ -250,9 +250,15 @@ public static class IdeasCheckTests
             env.Decide(_ => new() { ["A"] = 0.93, ["B"] = 0.06, ["C"] = 0.01 });
             env.Says("NOTHING");
 
-            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
-            for (var waited = 0; waited < 200 && (await env.SessionsOn(idea)).Count == 0; waited += 25) await Task.Delay(25);
-            Check.Equal(1, (await env.SessionsOn(idea)).Count, "the chat is attached");
+            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+            // The attach runs in the background: wait for the check's end (NOTHING makes no card to wait for).
+            await env.WaitForMark(env.Session.Id);
+            var sessions = ((await env.Rpc("ideas.get", new JsonObject { ["id"] = idea }))["sessions"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+            Check.Equal(1, sessions.Count, "the chat is attached");
+            Check.Equal(env.Session.Id, sessions[0]["sessionId"].Str());
+            Check.Equal("s", sessions[0]["title"].Str());
+            Check.Equal(false, sessions[0]["seen"]!.GetValue<bool>(), "unseen until the user opens the idea");
+            Check.Equal(0, (await env.Cards()).Count, "an attach is no question to the user");
 
             Check.Equal(1, env.Asked.Count, "one decision");
             var asked = env.Asked[0].ToJsonString();
