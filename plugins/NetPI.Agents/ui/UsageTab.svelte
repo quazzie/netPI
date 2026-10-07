@@ -83,7 +83,10 @@
   const totals = $derived(data?.totals ?? null);
   const budget = $derived(data?.budget ?? null);
   const limit = $derived(isCurrent && budget?.monthlyUsd ? budget.monthlyUsd : null);
-  const frac = $derived(limit ? Math.min(1, (totals?.costUsd ?? 0) / limit) : null);
+  // the current period without the calls still running: they count at their reservation until they settle (idea-qbi2fv)
+  const reserved = $derived(isCurrent ? (budget?.reservedOrUnsettledUsd ?? 0) : 0);
+  const periodCost = $derived(Math.max(0, (totals?.costUsd ?? 0) - reserved));
+  const frac = $derived(limit ? Math.min(1, periodCost / limit) : null);
   const days = $derived(data?.days ?? []);
   const byCost = $derived(days.some((d) => d.costUsd > 0));
   const chartMax = $derived(Math.max(0.0000001, ...days.map((d) => (byCost ? d.costUsd : d.inputTokens + d.outputTokens))));
@@ -130,7 +133,8 @@
     <!-- ------------------------------------------------------------ the period: what it cost, against the limit -->
     <div class="top">
       <div class="np-line np-baseline">
-        <span class="big np-mono" class:warn={isCurrent && budget?.warning && !budget?.exhausted} class:err={isCurrent && budget?.exhausted}>{usd(totals.costUsd) || '$0'}</span>
+        <span class="big np-mono" class:warn={isCurrent && budget?.warning && !budget?.exhausted} class:err={isCurrent && budget?.exhausted}
+          title={reserved > 0 ? `${usd(reserved)} more is reserved for calls still running` : undefined}>{usd(periodCost) || '$0'}</span>
         {#if limit}<span class="np-dim np-mono">&nbsp;of {usd(limit)}</span>{/if}
         <span class="np-grow"></span>
         <span class="np-dim small">{label(data.period, data.end)}</span>
@@ -146,7 +150,7 @@
       </div>
       {#if isCurrent}
         <div class="figs">
-          <span>today <b>{usd(budget?.todayUsd ?? todayRow?.costUsd ?? 0) || '$0'}</b>{#if budget?.dailyUsd}<span class="np-dim">&nbsp;of {usd(budget.dailyUsd)}</span>{/if}</span>
+          <span>today <b>{usd(budget?.todaySettledUsd ?? budget?.todayUsd ?? todayRow?.costUsd ?? 0) || '$0'}</b>{#if budget?.dailyUsd}<span class="np-dim">&nbsp;of {usd(budget.dailyUsd)}</span>{/if}</span>
           {#if todayRow}<span><b>{todayRow.calls.toLocaleString()}</b> calls</span>{/if}
         </div>
       {/if}

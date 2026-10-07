@@ -136,7 +136,11 @@ public sealed class OpenRouterProvider : IModelProvider
             Id = id,
             DisplayName = ov.Str("displayName") ?? e.Str("name") ?? id,
             ContextWindow = ov.Int("contextWindow") ?? e.Prop("top_provider").IntOrNull("context_length") ?? e.IntOrNull("context_length"),
-            MaxOutputTokens = ov.Int("maxOutputTokens") ?? e.Prop("top_provider").IntOrNull("max_completion_tokens"),
+            // What a call can produce, as MaxTokens sends it: the catalog's maximum under providers.openrouter.maxOutputTokens.
+            // Listed uncapped (943,717 for glm-5.3-flash) every request asked for it and the budget reserved it — about $0.47 a
+            // call for one that can spend $0.016 (idea-qbi2fv). An override for the model is used as it is.
+            MaxOutputTokens = ov.Int("maxOutputTokens") ?? (e.Prop("top_provider").IntOrNull("max_completion_tokens") is > 0 and var catalogMax
+                ? Math.Min(catalogMax, o.MaxOutputTokens) : (int?)null),
             InputModalities = modalities,
             Reasoning = reasoning,
             Status = "available",

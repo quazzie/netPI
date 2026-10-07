@@ -444,18 +444,8 @@ internal sealed class AgentScheduler : IAgentScheduler
         Provider = r.Provider, ExecutorGeneration = r.ExecutorGeneration,
     };
 
-    /// <summary>The candidates of a run whose provider is within its budget, in order (the message of one that is over it).</summary>
-    private List<string> Eligible(AgentSlotRequest request, out string? budgetMessage)
-    {
-        budgetMessage = null;
-        var list = new List<string>();
-        foreach (var key in request.Candidates ?? [request.Key])
-        {
-            if (_usage is not null && _usage.IsOverBudget(ProviderOf(key), out var message)) { budgetMessage ??= message; continue; }
-            list.Add(key);
-        }
-        return list;
-    }
+    /// <summary>The agents a run may go to, in order.</summary>
+    private static List<string> Candidates(AgentSlotRequest request) => [.. request.Candidates ?? [request.Key]];
 
     private Pool GetOrCreate(string key, string? provider = null)
     {
@@ -593,7 +583,6 @@ internal sealed class AgentScheduler : IAgentScheduler
     {
         lease = null;
         if (request.Candidates is { Count: > 1 }) return TryAcquireAny(request, out lease);
-        if (_usage?.IsOverBudget(request.Provider ?? ProviderOf(request.Key), out _) == true) return false;
         lock (_gate)
         {
             if (_stopped) return false;
@@ -612,7 +601,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     private bool TryAcquireAny(AgentSlotRequest request, out IAgentSlot? lease)
     {
         lease = null;
-        var eligible = Eligible(request, out _);
+        var eligible = Candidates(request);
         lock (_gate)
         {
             if (_stopped) return false;
@@ -654,8 +643,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// </summary>
     private ValueTask<IAgentSlot> AcquireAnyAsync(AgentSlotRequest request, CancellationToken ct)
     {
-        var eligible = Eligible(request, out var budgetMessage);
-        if (eligible.Count == 0) throw new CallRefusedException(budgetMessage!) { Kind = "budget" };
+        var eligible = Candidates(request);
         if (eligible.Count == 1) return AcquireAsync(Copy(request, eligible[0], null), ct);
         ct.ThrowIfCancellationRequested();
 
@@ -693,9 +681,6 @@ internal sealed class AgentScheduler : IAgentScheduler
     public ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct)
     {
         if (request.Candidates is { Count: > 1 }) return AcquireAnyAsync(request, ct);
-        var provider = request.Provider ?? ProviderOf(request.Key);
-        if (_usage is not null && _usage.IsOverBudget(provider, out var message))
-            throw new CallRefusedException(message!) { Kind = "budget" };
         ct.ThrowIfCancellationRequested();
 
         Waiter waiter;
@@ -762,16 +747,6 @@ internal sealed class AgentScheduler : IAgentScheduler
             // An already-cancelled token invokes Cancel inline, before Register returns its handle.
             if (waiter.Tcs.Task.IsCompleted) waiter.Registration.Unregister();
         }
-    }
-
-    private string? ProviderOf(string poolKey)
-    {
-        lock (_gate)
-        {
-            if (_pools.TryGetValue(poolKey, out var p) && p.Provider is not null) return p.Provider;
-        }
-        var slash = poolKey.IndexOf('/');
-        return slash > 0 ? poolKey[..slash] : poolKey;
     }
 
     private void Cancel(Waiter waiter, CancellationToken ct)

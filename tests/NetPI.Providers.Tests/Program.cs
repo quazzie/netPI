@@ -1622,7 +1622,16 @@ await t.Run("openrouter: catalog = tool-capable models; context, output, modalit
     var models = await openrouter.ListModelsAsync(true, CancellationToken.None);
     t.Eq("anthropic/claude-x,stealth/bunny,vendor/any-effort,vendor/plain:free,vendor/switch", string.Join(",", models.Select(m => m.Id).OrderBy(x => x)), "no model without tool support");
     var bunny = models.Single(m => m.Id == "stealth/bunny");
-    t.Check(bunny is { Provider: "openrouter", DisplayName: "Space Bunny", ContextWindow: 1000000, MaxOutputTokens: 524288, IsLocal: false }, "bunny basics");
+    // the catalog's 524,288 under providers.openrouter.maxOutputTokens (32,768): what a call can produce, and so what the budget
+    // reserves; listed uncapped, every call reserved the whole catalog maximum (idea-qbi2fv)
+    t.Check(bunny is { Provider: "openrouter", DisplayName: "Space Bunny", ContextWindow: 1000000, MaxOutputTokens: 32768, IsLocal: false }, "bunny basics");
+    t.Eq(32768, models.Single(m => m.Id == "anthropic/claude-x").MaxOutputTokens, "the catalog's 64,000 is capped too");
+    orCtx.SettingsImpl.Set("providers.openrouter.maxOutputTokens", 100000);
+    var raised = await openrouter.ListModelsAsync(true, CancellationToken.None);
+    t.Eq(64000, raised.Single(m => m.Id == "anthropic/claude-x").MaxOutputTokens, "a catalog maximum under the cap stays");
+    t.Eq(100000, raised.Single(m => m.Id == "stealth/bunny").MaxOutputTokens, "a raised cap is the limit of a model with more");
+    orCtx.SettingsImpl.Set("providers.openrouter.maxOutputTokens", null);
+    t.Eq(null, models.Single(m => m.Id == "vendor/plain:free").MaxOutputTokens, "an unknown maximum stays unknown");
     t.Check(bunny.SupportsImages, "image input");
     t.Eq("low,medium,high,xhigh,max", string.Join(",", bunny.Reasoning!.Efforts), "efforts low→high, no none (mandatory)");
     t.Eq("max", bunny.Reasoning.Default, "default effort");

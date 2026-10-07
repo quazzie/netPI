@@ -7,7 +7,7 @@ namespace NetPI.Agents;
 /// Agents (<see cref="IAgentScheduler"/>), the ledger of every model call with its cost, and the budget.
 /// <para>Settings: <c>agents.&lt;id&gt;</c> <c>{ model, instances, use, disabled, budget: { limitUsd }, cost: { input, output } }</c>,
 /// <c>budget.*</c>; <c>models.localSlots</c> (1) and <c>models.cloudSlots</c> (4) for model calls
-/// without an agent; still read: <c>budget.providers.&lt;provider&gt;.dailyTokens</c>.</para>
+/// without an agent.</para>
 /// <para>RPC: <c>agents.list</c>, <c>agents.use</c>, <c>agents.setEnabled</c>, <c>usage.summary</c>, <c>usage.history</c>, <c>usage.chats</c>, <c>usage.session</c>,
 /// <c>budget.status</c>, <c>budget.allow</c>. Events: <c>agents.changed { agents }</c>, <c>usage.changed</c> (the budget
 /// status). For agents that delegate: the <c>agent_choices</c> tool and an "Agents" system prompt section.</para>
@@ -43,6 +43,9 @@ public sealed class AgentsPlugin : INetPiPlugin
                 SettingInfo.Int("budget.resetDay", "The month starts on day", 1, null, 1, 28),
                 SettingInfo.Int("budget.warnPercent", "Warn at", 80, "From here agents use paid agents only when you asked.", 1, 100, "%"),
                 SettingInfo.Choice("budget.onLimit", "When the budget is spent", "stop", ["stop", "ask"], "stop: paid calls stop. ask: your chats stop with \"let this chat go over\"; subagents stop."),
+                SettingInfo.Int("budget.keepCallsDays", "Keep each model call for", Ledger.DefaultKeepCallsDays,
+                    "The ledger's row per model call (thousands a day) is deleted after this many days; the totals per period, day, agent and chat stay. At least 62 days; 0 keeps every row.",
+                    0, 3650, "days"),
             ],
         });
         context.Services.Register(new SettingsSection

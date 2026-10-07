@@ -228,20 +228,20 @@ public static class AdvancedTests
             Check.Contains(next.FinalText, "ECHO-DONE");
         }, 60);
 
-        r.Add("errors.budget-stopped", "budgets and stopped backends: clear error notices", async () =>
+        r.Add("errors.budget-stopped", "the dollar budget and stopped backends: clear notices", async () =>
         {
-            await env.Rpc("settings.set", new { path = "budget.providers.anthropic.dailyTokens", value = 1 });
+            // a daily dollar budget too small for one call: a paid model is refused before the call, with a budget
+            // notice (the per-provider token budget is gone, idea-r5h5fz)
+            await env.Rpc("settings.set", new { path = "budget.dailyUsd", value = 0.000001 });
             try
             {
-                // spend the tiny budget (unless earlier tests already did), then a fresh session is refused
-                await env.Run((await env.NewSession(model: "anthropic/claude-haiku-4-5")).S("id")!, "spend the budget [s:echo]");
                 var s = await env.NewSession(model: "anthropic/claude-haiku-4-5");
                 var run = await env.Run(s.S("id")!, "hi");
                 var notice = run.Role("notice").Single();
-                Check.Equal("error", notice.P("meta").S("kind"));
-                Check.Contains(RunResult.Text(notice), "daily token budget for provider 'anthropic' is exhausted");
+                Check.Equal("budget", notice.P("meta").S("kind"));
+                Check.Contains(RunResult.Text(notice), "budget");
             }
-            finally { await env.Rpc("settings.set", new { path = "budget.providers", value = (object?)null }); }
+            finally { await env.Rpc("settings.set", new { path = "budget.dailyUsd", value = (object?)null }); }
 
             await env.Rpc("settings.set", new { path = "retry.maxAttempts", value = 2 });
             try

@@ -11,8 +11,8 @@
   import WaitList from './WaitList.svelte';
 
   // cmds: the foreground commands running now, by chat (a busy row shows its chat's command); use: what this agent has done
-  // this period (usage.summary); budget: the provider's token budget today, when it has one
-  let { pool, agentById, titles, ctx, cmds = new Map(), use = null, budget = null, period = '' } = $props();
+  // this period (usage.summary)
+  let { pool, agentById, titles, ctx, cmds = new Map(), use = null, period = '' } = $props();
 
   const agent = $derived(!!pool.configured);
   const usable = $derived(pool.available !== false && !pool.disabled);
@@ -60,17 +60,12 @@
   // a running shell command says more than "tool: bash": the row shows it where the agent is
   const cmdsOf = (o) => cmds.get(o.sessionId ?? runOf(o)?.sessionId) ?? [];
 
-  const budgetFrac = $derived.by(() => {
-    if (!use || !budget?.budgetTokens) return null; // the provider's budget is shared: only an agent that used it shows it
-    const used = budget.budgetUsed ?? (budget.inputTokens ?? 0) + (budget.outputTokens ?? 0) + (budget.cacheWriteTokens ?? 0);
-    return Math.min(1, used / budget.budgetTokens);
-  });
   const useText = $derived(
     use ? `${use.calls.toLocaleString()} calls · ${tokens(use.input) || 0}↑ ${tokens(use.output) || 0}↓${use.cost > 0 ? ` · ${usd(use.cost)}` : ''}` : 'no calls yet',
   );
   const useTip = $derived(
     use
-      ? `${period ? `Since ${period}` : 'This period'}: ${use.calls.toLocaleString()} calls, ${use.input.toLocaleString()} input, ${use.output.toLocaleString()} output and ${use.cacheRead.toLocaleString()} cache read tokens${use.cost > 0 ? `, ${usd(use.cost)}` : ''}${budget?.budgetTokens ? `\nToday on ${pool.provider}: ${tokens(budget.budgetUsed ?? 0)} of the ${tokens(budget.budgetTokens)} token budget` : ''}`
+      ? `${period ? `Since ${period}` : 'This period'}: ${use.calls.toLocaleString()} calls, ${use.input.toLocaleString()} input, ${use.output.toLocaleString()} output and ${use.cacheRead.toLocaleString()} cache read tokens${use.cost > 0 ? `, ${usd(use.cost)}` : ''}`
       : 'No calls on this agent in the current period',
   );
   const tip = (o) => {
@@ -201,9 +196,6 @@
     <div class="use np-line np-mono" title={useTip}>
       <span class="np-grow np-ellipsis">{useText}</span>
     </div>
-    {#if budgetFrac != null}
-      <div class="np-progress usebar" style="--value: {budgetFrac}" data-tone={budgetFrac >= 1 ? 'err' : budgetFrac >= 0.8 ? 'warn' : undefined}></div>
-    {/if}
   {/if}
 </div>
 
@@ -410,8 +402,5 @@
     min-height: 16px;
     font-size: 11px;
     color: var(--fg-dim);
-  }
-  .usebar {
-    margin: 2px 4px 0 10px;
   }
 </style>

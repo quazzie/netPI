@@ -136,8 +136,8 @@ public static class BudgetTests
         Roll(prev, "Alpha", "cloud", "big", 7, 700, 70, 1.25);
 
         // today's tokens come from the daily roll-up, today's cost and calls from the calls' day index
-        h.Storage.Plugins.For("netpi.agents").Collection("lanes_usage", new CollectionSpec().Text("day").Text("provider").Text("model").Integer("budgetTokens"))
-            .Put($"{today}|cloud|big", new JsonObject { ["day"] = today, ["provider"] = "cloud", ["model"] = "big", ["inputTokens"] = 1000L, ["outputTokens"] = 100L, ["cacheReadTokens"] = 0L, ["cacheWriteTokens"] = 0L, ["calls"] = 2L, ["budgetTokens"] = 1100L });
+        h.Storage.Plugins.For("netpi.agents").Collection("lanes_usage", new CollectionSpec().Text("day").Text("provider").Text("model"))
+            .Put($"{today}|cloud|big", new JsonObject { ["day"] = today, ["provider"] = "cloud", ["model"] = "big", ["inputTokens"] = 1000L, ["outputTokens"] = 100L, ["cacheReadTokens"] = 0L, ["cacheWriteTokens"] = 0L, ["calls"] = 2L });
         var a = h.NewSession(title: "chat A");
         var b = h.NewSession(title: "chat B");
         var c = h.NewSession(title: "chat C");

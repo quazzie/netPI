@@ -148,7 +148,6 @@
     }
     return m;
   });
-  const tokenBudgets = $derived(new Map((usage?.providers ?? []).filter((u) => u.budgetTokens).map((u) => [u.provider, u])));
   const budget = $derived(usage?.budget && (usage.budget.monthlyUsd || usage.budget.dailyUsd || usage.budget.spentUsd > 0) ? usage.budget : null);
 
   // the agents the user set up (always listed) and model calls without an agent (a chip in the summary while they run). With no
@@ -197,16 +196,18 @@
     <!-- ---------------------------------------------------------------- the budget, when one is set -->
     {#if budget}
       {@const b = budget}
-      {@const frac = b.monthlyUsd ? Math.min(1, b.spentUsd / b.monthlyUsd) : null}
+      {@const spent = b.settledUsd ?? b.spentUsd}
+      {@const frac = b.monthlyUsd ? Math.min(1, spent / b.monthlyUsd) : null}
       <div class="usage budget" title="Paid models since {b.periodStart}; the budget is set in Settings → Agents & budget">
         <div class="uline np-line np-baseline">
           <span class="uprov np-grow">This month</span>
           <span class="np-mono" class:warn={b.warning && !b.exhausted} class:err={b.exhausted}
-            >{usd(b.spentUsd)}{#if b.monthlyUsd}<span class="np-dim">&nbsp;/ {usd(b.monthlyUsd)}</span>{/if}</span
+            title={b.reservedOrUnsettledUsd > 0 ? `${usd(b.reservedOrUnsettledUsd)} more is reserved for calls still running` : undefined}
+            >{usd(spent)}{#if b.monthlyUsd}<span class="np-dim">&nbsp;/ {usd(b.monthlyUsd)}</span>{/if}</span
           >
         </div>
         <div class="umeta np-line">
-          <span class="np-grow">today {usd(b.todayUsd)}{#if b.dailyUsd}<span class="np-dim">&nbsp;/ {usd(b.dailyUsd)}</span>{/if}</span>
+          <span class="np-grow">today {usd(b.todaySettledUsd ?? b.todayUsd)}{#if b.dailyUsd}<span class="np-dim">&nbsp;/ {usd(b.dailyUsd)}</span>{/if}</span>
           {#if b.exhausted}<span class="err">{b.onLimit === 'ask' ? 'spent · chats ask' : 'spent · paid calls stop'}</span>{/if}
         </div>
         {#if frac != null}
@@ -221,7 +222,7 @@
         <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
       {:else}
         {#each shown as pool (pool.key)}
-          <AgentPool {pool} {agentById} {titles} {ctx} cmds={cmdsBySession} use={usageByAgent.get(pool.key) ?? null} budget={tokenBudgets.get(pool.provider) ?? null} period={usage?.budget?.periodStart ?? ''} />
+          <AgentPool {pool} {agentById} {titles} {ctx} cmds={cmdsBySession} use={usageByAgent.get(pool.key) ?? null} period={usage?.budget?.periodStart ?? ''} />
         {:else}
           <div class="na">
             No agents set up: chats run on their model.

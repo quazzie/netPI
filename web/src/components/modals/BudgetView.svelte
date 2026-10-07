@@ -22,7 +22,10 @@
     return () => offs.forEach((off) => off());
   });
 
-  const pct = $derived(status?.monthlyUsd ? Math.min(100, (status.spentUsd / status.monthlyUsd) * 100) : 0);
+  // settled amounts: calls still running count at their reservation, named apart below (idea-qbi2fv)
+  const spent = $derived(status?.settledUsd ?? status?.spentUsd ?? 0);
+  const today = $derived(status?.todaySettledUsd ?? status?.todayUsd ?? 0);
+  const pct = $derived(status?.monthlyUsd ? Math.min(100, (spent / status.monthlyUsd) * 100) : 0);
   const state = $derived(status?.exhausted ? 'err' : status?.warning ? 'warn' : 'ok');
 </script>
 
@@ -32,13 +35,13 @@
       <span class="lbl">This month</span>
       <span class="np-dim">since {status.periodStart}</span>
       <span class="grow"></span>
-      <b class="np-mono">{usd(status.spentUsd)}</b>{#if status.monthlyUsd}<span class="np-dim">&nbsp;of {usd(status.monthlyUsd)}</span>{/if}
+      <b class="np-mono">{usd(spent)}</b>{#if status.monthlyUsd}<span class="np-dim">&nbsp;of {usd(status.monthlyUsd)}</span>{/if}
     </div>
     {#if status.monthlyUsd}<div class="bar"><span style="width: {pct}%"></span></div>{/if}
     <div class="row">
       <span class="lbl">Today</span>
       <span class="grow"></span>
-      <b class="np-mono">{usd(status.todayUsd)}</b>{#if status.dailyUsd}<span class="np-dim">&nbsp;of {usd(status.dailyUsd)}</span>{/if}
+      <b class="np-mono">{usd(today)}</b>{#if status.dailyUsd}<span class="np-dim">&nbsp;of {usd(status.dailyUsd)}</span>{/if}
     </div>
     {#if status.exhausted}
       <div class="note err">
@@ -47,7 +50,7 @@
     {:else if status.warning}
       <div class="note warn">Over {status.warnPercent} % of the budget: agents use paid lanes only when you ask.</div>
     {/if}
-    {#if status.reservedOrUnsettledUsd > 0}<div class="note">Includes {usd(status.reservedOrUnsettledUsd)} reserved for active or unsettled calls.</div>{/if}
+    {#if status.reservedOrUnsettledUsd > 0}<div class="note">{usd(status.reservedOrUnsettledUsd)} more is reserved for calls still running (or left unsettled); the limits count it.</div>{/if}
     {#if status.interruptedEstimateUsd > 0}<div class="note">Includes {usd(status.interruptedEstimateUsd)} estimated for interrupted calls; provider billing may differ.</div>{/if}
     {#if status.unknownCostCalls > 0}<div class="note warn">{status.unknownCostCalls} calls have unknown costs.</div>{/if}
     {#if models.length}

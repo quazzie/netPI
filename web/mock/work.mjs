@@ -98,8 +98,8 @@ export function createWork({ publish, log, agentsView }) {
 
   // ------------------------------------------------------------------ usage
   const usage = {
-    aiproxy: { inputTokens: 1_184_000, outputTokens: 86_400, cacheReadTokens: 912_000, cacheWriteTokens: 0, calls: 412, budgetTokens: 2_000_000 },
-    anthropic: { inputTokens: 402_000, outputTokens: 31_800, cacheReadTokens: 188_000, cacheWriteTokens: 24_100, calls: 57, budgetTokens: 500_000 },
+    aiproxy: { inputTokens: 1_184_000, outputTokens: 86_400, cacheReadTokens: 912_000, cacheWriteTokens: 0, calls: 412 },
+    anthropic: { inputTokens: 402_000, outputTokens: 31_800, cacheReadTokens: 188_000, cacheWriteTokens: 24_100, calls: 57 },
   };
   function recordUsage(provider, model, u) {
     const t = (usage[provider] ??= { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, calls: 0 });
@@ -113,11 +113,7 @@ export function createWork({ publish, log, agentsView }) {
   function usageSummary() {
     return {
       day: new Date().toISOString().slice(0, 10),
-      providers: Object.entries(usage).map(([provider, t]) => ({
-        provider,
-        ...t,
-        ...(t.budgetTokens ? { budgetUsed: t.inputTokens + t.outputTokens + t.cacheWriteTokens } : {}),
-      })),
+      providers: Object.entries(usage).map(([provider, t]) => ({ provider, ...t })),
     };
   }
 

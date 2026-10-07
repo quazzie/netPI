@@ -41,7 +41,7 @@ interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isS
   createdAt; startedAt?; finishedAt?; runs; turns; toolCalls; inputTokens; outputTokens; queuedMessages; task?; result?; error?; children: string[] }
 interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?; agentId?; background: boolean;
   status: 'running'|'exited'|'killed'|'timeout'; exitCode?; startedAt; endedAt?; outputBytes }
-interface UsageSummary { day; providers: { provider; inputTokens; outputTokens; cacheReadTokens; calls; budgetTokens? }[];
+interface UsageSummary { day; providers: { provider; inputTokens; outputTokens; cacheReadTokens; cacheWriteTokens; calls }[];
   budget: BudgetStatus /* budget.status */; models: { agent?; provider; model; calls; inputTokens; outputTokens; costUsd; unknownCost }[] /* this period */ }
 interface BudgetStatus { monthlyUsd?; dailyUsd?; warnPercent; resetDay; onLimit: 'stop'|'ask'; periodStart; periodEnd; spentUsd; todayUsd; warning; exhausted }
 ```

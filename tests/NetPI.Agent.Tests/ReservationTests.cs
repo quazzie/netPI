@@ -19,6 +19,75 @@ public static class ReservationTests
         t.Add("budget: the reservation holds what the provider can actually send beside a full window", WindowClamp);
         t.Add("budget: the output of a model without a limit comes from agent.defaultMaxOutputTokens", OutputLimitFromSetting);
         t.Add("budget: a call that started before the ledger was stopped (a hot swap of the plugin) still settles into the store", SettlesAfterStop);
+        t.Add("budget: a call in flight counts against the limits but not in the settled figures a person reads", SettledApart);
+        t.Add("budget: a chat's cost is a roll-up (built once from an older store), so old call rows can go and the totals stay", ChatRollupAndRetention);
+    }
+
+    // One row per model call, never deleted: 43,862 in a week here (idea-sdevr6). A chat's cost read those rows.
+    private static async Task ChatRollupAndRetention()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
+        var parent = h.Sessions.CreateSession(new SessionInfo { Title = "chat" });
+        var child = h.Sessions.CreateSession(new SessionInfo { Title = "worker", Kind = "subagent", ParentSessionId = parent.Id });
+        var l = Create(h);
+        void Call(string sessionId, double usd)
+        {
+            var req = Request();
+            var r = l.Reserve(new ModelRequest { Model = req.Model, Messages = req.Messages, MaxOutputTokens = 100, SessionId = sessionId }, "a", null);
+            l.Settle(r, new Usage { CostUsd = usd }, true, false);
+        }
+        Call(parent.Id, 0.10);
+        Call(parent.Id, 0.20);
+        Call(child.Id, 0.05);
+        var cost = l.SessionCost(parent.Id);
+        Check.Equal(0.3, cost["costUsd"]!.GetValue<double>(), "the chat's own calls");
+        Check.Equal(0.35, cost["withSubagentsUsd"]!.GetValue<double>(), "and with its subagent's");
+        Check.Equal(3L, cost["withSubagentsCalls"]!.GetValue<long>());
+        Check.Equal(0.05, l.SessionCost(child.Id)["costUsd"]!.GetValue<double>(), "a subagent's own");
+
+        // a store from before the roll-up: built from the call rows on the next start
+        var data = h.Storage.Plugins.For("ledger-test");
+        data.Collection("session_usage", new CollectionSpec()).DeleteWhere(new DataQuery());
+        data.Collection("counters", new CollectionSpec()).Delete("session_usage");
+        var rebuilt = Create(h);
+        Check.Equal(0.35, rebuilt.SessionCost(parent.Id)["withSubagentsUsd"]!.GetValue<double>(), "rebuilt from the calls");
+
+        // the rows grow old: they go, a reservation in flight stays, and the totals do not move
+        var running = rebuilt.Reserve(new ModelRequest { Model = Request().Model, Messages = Request().Messages, MaxOutputTokens = 100, SessionId = parent.Id }, "a", null);
+        var calls = Calls(h);
+        var old = new DateTimeOffset(DateTime.Now.AddDays(-(Ledger.DefaultKeepCallsDays + 40))).ToUnixTimeMilliseconds();
+        foreach (var d in calls.Find()) { d.Doc["ts"] = old; calls.Put(d.Key, d.Doc); }
+        Check.Equal(3, rebuilt.PruneCalls(), "the three settled rows are deleted");
+        Check.Equal(1L, calls.Count(), "the reservation in flight is not");
+        var after = rebuilt.SessionCost(parent.Id);
+        Check.Equal(0.35, Math.Round(after["withSubagentsUsd"]!.GetValue<double>() - after["reservedUsd"]!.GetValue<double>(), 6), "the chat's settled cost stands");
+        h.Settings.SetQuiet("budget.keepCallsDays", JsonValue.Create(0));
+        Check.Equal(0, rebuilt.PruneCalls(), "0 keeps every row");
+    }
+
+    // The figures jumped by a whole reservation at every call and back at its settlement: 0.22 -> 0.6 -> 0.22 (idea-qbi2fv).
+    private static async Task SettledApart()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
+        var l = Create(h);
+        var done = Request();
+        var settled = l.Reserve(done, "a", null);
+        l.Settle(settled, new Usage { CostUsd = 0.25 }, true, false);
+        var running = new ModelRequest { Model = done.Model, Messages = done.Messages, MaxOutputTokens = 100, SessionId = "ses_x" };
+        var flight = l.Reserve(running, "a", null);
+
+        var status = l.BudgetStatus();
+        Check.True(status["spentUsd"]!.GetValue<double>() > 0.25, "the limits count the call in flight");
+        Check.Equal(0.25, status["settledUsd"]!.GetValue<double>(), "the settled figure does not");
+        Check.Equal(0.25, status["todaySettledUsd"]!.GetValue<double>());
+        Check.Equal(Math.Round(flight.Cost, 6), status["reservedTodayUsd"]!.GetValue<double>(), "and the reservation is named apart");
+        var chat = l.SessionCost("ses_x");
+        Check.Equal(Math.Round(flight.Cost, 6), chat["reservedUsd"]!.GetValue<double>(), "a chat's cost names its calls in flight too");
+
+        l.Settle(flight, new Usage { CostUsd = 0.01 }, true, false);
+        status = l.BudgetStatus();
+        Check.Equal(0.26, status["settledUsd"]!.GetValue<double>(), "settled: one figure again");
+        Check.Equal(0.0, l.SessionCost("ses_x")["reservedUsd"]!.GetValue<double>());
     }
 
     private static ModelRequest Request() => new()

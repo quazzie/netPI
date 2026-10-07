@@ -23,11 +23,14 @@
     };
   });
 
-  const total = $derived(cost?.withSubagentsUsd ?? 0);
+  // settled cost: a call in flight counts at its reservation until it ends, which made the figure jump (idea-qbi2fv)
+  const reserved = $derived(cost?.reservedUsd ?? 0);
+  const total = $derived(Math.max(0, (cost?.withSubagentsUsd ?? 0) - reserved));
   const title = $derived(
     cost
       ? `This chat: ${usd(cost.costUsd)} (${cost.calls} model calls)` +
-          (cost.withSubagentsUsd > cost.costUsd ? `; with its subagents ${usd(cost.withSubagentsUsd)}` : '')
+          (cost.withSubagentsUsd > cost.costUsd ? `; with its subagents ${usd(cost.withSubagentsUsd)}` : '') +
+          (reserved > 0 ? `, of which ${usd(reserved)} is reserved for calls still running` : '')
       : '',
   );
 </script>

@@ -23,7 +23,7 @@ public static class SchedulerTests
         t.Add("agents: a chat's run goes to the first agent on its model that frees up, not the one it was queued behind", RunsGoToTheFirstFreeAgent);
         t.Add("agents: a chat on \"any\" runs on whichever agent is free and its model follows (agents.use any)", ChatsOnAnyAgent);
         t.Add("scheduler: stop fails waiters; runs survive a reload of the agents plugin", ReloadDuringWait);
-        t.Add("scheduler: budget exceeded + usage.summary", Budget);
+        t.Add("scheduler: usage.summary counts today's tokens; the old per-provider daily token budget no longer blocks", Budget);
         t.Add("scheduler: runs without the agents plugin", NoAgentsPlugin);
     }
 
@@ -712,23 +712,16 @@ public static class SchedulerTests
         Check.Equal(100L, fake["inputTokens"]!.GetValue<long>());
         Check.Equal(10L, fake["outputTokens"]!.GetValue<long>());
         Check.Equal(1L, fake["calls"]!.GetValue<long>());
-        Check.Equal(50L, fake["budgetTokens"]!.GetValue<long>());
+        Check.Equal(null, fake["budgetTokens"], "the per-provider token budget is gone (idea-r5h5fz)");
         Check.Equal(DateTime.Now.ToString("yyyy-MM-dd"), (string?)summary["day"]);
 
+        // a leftover budget.providers.<provider>.dailyTokens setting is not read: the dollar budget is the one limit
         await h.SendAsync(s.Id, "second");
         var a = await h.IdleAsync(s.Id);
-        Check.Equal(1, h.Catalog.Calls, "second call blocked by the budget");
-        var last = h.Messages(s.Id)[^1];
-        Check.Equal("error", last.MetaString("kind"));
-        Check.Contains(last.Text, "budget");
-        Check.Contains(last.Text, "budget.providers.fake.dailyTokens");
-        Check.Contains(a.Error, "budget");
-
-        // another provider is unaffected
-        h.SetModel(s.Id, "cloud/big");
-        await h.SendAsync(s.Id, "third");
-        await h.IdleAsync(s.Id);
-        Check.Equal(2, h.Catalog.Calls);
+        Check.Equal(null, a.Error);
+        Check.Equal(2, h.Catalog.Calls, "the second call runs past the old 50-token limit");
+        Check.Equal(2L, ((JsonArray)(await h.Rpc.CallAsync("usage.summary"))!["providers"]!)
+            .Single(p => (string?)p!["provider"] == "fake")!["calls"]!.GetValue<long>());
     }
 
     private static async Task NoAgentsPlugin()

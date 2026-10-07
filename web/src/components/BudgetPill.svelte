@@ -23,10 +23,15 @@
   });
 
   const show = $derived(!!b && (b.warning || b.exhausted));
+  // what was spent, without the calls still in flight: those count at their reservation until they settle, and showing
+  // them made the figure jump up at every call and back at its end (idea-qbi2fv); the tooltip names them
+  const spent = $derived(b?.settledUsd ?? b?.spentUsd ?? 0);
+  const today = $derived(b?.todaySettledUsd ?? b?.todayUsd ?? 0);
   const title = $derived(
     b
-      ? `This month ${usd(b.spentUsd)}${b.monthlyUsd ? ` of ${usd(b.monthlyUsd)}` : ''}, today ${usd(b.todayUsd)}` +
+      ? `This month ${usd(spent)}${b.monthlyUsd ? ` of ${usd(b.monthlyUsd)}` : ''}, today ${usd(today)}` +
           `${b.dailyUsd ? ` of ${usd(b.dailyUsd)}` : ''}. ` +
+          (b.reservedOrUnsettledUsd > 0 ? `${usd(b.reservedOrUnsettledUsd)} more is reserved for calls in flight. ` : '') +
           (b.exhausted ? (b.onLimit === 'ask' ? 'Spent: chats ask before paid calls.' : 'Spent: paid calls stop.') : 'Near the budget.') +
           ' Click for the budget settings.'
       : '',
@@ -37,9 +42,9 @@
   <button class="budget-pill" class:spent={b.exhausted} {title} onclick={() => (modals.settings = 'agents')}>
     <Icon name="dollar" size={13} />
     {#if b.monthlyUsd}
-      <span>{usd(b.spentUsd)}&nbsp;/ {usd(b.monthlyUsd)}</span>
+      <span>{usd(spent)}&nbsp;/ {usd(b.monthlyUsd)}</span>
     {:else}
-      <span>{usd(b.todayUsd)}&nbsp;/ {usd(b.dailyUsd)} today</span>
+      <span>{usd(today)}&nbsp;/ {usd(b.dailyUsd)} today</span>
     {/if}
   </button>
 {/if}

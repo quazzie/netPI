@@ -131,7 +131,7 @@ public static class PersistenceTests
         await h.IdleAsync(s.Id);
         await h.Bus.DrainAsync();
         var lanes = h.Storage.Plugins.For("netpi.agents").Collection("lanes_usage",
-            new CollectionSpec().Text("day").Text("provider").Text("model").Integer("budgetTokens"));
+            new CollectionSpec().Text("day").Text("provider").Text("model"));
         Check.Equal(2L, lanes.Find(new DataQuery().Eq("provider", "fake").Eq("model", "local"))
             .Sum(d => d.Doc["calls"]!.GetValue<long>()));
 

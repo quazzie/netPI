@@ -27,9 +27,9 @@ namespace NetPI.Agents;
 //
 // lanes_usage — tokens per (day, provider, model), upserted with every recorded call.
 //   key:   <day>|<provider>|<model>
-//   doc:   { day, provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, calls,
-//            budgetTokens }            (budgetTokens = inputTokens + outputTokens + cacheWriteTokens)
-//   index: day Text, provider Text, model Text, budgetTokens Integer
+//   doc:   { day, provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, calls }
+//          (rows written before 2026-10-08 also carry budgetTokens, the sum the per-provider token budget counted: it is gone)
+//   index: day Text, provider Text, model Text
 //
 // lane_usage — the cost per (day, lane): the lane's day gets the call's cost when it is recorded (a reservation at
 //   its estimate), and Settle replaces the estimate with the settled cost.
@@ -37,10 +37,19 @@ namespace NetPI.Agents;
 //   doc:   { day, lane, laneKey, costUsd }
 //   index: day Text, laneKey Text, costUsd Real
 //
-// counters — the plugin's sequences.
-//   key:   the counter name ("usage_calls")
-//   doc:   { value }
+// session_usage — what each chat cost, so a chat's cost does not need its call rows (idea-sdevr6): its own calls, and every
+//   call of its tree (the calls whose root it is), upserted with each call and corrected by its settlement.
+//   key:   s|<sessionId>  { sessionId, calls, costUsd, reservedUsd }         (the chat's own calls)
+//          r|<rootId>     { rootSessionId, calls, costUsd, reservedUsd }     (the calls of the chat and its subagents)
 //   index: none
+//
+// counters — the plugin's sequences, and marks.
+//   key:   the counter name ("usage_calls"), or "session_usage" once that roll-up was built from the calls
+//   doc:   { value } / { built: true }
+//   index: none
+//
+// Retention: a usage_calls row older than budget.keepCallsDays (default 90, at least 62, 0 = never) and before the current
+// period is deleted at start and every few thousand calls; the roll-ups above keep the totals.
 
 /// <summary>
 /// Every model call with its tokens and cost, and the budgets.
@@ -49,8 +58,7 @@ namespace NetPI.Agents;
 /// <see cref="LedgerMiddleware"/>. The cost is what the provider reported (<see cref="Usage.CostUsd"/>: OpenRouter),
 /// else tokens × the price (the agent's <c>cost</c>, else the catalog's pricing); local models are free; other cloud
 /// models without a price are "unknown" and cannot start under a dollar cap without an explicit override.</item>
-/// <item><c>lanes_usage</c>: tokens per day, provider and model (the Work tab, the legacy
-/// <c>budget.providers.&lt;provider&gt;.dailyTokens</c>).</item>
+/// <item><c>lanes_usage</c>: tokens per day, provider and model (the Work tab).</item>
 /// <item>Budgets: <c>budget.monthlyUsd</c> (the month starts on <c>budget.resetDay</c>), <c>budget.dailyUsd</c> and a
 /// agent's <c>agents.&lt;id&gt;.budget.limitUsd</c> per day. When one is spent, calls to paid models throw
 /// <see cref="CallRefusedException"/>; <c>budget.onLimit</c> "ask" lets the user allow a chat to go over
@@ -75,7 +83,13 @@ internal sealed partial class Ledger
     private IDataCollection? _lanesUsage;   // lanes_usage: tokens per day, provider and model
     private IDataCollection? _laneUsage;    // lane_usage: the cost per day and lane (an agent's pool for the day)
     private IDataCollection? _periodUsage;  // period_usage: calls, tokens and cost per period, lane, provider and model
+    private IDataCollection? _sessionUsage; // session_usage: calls and cost per chat, and per chat with its subagents
     private IDataCollection? _counters;     // per-plugin sequences
+
+    /// <summary>Days a call's own row is kept (<c>budget.keepCallsDays</c>).</summary>
+    public const int DefaultKeepCallsDays = 90;
+    /// <summary>The least it may be: a changed <c>budget.resetDay</c> rebuilds the current period from its calls, which reach up to two months back.</summary>
+    public const int MinKeepCallsDays = 62;
 
     public sealed class Totals
     {
@@ -84,7 +98,6 @@ internal sealed partial class Ledger
         public long CacheReadTokens;
         public long CacheWriteTokens;
         public long Calls;
-        public long BudgetTokens => InputTokens + OutputTokens + CacheWriteTokens;
     }
 
     /// <summary>USD per million tokens.</summary>
@@ -109,21 +122,23 @@ internal sealed partial class Ledger
     {
         try
         {
-            // All four or none: a half-opened ledger would let a free call through to a null collection and fail it.
+            // All of them or none: a half-opened ledger would let a free call through to a null collection and fail it.
             var calls = _ctx.Data.Collection("usage_calls", new CollectionSpec()
                 .Integer("ts").Text("day").Text("sessionId").Text("rootSessionId").Text("lane")
                 .Real("costUsd").Text("costSource"));
             var lanesUsage = _ctx.Data.Collection("lanes_usage", new CollectionSpec()
-                .Text("day").Text("provider").Text("model").Integer("budgetTokens"));
+                .Text("day").Text("provider").Text("model"));
             var laneUsage = _ctx.Data.Collection("lane_usage", new CollectionSpec()
                 .Text("day").Text("laneKey").Real("costUsd"));
             var periodUsage = _ctx.Data.Collection("period_usage", new CollectionSpec()
                 .Text("period").Integer("calls"));
+            var sessionUsage = _ctx.Data.Collection("session_usage", new CollectionSpec());
             var counters = _ctx.Data.Collection("counters", new CollectionSpec());
             _calls = calls;
             _lanesUsage = lanesUsage;
             _laneUsage = laneUsage;
             _periodUsage = periodUsage;
+            _sessionUsage = sessionUsage;
             _counters = counters;
         }
         catch (Exception ex)
@@ -133,6 +148,83 @@ internal sealed partial class Ledger
         // The roll-up is maintained in every call's transaction; a period it has not caught up on (a store that
         // pre-dates it, or a changed budget.resetDay) is rebuilt from the calls once, in one transaction.
         RebuildPeriodUsage();
+        // The chats' roll-up is built from the calls once (a store from before it), then kept with every call; only then
+        // may old call rows go (idea-sdevr6).
+        try
+        {
+            if (_calls is not null && _sessionUsage is not null && _counters is not null) _ctx.Data.Transaction(CatchUpSessionUsage);
+            PruneCalls();
+        }
+        catch (Exception ex) { _ctx.Logger.LogWarning(ex, "The chats' usage roll-up could not be built; old call rows are kept"); }
+    }
+
+    /// <summary>Build <c>session_usage</c> from the calls, once: paged, inside the caller's transaction.</summary>
+    private void CatchUpSessionUsage()
+    {
+        if (_counters!.Get("session_usage") is not null) return;
+        var totals = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        void Add(string key, string field, string id, double cost, double reserved)
+        {
+            if (!totals.TryGetValue(key, out var doc))
+                totals[key] = doc = new JsonObject { [field] = id, ["calls"] = 0L, ["costUsd"] = 0.0, ["reservedUsd"] = 0.0 };
+            doc["calls"] = L(doc["calls"]) + 1;
+            doc["costUsd"] = Usd6(D(doc["costUsd"]) + cost);
+            doc["reservedUsd"] = Usd6(D(doc["reservedUsd"]) + reserved);
+        }
+        const int Page = 2000;
+        for (var offset = 0; ; offset += Page)
+        {
+            var page = _calls!.Find(new DataQuery { Offset = offset }.Order("ts").Take(Page));
+            foreach (var d in page)
+            {
+                var cost = D(d.Doc["costUsd"]);
+                var reserved = d.Doc["costSource"]?.GetValue<string>() == "reserved" ? cost : 0;
+                if (d.Doc["sessionId"]?.GetValue<string>() is { Length: > 0 } sid) Add("s|" + sid, "sessionId", sid, cost, reserved);
+                if (d.Doc["rootSessionId"]?.GetValue<string>() is { Length: > 0 } root) Add("r|" + root, "rootSessionId", root, cost, reserved);
+            }
+            if (page.Count < Page) break;
+        }
+        _sessionUsage!.DeleteWhere(new DataQuery());
+        foreach (var (key, doc) in totals) _sessionUsage.Put(key, doc);
+        _counters.Put("session_usage", new JsonObject { ["built"] = true });
+    }
+
+    /// <summary>
+    /// A call (or its settlement) in the chats' roll-up: the chat's own line and its tree's, in the caller's transaction.
+    /// <paramref name="reserved"/> moves the part still at a reservation (a settlement takes it back out).
+    /// </summary>
+    private void SessionUsageAdd(string? sessionId, string? root, int calls, double cost, double reserved)
+    {
+        if (_sessionUsage is null) return;
+        void Add(string key, string field, string id)
+        {
+            var doc = _sessionUsage.Get(key) ?? new JsonObject { [field] = id, ["calls"] = 0L, ["costUsd"] = 0.0, ["reservedUsd"] = 0.0 };
+            doc["calls"] = L(doc["calls"]) + calls;
+            doc["costUsd"] = Usd6(D(doc["costUsd"]) + cost);
+            doc["reservedUsd"] = Usd6(Math.Max(0, D(doc["reservedUsd"]) + reserved));
+            _sessionUsage.Put(key, doc);
+        }
+        if (!string.IsNullOrEmpty(sessionId)) Add("s|" + sessionId, "sessionId", sessionId);
+        if (!string.IsNullOrEmpty(root)) Add("r|" + root, "rootSessionId", root);
+    }
+
+    /// <summary>
+    /// Delete the call rows older than <c>budget.keepCallsDays</c> (and before the current period): one row per model call is
+    /// thousands a day, and the roll-ups keep the totals (idea-sdevr6). A reservation is never deleted. The number deleted.
+    /// </summary>
+    public int PruneCalls()
+    {
+        if (_calls is null) return 0;
+        var days = (int)(Number(_ctx.Settings.GetNode("budget.keepCallsDays")) ?? DefaultKeepCallsDays);
+        if (days <= 0) return 0;
+        days = Math.Max(days, MinKeepCallsDays);
+        // until the chats' roll-up exists, their costs come from these rows: keep them
+        if (_counters?.Get("session_usage") is null) return 0;
+        var before = Math.Min(new DateTimeOffset(DateTime.Now.AddDays(-days)).ToUnixTimeMilliseconds(),
+            new DateTimeOffset(PeriodStart).ToUnixTimeMilliseconds());
+        var deleted = _ctx.Data.Transaction(() => _calls.DeleteWhere(new DataQuery().Lt("ts", before).NotIn("costSource", ["reserved"])));
+        if (deleted > 0) _ctx.Logger.LogInformation("Usage: deleted {Count} model call rows older than {Days} days (the totals stay)", deleted, days);
+        return deleted;
     }
 
     /// <summary>
@@ -339,8 +431,14 @@ internal sealed partial class Ledger
         var warn = o.MonthlyUsd is { } m && period >= m * o.WarnPercent / 100 || o.DailyUsd is { } d && today >= d * o.WarnPercent / 100;
         var exhausted = o.MonthlyUsd is { } m2 && period >= m2 || o.DailyUsd is { } d2 && today >= d2;
         var estimates = EstimateStatus();
+        // Calls in flight count at their reservation (the gate above must see them), but a figure a person reads jumped up by
+        // a whole reservation at every call and back at its settlement (idea-qbi2fv): the settled amounts are given apart.
+        var reservedToday = _calls?.Sum("costUsd", new DataQuery().Eq("day", Today).Eq("costSource", "reserved")) ?? 0;
         return new JsonObject
         {
+            ["settledUsd"] = Math.Round(Math.Max(0, period - estimates.Reserved), 6),
+            ["todaySettledUsd"] = Math.Round(Math.Max(0, today - reservedToday), 6),
+            ["reservedTodayUsd"] = Math.Round(reservedToday, 6),
             ["reservedOrUnsettledUsd"] = estimates.Reserved,
             ["interruptedEstimateUsd"] = estimates.Interrupted,
             ["interruptedEstimateCalls"] = estimates.InterruptedCalls,
@@ -376,12 +474,29 @@ internal sealed partial class Ledger
         return line;
     }
 
-    /// <summary>What a chat cost: its own calls, and with its subagents.</summary>
+    /// <summary>What a chat cost: its own calls, and with its subagents; <c>reservedUsd</c> is the part of the latter still at a
+    /// reservation (calls in flight), which the chat's cost shows apart (idea-qbi2fv).</summary>
     public JsonObject SessionCost(string sessionId)
     {
-        double own = 0, all = 0;
+        double own = 0, all = 0, reserved = 0;
         long calls = 0, allCalls = 0;
-        if (_calls is not null)
+        if (_sessionUsage is not null && _counters?.Get("session_usage") is not null)
+        {
+            // the roll-up: a read of two documents, and it outlives the call rows (idea-sdevr6). A top-level chat's own calls
+            // are in its tree; a subagent's tree is its own calls (the calls are rolled up under the top-level chat).
+            try
+            {
+                var mine = _sessionUsage.Get("s|" + sessionId);
+                var tree = _sessionUsage.Get("r|" + sessionId);
+                own = D(mine?["costUsd"]);
+                calls = L(mine?["calls"]);
+                all = tree is not null ? D(tree["costUsd"]) : own;
+                allCalls = tree is not null ? L(tree["calls"]) : calls;
+                reserved = tree is not null ? D(tree["reservedUsd"]) : D(mine?["reservedUsd"]);
+            }
+            catch (Exception ex) { _ctx.Logger.LogDebug(ex, "Session cost read failed"); }
+        }
+        else if (_calls is not null)
         {
             try
             {
@@ -394,6 +509,9 @@ internal sealed partial class Ledger
                 var overlap = new DataQuery().Eq("rootSessionId", sessionId).Eq("sessionId", sessionId);
                 all = root + own - _calls.Sum("costUsd", overlap);
                 allCalls = rootCalls + calls - _calls.Count(overlap);
+                reserved = _calls.Sum("costUsd", new DataQuery().Eq("rootSessionId", sessionId).Eq("costSource", "reserved"))
+                    + _calls.Sum("costUsd", new DataQuery().Eq("sessionId", sessionId).Eq("costSource", "reserved"))
+                    - _calls.Sum("costUsd", new DataQuery().Eq("rootSessionId", sessionId).Eq("sessionId", sessionId).Eq("costSource", "reserved"));
             }
             catch (Exception ex) { _ctx.Logger.LogDebug(ex, "Session cost query failed"); }
         }
@@ -404,6 +522,7 @@ internal sealed partial class Ledger
             ["calls"] = calls,
             ["withSubagentsUsd"] = Math.Round(all, 6),
             ["withSubagentsCalls"] = allCalls,
+            ["reservedUsd"] = Math.Round(Math.Max(0, reserved), 6),
         };
     }
 
@@ -439,7 +558,7 @@ internal sealed partial class Ledger
         return arr;
     }
 
-    // ---------------------------------------------------------------- tokens per day (lanes_usage) and the legacy token budget
+    // ---------------------------------------------------------------- tokens per day (lanes_usage)
 
     /// <summary>
     /// The per-(day, provider, model) token roll-up: upserted with every recorded call. When called inside the
@@ -473,48 +592,7 @@ internal sealed partial class Ledger
         doc["cacheReadTokens"] = L(doc["cacheReadTokens"]) + cacheRead;
         doc["cacheWriteTokens"] = L(doc["cacheWriteTokens"]) + cacheWrite;
         doc["calls"] = L(doc["calls"]) + 1;
-        // What the legacy per-provider token budgets count.
-        doc["budgetTokens"] = L(doc["inputTokens"]) + L(doc["outputTokens"]) + L(doc["cacheWriteTokens"]);
         _lanesUsage.Put(key, doc);
-    }
-
-    public long? Budget(string provider)
-    {
-        try
-        {
-            var node = _ctx.Settings.GetNode("budget.providers") as JsonObject;
-            if (node is null) return null;
-            foreach (var (key, cfg) in node)
-            {
-                if (!string.Equals(key, provider, StringComparison.OrdinalIgnoreCase)) continue;
-                var v = cfg is JsonObject o ? o["dailyTokens"] : cfg;
-                if (Number(v) is > 0 and var n) return (long)n;
-            }
-        }
-        catch { /* ignore bad settings */ }
-        return null;
-    }
-
-    public long UsedToday(string provider)
-    {
-        if (_lanesUsage is null) return 0;
-        var used = 0L;
-        foreach (var d in _lanesUsage.Find(new DataQuery().Eq("day", Today)))
-            if (string.Equals(d.Doc["provider"]?.GetValue<string>(), provider, StringComparison.OrdinalIgnoreCase))
-                used += L(d.Doc["budgetTokens"]);
-        return used;
-    }
-
-    public bool IsOverBudget(string? provider, out string? message)
-    {
-        message = null;
-        if (string.IsNullOrEmpty(provider)) return false;
-        if (Budget(provider) is not { } budget) return false;
-        var used = UsedToday(provider);
-        if (used < budget) return false;
-        message = $"The daily token budget for provider '{provider}' is exhausted ({used:N0} of {budget:N0} tokens used today). " +
-                  $"Raise budget.providers.{provider}.dailyTokens in the settings, pick a model from another provider, or wait until tomorrow.";
-        return true;
     }
 
     /// <summary><c>usage.summary</c>: today's tokens per provider, the budget, and this period's calls per model.</summary>
@@ -532,19 +610,10 @@ internal sealed partial class Ledger
                 agg.CacheReadTokens += L(d.Doc["cacheReadTokens"]); agg.CacheWriteTokens += L(d.Doc["cacheWriteTokens"]);
                 agg.Calls += L(d.Doc["calls"]);
             }
-        // providers with a budget but no usage yet
-        try
-        {
-            if (_ctx.Settings.GetNode("budget.providers") is JsonObject budgets)
-                foreach (var (key, _) in budgets)
-                    if (!byProvider.ContainsKey(key)) byProvider[key] = new Totals();
-        }
-        catch { }
 
         var arr = new JsonArray();
         foreach (var (provider, t) in byProvider)
-        {
-            var o = new JsonObject
+            arr.Add(new JsonObject
             {
                 ["provider"] = provider,
                 ["inputTokens"] = t.InputTokens,
@@ -552,14 +621,7 @@ internal sealed partial class Ledger
                 ["cacheReadTokens"] = t.CacheReadTokens,
                 ["cacheWriteTokens"] = t.CacheWriteTokens,
                 ["calls"] = t.Calls,
-            };
-            if (Budget(provider) is { } b)
-            {
-                o["budgetTokens"] = b;
-                o["budgetUsed"] = t.BudgetTokens;
-            }
-            arr.Add(o);
-        }
+            });
         return new JsonObject { ["day"] = day, ["providers"] = arr, ["budget"] = BudgetStatus(), ["models"] = ModelsThisPeriod() };
     }
 

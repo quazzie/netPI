@@ -14,12 +14,12 @@ public static class AskTests
         t.Add("ask_user: two chats with the same tool call id each get their own answer", SameCallIdInTwoChats);
         t.Add("ask_user: subagents can't ask", SubagentRefused);
         t.Add("ask_user: lenient arguments, limits, and the answer the model reads", Parsing);
-        t.Add("ask_user: an answer given while the provider's budget is spent is not lost - the slot failure lands on the next turn", AnswerSurvivesSlotFailure);
+        t.Add("ask_user: an answer given while the chat's agent is switched off is not lost - the slot failure lands on the next turn", AnswerSurvivesSlotFailure);
     }
 
-    private static async Task<TestHost> StartAsync()
+    private static async Task<TestHost> StartAsync(Action<TestHost>? setup = null)
     {
-        var h = await TestHost.StartAsync();
+        var h = await TestHost.StartAsync(setup);
         await h.StartPluginAsync(new AskPlugin());
         return h;
     }
@@ -199,14 +199,15 @@ public static class AskTests
     }
 
     /// <summary>
-    /// A question out, then the provider's daily budget is spent while the user is typing: the slot the wait gave back
+    /// A question out, then the chat's agent is switched off while the user is typing: the slot the wait gave back
     /// cannot be re-acquired. Re-acquiring is bookkeeping, so its failure must not throw away the answer: the tool
     /// result keeps it, the card closes as answered, and the next turn's slot check reports the real failure (idea-633b6n).
     /// </summary>
     private static async Task AnswerSurvivesSlotFailure()
     {
-        await using var h = await StartAsync();
+        await using var h = await StartAsync(x => x.Settings.SetQuiet("agents.solo", JsonNode.Parse("""{ "model": "fake/solo" }""")));
         var s = h.NewSession(model: "fake/solo");
+        await h.Rpc.CallAsync("agents.use", new { sessionId = s.Id, agent = "solo" });
         h.Catalog.Handler = (r, ct) =>
             r.Messages.SelectMany(m => m.ToolResults).Any(t => (t.Content ?? "").Contains("The user answered: A"))
                 ? Reply.Text("done")
@@ -214,10 +215,10 @@ public static class AskTests
         await h.SendAsync(s.Id, "pick");
         var asked = await AskedAsync(h, s.Id);
         await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the run waits with its slot given back");
-        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the instance is free meanwhile");
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "solo").Sum(x => x.Busy), "the instance is free meanwhile");
 
-        // the provider's daily budget is spent while the user is typing (turn 1 already used tokens)
-        h.Settings.Set("budget.providers", new JsonObject { ["fake"] = new JsonObject { ["dailyTokens"] = 1 } });
+        // the chat's agent is switched off while the user is typing
+        await h.Rpc.CallAsync("agents.setEnabled", new { id = "solo", enabled = false });
         await h.Bus.DrainAsync();
 
         var id = (string)asked["id"]!;
@@ -230,11 +231,11 @@ public static class AskTests
         Check.Equal("answered", (string?)result.Details!["status"]);
         Check.Equal("answered", (string?)FakeBus.Data(h.Bus.OfType("ask.closed").Single())["status"], "the card closes as answered, not cancelled");
         Check.Equal(1, h.Catalog.Calls, "the next turn's slot check failed before a model call");
-        Check.Contains(h.Runtime.GetBySession(s.Id)!.Error ?? "", "daily token budget", "the real failure is reported by the next turn");
-        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the slot is free");
+        Check.Contains(h.Runtime.GetBySession(s.Id)!.Error ?? "", "The agent \"solo\" is disabled.", "the real failure is reported by the next turn");
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "solo").Sum(x => x.Busy), "the slot is free");
 
-        // the budget is lifted: the answer is in the transcript, and it is what the model reads
-        h.Settings.Set("budget.providers", null);
+        // on again: the answer is in the transcript, and it is what the model reads
+        await h.Rpc.CallAsync("agents.setEnabled", new { id = "solo", enabled = true });
         await h.Bus.DrainAsync();
         await h.SendAsync(s.Id, "now what?");
         await h.IdleAsync(s.Id);
