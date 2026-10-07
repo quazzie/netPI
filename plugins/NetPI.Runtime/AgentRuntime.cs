@@ -101,7 +101,17 @@ internal sealed class AgentRuntime : IAgentRuntime
         _ = Task.Run(() => CleanToolResults());
         Ctx.Events.Subscribe(EventTypes.SessionDeleted, e =>
         {
-            if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) CleanToolResults(id);
+            if (e.As<JsonObject>()?["id"]?.GetValue<string>() is not { Length: > 0 } id) return;
+            // A deleted chat's run has nowhere left to write: stop it now, not when its model call ends and the write
+            // fails. That held a model slot for the rest of the answer, for a chat that no longer exists. A deleted tree
+            // is announced children first, so the abort starts at the topmost agent whose session is gone too: its
+            // subagents are cancelled as by their parent, and none reports to a parent that is being deleted with it.
+            if (FindStateBySession(id) is { } s)
+            {
+                while (s.Info.ParentSessionId is { Length: > 0 } up && Ctx.Sessions.GetSession(up) is null && FindStateBySession(up) is { } parent) s = parent;
+                AbortCore(s, "cancelled: its session was deleted", byParent: false);
+            }
+            CleanToolResults(id);
         });
         _store.Initialize();
         var interrupted = _store.MarkInterrupted();

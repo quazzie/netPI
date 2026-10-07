@@ -163,7 +163,9 @@ public static class AdvancedTests
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
             var mark = env.Client.Mark();
-            var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Three workers [s:spawn n=3 delay=6000]" });
+            // The workers think for 30 s, longer than any wait below: only a delete that stops them empties the pool in time.
+            // (At 6 s the test passed when the workers simply finished: their model calls ran on for a deleted chat.)
+            var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Three workers [s:spawn n=3 delay=30000]" });
             var parentId = agent.S("id")!;
             await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("id") == parentId && e.D.P("agent").S("status") == "yielded", "parent waiting", 20_000);
             var kids = await Children(env, parentId);
