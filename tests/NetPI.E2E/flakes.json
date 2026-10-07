@@ -23,9 +23,9 @@
     },
     {
       "id": "context.workspace-binding",
-      "runs": 31,
+      "runs": 32,
       "failures": 3,
-      "rate": 0.0968,
+      "rate": 0.0938,
       "firstSeen": "20261002-212304-85ab",
       "lastFailure": "20261002-212332-b31e",
       "cause": "timed out after 30000ms waiting for session.workspace after the delete. Last events: \u2014 responsive",
@@ -33,9 +33,9 @@
     },
     {
       "id": "sessions.delete-orchestrator",
-      "runs": 20,
+      "runs": 21,
       "failures": 1,
-      "rate": 0.05,
+      "rate": 0.0476,
       "firstSeen": "20261005-160936-f110",
       "lastFailure": "20261005-160936-f110",
       "cause": "no agent of the deleted tree still busy: main:running (busy.Any(a =\u003E a.S(\u0022id\u0022) == parentId || kids.Any(k =\u003E k.S(\u0022id\u0022) == a.S(\u0022id\u0022)))) \u2014 responsive",

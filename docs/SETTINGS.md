@@ -93,7 +93,7 @@ model that produced them (required for tool calls with Claude, Gemini or OpenAI 
 | `baseUrl` | `https://openrouter.ai/api` | a trailing `/v1` is fine |
 | `include` | all models with tool calls | model ids or globs to offer, e.g. `["stealth/*", "anthropic/claude-*", "*:free"]`; an exact id is offered even without tool support |
 | `models.<id>` | – | per model: `displayName`, `contextWindow`, `maxOutputTokens`, `hidden` |
-| `maxOutputTokens` | `32768` | cap for `max_tokens` (catalogs report up to 500k+; reasoning counts against it), further cut to what the model's `contextWindow` has left beside the request |
+| `maxOutputTokens` | `32768` | cap for `max_tokens` (catalogs report up to 500k+; reasoning counts against it), further cut to what the model's `contextWindow` has left beside the request. The catalog lists each model's output limit under this cap (a per-model `maxOutputTokens` is used as it is), so the budget reserves what a call can actually produce |
 | `provider` | – | routing preferences sent as the request's `provider` object, e.g. `{ "sort": "throughput" }` |
 | `promptCaching` | `true` | top-level `cache_control` for `anthropic/*` models (other providers cache automatically) |
 | `replayReasoning` | `true` | send `reasoning_details` back |
@@ -150,14 +150,19 @@ apply, and a run that works through many files uses a lot of them.
 | `permissionMode` | `bypassPermissions` | a print-mode call cannot answer a prompt, so the CLI's tools run unasked; `acceptEdits`, `plan` and `default` limit them (what is not allowed then fails) |
 | `settingSources` | – | which settings files the CLI loads (`user`, `project`, `local`); none by default, because they bring hooks and permission rules |
 | `connectors` | `false` | let the CLI load the account's MCP connectors |
-| `usage` | `true` | show the Claude subscription usage (session and weekly windows) in the context ring's popout. It is the utilization the CLI prints after each call; pressing the ring also asks Anthropic for the live figure with the CLI's login token (`claudecli.usage.refresh`, at most once a minute) |
+| `usage` | `true` | show the Claude subscription usage (session and weekly windows) in the context ring's popout. It is the utilization the CLI prints after each call; hovering or pressing the ring also asks Anthropic for the live figure with the CLI's login token (`claudecli.usage.refresh`, at most once a minute) |
 | `stallTimeoutSeconds` | `1800` | how long the CLI may stay silent before the retry plugin declares the call stalled and retries it. The CLI's own tools and subagents can run for minutes without a line of output (the global `retry.stallTimeoutSeconds` is 180 s, which would kill a running subagent and wipe the chat's in-flight answer); 0 never declares a stall — a dead CLI ends the stream on its own |
 
 Each call is one process with the prompt on stdin (the system prompt through a temporary `--system-prompt-file` that also
 tells the model which tools it really has). The working folder is the session's workspace (else its project folder, else
-`%TEMP%\netpi-claude-cli`). The reported usage is the last turn of the CLI's own loop, so the context size is the size of the
-CLI's real context, shown by the context ring against the model's real window: the CLI reports it with each answer (1M for the Claude 5
-models, 200k for the earlier ones), and the catalog takes it up. The CLI compacts its own session, so NetPI's compaction leaves these chats alone.
+`<home>/claude-cli`, where the prompt files are written too: the home is the owner's alone, a shared temp folder is not). The
+reported usage is the last turn of the CLI's own loop, so the context size is the size of the CLI's real context, shown by the context
+ring against the model's real window: the CLI reports it with each answer (1M for the Claude 5 models, 200k for the earlier ones; read
+from the result's entry for the model asked for, since the CLI lists every model it used, a Haiku for an Explore subagent among them),
+and the catalog takes it up. The CLI compacts its own session, so NetPI's compaction leaves these chats alone. `claude auth status`
+(the plan the usage popout names) runs only while the provider is enabled. A failed live usage ask (`claudecli.usage.refresh`) is the
+answer again for the rest of its minute, not the old reading; on macOS the CLI keeps its login in the Keychain, which NetPI does not
+read, so the reading there comes from the calls alone.
 
 **A chat keeps one CLI session.** The first turn starts it (`--session-id`, with the conversation so far as the prompt); every
 later turn resumes it (`--resume`) and sends only what is new to it: the messages after the point it had, without its own answers
@@ -175,6 +180,16 @@ reads (`env:NAME`) or `shell.hideEnv`, the same policy as NetPI's shell tool; th
 CLI and everything it starts are in a job object that dies with NetPI, so a killed or crashed NetPI leaves no CLI running. A
 failure after the CLI ran tools is reported and never retried automatically, and a refusal for the subscription's limit says when
 the window opens again.
+
+**The CLI's tools follow what NetPI gives the run** (idea-hghbmg). Its calls never pass NetPI's before-call hooks, so the provider
+holds them itself: a CLI tool whose NetPI counterpart exists but is not given to the run (bash → `Bash`, edit/write → `Edit`, `Write`,
+read/grep/find → `Read`, `Grep`, `Glob`, web_fetch/web_search → `WebFetch`, `WebSearch`, agent_spawn → `Task`, todo_write →
+`TodoWrite`) goes to `--disallowedTools` — a tool switched off for the chat, a profile without it, a subagent handed a shorter list.
+A counterpart NetPI does not have at all leaves the CLI's tool alone. A run that may only read (plan mode, and a research subagent
+of a chat in plan mode: the Plan plugin marks the call) gets `--tools Read,Grep,Glob,WebFetch,WebSearch,TodoWrite` (what of that the
+run is given). The chat is told in a notice when something was held back. Goals need `goal_update`, which the CLI does not get, so a
+goal cannot be set or resumed on a `claude-cli` chat, and a goal whose chat moves to one pauses after the run. The after-call hooks
+see the CLI's calls under their NetPI names, so a goal set earlier still counts the CLI's work.
 
 ## Agents
 
@@ -270,7 +285,8 @@ where a chat runs, the profile who it is.
   `models.cloudSlots` (4) per
   cloud provider. The same slots serve model calls without an agent (a `compaction.model` on another model).
 - **`cost`:** also accepts `cacheRead` and `cacheWrite`; the defaults are 10 % and 125 % of the input price.
-- `budget.providers.<provider>.dailyTokens` (older: tokens per day per provider) is still read.
+- The older `budget.providers.<provider>.dailyTokens` (tokens per day per provider) is no longer read: the dollar budget
+  below is the one limit, and an agent's `budget` caps its own dollars per day.
 
 ## Budget
 
@@ -281,6 +297,7 @@ where a chat runs, the profile who it is.
 | `budget.resetDay` | `1` | the day of the month the budget period starts (1–28) |
 | `budget.warnPercent` | `80` | from here `agent_choices` tells agents to use paid agents only when you asked |
 | `budget.onLimit` | `"stop"` | when a budget is spent: `"stop"` paid calls, or `"ask"`: your chats stop with "let this chat go over" (`budget.allow`), subagents stop |
+| `budget.keepCallsDays` | `90` | days the ledger keeps its row per model call (at least 62; `0` keeps every row). Older settled rows are deleted at start and every 5000 calls; the totals per period, day, agent and chat (`session_usage`) stay, so only `usage.chats` of a period older than that comes back empty (idea-sdevr6) |
 
 Every provider attempt (including each retry) is recorded in the ledger the Agents plugin keeps in `ctx.Data`.
 Before dispatch, paid calls reserve
@@ -447,7 +464,7 @@ checks catch the plain cases (a command built at run time gets through): they ar
 | key | default | |
 |---|---|---|
 | `guardrails.enabled` | `true` | check tool calls against the rules below |
-| `guardrails.commands` | catastrophic commands (below) | regular expressions, tried on each part of a `bash`, `pwsh` or `ssh` `run` command (split at new lines, `;`, `&&`, `\|\|`, `\|`, `&`, but not the `&` of a redirection such as `2>&1`; a backslash at the end of a line continues it), ignoring case. A part is tried as written and with what a shell ignores taken off (a trailing `# comment`, redirections, quotes, and wrappers: `sudo` and its options, `env`, `command`, `time`, `nohup`, `exec`, `if`, `then`, `do`), so `rm -rf / 2>/dev/null` and `sudo -n rm -rf "$HOME"` match like `rm -rf /`. A rule that takes longer than 250 ms on a part counts as matching it |
+| `guardrails.commands` | catastrophic commands (below) | regular expressions, tried on each part of a `bash`, `pwsh` or `ssh` `run` command, and of the program and arguments a `windows` `open` starts (split at new lines, `;`, `&&`, `\|\|`, `\|`, `&`, but not the `&` of a redirection such as `2>&1`; a backslash at the end of a line continues it), ignoring case. A part is tried as written and with what a shell ignores taken off (a trailing `# comment`, redirections, quotes, and wrappers: `sudo` and its options, `env`, `command`, `time`, `nohup`, `exec`, `if`, `then`, `do`), so `rm -rf / 2>/dev/null` and `sudo -n rm -rf "$HOME"` match like `rm -rf /`. A rule that takes longer than 250 ms on a part counts as matching it |
 | `guardrails.paths` | `["ask: ~/.netpi", "~/.ssh"]` | files and folders the agent may not change: `write` and `edit` refuse them, so does an `ssh` download (`copy`, direction `download`) whose destination is under one, and so do `bash` and `pwsh` commands that name them, in any spelling a shell uses (`~/.netpi`, `$HOME/.netpi`, `%USERPROFILE%\.netpi`, `$env:USERPROFILE\.netpi`, `C:\Users\me\.netpi`, `/c/Users/me/.netpi`); the `read` tool still reads them. `~` is your home |
 | `guardrails.maxSleepSeconds` | `30` | the longest a `bash`, `pwsh` or `ssh` `run` command may wait on purpose (0 switches it off). A pattern cannot say "longer than N seconds" (a rule for `^sleep\s` takes `sleep 1` with it), so this one is parsed and compared: `sleep 300` with its GNU suffixes (`1m30s`, `500ms`) and decimals, `Start-Sleep -Seconds 300` / `-Milliseconds` / `-Timeout 00:05:00`, `ping -n 300` and `ping -c 300`, `timeout 400 sleep 300` (the timeout bounds it, so `timeout 5 sleep 300` is not a long wait), and the script a shell runs with `bash -c "sleep 300"` or `pwsh -Command "Start-Sleep 300"`. Only a wait in command position counts: the `sleep 300` an `echo`, a `printf` or a `git commit -m` quotes is data, and so is the tool's own `timeout` (that is a wait, not a sleep) — a heredoc body is a line of its own once the command is split at its newlines, so it does read as a command |
 | `guardrails.maxSleepAction` | `"block"` | `block`: a wait over the limit does not run and the model reads why (run the work itself with a matching `timeout`, or `background: true` and `process wait`). `ask`: you are asked on the tool's row in the chat, and "Allow in this chat" remembers it for that chat. A second opinion (`guardrails.secondOpinion`) never clears one |
@@ -546,11 +563,14 @@ control sockets live in `~/.netpi/ssh/` (one per host and user, hashed), so they
 - A client that cannot multiplex gets no master connection: OpenSSH_for_Windows accepts `ControlMaster` and then fails
   every session with `getsockname failed: Not a socket`. This is the normal case on Windows, and there the plugin keeps
   connections itself instead (`ssh.reuseConnections`): one long-lived ssh per host runs a small `sh` loop that takes one
-  call at a time (the command base64-encoded, its stdin as counted bytes saved to a temp file first, output ended by a
-  per-call random marker with the exit code), up to `ssh.connectionsPerHost` side by side. A handshake costs ~300 ms to
+  call at a time (the command base64-encoded, its stdin as counted bytes saved to a temp file first, output framed by a
+  per-call random start line and end marker with the exit code), up to `ssh.connectionsPerHost` side by side. A handshake costs ~300 ms to
   a LAN host and a call over a kept connection a few ms (measured 2026-10-03). A timeout or abort kills that connection,
   as killing a per-call ssh did; a host whose kept connection will not start (auth, host key, no POSIX `sh`, `base64`
-  or count-exact `head -c`) runs its calls the old way for 10 minutes, so ssh's own errors read as before.
+  or count-exact `head -c`) runs its calls the old way for 10 minutes, so ssh's own errors read as before. A job a call
+  leaves running still writes to the connection's output: what it prints outside a call (before the next call's start line,
+  after a call's end) is dropped and the connection is given up, and a command with a lone `&` gives up its connection
+  after the call, so a later call never carries another's output (idea-ic4fr9).
 
 Both questions are answered once per client, offline (`ssh -o … -G localhost` and `ssh -O check`), and take a few
 milliseconds; anything unexpected answers "not supported", so a call never fails because of the check itself.

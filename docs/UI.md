@@ -407,7 +407,7 @@ Timings from `npm run e2e` against the mock (headless Chromium):
   session** (a model with `managesOwnContext`) the ring is the CLI's own context against the model's real window (the CLI
   reports it; 1M for the Claude 5 models): the chat resumes one CLI session, which holds and compacts the conversation
   itself. Its popout then shows used / window / free, and the **Claude subscription usage** (`ClaudeUsage`: the session
-  and weekly windows as percent, bar and reset time, from `claudecli.usage`, updated on `usage.claude`; opening the popout (pressing the ring) asks for the live figure with `claudecli.usage.refresh`, at most once a minute, and shows a spinner until it answers, with when the
+  and weekly windows as percent, bar and reset time, from `claudecli.usage`, updated on `usage.claude`; the pointer reaching the ring (or focusing it) already asks for the live figure with `claudecli.usage.refresh`, at most once a minute, so the popout usually opens on it; opening the popout (pressing the ring) asks too, and shows a spinner until it answers, with when the
   Claude CLI last reported it), and leaves out what describes NetPI's own prompt: the compaction count, the prompt
   breakdown, **Compact now** (`compaction.run` answers that the backend compacts itself) and the Diagnostics link. Hover (like pressing it) re-reads the stored count with `sessions.get`, at most once per 5 s, and reads
   it in one line; **pressing it opens a popout** (idea-kp4fq5) with used / window / free, how often this chat was
@@ -428,6 +428,9 @@ Timings from `npm run e2e` against the mock (headless Chromium):
   toast, never a silent no-op. Nothing refreshes by hand: the service publishes `session.context` and appends the
   summary, so the ring and the count follow on their own.
 - The person's own queued inputs (`agent.queue`, `source: "user"`) appear as chips; the × on a chip calls `agent.dequeue`.
+  A queued follow-up that has waited 10 minutes (`createdAt`) behind a running agent turns amber with its age and a
+  **steer now** button (`agent.promote`): queued means "after the run", and a worker's run can last its whole package
+  (idea-equiw4).
   Internal ones (a subagent's report, a harness notice) are never shown: they are for the agent. `agent.notice` shows
   as a transient banner, which clears when the model streams again or the run ends. A compaction's banner is kept
   instead: "Compacting context…" while the summary is written, then its result until the model answers again (on a
@@ -456,7 +459,10 @@ the same Esc stack, `escLayer()` in `Modal.svelte`).
   warning when the agents on one local model have more instances than it serves), the note on when to use it, price
   overrides and a daily cap; the price, context, local/cloud and today's spend come from `agents.list`. "Add agent" opens
   the model list and then the new agent's dialog (the id is a slug of the model). `BudgetView` shows this period against the monthly
-  and daily budgets and what each model cost (`usage.summary`), above the budget settings.
+  and daily budgets and what each model cost (`usage.summary`), above the budget settings. Every spend figure (this view, the
+  budget pill, the Work tab's bar, the Usage tab's total, a chat's cost) is the settled one: a call still running counts at its
+  reservation for the limits, and is named apart ("… more is reserved for calls still running") instead of making the figure
+  jump up and back at every call (idea-qbi2fv).
 - **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`), "Chats NetPI starts itself use"
   (`profiles.autoProfile`; the UI starts of idea work pass `newSession({ auto: true })`, which calls `profiles.applyAuto`) and one row per profile (its name,
   the first line of its instructions, its tools); `ProfileDialog` edits one: the name, the instructions that replace the
@@ -555,9 +561,11 @@ Per-tab narrow layouts:
   `sub` mark and `for <parent chat>`), then the activity and elapsed time; a free one says `free`. A process shows its
   command + elapsed/exit, then pid · bg · size · cwd … time ago.
 - **Schedules:** a row reads a status dot · name · right-aligned next-run label (`in 3 h`, `tomorrow 07:30`, `paused`,
-  `finished`, `overdue`); line 2 is one meta line (when · project · agent · last-run chip). The hover actions are
+  `proposed`, `finished`, `overdue`); line 2 is one meta line (when · project · agent · last-run chip). The hover actions are
   run now, pause/resume, edit, history and a two-step delete; expanding a row shows the prompt, the ids, **Open last
-  chat** and the run history. The add/edit form replaces the list (no modal), stacked fields.
+  chat** and the run history. The add/edit form replaces the list (no modal), stacked fields. A schedule an agent added
+  or changed (`proposedBy`) is **proposed**: a warning dot, "proposed by an agent" leading its meta line, and the resume
+  button (titled to say so) is the approval that lets it run.
 - **Ideas:** a full-width title, a 2-line summary, then one meta line: status pill · project badge · priority · tags ·
   sections · time. In an expanded card the actions are **Send to chat**, **+ Section**, edit, and ⋯ (move
   up/down, copy id, delete).
@@ -600,8 +608,7 @@ versioned `work.v2.*` so the defaults of this layout apply).
   waiting, longest 14m`; clicking it opens who waits in a floating list (`WaitList`, `position: fixed`, so it never
   pushes the tab down): each row opens its chat and has an **x** that cancels that run (`agent.abort`: a run still
   waiting for an instance is cancelled before it starts). The last line of the agent is what it has done this period
-  (`usage.summary.models`: `412 calls · 1.2M↑ 86k↓`, a cost when it has one; the tooltip adds cache reads), with a bar
-  under it when its provider has a token budget today. An agent that cannot take work (off, or its model is not loaded)
+  (`usage.summary.models`: `412 calls · 1.2M↑ 86k↓`, a cost when it has one; the tooltip adds cache reads). An agent that cannot take work (off, or its model is not loaded)
   has a header and its reason only. Model calls without an agent show only in the summary chip.
 - **Background** (collapsed by default; `<n> running`): the commands that outlive a tool call (dev servers, watchers) and any
   foreground command with no row to show on. Expanding a row fetches `processes.output` (tail 300 lines) and appends live
@@ -709,7 +716,8 @@ set, uptime, threads, framework; the full details are in its tooltip). A segment
 
 **MCP** (`netpi.mcp`, right). The configured MCP servers from `mcp.list` (id, status, tool count; a failed server's
 error and the tools the plugin rejected), each with a ⋯ menu (edit the configuration as JSON, enable/disable, reconnect,
-refresh tools, remove: `mcp.save`, `mcp.setEnabled`, `mcp.reconnect`, `mcp.refresh`, `mcp.remove`). Clicking a server
+refresh tools, remove: `mcp.save`, `mcp.setEnabled`, `mcp.reconnect`, `mcp.refresh`, `mcp.remove`; the editor and the
+switches below start from `mcp.config { id }`, the configuration whole, because `mcp.list` masks its secrets). Clicking a server
 lists its tools from `mcp.tools { serverId }` with a filter; a tool opens to its description, registered id, three
 switches that write the server's configuration through `mcp.save` (exposed → `config.tools`, pinned schema →
 `config.pinned`, read-only → `config.readOnly`) and its schema. Kit classes and tokens throughout, one column that
@@ -922,7 +930,7 @@ names or an inline `<svg …>` string.
   The `clientAction` values the UI understands are `openTab:<pluginId>/<tabId>`, `insert:<text>` and
   `settings`.
 - A `UiTabInfo.panel` sent as a number (enum without a string converter) is accepted: `0` is left, `1` is right.
-- The Work tab reads `usage.summary` providers' `budgetTokens` and `budgetUsed` (input + output + cache write),
+- The Work tab reads `usage.summary.models`,
   `AgentSlots.status`/`available`/`unavailable`/`disabled`, `SlotHolder.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.
 - The Ideas tab expects `ideas.changed { backend: 'sqlite', database, scope, schemaVersion, file, reason? }` after every
   committed write, including writes made by agents, and reads `ideas.list().storage` for where the backlog lives. It

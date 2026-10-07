@@ -165,8 +165,12 @@ details: { path, created: boolean, bytes: number, lines: number, eol: 'lf'|'crlf
   unless all of them match. A refusal names the file by its place in the list (`File 2 of 3, edit 1 of 2 failed in
   src/b.cs: …  No files were changed (all-or-nothing).`). A file listed twice, `path` together with `files`, or more than
   50 files are refused before anything is read. If a write fails midway (a locked file), the files already written are
-  put back from their originals. Guardrails and the workspace guard judge every path: one protected path or one file in
-  another checkout refuses the whole call. Each file keeps its own line endings, BOM and encoding.
+  put back from their originals (unless one changed again after this edit wrote it: that one is named, not overwritten).
+  Guardrails and the workspace guard judge every path: one protected path or one file in another checkout refuses the
+  whole call. Each file keeps its own line endings, BOM and encoding.
+- **A file that changed after the edit read it** (another agent in the same checkout, a formatter, an editor's autosave) is
+  not written: right before its write every file is compared with the bytes the edit read, and a difference is an error
+  ("… changed since this edit read it … read it again and repeat the edit"); in a batch, no file is written then.
 
 - Edits run in order in memory (a later edit sees the result of earlier ones) and are **all-or-nothing**. If any edit fails,
   nothing is written, and the error names the edit that failed: `Edit 2 of 3 failed in src/x.cs: …`.
@@ -359,7 +363,10 @@ The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.
   Python/Node script that writes a file, `sed -i`, `perl -pi`, `Set-Content`…) and changed nothing gets
   `[No file in <repo> changed. If this command was meant to edit one, the text it looked for may not be there …]`: the
   replace that matched nothing. A repository outside the session's workspace is named. Each snapshot has 3 s; a slower
-  repository, more than 5000 dirty paths or no git is simply not tracked. It sees what git sees, so ignored files and
+  repository, more than 5000 dirty paths or no git is simply not tracked, and a repository that ran over the budget (or
+  over 5000 dirty paths) is left alone for 5 minutes instead of being asked again before and after every command
+  (idea-stj3mv). `sudo`, `time`, `env`, `nohup` and `exec` in front of a command are skipped to find what it runs, and
+  `sort -o file` and `uniq in out` count as writing. It sees what git sees, so ignored files and
   other repositories are outside it, and a change another process made meanwhile is reported too: a report, not a
   guard. The chat shows the files under the output and, on request, the diff of those that were clean before (against
   the commit they were clean at, which is exactly the command's change).
@@ -634,7 +641,9 @@ that folder; the Browser view shows the path). It connects to `/api/p/netpi.tool
 DevTools commands to tabs through `chrome.debugger` (Chrome shows its "started debugging this browser" bar while a tab
 is attached); its button's popup **shares the current tab with a chat** — an existing chat, a new one, or "any chat"
 (the pool for `tabs`/`use`) — with an optional message that is sent to the chat as the user's, and stops sharing it.
-The agents' own tabs in the user's Chrome (`browser: "chrome"`) go through it too.
+The agents' own tabs in the user's Chrome (`browser: "chrome"`) go through it too. The extension itself refuses every
+command for a tab NetPI did not open (or follow from one of its tabs) and the user did not share, so its debugger never
+reaches the user's other tabs whatever it is sent (idea-ic4fr9). A download is credited to the chat whose tab started it.
 
 ```ts
 details: { action, url, title, controls, shown, result }          // after an action or snapshot
@@ -651,7 +660,10 @@ details: { action, url, title, controls, shown, result }          // after an ac
 
 `plugins/NetPI.Tools.Windows`, Windows only. UI Automation runs in a helper process (`src/NetPI.WindowsAgent`,
 `netpi-windows-agent.exe`, started on first use from a copy outside the plugin folder; one JSON request per line): an
-app that stops answering costs a timeout and a restarted helper, not a stuck NetPI.
+app that stops answering costs a timeout and a restarted helper, not a stuck NetPI. Only the helper is ended then (or when the
+run is stopped mid-call): the apps it opened are its children, and they are the user's once open, so they keep running.
+`open` starts a program with arguments, which is running a command: the guardrails' command rules and protected paths judge the
+program and its arguments like a shell command (the names the tool reads them by are `ToolPathArgs.Windows*`).
 
 ### `windows` (summary arg `action`)
 
@@ -751,6 +763,11 @@ child asked for that passes, else all of it; plus `mcp_search`, `mcp_call`, `mcp
 (it shares the plan chat's checkout), and the research instructions are appended. The child's own calls are checked by the same
 hook while the chat that started it (up to six levels) is in plan mode. Any agent may be chosen: `agent_choices` shows each one's
 model and description. `plan.subagentsReadOnly: false` leaves spawns alone.
+
+A model that works with tools of its own (`runsOwnTools`, the Claude CLI) never makes the calls the gate above sees, so plan mode
+reaches it another way: a model middleware of the Plan plugin marks its agent calls `ReadOnlyTools` while the chat (or the chat
+that started a research subagent) is in plan mode, and the provider then gives the CLI its reading tools only (`Read`, `Grep`,
+`Glob`, `WebFetch`, `WebSearch`, `TodoWrite`). Such a model cannot call `plan_submit`; it writes the plan as its answer.
 
 ### `plan_submit`
 
@@ -891,7 +908,8 @@ only when the user asks. No active goal is an error.
 model, while the chat's own subagents are still working ("wait for their reports, check them, then complete"). Then
 one model call that did not do the work (the chat's model, effort `low`, no tools, at most 2000 output tokens) reads
 the objective, the agent's summary and the evidence (the context's tool calls with the end of what each returned,
-newest last, at most 60 calls and 24k characters, plus a compaction summary when there is one) and answers `PASS` or
+and the subagents' reports — the `agent-result` notices and what `agent` wait/result returned — as 2000 characters of
+their start and end, newest last, at most 60 entries and 24k characters, plus a compaction summary when there is one) and answers `PASS` or
 `GAPS` with what is missing: a part without evidence, a check that failed, was skipped or was pointed at other input
 so it would pass, a warning the summary does not deal with (`OVER BUDGET`), a claim the evidence does not show, or a
 goal that cannot be finished by its nature. Gaps refuse the completion (an error result listing them; the goal stays
@@ -924,21 +942,24 @@ is one validation path, and it adds the model-facing guards the RPCs leave to th
 Synonyms: `create`/`new` → add, `pause`/`resume` → update (with `enabled` forced), `edit`/`change` → update, `show` → get.
 With no action: an id plus a change means update, an id alone means get, a prompt plus a cadence means add, otherwise list.
 
-- `list`: every schedule (or `projectId`'s), one plain-text line each — `id · name · when · enabled|paused|finished · next <local time> · last <status: reason> <ago>` —
+- `list`: every schedule (or `projectId`'s), one plain-text line each — `id · name · when · enabled|proposed|paused|finished · next <local time> · last <status: reason> <ago>` —
   with `now` in the machine's local time and offset (a `once` time is computed from it). Capped at 100 lines.
 - `get`: one schedule plus its full prompt, project and agent.
 - `history`: a schedule's runs, newest first (`limit`, default 20): time · status · reason · chat.
-- `add`: `prompt` + `cadence` (`{ kind: once, at }` a future ISO 8601 time with offset · `{ kind: every, minutes }` ·
-  `{ kind: daily, time, tz? }` an IANA zone, default the machine's). The project defaults to the calling chat's;
-  `""` means none. The result echoes the machine's now.
-- `update`: change any field, or pause/resume with `enabled` false/true. A cadence change counts the next run from now
-  (and, server-side, resumes a paused schedule — the form sends `enabled` explicitly).
+- `add`: `prompt` + `cadence` (`{ kind: once, at }` a future ISO 8601 time with its offset, or `Z` — one without is refused ·
+  `{ kind: every, minutes }` · `{ kind: daily, time, tz? }` an IANA zone, default the machine's). The project defaults to
+  the calling chat's; `""` means none. The result echoes the machine's now. **The schedule is a proposal:** it is stored
+  paused with `proposedBy: "session:<chat>"` and runs only once the user enables it in the Schedules tab.
+- `update`: change any field, or pause with `enabled: false`. A change of what runs (prompt, cadence, project, agent) pauses
+  the schedule as a proposal until the user enables it again; a new name does not. Enabling or resuming is refused: that is
+  the user's OK. A cadence change counts the next run from now.
 - `run`: start a run now, beside the cadence; a skip or failure is an error result, so the model reads it as a refusal.
 
-**Guards (tool-side; the RPCs stay unconstrained for the user's tab):** a chat a schedule started (its `meta.schedule`)
-cannot `add` or `run`, and may `update` only its own schedule to `enabled: false` (a digest run can pause itself); the
-set is capped at 50 schedules. `delete` is not an action: “Deleting a schedule is up to the user, in the Schedules tab.
-Pause it with action update, enabled false.”
+**Guards (tool-side):** a schedule runs unattended with the full tool set, so what a model adds or changes waits for the
+user (idea-96bh9b): a prompt injected into a chat cannot make itself recurring. A chat a schedule started (its
+`meta.schedule`, or a subagent of such a chat, up to eight levels up) cannot `add` or `run`, and may `update` only its own
+schedule to `enabled: false` (a digest run can pause itself); the set is capped at 50 schedules. `delete` is not an action:
+“Deleting a schedule is up to the user, in the Schedules tab. Pause it with action update, enabled false.”
 
 `list`, `get` and `history` are read-only (`IReadOnlyCalls`); `add`, `update` and `run` are not. Runs start a fresh chat
 (`meta.schedule`, `Source = "system"`), so the Work tab, `runs.list` and the budget see them like any run; they are
