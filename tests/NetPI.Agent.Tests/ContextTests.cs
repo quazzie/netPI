@@ -22,8 +22,7 @@ public static class ContextTests
         t.Add("context: an original with two prompt versions at the fork point gives the fork that history once, whichever side of the copy its first call lands", ForkTwoPrompts);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
-        t.Add("context: a tools notice says why (plugin reload, the user, a setting) and keeps the cause in meta", ToolChangeCauses);
-        t.Add("context: a plugin whose folder disappeared is named as the cause of its vanished tools", ToolChangeCausePluginRemoved);
+        t.Add("context: a tools notice keeps its cause in meta: unknown for a new plugin, plugin-reload for a reloaded plugin or a removed plugin folder", ToolChangeCauses);
         t.Add("context: a profile switch is named by session.changed, not by the notice it happens to leave", ToolChangeCauseProfileEvent);
         t.Add("context: a tools notice names the user and a setting as the cause too", ToolChangeCausesUserAndSettings);
         t.Add("context: context.toolsets: the tools now, the baseline and every change with its cause", ToolSets);
@@ -645,58 +644,38 @@ public static class ContextTests
 
     // A tools notice says why, so the model (and the user) can tell a plugin reload from a tool that vanished for no
     // reason: the cause and the plugins behind it go in the notice's meta, and the reload is the host's plugins.reloaded.
+    // The host also stops a plugin whose folder or assembly is gone and says so the same way (kind: "removed"): its
+    // vanished tools are a reload too, not a plugin switched off (that is a setting) and not "no longer available" with
+    // nothing to explain it. Each kind runs on a host of its own, so one reload cannot explain the other's change.
     private static async Task ToolChangeCauses()
     {
-        await using var h = await TestHost.StartAsync();
-        Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
-        var s = h.NewSession();
-        await Turn(h, s.Id, "hi");
-
-        // a plugin's tool arrives: nothing to point at yet
-        using (h.Tools.Register(new FakeTool("web_probe", Ok), 0, "netpi.tools.web"))
+        foreach (var kind in (string[])["reload", "removed"])
         {
-            await Turn(h, s.Id, "a web tool?");
-            Check.Equal("unknown", Notices(h, s.Id, "tools").Last().MetaString("cause"), "nothing explains a new plugin");
+            await using var h = await TestHost.StartAsync();
+            Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
+            var s = h.NewSession();
+            await Turn(h, s.Id, "hi");
 
-            // the plugin is reloaded: the notice names it, and the meta keeps the cause
-            h.Bus.Publish(new BusEvent
+            // a plugin's tool arrives: nothing to point at yet
+            using (h.Tools.Register(new FakeTool("web_probe", Ok), 0, "netpi.tools.web"))
             {
-                Type = EventTypes.PluginsReloaded,
-                Data = new JsonObject { ["ids"] = new JsonArray("netpi.tools.web", "netpi.tools.media"), ["kind"] = "reload" },
-            });
-            await h.Bus.DrainAsync();
-        }
-        await Turn(h, s.Id, "gone?");
-        var reloaded = Notices(h, s.Id, "tools").Last();
-        Check.Equal("Your tools changed. No longer available: web_probe (plugin reload netpi.tools.web).", reloaded.Text);
-        Check.Equal("plugin-reload", reloaded.MetaString("cause"));
-        Check.Equal("netpi.tools.web", ((JsonArray)reloaded.Meta!["plugins"]!)[0]!.GetValue<string>());
-    }
+                await Turn(h, s.Id, "a web tool?");
+                Check.Equal("unknown", Notices(h, s.Id, "tools").Last().MetaString("cause"), $"{kind}: nothing explains a new plugin");
 
-    // The host stops a plugin whose folder or assembly is gone and says so on the bus (plugins.reloaded, kind: "removed").
-    // Without that the notice for its vanished tools has no cause at all, and the model is told a tool is "no longer
-    // available" with nothing to explain it.
-    private static async Task ToolChangeCausePluginRemoved()
-    {
-        await using var h = await TestHost.StartAsync();
-        Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
-        var s = h.NewSession();
-        await Turn(h, s.Id, "hi");
-        using (h.Tools.Register(new FakeTool("web_probe", Ok), 0, "netpi.tools.web"))
-        {
-            await Turn(h, s.Id, "a web tool?");
-            h.Bus.Publish(new BusEvent
-            {
-                Type = EventTypes.PluginsReloaded,
-                Data = new JsonObject { ["ids"] = new JsonArray("netpi.tools.web"), ["kind"] = "removed" },
-            });
-            await h.Bus.DrainAsync();
+                // the plugin is reloaded, or its folder disappeared: the notice names it, and the meta keeps the cause
+                h.Bus.Publish(new BusEvent
+                {
+                    Type = EventTypes.PluginsReloaded,
+                    Data = new JsonObject { ["ids"] = new JsonArray("netpi.tools.web", "netpi.tools.media"), ["kind"] = kind },
+                });
+                await h.Bus.DrainAsync();
+            }
+            await Turn(h, s.Id, "gone?");
+            var reloaded = Notices(h, s.Id, "tools").Last();
+            Check.Equal("Your tools changed. No longer available: web_probe (plugin reload netpi.tools.web).", reloaded.Text, $"{kind}: a reload, not a setting");
+            Check.Equal("plugin-reload", reloaded.MetaString("cause"), $"{kind}: named, not unknown");
+            Check.Equal("netpi.tools.web", ((JsonArray)reloaded.Meta!["plugins"]!)[0]!.GetValue<string>(), $"{kind}: the plugin behind it");
         }
-        await Turn(h, s.Id, "gone?");
-        var notice = Notices(h, s.Id, "tools").Last();
-        Check.Equal("Your tools changed. No longer available: web_probe (plugin reload netpi.tools.web).", notice.Text);
-        Check.Equal("plugin-reload", notice.MetaString("cause"), "named, not unknown");
-        Check.Equal("netpi.tools.web", ((JsonArray)notice.Meta!["plugins"]!)[0]!.GetValue<string>());
     }
 
     // The profile cause used to be a string-match on the last notice's kind, so renaming that kind would have silently
