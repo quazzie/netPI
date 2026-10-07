@@ -55,6 +55,20 @@
     }
   }
 
+  // A Claude CLI chat: the pointer reaching the ring asks for the live subscription usage ahead of the press, so the
+  // popout opens on a current figure instead of a spinner (idea-qbg097). The server asks Anthropic at most once a
+  // minute and answers a press inside that minute from what it read; this side asks at most once a minute too.
+  let lastUsageAsk = 0;
+  function prefetchUsage() {
+    if (!claudeUsage || Date.now() - lastUsageAsk < 60_000) return;
+    lastUsageAsk = Date.now();
+    rpc('claudecli.usage.refresh', undefined, { timeout: 20000 }).catch(() => {}); // the popout shows a failure itself
+  }
+  function hover() {
+    refresh();
+    prefetchUsage();
+  }
+
   async function show() {
     refresh();
     open = !open;
@@ -148,8 +162,8 @@
   aria-expanded={open}
   aria-haspopup="dialog"
   onclick={show}
-  onpointerenter={refresh}
-  onfocus={refresh}
+  onpointerenter={hover}
+  onfocus={hover}
 >
   <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
     <circle cx="9" cy="9" r={R} class="track" />

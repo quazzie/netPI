@@ -204,8 +204,48 @@ internal static class ClaudeCliTests
             }).Where(x => x is not null).ToList();
             t.Eq("running,output,done", string.Join(",", order), "running, then a subagent's progress, then done");
             t.Check(call.ProviderLive, "the call is marked as reported live");
+            t.Eq("read", call.ProviderAs, "named for the hooks as the NetPI tool it stands for");
             t.Eq(2000L, done.Usage!.CacheReadTokens, "context size is the last turn's");
             t.Eq(7L, done.Usage!.OutputTokens, "output of the last turn");
+        });
+
+        await t.Run("claude-cli: the CLI's own tools follow what NetPI gives the run: read-only in plan mode, a tool switched off is held back, one NetPI lacks is left alone", () =>
+        {
+            static ToolDefinition T(string n) => new() { Name = n, Description = "d", Parameters = new JsonObject { ["type"] = "object" } };
+            static ModelRequest R(IEnumerable<string> tools, bool readOnly = false) => new()
+            {
+                Model = new ModelInfo { Provider = "claude-cli", Id = "claude-opus-5-5" }, Messages = [ChatMessage.UserText("go")],
+                Tools = [.. tools.Select(T)], Purpose = "agent", ReadOnlyTools = readOnly,
+            };
+            string[] all = ["bash", "pwsh", "edit", "write", "read", "grep", "find", "ls", "web_fetch", "web_search", "agent_spawn", "todo_write"];
+            var o = CL.ClaudeCliOptions.Parse(new JsonObject { ["enabled"] = true });
+
+            var (tools, off, note) = CL.ClaudeCliProvider.ToolPolicy(R(all), o, all);
+            t.Eq("default", tools, "everything offered: the CLI's whole set");
+            t.Eq(0, off.Count, "nothing held back");
+            t.Check(note is null, "and nothing to say");
+
+            (tools, off, note) = CL.ClaudeCliProvider.ToolPolicy(R(all.Where(n => n is not ("bash" or "pwsh"))), o, all);
+            t.Check(off.Contains("Bash") && off.Contains("BashOutput") && !off.Contains("Edit") && !off.Contains("Read"), $"bash switched off: the CLI's Bash goes with it ({string.Join(",", off)})");
+            t.Check(note!.Contains("without Bash"), $"and the chat is told: {note}");
+
+            var noWeb = all.Where(n => !n.StartsWith("web_", StringComparison.Ordinal)).ToArray();
+            (_, off, _) = CL.ClaudeCliProvider.ToolPolicy(R(noWeb), o, noWeb);
+            t.Check(!off.Contains("WebFetch") && !off.Contains("WebSearch"), "a tool NetPI does not have at all leaves its CLI counterpart alone");
+
+            (tools, off, note) = CL.ClaudeCliProvider.ToolPolicy(R(all, readOnly: true), o, all);
+            t.Eq("Read,Grep,Glob,WebFetch,WebSearch,TodoWrite", tools, "a run that may only read keeps the reading tools alone");
+            t.Check(note!.Contains("read-only"), $"and says so: {note}");
+            (tools, _, _) = CL.ClaudeCliProvider.ToolPolicy(R(["read", "grep"], readOnly: true), o, all);
+            t.Eq("Read,Grep", tools, "and only those NetPI gives it too");
+
+            var listed = CL.ClaudeCliOptions.Parse(new JsonObject { ["enabled"] = true, ["tools"] = "Read,Bash,Edit" });
+            (tools, _, _) = CL.ClaudeCliProvider.ToolPolicy(R(all.Where(n => n is not ("bash" or "pwsh"))), listed, all);
+            t.Eq("Read,Edit", tools, "a configured list loses what the run is not given");
+
+            var args = CL.ClaudeCliProvider.BuildArgs(R(all), o, "default", "p.md", new CL.ClaudeCliProvider.CliAttempt(false, "", "", false), ["Bash", "BashOutput"]);
+            t.Eq("Bash,BashOutput", args[args.IndexOf("--disallowedTools") + 1], "what is held back goes to --disallowedTools");
+            return Task.CompletedTask;
         });
 
         await t.Run("claude-cli: a history is sent as a labelled transcript; an API-key login is called out", async () =>

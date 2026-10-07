@@ -41,6 +41,8 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     public int? Turns { get; private set; }
     /// <summary>The model's real context window and output limit, from the result's <c>modelUsage</c> (the CLI knows them, NetPI's table does not).</summary>
     public (int Window, int MaxOutput)? Limits { get; private set; }
+    /// <summary>The model the call asked for: <see cref="Limits"/> are read from its own <c>modelUsage</c> entry.</summary>
+    public string? ModelId { get; init; }
     /// <summary>True once the CLI has started a tool: from then on its run did work (it may have written files, spent a long time), so a failure
     /// is reported, never retried from the top by the retry middleware.</summary>
     public bool RanTools { get; private set; }
@@ -94,8 +96,11 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
                 else if (type == "tool_use")
                 {
                     var call = asm.StartToolCall(block.Str("id"), block.Str("name"));
-                    // executed: the CLI runs it; live: it is reported while it runs (ProviderToolRunning/Done), not only at the end
+                    // executed: the CLI runs it; live: it is reported while it runs (ProviderToolRunning/Done), not only at the end;
+                    // as: the NetPI tool it stands for, so the after-call hooks read the CLI's Bash as bash (idea-hghbmg)
                     call.ProviderData = new JsonObject { [ToolCallPart.ExecutedKey] = true, [ToolCallPart.LiveKey] = true };
+                    if (call.Name is { Length: > 0 } cliName && ClaudeCliProvider.Counterparts.TryGetValue(cliName, out var netpi))
+                        call.ProviderData[ToolCallPart.AsKey] = netpi[0];
                     RanTools = true;
                     _toolBlocks[index] = call;
                     _toolArgs[index] = new StringBuilder();
@@ -196,13 +201,9 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     {
         Finished = true;
         Turns = o.Int("num_turns");
-        if (o.Obj("modelUsage") is { } perModel)
-            foreach (var (_, usage) in perModel)
-                if (usage?["contextWindow"] is JsonValue w && w.TryGetValue<int>(out var window) && window > 0)
-                {
-                    Limits = (window, usage["maxOutputTokens"] is JsonValue m && m.TryGetValue<int>(out var max) && max > 0 ? max : 0);
-                    break;
-                }
+        if (o.Obj("modelUsage") is { } perModel && PickModelUsage(perModel, ModelId) is { } usage
+            && usage["contextWindow"] is JsonValue w && w.TryGetValue<int>(out var window) && window > 0)
+            Limits = (window, usage["maxOutputTokens"] is JsonValue m && m.TryGetValue<int>(out var max) && max > 0 ? max : 0);
         var text = o.Str("result");
         if (o.Bool("is_error", false))
         {
@@ -225,6 +226,28 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         if (!_sawUsage) ApplyUsage(o.Obj("usage"));
         // the calls were run by the CLI: this message is the answer, not a request for tools
         asm.StopReason ??= "stop";
+    }
+
+    /// <summary>
+    /// The <c>modelUsage</c> entry of the model the call asked for. The CLI lists every model it used — a Haiku for an
+    /// Explore subagent or a web page summary, beside the one asked for — so the first entry is not necessarily it
+    /// (idea-irqqkj): its own id, or a dated or suffixed form of it (<c>claude-opus-5-5-20260101</c>,
+    /// <c>claude-opus-5-5[1m]</c>); the only entry when there is one; otherwise none, and nothing is learned.
+    /// </summary>
+    internal static JsonObject? PickModelUsage(JsonObject perModel, string? modelId)
+    {
+        JsonObject? only = null;
+        var count = 0;
+        foreach (var (key, node) in perModel)
+        {
+            if (node is not JsonObject usage) continue;
+            count++;
+            only = usage;
+            if (!string.IsNullOrEmpty(modelId) && (key.Equals(modelId, StringComparison.OrdinalIgnoreCase)
+                    || key.StartsWith(modelId + "-", StringComparison.OrdinalIgnoreCase) || key.StartsWith(modelId + "[", StringComparison.OrdinalIgnoreCase)))
+                return usage;
+        }
+        return count == 1 ? only : null;
     }
 
     // CostUsd stays null on purpose: total_cost_usd is what the call would cost on the API, not what a subscription pays.

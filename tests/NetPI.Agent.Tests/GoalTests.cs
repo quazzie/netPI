@@ -22,6 +22,8 @@ public static class GoalTests
         t.Add("goal: goal_set on the user's request starts the loop", SetByModel);
         t.Add("goal: announced again after compaction, once; changes and resumes are announced", Notices);
         t.Add("goal: RPC validation (empty, too long, subagent sessions, nothing to pause)", RpcValidation);
+        t.Add("goal: a model that runs its own tools: set and resume are refused, a goal whose chat moved to one pauses", OwnToolsModel);
+        t.Add("goal: the review's evidence carries the subagents' reports, from a notice or a wait, their start and end", ReviewSeesReports);
         t.Add("goal: a completion is reviewed against the evidence: gaps refuse it, a second refusal blocks it for the user", ReviewRefusesThenBlocks);
         t.Add("goal: a completion the review passes closes the goal; a review that cannot run never holds it back", ReviewPasses);
         t.Add("goal: a run that ends while its subagents work is continued at once, naming them; completing is refused until they report", ContinueWhileSubagentsWork);
@@ -422,6 +424,67 @@ public static class GoalTests
         var sub = h.Sessions.CreateSession(new SessionInfo { Title = "sub", Kind = "subagent" });
         Check.Contains(await Fails("goal.set", new { sessionId = sub.Id, objective = "x" }), "not subagents");
         Check.True(await h.Rpc.CallAsync("goal.get", new { sessionId = s.Id }) is null, "no goal yet");
+    }
+
+    // A model that works with its own tools (the Claude CLI) cannot call goal_update: a goal on it could never complete, and
+    // its continuations would each be a whole run of its own (idea-hghbmg). Refused up front; paused when the chat moves to one.
+    private static async Task OwnToolsModel()
+    {
+        var (h, _) = await Start();
+        await using var _h = h;
+        h.Catalog.AddModel(new ModelInfo { Provider = "fake", Id = "cli", IsLocal = true, Concurrency = 1, ContextWindow = 50_000, Status = "loaded", RunsOwnTools = true });
+        var cli = h.NewSession(model: "fake/cli");
+        string? refused = null;
+        try { await h.Rpc.InvokeAsync("goal.set", new { sessionId = cli.Id, objective = "Do it" }); }
+        catch (RpcException ex) { refused = ex.Message; }
+        Check.Contains(refused, "cannot call goal_update", "set on such a model: refused");
+        Check.True(GoalOf(h, cli.Id) is null, "and no goal was set");
+
+        var s = h.NewSession();
+        var hold = new TaskCompletionSource();
+        var calls = 0;
+        h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref calls) == 1 ? Held(hold.Task) : Reply.Text("working on it");
+        await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Do it" });
+        await Wait.Until(() => calls >= 1, "the first run is in its model call");
+        h.SetModel(s.Id, "fake/cli");   // the chat moves to the CLI while the goal runs
+        hold.SetResult();
+        await SettledAsync(h, s.Id, "paused");
+        Check.Contains((string?)GoalOf(h, s.Id)!["reason"], "cannot call goal_update", "paused, saying why");
+        string? resume = null;
+        try { await h.Rpc.InvokeAsync("goal.resume", new { sessionId = s.Id }); }
+        catch (RpcException ex) { resume = ex.Message; }
+        Check.Contains(resume, "cannot call goal_update", "and it cannot be resumed on that model");
+
+        static async IAsyncEnumerable<ModelStreamEvent> Held(Task gate)
+        {
+            await gate;
+            await foreach (var e in Reply.Text("part one")) yield return e;
+        }
+    }
+
+    // An orchestrator's work is its subagents': their reports came in as notices (left out of the evidence) or through a wait
+    // (cut to their last 240 characters), so the reviewer saw no proof and refused finished goals (idea-nemj9e).
+    private static Task ReviewSeesReports()
+    {
+        var parser = "Implemented the parser. " + new string('x', 5000) + " All 54 tests pass.";
+        var lexer = "The lexer is done. " + new string('y', 3000) + " Lexer tests: 12 passed.";
+        var context = new List<ChatMessage>
+        {
+            ChatMessage.UserText("go"),
+            new() { Role = MessageRole.Assistant, Parts = [new ToolCallPart { Id = "c1", Name = "agent_spawn", Arguments = "{\"task\":\"parser\"}" }] },
+            new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c1", Name = "agent_spawn", Content = "Started agt_1" }] },
+            ChatMessage.NoticeText("<agent-result id=\"agt_1\" name=\"parser\" status=\"completed\">\n" + parser + "\n</agent-result>", "agent-result"),
+            new() { Role = MessageRole.Assistant, Parts = [new ToolCallPart { Id = "c2", Name = "agent", Arguments = "{\"action\":\"wait\"}" }] },
+            new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c2", Name = "agent", Content = lexer }] },
+        };
+        var evidence = GoalReview.Evidence(context);
+        Check.Contains(evidence, "a subagent reported", "a report that came as a notice is evidence");
+        Check.Contains(evidence, "Implemented the parser.", "its start");
+        Check.Contains(evidence, "All 54 tests pass.", "and its end");
+        Check.Contains(evidence, "The lexer is done.", "a report a wait returned keeps its start");
+        Check.Contains(evidence, "Lexer tests: 12 passed.", "and its end");
+        Check.Contains(evidence, "characters not shown", "and says what was cut");
+        return Task.CompletedTask;
     }
 
     private static bool IsReview(ModelRequest r) => r.Purpose == "goal-review";

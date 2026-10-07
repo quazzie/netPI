@@ -61,14 +61,32 @@ public sealed class GoalPlugin : INetPiPlugin
 
         ctx.Rpc.RegisterReadOnly("goal.get", (r, _) => Result(goals.Get(r.Required("sessionId"))),
             "The session's goal: { sessionId } → { id, objective, status, reason, tokenBudget, tokensUsed, continuations, … } | null");
-        ctx.Rpc.Register("goal.set", (r, _) => Run(() => goals.Set(r.Required("sessionId"), r.Str("objective"), Budget(r) ?? 0, byModel: false)),
-            "Set a new goal (replaces the current one) and start working on it: { sessionId, objective, tokenBudget? }");
+        // A model that works with its own tools (the Claude CLI) cannot call goal_update: a goal on it could never be completed,
+        // and every continuation would be a whole run of its own, so it is refused up front (idea-hghbmg).
+        async Task RefuseOwnToolsAsync(string sessionId, CancellationToken ct)
+        {
+            if (ctx.Sessions.GetSession(sessionId) is not { } session) return;   // the action itself reports a missing chat
+            var modelRef = await SessionModel.ResolveRefAsync(session, ctx.Models, ctx.Settings, ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
+            if (modelRef is not null && await ctx.Models.FindAsync(modelRef, ct).ConfigureAwait(false) is { RunsOwnTools: true } model)
+                throw new RpcException("bad_request", Goals.OwnToolsReason(model.Ref));
+        }
+
+        ctx.Rpc.Register("goal.set", async (r, ct) =>
+            {
+                await RefuseOwnToolsAsync(r.Required("sessionId"), ct).ConfigureAwait(false);
+                return await Run(() => goals.Set(r.Required("sessionId"), r.Str("objective"), Budget(r) ?? 0, byModel: false)).ConfigureAwait(false);
+            },
+            "Set a new goal (replaces the current one) and start working on it: { sessionId, objective, tokenBudget? }. Refused for a chat whose model works with its own tools (the Claude CLI): it cannot call goal_update");
         ctx.Rpc.Register("goal.edit", (r, _) => Run(() => goals.Edit(r.Required("sessionId"), r.Str("objective"), Budget(r))),
             "Change the objective or token budget of the current goal: { sessionId, objective?, tokenBudget? }");
         ctx.Rpc.Register("goal.pause", (r, _) => Run(() => goals.Pause(r.Required("sessionId"))),
             "Pause the goal (the current run finishes; no new run starts): { sessionId }");
-        ctx.Rpc.Register("goal.resume", (r, _) => Run(() => goals.Resume(r.Required("sessionId"))),
-            "Resume a paused or blocked goal (counters reset; starts a run when idle): { sessionId }");
+        ctx.Rpc.Register("goal.resume", async (r, ct) =>
+            {
+                await RefuseOwnToolsAsync(r.Required("sessionId"), ct).ConfigureAwait(false);
+                return await Run(() => goals.Resume(r.Required("sessionId"))).ConfigureAwait(false);
+            },
+            "Resume a paused or blocked goal (counters reset; starts a run when idle): { sessionId }. Refused while the chat's model works with its own tools");
         ctx.Rpc.Register("goal.clear", (r, _) => Run(() => goals.Clear(r.Required("sessionId"))),
             "Remove the goal: { sessionId }");
     }

@@ -114,12 +114,21 @@ public sealed class ToolCallPart : MessagePart
     /// does not announce it a second time when it records the result.</summary>
     public const string LiveKey = "live";
 
+    /// <summary><see cref="MessagePart.ProviderData"/> key: the NetPI tool such a call is the equivalent of (the Claude CLI's <c>Bash</c> is
+    /// <c>bash</c>, its <c>Edit</c> is <c>edit</c>). The after-call hooks see the call under that name, so a commit made with the CLI's own shell
+    /// or its tool use counted as a goal's progress reads like NetPI's own; without it they see the provider's name.</summary>
+    public const string AsKey = "as";
+
     /// <summary>True when the provider already ran this call: the runner records it (events, result message) and never executes it.</summary>
     [JsonIgnore]
     public bool ProviderLive => ProviderData?[LiveKey] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
 
     [JsonIgnore]
     public bool ProviderExecuted => ProviderData?[ExecutedKey] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+
+    /// <summary>The NetPI tool a provider-run call is the equivalent of (<see cref="AsKey"/>), or null.</summary>
+    [JsonIgnore]
+    public string? ProviderAs => ProviderData?[AsKey] is JsonValue v && v.TryGetValue<string>(out var s) && s.Length > 0 ? s : null;
 }
 
 public sealed class ToolResultPart : MessagePart

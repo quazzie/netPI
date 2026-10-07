@@ -30,6 +30,8 @@ public sealed class PlanPlugin : INetPiPlugin
         context.Tools.Register(new PlanSubmitTool(service));
         context.Tools.Register(new PlanEnterTool(service));
         context.Services.Register<IAgentHook>(new PlanHook(context));
+        // plan mode for a model that runs its own tools (the Claude CLI): the hook above never sees those calls
+        context.Services.Register<IModelMiddleware>(new PlanToolPolicy(context));
         context.Services.Register(new SettingsSection
         {
             Id = "plan", Title = "Plan mode", Group = "Agents", Order = 34,

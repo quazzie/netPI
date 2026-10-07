@@ -36,6 +36,12 @@ public sealed class ModelInfo
     /// context size the provider reports are the backend's own.
     /// </summary>
     public bool ManagesOwnContext { get; set; }
+    /// <summary>
+    /// The model works with tools of its own (the Claude CLI runs its built-in ones) and NetPI's tools are not offered to it: a feature
+    /// that needs the model to call one of NetPI's (goal_update) cannot run on it, and the provider holds its own tools to what NetPI
+    /// offers the run (<see cref="ModelRequest.Tools"/>) and to <see cref="ModelRequest.ReadOnlyTools"/> (idea-hghbmg).
+    /// </summary>
+    public bool RunsOwnTools { get; set; }
     /// <summary>loaded | unloaded | stopped | offline | available</summary>
     public string? Status { get; set; }
     public bool IsLocal { get; set; }
@@ -69,6 +75,12 @@ public sealed class ModelRequest
     public string? AgentId { get; init; }
     /// <summary>agent | compaction | title | other</summary>
     public string Purpose { get; init; } = "agent";
+    /// <summary>
+    /// The run may only read (plan mode, or a research subagent of a chat in plan mode). NetPI's own tools are held to it by their
+    /// hooks; a provider whose model runs tools of its own (<see cref="ModelInfo.RunsOwnTools"/>) must hold those to it too. Set by
+    /// the plugin that owns the policy, in a model middleware, before the provider is called (idea-hghbmg).
+    /// </summary>
+    public bool ReadOnlyTools { get; set; }
 }
 
 /// <summary>Streaming events produced by a provider. The stream must end with <see cref="StreamCompleted"/>.</summary>

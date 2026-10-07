@@ -28,6 +28,30 @@ public static class PlanTests
         t.Add("plan: /plan enters (with a task it starts the run), shows, leaves; the chat is told once per change", Command);
         t.Add("plan: a fork starts without plan mode", ForkReset);
         t.Add("plan: a messageless chat's enter and exit are announced with session.updated, so a window's row sees the mode", MessagelessAnnounce);
+        t.Add("plan: a model that runs its own tools is told the run may only read while the chat is in plan mode", OwnToolsReadOnly);
+    }
+
+    // The Claude CLI runs its own tools, which PlanHook never sees: its Edit ran in plan mode (idea-hghbmg). The middleware
+    // marks the request, and the provider keeps its own tools to the reading ones; a model on NetPI's tools is not marked.
+    private static async Task OwnToolsReadOnly()
+    {
+        await using var h = await TestHost.StartAsync(x => x.Catalog.Cached.Single(m => m.Ref == "fake/local").RunsOwnTools = true);
+        await h.StartPluginAsync(new PlanPlugin());
+        var s = h.NewSession();
+
+        await h.SendAsync(s.Id, "hello");
+        await h.IdleAsync(s.Id);
+        Check.False(h.Catalog.Requests.Last(r => r.Purpose == "agent").ReadOnlyTools, "not in plan mode: nothing held back");
+
+        await h.Rpc.CallAsync("plan.enter", new { sessionId = s.Id });
+        await h.SendAsync(s.Id, "look around");
+        await h.IdleAsync(s.Id);
+        Check.True(h.Catalog.Requests.Last(r => r.Purpose == "agent").ReadOnlyTools, "in plan mode the call says the run may only read");
+
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").RunsOwnTools = false;
+        await h.SendAsync(s.Id, "and again");
+        await h.IdleAsync(s.Id);
+        Check.False(h.Catalog.Requests.Last(r => r.Purpose == "agent").ReadOnlyTools, "a model on NetPI's tools is held at the call instead: no mark");
     }
 
     private static async Task<TestHost> StartAsync()

@@ -23,7 +23,12 @@ internal static class ClaudeUsageApi
         JsonObject? oauth;
         try { oauth = (JsonNode.Parse(await File.ReadAllTextAsync(credentialsPath, ct).ConfigureAwait(false)) as JsonObject)?.Obj("claudeAiOauth"); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
-        { throw new RpcException("unavailable", "The Claude CLI's login was not found: sign in with `claude auth login`."); }
+        {
+            // macOS keeps the CLI's login in the Keychain, not in a file: say so instead of "not signed in"
+            throw new RpcException("unavailable", OperatingSystem.IsMacOS() && ex is FileNotFoundException or DirectoryNotFoundException
+                ? "On macOS the Claude CLI keeps its login in the Keychain, which NetPI does not read: the reading comes from the CLI's own output after each call."
+                : "The Claude CLI's login was not found: sign in with `claude auth login`.");
+        }
         var token = oauth?.Str("accessToken");
         if (string.IsNullOrEmpty(token)) throw new RpcException("unavailable", "The Claude CLI is not signed in with a subscription: `claude auth login`.");
         if (oauth!["expiresAt"] is JsonValue e && e.TryGetValue<long>(out var ms) && ms <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())

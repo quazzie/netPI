@@ -22,6 +22,7 @@ public sealed class ClaudeUsageTracker(Action<JsonObject>? persist = null, ILogg
     private string? _plan;
     private long _lastAsk; // Environment.TickCount64 of the last ask; 0 = never
     private Task? _asking;
+    private Exception? _lastError; // how the last ask failed; null after a good one
 
     /// <summary>Fires when a reading changed (the plugin publishes it on the bus as <c>usage.claude</c>).</summary>
     public Action<JsonObject>? OnChanged { get; set; }
@@ -68,8 +69,9 @@ public sealed class ClaudeUsageTracker(Action<JsonObject>? persist = null, ILogg
 
     /// <summary>
     /// Asks Anthropic for the reading (<paramref name="fetch"/>) and keeps it, unless that was asked within
-    /// <see cref="RefreshEvery"/>: then the reading it has is the answer. A caller that arrives while a fetch runs waits for it.
-    /// A failed fetch throws to everyone waiting on it.
+    /// <see cref="RefreshEvery"/>: then the reading it has is the answer — or, when that ask failed, the same failure again,
+    /// so a press inside the minute does not pass an old reading off as the live one (idea-irqqkj). A caller that arrives
+    /// while a fetch runs waits for it. A failed fetch throws to everyone waiting on it.
     /// </summary>
     public async Task<JsonObject> RefreshAsync(Func<CancellationToken, Task<JsonObject>> fetch, CancellationToken ct)
     {
@@ -77,13 +79,27 @@ public sealed class ClaudeUsageTracker(Action<JsonObject>? persist = null, ILogg
         lock (_gate)
         {
             if (_asking is { } running) run = running;
-            else if (_lastAsk != 0 && Environment.TickCount64 - _lastAsk < RefreshEvery.TotalMilliseconds) return Get();
+            else if (_lastAsk != 0 && Environment.TickCount64 - _lastAsk < RefreshEvery.TotalMilliseconds)
+            {
+                if (_lastError is { } failed)
+                    throw failed as RpcException is { } rpc ? new RpcException(rpc.Code, rpc.Message) : new RpcException("unavailable", failed.Message);
+                return Get();
+            }
             else
             {
                 _lastAsk = Environment.TickCount64;
                 run = _asking = Task.Run(async () =>
                 {
-                    try { Apply(await fetch(CancellationToken.None).ConfigureAwait(false)); }
+                    try
+                    {
+                        Apply(await fetch(CancellationToken.None).ConfigureAwait(false));
+                        lock (_gate) _lastError = null;
+                    }
+                    catch (Exception ex)
+                    {
+                        lock (_gate) _lastError = ex;
+                        throw;
+                    }
                     finally { lock (_gate) _asking = null; }
                 });
             }

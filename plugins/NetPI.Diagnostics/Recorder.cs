@@ -176,6 +176,7 @@ public sealed class Recorder
             try { data = NetPiJson.ToNode(e.Data) as JsonObject; } catch { }
             if (e.Type == EventTypes.ToolStart) ToolStarted(e, data);
             else if (e.Type == EventTypes.ToolEnd) ToolEnded(e, data);
+            else if (e.Type == EventTypes.AgentStatus) AgentStopped(e, data?["agent"] as JsonObject);
             // the chat: on the event, or in its data (agent.status carries it in the agent, message.added in the message)
             sessionId ??= Str(data, "sessionId") ?? Str(data?["agent"] as JsonObject, "sessionId") ?? Str(data?["message"] as JsonObject, "sessionId");
             summary = Summarize(e.Type, data);
@@ -223,8 +224,34 @@ public sealed class Recorder
             if (!_toolsByCall.TryGetValue(callId, out var record)) return;
             record.EndedAt = e.Time;
             record.IsError = d?["isError"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+            record.Interrupted = d?["interrupted"] is JsonValue iv && iv.TryGetValue<string>(out var why) ? why : null;
             record.DurationMs = Long(d?["durationMs"]) ?? (long)(e.Time - record.StartedAt).TotalMilliseconds;
         }
+    }
+
+    /// <summary>
+    /// An agent that is no longer running, queued or yielded runs no tool: a record of its chat still open then lost its
+    /// tool.end (a provider-run call cut off with its stream, a reload), and would be listed as running, and warned about,
+    /// until a restart. It is closed here as interrupted (idea-7jj4xn).
+    /// </summary>
+    private void AgentStopped(BusEvent e, JsonObject? agent)
+    {
+        var status = Str(agent, "status");
+        if (status is null || status.Equals("running", StringComparison.OrdinalIgnoreCase) || status.Equals("queued", StringComparison.OrdinalIgnoreCase)
+            || status.Equals("yielded", StringComparison.OrdinalIgnoreCase)) return;
+        var agentId = Str(agent, "id");
+        var sessionId = Str(agent, "sessionId");
+        if (agentId is null && sessionId is null) return;
+        lock (_gate)
+            foreach (var record in _tools)
+            {
+                if (record.EndedAt is not null) continue;
+                if (!(agentId is not null && record.RunId == agentId) && !(record.RunId is null && sessionId is not null && record.SessionId == sessionId)) continue;
+                record.EndedAt = e.Time;
+                record.IsError = true;
+                record.Interrupted = "run ended";
+                record.DurationMs = (long)(e.Time - record.StartedAt).TotalMilliseconds;
+            }
     }
 
     public IReadOnlyList<ToolRecord> Tools()
@@ -542,14 +569,21 @@ public sealed class ToolRecord
     public DateTimeOffset? EndedAt { get; set; }
     public long? DurationMs { get; set; }
     public bool IsError { get; set; }
+    /// <summary>Why the call ended without its result (aborted, failed, reset, run ended), or null when it ended normally.</summary>
+    public string? Interrupted { get; set; }
 
-    public JsonObject ToJson() => new()
+    public JsonObject ToJson()
     {
-        ["callId"] = CallId, ["name"] = Name, ["sessionId"] = SessionId, ["runId"] = RunId, ["startedAt"] = StartedAt.ToString("O"),
-        ["state"] = EndedAt is null ? "running" : IsError ? "error" : "ok",
-        ["durationMs"] = DurationMs ?? (long)(DateTimeOffset.UtcNow - StartedAt).TotalMilliseconds,
-        ["arguments"] = Arguments,
-    };
+        var j = new JsonObject
+        {
+            ["callId"] = CallId, ["name"] = Name, ["sessionId"] = SessionId, ["runId"] = RunId, ["startedAt"] = StartedAt.ToString("O"),
+            ["state"] = EndedAt is null ? "running" : Interrupted is not null ? "interrupted" : IsError ? "error" : "ok",
+            ["durationMs"] = DurationMs ?? (long)(DateTimeOffset.UtcNow - StartedAt).TotalMilliseconds,
+            ["arguments"] = Arguments,
+        };
+        if (Interrupted is not null) j["interrupted"] = Interrupted;
+        return j;
+    }
 }
 
 /// <summary>One journal line: a bus event with a short summary of its data.</summary>

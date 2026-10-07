@@ -21,9 +21,19 @@ internal sealed class PlanHook(IPluginContext ctx) : IAgentHook
     private bool Bound(AgentRunContext run)
     {
         var session = ctx.Sessions.GetSession(run.Session.Id) ?? run.Session;
+        return Bound(ctx, session, run.Agent.IsSubagent, session.ParentSessionId ?? run.Agent.ParentSessionId);
+    }
+
+    /// <summary>
+    /// Whether a chat may only read: it is in plan mode, or it is a subagent (with <c>plan.subagentsReadOnly</c>) of a chat that is,
+    /// up to <see cref="MaxParents"/> levels up. The hook gates NetPI's tool calls with it; <see cref="PlanToolPolicy"/> tells a model
+    /// that runs tools of its own.
+    /// </summary>
+    internal static bool Bound(IPluginContext ctx, SessionInfo session, bool isSubagent, string? parentSessionId)
+    {
         if (PlanMode.Active(session)) return true;
-        if (!run.Agent.IsSubagent || !ctx.Settings.Get("plan.subagentsReadOnly", true)) return false;
-        var parent = session.ParentSessionId ?? run.Agent.ParentSessionId;
+        if (!isSubagent || !ctx.Settings.Get("plan.subagentsReadOnly", true)) return false;
+        var parent = parentSessionId;
         for (var i = 0; i < MaxParents && parent is not null; i++)
         {
             var p = ctx.Sessions.GetSession(parent);

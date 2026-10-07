@@ -108,6 +108,18 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
             if (thinkStart is not null && thinkEnd is null) thinkEnd = sw.ElapsedMilliseconds;
         }
 
+        // A call the provider was still running when its stream ended without a result (a failure, an abort, a reset): its
+        // row and every record of it would otherwise stay "running" for good (idea-7jj4xn), so it ends here, as interrupted.
+        void EndProviderTools(string why)
+        {
+            foreach (var (id, name) in providerTools)
+                rt.Emit(EventTypes.ToolEnd, new JsonObject
+                {
+                    ["sessionId"] = SessionId, ["callId"] = id, ["name"] = name, ["isError"] = true, ["interrupted"] = why,
+                }, SessionId);
+            providerTools.Clear();
+        }
+
         try
         {
             await foreach (var ev in Ctx.Models.StreamAsync(request, ct).WithCancellation(ct).ConfigureAwait(false))
@@ -163,6 +175,7 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
                         lastUsage = u.Usage;
                         break;
                     case StreamReset r:
+                        EndProviderTools("reset");
                         emitter.Discard();
                         partial.Clear();
                         thinkStart = thinkEnd = null;
@@ -183,6 +196,7 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             emitter.Dispose();
+            EndProviderTools("aborted");
             rt.Emit(EventTypes.StreamEnd, new JsonObject { ["sessionId"] = SessionId }, SessionId);
             EndThinking();
             var parts = partial.Build();
@@ -214,6 +228,7 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
         catch
         {
             emitter.Dispose();
+            EndProviderTools("failed");
             rt.Emit(EventTypes.StreamEnd, new JsonObject { ["sessionId"] = SessionId }, SessionId);
             throw;
         }

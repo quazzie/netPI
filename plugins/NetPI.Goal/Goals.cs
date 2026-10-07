@@ -557,6 +557,13 @@ internal sealed class Goals(IPluginContext ctx)
             PauseQuietly(sid, goal.Id, $"The run failed: {run.Error?.Message ?? "unknown error"}");
             return;
         }
+        if (run.Model.RunsOwnTools)
+        {
+            // the chat moved to a model that works with its own tools (the Claude CLI): it cannot call goal_update, so it could
+            // never complete the goal, and every continuation would be a whole run of its own (idea-hghbmg)
+            PauseQuietly(sid, goal.Id, OwnToolsReason(run.Model.Ref));
+            return;
+        }
 
         var auto = track?.Auto == true;
         var noProgress = auto && track!.Progress == 0 ? goal.NoProgress + 1 : 0;
@@ -629,6 +636,11 @@ internal sealed class Goals(IPluginContext ctx)
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /// <summary>Why a goal cannot run on a model that works with its own tools.</summary>
+    internal static string OwnToolsReason(string modelRef) =>
+        $"This chat's model ({modelRef}) works with its own tools and cannot call goal_update, so it could never complete a goal: " +
+        "switch the chat to another model to work on it.";
 
     internal static string Short(string s) => s.Length <= 80 ? s : s[..80] + "…";
 

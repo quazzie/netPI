@@ -24,6 +24,8 @@ public static class LoopTests
         t.Add("loop: a call the provider ran itself is recorded, not executed, and the run ends", ProviderExecutedCallIsRecordedNotRun);
         t.Add("loop: a provider's own tool is reported live: one start, its output, one end", ProviderToolIsReportedLive);
         t.Add("loop: a provider's own tool that never finished is closed by the runner as an error", ProviderToolNeverFinishedIsClosed);
+        t.Add("loop: a provider's own tool cut off with its stream ends as interrupted", ProviderToolCutOffIsInterrupted);
+        t.Add("loop: the after-call hooks see a provider's own call, under the NetPI tool it stands for", ProviderCallReachesAfterHooks);
         t.Add("loop: a run cancelled in an after-tool hook keeps one result per call id", OneResultWhenCancelledInAfterHook);
         t.Add("loop: an abort keeps the queue: dequeue it, then send it as the next turn", AbortKeepsQueue);
         t.Add("loop: a run that fails before it takes the queue does not start itself again for it", FailedRunKeepsQueue);
@@ -531,6 +533,72 @@ public static class LoopTests
         Check.Equal(true, end["isError"]!.GetValue<bool>(), "closed as an error");
         var result = h.Messages(s.Id).Single(m => m.Role == MessageRole.Tool).ToolResults.Single();
         Check.True(result.IsError && result.Content.Contains("no result"), "the stored result says so");
+    }
+
+    /// <summary>
+    /// The stream fails while the provider still runs its own tool (the CLI died mid-command): no message records the call,
+    /// so the runner ends it itself, or its row and its diagnostics record would stay "running" for good (idea-7jj4xn).
+    /// </summary>
+    private static async Task ProviderToolCutOffIsInterrupted()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => CutStream();
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolStart).Count, "one tool.start, from the live event");
+        var end = FakeBus.Data(h.Bus.OfType(EventTypes.ToolEnd).Single());
+        Check.Equal("tu_cut", (string?)end["callId"]);
+        Check.Equal(true, end["isError"]!.GetValue<bool>(), "ended as an error");
+        Check.Equal("failed", (string?)end["interrupted"], "and says why");
+    }
+
+    /// <summary>
+    /// A goal counted progress, a commit was noticed, only through the after-call hooks, which a provider's own calls never reached
+    /// (idea-hghbmg): they see it now, named as the NetPI tool it stands for (the CLI's Bash as bash), still marked as the provider's.
+    /// </summary>
+    private static async Task ProviderCallReachesAfterHooks()
+    {
+        await using var h = await TestHost.StartAsync();
+        var seen = new List<(string Name, bool Executed, string Content)>();
+        h.Services.Register<IAgentHook>(new AfterToolRecorder(seen));
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            var ran = Reply.Call("Bash", new { command = "git commit -m x" }, id: "tu_b");
+            ran.ProviderData = new JsonObject
+            {
+                [ToolCallPart.ExecutedKey] = true, [ToolCallPart.AsKey] = "bash",
+                [ToolCallPart.ResultKey] = new JsonObject { ["content"] = "[main abc] x", ["isError"] = false },
+            };
+            return Reply.Stream(Reply.Message(ran, new TextPart { Text = "committed" }));
+        };
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+
+        Check.Equal(1, seen.Count, "the hook saw the provider's call");
+        Check.Equal("bash", seen[0].Name, "under the NetPI tool it stands for");
+        Check.True(seen[0].Executed, "still marked as the provider's own");
+        Check.Equal("[main abc] x", seen[0].Content, "with its result");
+        Check.Equal("Bash", h.Messages(s.Id).Single(m => m.Role == MessageRole.Tool).ToolResults.Single().Name, "the transcript keeps the provider's name");
+    }
+
+    private sealed class AfterToolRecorder(List<(string Name, bool Executed, string Content)> seen) : IAgentHook
+    {
+        public ValueTask OnAfterToolCallAsync(AgentTurnContext turn, ToolCallPart call, ToolResultPart result)
+        {
+            lock (seen) seen.Add((call.Name, call.ProviderExecuted, result.Content));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private static async IAsyncEnumerable<ModelStreamEvent> CutStream([EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await Task.Yield();
+        yield return new ToolCallStarted("tu_cut", "Bash");
+        yield return new ProviderToolRunning("tu_cut", "Bash", "{\"command\":\"make\"}");
+        throw new ModelException("Claude CLI ended without a result line (the process stopped early).", false, null, "cli_incomplete");
     }
 
     private static async IAsyncEnumerable<ModelStreamEvent> LiveStream(bool finish, [EnumeratorCancellation] CancellationToken ct = default)

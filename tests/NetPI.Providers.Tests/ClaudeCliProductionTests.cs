@@ -121,6 +121,13 @@ internal static class ClaudeCliProductionTests
             try { await failing.RefreshAsync(_ => throw new RpcException("unavailable", "expired"), CancellationToken.None); }
             catch (RpcException) { threw = true; }
             t.Check(threw, "a failed ask throws");
+            // within the minute after it the failure is the answer again: an old reading is not passed off as the live one
+            var asked = 0;
+            string? again = null;
+            try { await failing.RefreshAsync(_ => { asked++; return Task.FromResult(new JsonObject()); }, CancellationToken.None); }
+            catch (RpcException ex) { again = ex.Message; }
+            t.Eq("expired", again, "the same failure, within the minute");
+            t.Eq(0, asked, "and Anthropic is not asked again inside the minute");
         });
 
         await t.Run("claude-cli: the models carry the CLI's real window, learned from its result line, and say they keep their own context", async () =>
@@ -145,6 +152,41 @@ internal static class ClaudeCliProductionTests
             t.Eq(1, learned, "the catalog was told once");
             await Collect(p, req);
             t.Eq(1, learned, "not again for the same limits");
+
+            // The CLI lists every model it used: a Haiku for an Explore subagent comes first here, and is not the model asked for
+            var twoModels = """{"type":"result","subtype":"success","is_error":false,"result":"ok","modelUsage":{"claude-haiku-4-5":{"contextWindow":200000,"maxOutputTokens":64000},"claude-sonnet-5-5-20260101":{"contextWindow":900000,"maxOutputTokens":100000}}}""";
+            var q = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines([Init, twoModels], ct));
+            await Collect(q, new ModelRequest { Model = new ModelInfo { Provider = "claude-cli", Id = "claude-sonnet-5-5" }, SystemPrompt = "x", Messages = [ChatMessage.UserText("hi")], SessionId = "ses_2", Purpose = "agent" });
+            var sonnet = (await q.ListModelsAsync(true, CancellationToken.None)).Single(m => m.Id == "claude-sonnet-5-5");
+            t.Eq(900_000, sonnet.ContextWindow, "the asked model's own (dated) entry, not the first one");
+            t.Eq(100_000, sonnet.MaxOutputTokens, "and its output limit");
+            var none = """{"type":"result","subtype":"success","is_error":false,"result":"ok","modelUsage":{"claude-haiku-4-5":{"contextWindow":200000},"claude-fable-5-1":{"contextWindow":300000}}}""";
+            q = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines([Init, none], ct));
+            await Collect(q, new ModelRequest { Model = new ModelInfo { Provider = "claude-cli", Id = "claude-sonnet-5-5" }, SystemPrompt = "x", Messages = [ChatMessage.UserText("hi")], SessionId = "ses_2", Purpose = "agent" });
+            t.Eq(1_000_000, (await q.ListModelsAsync(true, CancellationToken.None)).Single(m => m.Id == "claude-sonnet-5-5").ContextWindow,
+                "several entries and none of them the asked model: nothing is learned");
+            t.Check(CL.ClaudeCliStream.PickModelUsage(JsonNode.Parse("""{"x":{"contextWindow":1}}""")!.AsObject(), "claude-opus-5-5") is not null,
+                "a single entry is the call's model, whatever its spelling");
+        });
+
+        await t.Run("claude-cli: the prompt files and a side call's folder are the work folder the plugin gives (its home), not a shared temp folder", async () =>
+        {
+            var home = Path.Combine(Path.GetTempPath(), "netpi-claude-home-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var seen = new List<(string File, string WorkDir)>();
+                var p = new CL.ClaudeCliProvider(() => Cfg(), null, (call, ct) =>
+                {
+                    var args = call.Args.ToList();
+                    seen.Add((args[args.IndexOf("--system-prompt-file") + 1], call.WorkDir));
+                    return Lines([Init, Result], ct);
+                }, workDir: Path.Combine(home, "claude-cli"));
+                await Collect(p, Req("title"));
+                t.Check(seen[0].File.StartsWith(Path.Combine(home, "claude-cli"), StringComparison.OrdinalIgnoreCase), $"the prompt file is in the work folder: {seen[0].File}");
+                t.Eq(Path.Combine(home, "claude-cli"), seen[0].WorkDir, "and a side call runs there");
+                t.Check(!File.Exists(seen[0].File), "the prompt file is gone after the call");
+            }
+            finally { try { Directory.Delete(home, true); } catch { /* temp */ } }
         });
 
         await t.Run("claude-cli: a title or compaction call through the model is text only, in no project", async () =>

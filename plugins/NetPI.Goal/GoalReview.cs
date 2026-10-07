@@ -22,6 +22,9 @@ internal static class GoalReview
     public const int MaxOutputTokens = 2_000;
     /// <summary>Refusals in a row before the goal is blocked for the user.</summary>
     public const int MaxRefusals = 2;
+    /// <summary>How much of one subagent report the reviewer reads (its start and its end): an orchestrator's work is mostly its
+    /// subagents', and their reports are the evidence of it (idea-nemj9e).</summary>
+    public const int ReportChars = 2_000;
 
     public const string SystemPrompt =
         "You check, independently and skeptically, whether an agent has really finished the goal a user gave it. You see " +
@@ -36,7 +39,11 @@ internal static class GoalReview
         "Format: the first line is exactly PASS or GAPS. After GAPS, at most 8 short bullets, each naming what is missing " +
         "and what would show it. Do not suggest new features or extra work beyond the goal.";
 
-    /// <summary>The run's evidence: its tool calls and their results, newest last, within <see cref="MaxEvidenceChars"/>.</summary>
+    /// <summary>
+    /// The run's evidence, newest last, within <see cref="MaxEvidenceChars"/>: its tool calls with their results, and its subagents'
+    /// reports — whether a wait returned one (an <c>agent</c> result) or it came in as an <c>agent-result</c> notice, the way most
+    /// reports reach an orchestrator that kept working. Both get <see cref="ReportChars"/> of start and end, not a tail (idea-nemj9e).
+    /// </summary>
     public static string Evidence(IReadOnlyList<ChatMessage> context)
     {
         var results = new Dictionary<string, ToolResultPart>(StringComparer.Ordinal);
@@ -48,6 +55,8 @@ internal static class GoalReview
         {
             if (m.Role == MessageRole.Summary && m.Text is { Length: > 0 } summary)
                 lines.Add("(earlier work, as summarized when the context was compacted)\n" + Cut(summary, 4000));
+            if (m.Role == MessageRole.Notice && m.MetaString("kind") == "agent-result" && m.Text is { Length: > 0 } report)
+                lines.Add("- a subagent reported\n  → " + HeadTail(report.Trim(), ReportChars).Replace("\n", "\n    "));
             foreach (var call in m.Parts.OfType<ToolCallPart>())
             {
                 if (call.Name is "goal_update" or "goal_set") continue;
@@ -82,8 +91,23 @@ internal static class GoalReview
         var flag = result.IsError ? " [error]" : "";
         // the end of a result says how it ended (exit code, summary line, failure count)
         var text = result.Content.Trim();
-        var shown = call.Name is "read" ? $"({text.Length} chars read)" : Tail(text, call.Name is "bash" or "pwsh" or "ssh" ? 500 : 240);
+        var shown = call.Name switch
+        {
+            "read" => $"({text.Length} chars read)",
+            "agent" => HeadTail(text, ReportChars),   // a subagent's report (wait, result): the evidence of the work it did
+            "bash" or "pwsh" or "ssh" => Tail(text, 500),
+            _ => Tail(text, 240),
+        };
         return $"- {what}{flag}\n  → {shown.Replace("\n", "\n    ")}";
+    }
+
+    /// <summary>The start and the end of a long text, saying how much is left out between them.</summary>
+    private static string HeadTail(string s, int max)
+    {
+        if (s.Length <= max) return s;
+        var head = max * 3 / 5;
+        var tail = max - head;
+        return s[..head] + $"\n… ({s.Length - max} characters not shown) …\n" + s[^tail..];
     }
 
     public static string Prompt(Goal goal, string summary, string evidence) =>

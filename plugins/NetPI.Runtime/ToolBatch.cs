@@ -360,10 +360,13 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
     /// <summary>
     /// Calls the provider ran itself (<see cref="ToolCallPart.ProviderExecuted"/>, the Claude CLI's own tools) come with their results in
     /// <see cref="MessagePart.ProviderData"/>: they are shown and stored like any tool call (start and end events, a tool result message)
-    /// and never executed here. The result leaves the assistant message, so it is stored once.
+    /// and never executed here. The result leaves the assistant message, so it is stored once. The after-call hooks see each one (under
+    /// the NetPI tool it is the equivalent of, <see cref="ToolCallPart.ProviderAs"/>), so what watches a run's tool use (a goal's
+    /// progress) sees this work too (idea-hghbmg); nothing is left to allow or block, so the before-call hooks are not asked.
     /// </summary>
-    public void RecordProviderExecuted(ChatMessage assistant, IReadOnlyList<ToolCallPart> calls)
+    public async Task RecordProviderExecutedAsync(ChatMessage assistant, AgentTurnContext turn, IReadOnlyList<ToolCallPart> calls, CancellationToken ct)
     {
+        var recorded = new List<(ToolCallPart Call, ToolResultPart Result)>(calls.Count);
         foreach (var call in calls)
         {
             var res = call.ProviderData?[ToolCallPart.ResultKey] as JsonObject;
@@ -377,11 +380,12 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
                     ["sessionId"] = SessionId, ["agentId"] = AgentId, ["callId"] = call.Id, ["name"] = call.Name,
                     ["label"] = call.Name, ["arguments"] = call.Arguments,
                 }, SessionId);
-            Persist(new ToolResultPart
+            var result = new ToolResultPart
             {
                 CallId = call.Id, Name = call.Name, Content = content, IsError = isError,
                 Details = new JsonObject { ["providerExecuted"] = true },
-            }, required: false);
+            };
+            Persist(result, required: false);
             if (!live || res is null)
                 rt.Emit(EventTypes.ToolEnd, new JsonObject
                 {
@@ -390,10 +394,20 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
             rt.Update(state, i => i.ToolCalls++);
             rc.ToolCallCount++;
             call.ProviderData?.Remove(ToolCallPart.ResultKey);
+            recorded.Add((call, result));
         }
         try { Ctx.Sessions.UpdateMessage(assistant); }
         catch (Exception ex) { Ctx.Logger.LogDebug(ex, "Failed to update the message of provider-executed calls"); }
         rt.PublishStatus(state, throttled: true);
+        foreach (var (call, result) in recorded)
+        {
+            // the hooks read the call as the NetPI tool it corresponds to (the CLI's Bash as bash); the flag stays on it
+            var seen = call.ProviderAs is { } name
+                ? new ToolCallPart { Id = call.Id, Name = name, Arguments = call.Arguments, ProviderData = call.ProviderData }
+                : call;
+            foreach (var hook in rt.Hooks())
+                await AgentRunner.SafeAsync(Ctx, () => hook.OnAfterToolCallAsync(turn, seen, result), "OnAfterToolCall", ct).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Persist a result for a call that did not (fully) run. <paramref name="skipped"/> (steer | aborted | stopped)

@@ -63,6 +63,8 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
 
     public ValueTask OnAfterToolCallAsync(AgentTurnContext turn, ToolCallPart call, ToolResultPart result)
     {
+        // a call the provider ran inside its own loop (the Claude CLI): a nudge after the fact cannot steer that loop
+        if (call.ProviderExecuted) return ValueTask.CompletedTask;
         var trace = Trace(turn.Run);
         lock (trace)
         {

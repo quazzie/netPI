@@ -65,13 +65,25 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
                 return await usage.RefreshAsync(fetchCt => ClaudeUsageApi.FetchAsync(Http, ClaudeUsageApi.CredentialsPath(), fetchCt), rpcCt).ConfigureAwait(false);
             },
             "Asks Anthropic for the live subscription usage with the Claude CLI's login token (at most once a minute; within it the stored reading is the answer) → the snapshot, as claudecli.usage; also published as usage.claude");
-        _ = Task.Run(() => LoadPlanAsync(context, usage), ct);
+        // The plan comes from `claude auth status`: only once the provider is on (a NetPI that does not use the CLI starts
+        // no CLI process, idea-irqqkj), and again when it is switched on later.
+        void PlanWhenEnabled()
+        {
+            if (Options(context).Enabled && Interlocked.Exchange(ref _planAsked, 1) == 0)
+                _ = Task.Run(() => LoadPlanAsync(context, usage), ct);
+        }
+        PlanWhenEnabled();
 
         var sessions = new DataCliSessions(context.Data.Collection("cli_sessions", new CollectionSpec().Integer("updatedAt")));
         try { sessions.Prune(); }
         catch (Exception ex) { context.Logger.LogDebug(ex, "claude-cli: could not prune the stored sessions"); }
+        // the prompt files and a side call's folder live in NetPI's home (owner-only), not in a temp folder other users share
         Provider = new ClaudeCliProvider(() => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,
-            sessionId => CwdOf(context, sessionId), () => HiddenEnvironment(context.Settings), usage, sessions);
+            sessionId => CwdOf(context, sessionId), () => HiddenEnvironment(context.Settings), usage, sessions,
+            Path.Combine(context.Paths.Home, "claude-cli"),
+            // a CLI tool is held back only where NetPI has its counterpart (registered, even if disabled in tools.disabled) and does
+            // not offer it to the run (idea-hghbmg)
+            () => [.. context.Tools.Registrations.Select(r => r.Tool.Definition.Name).Distinct(StringComparer.OrdinalIgnoreCase)]);
         // the CLI reports each model's real window with its first answer: the catalog (and the context ring) take it up
         Provider.OnModelsLearned = () => context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = "claude-cli" });
         context.Services.Register<IModelProvider>(Provider);
@@ -80,9 +92,12 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         {
             if (Provider is { } p && p.ModelsChangedSinceLastList())
                 context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = p.Id });
+            PlanWhenEnabled();
         });
         return Task.CompletedTask;
     }
+
+    private int _planAsked;
 
     private static ClaudeCliOptions Options(IPluginContext context) => ClaudeCliOptions.Parse(context.Settings.GetNode(SettingsPath) as JsonObject);
 
@@ -96,9 +111,19 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         {
             var exe = ClaudeCliProvider.ResolveExecutable(Options(context).Executable);
             var psi = new ProcessStartInfo(exe, "auth status") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var name in ProcessRunner.AlwaysHidden.Concat(HiddenEnvironment(context.Settings))) psi.Environment.Remove(name);
             using var p = Process.Start(psi);
             if (p is null) return;
-            var outText = await p.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            ChildJob.Assign(p);
+            p.ErrorDataReceived += (_, _) => { };   // drained: a chatty stderr must not fill its pipe and stall the CLI
+            p.BeginErrorReadLine();
+            string outText;
+            try { outText = await p.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false); }
+            catch (TimeoutException)
+            {
+                try { p.Kill(entireProcessTree: true); } catch { /* gone */ }
+                throw;
+            }
             usage.SetPlan((JsonNode.Parse(outText) as JsonObject)?.Str("subscriptionType"));
         }
         catch (Exception ex) { context.Logger.LogDebug(ex, "claude-cli: could not read the plan from `claude auth status`"); }

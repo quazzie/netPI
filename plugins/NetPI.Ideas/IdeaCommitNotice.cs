@@ -55,6 +55,9 @@ public sealed partial class IdeaCommitNoticeHook(
         var run = turn.Run;
         if (run.CancellationToken.IsCancellationRequested) return ValueTask.CompletedTask;
         if (!settings().GetOr("ideas.tellAgentOnCommit", true)) return ValueTask.CompletedTask;
+        // a commit the provider made with its own shell (the Claude CLI): that model cannot call the ideas tool the notice
+        // asks for, so it is left to the background commit check, which asks the user (idea-hghbmg)
+        if (call.ProviderExecuted) return ValueTask.CompletedTask;
         // Nothing to update without the tool, and nothing to say without a project: ideas are stamped with one.
         if (!turn.Tools.Any(t => t.Name == "ideas")) return ValueTask.CompletedTask;
         if (run.Project is not { } project) return ValueTask.CompletedTask;

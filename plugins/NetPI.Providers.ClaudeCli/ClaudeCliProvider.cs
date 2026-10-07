@@ -23,19 +23,29 @@ public sealed class ClaudeCliProvider : IModelProvider
     private readonly ClaudeUsageTracker? _usage;
     private readonly ICliSessions _sessions;
     private readonly CallGate _gate = new();
-    private readonly string _workDir = Path.Combine(Path.GetTempPath(), "netpi-claude-cli");
+    /// <summary>The names of NetPI's registered tools (null: every counterpart counts as registered).</summary>
+    private readonly Func<IReadOnlyCollection<string>>? _knownTools;
+    /// <summary>
+    /// Where the system prompt files go, and the folder a side call (title, summary) runs in. The plugin puts it in NetPI's
+    /// home, which is the owner's alone: in a shared temp folder another local user could swap a prompt file between its
+    /// write and the CLI's read (idea-irqqkj). Without a home (tests) it is the temp folder.
+    /// </summary>
+    private readonly string _workDir;
 
     public ClaudeCliProvider(Func<JsonObject?> config, ILogger? logger = null, Func<string?, string?>? cwdOf = null,
         Func<IReadOnlyCollection<string>>? hiddenEnv = null, ClaudeUsageTracker? usage = null)
         : this(config, logger, ProcessRunner.Run, cwdOf, hiddenEnv, usage) { }
 
     internal ClaudeCliProvider(Func<JsonObject?> config, ILogger? logger, Func<string?, string?>? cwdOf,
-        Func<IReadOnlyCollection<string>>? hiddenEnv, ClaudeUsageTracker? usage, ICliSessions sessions)
-        : this(config, logger, ProcessRunner.Run, cwdOf, hiddenEnv, usage, sessions) { }
+        Func<IReadOnlyCollection<string>>? hiddenEnv, ClaudeUsageTracker? usage, ICliSessions sessions, string? workDir = null,
+        Func<IReadOnlyCollection<string>>? knownTools = null)
+        : this(config, logger, ProcessRunner.Run, cwdOf, hiddenEnv, usage, sessions, workDir, knownTools) { }
 
     internal ClaudeCliProvider(Func<JsonObject?> config, ILogger? logger, CliRunner runner, Func<string?, string?>? cwdOf = null,
-        Func<IReadOnlyCollection<string>>? hiddenEnv = null, ClaudeUsageTracker? usage = null, ICliSessions? sessions = null)
+        Func<IReadOnlyCollection<string>>? hiddenEnv = null, ClaudeUsageTracker? usage = null, ICliSessions? sessions = null, string? workDir = null,
+        Func<IReadOnlyCollection<string>>? knownTools = null)
     {
+        _knownTools = knownTools;
         _sessions = sessions ?? new MemoryCliSessions();
         _config = config;
         _log = logger ?? NullLogger.Instance;
@@ -43,8 +53,12 @@ public sealed class ClaudeCliProvider : IModelProvider
         _cwdOf = cwdOf ?? (_ => null);
         _hiddenEnv = hiddenEnv ?? (() => []);
         _usage = usage;
+        _workDir = workDir ?? Path.Combine(Path.GetTempPath(), "netpi-claude-cli");
         SweepStalePromptFiles();
     }
+
+    /// <summary>Where the prompt files are written and side calls run.</summary>
+    internal string WorkDir => _workDir;
 
     public string Id => "claude-cli";
     public string DisplayName => "Claude CLI";
@@ -86,6 +100,7 @@ public sealed class ClaudeCliProvider : IModelProvider
             ContextWindow = LimitsOf(id).Window,
             MaxOutputTokens = LimitsOf(id).MaxOutput,
             ManagesOwnContext = true,
+            RunsOwnTools = true,
             Concurrency = o.MaxConcurrent,
             InputModalities = ["text"],
             Reasoning = new ReasoningInfo { Supported = true, Efforts = [.. ClaudeCliOptions.Efforts], Default = "medium" },
@@ -154,13 +169,14 @@ public sealed class ClaudeCliProvider : IModelProvider
         var started = Stopwatch.GetTimestamp();
         // an agent's own turn gets the CLI's tools and its working folder; a title, a compaction summary or any other side call
         // through this model is text in, text out (a full CLI session for a title would work in the project with no permission prompts)
-        var tools = !agentTurn || o.Tools.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : o.Tools;
+        var (tools, disallowed, policy) = agentTurn ? ToolPolicy(request, o, _knownTools?.Invoke()) : NoTools;
         var cwd = agentTurn ? _cwdOf(request.SessionId) : null;
         var workDir = cwd is { Length: > 0 } && Directory.Exists(cwd) ? cwd : _workDir;
         if (agentTurn && request.Tools.Count > 0 && !attempt.Resume)
             yield return new StreamNotice(
                 $"Claude CLI does not use NetPI's tools (the {request.Tools.Count} of this request): it works with its own" +
                 (tools.Length == 0 ? " (none enabled)." : $" in {workDir}; its tool calls show in the chat."), "info");
+        if (agentTurn && policy is not null) yield return new StreamNotice($"Claude CLI works {policy} in this turn.", "info");
 
         // every call is a full Claude Code process: the ones beyond the limit wait (memory, and the subscription's rate limits)
         var (lease, waited) = await _gate.EnterAsync(() => Options().MaxConcurrent, ct).ConfigureAwait(false);
@@ -172,13 +188,13 @@ public sealed class ClaudeCliProvider : IModelProvider
         var promptFile = Path.Combine(_workDir, $"system-{Guid.NewGuid():N}.md");
         await File.WriteAllTextAsync(promptFile, SystemPromptWithNote(request.SystemPrompt, tools.Length > 0), ct).ConfigureAwait(false);
         var asm = new MessageAssembler();
-        var stream = new ClaudeCliStream(asm);
+        var stream = new ClaudeCliStream(asm) { ModelId = request.Model.Id };
         if (_usage is not null && o.Usage) stream.OnRateLimit = _usage.Observe;
         var executable = ResolveExecutable(o.Executable);
         var recorded = false;
         try
         {
-            var call = new CliCall(executable, BuildArgs(request, o, tools, promptFile, attempt), attempt.Prompt, workDir,
+            var call = new CliCall(executable, BuildArgs(request, o, tools, promptFile, attempt, disallowed), attempt.Prompt, workDir,
                 TimeSpan.FromSeconds(o.TimeoutSeconds), _hiddenEnv());
             var warned = false;
             await foreach (var line in _runner(call, ct).ConfigureAwait(false))
@@ -274,11 +290,66 @@ public sealed class ClaudeCliProvider : IModelProvider
         return string.IsNullOrWhiteSpace(system) ? note : system.TrimEnd() + "\n\n" + note;
     }
 
-    /// <summary>The CLI arguments: no saved session, no skills; its tools and permissions as the settings say; the system prompt is read from a file.</summary>
-    internal static List<string> BuildArgs(ModelRequest request, ClaudeCliOptions o, string tools, string systemPromptFile, CliAttempt attempt)
+    /// <summary>A side call's tools: none.</summary>
+    private static readonly (string Tools, IReadOnlyList<string> Disallowed, string? Note) NoTools = ("", [], null);
+
+    /// <summary>
+    /// The CLI's own tools and the NetPI tools each one stands in for: a run keeps a CLI tool only while NetPI offers it a
+    /// counterpart (or has none registered, so it has no say), the same rule its own tools follow (idea-hghbmg).
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, string[]> Counterparts = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Bash"] = ["bash", "pwsh"], ["BashOutput"] = ["bash", "pwsh"], ["KillShell"] = ["bash", "pwsh"], ["KillBash"] = ["bash", "pwsh"],
+        ["Edit"] = ["edit"], ["MultiEdit"] = ["edit"], ["Write"] = ["write"], ["NotebookEdit"] = ["edit", "write"],
+        ["Read"] = ["read"], ["Grep"] = ["grep"], ["Glob"] = ["find", "ls"],
+        ["WebFetch"] = ["web_fetch"], ["WebSearch"] = ["web_search"],
+        ["Task"] = ["agent_spawn"], ["TodoWrite"] = ["todo_write"],
+    };
+
+    /// <summary>The CLI tools a run that may only read keeps (plan mode, a research subagent of a chat in it).</summary>
+    internal static readonly string[] ReadingTools = ["Read", "Grep", "Glob", "WebFetch", "WebSearch", "TodoWrite"];
+
+    /// <summary>
+    /// The CLI tools of an agent turn (idea-hghbmg): what <c>--tools</c> gets, what <c>--disallowedTools</c> takes away, and a line saying
+    /// what was held back (null when nothing was). The configured set (<c>default</c>: every tool of the CLI) loses each tool whose
+    /// NetPI counterpart this run is not offered although NetPI has it — a chat with bash switched off, a profile without edit, a
+    /// subagent handed read-only tools; and a run that may only read (<see cref="ModelRequest.ReadOnlyTools"/>: plan mode) keeps the
+    /// reading ones alone, whatever else it is offered. <paramref name="known"/>: NetPI's registered tools (null: all counterparts).
+    /// </summary>
+    internal static (string Tools, IReadOnlyList<string> Disallowed, string? Note) ToolPolicy(ModelRequest request, ClaudeCliOptions o, IReadOnlyCollection<string>? known)
+    {
+        if (o.Tools.Equals("none", StringComparison.OrdinalIgnoreCase)) return NoTools;
+        var offered = request.Tools.Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var registered = known is null ? null : new HashSet<string>(known, StringComparer.OrdinalIgnoreCase);
+        bool Kept(string cli) => !Counterparts.TryGetValue(cli, out var netpi)
+            || netpi.Any(offered.Contains)
+            || (registered is not null && !netpi.Any(registered.Contains));
+        var configured = o.Tools.Equals("default", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : o.Tools.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        if (request.ReadOnlyTools)
+        {
+            var reading = (configured ?? [.. ReadingTools]).Where(t => ReadingTools.Contains(t, StringComparer.OrdinalIgnoreCase) && Kept(t)).ToList();
+            return (string.Join(",", reading), [], "read-only (plan mode): " + (reading.Count == 0 ? "no tools" : string.Join(", ", reading)));
+        }
+        if (configured is not null)
+        {
+            var kept = configured.Where(Kept).ToList();
+            var dropped = configured.Except(kept, StringComparer.OrdinalIgnoreCase).ToList();
+            return (string.Join(",", kept), [], dropped.Count == 0 ? null : $"without {string.Join(", ", dropped)} (this run is not given their NetPI counterparts)");
+        }
+        var off = Counterparts.Keys.Where(t => !Kept(t)).ToList();
+        var shown = off.Where(t => t is not ("BashOutput" or "KillShell" or "KillBash" or "MultiEdit")).ToList();
+        return ("default", off, off.Count == 0 ? null : $"without {string.Join(", ", shown)} (this run is not given their NetPI counterparts)");
+    }
+
+    /// <summary>The CLI arguments: no saved session, no skills; its tools and permissions as the settings and the run say; the system prompt is read from a file.</summary>
+    internal static List<string> BuildArgs(ModelRequest request, ClaudeCliOptions o, string tools, string systemPromptFile, CliAttempt attempt,
+        IReadOnlyList<string>? disallowed = null)
     {
         var args = new List<string> { "-p", "--model", request.Model.Id, "--tools", tools };
         if (tools.Length > 0) args.AddRange(["--permission-mode", o.PermissionMode]);
+        if (tools.Length > 0 && disallowed is { Count: > 0 }) args.AddRange(["--disallowedTools", string.Join(",", disallowed)]);
         if (!o.Connectors) args.Add("--strict-mcp-config");
         // a chat's CLI session is kept (it is what the next turn resumes); anything else leaves no session behind
         if (!attempt.Persist) args.Add("--no-session-persistence");
