@@ -76,12 +76,16 @@ public static class EventBusTests
             var started = new ManualResetEventSlim();
             var release = new ManualResetEventSlim();
             var slowSeen = new List<int>(); var fastSeen = new List<int>();
+            var fastTook = new SemaphoreSlim(0);
             using var _ = bus.Subscribe("t", e => { if (slowSeen.Count == 0) { started.Set(); release.Wait(5000); } slowSeen.Add((int)e.Data!); });
-            using var fast = bus.Subscribe("t", e => fastSeen.Add((int)e.Data!));
+            using var fast = bus.Subscribe("t", e => { fastSeen.Add((int)e.Data!); fastTook.Release(); });
             for (var i = 1; i <= 50; i++)
             {
                 bus.Publish("t", i);
-                await Task.Delay(2);   // at a pace the fast line keeps up with; the wedged one cannot
+                // at the pace the fast line keeps up with (it has taken this event before the next is published); the
+                // wedged one cannot. Waiting for the event, not a fixed 2 ms (a 15.6 ms timer tick on Windows, and no
+                // promise at all on a loaded machine).
+                Check.True(await fastTook.WaitAsync(TimeSpan.FromSeconds(10)), "the fast line took event " + i + " while the other is wedged");
             }
             Check.True(started.Wait(5000), "the slow subscriber started");
             release.Set();
@@ -254,8 +258,8 @@ public static class EventBusTests
             bus.Publish("t");
             Check.True(started.Wait(5000), "the subscriber is inside its handler");
             var flush = bus.FlushAsync();   // its marker waits on the wedged line
-            await Task.Delay(400);         // well past the stale threshold: while it lasts, it is named
-            Check.True(bus.StaleFlush() is not null, "the wedged flush is reported while it lasts: " + bus.StaleFlush());
+            // past the stale threshold, while it lasts, it is named (asked until it is: StaleFlush says it once per 10 s)
+            await WaitFor(() => bus.StaleFlush() is not null, "the wedged flush is reported while it lasts");
             release.Set();
             await flush.WaitAsync(TimeSpan.FromSeconds(5));
             for (var i = 0; i < 5; i++)
@@ -352,7 +356,8 @@ public static class EventBusTests
             var log = new CapturingLogger();
             await using var bus = new EventBus(NullLogger.Instance);
             var gate = new object();
-            using var dog = new StallWatchdog(bus, log, TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(30), work => work(), gate);
+            // (a held gate counts a tick per miss, and a miss is the tick plus a 60 ms try: 100 ms is four misses, ~0.4 s)
+            using var dog = new StallWatchdog(bus, log, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(30), work => work(), gate);
             // a thread that holds the gate: a deadlocked statement looks like this from outside
             var release = new ManualResetEventSlim();
             var holding = new ManualResetEventSlim();
