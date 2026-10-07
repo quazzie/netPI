@@ -299,7 +299,8 @@ public static class AgentsTests
             Check.True(idea.S("revision") is not null, "and it carries the revision an editor submits back");
 
             var ev = await env.Client.WaitFor(mark, e => e.Type == "ideas.changed" && e.D.S("backend") == "sqlite", "ideas.changed", 5000);
-            Check.True(ev is not null);
+            Check.Equal(list.P("storage").S("scope"), ev.D.S("scope"), "ideas.changed carries the storage ideas.list names");
+            Check.Equal(list.P("storage").S("database"), ev.D.S("database"));
 
             // The RPC side writes the same backlog.
             await env.Rpc("ideas.add", new { projectId = p.S("id"), idea = new { title = "From the UI", tags = "ui, e2e" } });

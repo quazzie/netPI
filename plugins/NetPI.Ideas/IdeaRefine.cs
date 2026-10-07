@@ -53,6 +53,9 @@ internal sealed class IdeaRefine(IPluginContext ctx, IdeasRepository repo)
             // "any available agent" is the default: whichever agent has a free instance takes the run, and the chat's model follows it
             if (ctx.Rpc.Exists("agents.use"))
                 await ctx.Rpc.InvokeAsync("agents.use", new JsonObject { ["sessionId"] = session.Id, ["agent"] = string.IsNullOrEmpty(agent) ? SessionAgent.Any : agent }, ct).ConfigureAwait(false);
+            // the automatic profile's instructions and tools; what refining must not do stays off whatever the profile says
+            if (ctx.Rpc.Exists("profiles.applyAuto"))
+                await ctx.Rpc.InvokeAsync("profiles.applyAuto", new JsonObject { ["sessionId"] = session.Id, ["toolsOff"] = new JsonArray([.. ToolsOff().Select(n => (JsonNode)n)]) }, ct).ConfigureAwait(false);
             // the idea as a notice in the chat, and the chat on the idea's card under "Chats" (the user opens it from there)
             await ctx.Rpc.InvokeAsync("ideas.attach", new JsonObject { ["sessionId"] = session.Id, ["id"] = id }, ct).ConfigureAwait(false);
             repo.AddSessionEntry(id, new JsonObject { ["sessionId"] = session.Id, ["title"] = session.Title, ["at"] = DateTimeOffset.UtcNow.ToString("O"), ["note"] = "Refining this idea" });

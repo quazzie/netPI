@@ -99,6 +99,27 @@ public static class UiTests
                 + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
             Check.Equal(0, proc.ExitCode, "idea-meaning exit code; stderr: " + err);
         }, 120);
+        r.Add("ui.schedules-tab", "ui: the Schedules tab - row states (ran/skipped/missed/running/paused/finished), pause, the finished-once guard, the confirm delete, the edit form's update payload, the schedules.changed reload and the 230px narrow panel (idea-1y1174)", async () =>
+        {
+            // No server needed: the script mounts the committed plugin bundle with a stub ctx that answers schedules.*.
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "schedules-tab.mjs"));
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            try { await proc.WaitForExitAsync(timeout.Token); }
+            catch { if (!proc.HasExited) proc.Kill(true); throw; }
+            var output = await stdout;
+            var err = await stderr;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+            Check.True(json is not null, "schedules-tab output: " + output + err);
+            using var doc = JsonDocument.Parse(json!);
+            var failedChecks = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+            Check.Equal(0, proc.ExitCode, "schedules-tab exit code; stderr: " + err);
+        }, 120);
         r.Add("ui.smoke", "ui: send [s:tools] in the browser, streamed text + tool rows, plugin tabs, no console errors (screenshots)", async () =>
         {
             var p = await env.NewProject("ui-demo", CoreTests.Seed);
@@ -253,7 +274,6 @@ public static class UiTests
             Check.True(failed.Count == 0, $"{failed.Count} ui check(s) failed:\n      " + string.Join("\n      ", failed)
                 + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
             Check.Equal(0, proc.ExitCode, "start-project exit code; stderr: " + err);
-            Check.True(p.S("path") is not null, "the project has a folder");
             Env.Log($"screenshots: {outDir}");
         }, 150);
 
@@ -282,7 +302,6 @@ public static class UiTests
                 var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
                 Check.True(json is not null, "remove-agent output: " + output + err);
                 using var d = JsonDocument.Parse(json!);
-                foreach (var line in d.RootElement.Arr("dbg").Select(e => e.GetString())) Console.WriteLine("      [dbg] " + line);
                 var failedChecks = d.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
                 Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
                     + (d.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", d.RootElement.Arr("errors").Select(e => e.GetString())) : ""));

@@ -33,6 +33,9 @@ static ToolDefinition Tool(string name) => new()
     Parameters = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject { ["path"] = new JsonObject { ["type"] = "string" } } },
 };
 
+// Every request below shares these definitions. That is also what keeps the transports cloning a tool's Parameters
+// into the body: a JsonNode has one parent, so a transport that assigned it by reference would throw "The node already
+// has a parent" on the second request of the run.
 var tools = new[] { Tool("read"), Tool("ls") };
 
 ModelRequest Req(ModelInfo model, IReadOnlyList<ChatMessage>? messages = null, string? effort = null) => new()
@@ -91,29 +94,6 @@ List<ChatMessage> Conversation(string assistantProvider) =>
 ];
 
 // ================================================================== unit tests
-
-// The provider transports put a tool's Parameters node into the request body with a DeepClone(). An audit called that
-// "pure waste" and suggested assigning the node by reference instead. Measured here, because the answer decides it: a
-// JsonNode has exactly one parent, the tool definition's own object already owns that node, and assigning it a second
-// time throws. The clone is load-bearing.
-await t.Run("JsonNode: a tool schema node cannot be re-parented, so the providers must clone it", () =>
-{
-    var definition = new ToolDefinition { Name = "read", Description = "Read a file", Parameters = new JsonObject { ["type"] = "object" } };
-    var body = new JsonObject { ["tools"] = new JsonArray(new JsonObject { ["name"] = definition.Name, ["parameters"] = definition.Parameters.DeepClone() }) };
-    t.Eq("{\"tools\":[{\"name\":\"read\",\"parameters\":{\"type\":\"object\"}}]}", body.ToJsonString(), "cloned: the body serializes the schema");
-
-    var threwOnSecond = false;
-    try
-    {
-        new JsonObject { ["parameters"] = definition.Parameters.DeepClone() };              // what the providers do
-        new JsonObject { ["parameters"] = definition.Parameters };                            // what the audit suggested
-        new JsonObject { ["parameters"] = definition.Parameters };                            // ...and again, on the next call
-    }
-    catch (InvalidOperationException ex) { threwOnSecond = ex.Message.Contains("already has a parent", StringComparison.OrdinalIgnoreCase); }
-    t.Check(threwOnSecond, "without the clone the second call throws 'The node already has a parent' - the audit's suggestion would pass one test and break every call after it");
-    t.Check(!ReferenceEquals(definition.Parameters, ((JsonArray)body["tools"]!)[0]!["parameters"]), "and the body's node is its own");
-    return Task.CompletedTask;
-});
 
 await t.Run("SSE reader: event names, multi-line data, comments, CRLF, missing separators, [DONE], EOF", async () =>
 {
@@ -193,7 +173,7 @@ await t.Run("provider kit: one shared source set, compiled into all three provid
     foreach (var file in kitFiles)
         t.Eq(0, Directory.GetFiles(plugins, file, SearchOption.AllDirectories).Length, $"{file}: no copy under plugins/, only in shared/ProviderKit");
 
-    foreach (var provider in new[] { "AiProxy", "Anthropic", "OpenRouter" })
+    foreach (var provider in new[] { "AiProxy", "Anthropic", "ClaudeCli", "OpenRouter" })
     {
         var csproj = Path.Combine(plugins, $"NetPI.Providers.{provider}", $"NetPI.Providers.{provider}.csproj");
         var compiles = System.Xml.Linq.XDocument.Load(csproj).Descendants().Where(n => n.Name.LocalName == "Compile").ToArray();
@@ -256,6 +236,24 @@ await t.Run("model list cache: one fetch per fingerprint, the last good list off
     served = await cache.ListAsync(true, fallback, Fetch, default);
     t.Eq(2, served.Count, "and the policy does not change a good list");
 });
+await t.Run("model list cache: backend restart metadata changes publish once even for the same loaded model", async () =>
+{
+    using var ctx = new FakePluginContext(new JsonObject());
+    var cache = new Kit.ModelListCache("test", ctx.Log, ctx.Bus);
+    var model = M("test", "m");
+    model.Status = "loaded";
+    model.Extra = new JsonObject { ["created"] = 123 };
+    var policy = new Kit.ModelListCache.Policy { Fingerprint = "k", CanFetch = true, Ttl = TimeSpan.Zero };
+    Task<IReadOnlyList<ModelInfo>> Fetch(CancellationToken _) => Task.FromResult<IReadOnlyList<ModelInfo>>([model]);
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(1, ctx.Bus.Count(EventTypes.ModelsChanged), "first listing");
+    model.Extra["created"] = 456;
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "backend replacement under the same public model ID");
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "unchanged metadata is quiet");
+});
+
 await t.Run("Effort mapping to catalog efforts", () =>
 {
     var r = new ReasoningInfo { Supported = true, Efforts = ["none", "low", "medium", "xhigh"], Default = "medium" };
@@ -494,10 +492,9 @@ await t.Run("aiproxy: server down -> last good list marked offline; unreachable 
     var back = await aiproxy.ListModelsAsync(true, CancellationToken.None);
     t.Check(back.Any(m => m.Status == "loaded"), "back online");
 
-    using var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-    l.Start(); var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port; l.Stop();
-    using var http = new HttpClient();
-    var dead = new AP.OpenAiCompatibleProvider("dead", "Dead", http, () => new JsonObject { ["baseUrl"] = $"http://127.0.0.1:{port}" });
+    var deadUrl = DeadEndpoint.Url();
+    using var http = DeadEndpoint.Client(); // the real refusal, without Windows' two seconds of SYN retries
+    var dead = new AP.OpenAiCompatibleProvider("dead", "Dead", http, () => new JsonObject { ["baseUrl"] = deadUrl });
     var empty = await dead.ListModelsAsync(false, CancellationToken.None);
     t.Eq(0, empty.Count, "unreachable -> empty list, no throw");
 });
@@ -566,29 +563,6 @@ await t.Run("responses: request body (instructions, tools, effort, max tokens, i
     t.Check(!req.Headers.ContainsKey("authorization"), "no auth header without apiKey");
 });
 
-await t.Run("responses: replayReasoning replays reasoning items (live settings)", async () =>
-{
-    apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", true);
-    apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", true);
-    try
-    {
-        await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
-        var b = mock.Last("/v1/responses").Json;
-        var r = b["input"]![1]!;
-        t.Eq("reasoning", r["type"]!.GetValue<string>(), "reasoning item");
-        t.Eq("rs_9", r["id"]?.GetValue<string>(), "reasoning id");
-        t.Eq("I should read", r["content"]![0]!["text"]!.GetValue<string>(), "reasoning_text");
-        t.Eq("E9", r["encrypted_content"]?.GetValue<string>(), "encrypted_content");
-        t.Eq("reasoning.encrypted_content", b["include"]?[0]?.GetValue<string>(), "include");
-        t.Check(b["reasoning"] is null, "no effort -> reasoning omitted");
-    }
-    finally
-    {
-        apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", null);
-        apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", null);
-    }
-});
-
 await t.Run("decision context: provider snapshot keeps the exact chat prefix, tools and resolved effort", async () =>
 {
     apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
@@ -608,7 +582,9 @@ await t.Run("decision context: provider snapshot keeps the exact chat prefix, to
     finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", null); }
 });
 
-await t.Run("responses: reasoning is replayed by default (standard stateless usage), chat does not replay it", async () =>
+// Replaying reasoning is the Responses default (stateless use): it used to be a setting each test turned on, which no
+// longer changed anything. includeEncryptedReasoning is the live setting that remains.
+await t.Run("responses: reasoning is replayed by default (id, text, encrypted content), include only when asked, chat does not replay it", async () =>
 {
     await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
     var input = mock.Last("/v1/responses").Json["input"]!.AsArray();
@@ -616,6 +592,21 @@ await t.Run("responses: reasoning is replayed by default (standard stateless usa
     t.Eq("user,reasoning,message,function_call,function_call,function_call_output,function_call_output,user,user",
         string.Join(",", input.Select(Kind)), "reasoning → message → function calls");
     t.Check(mock.Last("/v1/responses").Json["include"] is null, "no include by default");
+
+    apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", true);   // read live, on the next request
+    try
+    {
+        await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
+        var b = mock.Last("/v1/responses").Json;
+        var r = b["input"]![1]!;
+        t.Eq("reasoning", r["type"]!.GetValue<string>(), "reasoning item");
+        t.Eq("rs_9", r["id"]?.GetValue<string>(), "reasoning id");
+        t.Eq("I should read", r["content"]![0]!["text"]!.GetValue<string>(), "reasoning_text");
+        t.Eq("E9", r["encrypted_content"]?.GetValue<string>(), "encrypted_content");
+        t.Eq("reasoning.encrypted_content", b["include"]?[0]?.GetValue<string>(), "include, once asked for");
+        t.Check(b["reasoning"] is null, "no effort -> reasoning omitted");
+    }
+    finally { apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", null); }
 
     apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
     try
@@ -899,10 +890,9 @@ await t.Run("responses: errors (503, context overflow, cut-off, EOF, response.fa
     t.Check(e5b is { ErrorType: "context_length_exceeded", ContextOverflow: true } && e5b.Message.Contains("context length exceeded"),
         "a data-only error frame is the server's own error: " + e5b?.Message);
 
-    using var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-    l.Start(); var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port; l.Stop();
-    using var http = new HttpClient();
-    var dead = new AP.OpenAiCompatibleProvider("dead", "Dead", http, () => new JsonObject { ["baseUrl"] = $"http://127.0.0.1:{port}" });
+    var deadUrl = DeadEndpoint.Url();
+    using var http = DeadEndpoint.Client(); // the real refusal, without Windows' two seconds of SYN retries
+    var dead = new AP.OpenAiCompatibleProvider("dead", "Dead", http, () => new JsonObject { ["baseUrl"] = deadUrl });
     var e6 = await Fails(dead, Req(M("dead", "x")));
     t.Check(e6 is { Transient: true, ErrorType: "network_error" }, "connection refused -> transient");
 });
@@ -964,7 +954,7 @@ await t.Run("chat: a tool name split across chunks is not truncated to its first
 
 await t.Run("chat: request body (system, tool_calls, tool results, images, stream_options, auth headers)", async () =>
 {
-    var model = M("vllm", "gemma-4");
+    var model = M("vllm", "ornith15-9b-mtp-128k");
     model.Reasoning = new ReasoningInfo { Supported = true, Efforts = ["none", "max"], Default = "max" };
     await Collect(apPlugin.Providers[1], Req(model, Conversation("vllm"), effort: "low"));
     var req = mock.Last("/v1/chat/completions");
@@ -978,7 +968,7 @@ await t.Run("chat: request body (system, tool_calls, tool results, images, strea
     t.Eq("read", b["tools"]![0]!["function"]!["name"]!.GetValue<string>(), "tool function name");
     var msgs = b["messages"]!.AsArray();
     t.Eq("system,user,assistant,tool,tool,user,user", string.Join(",", msgs.Select(m => m!["role"]!.GetValue<string>())), "roles");
-    t.Eq("image_url", msgs[1]!["content"]![1]!["type"]!.GetValue<string>(), "user image (modalities unknown for extra endpoint)");
+    t.Eq("image_url", msgs[1]!["content"]![1]!["type"]!.GetValue<string>(), "user image on a vision-capable extra endpoint");
     var asst = msgs[2]!;
     t.Eq("Reading", asst["content"]!.GetValue<string>(), "assistant content");
     t.Check(asst["reasoning_content"] is null, "no reasoning replay by default");
@@ -1037,7 +1027,7 @@ await t.Run("chat: images dropped for a text-only catalog model (aiproxy gemma-4
 
 // Both aiproxy transports and OpenRouter sent the catalog's output maximum whatever the prompt left of the window,
 // so a model whose window is smaller than that failed every call until compaction ran (idea-begg3v).
-await t.Run("max_tokens is clamped to the window beside the request (all three transports)", async () =>
+await t.Run("max_tokens is clamped to the window beside the request (aiproxy chat and responses; OpenRouter has its own)", async () =>
 {
     var model = M("vllm", "narrow");
     model.ContextWindow = 16_384;
@@ -1895,5 +1885,10 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
     t.Check(r3 is { PluginId: "netpi.providers.openrouter", Providers: 1, Models: 5, StreamedText: "Reading it.", AbstractionsShared: true }, $"openrouter ran in ALC ({r3})");
     t.Check(await PluginLoadTest.WaitCollectedAsync(r3.Alc), "openrouter ALC collected after unload");
 });
+
+await ClaudeCliTests.RunAsync(t);
+await ClaudeCliProductionTests.RunAsync(t);
+await ClaudeCliResumeTests.RunAsync(t);
+
 
 return t.Summary();

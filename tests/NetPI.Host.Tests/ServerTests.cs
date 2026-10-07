@@ -575,8 +575,13 @@ public static class ServerTests
             await using var ws = await WsTestClient.ConnectAsync(server);
             // a window that listens to everything, and a burst of events published just before the call
             await ws.SendAsync(new { t = "sub", sessions = "*" });
-            // a slow subscriber keeps the bus busy for about half a second, so an answer that did not wait for it would come first
-            using var slow = server.Events.Subscribe("e2e.burst", _ => Thread.Sleep(5));
+            // a slow subscriber keeps the bus busy for about half a second, so an answer that did not wait for it would come
+            // first (5 ms an event, measured: a Thread.Sleep(5) lasts a whole 15.6 ms timer tick on Windows, 1.5 s in all)
+            using var slow = server.Events.Subscribe("e2e.burst", _ =>
+            {
+                var until = System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency / 200;
+                while (System.Diagnostics.Stopwatch.GetTimestamp() < until) Thread.Yield();
+            });
             const int burst = 100;
             for (var i = 0; i < burst; i++) server.Events.Publish("e2e.burst", new { i });
             var res = await ws.RpcAsync("events.flush");
@@ -673,7 +678,10 @@ public static class ServerTests
             Check.Equal(HttpStatusCode.OK, (await SendAsync(http, HttpMethod.Get, server.BaseUrl + "/api/health")).Status);
             await Task.WhenAll(server.StopAsync(), server.StopAsync());
             await server.DisposeAsync();
-            await Check.ThrowsAsync<HttpRequestException>(() => http.GetAsync(server.BaseUrl + "/api/health"));
+            // Nothing listens there any more. Asked of the OS, not with a request: on Windows a refused connection to
+            // a port nobody listens on takes two seconds to fail (the connect is retried), which is all this test spent.
+            Check.False(System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners()
+                .Any(e => e.Port == server.Port && IPAddress.IsLoopback(e.Address)), "the port is closed once the server stopped");
             Check.False(File.Exists(file), "server.json is removed when the server stops");
         });
 

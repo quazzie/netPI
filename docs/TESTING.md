@@ -246,7 +246,7 @@ instance (`NETPI_URL`, default `http://127.0.0.1:7431`).
 ## End-to-end suite (`tests/NetPI.E2E`)
 
 The real `netpi-server` (a private copy of the dev build) against the mock model server, driven over HTTP/WebSocket like the UI
-does. **Run it by what your change can reach, not as a whole, while you work**: one test is ~2 s, the whole suite ~35 s.
+does. **Run it by what your change can reach, not as a whole, while you work**: one test is ~2 s, the whole suite ~45 s.
 
 ```powershell
 .\scripts\e2e.ps1 -Changed                        # the tests your changed files can affect (tests\NetPI.E2E\areas.json)
@@ -281,7 +281,8 @@ dotnet tests/NetPI.E2E/bin/Release/NetPI.E2E.dll [options] [test id | filter]...
 so they cannot disturb one another; the selected tests are split over them by how long each took last time
 (`artifacts/e2elogs/timings.json`), longest first, and each shard runs its tests in registration order. Two runs at once (two
 agents) share nothing: ports, work folders, screenshots and result folders are per run. Measured on one 16-core machine
-(2026-09-30): the whole suite took 126 s serially and ~35 s in 4 shards; the longest single test (`ui.smoke`, ~26 s) bounds it.
+(2026-10-07): the whole suite (80 tests) takes ~46 s in 4 shards, and the longest single test (`ui.smoke`, ~23 s) bounds it. A
+fixed pause in a ui script is what makes that number creep (ui.smoke had grown to 43 s): wait for the state a check reads.
 
 **Results.** Every run leaves `artifacts/e2elogs/<run>/`: `report.json` (selection, per-test outcome and time, per-shard
 setup/test/teardown time, revision), `console.txt` (from the script), `screenshots/`, and `failures/<id>.txt` for each failed
@@ -419,7 +420,7 @@ Coverage (run `--list` for the names):
 - **hot reload**: overwriting `NetPI.Nudge.dll` → `plugins.changed`, reload, `plugins.unloaded { collected: true }`, still
   works; `plugins.reload` of providers/tools/hooks/agents/context; reloading the agent runtime mid-run; reloading the provider
   while a stream is open.
-- **server**: session-scoped events only reach subscribed clients, HTTP RPC fallback and auth, external `settings.json`
+- **server**: session-scoped events only reach subscribed clients (HTTP RPC and its auth are the Host suite's), external `settings.json`
   edits applied live, automatic session titles, projects CRUD, SIGTERM during a run → exit 0 → restart keeps sessions,
   messages and projects.
 - **UI** (`ui/smoke.mjs`, Playwright): open a prepared session, send `[s:tools]` (streaming block, tool rows, diff, final

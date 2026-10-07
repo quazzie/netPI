@@ -26,12 +26,10 @@ public static class McpTests
                 Check.Contains(outputs.Last().GetRawText(),"Weather: Oslo");
                 var requests=(await env.MockLog()).Where(e=>e.L("seq")>mark).ToList();
                 Check.Equal(4,requests.Count);
-                string? prefix=null;
                 foreach(var entry in requests)
                 {
                     var request=await env.MockRequest(entry.L("seq"));
                     var serialized=request.P("tools").GetRawText();
-                    prefix ??=serialized;Check.Equal(prefix,serialized);
                     constantTools ??= serialized; Check.Equal(constantTools, serialized);
                     constantInstructions ??= request.S("instructions"); Check.Equal(constantInstructions, request.S("instructions"));
                     Check.Contains(serialized,"mcp_search");Check.Contains(serialized,"mcp_call");
@@ -41,7 +39,7 @@ public static class McpTests
                 Check.True(outputs.All(o => !o.B("isError")));
                 var success = result.Events.Single(e => e.Type == "tool.end" && e.D.S("name") == "mcp_call");
                 Console.WriteLine($"    MCP first successful call catalog={count}: {(success.At-started).TotalMilliseconds:0} ms");
-                Console.WriteLine($"    MCP catalog={count}: serialized tools={prefix!.Length} chars, instructions={constantInstructions!.Length} chars, schema inspections=1, argument errors=0, mocked task={watch.ElapsedMilliseconds} ms");
+                Console.WriteLine($"    MCP catalog={count}: serialized tools={constantTools!.Length} chars, instructions={constantInstructions!.Length} chars, schema inspections=1, argument errors=0, mocked task={watch.ElapsedMilliseconds} ms");
             }
             finally {await env.Rpc("mcp.remove",new {id="fixture"});}
             }

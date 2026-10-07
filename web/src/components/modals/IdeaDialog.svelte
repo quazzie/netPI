@@ -186,7 +186,7 @@
       return;
     }
     committed = true;
-    const s = await newSession({ projectId: idea.project?.id ?? null, title: idea.title });
+    const s = await newSession({ projectId: idea.project?.id ?? null, title: idea.title, auto: true });
     if (s) await sendMessage(s.id, `Work on idea ${idea.id} (${idea.title}) — read it, then tell me what you plan to do.`, [], 'auto');
     busy = false;
     onclose();

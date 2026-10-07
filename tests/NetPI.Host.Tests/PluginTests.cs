@@ -443,9 +443,10 @@ public static class PluginTests
             // its wait leaves the pending build alone rather than move a half-written folder into place
             using (new FileStream(lockFile, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
+                // (it tries again every 500 ms until the wait is over: two refused tries here, half a second apart)
                 var sw = Stopwatch.StartNew();
-                PendingBuild.Install(app, log, TimeSpan.FromMilliseconds(1200));
-                Check.True(sw.ElapsedMilliseconds >= 1000, "it waited for the lock");
+                PendingBuild.Install(app, log, TimeSpan.FromMilliseconds(400));
+                Check.True(sw.ElapsedMilliseconds >= 400, "it waited for the lock");
                 Check.Equal("old A", Text("plugins/A/A.dll"), "nothing was installed under the publish");
                 Check.Equal("new A", Text(".pending/plugins/A/A.dll"), "still pending");
                 Check.True(File.Exists(lockFile), "a lock it did not take is left alone");

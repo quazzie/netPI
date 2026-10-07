@@ -21,6 +21,9 @@ public static class LoopTests
         t.Add("loop: abort persists partial message", AbortPartial);
         t.Add("loop: abort during a tool call", AbortDuringTool);
         t.Add("loop: abort during a tool that swallows cancellation stops the batch", AbortDuringSwallowingTool);
+        t.Add("loop: a call the provider ran itself is recorded, not executed, and the run ends", ProviderExecutedCallIsRecordedNotRun);
+        t.Add("loop: a provider's own tool is reported live: one start, its output, one end", ProviderToolIsReportedLive);
+        t.Add("loop: a provider's own tool that never finished is closed by the runner as an error", ProviderToolNeverFinishedIsClosed);
         t.Add("loop: a run cancelled in an after-tool hook keeps one result per call id", OneResultWhenCancelledInAfterHook);
         t.Add("loop: an abort keeps the queue: dequeue it, then send it as the next turn", AbortKeepsQueue);
         t.Add("loop: a run that fails before it takes the queue does not start itself again for it", FailedRunKeepsQueue);
@@ -454,7 +457,98 @@ public static class LoopTests
         Check.Equal(1, h.Bus.OfType(EventTypes.ToolStart).Count, "no tool.start for the skipped calls");
         Check.Equal(1, h.Catalog.Calls);
     }
- 
+
+    /// <summary>A provider that ran a call itself (the Claude CLI's tools): recorded and shown like a tool call, never executed, and the run ends.</summary>
+    private static async Task ProviderExecutedCallIsRecordedNotRun()
+    {
+        await using var h = await TestHost.StartAsync();
+        var echo = Echo();
+        h.AddTool(echo);
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            // a call named like a registered tool, to prove that the flag, not the name, decides
+            var ran = Reply.Call("echo", new { text = "by the cli" }, id: "tu_1");
+            ran.ProviderData = new JsonObject
+            {
+                [ToolCallPart.ExecutedKey] = true,
+                [ToolCallPart.ResultKey] = new JsonObject { ["content"] = "cli says hi", ["isError"] = false },
+            };
+            return Reply.Stream(Reply.Message(ran, new TextPart { Text = "all done" }));
+        };
+        await h.SendAsync(s.Id, "go");
+        var a = await h.IdleAsync(s.Id);
+
+        var msgs = h.Messages(s.Id);
+        Check.Equal("User,Notice,Assistant,Tool", string.Join(",", msgs.Select(m => m.Role)), "no second model call");
+        Check.Equal(0, echo.Calls, "the tool did not run");
+        Check.Equal(1, h.Catalog.Calls, "one model call: the loop ended");
+        var result = msgs[3].ToolResults.Single();
+        Check.Equal("tu_1", result.CallId);
+        Check.Equal("cli says hi", result.Content);
+        Check.False(result.IsError);
+        Check.Equal(true, result.Details!["providerExecuted"]!.GetValue<bool>());
+        var call = msgs[2].ToolCalls.Single();
+        Check.True(call.ProviderExecuted, "the call stays marked");
+        Check.True(call.ProviderData![ToolCallPart.ResultKey] is null, "the result is stored once, as the tool message");
+        Check.Equal(1, a.ToolCalls, "counted");
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolStart).Count, "tool.start for the chat");
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolEnd).Count, "tool.end for the chat");
+    }
+
+    /// <summary>A provider that reports its own tool while it works: running, progress, done: one start, one end, and the output in between.</summary>
+    private static async Task ProviderToolIsReportedLive()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => LiveStream(finish: true);
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolStart).Count, "one tool.start, from the live event");
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolEnd).Count, "one tool.end, from the live event");
+        var start = FakeBus.Data(h.Bus.OfType(EventTypes.ToolStart).Single());
+        Check.Equal("tu_live", (string?)start["callId"]);
+        Check.Contains((string?)start["arguments"], "a.cs");
+        var output = FakeBus.Data(h.Bus.OfType(EventTypes.ToolOutput).Single());
+        Check.Equal("↳ Grep x\n", (string?)output["chunk"]);
+        var order = h.Bus.All.Select(e => e.Type).Where(t => t is EventTypes.ToolStart or EventTypes.ToolOutput or EventTypes.ToolEnd).ToList();
+        Check.Equal("tool.start,tool.output,tool.end", string.Join(",", order));
+        Check.Equal("cli result", h.Messages(s.Id).Single(m => m.Role == MessageRole.Tool).ToolResults.Single().Content);
+    }
+
+    /// <summary>The provider announced the call but never finished it (the CLI died): the runner closes the call, or its row would spin for ever.</summary>
+    private static async Task ProviderToolNeverFinishedIsClosed()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => LiveStream(finish: false);
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolStart).Count, "one tool.start");
+        var end = FakeBus.Data(h.Bus.OfType(EventTypes.ToolEnd).Single());
+        Check.Equal(true, end["isError"]!.GetValue<bool>(), "closed as an error");
+        var result = h.Messages(s.Id).Single(m => m.Role == MessageRole.Tool).ToolResults.Single();
+        Check.True(result.IsError && result.Content.Contains("no result"), "the stored result says so");
+    }
+
+    private static async IAsyncEnumerable<ModelStreamEvent> LiveStream(bool finish, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await Task.Yield();
+        var call = Reply.Call("Read", new { file_path = "a.cs" }, id: "tu_live");
+        call.ProviderData = new JsonObject { [ToolCallPart.ExecutedKey] = true, [ToolCallPart.LiveKey] = true };
+        yield return new ToolCallStarted("tu_live", "Read");
+        yield return new ProviderToolRunning("tu_live", "Read", call.Arguments);
+        yield return new ProviderToolOutput("tu_live", "↳ Grep x\n");
+        if (finish)
+        {
+            yield return new ProviderToolDone("tu_live", false);
+            call.ProviderData[ToolCallPart.ResultKey] = new JsonObject { ["content"] = "cli result", ["isError"] = false };
+        }
+        yield return new StreamCompleted(Reply.Message(call, new TextPart { Text = "ok" }));
+    }
+
     /// <summary>
     /// A call's result is persisted before its after-hooks run: a run cancelled in an after-hook must not write a second,
     /// contradictory result ("aborted") for the same call id - the transcript keeps the one real result (idea-3coif8).
@@ -503,10 +597,6 @@ public static class LoopTests
         public ValueTask OnRunEndAsync(AgentRunContext run) => ValueTask.CompletedTask;
     }
 
-    // A stop leaves the queued input with no run left to run in: the UI's chip send action dequeues it and
-    // sends the same text as the next turn. The queue must survive the abort, the removal is what authorizes
-    // the send (a second removal reports "gone", so the text is never sent twice), and the resent text starts
-    // its own run.
     /// <summary>
     /// The steps of a turn that can fail (the model is gone, the budget is spent, no slot) come before the queue is taken, so
     /// a run that failed there still holds the input. It used to start the next run for it at once, which failed the same
@@ -678,6 +768,10 @@ public static class LoopTests
         Check.True(h.Messages(s.Id).Any(m => m.Text == "three"), "the steer was delivered");
     }
 
+    // A stop leaves the queued input with no run left to run in: the UI's chip send action dequeues it and
+    // sends the same text as the next turn. The queue must survive the abort, the removal is what authorizes
+    // the send (a second removal reports "gone", so the text is never sent twice), and the resent text starts
+    // its own run.
     private static async Task AbortKeepsQueue()
     {
         await using var h = await TestHost.StartAsync();

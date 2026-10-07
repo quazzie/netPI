@@ -27,6 +27,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     private long _seq;
     private bool _stopped;
     private int _publishScheduled;
+    private int _publishPending;
     private string _signature = "";
 
     public AgentScheduler(IPluginContext ctx, Ledger? usage)
@@ -38,6 +39,12 @@ internal sealed class AgentScheduler : IAgentScheduler
 
     /// <summary>Delay used to coalesce <c>agents.changed</c> events.</summary>
     public int PublishDelayMs { get; init; } = 100;
+
+    /// <summary>A coalesced <c>agents.changed</c> is still on its timer or being sent: a test waits for this instead of guessing at the window.</summary>
+    internal bool PublishPending => Volatile.Read(ref _publishPending) > 0;
+
+    /// <summary>How long one second of <c>agents.queueTimeoutSeconds</c> lasts: a second (tests shorten it).</summary>
+    internal TimeSpan QueueTimeoutUnit { get; set; } = TimeSpan.FromSeconds(1);
 
     // ---------------------------------------------------------------- agents
 
@@ -735,7 +742,7 @@ internal sealed class AgentScheduler : IAgentScheduler
             waiter.WaitTimeout = new CancellationTokenSource();
             var tcs = waiter.Tcs;
             var w = waiter;
-            _ = Task.Delay(TimeSpan.FromSeconds(queueTimeout), waiter.WaitTimeout.Token).ContinueWith(_ =>
+            _ = Task.Delay(queueTimeout * QueueTimeoutUnit, waiter.WaitTimeout.Token).ContinueWith(_ =>
             {
                 bool dropped;
                 lock (_gate) dropped = w.Floating ? _floating.Remove(w) : _pools.TryGetValue(w.Request.Key, out var p) && p.Waiters.Remove(w);
@@ -888,11 +895,16 @@ internal sealed class AgentScheduler : IAgentScheduler
     private void SchedulePublish()
     {
         if (Interlocked.Exchange(ref _publishScheduled, 1) == 1) return;
+        Interlocked.Increment(ref _publishPending);
         _ = Task.Delay(PublishDelayMs).ContinueWith(_ =>
         {
-            Volatile.Write(ref _publishScheduled, 0);
-            if (_stopped) return;
-            PublishNow();
+            try
+            {
+                Volatile.Write(ref _publishScheduled, 0);
+                if (_stopped) return;
+                PublishNow();
+            }
+            finally { Interlocked.Decrement(ref _publishPending); }
         }, TaskScheduler.Default);
     }
 

@@ -144,8 +144,6 @@ public sealed class NetPiClient : IAsyncDisposable
         lock (_gate) return _events.Skip((int)mark).Where(e => filter is null || filter(e)).ToList();
     }
 
-    public List<Ev> All(Func<Ev, bool>? filter = null) => Since(0, filter);
-
     /// <summary>First event after <paramref name="mark"/> matching <paramref name="match"/>.</summary>
     public async Task<Ev> WaitFor(long mark, Func<Ev, bool> match, string what, int timeoutMs = 30_000)
     {

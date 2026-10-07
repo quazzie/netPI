@@ -23,6 +23,19 @@ public sealed class ModelInfo
     public int? Concurrency { get; set; }
     public List<string> InputModalities { get; set; } = ["text"];
     public ReasoningInfo? Reasoning { get; set; }
+    /// <summary>
+    /// Max silence between stream events for this model, in seconds, overriding the retry plugin's global
+    /// <c>retry.stallTimeoutSeconds</c> (null = the global). 0 disables the stall detection. A provider whose calls
+    /// can be legitimately silent for a long time (the Claude CLI works with its own tools and subagents) sets this;
+    /// the process dying is detected by the stream ending, not by silence.
+    /// </summary>
+    public int? StallTimeoutSeconds { get; set; }
+    /// <summary>
+    /// The model's backend keeps and compacts the conversation itself (the Claude CLI resumes its own session): NetPI's compaction leaves such
+    /// a chat alone, because summarizing NetPI's copy of the messages would not shrink what the backend holds. <see cref="ContextWindow"/> and the
+    /// context size the provider reports are the backend's own.
+    /// </summary>
+    public bool ManagesOwnContext { get; set; }
     /// <summary>loaded | unloaded | stopped | offline | available</summary>
     public string? Status { get; set; }
     public bool IsLocal { get; set; }
@@ -64,6 +77,13 @@ public sealed record TextDelta(string Text) : ModelStreamEvent;
 public sealed record ThinkingDelta(string Text) : ModelStreamEvent;
 public sealed record ToolCallStarted(string Id, string Name) : ModelStreamEvent;
 public sealed record ToolCallArgsDelta(string Id, string Delta) : ModelStreamEvent;
+/// <summary>A call the provider runs itself (<see cref="ToolCallPart.ProviderExecuted"/>) has its arguments and is now being worked on:
+/// the chat shows it as running (<c>tool.start</c>), not as still being written.</summary>
+public sealed record ProviderToolRunning(string Id, string Name, string Arguments) : ModelStreamEvent;
+/// <summary>Progress of such a call (a subagent's own tool use): live output of the call's row (<c>tool.output</c>).</summary>
+public sealed record ProviderToolOutput(string Id, string Text) : ModelStreamEvent;
+/// <summary>Such a call has finished (<c>tool.end</c>); its result follows with the assistant message.</summary>
+public sealed record ProviderToolDone(string Id, bool IsError) : ModelStreamEvent;
 public sealed record UsageUpdate(Usage Usage) : ModelStreamEvent;
 /// <summary>Discard everything streamed so far in this call (used by retry middleware).</summary>
 public sealed record StreamReset(string Reason) : ModelStreamEvent;

@@ -578,3 +578,43 @@ internal sealed class MockServer : IAsyncDisposable
         ]);
     }
 }
+
+/// <summary>
+/// An endpoint nothing listens on, and a client that hears so at once. The refusal is the real one (the connect is
+/// answered with a reset), but Windows retries a refused SYN twice before it reports it, so every refused connect to
+/// 127.0.0.1 takes two seconds there. This client's sockets are told not to retry it (SIO_TCP_INITIAL_RTO): the same
+/// error, the same exception, in milliseconds. Elsewhere a refused connect is immediate anyway.
+/// </summary>
+internal static class DeadEndpoint
+{
+    /// <summary>A loopback URL whose port was free a moment ago: nothing listens on it.</summary>
+    public static string Url()
+    {
+        using var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        l.Start(); var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port; l.Stop();
+        return $"http://127.0.0.1:{port}";
+    }
+
+    public static HttpClient Client() => new(new SocketsHttpHandler { ConnectCallback = ConnectWithoutSynRetriesAsync });
+
+    // _WSAIOW(IOC_VENDOR, 17); its input is TCP_INITIAL_RTO_PARAMETERS { USHORT Rtt; UCHAR MaxSynRetransmissions; }
+    private const int SioTcpInitialRto = unchecked((int)0x98000011);
+    // Rtt = TCP_INITIAL_RTO_UNSPECIFIED_RTT (0xFFFF, the default), MaxSynRetransmissions = TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS (0xFE)
+    private static readonly byte[] NoSynRetransmissions = [0xFF, 0xFF, 0xFE, 0x00];
+
+    private static async ValueTask<Stream> ConnectWithoutSynRetriesAsync(SocketsHttpConnectionContext context, CancellationToken ct)
+    {
+        var socket = new System.Net.Sockets.Socket(System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            if (OperatingSystem.IsWindows()) socket.IOControl(SioTcpInitialRto, NoSynRetransmissions, null);
+            await socket.ConnectAsync(context.DnsEndPoint, ct);
+            return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+}

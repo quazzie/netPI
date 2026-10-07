@@ -11,7 +11,7 @@ namespace NetPI.Aux.Tests;
 public static class SchedulesTests
 {
     /// <summary>A clock the test moves.</summary>
-    private sealed class ManualTime(DateTimeOffset start) : TimeProvider
+    internal sealed class ManualTime(DateTimeOffset start) : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = start;
         public override DateTimeOffset GetUtcNow() => Now;
@@ -19,7 +19,7 @@ public static class SchedulesTests
     }
 
     /// <summary>A runtime that records what it was sent; <see cref="Fail"/> makes the next send throw.</summary>
-    private sealed class RecordingRuntime : IAgentRuntime
+    internal sealed class RecordingRuntime : IAgentRuntime
     {
         public List<(string SessionId, UserInput Input)> Sent { get; } = [];
         public List<AgentInfo> Agents { get; } = [];
@@ -43,7 +43,7 @@ public static class SchedulesTests
         public bool RemoveQueued(string sessionId, string inputId) => false;
     }
 
-    private sealed class Env
+    internal sealed class Env
     {
         public ManualTime Time { get; } = new(new DateTimeOffset(2026, 10, 3, 8, 0, 0, TimeSpan.Zero));
         public FakePluginContext Ctx { get; private set; }

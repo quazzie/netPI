@@ -1,0 +1,5 @@
+{
+  "id": "netpi.providers.claudecli",
+  "name": "Claude CLI provider",
+  "description": "Claude models through the installed Claude Code CLI (`claude -p`), on the owner's Claude subscription: text in, text out, no tools. For planner and designer agents."
+}

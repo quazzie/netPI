@@ -2,12 +2,13 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import Popover from '../Popover.svelte';
   import { app, setSessionProject, noteProject, newSession } from '../../lib/state/app.svelte.js';
-  import { toast, openProjects } from '../../lib/state/ui.svelte.js';
+  import { toast, openProjects, prefs } from '../../lib/state/ui.svelte.js';
 
   /**
    * Project picker.
    * data: { sessionId, anchor }: attach the chosen project to that session (sessions.setProject).
-   * data: { select: true, anchor }: start a new session in the picked project (the start screen's chevron).
+   * data: { select: true, anchor }: start a new session in the picked project (the start screen's and the top bar's
+   *   chevrons): every project under a search box, the starred ones in a section at the top.
    */
   let { data, onclose } = $props();
   let q = $state('');
@@ -18,16 +19,31 @@
     select ? (app.lastProjectId && app.projectsById.has(app.lastProjectId) ? app.lastProjectId : null) : (session?.projectId ?? null),
   );
   const currentProject = $derived(current ? (app.projectsById.get(current) ?? null) : null);
-  const items = $derived.by(() => {
+  const favIds = $derived(new Set(prefs.favorites));
+  // what the list renders: project rows ({ p, i } — i is the row's place among the selectable ones) and, in select mode,
+  // section headers (favorites first, then the rest in last-used order). The keyboard highlight walks the rows only.
+  const rows = $derived.by(() => {
     const query = q.trim().toLowerCase();
-    const list = app.projects
-      .filter((p) => !query || p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query))
-      .sort((a, b) => (Date.parse(b.lastUsedAt ?? b.updatedAt) || 0) - (Date.parse(a.lastUsedAt ?? a.updatedAt) || 0));
-    return [{ id: null, name: 'No project', path: 'default workspace' }, ...list];
+    const match = (p) => !query || p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query);
+    const byUse = (a, b) => (Date.parse(b.lastUsedAt ?? b.updatedAt) || 0) - (Date.parse(a.lastUsedAt ?? a.updatedAt) || 0);
+    if (!select) {
+      const list = [...app.projects.filter(match)].sort(byUse);
+      return [{ p: { id: null, name: 'No project', path: 'default workspace' }, i: 0 }, ...list.map((p, i) => ({ p, i: i + 1 }))];
+    }
+    const favs = prefs.favorites.map((id) => app.projectsById.get(id)).filter((p) => p && match(p));
+    const rest = app.projects.filter((p) => !favIds.has(p.id) && match(p)).sort(byUse);
+    const out = [];
+    let i = 0;
+    if (favs.length) out.push({ header: 'Favorites' });
+    for (const p of favs) out.push({ p, i: i++ });
+    if (rest.length) out.push({ header: 'All projects' });
+    for (const p of rest) out.push({ p, i: i++ });
+    return out;
   });
+  const pickables = $derived(rows.filter((r) => !r.header).map((r) => r.p));
   // the keyboard highlight starts on the current project and goes back to the top when the filter changes
   // svelte-ignore state_referenced_locally
-  let index = $state(Math.max(0, items.findIndex((p) => p.id === current)));
+  let index = $state(Math.max(0, pickables.findIndex((p) => p.id === current)));
 
   async function choose(p) {
     // read everything from props BEFORE closing: onclose() unmounts this popover and `data` becomes null
@@ -55,13 +71,13 @@
   function onKey(e) {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      index = Math.min(items.length - 1, index + 1);
+      index = Math.min(pickables.length - 1, index + 1);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       index = Math.max(0, index - 1);
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (items[index]) choose(items[index]);
+      if (pickables[index]) choose(pickables[index]);
     }
   }
   function focus(n) {
@@ -80,15 +96,20 @@
     <input placeholder={select ? 'Start a session in…' : 'Attach project…'} bind:value={q} oninput={() => (index = 0)} onkeydown={onKey} use:focus spellcheck="false" />
   </div>
   <div class="list np-scroll">
-    {#each items as p, i (p.id ?? '__none')}
-      <button class="item" class:active={i === index} class:current={current === p.id} onclick={() => choose(p)} onmouseenter={() => (index = i)}>
-        <Icon name={p.id ? 'folder' : 'x'} size={14} />
-        <span class="main">
-          <span class="np-ellipsis name">{p.name}</span>
-          <span class="np-ellipsis path np-mono">{p.path}</span>
-        </span>
-        {#if current === p.id}<Icon name="check" size={13} />{/if}
-      </button>
+    {#each rows as r (r.header ?? (r.p.id ?? '__none'))}
+      {#if r.header}
+        <div class="section">{r.header}</div>
+      {:else}
+        {@const fav = select && r.p.id && favIds.has(r.p.id)}
+        <button class="item" class:active={r.i === index} class:current={current === r.p.id} onclick={() => choose(r.p)} onmouseenter={() => (index = r.i)}>
+          <Icon name={r.p.id ? (fav ? 'star' : 'folder') : 'x'} size={14} class={fav ? 'fav' : ''} />
+          <span class="main">
+            <span class="np-ellipsis name">{r.p.name}</span>
+            <span class="np-ellipsis path np-mono">{r.p.path}</span>
+          </span>
+          {#if current === r.p.id}<Icon name="check" size={13} />{/if}
+        </button>
+      {/if}
     {/each}
   </div>
   <div class="foot">
@@ -121,6 +142,18 @@
   .list {
     padding: 4px;
     max-height: 320px;
+  }
+  .section {
+    padding: 6px 8px 2px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+  }
+  .fav {
+    color: var(--warn);
+    fill: var(--warn);
   }
   .item {
     display: flex;

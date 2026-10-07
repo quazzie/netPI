@@ -134,7 +134,7 @@ public static class SettingsTests
             lock (events) Check.True(events.Any(e => e.Contains("\"source\":\"file\"")), "settings.changed from file");
 
             File.WriteAllText(file, "{ this is not json");
-            await Task.Delay(700);
+            await Wait.Until(() => s.InvalidOnDisk, "the watcher read the broken file");
             Check.Equal("light", s.Get<string>("ui.theme"), "invalid JSON ignored");
 
             doc["ui"]!["theme"] = "blue";
@@ -262,7 +262,8 @@ public static class SettingsTests
         {
             var dir = T.TempDir("settings");
             var file = Path.Combine(dir, "settings.json");
-            using var s = new SettingsStore(file, NullLogger.Instance);
+            // every attempt of the failing write fails: no need to sit through the 0.6 s of pauses between them
+            using var s = new SettingsStore(file, NullLogger.Instance) { WriteRetryPause = TimeSpan.FromMilliseconds(1) };
             s.Set("ui.theme", JsonValue.Create("dark"));
             var before = File.ReadAllText(file);
             var changes = 0;

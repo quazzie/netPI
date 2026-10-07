@@ -36,7 +36,7 @@
     if (busy) return;
     busy = pick.id;
     try {
-      const s = await newSession({ projectId: pick.projectId ?? null, title: pick.title });
+      const s = await newSession({ projectId: pick.projectId ?? null, title: pick.title, auto: true });
       if (!s) return;
       try {
         await rpc('ideas.attach', { sessionId: s.id, id: pick.id });

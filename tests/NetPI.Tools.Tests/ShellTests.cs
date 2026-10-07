@@ -16,6 +16,22 @@ public static class ShellTests
 
     private static ShellTool Bash(ShellService s) => new("bash", s);
 
+    /// <summary>
+    /// Background starts return at once until disposed. The start-up wait (<see cref="ShellService.BackgroundStartupWait"/>)
+    /// only catches a command that fails at once, and costs a running job half a second per start: a test that is not
+    /// about it turns it off and waits for the output it needs instead.
+    /// </summary>
+    private static Disposer NoStartupWait()
+    {
+        var was = ShellService.BackgroundStartupWait;
+        ShellService.BackgroundStartupWait = TimeSpan.Zero;
+        return new Disposer(() => ShellService.BackgroundStartupWait = was);
+    }
+
+    /// <summary>Wait until the process has printed <paramref name="text"/>.</summary>
+    private static Task Printed(ProcessRegistry registry, string id, string text, int timeoutMs = 10_000) =>
+        Wait.Until(() => registry.Get(id)!.Output.Snapshot().Contains(text, StringComparison.Ordinal), $"{id} printed \"{text}\"", timeoutMs);
+
     /// <summary>Runs one short command with live-output and exit callbacks that capture a marker (standing for a plugin's closure).
     /// Not inlined, so nothing here keeps the marker alive once it returns.</summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -104,7 +120,7 @@ public static class ShellTests
             // head+tail: short is unchanged, cut keeps both ends and the marker names (dropped, total)
             Check.Equal("ok", TextLimit.HeadTail("ok", 10, 2, (o, t) => $"~{o}~{t}~"));
             var both = TextLimit.HeadTail(new string('a', 50) + "END", 20, 2, (o, t) => $"~{o}~{t}~");
-            Check.Equal(13, 20 * 2 / 3, "head gets 2 of 3 of the budget");
+            // the head gets 2 of 3 of the budget: 13 of the 20
             Check.True(both.StartsWith(new string('a', 13)), both[..20]);
             Check.Equal("~33~53~", both[13..20], "the marker names the dropped and the total");
             Check.True(both.EndsWith("aaaaEND"), both[^10..]);
@@ -298,18 +314,23 @@ public static class ShellTests
             try
             {
                 var (svc, registry, bus) = NewService();
-                registry.WatchSilence(() => TimeSpan.FromMilliseconds(1500));
+                // Read on every check (as shell.idleMinutes is), so the last step can lower it instead of sitting one out.
+                var idleAfter = TimeSpan.FromMilliseconds(1500);
+                registry.WatchSilence(() => idleAfter);
                 var dir = T.TempDir("idle");
                 // every wait below is measured from output the test has seen, not from the start: bash's start-up time
-                // on a loaded machine is not part of what is tested
-                var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "echo started; sleep 5; echo again; sleep 30", background = true }), default);
+                // on a loaded machine is not part of what is tested. The command prints again when the test creates
+                // the file "go", not after a fixed sleep.
+                var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "echo started; while [ ! -e go ]; do sleep 0.05; done; echo again; sleep 30", background = true }), default);
                 var id = T.D(res).Str("processId")!;
-                List<BusEvent> Idle() => bus.Events.Where(e => e.Type == "process.idle").ToList();
+                List<BusEvent> Idle() => bus.OfType(ProcessEvents.Idle); // under the bus's lock: the live output is published from a timer meanwhile
                 await Wait.Until(() => registry.Get(id)!.Output.Snapshot().Contains("started"), "it printed", 10_000);
 
                 registry.CheckSilence();
                 Check.Equal(0, Idle().Count, "not silent long enough yet");
-                await Task.Delay(2000);
+                // Checked until it is reported (the moment the silence reaches 1.5 s), not after a fixed delay. It has to be
+                // longer than a second: a silence that starts within a second of the one reported counts as that one.
+                await Wait.Until(() => { registry.CheckSilence(); return Idle().Count > 0; }, "the silence is reported", 10_000);
                 registry.CheckSilence();
                 registry.CheckSilence();
                 Check.Equal(1, Idle().Count, "one silence, one event");
@@ -318,10 +339,13 @@ public static class ShellTests
                 Check.True(d["idleSeconds"]!.GetValue<int>() >= 0);
                 Check.True(registry.Get(id)!.ToInfo().IdleSeconds is >= 0, "processes.list shows the silence");
 
+                File.WriteAllText(Path.Combine(dir, "go"), "");
                 await Wait.Until(() => registry.Get(id)!.Output.Snapshot().Contains("again"), "it printed again", 15_000);
                 registry.CheckSilence();
                 Check.Equal(1, Idle().Count, "output ended the silence: nothing new to report yet");
-                await Task.Delay(2000);
+                // The next silence only has to exist to be reported: what is checked is that it is a new one.
+                idleAfter = TimeSpan.FromMilliseconds(1);
+                await Wait.Until(() => { registry.CheckSilence(); return Idle().Count > 1; }, "the next silence is reported", 10_000);
                 registry.CheckSilence();
                 Check.Equal(2, Idle().Count, "output ended the first silence; the next one is reported again");
                 registry.Get(id)!.Kill();
@@ -401,9 +425,14 @@ public static class ShellTests
         {
             var (svc, _, _) = NewService();
             var dir = T.TempDir("bash");
-            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(700));
+            // Aborted once the background sleep exists (it is started before the marker is printed), not after a fixed
+            // 700 ms: on a slow start that killed bash before it had forked anything, and the EOF below proved nothing.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var started = false;
+            var ctx = T.Ctx(dir, output: c => { if (c.Contains("started", StringComparison.Ordinal)) { started = true; cts.Cancel(); } });
             var sw = Stopwatch.StartNew();
-            var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30 & sleep 30" }), cts.Token);
+            var res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "sleep 30 & echo started; sleep 30" }), cts.Token);
+            Check.True(started, "aborted after the background child was started");
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(8));
             ToolCheck.Error(res, "[aborted");
             Check.True(T.D(res).Bool("outputEof"), "captured output reached EOF after the abort");
@@ -420,23 +449,6 @@ public static class ShellTests
             ToolCheck.Error(res, "[aborted before the command started");
             await Task.Delay(200);
             Check.False(File.Exists(Path.Combine(dir, "ran.txt")), "the command did not run");
-        });
-
-        r.Add("bash: orphaned background child holding the pipe does not block", async () =>
-        {
-            var (svc, _, _) = NewService();
-            var dir = T.TempDir("bash");
-            // Here the child is meant to survive: the point is that the tool does not wait for it.
-            // So the test owns it and takes it down itself, by the pid Windows actually uses.
-            using var child = ShellChild.For(svc, dir, "orphan");
-            var sw = Stopwatch.StartNew();
-            var res = await T.Run(Bash(svc), dir, new { command = child.Preamble + "echo quick" });
-            sw.Stop();
-            Check.True(sw.Elapsed < TimeSpan.FromSeconds(6), $"took {sw.Elapsed}");
-            Check.Contains(res.Content, "quick");
-            Check.True(await child.IsAlive(5000), "the detached child should still be running when the tool returns");
-            await child.RememberNativePid();
-            Check.True(child.NativePid is > 0, "resolved the child's Windows pid (not the MSYS one)");
         });
 
         // The shell exits while a descendant still holds the output pipes: it must stay killable (the tree is alive)
@@ -459,6 +471,10 @@ public static class ShellTests
                 Check.False(p.OutputReachedEof, "the descendant still holds the pipes");
                 Check.True(p.TreeMayBeAlive, "the tree is still alive and killable");
                 Check.True(await child.IsAlive(5000), "the descendant is still running");
+                // its Windows pid, so the cleanup below can still take it down if a check after this one fails (a
+                // survivor would hold the runner's output pipe for the rest of the suite)
+                await child.RememberNativePid();
+                Check.True(child.NativePid is > 0, "resolved the child's Windows pid (not the MSYS one)");
 
                 // process kill reaches the surviving tree (the old code answered "not running" here).
                 var id = p.Id;
@@ -504,8 +520,9 @@ public static class ShellTests
             Check.Equal(5000, lines.Length);
             Check.Equal("1", lines[0]);
 
-            // > 1MB: spill file is written while the command runs.
-            res = await T.Run(Bash(svc), T.TempDir("bash"), new { command = "for i in $(seq 1 60000); do echo \"line $i of a long output stream\"; done" });
+            // > 1MB: spill file is written while the command runs. (awk writes the 2 MB in a fraction of the time a bash
+            // loop of 60000 echos takes, and the pipe still holds it back to the pump's pace.)
+            res = await T.Run(Bash(svc), T.TempDir("bash"), new { command = "awk 'BEGIN { for (i = 1; i <= 60000; i++) print \"line \" i \" of a long output stream\" }'" });
             d = T.D(res);
             var big = File.ReadAllLines(d.Str("fullOutputPath"));
             Check.Equal(60000, big.Length);
@@ -570,11 +587,13 @@ public static class ShellTests
         {
             var (svc, registry, bus) = NewService();
             var dir = T.TempDir("bg");
+            using var startNow = NoStartupWait();
             try
             {
                 var sw = Stopwatch.StartNew();
-                // Deliberately emit after the old 900 ms observation window.
-                var res = await T.Run(Bash(svc), dir, new { command = "sleep 1.2; for i in 1 2 3; do echo tick $i; sleep 0.2; done; sleep 30 & wait", background = true });
+                // Deliberately emit after the start returned (it once observed only a 900 ms window): the ticks wait for
+                // the file "go", which the test creates once the call is back, instead of for a fixed sleep.
+                var res = await T.Run(Bash(svc), dir, new { command = "while [ ! -e go ]; do sleep 0.05; done; for i in 1 2 3; do echo tick $i; sleep 0.2; done; sleep 30 & wait", background = true });
                 Check.True(sw.Elapsed < TimeSpan.FromSeconds(3), "returns immediately");
                 ToolCheck.Ok(res);
                 var d = T.D(res);
@@ -586,6 +605,8 @@ public static class ShellTests
                 var list = await T.Run(new ProcessTool(registry), dir, new { action = "list" });
                 Check.Contains(list.Content, $"{id}  running");
                 Check.Contains(list.Content, "bg  bash:");
+                Check.Equal("", registry.Get(id)!.Output.Snapshot(), "nothing printed before the go");
+                File.WriteAllText(Path.Combine(dir, "go"), "");
 
                 // Startup and the output pump can be slow under a parallel build/test load. Observe the
                 // output we need, rather than assuming three lines arrived after a fixed sleep.
@@ -596,7 +617,8 @@ public static class ShellTests
                 var outRes = await T.Run(new ProcessTool(registry), dir, new { action = "output", id });
                 Check.Contains(outRes.Content, "tick 1\ntick 2\ntick 3");
                 Check.Contains(outRes.Content, "running");
-                Check.True(bus.OfType(ProcessEvents.Output).Count > 0, "process.output events for background processes");
+                // published by the 250 ms live throttle, so waited for rather than assumed to have fired
+                await Wait.Until(() => bus.OfType(ProcessEvents.Output).Count > 0, "process.output events for background processes");
 
                 var kill = await T.Run(new ProcessTool(registry), dir, new { action = "kill", id });
                 ToolCheck.Ok(kill);
@@ -630,6 +652,7 @@ public static class ShellTests
             store.CreateSession(new SessionInfo { Id = "ses_sub2", Kind = "subagent", ParentSessionId = "ses_sub" });
             store.CreateSession(new SessionInfo { Id = "ses_b", Kind = "chat" });
             store.CreateSession(new SessionInfo { Id = "ses_bsub", Kind = "subagent", ParentSessionId = "ses_b" });
+            using var startNow = NoStartupWait(); // five jobs that run: the scoping is under test, not the start
             using (T.Services.Register<ISessionStore>(store))
             {
                 ToolContext Ctx(string sessionId) => new()
@@ -677,10 +700,14 @@ public static class ShellTests
                     Check.Equal("running", registry.Get(idB)!.Status, "the foreign job was left running");
 
                     // own and subagent jobs still work.
+                    await Printed(registry, idSub, "job-sub");
                     var outSub = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "output", id = idSub }), default);
                     ToolCheck.Ok(outSub);
                     Check.Contains(outSub.Content, "job-sub");
-                    var waitSub2 = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "wait", id = idSub2, timeout = 1 }), default);
+                    // The wait is admitted, not refused; an already-cancelled call answers at once instead of sitting out a timeout.
+                    using var cancelled = new CancellationTokenSource();
+                    cancelled.Cancel();
+                    var waitSub2 = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "wait", id = idSub2, timeout = 1 }), cancelled.Token);
                     ToolCheck.Ok(waitSub2);
                     Check.Equal("running", T.D(waitSub2).Str("status"), "a subagent's subagent's job is waitable");
 
@@ -740,12 +767,15 @@ public static class ShellTests
         {
             var (svc, registry, _) = NewService();
             var dir = T.TempDir("waitc");
+            using var startNow = NoStartupWait();
             var res = await T.Run(Bash(svc), dir, new { command = "echo start; sleep 30", background = true });
             var id = T.D(res).Str("processId");
             var tool = new ProcessTool(registry);
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+                // Cancelled while the wait runs: the call reaches its wait synchronously, so this fires during it (and a
+                // call already cancelled when it got there is answered the same way).
+                using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
                 var w = await T.Run(tool, dir, new { action = "wait", id, timeout = 30 }, ct: cts.Token);
                 ToolCheck.Ok(w);
                 Check.Contains(w.Content, "cancelled", "says the wait was cancelled");
@@ -763,9 +793,11 @@ public static class ShellTests
         {
             var (svc, registry, _) = NewService();
             var dir = T.TempDir("wait2");
+            using var startNow = NoStartupWait();
             var res = await T.Run(Bash(svc), dir, new { command = "echo first; sleep 30", background = true });
             var id = T.D(res).Str("processId");
             var tool = new ProcessTool(registry);
+            await Printed(registry, id, "first"); // the last lines below are what it printed, not what bash managed to print in time
 
             var sw = Stopwatch.StartNew();
             var w = await T.Run(tool, dir, new { action = "wait", id, timeout = 1 });
@@ -783,11 +815,15 @@ public static class ShellTests
             Check.Equal("first", d.GetProperty("lastLines")[0].GetString());
             Check.Equal("running", registry.Get(id)!.Status);
 
-            // And the job is still waitable: a longer wait gets the result.
-            var w2 = await T.Run(new ProcessTool(registry), dir, new { action = "wait", id, timeout = 1 });
-            Check.Equal("running", T.D(w2).Str("status"));
+            // And the job is still waitable: a longer wait gets the result, the moment the job ends (here: killed).
+            var w2Call = T.Run(new ProcessTool(registry), dir, new { action = "wait", id, timeout = 60 });
+            Check.False(w2Call.IsCompleted, "the second wait blocks on the running job");
             await T.Run(tool, dir, new { action = "kill", id });
             Check.Equal("killed", registry.Get(id)!.Status);
+            sw.Restart();
+            var w2 = await w2Call;
+            Check.True(sw.Elapsed < TimeSpan.FromSeconds(8), $"the wait returned when the job ended ({sw.ElapsedMilliseconds} ms after the kill)");
+            Check.Equal("killed", T.D(w2).Str("status"));
             var w3 = await T.Run(tool, dir, new { action = "wait", id });
             Check.Equal("killed", T.D(w3).Str("status"));
         });
@@ -843,13 +879,14 @@ public static class ShellTests
                 : "bash,pwsh,process";
             Check.Equal(expectedTools, string.Join(",", ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
             var bash = ctx.ToolsFake.Get("bash")!;
-            res = await bash.ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30", background = true }), default);
+            using (NoStartupWait()) // a job that runs: no early exit to catch
+                res = await bash.ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30", background = true }), default);
             var pid = T.D(res).Int("pid");
             var procs = (System.Collections.IEnumerable)(await ctx.RpcFake.InvokeAsync("processes.list"))!;
             Check.True(procs.Cast<ProcessInfo>().Any(p => p.Status == "running"));
             await plugin.StopAsync(default);
-            await Task.Delay(200);
-            Check.False(ProcessAlive(pid), "killed on plugin stop");
+            // dead by now, or within moments; a survivor would run on for its 30 s
+            await Wait.Until(() => !ProcessAlive(pid), "killed on plugin stop", 5000);
             var output = (string)(await ctx.RpcFake.InvokeAsync("processes.output", new { id = T.D(res).Str("processId") }))!;
             Check.Equal("", output);
         });

@@ -362,7 +362,8 @@ public static class GuardrailsTests
     /// <summary>
     /// A rule's root and a write's target are compared as places, not spellings: the long-path prefix, this
     /// machine's admin shares and the drive's device spelling all name the protected directory, and every one of
-    /// them is refused. On Unix the escapes are Windows spellings, so the one spelling that matters is the path.
+    /// them is refused. The escapes are Windows spellings: elsewhere only the path itself is checked, and the test
+    /// says it skipped the rest instead of passing.
     /// </summary>
     private static async Task ProtectedSpellings()
     {
@@ -398,12 +399,14 @@ public static class GuardrailsTests
         for (var i = 0; i < spellings.Length; i++)
             Check.Contains(results[i].Content, "is protected by the guardrail", "the spelling is the same path: " + spellings[i]);
         Check.Equal(0, ran.Count, "no write through a spelling of the protected path ran: " + string.Join(" | ", ran));
+        if (!OperatingSystem.IsWindows())
+            Check.Skip("the long-path, admin-share and device spellings are Windows paths; only the path itself was checked");
     }
 
     /// <summary>
     /// <c>C:\Users\me\SSH~1\authorized_keys</c> is <c>~/.ssh/authorized_keys</c>: a rule root and a write target are
-    /// compared as places, and a short (8.3) spelling of an existing level is expanded to the directory it names. On
-    /// Unix there are no short names, so the one spelling that matters is the path itself.
+    /// compared as places, and a short (8.3) spelling of an existing level is expanded to the directory it names. Off
+    /// Windows there are no short names: only the long spelling is checked, and the test says it skipped the rest.
     /// </summary>
     private static Task ShortNames()
     {
@@ -412,7 +415,11 @@ public static class GuardrailsTests
         var rules = RuleSet.Parse([], [dir], Home);
         Check.Equal(0, rules.Problems.Count, string.Join("; ", rules.Problems));
         Check.True(Judge(rules, "write", new { path = Path.Combine(dir, "authorized_keys"), content = "x" }) is { Action: GuardAction.Block, Kind: "path" }, "the long spelling is protected");
-        if (!OperatingSystem.IsWindows()) return Task.CompletedTask;
+        if (!OperatingSystem.IsWindows())
+        {
+            Check.Skip("8.3 short names are Windows only; only the long spelling was checked");
+            return Task.CompletedTask;   // not reached, but the platform analyzer does not read [DoesNotReturn]
+        }
         var shortDir = ShortPath(dir);
         if (shortDir is null || string.Equals(shortDir, dir, StringComparison.OrdinalIgnoreCase)) Check.Skip("the volume generates no short names");
         Check.True(Judge(rules, "write", new { path = Path.Combine(shortDir, "authorized_keys"), content = "x" }) is { Action: GuardAction.Block, Kind: "path" },

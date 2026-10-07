@@ -9,16 +9,18 @@ public static class ProfilesTests
     {
         t.Add("profiles: a new chat gets its project's default, else the global one; its text opens the prompt and its tools are off", NewChats);
         t.Add("profiles: switching before the first message is free; after it the prompt is rendered again, with a notice and no stray tools notice", Switching);
+        t.Add("profiles: a chat the app starts itself gets the automatic profile (its project's default first), and what its starter keeps off stays off", Automatic);
         t.Add("profiles: an older chat is never changed by a new default; subagents get no profile, their owner's tools or the ones it names", Boundaries);
     }
 
     private const string Admin = "You are a system administrator for the hosts in ~/.ssh/config.";
 
-    private static async Task<TestHost> Start(string defaultProfile = "coder")
+    private static async Task<TestHost> Start(string defaultProfile = "coder", string autoProfile = "")
     {
         var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("profiles", JsonNode.Parse($$"""
             {
               "defaultProfile": "{{defaultProfile}}",
+              "autoProfile": "{{autoProfile}}",
               "coder": { "name": "Coder" },
               "admin": { "name": "Admin", "prompt": "{{Admin}}", "toolsOff": ["bash", "write"] }
             }
@@ -118,6 +120,41 @@ public static class ProfilesTests
             throw new AssertException("expected not_found");
         }
         catch (RpcException ex) { Check.Equal("not_found", ex.Code); }
+    }
+
+    private static async Task Automatic()
+    {
+        await using var h = await Start(autoProfile: "admin");
+        var ops = h.Sessions.CreateProject("ops", h.Workspace);
+        h.UpdateProject(ops.Id, new JsonObject { ["profile"] = "coder" });
+
+        // a chat the app starts: the automatic profile in place of the global default; a normal new chat keeps the default
+        var auto = h.NewSession();
+        await h.Rpc.CallAsync("profiles.applyAuto", new { sessionId = auto.Id });
+        await Turn(h, auto.Id, "hi");
+        Check.Equal("admin", ProfileOf(h, auto.Id));
+        Check.True(Last(h, auto.Id).SystemPrompt!.StartsWith(Admin));
+        var plain = h.NewSession();
+        await Turn(h, plain.Id, "hi");
+        Check.Equal("coder", ProfileOf(h, plain.Id));
+
+        // the project's own default still wins
+        var inProject = h.NewSession(projectId: ops.Id);
+        await h.Rpc.CallAsync("profiles.applyAuto", new { sessionId = inProject.Id });
+        Check.Equal("coder", ProfileOf(h, inProject.Id));
+
+        // what the starter keeps off stays off, with and without a profile's own list
+        var kept = h.NewSession();
+        await h.Rpc.CallAsync("profiles.applyAuto", new { sessionId = kept.Id, toolsOff = new[] { "ssh_run" } });
+        await Turn(h, kept.Id, "hi");
+        var keptTools = Sent(h, kept.Id);
+        Check.True(keptTools.Contains("read") && !keptTools.Contains("bash") && !keptTools.Contains("write") && !keptTools.Contains("ssh_run"), string.Join(",", keptTools));
+        h.Settings.Set("profiles.autoProfile", "none");
+        var bare = h.NewSession();
+        await h.Rpc.CallAsync("profiles.applyAuto", new { sessionId = bare.Id, toolsOff = new[] { "ssh_run" } });
+        await Turn(h, bare.Id, "hi");
+        Check.True(ProfileOf(h, bare.Id) is null);
+        Check.True(!Sent(h, bare.Id).Contains("ssh_run") && Sent(h, bare.Id).Contains("bash"), string.Join(",", Sent(h, bare.Id)));
     }
 
     private static async Task Boundaries()

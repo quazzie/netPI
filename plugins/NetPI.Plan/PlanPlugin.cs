@@ -11,7 +11,8 @@ namespace NetPI.Plan;
 /// <para>
 /// State: <c>meta.planMode</c> on the chat (<see cref="PlanMode"/>), the plans in this plugin's data (<see cref="PlanStore"/>).
 /// RPC: plan.enter, plan.exit, plan.get, plan.list, plan.answer, plan.offers, plan.enterAnswer, plan.command (the slash command).
-/// Events (unscoped): plan.changed, plan.enter.asked, plan.enter.closed. The gate is <see cref="PlanHook"/> over <see cref="PlanPolicy"/>.
+/// Events (unscoped): plan.changed, plan.enter.asked, plan.enter.closed; a messageless chat's enter and exit also as
+/// session.updated (it is transient, so the session service announces nothing about it). The gate is <see cref="PlanHook"/> over <see cref="PlanPolicy"/>.
 /// </para>
 /// </summary>
 [NetPiPlugin("netpi.plan", Name = "Plan mode", Description = "/plan: explore read-only, submit a plan, the user approves it, asks for changes or saves it", Order = 67)]

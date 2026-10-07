@@ -36,7 +36,13 @@ public static class EmbeddingsTests
         {
             var v = new float[64];
             foreach (var w in text.ToLowerInvariant().Split([' ', '\n', ',', '.', ':', '"', '(', ')', '-'], StringSplitOptions.RemoveEmptyEntries))
-                if (w.Length >= 3) v[(int)((uint)w.GetHashCode(StringComparison.Ordinal) % 64)] += 1;
+                if (w.Length >= 3)
+                {
+                    // String.GetHashCode is salted per process: random bucket collisions changed rankings.
+                    uint hash = 2166136261;
+                    foreach (var c in w) hash = unchecked((hash ^ c) * 16777619);
+                    v[(int)(hash % 64)] += 1;
+                }
             v[63] += 0.01f; // never all zero
             return VectorMath.Normalize(v);
         }
