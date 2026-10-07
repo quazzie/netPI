@@ -33,6 +33,9 @@ static ToolDefinition Tool(string name) => new()
     Parameters = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject { ["path"] = new JsonObject { ["type"] = "string" } } },
 };
 
+// Every request below shares these definitions. That is also what keeps the transports cloning a tool's Parameters
+// into the body: a JsonNode has one parent, so a transport that assigned it by reference would throw "The node already
+// has a parent" on the second request of the run.
 var tools = new[] { Tool("read"), Tool("ls") };
 
 ModelRequest Req(ModelInfo model, IReadOnlyList<ChatMessage>? messages = null, string? effort = null) => new()
@@ -91,29 +94,6 @@ List<ChatMessage> Conversation(string assistantProvider) =>
 ];
 
 // ================================================================== unit tests
-
-// The provider transports put a tool's Parameters node into the request body with a DeepClone(). An audit called that
-// "pure waste" and suggested assigning the node by reference instead. Measured here, because the answer decides it: a
-// JsonNode has exactly one parent, the tool definition's own object already owns that node, and assigning it a second
-// time throws. The clone is load-bearing.
-await t.Run("JsonNode: a tool schema node cannot be re-parented, so the providers must clone it", () =>
-{
-    var definition = new ToolDefinition { Name = "read", Description = "Read a file", Parameters = new JsonObject { ["type"] = "object" } };
-    var body = new JsonObject { ["tools"] = new JsonArray(new JsonObject { ["name"] = definition.Name, ["parameters"] = definition.Parameters.DeepClone() }) };
-    t.Eq("{\"tools\":[{\"name\":\"read\",\"parameters\":{\"type\":\"object\"}}]}", body.ToJsonString(), "cloned: the body serializes the schema");
-
-    var threwOnSecond = false;
-    try
-    {
-        new JsonObject { ["parameters"] = definition.Parameters.DeepClone() };              // what the providers do
-        new JsonObject { ["parameters"] = definition.Parameters };                            // what the audit suggested
-        new JsonObject { ["parameters"] = definition.Parameters };                            // ...and again, on the next call
-    }
-    catch (InvalidOperationException ex) { threwOnSecond = ex.Message.Contains("already has a parent", StringComparison.OrdinalIgnoreCase); }
-    t.Check(threwOnSecond, "without the clone the second call throws 'The node already has a parent' - the audit's suggestion would pass one test and break every call after it");
-    t.Check(!ReferenceEquals(definition.Parameters, ((JsonArray)body["tools"]!)[0]!["parameters"]), "and the body's node is its own");
-    return Task.CompletedTask;
-});
 
 await t.Run("SSE reader: event names, multi-line data, comments, CRLF, missing separators, [DONE], EOF", async () =>
 {
@@ -583,29 +563,6 @@ await t.Run("responses: request body (instructions, tools, effort, max tokens, i
     t.Check(!req.Headers.ContainsKey("authorization"), "no auth header without apiKey");
 });
 
-await t.Run("responses: replayReasoning replays reasoning items (live settings)", async () =>
-{
-    apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", true);
-    apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", true);
-    try
-    {
-        await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
-        var b = mock.Last("/v1/responses").Json;
-        var r = b["input"]![1]!;
-        t.Eq("reasoning", r["type"]!.GetValue<string>(), "reasoning item");
-        t.Eq("rs_9", r["id"]?.GetValue<string>(), "reasoning id");
-        t.Eq("I should read", r["content"]![0]!["text"]!.GetValue<string>(), "reasoning_text");
-        t.Eq("E9", r["encrypted_content"]?.GetValue<string>(), "encrypted_content");
-        t.Eq("reasoning.encrypted_content", b["include"]?[0]?.GetValue<string>(), "include");
-        t.Check(b["reasoning"] is null, "no effort -> reasoning omitted");
-    }
-    finally
-    {
-        apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", null);
-        apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", null);
-    }
-});
-
 await t.Run("decision context: provider snapshot keeps the exact chat prefix, tools and resolved effort", async () =>
 {
     apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
@@ -625,7 +582,9 @@ await t.Run("decision context: provider snapshot keeps the exact chat prefix, to
     finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", null); }
 });
 
-await t.Run("responses: reasoning is replayed by default (standard stateless usage), chat does not replay it", async () =>
+// Replaying reasoning is the Responses default (stateless use): it used to be a setting each test turned on, which no
+// longer changed anything. includeEncryptedReasoning is the live setting that remains.
+await t.Run("responses: reasoning is replayed by default (id, text, encrypted content), include only when asked, chat does not replay it", async () =>
 {
     await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
     var input = mock.Last("/v1/responses").Json["input"]!.AsArray();
@@ -633,6 +592,21 @@ await t.Run("responses: reasoning is replayed by default (standard stateless usa
     t.Eq("user,reasoning,message,function_call,function_call,function_call_output,function_call_output,user,user",
         string.Join(",", input.Select(Kind)), "reasoning → message → function calls");
     t.Check(mock.Last("/v1/responses").Json["include"] is null, "no include by default");
+
+    apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", true);   // read live, on the next request
+    try
+    {
+        await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
+        var b = mock.Last("/v1/responses").Json;
+        var r = b["input"]![1]!;
+        t.Eq("reasoning", r["type"]!.GetValue<string>(), "reasoning item");
+        t.Eq("rs_9", r["id"]?.GetValue<string>(), "reasoning id");
+        t.Eq("I should read", r["content"]![0]!["text"]!.GetValue<string>(), "reasoning_text");
+        t.Eq("E9", r["encrypted_content"]?.GetValue<string>(), "encrypted_content");
+        t.Eq("reasoning.encrypted_content", b["include"]?[0]?.GetValue<string>(), "include, once asked for");
+        t.Check(b["reasoning"] is null, "no effort -> reasoning omitted");
+    }
+    finally { apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", null); }
 
     apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
     try
@@ -1053,7 +1027,7 @@ await t.Run("chat: images dropped for a text-only catalog model (aiproxy gemma-4
 
 // Both aiproxy transports and OpenRouter sent the catalog's output maximum whatever the prompt left of the window,
 // so a model whose window is smaller than that failed every call until compaction ran (idea-begg3v).
-await t.Run("max_tokens is clamped to the window beside the request (all three transports)", async () =>
+await t.Run("max_tokens is clamped to the window beside the request (aiproxy chat and responses; OpenRouter has its own)", async () =>
 {
     var model = M("vllm", "narrow");
     model.ContextWindow = 16_384;
