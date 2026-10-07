@@ -14,6 +14,11 @@ internal static class McpFixture
         var counter = args.Length > 1 ? args[1] : null;
         // "ping": the server pings the client before it answers the first tools/call, and echoes the client's reply in the result.
         var pong = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // "slow": the first handshake answer comes after 2.5 s (a LAN host on a bad day: the connection is slow, not broken).
+        // Once: the discovery probe gives up after a second and the client falls back to initialize, which a second delay
+        // only made the test wait for again.
+        var slow = mode == "slow";
+        async Task SlowOnce() { if (slow) { slow = false; await Task.Delay(2500); } }
         async Task Send(JsonObject message) { await write.WaitAsync(); try { await Console.Out.WriteLineAsync(message.ToJsonString()); } finally { write.Release(); } }
         JsonObject Reply(JsonObject request, JsonObject result) => new() { ["jsonrpc"]="2.0", ["id"]=request["id"]?.DeepClone(), ["result"]=result };
         // A tool whose arguments are typed the way a remote schema usually types them.
@@ -35,7 +40,7 @@ internal static class McpFixture
             if (request["id"] is null) continue;
             if (method == "server/discover")
             {
-                if (mode == "slow") await Task.Delay(2500); // a LAN host on a bad day: the connection is slow, not broken
+                await SlowOnce();
                 if (mode == "legacy") await Send(new JsonObject { ["jsonrpc"]="2.0", ["id"]=request["id"]?.DeepClone(), ["error"]=new JsonObject { ["code"]=-32601, ["message"]="Unknown method" } });
                 else await Send(Reply(request, new JsonObject { ["supportedVersions"]=new JsonArray("2026-07-28"),
                     ["capabilities"]=ResourcesOnly(mode)
@@ -44,7 +49,7 @@ internal static class McpFixture
                                            ["resources"]=new JsonObject { ["subscribe"]=false, ["listChanged"]=mode=="resources-subscribe" } },
                     ["instructions"]="UNTRUSTED_SERVER_INSTRUCTIONS" }));
             }
-            else if (method == "initialize") { if (mode == "slow") await Task.Delay(2500); await Send(Reply(request, new JsonObject { ["protocolVersion"]="2025-11-25", ["capabilities"]=new JsonObject { ["tools"]=new JsonObject() } })); }
+            else if (method == "initialize") { await SlowOnce(); await Send(Reply(request, new JsonObject { ["protocolVersion"]="2025-11-25", ["capabilities"]=new JsonObject { ["tools"]=new JsonObject() } })); }
             else if (method == "tools/list")
             {
                 var count = int.TryParse(mode, out var size) ? size : mode == "large" ? 250 : 1;
