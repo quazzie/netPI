@@ -30,6 +30,8 @@ public static class CoordinatorTests
         return (h, h.Sessions.CreateProject("MarioV3", dir));
     }
 
+    private const string NL = "\n";
+
     private static int Chats(TestHost h) => h.Sessions.ListSessions(new SessionQuery { Limit = 500 }).Count;
 
     private static async Task<RpcException> Refused(TestHost h, object p)
@@ -113,7 +115,7 @@ public static class CoordinatorTests
     {
         var (h, _) = await Start();
         await using var _h = h;
-        h.AddTool(new FakeTool("work", (c, a, ct) => Task.FromResult(ToolResult.Ok("worked"))));
+        h.AddTool(new FakeTool("work", (c, a, ct) => Task.FromResult(ToolResult.Ok("building" + NL + "12 passed, 2 failed, 0 skipped, 14 total in 3.1s" + NL + "worked"))));
         var calls = 0;
         h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref calls) switch
         {
@@ -143,6 +145,19 @@ public static class CoordinatorTests
         Check.Equal("encode", (string?)res["todo"]!["current"]);
         Check.True(res["durationMs"]!.GetValue<long>() >= 0);
         Check.Equal(0, ((JsonArray)res["commits"]!).Count, "not a repository: no commits");
+        Check.Equal("12 passed, 2 failed, 0 skipped, 14 total in 3.1s", (string?)res["tests"]!["line"], "the latest test tally in the run's tool output");
+        Check.Equal("work", (string?)res["tests"]!["tool"]);
+        Check.Equal(true, (bool?)res["tests"]!["failed"]);
+
+        // the tallies other runners print, and which of them count a failure
+        static ChatMessage Out(string text) => new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { Name = "bash", CallId = "c", Content = text }] };
+        static JsonNode? Summary(params string[] outputs) => NetPiJson.ToNode(NetPI.Coordinator.Coordinator.TestSummary([.. outputs.Select(Out)]));
+        Check.Equal(null, Summary("built in 3s", "no tests here"));
+        Check.Equal(false, (bool?)Summary("Passed!  - Failed:     0, Passed:   123, Skipped:     0, Total:   123")!["failed"]);
+        Check.Equal(true, (bool?)Summary("Failed!  - Failed:     2, Passed:    10, Skipped:     0, Total:    12")!["failed"]);
+        Check.Equal(true, (bool?)Summary("Tests:       2 failed, 10 passed, 12 total")!["failed"]);
+        Check.Equal(false, (bool?)Summary("test result: ok. 12 passed; 0 failed; 0 ignored")!["failed"]);
+        Check.Equal("=== 10 passed in 1.20s ===", (string?)Summary("=== 3 failed, 10 passed in 1.20s ===", "=== 10 passed in 1.20s ===")!["line"], "the newest tally wins");
 
         var byRun = (await h.Rpc.CallAsync("runs.result", new { runId = (string)res["runId"]! }))!;
         Check.Equal(sid, (string?)byRun["sessionId"]);

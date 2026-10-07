@@ -1029,6 +1029,15 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
       publishQueue(sid);
       return true;
     },
+    /** agent.promote: a queued follow-up becomes a steer, read at the run's next step. */
+    promote(sid, id) {
+      const q = queueOf(sid);
+      const i = q.findIndex((x) => x.id === id);
+      if (i < 0 || q[i].mode !== 'queue' || (q[i].source ?? 'user') !== 'user') return false;
+      q[i] = { ...q[i], mode: 'steer' };
+      publishQueue(sid);
+      return true;
+    },
   };
 }
 

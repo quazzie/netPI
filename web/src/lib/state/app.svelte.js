@@ -613,6 +613,18 @@ export async function abortAgent(sessionId) {
   }
 }
 
+/**
+ * "Steer now" on a follow-up that waits behind a long run: it is delivered at the run's next step instead of after the
+ * run (agent.promote); the queue event that follows turns the chip into a steer (idea-equiw4).
+ */
+export async function promoteQueued(sessionId, id) {
+  try {
+    if (!(await rpc('agent.promote', { sessionId, id }))) toast('That message is no longer waiting in the queue.', 'warn');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
 export async function dequeue(sessionId, id) {
   try {
     await rpc('agent.dequeue', { sessionId, id });

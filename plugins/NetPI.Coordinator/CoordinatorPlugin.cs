@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Coordinator;
@@ -24,12 +25,13 @@ public sealed class CoordinatorPlugin : INetPiPlugin
             "{{workspacePath}}, {{branch}}, {{workspaceName}}, {{sessionId}}, {{projectPath}} in the text are filled in");
         context.Rpc.RegisterReadOnly("runs.result", (req, token) => c.ResultAsync(req, token),
             "A chat's last run in one answer: { sessionId | runId } → { sessionId, title, status, startedAt, finishedAt, durationMs, turns, toolCalls, " +
-            "error, queued, report (the run's last assistant text), lastTool, todo: { done, total, current, items }, commits (made on its workspace since the run started), workspace }");
+            "error, queued, report (the run's last assistant text), lastTool, todo: { done, total, current, items }, commits (made on its workspace since the run started), " +
+            "tests (the latest test tally in the run's tool output: { line, tool, at, failed }), workspace }");
         return Task.CompletedTask;
     }
 }
 
-internal sealed class Coordinator(IPluginContext ctx)
+internal sealed partial class Coordinator(IPluginContext ctx)
 {
     /// <summary>The largest brief a dispatch reads from <c>textFile</c>.</summary>
     public const int MaxTextFileBytes = 1024 * 1024;
@@ -273,7 +275,40 @@ internal sealed class Coordinator(IPluginContext ctx)
                 items = todoItems,
             },
             commits,
+            tests = TestSummary(messages),
             workspace,
         };
+    }
+
+    // A test runner's tally: "195 passed, 0 failed" (NetPI's suites), "Passed!  - Failed: 0, Passed: 12" (dotnet test),
+    // "Tests: 2 failed, 10 passed" (jest), "test result: ok. 12 passed" (cargo), "3 failed, 10 passed in 1.2s" (pytest).
+    [GeneratedRegex(@"\b\d+\s+(passed|failed|passing|failing)\b|\b(Passed|Failed)\s*:\s*\d+|\btest result: (ok|FAILED)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex Tally();
+
+    [GeneratedRegex(@"(?<n>\d+)\s+(failed|failing)\b|\bFailed\s*:\s*(?<n>\d+)", RegexOptions.IgnoreCase)]
+    private static partial Regex FailedCount();
+
+    /// <summary>
+    /// The latest test summary in the run's tool output (idea-equiw4): the last tally line of the newest tool result that
+    /// has one, with the tool, when, and whether it counts a failure. A coordinator reads "green", "red" or "no tests yet"
+    /// from it at turn 250 without reading the transcript. Null when the run ran no tests that printed a tally.
+    /// </summary>
+    internal static object? TestSummary(IReadOnlyList<ChatMessage> messages)
+    {
+        for (var i = messages.Count - 1; i >= 0; i--)
+            foreach (var result in messages[i].ToolResults.Reverse())
+            {
+                if (string.IsNullOrEmpty(result.Content)) continue;
+                string? line = null;
+                foreach (var candidate in result.Content.Split('\n'))
+                    if (candidate.Length <= 2000 && Tally().IsMatch(candidate)) line = candidate;
+                if (line is null) continue;
+                line = line.Trim();
+                if (line.Length > 240) line = line[..240] + "…";
+                var failed = FailedCount().Matches(line).Any(m => int.TryParse(m.Groups["n"].Value, out var n) && n > 0)
+                    || line.Contains("test result: FAILED", StringComparison.OrdinalIgnoreCase) || line.Contains("Failed!", StringComparison.Ordinal);
+                return new { line, tool = result.Name, at = messages[i].CreatedAt, failed };
+            }
+        return null;
     }
 }

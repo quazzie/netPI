@@ -770,6 +770,7 @@ const handlers = {
   },
   'agent.queue': (p) => agent.queue(need(p, 'sessionId')),
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),
+  'agent.promote': (p) => agent.promote(need(p, 'sessionId'), need(p, 'id')),
   // the background idea checks the Diagnostics tab's Ideas view reads via ideas.work (eleven in run order, oldest first — the view keeps the last 10)
   'ideas.work': () => ideasWorkList(),
   // like the Work plugin: agents.list, runs.list, processes.list and usage.summary
@@ -1207,6 +1208,7 @@ ${agent.plan.markdown(id)}` });
 
   // --- MCP plugin (plugins/NetPI.Mcp): the two seeded servers above
   'mcp.list': () => mcpSnapshot(),
+  'mcp.config': (p) => ({ id: p.id, config: structuredClone(mcpServer(p.id).config) }),
   'mcp.tools': (p = {}) => ({ tools: (p.serverId ? [mcpServer(p.serverId)] : mcpServers).flatMap(mcpTools) }),
   'mcp.tool': (p) => {
     const id = need(p, 'id');
