@@ -99,7 +99,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["action"] = Enum([.. Actions.Select(a => a.Action)]),
+                ["action"] = Enum([.. Actions.Select(a => a.Action)], "what to inspect"),
                 ["limit"] = Int("how many entries, newest first (the method's own default when omitted)"),
                 ["sessionId"] = Str("a session; the calling one for calls, tools, journal, run, toolsets and messages, \"all\" for none"),
                 ["runId"] = Str("calls: only one run (its agent id)"),
@@ -252,14 +252,24 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         return o;
     }
 
-    private static JsonObject Enum(string[] values, string? description = null) => new()
+    // A null description would be sent as "description": null, which strict providers reject outright (HTTP 400).
+    private static JsonObject Typed(string type, string? description)
     {
-        ["type"] = "string", ["description"] = description, ["enum"] = new JsonArray(values.Select(v => (JsonNode?)v).ToArray()),
-    };
+        var o = new JsonObject { ["type"] = type };
+        if (!string.IsNullOrEmpty(description)) o["description"] = description;
+        return o;
+    }
 
-    private static JsonObject Str(string? description = null) => new() { ["type"] = "string", ["description"] = description };
+    private static JsonObject Enum(string[] values, string? description = null)
+    {
+        var o = Typed("string", description);
+        o["enum"] = new JsonArray(values.Select(v => (JsonNode?)v).ToArray());
+        return o;
+    }
 
-    private static JsonObject Int(string? description = null) => new() { ["type"] = "integer", ["description"] = description };
+    private static JsonObject Str(string? description = null) => Typed("string", description);
 
-    private static JsonObject Bool(string? description = null) => new() { ["type"] = "boolean", ["description"] = description };
+    private static JsonObject Int(string? description = null) => Typed("integer", description);
+
+    private static JsonObject Bool(string? description = null) => Typed("boolean", description);
 }
