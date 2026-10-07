@@ -36,7 +36,7 @@ export function cadenceChanged(a, b) {
 /** The row's right-hand label: "in 3 h", "tomorrow 07:30", "overdue", "paused", "finished" or "–". */
 export function describeNext(s, now) {
   if (s.finishedAt) return 'finished';
-  if (!s.enabled) return 'paused';
+  if (!s.enabled) return s.proposedBy ? 'proposed' : 'paused';
   if (!s.nextRunAt) return '–';
   const t = Date.parse(s.nextRunAt);
   if (Number.isNaN(t)) return '–';
@@ -70,6 +70,8 @@ export function ago(iso, now) {
  */
 export function rowState(s, running, now) {
   if (s.finishedAt) return { key: 'finished', label: 'finished', tone: 'cancelled' };
+  // an agent added or changed it: it runs once the user enables it (idea-96bh9b)
+  if (!s.enabled && s.proposedBy) return { key: 'proposed', label: 'proposed by an agent: enable it to run', tone: 'warn' };
   if (!s.enabled) return { key: 'paused', label: 'paused', tone: 'cancelled' };
   if (s.lastSessionId && running.has(s.lastSessionId)) return { key: 'running', label: 'running', tone: 'running' };
   if (s.lastStatus === 'failed') return { key: 'failed', label: 'failed' + (s.lastReason ? `: ${short(s.lastReason)}` : ''), tone: 'error' };
@@ -86,7 +88,7 @@ export function rowState(s, running, now) {
  */
 export function reasonKind(reason) {
   const r = String(reason ?? '');
-  if (/previous run .* is still going/.test(r)) return 'running';
+  if (/previous run .* is still going|another start of it is under way/.test(r)) return 'running';
   if (/budget is exhausted/.test(r)) return 'budget';
   if (/agent \S+ (does not exist|is disabled|is unavailable)|no agent is available/.test(r)) return 'agent';
   if (/project \S+ no longer exists/.test(r)) return 'project';

@@ -25,18 +25,20 @@ public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCal
         Category = "schedules",
         SummaryArg = "action",
         ReadOnly = false,
-        Description = "Prompts that start on their own as a fresh chat: list, get, history, add, update (also pause/resume), run now. The user sees them in the Schedules tab.",
+        Description = "Prompts that start on their own as a fresh chat: list, get, history, add, update (also pause), run now. The user sees them in the Schedules tab, and enables what you add or change.",
         PromptGuidelines =
         [
-            "Use the schedules tool to set up recurring or one-time prompts the user asks for (\"every morning\", \"tonight at 22:00\"); list first to avoid duplicates.",
+            "Use the schedules tool to set up recurring or one-time prompts the user asks for (\"every morning\", \"tonight at 22:00\"); list first to avoid duplicates, and tell the user to enable what you add in the Schedules tab.",
         ],
         Help = """
             Actions:
             - list: every schedule (or only one project's, with projectId), one line each.
             - get: one schedule by id, with its full prompt.
             - history: a schedule's runs, newest first (limit, default 20): what ran, and why a run was skipped.
-            - add: a new schedule. Needs prompt and cadence; the name defaults to the prompt's start, the project to this chat's.
-            - update: change a schedule (prompt, name, cadence, project, agent) or pause/resume it with enabled false/true.
+            - add: propose a new schedule. Needs prompt and cadence; the name defaults to the prompt's start, the project to this
+              chat's. It is paused until the user enables it in the Schedules tab: a schedule runs on its own with every tool.
+            - update: change a schedule (prompt, name, cadence, project, agent) or pause it with enabled false. A change of what
+              runs (prompt, cadence, project, agent) pauses it until the user enables it again; resuming is the user's.
               Changing the cadence counts the next run from now.
             - run: start a schedule's run now, beside its cadence.
 
@@ -73,7 +75,7 @@ public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCal
                 },
                 ["projectId"] = new JsonObject { ["type"] = "string", ["description"] = "add/update/list: a project id or name; add defaults to this chat's project; \"\" = none" },
                 ["agent"] = new JsonObject { ["type"] = "string", ["description"] = "add/update: an agent key, \"any\", or \"\" to clear" },
-                ["enabled"] = new JsonObject { ["type"] = "boolean", ["description"] = "add/update: false pauses, true resumes" },
+                ["enabled"] = new JsonObject { ["type"] = "boolean", ["description"] = "update: false pauses (enabling is the user's, in the Schedules tab)" },
                 ["limit"] = new JsonObject { ["type"] = "integer", ["description"] = "history: how many runs (default 20)" },
             },
         },
@@ -184,13 +186,16 @@ public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCal
             return ToolResult.Error($"There are already {MaxSchedules} schedules; ask the user to delete some (the Schedules tab) before adding more.");
         var p = new JsonObject { ["prompt"] = a.Str("prompt"), ["cadence"] = Cadence(a) };
         Fill(p, a, forcedEnabled, projectIdDefault: context.Project?.Id);
+        p.Remove("enabled");
+        p["proposedBy"] = Proposer(context);
         var s = await RpcAsync<JsonObject>("schedules.add", p, ct).ConfigureAwait(false);
         var now = DateTimeOffset.Now;
         var project = await ProjectNameAsync(s["projectId"]?.GetValue<string>(), ct).ConfigureAwait(false);
         return ToolResult.Ok(
-            $"Added schedule {s["id"]?.GetValue<string>()} “{s["name"]?.GetValue<string>()}” ({s["when"]?.GetValue<string>()}); " +
-            $"next run {Local(s["nextRunAt"]?.GetValue<string>())}. Now is {Stamp(now)}. Each run starts a fresh chat on project {project}.",
-            new { kind = "schedule", schedule = s, created = true });
+            $"Proposed schedule {s["id"]?.GetValue<string>()} “{s["name"]?.GetValue<string>()}” ({s["when"]?.GetValue<string>()}): it does not run " +
+            "until the user enables it in the Schedules tab, so tell them it is there. A schedule runs on its own with every tool, which is why " +
+            $"one an agent sets up waits for the user's OK. Now is {Stamp(now)}. Each run starts a fresh chat on project {project}.",
+            new { kind = "schedule", schedule = s, created = true, proposed = true });
     }
 
     private async Task<ToolResult> UpdateAsync(ToolContext context, ToolArgs a, bool? forcedEnabled, CancellationToken ct)
@@ -203,14 +208,25 @@ public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCal
             if (!string.Equals(id, own, StringComparison.Ordinal) || (forcedEnabled ?? a.Bool("enabled") ?? true))
                 return ToolResult.Error("A scheduled run may only pause its own schedule (action update, id its own schedule, enabled false).");
         }
+        // Enabling (resuming) is the user's OK: a schedule runs unattended with every tool (idea-96bh9b).
+        if ((forcedEnabled ?? a.Bool("enabled")) == true)
+            return ToolResult.Error("Enabling or resuming a schedule is up to the user, in the Schedules tab; tell them which one. You may pause one (enabled false).");
         var p = new JsonObject { ["id"] = id };
         Fill(p, a, forcedEnabled);
+        p["proposedBy"] = Proposer(context);
         var s = await RpcAsync<JsonObject>("schedules.update", p, ct).ConfigureAwait(false);
-        var changed = p.Select(kvp => kvp.Key).Where(k => k != "id").ToList();
+        var changed = p.Select(kvp => kvp.Key).Where(k => k is not ("id" or "proposedBy")).ToList();
+        var proposed = s["proposedBy"] is not null && !Enabled(s);
         return ToolResult.Ok(
-            $"Updated {id}: {string.Join(", ", changed.DefaultIfEmpty("enabled"))}. {(Enabled(s) ? "enabled" : "paused")}; next run {Local(s["nextRunAt"]?.GetValue<string>())}.",
-            new { kind = "schedule", schedule = s });
+            $"Updated {id}: {string.Join(", ", changed.DefaultIfEmpty("enabled"))}. " +
+            (proposed
+                ? "It is paused as a proposal until the user enables it again in the Schedules tab (a change of what a schedule runs waits for their OK): tell them."
+                : $"{(Enabled(s) ? "enabled" : "paused")}; next run {Local(s["nextRunAt"]?.GetValue<string>())}."),
+            new { kind = "schedule", schedule = s, proposed });
     }
+
+    /// <summary>Who proposes a change: the chat the tool runs in.</summary>
+    private static string Proposer(ToolContext context) => "session:" + context.SessionId;
 
     private async Task<ToolResult> RunOneAsync(ToolContext context, ToolArgs a, CancellationToken ct)
     {
@@ -231,9 +247,22 @@ public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCal
         };
     }
 
-    /// <summary>The schedule that started this chat (meta.schedule), or null for an ordinary one.</summary>
-    private string? OwnSchedule(ToolContext context) =>
-        _ctx.Sessions.GetSession(context.SessionId)?.Meta?["schedule"]?.GetValue<string>();
+    /// <summary>
+    /// The schedule that started this chat (meta.schedule), or the chat a subagent works for (its parents, up to eight levels), or
+    /// null for an ordinary one. A subagent of a scheduled run inherits its parent's tools, schedules included, and its own session
+    /// carries no schedule mark: reading only its own let it grow the set the run itself may not (idea-96bh9b).
+    /// </summary>
+    private string? OwnSchedule(ToolContext context)
+    {
+        var id = context.SessionId;
+        for (var i = 0; i < 8 && !string.IsNullOrEmpty(id); i++)
+        {
+            var session = _ctx.Sessions.GetSession(id);
+            if (session?.Meta?["schedule"] is JsonValue v && v.TryGetValue<string>(out var schedule) && schedule.Length > 0) return schedule;
+            id = session?.ParentSessionId;
+        }
+        return null;
+    }
 
     // --- shared helpers ---------------------------------------------------------
 
@@ -298,7 +327,8 @@ public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCal
     /// <summary>One schedule as the model reads it: id · name · when · state · next · last.</summary>
     private static string Line(JsonObject s, DateTimeOffset now)
     {
-        var state = s["finishedAt"] is not null ? "finished" : Enabled(s) ? "enabled" : "paused";
+        var state = s["finishedAt"] is not null ? "finished" : Enabled(s) ? "enabled"
+            : s["proposedBy"] is not null ? "proposed (the user enables it)" : "paused";
         var last = s["lastStatus"]?.GetValue<string>() is { } st
             ? st + (s["lastReason"]?.GetValue<string>() is { Length: > 0 } r ? $": {r}" : "") + " " + Ago(s["lastRunAt"]?.GetValue<string>(), now)
             : "never";

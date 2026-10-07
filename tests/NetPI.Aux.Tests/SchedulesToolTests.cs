@@ -92,17 +92,51 @@ public static class SchedulesToolTests
             Check.Contains(noAgent.Content, "nobody");
         });
 
-        r.Add("schedules tool: update pauses, and a cadence change alone resumes a paused schedule (the server behaviour the form works around)", async () =>
+        // A schedule runs unattended with every tool: a model may pause one, but what it changes waits for the user (idea-96bh9b).
+        r.Add("schedules tool: update pauses; a change of what runs is a proposal the user enables, and the tool never enables", async () =>
         {
             var env = await new SchedulesTests.Env().StartAsync();
             var id = S((await env.Add(new { kind = "every", minutes = 60 }))["id"])!;
             var paused = await Call(env, new { action = "update", id, enabled = false });
             Check.False(paused.IsError, paused.Content);
             Check.Contains(paused.Content, "paused");
+            var resume = await Call(env, new { action = "resume", id });
+            Check.True(resume.IsError, "resuming is the user's");
+            Check.Contains(resume.Content, "up to the user");
 
-            var resumed = await Call(env, new { action = "update", id, cadence = new { kind = "every", minutes = 30 } });
-            Check.False(resumed.IsError, resumed.Content);
-            Check.Contains(resumed.Content, "enabled", "the server resumes on a cadence change");
+            await env.Ctx.RpcFake.CallAsync("schedules.update", new { id, enabled = true });   // the user resumes it
+            var changed = await Call(env, new { action = "update", id, prompt = "Something else" });
+            Check.False(changed.IsError, changed.Content);
+            Check.Contains(changed.Content, "proposal");
+            var s = await env.Get(id);
+            Check.False(s["enabled"]!.GetValue<bool>(), "a change of what runs pauses it");
+            Check.Equal("session:ses_tool", S(s["proposedBy"]), "as the calling chat's proposal");
+            var cadence = await Call(env, new { action = "update", id, cadence = new { kind = "every", minutes = 30 } });
+            Check.False(cadence.IsError, cadence.Content);
+            Check.False((await env.Get(id))["enabled"]!.GetValue<bool>(), "a cadence change does not resume it either");
+
+            await env.Ctx.RpcFake.CallAsync("schedules.update", new { id, enabled = true });   // the user's OK
+            s = await env.Get(id);
+            Check.True(s["enabled"]!.GetValue<bool>() && s["proposedBy"] is null, "enabling it is the approval");
+            var renamed = await Call(env, new { action = "update", id, name = "Renamed" });
+            Check.False(renamed.IsError, renamed.Content);
+            Check.True((await env.Get(id))["enabled"]!.GetValue<bool>(), "a new name does not change what runs");
+        });
+
+        r.Add("schedules tool: an add is a proposal: paused until the user enables it, and listed as proposed", async () =>
+        {
+            var env = await new SchedulesTests.Env().StartAsync();
+            var added = await Call(env, new { action = "add", prompt = "Daily digest", cadence = new { kind = "every", minutes = 60 }, enabled = true });
+            Check.False(added.IsError, added.Content);
+            Check.Contains(added.Content, "until the user enables it");
+            var s = ((JsonNode)JsonSerializer.SerializeToNode(added.Details)!)["schedule"]!;
+            Check.False(s["enabled"]!.GetValue<bool>(), "paused, even when the model asked for enabled");
+            Check.Equal("session:ses_tool", S(s["proposedBy"]));
+            Check.Contains((await Call(env, new { action = "list" })).Content, "proposed");
+            env.Time.Advance(TimeSpan.FromHours(3));
+            Check.Equal(0, await env.Tick(), "a proposal does not run");
+            await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.CallAsync("schedules.update",
+                new { id = S(s["id"]), enabled = true, proposedBy = "session:ses_tool" }), "a proposer cannot enable one through the RPC either");
         });
 
         r.Add("schedules tool: run starts a chat, and an unavailable agent is a skipped error the model reads as a refusal", async () =>
@@ -163,6 +197,13 @@ public static class SchedulesToolTests
             Check.Contains(notOwn.Content, "only pause its own");
             var selfChange = await Call(env, new { action = "update", id = own, prompt = "new" }, session: digest);
             Check.True(selfChange.IsError, "anything but pausing itself is refused");
+
+            // a subagent of the run inherits its tools, and its own session carries no schedule mark (idea-96bh9b)
+            var child = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "worker", Kind = "subagent", ParentSessionId = digest.Id });
+            var childAdd = await Call(env, new { action = "add", prompt = "x", cadence = new { kind = "every", minutes = 60 } }, session: child);
+            Check.True(childAdd.IsError, "the run's subagent cannot grow the set either");
+            Check.Contains(childAdd.Content, "cannot create");
+            Check.True((await Call(env, new { action = "run", id = other }, session: child)).IsError, "nor start a schedule");
         });
 
         r.Add("schedules tool: the set is capped, so a runaway add loop stops at the cap", async () =>

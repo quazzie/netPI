@@ -113,11 +113,11 @@ public sealed class SchedulesPlugin : INetPiPlugin
             [RpcParam.Opt("id", RpcParamType.String, "one schedule's; all when omitted"), RpcParam.Opt("limit", RpcParamType.Integer)]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.History(req.Str("id"), Math.Clamp(req.Int("limit") ?? 50, 1, 500)).Select(d => (JsonNode)d)])));
 
-        ctx.Rpc.Register(new RpcMethod("schedules.add", "Add a schedule: { prompt, cadence, name?, projectId?, agent? (an agent key or \"any\"), enabled? (true) } → Schedule. The prompt starts a fresh chat on the project at each run",
+        ctx.Rpc.Register(new RpcMethod("schedules.add", "Add a schedule: { prompt, cadence, name?, projectId?, agent? (an agent key or \"any\"), enabled? (true), proposedBy? } → Schedule. The prompt starts a fresh chat on the project at each run. proposedBy (the schedules tool sets it: who proposed it) stores it paused, as a proposal the user enables in the Schedules tab",
             Params:
             [
                 RpcParam.Req("prompt"), RpcParam.Req("cadence", RpcParamType.Object), RpcParam.Opt("name"), RpcParam.Opt("projectId"),
-                RpcParam.Opt("agent"), RpcParam.Opt("enabled", RpcParamType.Boolean),
+                RpcParam.Opt("agent"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
             async (req, ct) =>
             {
@@ -127,6 +127,9 @@ public sealed class SchedulesPlugin : INetPiPlugin
                 var projectId = await ProjectAsync(ctx, req.Str("projectId")).ConfigureAwait(false);
                 var agent = await AgentAsync(ctx, req.Str("agent"), ct).ConfigureAwait(false);
                 if (cadence.Kind == Cadence.Once && cadence.At <= now) throw new RpcException("bad_request", "a once cadence must be in the future");
+                // A schedule an agent sets up runs unattended with the full tool set, so it waits for the user's OK: a prompt
+                // injected into a chat must not be able to make itself recurring (idea-96bh9b).
+                var proposedBy = Proposer(req);
                 var doc = new JsonObject
                 {
                     ["id"] = Ids.New("sch"),
@@ -135,21 +138,22 @@ public sealed class SchedulesPlugin : INetPiPlugin
                     ["projectId"] = projectId,
                     ["agent"] = agent,
                     ["cadence"] = cadence.ToJson(),
-                    ["enabled"] = req.Bool("enabled") ?? true,
+                    ["enabled"] = proposedBy is null && (req.Bool("enabled") ?? true),
                     ["createdAt"] = ScheduleStore.Iso(now),
                     ["updatedAt"] = ScheduleStore.Iso(now),
                 };
+                if (proposedBy is not null) doc["proposedBy"] = proposedBy;
                 ScheduleStore.SetNext(doc, cadence.First(now));
                 store.Put(doc);
                 Changed(ctx, doc["id"]!.GetValue<string>());
                 return Shown(doc);
             });
 
-        ctx.Rpc.Register(new RpcMethod("schedules.update", "Change a schedule: { id, prompt?, cadence?, name?, projectId? (\"\" clears), agent? (\"\" clears), enabled? } → Schedule. enabled: false pauses it, true resumes it from now (a finished once needs a new cadence)",
+        ctx.Rpc.Register(new RpcMethod("schedules.update", "Change a schedule: { id, prompt?, cadence?, name?, projectId? (\"\" clears), agent? (\"\" clears), enabled?, proposedBy? } → Schedule. enabled: false pauses it, true resumes it from now (a finished once needs a new cadence) and approves a proposed one. proposedBy (the schedules tool sets it): a change of what runs (prompt, cadence, project, agent) pauses the schedule as a proposal for the user, and it cannot enable one",
             Params:
             [
                 RpcParam.Req("id"), RpcParam.Opt("prompt"), RpcParam.Opt("cadence", RpcParamType.Object), RpcParam.Opt("name"),
-                RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("enabled", RpcParamType.Boolean),
+                RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
             async (req, ct) =>
             {
@@ -182,6 +186,18 @@ public sealed class SchedulesPlugin : INetPiPlugin
                         doc["finishedAt"] = null;
                     }
                     var enabled = req.Bool("enabled") ?? (cadenceChanged || wasEnabled);
+                    // An agent's change of what runs waits for the user like a schedule it adds, and it never enables one: that
+                    // is the user's OK. The user enabling a proposal is that OK (idea-96bh9b).
+                    if (Proposer(req) is { } proposer)
+                    {
+                        if (req.Bool("enabled") == true) throw new RpcException("bad_request", "an agent cannot enable a schedule: the user does, in the Schedules tab");
+                        if (req.Str("prompt") is not null || cadenceChanged || req.Str("projectId") is not null || req.Str("agent") is not null)
+                        {
+                            enabled = false;
+                            doc["proposedBy"] = proposer;
+                        }
+                    }
+                    else if (enabled) doc.Remove("proposedBy");
                     if (enabled && doc["finishedAt"] is not null) throw new RpcException("bad_request", "this once schedule has run; give it a new cadence to run again");
                     doc["enabled"] = enabled;
                     // a new cadence or a resume counts from now: a paused schedule does not owe the runs it slept through
@@ -211,6 +227,9 @@ public sealed class SchedulesPlugin : INetPiPlugin
     }
 
     private static int MinMinutes(IPluginContext ctx) => Math.Clamp(ctx.Settings.Get("schedules.minIntervalMinutes", 5), 1, 1440);
+
+    /// <summary>Who proposed the change (<c>proposedBy</c>: the schedules tool names the chat), or null for the user's own.</summary>
+    private static string? Proposer(RpcRequest req) => req.Str("proposedBy")?.Trim() is { Length: > 0 } by ? by : null;
 
     private static JsonObject Require(ScheduleStore store, string id) =>
         store.Get(id) ?? throw new RpcException("not_found", $"Schedule {id} not found");

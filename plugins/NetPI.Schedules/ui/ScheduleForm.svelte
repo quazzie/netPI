@@ -109,7 +109,8 @@
   <div class="f-head">
     <div class="f-title np-strong">{editing ? 'Edit schedule' : 'New schedule'}</div>
     <label class="np-check f-enabled"
-      title={schedule?.finishedAt ? 'This one-time schedule has run; it stays off until you give it a new time' : ''}>
+      title={schedule?.finishedAt ? 'This one-time schedule has run; it stays off until you give it a new time'
+        : schedule?.proposedBy && !schedule.enabled ? 'An agent proposed this schedule: enabling it lets it run on its own' : ''}>
       <input type="checkbox" bind:checked={f.enabled} />
       <span>Enabled</span>
     </label>

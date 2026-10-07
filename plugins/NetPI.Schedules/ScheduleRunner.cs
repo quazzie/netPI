@@ -50,6 +50,9 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
         var id = schedule["id"]!.GetValue<string>();
         if (await CheckAsync(schedule, now, ct).ConfigureAwait(false) is { } reason)
             return Finish(schedule, now, Skipped, reason, null);
+        // one start at a time: the check above cannot see a start that has not made its chat yet (idea-96bh9b)
+        if (store.TryClaimStart(id, now) is not { } claim)
+            return Finish(schedule, now, Skipped, StartingReason, null);
 
         var runtime = ctx.Services.Get<IAgentRuntime>()!;
         var name = schedule["name"]?.GetValue<string>() ?? id;
@@ -67,7 +70,7 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return Finish(schedule, now, Failed, "the chat could not be created: " + ex.Message, null);
+            return Finish(schedule, now, Failed, "the chat could not be created: " + ex.Message, null, claim);
         }
         try
         {
@@ -87,10 +90,10 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
             // nothing started: the chat is not left behind
             try { ctx.Sessions.DeleteSession(session.Id); } catch { /* already gone */ }
             ctx.Logger.LogWarning(ex, "Schedule {Schedule}: the run did not start", id);
-            return Finish(schedule, now, Failed, "the run did not start: " + ex.Message, null);
+            return Finish(schedule, now, Failed, "the run did not start: " + ex.Message, null, claim);
         }
         ctx.Logger.LogInformation("Schedule {Schedule} started a run in {Session}", id, session.Id);
-        return Finish(schedule, now, Ran, null, session.Id);
+        return Finish(schedule, now, Ran, null, session.Id, claim);
     }
 
     /// <summary>Why this run must not start now, or null. Nothing here creates or changes anything.</summary>
@@ -132,10 +135,13 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
         return null;
     }
 
-    private RunResult Finish(JsonObject schedule, DateTimeOffset at, string status, string? reason, string? sessionId)
+    /// <summary>The reason a start is skipped while another start of the same schedule is under way.</summary>
+    public const string StartingReason = "another start of it is under way";
+
+    private RunResult Finish(JsonObject schedule, DateTimeOffset at, string status, string? reason, string? sessionId, string? claim = null)
     {
         var id = schedule["id"]!.GetValue<string>();
-        store.Record(id, at, status, reason, sessionId);
+        store.Record(id, at, status, reason, sessionId, claim);
         if (status != Ran) ctx.Logger.LogInformation("Schedule {Schedule}: {Status} — {Reason}", id, status, reason);
         ctx.Events.Publish(RanEvent, new { scheduleId = id, status, reason, sessionId }, sessionId);
         return new RunResult(status, reason, sessionId);

@@ -71,7 +71,11 @@
     }
   }
 
-  const meta = $derived([s.when, projectName, agentLabel, lastSummary].filter(Boolean).join(' · '));
+  const meta = $derived(
+    [state.key === 'proposed' ? 'proposed by an agent' : null, s.when, projectName, agentLabel, state.key === 'proposed' ? null : lastSummary]
+      .filter(Boolean)
+      .join(' · '),
+  );
 </script>
 
 <div class="sch np-hover-row" class:open data-tone={state.tone}>
@@ -97,7 +101,8 @@
     <IconButton
       icon={s.enabled ? 'pause' : 'play'}
       size="sm"
-      title={s.enabled ? 'Pause' : finishedOnce ? 'This one-time schedule has run; edit it to give a new time' : 'Resume'}
+      title={s.enabled ? 'Pause' : finishedOnce ? 'This one-time schedule has run; edit it to give a new time'
+        : s.proposedBy ? 'An agent proposed this: check the prompt, then enable it to let it run' : 'Resume'}
       disabled={busy || (finishedOnce && !s.enabled)}
       onclick={togglePause}
     />

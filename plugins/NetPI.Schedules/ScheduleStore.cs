@@ -80,8 +80,30 @@ internal sealed class ScheduleStore(IPluginData data)
         return claimed;
     });
 
-    /// <summary>What happened to a run: on the schedule (its last*) and as a row of its history.</summary>
-    public void Record(string scheduleId, DateTimeOffset at, string status, string? reason, string? sessionId) => data.Transaction(() =>
+    /// <summary>How long a start claim holds (<see cref="TryClaimStart"/>): a start takes seconds, so an older claim is a crashed one.</summary>
+    public static readonly TimeSpan StartClaim = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Claim the start of a run: the claim's id, or null when another start of the same schedule holds one. The check that the
+    /// previous run is still going reads the chat the last run started, which is written only once a run has started: two starts
+    /// at once (a double click on Run, a click during a tick) both passed it and ran twice (idea-96bh9b). <see cref="Record"/> with
+    /// the claim's id lets go; a start that was refused, or a skip of another start, leaves it to its owner.
+    /// </summary>
+    public string? TryClaimStart(string scheduleId, DateTimeOffset now) => data.Transaction(() =>
+    {
+        if (_schedules.Get(scheduleId) is not { } doc) return null;
+        if (doc["starting"] is JsonObject held && held["at"] is JsonValue v && v.TryGetValue<string>(out var at)
+            && DateTimeOffset.TryParse(at, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var since) && now - since < StartClaim)
+            return null;
+        var claim = Ids.New("start");
+        doc["starting"] = new JsonObject { ["id"] = claim, ["at"] = Iso(now) };
+        _schedules.Put(scheduleId, doc);
+        return (string?)claim;
+    });
+
+    /// <summary>What happened to a run: on the schedule (its last*) and as a row of its history. <paramref name="claim"/>: the start
+    /// claim this run took (<see cref="TryClaimStart"/>), let go here.</summary>
+    public void Record(string scheduleId, DateTimeOffset at, string status, string? reason, string? sessionId, string? claim = null) => data.Transaction(() =>
     {
         if (_schedules.Get(scheduleId) is { } doc)
         {
@@ -89,6 +111,7 @@ internal sealed class ScheduleStore(IPluginData data)
             doc["lastStatus"] = status;
             doc["lastReason"] = reason;
             if (sessionId is not null) doc["lastSessionId"] = sessionId;
+            if (claim is not null && doc["starting"] is JsonObject held && held["id"]?.GetValue<string>() == claim) doc.Remove("starting");
             _schedules.Put(scheduleId, doc);
         }
         var ms = at.ToUnixTimeMilliseconds();

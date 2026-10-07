@@ -8,7 +8,7 @@ namespace NetPI.Schedules;
 /// time zone (<c>daily</c>). Full cron is deliberately not here: these three cover "tonight", "every hour" and "every
 /// morning", and each one's next run is a line of arithmetic a test can check.
 /// </summary>
-internal sealed record Cadence(string Kind, DateTimeOffset? At = null, int? Minutes = null, TimeOnly? Time = null, string? Tz = null)
+internal sealed partial record Cadence(string Kind, DateTimeOffset? At = null, int? Minutes = null, TimeOnly? Time = null, string? Tz = null)
 {
     public const string Once = "once", Every = "every", Daily = "daily";
 
@@ -20,8 +20,14 @@ internal sealed record Cadence(string Kind, DateTimeOffset? At = null, int? Minu
         switch (kind)
         {
             case Once:
-                if (!DateTimeOffset.TryParse(Str(o["at"]), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at))
+                var text = Str(o["at"])?.Trim();
+                if (!DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at))
                     throw Bad("a once cadence needs at: an ISO 8601 time (\"2026-10-04T07:30:00+02:00\")");
+                // A time without its offset was read as UTC, while a daily time without a zone is the machine's: "22:00"
+                // ran at midnight here (idea-96bh9b). Asking for the offset is better than guessing the zone.
+                if (!WithOffset().IsMatch(text!))
+                    throw Bad($"a once time needs its offset, or it is read in the wrong zone: \"{text}\". Write it like " +
+                              $"\"2026-10-04T07:30:00{Offset(DateTimeOffset.Now)}\" (this machine's offset now) or with Z for UTC");
                 return new Cadence(Once, At: at);
             case Every:
                 var minutes = o["minutes"] is JsonValue v && v.TryGetValue<int>(out var m) ? m
@@ -96,4 +102,10 @@ internal sealed record Cadence(string Kind, DateTimeOffset? At = null, int? Minu
     private static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : n?.ToJsonString();
 
     private static RpcException Bad(string message) => new("bad_request", message);
+
+    private static string Offset(DateTimeOffset t) => (t.Offset < TimeSpan.Zero ? "-" : "+") + t.Offset.ToString("hh\\:mm", CultureInfo.InvariantCulture);
+
+    /// <summary>A time of day followed by its zone: <c>Z</c> or an offset (<c>+02:00</c>, <c>-0500</c>, <c>+02</c>).</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"\d:\d\d(?::\d\d(?:\.\d+)?)?\s*(?:[Zz]|[+-]\d\d(?::?\d\d)?)$")]
+    private static partial System.Text.RegularExpressions.Regex WithOffset();
 }

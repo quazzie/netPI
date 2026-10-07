@@ -337,6 +337,45 @@ public static class SchedulesTests
             Check.Contains(S(missed["lastReason"]), "1 min", "the reason names the grace that applied");
         });
 
+        // The "previous run is still going" check reads the chat a run started, written only once it has: two starts at once
+        // (a double click on Run, a click during a tick) both passed it (idea-96bh9b).
+        r.Add("schedules: one start at a time: a start under way skips the next, and only its owner lets the claim go", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var id = S((await env.Add(new { kind = "every", minutes = 60 }))["id"])!;
+            var store = env.Plugin.Store!;
+            var claim = store.TryClaimStart(id, env.Time.Now);
+            Check.True(claim is not null, "the claim is taken");
+            Check.True(store.TryClaimStart(id, env.Time.Now) is null, "a second one is refused");
+
+            var skipped = (await env.Ctx.RpcFake.CallAsync("schedules.run", new { id }))!;
+            Check.Equal("skipped", S(skipped["status"]));
+            Check.Equal(ScheduleRunner.StartingReason, S(skipped["reason"]));
+            Check.Equal(0, env.Runtime.Sent.Count, "no chat was started");
+            Check.True(store.TryClaimStart(id, env.Time.Now) is null, "the skip did not let go of a claim it did not take");
+
+            store.Record(id, env.Time.Now, ScheduleRunner.Skipped, "test", null, claim);
+            var ran = (await env.Ctx.RpcFake.CallAsync("schedules.run", new { id }))!;
+            Check.Equal("ran", S(ran["status"]), "its owner let go: the next start runs");
+            Check.True((await env.Get(id))["starting"] is null, "and a finished start leaves no claim behind");
+
+            var other = S((await env.Add(new { kind = "every", minutes = 60 }))["id"])!;
+            Check.True(store.TryClaimStart(other, env.Time.Now) is not null, "a claim");
+            env.Time.Advance(ScheduleStore.StartClaim + TimeSpan.FromSeconds(1));
+            Check.True(store.TryClaimStart(other, env.Time.Now) is not null, "one older than a start can take is a crashed one, and is taken over");
+        });
+
+        r.Add("schedules: a once time needs its offset (it was read as UTC while a daily time is the machine's)", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var bad = await Check.ThrowsAsync<RpcException>(() => env.Add(new { kind = "once", at = "2026-10-03T22:00:00" }), "no offset: refused");
+            Check.Contains(bad.Message, "offset");
+            var ok = await env.Add(new { kind = "once", at = "2026-10-03T22:00:00+02:00" });
+            Check.Equal("2026-10-03T22:00:00.0000000+02:00", S(ok["cadence"]!["at"]), "an offset is kept as given");
+            var utc = await env.Add(new { kind = "once", at = "2026-10-03T21:00:00Z" });
+            Check.True(S(utc["cadence"]!["at"]) is { Length: > 0 }, "Z is an offset");
+        });
+
         r.Add("schedules: requests are checked against the declared parameters", async () =>
         {
             var env = await new Env().StartAsync();
