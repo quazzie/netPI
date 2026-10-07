@@ -581,12 +581,12 @@ milliseconds; anything unexpected answers "not supported", so a call never fails
 
 | Setting | Default | Purpose |
 | --- | ---: | --- |
-| mcp.discoveryChars | 4000 | Bounded search/schema result; complete large schemas saved as files |
-| mcp.maxMessageChars | 4000000 | Protocol frame/SSE event limit |
-| mcp.maxCatalogTools | 10000 | Tools per server |
-| mcp.maxCatalogChars | 8000000 | Catalog data per server |
-| mcp.maxResourceEntries | 2000 | Resources per server |
-| mcp.maxResourceCatalogChars | 2000000 | Resource catalog data per server |
-| mcp.maxResourceChars | 20000 | Characters per resource read; a larger one is written to a file |
-| mcp.maxBinaryBytes | 2000000 | Decoded image limit |
-| mcp.refreshSeconds | 60 | Polling fallback |
+| `mcp.discoveryChars` | 4000 | Bounded search/schema result; complete large schemas saved as files |
+| `mcp.maxMessageChars` | 4000000 | Protocol frame/SSE event limit |
+| `mcp.maxCatalogTools` | 10000 | Tools per server |
+| `mcp.maxCatalogChars` | 8000000 | Catalog data per server |
+| `mcp.maxResourceEntries` | 2000 | Resources per server |
+| `mcp.maxResourceCatalogChars` | 2000000 | Resource catalog data per server |
+| `mcp.maxResourceChars` | 20000 | Characters per resource read; a larger one is written to a file |
+| `mcp.maxBinaryBytes` | 2000000 | Decoded image limit |
+| `mcp.refreshSeconds` | 60 | Polling fallback |

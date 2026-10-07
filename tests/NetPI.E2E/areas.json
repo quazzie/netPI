@@ -452,6 +452,12 @@
    ]
   },
   {
+   "path": "docs/SETTINGS.md",
+   "ids": [
+    "inspect.settings-docs"
+   ]
+  },
+  {
    "path": "web/mock/",
    "ids": [
     "ui.rpc-contract"

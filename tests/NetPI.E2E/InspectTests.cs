@@ -107,6 +107,44 @@ public static class InspectTests
             Check.True(missing.Count == 0, $"{missing.Count} method(s) the server registers are not in docs/PROTOCOL.md: {string.Join(", ", missing)}");
             Check.True(stale.Count == 0, $"{stale.Count} method row(s) in docs/PROTOCOL.md name a method the server does not have: {string.Join(", ", stale)}");
         });
+        r.Add("inspect.settings-docs", "docs: every setting the server's plugins declare (settings.schema) is in docs/SETTINGS.md (idea-yvcy8b)", async () =>
+        {
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var section in (await env.Rpc("settings.schema")).Arr())
+                if (section.TryGetProperty("settings", out var list) && list.ValueKind == JsonValueKind.Array)
+                    foreach (var setting in list.EnumerateArray())
+                        if (setting.S("key") is { } key) keys.Add(key);
+            Check.True(keys.Count > 100, $"the server declares its settings ({keys.Count})");
+            var doc = File.ReadAllText(Path.Combine(env.RepoRoot, "docs", "SETTINGS.md")).Replace("\r\n", "\n");
+            var missing = SettingsDrift(doc, keys);
+            Check.True(missing.Count == 0, $"{missing.Count} setting(s) the server declares are not in docs/SETTINGS.md: {string.Join(", ", missing)}");
+        });
+    }
+
+    /// <summary>
+    /// The settings a plugin declares (a <c>SettingInfo</c> in its settings section) that docs/SETTINGS.md never names. A key is
+    /// named in backticks anywhere (<c>`agent.maxTurns`</c>), or as a row of a table under a heading that names its prefix: the
+    /// <c>### `providers.claudeCli`</c> table's <c>| `tools` |</c> row is <c>providers.claudeCli.tools</c>, and a row may name
+    /// several (<c>| `enabled`, `local` |</c>).
+    /// </summary>
+    internal static List<string> SettingsDrift(string doc, IEnumerable<string> keys)
+    {
+        var named = Regex.Matches(doc, @"`([A-Za-z][\w-]*(?:\.[\w<>*-]+)*)`").Select(m => m.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
+        var prefixes = new List<string>();
+        foreach (var line in doc.Split('\n'))
+        {
+            if (line.StartsWith('#'))
+            {
+                prefixes = [.. Regex.Matches(line, @"`([A-Za-z][\w-]*(?:\.[\w-]+)*)`").Select(m => m.Groups[1].Value)];
+                continue;
+            }
+            if (!line.StartsWith('|') || prefixes.Count == 0) continue;
+            var first = line.Split('|', 3) is { Length: 3 } cells ? cells[1] : "";
+            foreach (Match m in Regex.Matches(first, @"`([A-Za-z][\w-]*(?:\.[\w-]+)*)`"))
+                foreach (var prefix in prefixes)
+                    named.Add(prefix + "." + m.Groups[1].Value);
+        }
+        return [.. keys.Where(k => !named.Contains(k)).Order(StringComparer.Ordinal)];
     }
 
     /// <summary>
