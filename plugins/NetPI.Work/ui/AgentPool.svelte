@@ -157,10 +157,11 @@
           <span class="l1 np-line np-baseline">
             <span class="name">{who(o)}</span>
             {#if runOf(o)?.isSubagent}<span class="sub">sub</span>{/if}
-            {#if forWhom(o)}<span class="for np-grow">for {forWhom(o)}</span>{/if}
+            {#if compact && forWhom(o)}<span class="for np-grow">for {forWhom(o)}</span>{/if}
             {#if compact}<Elapsed since={o.since} class="np-mono el" />{/if}
           </span>
           {#if !compact}
+            {#if forWhom(o)}<span class="l2 for np-ellipsis" title="for {forWhom(o)}">for {forWhom(o)}</span>{/if}
             <span class="l2 np-line np-baseline">
               {#if cmdsOf(o).length}
                 <span class="act cmd np-mono np-grow" title={cmdsOf(o)[0].command}>$ {shortCommand(cmdsOf(o)[0].command)}{#if cmdsOf(o).length > 1}<span class="np-dim"> +{cmdsOf(o).length - 1}</span>{/if}</span>
@@ -286,7 +287,7 @@
     align-items: center;
     gap: 8px;
     box-sizing: border-box;
-    height: 40px;
+    height: 58px; /* three lines: name, what it is for, what it is doing */
     margin: 3px 0 0 6px;
     padding: 0 6px 0 8px;
     border: 1px solid var(--border);

@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace NetPI.Nudge;
 
 /// <summary>
-/// Registers <see cref="NudgeHook"/>. Settings: <c>nudge.enabled</c> (true), <c>nudge.maxPerRun</c> (3, consecutive
+/// Registers <see cref="NudgeHook"/>. Settings: <c>nudge.maxPerRun</c> (3, consecutive
 /// nudges per stall episode).
 /// </summary>
 [NetPiPlugin("netpi.nudge", Name = "Nudge", Description = "Auto-nudges a stalled agent", Order = 70)]
@@ -16,7 +16,6 @@ public sealed class NudgePlugin : INetPiPlugin
             Id = "nudge", Title = "Nudge", Group = "Agents", Order = 30,
             Settings =
             [
-                SettingInfo.Bool("nudge.enabled", "Nudge stalled turns", true, "Says \"continue\" when a turn ends empty, is cut off, or announces an action without doing it."),
                 SettingInfo.Int("nudge.maxPerRun", "Nudges per stall episode", 3, "How many nudges in a row one stall may get. An acceptable response (a tool call, a final answer, an aborted or errored turn) resets it, so a long run that recovers can still be nudged when it stalls again.", 0, 20),
             ],
         });
@@ -50,7 +49,7 @@ public sealed partial class NudgeHook(Func<ISettings?> settings) : IAgentHook
     {
         var run = turn.Run;
         var s = settings();
-        if (!s.GetOr("nudge.enabled", true) || run.CancellationToken.IsCancellationRequested)
+        if (run.CancellationToken.IsCancellationRequested)
             return ValueTask.FromResult<TurnDecision?>(null);
 
         var reason = Classify(assistant, run.ToolCallCount);

@@ -357,6 +357,45 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
         }
     }
 
+    /// <summary>
+    /// Calls the provider ran itself (<see cref="ToolCallPart.ProviderExecuted"/>, the Claude CLI's own tools) come with their results in
+    /// <see cref="MessagePart.ProviderData"/>: they are shown and stored like any tool call (start and end events, a tool result message)
+    /// and never executed here. The result leaves the assistant message, so it is stored once.
+    /// </summary>
+    public void RecordProviderExecuted(ChatMessage assistant, IReadOnlyList<ToolCallPart> calls)
+    {
+        foreach (var call in calls)
+        {
+            var res = call.ProviderData?[ToolCallPart.ResultKey] as JsonObject;
+            var content = res?["content"] is JsonValue c && c.TryGetValue<string>(out var text) ? text : "(the provider recorded no result for this call)";
+            var isError = res is null || (res["isError"] is JsonValue e && e.TryGetValue<bool>(out var flag) && flag);
+            // reported live while the provider worked (ProviderToolRunning/Done): only a call it never finished needs its end here
+            var live = call.ProviderLive;
+            if (!live)
+                rt.Emit(EventTypes.ToolStart, new JsonObject
+                {
+                    ["sessionId"] = SessionId, ["agentId"] = AgentId, ["callId"] = call.Id, ["name"] = call.Name,
+                    ["label"] = call.Name, ["arguments"] = call.Arguments,
+                }, SessionId);
+            Persist(new ToolResultPart
+            {
+                CallId = call.Id, Name = call.Name, Content = content, IsError = isError,
+                Details = new JsonObject { ["providerExecuted"] = true },
+            }, required: false);
+            if (!live || res is null)
+                rt.Emit(EventTypes.ToolEnd, new JsonObject
+                {
+                    ["sessionId"] = SessionId, ["callId"] = call.Id, ["name"] = call.Name, ["isError"] = isError,
+                }, SessionId);
+            rt.Update(state, i => i.ToolCalls++);
+            rc.ToolCallCount++;
+            call.ProviderData?.Remove(ToolCallPart.ResultKey);
+        }
+        try { Ctx.Sessions.UpdateMessage(assistant); }
+        catch (Exception ex) { Ctx.Logger.LogDebug(ex, "Failed to update the message of provider-executed calls"); }
+        rt.PublishStatus(state, throttled: true);
+    }
+
     /// <summary>Persist a result for a call that did not (fully) run. <paramref name="skipped"/> (steer | aborted | stopped)
     /// is stored as <c>details.skipped</c> so the UI can show it as skipped rather than as a failure.</summary>
     public void PersistResult(ToolCallPart call, string content, bool isError, bool publishEnd, string? skipped = null)

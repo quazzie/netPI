@@ -73,6 +73,8 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
         {
             if (!string.IsNullOrEmpty(agent) && ctx.Rpc.Exists("agents.use"))
                 await ctx.Rpc.InvokeAsync("agents.use", new JsonObject { ["sessionId"] = session.Id, ["agent"] = agent }, ct).ConfigureAwait(false);
+            if (ctx.Rpc.Exists("profiles.applyAuto"))
+                await ctx.Rpc.InvokeAsync("profiles.applyAuto", new JsonObject { ["sessionId"] = session.Id }, ct).ConfigureAwait(false);
             await runtime.SendAsync(session.Id, new UserInput
             {
                 Text = schedule["prompt"]?.GetValue<string>() ?? "",

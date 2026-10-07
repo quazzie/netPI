@@ -8,6 +8,8 @@
 - `src/NetPI.Host`: kernel; references only Abstractions. `Server`: headless; `Desktop`: WinForms/WebView2.
 - `plugins/<Name>`: independent plugins; `shared/`: compiled-in source, not shared assemblies.
 - `web/src`, `plugins/*/ui`: Svelte sources. Commit their generated bundles with source changes only.
+  Svelte 5 trap: `$state(fn)` stores the function as the value (no lazy init) — call the initializer
+  and pass the result; a bound `f.name` on a function reads the function's own name.
 - `tests/`: console runners, MockLlm, E2E. No NuGet packages except WebView2.
 
 ## Work and delivery
@@ -16,6 +18,8 @@
 - One commit per piece. Merge into `master` from the main checkout, verify ancestry, remove your merged tree/branch.
 - Plain builds use `artifacts/dev/app`; they must never touch the installed app.
 - Merge before publishing app changes: `.\build.ps1 -Publish`. Use `-NextStart` during an active turn or when requested.
+  Web-only changes need no deferral: a plain `-Publish` swaps `wwwroot` in place (the server reads it from disk per
+  request) and a window refresh picks the new UI up — no restart. `-NextStart` matters when host files or plugins change.
 - App changes are done when installed or staged in the live app's `.pending`. A restart does not install Git changes.
 - Docs-only changes need no build/publish. Ask before stopping the owner's app.
 - Commands and install details: `Get-Help .\build.ps1 -Full`, [HANDOFF](docs/HANDOFF.md). UI: `npm ci`, `npm run build`; Git handles LF.
@@ -27,6 +31,9 @@
 - Full gates only for shared contracts, cross-cutting behavior or explicit requests—never merely for merging.
 - Fix flaky tests; a passing retry is not a fix. Read saved evidence and rerun only affected tests. Do not merge unresolved failures.
 - Commands, selection, mocks and failure evidence: [TESTING](docs/TESTING.md).
+- Deterministic builds are load-bearing (hot-reload + the contracts check in build.ps1): unchanged sources must rebuild
+  byte-identical, same commit in two checkouts included. If a dll's bytes start changing with no source change, diff the
+  PDBs (SourceLink, line endings and checkout paths are the known leaks) before touching anything else.
 
 ## Architecture and conventions
 

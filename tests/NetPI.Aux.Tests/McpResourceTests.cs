@@ -93,20 +93,25 @@ public static class McpResourceTests
             await manager.DisposeAsync(); ctx.Unload();
         });
 
-        r.Add("mcp resources: an oversized read is bounded, an allow-list hides, and a notification refreshes", async () =>
+        r.Add("mcp resources: a resources-only server's list_changed notification refreshes the catalog, and an allow-list hides", async () =>
         {
             var ctx = new FakePluginContext();
+            // No poll can refresh the catalog inside the wait below: only the notification can.
+            ctx.Settings.Set("mcp.refreshSeconds", 3600);
             ctx.Settings.Set("mcp.servers", new JsonObject { ["fixture"] = Config("resources-subscribe").Json() });
-            var refreshed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            using var sub = ctx.Events.Subscribe("mcp.serverChanged", _ => refreshed.TrySetResult());
             await using var manager = new ServerManager(ctx);
             await manager.StartAsync([], CancellationToken.None);
             await McpTests.Connected(manager, "fixture");
             Check.Equal(4, manager.Resources(null).Count);
-            // resources/list_changed re-reads the catalog, and the server renamed a resource when it did.
-            await refreshed.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            await manager.CommandAsync("fixture", false, CancellationToken.None);
-            Check.Contains(string.Join(",", manager.Resources(null).Select(r => r.Uri)), "skill://demo/references/patterns.md");
+            // The server publishes only resources, announces resources.listChanged, and renames a resource when it sends
+            // notifications/resources/list_changed (same uri, new name): the catalog follows without being asked to.
+            string Names() => string.Join(",", manager.Resources(null).Select(r => r.Name));
+            var deadline = Environment.TickCount64 + 10_000;
+            while (!Names().Contains("UPDATED.md", StringComparison.Ordinal) && Environment.TickCount64 < deadline) await Task.Delay(50);
+            Check.Contains(Names(), "UPDATED.md", "the notification re-read the catalog");
+            Check.NotContains(Names(), "references/patterns.md", "the old name is gone");
+            Check.Equal("skill://demo/references/patterns.md", manager.Resources(null).Single(r => r.Name == "UPDATED.md").Uri);
+            Check.Equal(4, manager.Resources(null).Count);
             await manager.DisposeAsync();
 
             // The per-server allow-list is the gate upstream of the catalog: an empty list exposes nothing.

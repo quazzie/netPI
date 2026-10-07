@@ -141,7 +141,10 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             assistant = decided.Assistant;
             var after = decided.Decision;
 
-            var calls = assistant.ToolCalls.ToList();
+            // calls the provider ran itself are recorded, not executed: only the others keep the loop going
+            var calls = assistant.ToolCalls.Where(c => !c.ProviderExecuted).ToList();
+            var ranByProvider = assistant.ToolCalls.Where(c => c.ProviderExecuted).ToList();
+            if (ranByProvider.Count > 0) new ToolBatch(rt, state, rc, HasSteering).RecordProviderExecuted(assistant, ranByProvider);
             if (after?.Action == TurnAction.Stop)
             {
                 var batch = new ToolBatch(rt, state, rc, HasSteering);

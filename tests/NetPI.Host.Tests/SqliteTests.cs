@@ -85,18 +85,6 @@ public static class SqliteTests
             }
         });
 
-        r.Add("sqlite: the TRUNCATE checkpoint shrinks the WAL back to nothing", () =>
-        {
-            using var db = Open(out var file);
-            db.Execute("CREATE TABLE t (v INTEGER)");
-            for (var i = 1; i <= 200; i++) db.Execute("INSERT INTO t VALUES(@v)", new { v = i });
-            var wal = file + "-wal";
-            Check.True(File.Exists(wal) && new FileInfo(wal).Length > 0, "the writes left a WAL");
-            db.Execute("PRAGMA wal_checkpoint(TRUNCATE)");
-            Check.True(!File.Exists(wal) || new FileInfo(wal).Length == 0, "and the TRUNCATE checkpoint takes it back");
-            Check.Equal(200L, db.Scalar<long>("SELECT COUNT(*) FROM t"), "everything was in the database before too");
-        });
-
         r.Add("sqlite: type mapping round-trips", () =>
         {
             using var db = Open(out _);
@@ -314,6 +302,7 @@ public static class SqliteTests
             db.IdleCheckpoint(null);
             Check.Equal(0, new FileInfo(file + "-wal").Length, "a quiet database with a WAL to empty is checkpointed");
             Check.Equal(0, db.LastActivity, "the checkpoint itself counts as no activity: only statements make the database busy");
+            Check.Equal(2L, db.Scalar<long>("SELECT COUNT(*) FROM t"), "and both rows are in the database");
         });
     }
 }

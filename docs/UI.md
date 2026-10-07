@@ -90,7 +90,7 @@ web/
       state/tabs.svelte.js     side-panel tab registry (core + plugin tabs)
       kit/                     @netpi/kit: Svelte components shared with plugin tabs
     components/
-      TopBar.svelte  BudgetPill.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
+      TopBar.svelte  BudgetPill.svelte  ClaudeUsage.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
       ModelMenu.svelte (the searchable model list)  ModelSelect.svelte (a model field that opens it)
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
       (the projects panel and the projects dialog share lib/projects.js: counts, filter/order, remove)
@@ -182,17 +182,17 @@ dismisses one — a chat that grows re-pins its list to the bottom on every stre
 the top bar's favorites menu down mid-reply.
 
 **Tab bar.** Tabs scroll sideways with the wheel, drag to reorder, middle-click or the × to close. The `+` starts a
-new session in the project new sessions start in; next to it a chevron (`TopBar.svelte`) opens the **favorites**
-menu — one entry per starred project, a new session in it (idea-xzsy6z; they used to be buttons beside the `+`, and
-took the space of the tab bar). The chevron only appears when there is at least one favorite; starring happens in the
-Projects tab (`prefs.favorites`).
+new session in the project new sessions start in; next to it a chevron (`TopBar.svelte`) opens `ProjectPicker` in
+select mode — every project under a search box, the starred ones (`prefs.favorites`, starred in the Projects tab) in
+a **Favorites** section at the top — and a pick starts a session in it (idea-xzsy6z; the favorites used to be
+buttons beside the `+`, and took the space of the tab bar). The chevron appears when there is at least one project.
 
 **New sessions and projects.** `newSession({ projectId? })` takes the explicit `projectId` (`null`/absent = no
 project): a new session never inherits one, so Ctrl+T, the + tab and the start screen's "New session" always start
 unattached. The start screen's project button is a split button: the name half starts a session in the project shown
 (its folder underneath is the hint), the chevron opens `ProjectPicker` in select mode (`{ select: true }`), which
 starts a session in the project picked and remembers it as `app.lastProjectId` (the project last worked in, read from
-`netpi.lastProject`) — "No project" starts unattached. The project button in the composer bar (after the profile picker) and
+`netpi.lastProject`) — the "No project" row is the attach mode's, so a pick always lands in a project. The project button in the composer bar (after the profile picker) and
 `/project` open `ProjectPicker` for a session, which calls `sessions.setProject`; the context plugin then appends
 a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
 
@@ -403,7 +403,17 @@ Timings from `npm run e2e` against the mock (headless Chromium):
   re-reads the chat (with its size). **All on** undoes every switch.
 - What the chat cost on paid models (`usage.session`, with its subagents) shows next to the context ring once it is more
   than nothing, refreshed on `usage.changed`; the tooltip splits the chat from its subagents.
+<<<<<<< HEAD
 - The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`. Hover (like pressing it) re-reads the stored count with `sessions.get`, at most once per 5 s, and reads
+=======
+- The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`. In a **Claude CLI
+  session** (a model with `managesOwnContext`) the ring is the CLI's own context against the model's real window (the CLI
+  reports it; 1M for the Claude 5 models): the chat resumes one CLI session, which holds and compacts the conversation
+  itself. Its popout then shows used / window / free, and the **Claude subscription usage** (`ClaudeUsage`: the session
+  and weekly windows as percent, bar and reset time, from `claudecli.usage`, updated on `usage.claude`, with when the
+  Claude CLI last reported it), and leaves out what describes NetPI's own prompt: the compaction count, the prompt
+  breakdown, **Compact now** (`compaction.run` answers that the backend compacts itself) and the Diagnostics link. Hover reads
+>>>>>>> master
   it in one line; **pressing it opens a popout** (idea-kp4fq5) with used / window / free, how often this chat was
   compacted and what the prompt is made of — `context.preview { sessionId }` gives the system prompt (≈ tokens,
   chars / 3.6) and the tools, with a line when the prompt is frozen. It fails soft: no Context plugin, and the rows
@@ -451,7 +461,8 @@ the same Esc stack, `escLayer()` in `Modal.svelte`).
   overrides and a daily cap; the price, context, local/cloud and today's spend come from `agents.list`. "Add agent" opens
   the model list and then the new agent's dialog (the id is a slug of the model). `BudgetView` shows this period against the monthly
   and daily budgets and what each model cost (`usage.summary`), above the budget settings.
-- **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`) and one row per profile (its name,
+- **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`), "Chats NetPI starts itself use"
+  (`profiles.autoProfile`; the UI starts of idea work pass `newSession({ auto: true })`, which calls `profiles.applyAuto`) and one row per profile (its name,
   the first line of its instructions, its tools); `ProfileDialog` edits one: the name, the instructions that replace the
   opening of the system prompt (they start as the current opening; unchanged they stay unset), whether new chats
   start with it, and the tools as checkboxes by category (with all on / all off per category).
@@ -508,7 +519,7 @@ ctx = {
 ### Narrow panels
 
 Side panels are often narrow: a user's layout might be 230–340px wide, and the minimum is 200px. Every panel
-tab (Sessions, Projects, Files, Work, Ideas, Diagnostics, MCP) is designed for 220px first, looks right at a typical
+tab (Sessions, Projects, Files, Work, Schedules, Ideas, Diagnostics, MCP) is designed for 220px first, looks right at a typical
 280–320px, and uses wider containers for extra detail. The rules:
 
 - **Never scroll sideways.** Plugin tab hosts clip `overflow-x`, and e2e checks that no panel tab overflows at
@@ -547,6 +558,10 @@ Per-tab narrow layouts:
   `off`, `not loaded`). Under it one fixed-height row per instance: a busy one has the chat title (a subagent: its name, a
   `sub` mark and `for <parent chat>`), then the activity and elapsed time; a free one says `free`. A process shows its
   command + elapsed/exit, then pid · bg · size · cwd … time ago.
+- **Schedules:** a row reads a status dot · name · right-aligned next-run label (`in 3 h`, `tomorrow 07:30`, `paused`,
+  `finished`, `overdue`); line 2 is one meta line (when · project · agent · last-run chip). The hover actions are
+  run now, pause/resume, edit, history and a two-step delete; expanding a row shows the prompt, the ids, **Open last
+  chat** and the run history. The add/edit form replaces the list (no modal), stacked fields.
 - **Ideas:** a full-width title, a 2-line summary, then one meta line: status pill · project badge · priority · tags ·
   sections · time. In an expanded card the actions are **Send to chat**, **+ Section**, edit, and ⋯ (move
   up/down, copy id, delete).
@@ -558,9 +573,15 @@ Per-tab narrow layouts:
 ### Built-in plugin tabs
 
 Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle sizes
-(minified, Svelte and the kit shared with the host rather than copied in, seven tabs 229KB): Diagnostics 61KB,
-Work 48KB, Ideas 34KB, Files 29KB, Agents 23KB, Web 17KB, Mcp 16KB. `build:plugins` prints the current sizes; they
+(minified, Svelte and the kit shared with the host rather than copied in, eight tabs 257KB): Diagnostics 61KB,
+Work 48KB, Ideas 34KB, Schedules 28KB, Files 29KB, Agents 23KB, Web 17KB, Mcp 16KB. `build:plugins` prints the current sizes; they
 move with the tabs, so treat this list as the shape, not as numbers to keep in step.
+
+**Schedules** (`netpi.schedules`, left, order 25 — between Projects and Files). The schedules, each a prompt that starts a fresh chat on its own:
+list, run now, pause/resume, edit (an inline form that replaces the list), history and a two-step delete. Reads
+`schedules.*` (its own plugin) plus `runs.list`, `projects.list` and `agents.list` (absent ones degrade their own
+feature); refreshes on `schedules.changed` (unscoped) and a 30 s poll — `schedules.ran` is only a hint, because it is
+session-scoped to the chat a run started.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,
 Finished), each with a count. The open or closed state of each section is remembered (`storageKey`,
@@ -892,6 +913,9 @@ names or an inline `<svg …>` string.
   latest budget notice; after a confirm it calls `budget.allow`. The top bar shows the budget (`BudgetPill`:
   `budget.status`, then `usage.changed`) only once it needs attention, amber from `budget.warnPercent`, red when spent;
   a click opens Settings on Agents & budget (`modals.settings = 'agents'`).
+- The Claude subscription usage is not in the top bar: it is in the context ring's popout of a Claude CLI chat (above). The reading
+  is what the Claude CLI printed after its last call, so it is as fresh as the last call (kept across restarts, marked old after
+  six hours).
 - Assistant messages that stop with `stopReason: 'error'` may carry `meta.error`, which is shown in the error
   row.
 - `agent_*` tool results carry `details.sessionId` (and `name`, `status`) for the subagent link, or
@@ -907,3 +931,5 @@ names or an inline `<svg …>` string.
 - The Ideas tab expects `ideas.changed { backend: 'sqlite', database, scope, schemaVersion, file, reason? }` after every
   committed write, including writes made by agents, and reads `ideas.list().storage` for where the backlog lives. It
   sends `expectedRevision` on an edit and shows a refused one as a conflict instead of losing the text.
+
+Local model/profile switches refresh the catalog and model controls through `models.changed`, without opening a picker or requesting a manual refresh. Backend metadata changes count even when the public model ID and limits stay the same.

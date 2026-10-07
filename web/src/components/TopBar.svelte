@@ -2,15 +2,15 @@
   import { tick } from 'svelte';
   import Icon from '../lib/kit/Icon.svelte';
   import IconButton from '../lib/kit/IconButton.svelte';
-  import Menu from '../lib/kit/Menu.svelte';
   import BudgetPill from './BudgetPill.svelte';
   import { app, activate, closeTab, moveTab, newSession, sessionStatus, waitingOn, projectOf } from '../lib/state/app.svelte.js';
-  import { modals, prefs } from '../lib/state/ui.svelte.js';
+  import { modals } from '../lib/state/ui.svelte.js';
   import { conn, reconnectNow } from '../lib/rpc.svelte.js';
 
   let tabsEl = $state();
   let dragId = $state(null);
   let retryIn = $state(0);
+  let chevronEl = $state();
 
   // keep the active tab visible
   $effect(() => {
@@ -59,18 +59,11 @@
     moveTab(dragId, to);
   }
 
-  // favorite projects (Projects tab ★) that still exist: the chevron menu is the way to start a session
-  // in a project (the + button beside it always starts without one)
-  const favorites = $derived(prefs.favorites.map((id) => app.projectsById.get(id)).filter(Boolean));
-  const newSessionItems = $derived([
-    { header: 'Favorites' },
-    ...favorites.map((p) => ({
-      label: p.name,
-      icon: 'folder',
-      hint: p.path,
-      onclick: () => newSession({ projectId: p.id }),
-    })),
-  ]);
+  // the chevron beside the +: the project picker (every project under a search box, the starred ones on top) —
+  // the way to start a session in a project (the + button itself always starts without one)
+  function pickProject() {
+    modals.projectPicker = { select: true, anchor: chevronEl };
+  }
 
   function title(id) {
     return app.sessionsById.get(id)?.title || 'New session';
@@ -140,14 +133,16 @@
     <button class="new-tab" title="New session (Ctrl+T)" aria-label="New session" onclick={() => newSession()}>
       <Icon name="plus" size={15} />
     </button>
-    {#if favorites.length}
-      <Menu items={newSessionItems} minWidth={220}>
-        {#snippet trigger({ toggle, open })}
-          <button class="quick-more" aria-expanded={open} aria-haspopup="menu" title="Favorites — new session in a starred project" onclick={toggle}>
-            <Icon name="chevron-down" size={13} />
-          </button>
-        {/snippet}
-      </Menu>
+    {#if app.projects.length}
+      <button
+        class="quick-more"
+        bind:this={chevronEl}
+        aria-haspopup="dialog"
+        title="Projects — start a session in a project"
+        onclick={pickProject}
+      >
+        <Icon name="chevron-down" size={13} />
+      </button>
     {/if}
   </div>
   <span class="gap"></span>

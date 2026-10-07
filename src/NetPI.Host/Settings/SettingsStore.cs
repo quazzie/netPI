@@ -59,6 +59,9 @@ internal sealed class SettingsStore : ISettings, IDisposable
 
     public string FilePath { get; }
 
+    /// <summary>The pause before a failed write is tried again, longer by as much each time (tests that make every attempt fail shorten it).</summary>
+    internal TimeSpan WriteRetryPause { get; init; } = TimeSpan.FromMilliseconds(40);
+
     public bool InvalidOnDisk { get { lock (_gate) return _invalidError is not null; } }
     public string? InvalidOnDiskError { get { lock (_gate) return _invalidError; } }
 
@@ -318,11 +321,11 @@ internal sealed class SettingsStore : ISettings, IDisposable
                 }
                 catch (IOException) when (attempt < 5)
                 {
-                    Thread.Sleep(40 * (attempt + 1)); // editor or antivirus holding the file
+                    Thread.Sleep(WriteRetryPause * (attempt + 1)); // editor or antivirus holding the file
                 }
                 catch (UnauthorizedAccessException) when (attempt < 5)
                 {
-                    Thread.Sleep(40 * (attempt + 1));
+                    Thread.Sleep(WriteRetryPause * (attempt + 1));
                 }
             }
         }

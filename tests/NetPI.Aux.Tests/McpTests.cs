@@ -279,7 +279,7 @@ public static class McpTests
             Check.Contains(Check.Throws<McpException>(()=>Schema.Validate(schema,new JsonObject {["n"]="7"})).Message,
                 "$.n: expected integer, got string");
         });
-        r.Add("mcp: HTTP modern metadata headers pagination auth rejection and no replay", async () => {
+        r.Add("mcp: HTTP modern metadata, parameter headers, auth rejection and no replay", async () => {
             int calls=0; string? header=null;
             await using var web=await LocalWeb.StartAsync(app=> app.Run(async http => {
                 if(http.Request.Method!="POST"){http.Response.StatusCode=405;return;}

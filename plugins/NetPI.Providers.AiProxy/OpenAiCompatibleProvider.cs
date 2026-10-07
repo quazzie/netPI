@@ -140,6 +140,8 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
 
         var extra = new JsonObject();
         if (e.Str("owned_by") is { } owner) extra["owned_by"] = owner;
+        foreach (var key in new[] { "engine", "host", "gpu" })
+            if (e.Str(key) is { } value) extra[key] = value;
         if (e.Prop("meta").IsObj()) extra["meta"] = JsonNode.Parse(e.Prop("meta").GetRawText());
         if (e.Prop("created").ValueKind == JsonValueKind.Number) extra["created"] = e.Long("created");
 

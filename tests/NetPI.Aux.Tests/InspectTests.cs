@@ -19,8 +19,27 @@ public static class InspectTests
         r.Add("inspect: the tool scans are paged and bounded — one page for a recent call id, and the old window reported", BoundedScans);
         r.Add("inspect: every diag action is cut at the same limit, and a cut answer leaves no details behind", ActionsAreCapped);
         r.Add("inspect: the diag tool answers with the RPC's JSON, defaults to the calling session and refuses every write", DiagTool);
+        r.Add("inspect: no tool schema carries a null keyword value (strict providers answer HTTP 400)", NoNullSchemaKeywords);
         r.Add("inspect: diag rpc reaches any read-only method and nothing else; a journal type query is global", DiagRpcAndJournalScope);
         r.Add("inspect: a reload says what it cost: the tools at stake, or that a hook-only plugin announces nothing", ReloadImpact);
+    }
+
+    // OpenRouter's Poolside provider refused the whole request for diag's "description": null.
+    private static async Task NoNullSchemaKeywords()
+    {
+        var ctx = await StartAsync();
+        Check.True(ctx.ToolsFake.Tools.Count > 0, "tools are registered");
+        foreach (var t in ctx.ToolsFake.Tools)
+        {
+            var nulls = new List<string>();
+            void Walk(JsonNode? n, string path)
+            {
+                if (n is JsonObject o) foreach (var kv in o) { if (kv.Value is null) nulls.Add(path + "/" + kv.Key); else Walk(kv.Value, path + "/" + kv.Key); }
+                else if (n is JsonArray a) for (var i = 0; i < a.Count; i++) Walk(a[i], path + "/" + i);
+            }
+            Walk(t.Definition.Parameters, t.Definition.Name);
+            Check.True(nulls.Count == 0, "null schema values: " + string.Join(", ", nulls));
+        }
     }
 
     // Without the rpc action, reaching anything diag does not wrap meant reading the live token out of server.json and

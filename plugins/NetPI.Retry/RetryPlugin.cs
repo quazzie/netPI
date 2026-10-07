@@ -4,7 +4,7 @@ namespace NetPI.Retry;
 
 /// <summary>
 /// Registers <see cref="RetryMiddleware"/> as the outermost model middleware. Settings (read per call):
-/// <c>retry.enabled</c>, <c>retry.maxAttempts</c>, <c>retry.baseDelayMs</c>, <c>retry.maxDelayMs</c>,
+/// <c>retry.maxAttempts</c>, <c>retry.baseDelayMs</c>, <c>retry.maxDelayMs</c>,
 /// <c>retry.firstEventTimeoutSeconds</c>, <c>retry.stallTimeoutSeconds</c>.
 /// </summary>
 [NetPiPlugin("netpi.retry", Name = "Retry", Description = "Retries model calls on lost connections and stalled streams", Order = 15)]
@@ -17,7 +17,6 @@ public sealed class RetryPlugin : INetPiPlugin
             Id = "retry", Title = "Retries", Group = "Models", Order = 60,
             Settings =
             [
-                SettingInfo.Bool("retry.enabled", "Retry lost connections and stalled streams", true),
                 SettingInfo.Int("retry.maxAttempts", "Attempts", 6, null, 1, 20),
                 SettingInfo.Int("retry.firstEventTimeoutSeconds", "Wait for the first token", 600, "A slow prefill of a long context can take minutes.", 10, 3600, "s"),
                 SettingInfo.Int("retry.stallTimeoutSeconds", "Silence between tokens", 180, null, 10, 3600, "s"),
@@ -34,7 +33,6 @@ public sealed class RetryPlugin : INetPiPlugin
 
 public sealed class RetryOptions
 {
-    public bool Enabled { get; init; } = true;
     /// <summary>Total attempts including the first one.</summary>
     public int MaxAttempts { get; init; } = 6;
     public TimeSpan BaseDelay { get; init; } = TimeSpan.FromMilliseconds(1000);
@@ -51,7 +49,6 @@ public sealed class RetryOptions
     {
         return new RetryOptions
         {
-            Enabled = s.GetOr("retry.enabled", true),
             MaxAttempts = Math.Clamp(s.GetOr("retry.maxAttempts", 6), 1, 100),
             BaseDelay = TimeSpan.FromMilliseconds(Math.Max(0, s.GetOr("retry.baseDelayMs", 1000.0))),
             MaxDelay = TimeSpan.FromMilliseconds(Math.Max(0, s.GetOr("retry.maxDelayMs", 30_000.0))),

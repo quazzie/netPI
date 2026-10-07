@@ -3,9 +3,9 @@ using System.Diagnostics;
 namespace NetPI.Host.Tests;
 
 /// <summary>
-/// The runners of all five suites exit 0 when the filter selects no test at all, so the direct run AGENTS.md
+/// A runner that exits 0 when the filter selects no test at all makes the direct run AGENTS.md
 /// documents for the fix loop — <c>dotnet tests/&lt;X&gt;.Tests/bin/&lt;Config&gt;/NetPI.&lt;X&gt;.Tests.dll [filter]</c> —
-/// reports green for a typo or a renamed test. Exit 2 says "nothing was selected" without pretending to be a crash
+/// report green for a typo or a renamed test. Exit 2 says "nothing was selected" without pretending to be a crash
 /// (1 is a failed test), and scripts/test.ps1 already treats a non-zero exit with no FAIL line as a failure.
 /// </summary>
 public static class RunnerTests
@@ -16,18 +16,20 @@ public static class RunnerTests
     {
         r.Add("tests: a filter that selects nothing exits 2, and one that selects a test still exits 0", NothingSelectedIsNotAPass);
         r.Add("tests: the suite dll itself exits 2 for a filter that matches nothing", SuiteDllExitsTwo);
-        r.Add("tests: every suite runner carries the exit-2 rule, not just this copy", EveryRunnerHasTheRule);
+        r.Add("tests: the Providers suite's own runner carries the exit-2 rule too", EveryRunnerHasTheRule);
         r.Add("tests: a skip is counted apart from the passes, says why, and does not fail the run", SkipIsNotAPass);
-        r.Add("tests: every suite runner carries the skip rule, and none prints a bare skip line", EveryRunnerHasTheSkipRule);
+        r.Add("tests: the Providers suite's own runner carries the skip rule too, and no test prints a bare skip line", EveryRunnerHasTheSkipRule);
         r.Add("tests: every suite loads the built plugins from artifacts/dev/app, never the installed app", EverySuiteLoadsTheDevTree);
         r.Add("tests: test.ps1 counts the skips, fails only when the filter matched nowhere, and names the suites", TestScriptHonesty);
     }
 
-    /// <summary>The runner sources, and every test source, for the checks that are about all of them. The five
-    /// suites share one runner (tests/Shared/Harness.cs); the Providers suite runs its check-style adapter over it.</summary>
+    /// <summary>
+    /// The runner sources the rules are read from. The other suites compile the one runner in tests/Shared/Harness.cs,
+    /// which the behaviour tests here run (exit 2, the suite dll, the skip), so reading its text again proved nothing
+    /// more. The Providers suite runs its own check-style runner, which no behaviour test runs: its text is what is checked.
+    /// </summary>
     private static readonly string[] RunnerFiles =
     {
-        "Shared/Harness.cs",
         "NetPI.Providers.Tests/TestRunner.cs",
     };
 
@@ -70,7 +72,7 @@ public static class RunnerTests
         Check.Contains(stdout, "No test matches the filter.");
     }
 
-    /// <summary>Five copies of the same runner, each free to drift: the rule has to be in all of them.</summary>
+    /// <summary>A runner of its own is free to drift: the rule has to be in it too.</summary>
     private static Task EveryRunnerHasTheRule()
     {
         foreach (var runner in RunnerFiles)

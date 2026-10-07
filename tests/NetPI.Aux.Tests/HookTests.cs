@@ -30,10 +30,11 @@ public static class NudgeTests
             Check.Equal(200, hook.Order);
         });
 
-        r.Add("nudge: only thinking (cut off while thinking) → nudge", async () =>
+        r.Add("nudge: only thinking, ended with no answer (stop) → still-thinking nudge", async () =>
         {
             var (hook, turn, _) = Setup();
             var msg = new ChatMessage { Role = MessageRole.Assistant, Parts = [new ThinkingPart { Text = "I should read the file" }], StopReason = "stop" };
+            Check.Equal(NudgeReason.EmptyAfterThinking, NudgeHook.Classify(msg, 0), "not a cut-off: that is stop reason length, below");
             var d = await After(hook, turn, msg);
             Check.Contains(d!.Text, "still thinking");
             Check.Contains(d.Text, "if you were about to call a tool, call it now");
@@ -124,29 +125,16 @@ public static class NudgeTests
             Check.True(await After(hook, turn, T.Assistant("All done.")) is null);
         });
 
-        r.Add("nudge: at most nudge.maxPerRun consecutive nudges", async () =>
+        r.Add("nudge: the cap (nudge.maxPerRun consecutive nudges) bounds one stall episode, not the run — a response that needs no nudge resets it", async () =>
         {
             var (hook, turn, ctx) = Setup();
             var empty = new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop" };
-            for (var i = 0; i < 3; i++) Check.True(await After(hook, turn, empty) is not null, $"nudge {i + 1}");
-            Check.True(await After(hook, turn, empty) is null, "4th nudge must be suppressed");
-            Check.Equal(3, (int)turn.Run.Items[NudgeHook.CountKey]!);
-            Check.Equal(0, ctx.Bus.Events.Count); // publishes nothing itself
 
-            var (hook2, turn2, ctx2) = Setup();
-            ctx2.SettingsFake.Set("nudge.maxPerRun", 1);
-            Check.True(await After(hook2, turn2, empty) is not null);
-            Check.True(await After(hook2, turn2, empty) is null);
-        });
-
-        r.Add("nudge: the cap bounds one stall episode, not the run — a response that needs no nudge resets it", async () =>
-        {
-            var (hook, turn, _) = Setup();
-            var empty = new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop" };
-
-            // Stall: three nudges in a row, then the fourth is suppressed.
+            // Stall: three nudges in a row (the default cap), then the fourth is suppressed.
             for (var i = 0; i < 3; i++) Check.True(await After(hook, turn, empty) is not null, $"nudge {i + 1}");
             Check.True(await After(hook, turn, empty) is null, "4th consecutive nudge is suppressed");
+            Check.Equal(3, (int)turn.Run.Items[NudgeHook.CountKey]!, "a suppressed nudge does not count");
+            Check.Equal(0, ctx.Bus.Events.Count, "the hook publishes nothing itself");
 
             // The agent recovers: a real tool call. The counter is gone, not left at 3.
             Check.True(await After(hook, turn, T.Assistant("Reading it.", T.Call("c1", "read"))) is null);
@@ -188,13 +176,6 @@ public static class NudgeTests
             Check.True(await After(hook, turn, empty) is null, "suppressed");
             Check.True(await After(hook, turn, T.Assistant("Working on it.", T.Call("c1", "read"))) is null, "tool call");
             Check.True(await After(hook, turn, empty) is not null, "nudged again after the recovery");
-        });
-
-        r.Add("nudge: nudge.enabled=false disables it", async () =>
-        {
-            var (hook, turn, ctx) = Setup();
-            ctx.SettingsFake.Set("nudge.enabled", false);
-            Check.True(await After(hook, turn, new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop" }) is null);
         });
 
         r.Add("nudge: plugin registers the hook", async () =>
@@ -476,7 +457,7 @@ public static class ToolRepairTests
             Check.Equal("A  B", ToolCallTextParser.RemoveSpans(text, [(calls[0].Start, calls[0].End)]));
         });
 
-        r.Add("toolrepair: hook returns Replace, respects toolRepair.enabled, runs before nudge", async () =>
+        r.Add("toolrepair: hook returns Replace, runs before nudge", async () =>
         {
             var ctx = new FakePluginContext();
             await new ToolRepairPlugin().StartAsync(ctx, CancellationToken.None);
@@ -488,8 +469,6 @@ public static class ToolRepairTests
             var d = await hook.OnAfterModelCallAsync(turn, T.Assistant("<function=agent_choices></function>"));
             Check.Equal(TurnAction.Replace, d!.Action);
             Check.Equal("agent_choices", d.Replacement!.ToolCalls.Single().Name);
-            ctx.SettingsFake.Set("toolRepair.enabled", false);
-            Check.True(await hook.OnAfterModelCallAsync(turn, T.Assistant("<function=agent_choices></function>")) is null);
         });
     }
 }

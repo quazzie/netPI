@@ -107,7 +107,8 @@ public static class SubagentWorkspaceTests
         h.Catalog.Handler = (r, ct) =>
         {
             if (IsChild(r)) return Reply.Text("child done");
-            refused = r.Messages[^1].ToolResults.SingleOrDefault()?.Content;
+            // answer the refusal with text, or the parent spawns again on every turn until agent.maxTurns
+            if (Reply.HasToolResult(r)) { refused = r.Messages[^1].ToolResults.SingleOrDefault()?.Content; return Reply.Text("gave up"); }
             return Reply.Tool("agent_spawn", new { task = "write", name = "writer", agent = "a", workspace = "wsp_nope" });
         };
         await h.SendAsync(parent.Id, "go");
@@ -130,7 +131,7 @@ public static class SubagentWorkspaceTests
         h.Catalog.Handler = (r, ct) =>
         {
             if (IsChild(r)) return Reply.Text("child done");
-            refused = r.Messages[^1].ToolResults.SingleOrDefault()?.Content;
+            if (Reply.HasToolResult(r)) { refused = r.Messages[^1].ToolResults.SingleOrDefault()?.Content; return Reply.Text("gave up"); }
             return Reply.Tool("agent_spawn", new
             {
                 agent = "a",

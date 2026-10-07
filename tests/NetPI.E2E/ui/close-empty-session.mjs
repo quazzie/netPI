@@ -72,6 +72,14 @@ try {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`[console] ${m.text()}`); });
   page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
 
+  // A fresh browser restores the chat tabs earlier tests on this server left open (the host's ui.state key
+  // netpi.openTabs): on a shared shard that was a dozen chats to load, and closing them one by one took up to 15 s.
+  // None of them is what this test is about, so it starts without them.
+  await fetch(`${BASE}/api/rpc/ui.state.set`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-NetPI-Token': TOKEN },
+    body: JSON.stringify({ key: 'netpi.openTabs', value: null }),
+  });
   await page.goto(`${BASE}/?token=${encodeURIComponent(TOKEN)}`);
   await page.waitForSelector('.panel.left', { timeout: 15_000 });
   const sessionsTab = page.locator('.panel.left .strip-tab', { hasText: 'Sessions' });

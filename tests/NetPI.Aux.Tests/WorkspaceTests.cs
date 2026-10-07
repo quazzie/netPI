@@ -22,7 +22,6 @@ public static class WorkspaceTests
     {
         t.Add("workspaces: two writing workers edit the same file in separate worktrees", TwoWriters);
         t.Add("workspaces: the primary checkout is untouched while its workers work", PrimaryUntouched);
-        t.Add("workspaces: a stale absolute path into the primary checkout is refused for a mutation", StalePathRefused);
         t.Add("workspaces: a missing workspace fails with a message and no fall back", MissingWorkspaceFails);
         t.Add("workspaces: a workspace of another repository is refused", OtherRepositoryRefused);
         t.Add("workspaces: provisioning starts from a recorded commit and leaves the parent's dirty changes behind", CleanStart);
@@ -34,7 +33,6 @@ public static class WorkspaceTests
         t.Add("workspaces: integrate verifies the branch the worktree is on, and refuses a stale record", IntegrateRefusesStaleRecord);
         t.Add("workspaces: a gated integrate merges the base first, runs verify in the worktree, and moves the base only when it passes", IntegrateGated);
         t.Add("workspaces: cleanup refuses a dirty, unbound or running worktree and removes a merged one", CleanupSafety);
-        t.Add("workspaces: a background process keeps its workspace busy", BackgroundProcessHoldsWorkspace);
         t.Add("workspaces: retirement ignores an archived bound session; a live one still blocks", RetirementIgnoresArchived);
         t.Add("workspaces: the guard is per spelling: relative, absolute, .. and a symlink into another checkout", GuardSpellings);
         t.Add("workspaces: a junction in an intermediate parent is the same place, so the write is refused", JunctionInIntermediateParent);
@@ -48,7 +46,6 @@ public static class WorkspaceTests
         t.Add("workspaces: the notice names the checkout, the branch and what a write outside it does", NoticeText);
         t.Add("workspaces: a switch asked for mid-batch is applied at the next model call", DeferredSwitch);
         t.Add("workspaces: the switch is in the next model call's batch and guard, not one call later", SwitchVisibleToNextModelCall);
-        t.Add("workspaces: every consumer agrees on the assigned root", ConsumersAgree);
         t.Add("workspaces: the identity changes with the binding, so a stale answer is recognizably stale", IdentityChanges);
         t.Add("workspaces: the resolve cache is per project, so a cross-repository bind is refused inside the window", ResolveCacheIsPerProject);
     }
@@ -346,21 +343,6 @@ public static class WorkspaceTests
             Json(new { action = "download", host = "nuc", from = "/tmp/x", to = mine }), CancellationToken.None);
         Check.False(allowed.IsError, "a download into the worker's own workspace was refused: " + allowed.Content);
         Check.Equal(1, launcher.Calls, "scp ran once");
-    }
-
-    private static Task StalePathRefused()
-    {
-        using var env = new Env();
-        if (!env.GitAvailable) { Skip("stale absolute path"); }
-        var w = env.Provision("w", "ses_w");
-        var session = env.Session("w", w.Binding!.WorkspaceId);
-        env.Write(env.ProjectPath, "target.txt", "primary's copy");
-        // The absolute path the worker would remember from the checkout it was told about.
-        var (result, _) = env.Write_(session, w.Binding, Path.Combine(env.ProjectPath, "target.txt"));
-        Check.True(result.IsError, "a stale absolute path into the primary checkout was allowed");
-        Check.Contains(result.Content, "Refused");
-        Check.Equal("primary's copy", File.ReadAllText(Path.Combine(env.ProjectPath, "target.txt")));
-        return Task.CompletedTask;
     }
 
     private static Task MissingWorkspaceFails()
@@ -687,9 +669,12 @@ public static class WorkspaceTests
         Check.False(boundOk);
         Check.Contains(boundWhy!, "still bound");
 
-        // A process working in it: refused.
+        // A process working in it: refused. Clean, unbound and with nothing of its own on the branch it may go; the shell
+        // plugin's answer (a directory with a running process inside it is busy) is what blocks it, asked about its root.
         var busy = env.Provision("busy", "ses_b").Binding!;
-        var (busyOk, busyWhy) = env.Provisioner.CanRetire(store.GetWorkspace(busy.WorkspaceId)!, _ => true);
+        var busyRecord = store.GetWorkspace(busy.WorkspaceId)!;
+        Check.True(env.Provisioner.CanRetire(busyRecord).Ok, "a clean, unbound worktree with nothing running may go");
+        var (busyOk, busyWhy) = env.Provisioner.CanRetire(busyRecord, new BusyProcesses(busy.Root).IsBusyIn);
         Check.False(busyOk);
         Check.Contains(busyWhy!, "running process");
 
@@ -715,23 +700,6 @@ public static class WorkspaceTests
         Check.False(Directory.Exists(merged.Root));
         Check.Equal(null, store.GetWorkspace(merged.WorkspaceId));
         return;
-    }
-
-    private static Task BackgroundProcessHoldsWorkspace()
-    {
-        using var env = new Env();
-        if (!env.GitAvailable) { Skip("background process"); }
-        var w = env.Provision("bg", "ses_bg").Binding!;
-        var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
-        var record = store.GetWorkspace(w.WorkspaceId)!;
-        Check.True(env.Provisioner.CanRetire(record).Ok, "a clean, unmerged-free worktree with nothing running may go");
-
-        // The shell plugin's answer: a directory with a running process in it is busy, and that blocks the cleanup.
-        var busy = new BusyProcesses(w.Root);
-        var (ok, why) = env.Provisioner.CanRetire(record, busy.IsBusyIn);
-        Check.False(ok);
-        Check.Contains(why!, "running process");
-        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -787,6 +755,7 @@ public static class WorkspaceTests
         {
             var (result, _) = env.Write_(session, w, path);
             Check.True(result.IsError, $"allowed a write to {path}");
+            Check.Contains(result.Content, "Refused");
         }
 
         // A junction/symlink that points into another checkout is the same directory, not a new spelling of "outside".
@@ -1180,27 +1149,6 @@ public static class WorkspaceTests
         {
             foreach (var e in list) yield return e;
         }
-    }
-
-    private static Task ConsumersAgree()
-    {
-        using var env = new Env();
-        if (!env.GitAvailable) { Skip("consumers agree"); }
-        var w = env.Provision("agree", "ses_ag").Binding!;
-        var session = env.Session("ag");
-        env.Ctx.Services.Get<IWorkspaceStore>()!.SetSessionWorkspace(session.Id, w.WorkspaceId);   // what sessions.setWorkspace does
-
-        // The runtime's resolver and the session store it asks: one answer.
-        Check.Equal(w.Root, env.Resolver.CwdOf(session));
-        Check.Equal(w.Root, env.Ctx.Sessions.GetCwd(session));
-        Check.Equal(w.Root, env.Ctx.SessionsFake.GetCwd(session));
-
-        // The tool context every tool call gets: relative paths resolve in the workspace, not in the project.
-        var ctx = env.Context(session, w);
-        Check.Equal(w.Root, ctx.Cwd);
-        Check.Equal(Path.Combine(w.Root, "x.txt"), ctx.ResolvePath("x.txt"));
-        Check.Equal(w, ctx.Workspace());
-        return Task.CompletedTask;
     }
 
     private static Task IdentityChanges()

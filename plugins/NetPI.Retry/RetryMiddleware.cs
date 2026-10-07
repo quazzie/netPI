@@ -20,13 +20,16 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
         [EnumeratorCancellation] CancellationToken ct)
     {
         var o = options();
-        if (!o.Enabled)
-        {
-            await foreach (var ev in next(request, ct).WithCancellation(ct).ConfigureAwait(false)) yield return ev;
-            yield break;
-        }
-
         var maxAttempts = Math.Max(1, o.MaxAttempts);
+        // A provider may extend (or disable) the silence between events for its own models: the Claude CLI works
+        // with its own tools and subagents and can be silent for a long time without being stuck; a dead process
+        // ends the stream, which the truncation path already catches.
+        var modelStall = request.Model.StallTimeoutSeconds switch
+        {
+            null => o.StallTimeout,
+            0 => Timeout.InfiniteTimeSpan,
+            { } secs => TimeSpan.FromSeconds(secs),
+        };
         var dirty = false; // something the consumer must discard was emitted since the last reset
         var waited = TimeSpan.Zero; // the retry budget spent so far: the waiting between attempts. Time the model
                                     // spent producing events is not counted, so a drop after a long stream is still
@@ -51,7 +54,7 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
                 {
                     ModelStreamEvent current;
                     // Only time the provider, not the consumer: the stall timer runs while we wait for the next event.
-                    stall.CancelAfter(first ? o.FirstEventTimeout : o.StallTimeout);
+                    stall.CancelAfter(first ? o.FirstEventTimeout : modelStall);
                     try
                     {
                         var vt = e!.MoveNextAsync();
@@ -107,7 +110,7 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
             string what; // the notice's own words: what happened, in the harness's voice, without the provider's
             if (stalled)
             {
-                var secs = (first ? o.FirstEventTimeout : o.StallTimeout).TotalSeconds;
+                var secs = (first ? o.FirstEventTimeout : modelStall).TotalSeconds;
                 reason = first ? $"no response for {secs:0}s" : $"stream stalled for {secs:0}s";
                 what = first ? $"No response for {Ago(secs)}" : $"Stream stalled for {Ago(secs)}";
                 failure = new ModelException($"Model stream stalled: {reason}", true, null, "stalled", failure);

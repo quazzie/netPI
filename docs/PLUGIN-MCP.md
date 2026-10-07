@@ -32,7 +32,7 @@ Remote resources are negotiated, listed and read. A server may advertise resourc
 - **`resources` mirrors `tools` as an allow-list.** Omitted exposes every advertised resource, `[]` exposes none, and an entry may be an exact URI or a prefix ending in `*`.
 - **Subscriptions are out of scope.** `resources/subscribe` needs the server→client request path NetPI does not open; `subscribe: true` is recorded, not acted on.
 
-`notifications/resources/list_changed` refreshes the catalog exactly like the tools path. `resources/templates/list`, prompts, elicitation, sampling and OAuth remain outside this release.
+`notifications/resources/list_changed` refreshes the catalog exactly like the tools path: a server that announces `resources.listChanged` is listened to even when it has no tools (or its tools announce nothing), and the modern `subscriptions/listen` asks for `resourcesListChanged` beside `toolsListChanged`; an acknowledgement that confirms either is accepted. `resources/templates/list`, prompts, elicitation, sampling and OAuth remain outside this release.
 
 ## Configuration
 

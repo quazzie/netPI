@@ -179,7 +179,7 @@ internal sealed class HttpTransport : IMcpTransport
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _stop.Token);
         var id = Interlocked.Increment(ref _next);
-        using var request = modern ? Http(HttpMethod.Post, Protocol.Message("subscriptions/listen", new JsonObject { ["notifications"] = new JsonObject { ["toolsListChanged"] = true } }, id, Version)) : Http(HttpMethod.Get);
+        using var request = modern ? Http(HttpMethod.Post, Protocol.Message("subscriptions/listen", Subscription.Request(), id, Version)) : Http(HttpMethod.Get);
         using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linked.Token).ConfigureAwait(false);
         if (!modern && response.StatusCode == HttpStatusCode.MethodNotAllowed) return;
         await CheckAsync(response, linked.Token).ConfigureAwait(false);

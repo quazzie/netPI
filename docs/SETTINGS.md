@@ -69,7 +69,7 @@ no SQL outside `src/NetPI.Host/Storage/Sqlite`, and nothing a plugin stores leav
 | `dumpFailedRequests` | `true` | save the request **and response** body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30, response capped at 16k chars) and add the server's `x-request-id` / response id to the error, for reproducing backend bugs. A rate limit or an overloaded backend is not saved: it repeats on every attempt and its dumps rotate the useful ones out |
 | `parseThinkTags` | `true` | split a leading inline `<think>…</think>` into thinking blocks; a tag after visible text stays text (it is content the model wrote) |
 | `defaultMaxOutputTokens` | `16384` | when the catalog says `max_output_tokens: null`. Every provider also cuts the value down to what the model's `contextWindow` has left beside the request, so it never sends more output than the window can hold |
-| `modelsCacheSeconds` | `10` | `/v1/models` cache |
+| `modelsCacheSeconds` | `10` | `/v1/models` cache; local endpoints are checked every 2 s in the provider background loop, respecting this TTL |
 | `reasoningSummary` | – | Responses `reasoning.summary` (nInfer rejects it with HTTP 400; leave unset for AiProxy/nInfer) |
 | `headers` | – | extra HTTP headers |
 | `enabled`, `local` | `true` | a local model's `concurrency` is how many runs its agents share |
@@ -124,6 +124,58 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `fallbackModels` | built-in list | used when `/v1/models` can't be listed |
 | `modelsCacheSeconds` | `600` | |
 
+### `providers.claudeCli` (Claude through the Claude Code CLI)
+
+Runs the installed `claude -p` as a subprocess, signed in with the owner's subscription (`claude auth login` once, in a
+terminal; the CLI bundled with the Claude desktop app has its own login and does not share it). Give an agent a
+`claude-cli/…` model and that agent **is** Claude Code for the run: it works in the session's workspace with the CLI's own
+tools (read, search, edit, write, shell, web) and answers in text. NetPI's tools are not used; a notice names the folder the
+CLI works in, and its tool use shows in the chat as ordinary tool-call blocks (named as the CLI names them, `Read`, `Bash`,
+`Edit`…), already run: the agent loop records them and never executes them (see "Calls the provider ran itself" in
+[PROTOCOL.md](PROTOCOL.md)). The CLI's tools
+act on the disk directly: NetPI's workspace guard and permission rules do not apply to them. Images are not sent.
+`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from the child's environment, so a call is never billed to an API
+key by accident; if the CLI still reports an API-key sign-in, the stream carries a warning. The cost is left unreported
+(`total_cost_usd` is the API price, not what a subscription pays), so budgets do not count it. Subscription usage limits
+apply, and a run that works through many files uses a lot of them.
+
+| key | default | |
+|---|---|---|
+| `enabled` | `false` | models are listed only while enabled |
+| `executable` | `claude` | name on PATH or a full path. A bare `claude` that is not on PATH is looked for in `~/.local/bin`, where the installer puts it |
+| `models` | `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-4-5` | ids passed to `--model` |
+| `timeoutSeconds` | `3600` | the longest one call may run before it is killed (10–14400). A backstop: a CLI that makes progress is not stuck, and a dead one ends by itself |
+| `maxConcurrent` | `2` | CLI processes at once (1–16): each is a full Claude Code, and the subscription's rate limits are shared; the other calls wait, and say so |
+| `tools` | `default` | `default`: every built-in tool of the CLI; `none`: text only; or a list for `--tools`, e.g. `Read,Grep,Glob` for read-only |
+| `permissionMode` | `bypassPermissions` | a print-mode call cannot answer a prompt, so the CLI's tools run unasked; `acceptEdits`, `plan` and `default` limit them (what is not allowed then fails) |
+| `settingSources` | – | which settings files the CLI loads (`user`, `project`, `local`); none by default, because they bring hooks and permission rules |
+| `connectors` | `false` | let the CLI load the account's MCP connectors |
+| `usage` | `true` | show the Claude subscription usage (session and weekly windows) in the top bar. It is the utilization the CLI prints after each call: nothing is read from the CLI's login, no token is used, and nothing is fetched |
+| `stallTimeoutSeconds` | `1800` | how long the CLI may stay silent before the retry plugin declares the call stalled and retries it. The CLI's own tools and subagents can run for minutes without a line of output (the global `retry.stallTimeoutSeconds` is 180 s, which would kill a running subagent and wipe the chat's in-flight answer); 0 never declares a stall — a dead CLI ends the stream on its own |
+
+Each call is one process with the prompt on stdin (the system prompt through a temporary `--system-prompt-file` that also
+tells the model which tools it really has). The working folder is the session's workspace (else its project folder, else
+`%TEMP%\netpi-claude-cli`). The reported usage is the last turn of the CLI's own loop, so the context size is the size of the
+CLI's real context, shown by the context ring against the model's real window: the CLI reports it with each answer (1M for the Claude 5
+models, 200k for the earlier ones), and the catalog takes it up. The CLI compacts its own session, so NetPI's compaction leaves these chats alone.
+
+**A chat keeps one CLI session.** The first turn starts it (`--session-id`, with the conversation so far as the prompt); every
+later turn resumes it (`--resume`) and sends only what is new to it: the messages after the point it had, without its own answers
+and its own tools' results (it holds those), an answer another model gave in between (labelled), and no compaction summary (the CLI
+has the real history, and compacts it itself). Nothing new (a retry) sends "Continue.". The pointer (NetPI chat → CLI session, and
+the newest message the CLI has) is kept in the plugin's data across restarts and dropped after 60 days without use. A CLI session
+that no longer exists, or a chat whose history was cut back, starts a new session with the whole conversation (and says so). A title
+or compaction call through the model uses no session. The CLI keeps its sessions as files under `~/.claude/projects`, so a chat's
+sessions also show in `claude --resume`; NetPI never deletes them.
+
+Only an agent's own turns get the CLI's tools and its folder: a title, a compaction summary or any other side call through a
+`claude-cli` model is text only and runs outside every project. The child process does not inherit `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, the cloud-provider switches, NetPI's own secrets, any variable a secret setting
+reads (`env:NAME`) or `shell.hideEnv`, the same policy as NetPI's shell tool; the user's other variables stay. On Windows the
+CLI and everything it starts are in a job object that dies with NetPI, so a killed or crashed NetPI leaves no CLI running. A
+failure after the CLI ran tools is reported and never retried automatically, and a refusal for the subscription's limit says when
+the window opens again.
+
 ## Agents
 
 | key | default | |
@@ -144,10 +196,14 @@ A profile is the opening of a chat's system prompt and the tools it gets (Settin
 project's default profile (the Projects dialog; `project.meta.profile`, `"none"` for none), else `profiles.defaultProfile`;
 each chat can pick another next to the model: free before the first message, later the chat is read again once.
 Subagents don't use profiles: the agent that starts one chooses its tools.
+Chats NetPI starts by itself (idea work from the Ideas tab, the start screen or the idea dialog, a plan approved in a
+new chat, idea refinement, schedule runs, `sessions.dispatch` without a profile) get `profiles.autoProfile` in place of
+the global default; a project's own default still wins. Such starters call `profiles.applyAuto` ([PROTOCOL](PROTOCOL.md)).
 
 ```jsonc
 "profiles": {
   "defaultProfile": "coder",
+  "autoProfile": "coder",      // "none": no profile; unset: the same as defaultProfile
   "coder": { "name": "Coder" },
   "admin": { "name": "Admin", "prompt": "You are a system administrator for the hosts in ~/.ssh/config. …",
              "toolsOff": ["bash", "pwsh", "write", "edit"] }
@@ -160,6 +216,7 @@ Subagents don't use profiles: the agent that starts one chooses its tools.
 | `profiles.<id>.prompt` | replaces the opening of the system prompt (the built-in "You are a coding agent…", or `context.customPrompt`); empty keeps it |
 | `profiles.<id>.toolsOff` | tools the chat starts without (checkboxes in the dialog); the chat's tools button can still change them |
 | `profiles.defaultProfile` | the profile of new chats whose project has none |
+| `profiles.autoProfile` | the profile of chats NetPI starts by itself whose project has none: a profile id, `"none"`, or unset for `defaultProfile` |
 
 ## Agents
 
@@ -185,7 +242,7 @@ where a chat runs, the profile who it is.
 
 - **Active:** an agent takes work only while it can without disturbing anything: a local agent while AiProxy reports its
   model **loaded** (NetPI never loads a model: loading one could evict what another agent runs; switch in AiSwitcher and
-  the agents follow within `models.refreshSeconds`), a cloud agent while its provider answers, and neither while
+  local OpenAI-compatible providers refresh in the background within their model-cache TTL plus 2 s; the agents follow `models.changed`), a cloud agent while its provider answers, and neither while
   switched off. An inactive agent stays listed with the reason; a chat on it stops at once with a notice, and waiting
   runs are told too. Runs already going finish.
 - **Instances:** default the model's slots for a local model, 1 for a cloud one. A local model's shared capacity is its
@@ -316,7 +373,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 
 | key | default | |
 |---|---|---|
-| `compaction.enabled` | `true` | |
+| `compaction.enabled` | `true` | a model that keeps its own context (`managesOwnContext`, the Claude CLI) is never auto-compacted: summarizing NetPI's copy of the messages would not shrink what its backend holds |
 | `compaction.reserveTokens` | `16384` | compact when fewer tokens than this are left (at most half the window) |
 | `compaction.thresholdPercent` | `1` | also compact at this share of the window (1 = only by the reserve) |
 | `compaction.keepRecentTokens` | `20000` | recent messages kept verbatim |
@@ -324,18 +381,18 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `compaction.effort` | `low` | the summarizer's reasoning effort (`none`, `low`, `medium`, `high`, or `chat` for the chat's own); an effort the model does not offer means its default. Its thinking counts against the summary's budget, which at a coding chat's effort a long turn used up |
 | `compaction.maxSummaryTokens` | 80 % of the reserve (`13107`) | output budget of a summary, thinking included (at most a quarter of the window). A summary cut off at it is asked again once with up to twice the room (within the window and the model's output cap) before the compaction fails |
 | `compaction.defaultContextWindow` | `131072` | for models without a known window |
-| `nudge.enabled` / `nudge.maxPerRun` | `true` / `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it. A cut-off that is only thinking gets "stop deliberating, take the smallest next step" instead of "continue where you left off" (which meant more thinking), and one cut off while writing a tool call as text gets "it did not run: make it smaller, write a large file in parts". `maxPerRun` counts *consecutive* nudges: any acceptable response (a tool call, a final answer, an aborted or errored turn) resets it, so the cap bounds one stall episode rather than the whole run |
-| `loops.enabled` / `loops.maxHintsPerRun` | `true` / `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results (the whole result text, durations and times aside, and its images: two screenshots or page snapshots that differ anywhere are progress), the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
+| `nudge.maxPerRun` | `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it. A cut-off that is only thinking gets "stop deliberating, take the smallest next step" instead of "continue where you left off" (which meant more thinking), and one cut off while writing a tool call as text gets "it did not run: make it smaller, write a large file in parts". `maxPerRun` counts *consecutive* nudges: any acceptable response (a tool call, a final answer, an aborted or errored turn) resets it, so the cap bounds one stall episode rather than the whole run |
+| `loops.maxHintsPerRun` | `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results (the whole result text, durations and times aside, and its images: two screenshots or page snapshots that differ anywhere are progress), the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
 | `loops.repeats` | `3` | the call about to run counts (2–10) |
 | `loops.contextEvery` | `4` | the full-conversation checks (`loops.contextChecks`) run on every Nth model call of a run, at most 8 per run, with their own budget (the compact check keeps its 5) |
 | `memory.enabled` | `true` | with an embedding model (`embed.model`) every chat is embedded in the background (a sweep every 5 minutes) and `memory_search` finds earlier chats by meaning; the text goes only to the embedding server |
 | `memory.maxChunksPerChat` | `24` | pieces of ~1,200 characters a chat is embedded as (4–200); the start, the summaries and the end are kept first |
 | `loops.model` | – | a decision model (`qwen3.8-27b`, `kev-9b`) that also reads the goal and the last 10 steps when 6 of the last 8 use one tool and 3 of them failed, and hints at p(stuck) ≥ 0.8 (`decide.ask`, needs the Decide plugin; at most 5 checks per run, 10 s each) |
-| `toolRepair.enabled` | `true` | execute tool calls a model wrote as text (`<tool_call>…`), but only when the message is nothing but the call: an answer that also explains, documents or quotes the markup stays text, and the nudge asks for a real call |
-| `retry.enabled` / `retry.maxAttempts` | `true` / `6` | retries what the provider calls transient — lost connections, stalled streams, rate limits and overload (429/529) and 5xx/server-error responses — up to this many attempts, with a notice in the chat each time; after that the error surfaces unchanged, with its request id |
+| (none: the plugin's own on/off switch) | | execute tool calls a model wrote as text (`<tool_call>…`), but only when the message is nothing but the call: an answer that also explains, documents or quotes the markup stays text, and the nudge asks for a real call |
+| `retry.maxAttempts` | `6` | retries what the provider calls transient — lost connections, stalled streams, rate limits and overload (429/529) and 5xx/server-error responses — up to this many attempts, with a notice in the chat each time; after that the error surfaces unchanged, with its request id |
 | `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter; when the server says how long to wait (`Retry-After`, e.g. with a 429 or 529), at least that long |
 | `retry.firstEventTimeoutSeconds` | `600` | silence before the first token (slow prefill) |
-| `retry.stallTimeoutSeconds` | `180` | silence between tokens |
+| `retry.stallTimeoutSeconds` | `180` | silence between tokens; a model can override it for its own calls with `ModelInfo.stallTimeoutSeconds` (the Claude CLI ships 1800 s, since its own tools and subagents can be silent for minutes) |
 | `retry.maxTotalSeconds` | `300` | give up once this much of the waiting between attempts (the backoff and any Retry-After) has passed: the time an attempt ran or stalled does not count against it, so a full first-token stall still gets its retry whatever this is set to |
 
 ## Tools

@@ -468,6 +468,8 @@ export async function newSession(opts = {}) {
     if (agent) params.model = agent.model;
     let s = await rpc('sessions.create', params);
     if (agent) s = (await useAgent(s.id, agent.key)) ?? s;
+    // a chat the app starts on its own (idea work) gets the automatic profile (settings profiles.autoProfile)
+    if (opts.auto && hasRpc('profiles.applyAuto')) s = (await rpc('profiles.applyAuto', { sessionId: s.id }).catch(() => null)) ?? s;
     upsertSession(s);
     activate(s.id);
     queueMicrotask(() => composer.focus?.());

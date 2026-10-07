@@ -172,3 +172,41 @@ settling waits, the shell timeouts, or any assertion.
 - The Aux test that failed in the baseline (`browser: … checkout refused, leave hands the tab back`) now passes.
   The likely reason is that the stray `bash`/`sleep` processes the old code leaked were interfering; the exact
   cause is still unproven.
+
+---
+
+# Step 5, applied (2026-10-07)
+
+All suites were green before and after; what changed is where the time went. A test that waited for something it does
+not check now waits for the state it checks, or runs the production timing at test scale through a seam that already
+had a sibling (a settable property, a constructor parameter). Measured per test on an otherwise idle machine; each
+changed test passed 10 runs idle and under CPU load.
+
+| Test | Before | After | What the time was |
+| --- | ---: | ---: | --- |
+| Aux: ideas verify queue (bounded tries / not now / queued chats / work list) | 7.4 / 8.6 / 1.0 / 1.0 s | 0.4 / 0.6 / 0.4 / <0.1 s | real 1-2-4 s backoff; `IdeaVerifyQueue.BackoffUnit` (internal, like `PostponeStep`) runs it in ms |
+| Aux: mcp cold start does not wait for a slow server | 5.2 s | 2.8 s | the fixture delayed discover *and* the initialize fallback by 2.5 s |
+| Tools: shell idle (`process.idle`) | 7.2 s | 1.7 s | `sleep 5` and two fixed 2 s delays; now a file the test creates, and checks until reported |
+| Tools: process scoping / wait timeout / background / cancelled wait | 3.6 / 2.6 / 1.9 / 0.9 s | 0.1-0.5 / 1.1 / 1.1 / 0.1 s | the 500 ms `BackgroundStartupWait` per start and fixed timeouts |
+| Tools: bash abort kills the tree | 0.7 s | 0.25 s | a fixed 700 ms cancel, which could kill bash before it forked; now aborts on a marker |
+| Providers: two unreachable-endpoint checks | 2.0 + 2.1 s | <0.2 s | Windows retries a refused loopback SYN for 2 s; the test client turns that off per socket |
+| Agent: scheduler queue timeout (3 tests) and agents.changed debounce | 3.3 / 3.0 / 2.1 / 1.2 s | 0.4 / 0.3 / 0.5 / 0.17 s | real seconds of `agents.queueTimeoutSeconds`; `AgentScheduler.QueueTimeoutUnit` and `PublishPending` (internal) |
+| Host: bus dispose unblocks a flush | 7.0 s | 0.56 s | the hard-coded 5 s + 2 s dispose grace; `EventBus(disposeGrace:)`, defaults unchanged |
+| Host: install lock (build) / next start waits for the lock | 5.4 / 2.1 s | 3.6 / 1.0 s | `Start-Sleep 3` hoping the waiter had tried; now the waiter's note that the lock turned it away |
+| Host: busy-port fallback / events.flush order | 2.1 / 1.5 s | 0.1 / 0.8 s | the 2 s refused connect again; `Thread.Sleep(5)` lasting a 15.6 ms timer tick |
+| Host: bus falls-behind / stale flush / held gate; settings reload / failed write | 0.8 / 0.7 / 0.9 / 1.7 / 0.7 s | 0.01 / 0.5 / 0.45 / 1.3 / 0.1 s | timer ticks and fixed waits; `SettingsStore.WriteRetryPause` (internal) |
+| E2E: ui.smoke (bounds the sharded run) | 34-43 s | 22 s | workers' `delay=2500` on top of the 3 s hold, 900 ms per tab, 500-800 ms per run |
+| E2E: ui.remove-agent | 4.6 s | 2.6 s | a fixed 2 s pause; now the reply frame and the row going |
+| E2E: sessions.delete-orchestrator / delete-during-run | 6.5-8.1 / 3.9 s | 1.1 / 1.5 s | **a product gap**: a deleted chat's runs went on until their model call ended; the runtime now aborts on `session.deleted` |
+
+**A flaky test, fixed in the bus.** "bus: a flush waits for its marker to be queued on a saturated input" failed 8 of 20 runs
+under 14 CPU burners: an owed flush marker was retried only after the dispatcher had drained all input, so every newer
+event took the slot the line had just freed, and a steady publisher kept the flush out for as long as it published. The
+dispatcher now retries owed markers before each item it delivers (regression: "a steady publisher does not keep a flush
+out of a busy line", 5 of 6 failures on the old loop).
+
+Left on purpose: real browser launches, real git/bash/pwsh, the real `build.ps1` runs, the subagent spawn+wait stress
+loop (it is what caught the yield race), the ssh broker's sleeps (their margins were raised for loaded machines), and
+the E2E tests whose scenario timing is what they observe (slots, wait-steer, provider reload mid-stream), the
+plugin hot-reload tests (the production 800 ms reload delay that gathers a multi-file copy into one reload), and the
+Host tests that move real data on purpose (100 MB backup copy, a 33 MB ws message, 300 flushed settings writes).

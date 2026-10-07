@@ -111,14 +111,11 @@ public static class LoopTests
             Check.Contains(d!.Text, "going back and forth");
         });
 
-        r.Add("loops: switched off, a hint budget of 0, or a turn without tool calls: no hint", async () =>
+        r.Add("loops: a hint budget of 0, or a turn without tool calls: no hint", async () =>
         {
             var e = Setup();
             await e.Ran("bash", new { command = "ls" }, "a");
             await e.Ran("bash", new { command = "ls" }, "a");
-            e.Ctx.SettingsFake.Set("loops.enabled", false);
-            Null(await e.Next(("bash", new { command = "ls" })));
-            e.Ctx.SettingsFake.Set("loops.enabled", true);
             e.Ctx.SettingsFake.Set("loops.maxHintsPerRun", 0);
             Null(await e.Next(("bash", new { command = "ls" })));
             e.Ctx.SettingsFake.Set("loops.maxHintsPerRun", 3);

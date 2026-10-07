@@ -38,6 +38,9 @@ public static class IdeasVerifyQueueTests
         }
     }
 
+    /// <summary>A second of backoff in these tests: the doubling and the bounds are what is tested, not the wall clock.</summary>
+    private static readonly TimeSpan Unit = TimeSpan.FromMilliseconds(20);
+
     private static async Task Until(Func<bool> what, int ms = 5000)
     {
         for (var waited = 0; waited < ms; waited += 25)
@@ -80,15 +83,15 @@ public static class IdeasVerifyQueueTests
         r.Add("ideas verify queue: a proposal is tried a bounded number of times, then handed back with its reason", async () =>
         {
             var ctx = new FakePluginContext();
-            ctx.SettingsFake.Set("ideas.verifyRetrySeconds", 1);   // the waits are the shortest the queue allows
+            ctx.SettingsFake.Set("ideas.verifyRetrySeconds", 1);
             var work = new IdeaWork(ctx); ctx.ServicesFake.Register<IBackgroundWork>(work);
-            var queue = new IdeaVerifyQueue(ctx);
+            var queue = new IdeaVerifyQueue(ctx) { BackoffUnit = Unit };   // the 1, 2 and 4 s of backoff in milliseconds
             var attempts = 0;
             string? given = null;
             queue.Defer("save:s1:r1", null, null, _ => { Interlocked.Increment(ref attempts); return Task.FromResult(IdeaVerifyQueue.Outcome.Again("the model was busy")); },
                 "the model was busy", why => given = why);
 
-            await Until(() => Volatile.Read(ref attempts) == IdeaVerifyQueue.MaxTries, 20000);
+            await Until(() => Volatile.Read(ref attempts) == IdeaVerifyQueue.MaxTries && given is not null, 20000);   // handed back: the last step of a drop
             Check.Equal(0, queue.Pending, "the proposal is not waiting any more");
             Check.Contains(given, "the model was busy", "and the caller is told why it is retryable again");
             Check.Contains(given, $"tried {IdeaVerifyQueue.MaxTries} times", "including how often it was tried");
@@ -107,7 +110,7 @@ public static class IdeasVerifyQueueTests
             var ctx = new FakePluginContext();
             ctx.SettingsFake.Set("ideas.verifyRetrySeconds", 1);
             var work = new IdeaWork(ctx); ctx.ServicesFake.Register<IBackgroundWork>(work);
-            var queue = new IdeaVerifyQueue(ctx) { PostponeStep = TimeSpan.FromMilliseconds(20), MaxPostponed = 6 };
+            var queue = new IdeaVerifyQueue(ctx) { BackoffUnit = Unit, PostponeStep = TimeSpan.FromMilliseconds(20), MaxPostponed = 6 };
             // not now, not now, then the model is busy twice and answers: the two busy attempts are the only tries spent
             var script = new Queue<IdeaVerifyQueue.Outcome>([IdeaVerifyQueue.Outcome.Later, IdeaVerifyQueue.Outcome.Later,
                 IdeaVerifyQueue.Outcome.Again("busy"), IdeaVerifyQueue.Outcome.Again("busy"), IdeaVerifyQueue.Outcome.Done()]);
@@ -121,7 +124,7 @@ public static class IdeasVerifyQueueTests
             // a chat that never stops working: handed back after MaxPostponed, not polled for ever
             var never = 0;
             queue.Defer("save:s3:r1", null, null, _ => { Interlocked.Increment(ref never); return Task.FromResult(IdeaVerifyQueue.Outcome.Later); }, "the chat is busy", why => given = why);
-            await Until(() => queue.Pending == 0, 20000);
+            await Until(() => queue.Pending == 0 && given is not null, 20000);
             Check.Equal(6, never, "MaxPostponed attempts, then no more");
             Check.Contains(given, "put off 6 times", "and the caller is told why it is retryable again");
             await Task.Delay(150);
@@ -136,11 +139,11 @@ public static class IdeasVerifyQueueTests
             ctx.SettingsFake.Set("ideas.verifyRetrySeconds", 1);
             var scheduler = new QueuedScheduler { Queued = true };
             ctx.ServicesFake.Register<IAgentScheduler>(scheduler);
-            var queue = new IdeaVerifyQueue(ctx);
+            var queue = new IdeaVerifyQueue(ctx) { BackoffUnit = Unit };
             var attempts = 0;
             queue.Defer("save:s1:r1", null, null, _ => { Interlocked.Increment(ref attempts); return Task.FromResult(IdeaVerifyQueue.Outcome.Done()); }, "the model was busy");
 
-            await Task.Delay(400);   // longer than the backoff, so only the queue's own gate can hold it
+            await Task.Delay(400);   // far longer than the backoff, so only the queue's own gate can hold it
             Check.Equal(0, attempts, "a chat queued ahead of it is served first: waiting costs no cancelled inference");
 
             scheduler.Queued = false;
@@ -156,7 +159,7 @@ public static class IdeasVerifyQueueTests
             var ctx = new FakePluginContext();
             ctx.SettingsFake.Set("ideas.verifyRetrySeconds", 1);
             var work = new IdeaWork(ctx); ctx.ServicesFake.Register<IBackgroundWork>(work);
-            var queue = new IdeaVerifyQueue(ctx);
+            var queue = new IdeaVerifyQueue(ctx) { BackoffUnit = Unit };
             var attempts = 0;
             queue.Defer("save:s1:r1", "s1", "p1", _ => { Interlocked.Increment(ref attempts); return Task.FromResult(IdeaVerifyQueue.Outcome.Again("the model was full")); }, "the model was busy");
 
