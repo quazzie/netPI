@@ -31,6 +31,16 @@ const shot = async (page, name) => {
   await page.screenshot({ path: path.join(OUT, `${name}.png`) });
   console.log(`  screenshot ${name}.png`);
 };
+// Wait until the chat shows `marker` (what the next check reads), not for a fixed pause: a pause is too long on an idle
+// machine and too short on a loaded one. A marker that never comes leaves the check below to fail with the text it saw.
+const chatShows = (page, marker, ms = 10_000) =>
+  page.waitForFunction((m) => (document.querySelector('.scroller > .content')?.innerText ?? '').includes(m), marker, { timeout: ms }).catch(() => {});
+// The same for the right panel's open tab: its own text, once it is more than the "Loading…" placeholder (and holds `includes`).
+const paneShows = (page, includes = '', ms = 10_000) =>
+  page.waitForFunction((want) => {
+    const t = (document.querySelector('.panel.right > .body .pane:not([hidden])')?.innerText ?? '').trim();
+    return t.length > 20 && t.includes(want);
+  }, includes, { timeout: ms }).catch(() => {});
 
 async function loadPlaywright() {
   for (const name of ['playwright', 'playwright-core']) {
@@ -153,7 +163,7 @@ try {
   await shot(page, 'ui-03-tools');
   const finished = await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 }).then(() => true).catch(() => false);
   check('run finished (composer idle)', finished);
-  await page.waitForTimeout(800);
+  await chatShows(page, 'TOOLS-DONE');
   await shot(page, 'ui-04-finished');
 
   const content = await page.locator('.scroller > .content').innerText().catch(() => '');
@@ -189,14 +199,14 @@ try {
     const opened = await openStripTab('right', name);
     check(`plugin tab ${name} present`, opened);
     if (!opened) continue;
-    await page.waitForTimeout(900);
+    await paneShows(page);
     const text = await page.locator('.panel.right > .body').innerText().catch(() => '');
     check(`plugin tab ${name} rendered content`, text.trim().length > 20, `${text.trim().length} chars`);
     await shot(page, file);
   }
   // ---- Ideas tab: the calm overview (idea-43oruq) — status groups, one line per idea, the rest on click
   if (await openStripTab('right', 'Ideas')) {
-    await page.waitForTimeout(900);
+    await paneShows(page, 'Smoke idea B');
     const pane = page.locator('.panel.right > .body .pane:not([hidden])');
     const text = (await pane.innerText().catch(() => '')).replace(/\s+/g, ' ');
     check('ideas grouped by status', /IN-PROGRESS/i.test(text) && /OPEN/i.test(text), text.slice(0, 140));
@@ -230,8 +240,9 @@ try {
   await openStripTab('right', 'Work');
   // Keep worker streams open independently of mock speed, then capture the panel text in the
   // same browser evaluation that observes both workers and a full pool. Screenshots can outlast
-  // a live state; never read the assertion's evidence only after taking one.
-  await send('Square 1..3 in parallel [s:spawn n=3 delay=2500 workerhold=3000]');
+  // a live state; never read the assertion's evidence only after taking one. The hold is what keeps the state up; the
+  // workers' own thinking time (delay) only made both rounds of workers longer (it was 2500 ms, from before the hold).
+  await send('Square 1..3 in parallel [s:spawn n=3 delay=300 workerhold=3000]');
   // the agent shows a row per instance: two workers hold the two instances, the third waits (one line, its name in a menu)
   const workText = await page.waitForFunction(() => {
     const t = document.querySelector('.panel.right > .body')?.innerText ?? '';
@@ -241,7 +252,7 @@ try {
   check('work tab shows the qwen agent full, with the third worker waiting', /\bfull\b/.test(workText) && /1\s+waiting/.test(workText));
   await shot(page, 'ui-10-subagents-running');
   check('subagent run finished', await idle());
-  await page.waitForTimeout(500);
+  await chatShows(page, 'SPAWN-DONE');
   check('orchestrator summary rendered', (await contentNow()).includes('SPAWN-DONE'));
   await shot(page, 'ui-11-subagents-done');
 
@@ -250,7 +261,7 @@ try {
   check('running tool row shown', firstTool);
   await send('Stop and read this first [s:echo]'); // Enter while running = steer
   check('steered run finished', await idle());
-  await page.waitForTimeout(500);
+  await chatShows(page, 'ECHO-DONE');
   const afterSteer = await contentNow();
   check('steer message and answer rendered', afterSteer.includes('Stop and read this first') && afterSteer.includes('ECHO-DONE'));
   await shot(page, 'ui-12-steered');
@@ -269,7 +280,7 @@ try {
   // idle() right after Enter can pass before the composer switches to running: wait for the run to start first
   await page.waitForSelector('.composer.running', { timeout: 10_000 }).catch(() => {});
   check('retried run finished', await idle());
-  await page.waitForTimeout(500);
+  await chatShows(page, 'DROP-RECOVERED');
   const afterDrop = await contentNow();
   check('retried answer shown', afterDrop.includes('DROP-RECOVERED'));
   check('discarded partial stream not shown (stream.reset)', !afterDrop.includes('connection drops in the middle'));

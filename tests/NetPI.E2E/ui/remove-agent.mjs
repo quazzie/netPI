@@ -117,8 +117,14 @@ try {
   await confirm.getByRole('button', { name: 'Remove', exact: true }).click();
   await confirm.waitFor({ state: 'detached', timeout: 5_000 }).catch(() => {});
 
-  // give the RPC a moment (it must not need 30 s to time out)
-  await page.waitForTimeout(2000);
+  // wait for the host's answer (it must not need 30 s to time out) and for the row to go, instead of a fixed pause:
+  // the list follows the settings.changed event, which the host sends after it answered
+  const answered = () => {
+    const f = sent.find((x) => x.m === 'settings.set' && x.p?.path === `agents.${AGENT}`);
+    return !!f && received.some((r) => r.id === f.id);
+  };
+  for (const end = Date.now() + 10_000; !answered() && Date.now() < end; ) await page.waitForTimeout(50);
+  await row.first().waitFor({ state: 'detached', timeout: 5_000 }).catch(() => {});
 
   const setFrames = sent.filter((f) => f.m === 'settings.set' && f.p?.path === `agents.${AGENT}`);
   check(
