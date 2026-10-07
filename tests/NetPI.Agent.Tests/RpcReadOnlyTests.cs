@@ -58,7 +58,7 @@ public static class RpcReadOnlyTests
                 ["netpi.guardrails"] = (["guard.pending", "guard.outcomes"], ["guard.answer"]),
                 ["netpi.context"] = (["context.preview", "context.prompts", "context.toolsets"], ["context.reset"]),
                 ["netpi.agentsmd"] = (["agentsmd.list"], []),
-                ["netpi.profiles"] = (["profiles.list"], ["profiles.apply"]),
+                ["netpi.profiles"] = (["profiles.list"], ["profiles.apply", "profiles.applyAuto"]),
                 ["netpi.skills"] = (["skills.list"], []),
             };
             foreach (var (pluginId, (readOnly, writable)) in expected)
