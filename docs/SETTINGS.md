@@ -150,7 +150,7 @@ apply, and a run that works through many files uses a lot of them.
 | `permissionMode` | `bypassPermissions` | a print-mode call cannot answer a prompt, so the CLI's tools run unasked; `acceptEdits`, `plan` and `default` limit them (what is not allowed then fails) |
 | `settingSources` | – | which settings files the CLI loads (`user`, `project`, `local`); none by default, because they bring hooks and permission rules |
 | `connectors` | `false` | let the CLI load the account's MCP connectors |
-| `usage` | `true` | show the Claude subscription usage (session and weekly windows) in the top bar. It is the utilization the CLI prints after each call: nothing is read from the CLI's login, no token is used, and nothing is fetched |
+| `usage` | `true` | show the Claude subscription usage (session and weekly windows) in the context ring's popout. It is the utilization the CLI prints after each call; pressing the ring also asks Anthropic for the live figure with the CLI's login token (`claudecli.usage.refresh`, at most once a minute) |
 | `stallTimeoutSeconds` | `1800` | how long the CLI may stay silent before the retry plugin declares the call stalled and retries it. The CLI's own tools and subagents can run for minutes without a line of output (the global `retry.stallTimeoutSeconds` is 180 s, which would kill a running subagent and wipe the chat's in-flight answer); 0 never declares a stall — a dead CLI ends the stream on its own |
 
 Each call is one process with the prompt on stdin (the system prompt through a temporary `--system-prompt-file` that also

@@ -407,7 +407,7 @@ Timings from `npm run e2e` against the mock (headless Chromium):
   session** (a model with `managesOwnContext`) the ring is the CLI's own context against the model's real window (the CLI
   reports it; 1M for the Claude 5 models): the chat resumes one CLI session, which holds and compacts the conversation
   itself. Its popout then shows used / window / free, and the **Claude subscription usage** (`ClaudeUsage`: the session
-  and weekly windows as percent, bar and reset time, from `claudecli.usage`, updated on `usage.claude`, with when the
+  and weekly windows as percent, bar and reset time, from `claudecli.usage`, updated on `usage.claude`; opening the popout (pressing the ring) asks for the live figure with `claudecli.usage.refresh`, at most once a minute, and shows a spinner until it answers, with when the
   Claude CLI last reported it), and leaves out what describes NetPI's own prompt: the compaction count, the prompt
   breakdown, **Compact now** (`compaction.run` answers that the backend compacts itself) and the Diagnostics link. Hover (like pressing it) re-reads the stored count with `sessions.get`, at most once per 5 s, and reads
   it in one line; **pressing it opens a popout** (idea-kp4fq5) with used / window / free, how often this chat was

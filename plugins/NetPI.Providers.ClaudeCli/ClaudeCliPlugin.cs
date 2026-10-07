@@ -17,6 +17,8 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
     private const string UsageCollection = "usage";
     private const string UsageKey = "latest";
 
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+
     private IDisposable? _settingsSub;
 
     public ClaudeCliProvider? Provider { get; private set; }
@@ -45,7 +47,7 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
                     "Which settings the CLI loads: user, project, local (comma-separated). Empty loads none; they bring hooks and permission rules."),
                 SettingInfo.Bool("providers.claudeCli.connectors", "Account connectors", false, "Let the CLI load the account's MCP connectors."),
                 SettingInfo.Bool("providers.claudeCli.usage", "Usage pill", true,
-                    "Shows the Claude subscription usage (session and weekly windows) in the top bar. It comes from the CLI's own output after each call; nothing is read from the CLI's login."),
+                    "Shows the Claude subscription usage (session and weekly windows) in the context ring's popout. It comes from the CLI's own output after each call; pressing the ring also asks Anthropic for the live figure with the CLI's login token (at most once a minute)."),
                 SettingInfo.Int("providers.claudeCli.stallTimeoutSeconds", "Silence tolerance", 1800,
                     "How long the CLI may stay silent (its own tools and subagents can run for minutes) before the call is declared stalled and retried. 0 never declares a stall: a dead CLI ends the stream on its own.", 0, 7200, "s"),
             ],
@@ -57,6 +59,12 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         usage.OnChanged = snap => context.Events.Publish(EventTypes.UsageClaude, snap);
         context.Rpc.RegisterReadOnly("claudecli.usage", (_, _) => Task.FromResult<object?>(Options(context).Usage ? usage.Get() : new JsonObject { ["limits"] = new JsonArray() }),
             "The Claude subscription usage as the Claude CLI reported it after its last call (session and weekly windows); empty before the first call");
+        context.Rpc.Register("claudecli.usage.refresh", async (_, rpcCt) =>
+            {
+                if (!Options(context).Usage) return new JsonObject { ["limits"] = new JsonArray() };
+                return await usage.RefreshAsync(fetchCt => ClaudeUsageApi.FetchAsync(Http, ClaudeUsageApi.CredentialsPath(), fetchCt), rpcCt).ConfigureAwait(false);
+            },
+            "Asks Anthropic for the live subscription usage with the Claude CLI's login token (at most once a minute; within it the stored reading is the answer) → the snapshot, as claudecli.usage; also published as usage.claude");
         _ = Task.Run(() => LoadPlanAsync(context, usage), ct);
 
         var sessions = new DataCliSessions(context.Data.Collection("cli_sessions", new CollectionSpec().Integer("updatedAt")));

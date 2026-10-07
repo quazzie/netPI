@@ -83,6 +83,46 @@ internal static class ClaudeCliProductionTests
             t.Eq(0, off.Get()["limits"]!.AsArray().Count, "usage off: nothing recorded");
         });
 
+        await t.Run("claude-cli usage refresh: Anthropic's answer becomes the reading, one ask a minute, concurrent callers share it, a failure throws", async () =>
+        {
+            var answer = JsonNode.Parse("""
+                {"five_hour":{"utilization":52.0},"limits":[
+                 {"kind":"session","percent":52,"severity":"normal","resets_at":"2026-10-07T20:30:00.330650+00:00","scope":null,"is_active":true},
+                 {"kind":"weekly_all","percent":41,"severity":"warning","resets_at":"2026-10-09T03:00:00+00:00","scope":null,"is_active":false},
+                 {"kind":"weekly_scoped","percent":7.25,"severity":"normal","resets_at":"2026-10-09T03:00:00+00:00","scope":{"model":{"display_name":"Fable"}},"is_active":false},
+                 {"kind":"weekly_scoped","percent":1,"scope":null},{"kind":"other","percent":3}]}
+                """)!.AsObject();
+            var snap = CL.ClaudeUsageTracker.NormalizeApi(answer)!;
+            var limits = snap["limits"]!.AsArray().Select(l => l!.AsObject()).ToDictionary(l => l["key"]!.GetValue<string>());
+            t.Eq(3, limits.Count, "session, week, week (a model); a scoped window without a model and an unknown kind are left out");
+            t.Eq(41.0, limits["weekly_all"]["percent"]!.GetValue<double>(), "percent is already percent");
+            t.Eq("Week (Fable)", limits["weekly_fable"]["label"]!.GetValue<string>(), "a model window is named");
+            t.Eq("warning", limits["weekly_all"]["severity"]!.GetValue<string>(), "severity kept");
+            t.Eq(true, limits["session"]["active"]!.GetValue<bool>(), "active kept");
+            t.Check(CL.ClaudeUsageTracker.NormalizeApi(JsonNode.Parse("""{"limits":[]}""")!.AsObject()) is null, "no windows, no reading");
+
+            var published = new List<JsonObject>();
+            var tracker = new CL.ClaudeUsageTracker { OnChanged = published.Add };
+            var calls = 0;
+            var gate = new TaskCompletionSource();
+            async Task<JsonObject> Fetch(CancellationToken _) { calls++; await gate.Task; return snap.DeepClone().AsObject(); }
+            var first = tracker.RefreshAsync(Fetch, CancellationToken.None);
+            var second = tracker.RefreshAsync(Fetch, CancellationToken.None);
+            t.Check(!first.IsCompleted, "waits for the answer");
+            gate.SetResult();
+            await Task.WhenAll(first, second);
+            t.Eq(1, calls, "two callers, one ask");
+            t.Eq(1, published.Count, "published once");
+            t.Eq(3, (await tracker.RefreshAsync(Fetch, CancellationToken.None))["limits"]!.AsArray().Count, "within a minute: the reading it has");
+            t.Eq(1, calls, "no second ask inside the minute");
+
+            var failing = new CL.ClaudeUsageTracker();
+            var threw = false;
+            try { await failing.RefreshAsync(_ => throw new RpcException("unavailable", "expired"), CancellationToken.None); }
+            catch (RpcException) { threw = true; }
+            t.Check(threw, "a failed ask throws");
+        });
+
         await t.Run("claude-cli: the models carry the CLI's real window, learned from its result line, and say they keep their own context", async () =>
         {
             var learned = 0;

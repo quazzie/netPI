@@ -2,22 +2,39 @@
   /**
    * The Claude subscription's usage, for the context ring's popout in a Claude CLI session: the session and weekly windows
    * (percent, bar, reset time) as the Claude CLI printed them after its last call (`claudecli.usage`, updated on
-   * `usage.claude`), and when that was. Nothing is fetched: before the first call there is no reading.
+   * `usage.claude`), and when that was. It is mounted when the popout opens, i.e. when the ring is pressed: it then asks
+   * for the live figure (`claudecli.usage.refresh`: Anthropic, with the CLI's login token, at most once a minute on the
+   * server) and shows a spinner until that answers; the reading it has stays on screen meanwhile.
    */
   import { rpc, conn } from '../lib/rpc.svelte.js';
   import { bus } from '../lib/bus.js';
   import { duration, timeAgo, toMs } from '../lib/format.js';
 
   let s = $state(null);
+  let refreshing = $state(false);
+  let failure = $state('');
 
   const load = () =>
     rpc('claudecli.usage')
       .then((x) => (s = x ?? null))
       .catch(() => {}); // the method is absent when the Claude CLI provider is not loaded
 
+  async function refresh() {
+    refreshing = true;
+    failure = '';
+    try {
+      s = (await rpc('claudecli.usage.refresh', undefined, { timeout: 20000 })) ?? s;
+    } catch (e) {
+      failure = e?.message ?? 'Could not read the live usage.';
+    } finally {
+      refreshing = false;
+    }
+  }
+
   $effect(() => {
     if (conn.status !== 'open') return;
     load();
+    refresh();
     const offs = [bus.on('usage.claude', (d) => (s = d ?? s)), bus.on('plugins.changed', load)];
     return () => offs.forEach((off) => off());
   });
@@ -35,7 +52,9 @@
   <div class="head">
     <span class="h">Claude usage</span>
     {#if s?.plan}<span class="chip np-mono">{s.plan}</span>{/if}
+    {#if refreshing}<span class="np-spinner" role="status" aria-label="Reading the live usage" title="Reading the live usage"></span>{/if}
   </div>
+  {#if failure}<div class="np-dim tiny" data-tone="warn">{failure}</div>{/if}
 
   {#if limits.length}
     <div class="rows">
@@ -51,7 +70,7 @@
         </div>
       {/each}
     </div>
-    <div class="np-dim tiny foot">{s.stale ? 'Old reading — ' : ''}as of the last Claude CLI call, {timeAgo(s.fetchedAt)}</div>
+    <div class="np-dim tiny foot">{s.stale ? 'Old reading — ' : ''}read {timeAgo(s.fetchedAt)}</div>
   {:else}
     <div class="np-dim small">No reading yet: the Claude CLI reports its usage with each call.</div>
   {/if}
