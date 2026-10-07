@@ -403,17 +403,13 @@ Timings from `npm run e2e` against the mock (headless Chromium):
   re-reads the chat (with its size). **All on** undoes every switch.
 - What the chat cost on paid models (`usage.session`, with its subagents) shows next to the context ring once it is more
   than nothing, refreshed on `usage.changed`; the tooltip splits the chat from its subagents.
-<<<<<<< HEAD
-- The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`. Hover (like pressing it) re-reads the stored count with `sessions.get`, at most once per 5 s, and reads
-=======
 - The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`. In a **Claude CLI
   session** (a model with `managesOwnContext`) the ring is the CLI's own context against the model's real window (the CLI
   reports it; 1M for the Claude 5 models): the chat resumes one CLI session, which holds and compacts the conversation
   itself. Its popout then shows used / window / free, and the **Claude subscription usage** (`ClaudeUsage`: the session
   and weekly windows as percent, bar and reset time, from `claudecli.usage`, updated on `usage.claude`, with when the
   Claude CLI last reported it), and leaves out what describes NetPI's own prompt: the compaction count, the prompt
-  breakdown, **Compact now** (`compaction.run` answers that the backend compacts itself) and the Diagnostics link. Hover reads
->>>>>>> master
+  breakdown, **Compact now** (`compaction.run` answers that the backend compacts itself) and the Diagnostics link. Hover (like pressing it) re-reads the stored count with `sessions.get`, at most once per 5 s, and reads
   it in one line; **pressing it opens a popout** (idea-kp4fq5) with used / window / free, how often this chat was
   compacted and what the prompt is made of — `context.preview { sessionId }` gives the system prompt (≈ tokens,
   chars / 3.6) and the tools, with a line when the prompt is frozen. It fails soft: no Context plugin, and the rows
