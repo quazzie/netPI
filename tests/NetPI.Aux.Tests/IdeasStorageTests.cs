@@ -540,11 +540,14 @@ public static class IdeasStorageTests
         {
             var env = new Env();
             await env.StartAsync();
-            var seen = new List<JsonObject>();
-            using var _ = env.Ctx.Events.Subscribe(IdeasPlugin.ChangedEvent, e => seen.Add((JsonObject)e.Data!));
+            var seen = new List<BusEvent>();
+            using var _ = env.Ctx.Events.Subscribe(IdeasPlugin.ChangedEvent, seen.Add);
             await env.Call("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Announced" } });
-            Check.Equal(1, seen.Count);
-            Check.Equal("add", seen[0]["reason"].Str());
+            Check.Equal(1, seen.Count, "one event per write, no storm");
+            var data = (JsonObject)seen[0].Data!;
+            Check.Equal("add", data["reason"].Str());
+            Check.Equal("sqlite", data["backend"].Str(), "the event says where the backlog lives now");
+            Check.True(seen[0].SessionId is null, "and it is a broadcast: every window refreshes, not only the chat that wrote");
             // A refused write announces nothing: the event says what happened, not what was attempted.
             await env.Try("ideas.update", new JsonObject { ["id"] = "idea-nope", ["patch"] = new JsonObject { ["title"] = "x" } });
             Check.Equal(1, seen.Count, "a write that did not happen is not announced");

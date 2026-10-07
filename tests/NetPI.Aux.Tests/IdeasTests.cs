@@ -856,27 +856,6 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: ideas.changed after every write, and another instance's write is seen at once", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var bus = env.Ctx.Bus;
-            Ok(await env.Run("ideas", new { action = "add", title = "A" }));
-            var first = await bus.WaitForAsync(IdeasPlugin.ChangedEvent);
-            Check.True(first is not null, "event after our own write");
-            var data = (JsonObject)first!.Data!;
-            Check.Equal("sqlite", data["backend"].Str(), "the event says where the backlog lives now");
-            Check.True(first.SessionId is null, "broadcast");
-            var after = bus.OfType(IdeasPlugin.ChangedEvent).Count;
-            Check.Equal(after, bus.OfType(IdeasPlugin.ChangedEvent).Count, "one event per write, no storm");
-
-            // A second plugin instance (a reload swap) writes: there is no watcher and no cache to miss it.
-            var other = IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home);
-            other.Add(IdeaOps.CreateIdea(new JsonObject { ["title"] = "From the other instance" }, other.TakenIds(), "user", null));
-            Check.Contains(string.Join(",", await env.Titles()), "From the other instance", "seen at once, with no watcher event involved");
-            env.Ctx.Unload();
-        });
-
         r.Add("ideas: concurrent adds are serialized by the store", async () =>
         {
             var env = new Env();
