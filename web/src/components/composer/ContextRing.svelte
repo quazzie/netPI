@@ -3,7 +3,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import Popover from '../Popover.svelte';
   import { rpc } from '../../lib/rpc.svelte.js';
-  import { hasRpc, isBusy } from '../../lib/state/app.svelte.js';
+  import { app, hasRpc, isBusy } from '../../lib/state/app.svelte.js';
   import { openPanelTab } from '../../lib/state/tabs.svelte.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   /**
@@ -27,7 +27,32 @@
   let preview = $state.raw(null); // context.preview: { systemPrompt, frozen, tools, estimatedTokens }
   let previewState = $state('idle'); // idle | loading | ready | error (per open)
 
+  // Re-read the stored reading from the server when the pointer reaches the ring or it is pressed, so what is shown
+  // is current even if a session.context event was missed (a reconnect, a compaction elsewhere). At most once per
+  // REFRESH_MS per ring, and never while a read is in flight.
+  const REFRESH_MS = 5000;
+  let lastRefresh = 0;
+  let refreshing = false;
+  async function refresh() {
+    const id = sessionId;
+    const now = Date.now();
+    if (!id || refreshing || now - lastRefresh < REFRESH_MS) return;
+    refreshing = true;
+    lastRefresh = now;
+    try {
+      const s = await rpc('sessions.get', { id }, { timeout: 5000 });
+      if (id === sessionId && s?.contextTokens > 0 && s.contextTokens !== used) {
+        app.context.set(id, { used: s.contextTokens, window: win });
+      }
+    } catch {
+      // the ring keeps the reading it has
+    } finally {
+      refreshing = false;
+    }
+  }
+
   async function show() {
+    refresh();
     open = !open;
     if (!open || !sessionId) return;
     // every time it is opened, not once per mount: the breakdown describes the prompt as it is now, and a session that
@@ -119,6 +144,8 @@
   aria-expanded={open}
   aria-haspopup="dialog"
   onclick={show}
+  onpointerenter={refresh}
+  onfocus={refresh}
 >
   <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
     <circle cx="9" cy="9" r={R} class="track" />
