@@ -263,6 +263,11 @@ public static class ModelCatalogTests
             model.Reasoning = new ReasoningInfo { Supported = true, Efforts = ["low", "high"], Default = "low" };
             Check.Equal(5, await Relisted(), "a reasoning change is published");
             Check.Equal(5, await Relisted(), "and nothing is published for a listing that changed nothing");
+            model.Extra = new JsonObject { ["created"] = 123, ["engine"] = "ninfer" };
+            Check.Equal(6, await Relisted(), "backend metadata reaches models.changed");
+            model.Extra["created"] = 456;
+            Check.Equal(7, await Relisted(), "same model ID on a restarted backend is a change");
+            Check.Equal(7, await Relisted(), "unchanged backend metadata stays quiet");
         });
 
         r.Add("models: the newest refresh wins even when an older one finishes last, and a provider removed mid-refresh does not come back", async () =>

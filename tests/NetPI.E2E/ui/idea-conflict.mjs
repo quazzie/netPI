@@ -43,8 +43,6 @@ window.__updates = [];   // every ideas.update the tab sent
 window.__toasts = [];    // every toast the tab raised
 window.__opened = [];    // every openIdea the tab asked the host for
 window.__started = [];   // every startChat
-window.__opened = [];    // every openIdea the tab asked the host for
-window.__started = [];   // every startChat
 window.__events = {};    // what the tab subscribed to, so the fixture can publish ideas.changed
 window.__idea = (id) => ideas.find((i) => i.id === id);
 // The agent writes the idea in another window: a new revision, then the event every window refetches on.

@@ -71,7 +71,7 @@ internal sealed class StdioTransport : IMcpTransport
     {
         if (!modern) { await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false); return; }
         // Subscription stays pending. Notifications on this channel carry its request id.
-        await RequestAsync("subscriptions/listen", new JsonObject { ["notifications"] = new JsonObject { ["toolsListChanged"] = true } }, ct).ConfigureAwait(false);
+        await RequestAsync("subscriptions/listen", Subscription.Request(), ct).ConfigureAwait(false);
         throw new McpException("MCP notification subscription ended.");
     }
     private async Task SendAsync(JsonObject message, CancellationToken ct)

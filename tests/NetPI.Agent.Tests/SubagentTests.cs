@@ -18,6 +18,7 @@ public static class SubagentTests
         t.Add("subagents: agent_send to parent", SendToParent);
         t.Add("subagents: another model, tools allowlist, max depth", SpawnOptions);
         t.Add("subagents: aborting a parent cancels its children", AbortCascade);
+        t.Add("subagents: deleting a chat stops its run and its subagents' at once, and gives their slots back", DeleteStopsTree);
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / agent_choices", ToolsMisc);
         t.Add("subagents: the agent dispatcher's schema covers every action's arguments", DispatcherSchema);
@@ -989,6 +990,35 @@ public static class SubagentTests
         Check.Equal(1, h.Runtime.GetBySession(parent.Id)!.Runs, "cancelled child does not wake the parent");
         Check.False(h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"));
         Check.Equal(0, h.Scheduler!.Snapshot().Sum(x => x.Busy + x.Queued));
+    }
+
+    /// <summary>
+    /// Deleting a chat stops its run and its subagents' runs at once and gives their slots back, and a subagent deleted
+    /// with its parent reports to no one. They used to run on until their model calls ended and the write to the deleted
+    /// session failed: a model slot held for the rest of an answer nobody can read. Here that is never: only a cancel
+    /// ends the child's call.
+    /// </summary>
+    private static async Task DeleteStopsTree()
+    {
+        await using var h = await TestHost.StartAsync();
+        var parent = h.NewSession();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r)) return Reply.Text("never", c => Task.Delay(Timeout.Infinite, c));
+            return Reply.HasToolResult(r) ? Reply.Text("carrying on") : Reply.Tool("agent_spawn", new { task = "hang", name = "hanger", background = true });
+        };
+        await h.SendAsync(parent.Id, "go");
+        await h.IdleAsync(parent.Id);   // a background child: the parent's turn is over, only the child holds a slot
+        var childId = h.Runtime.GetBySession(parent.Id)!.Children.Single();
+        await h.StatusAsync(childId, AgentStatus.Running);
+        var parentRuns = h.Runtime.GetBySession(parent.Id)!.Runs;
+
+        h.Sessions.DeleteSession(parent.Id);
+        var child = await h.StatusAsync(childId, AgentStatus.Cancelled);
+        Check.Contains(child.Error, "parent", "cancelled as by its parent, which went with it");
+        await Wait.Until(() => h.Scheduler!.Snapshot().Sum(x => x.Busy + x.Queued) == 0, "the slots are given back");
+        await Task.Delay(100);
+        Check.Equal(parentRuns, h.Runtime.GetBySession(parent.Id)!.Runs, "no report woke the deleted parent");
     }
 
     private static async Task FailedChild()

@@ -4,34 +4,16 @@ using NetPI.Ideas;
 namespace NetPI.Aux.Tests;
 
 /// <summary>
-/// The two regressions the post-merge review reproduced, as they stand against the storage that replaced the file:
-/// a rejected patch must not be committed by a later successful write, and two instances of the plugin must not lose
-/// each other's update. They are written here rather than carried over because the storage they were written against
-/// (a JSON file, a watcher and a parse cache) is gone; what they assert has not changed.
+/// A regression the post-merge review reproduced, as it stands against the storage that replaced the file: two
+/// instances of the plugin must not lose each other's update. It is written here rather than carried over because the
+/// storage it was written against (a JSON file, a watcher and a parse cache) is gone; what it asserts has not changed.
+/// The review's other regression (a rejected patch must not be committed by a later successful write) is
+/// "review: a rejected patch leaves no trace, and no later write commits it" in <see cref="IdeasStorageTests"/>.
 /// </summary>
 public static class ReviewStorageTests
 {
     public static void Register(TestRunner r)
     {
-        r.Add("review: rejected patch must not leak into a later successful save", async () =>
-        {
-            var env = new FakePluginContext(T.TempDir("review-patch"));
-            var repo = IdeasRepository.Open(env.Data, env.Access, env.Log, env.Paths.Home);
-            var idea = IdeaOps.CreateIdea(new JsonObject { ["title"] = "Original" }, repo.TakenIds(), "user", null);
-            repo.Add(idea);
-            var id = idea["id"]!.Str()!;
-
-            // The patch changes the title and is then refused on the status: half of it must not survive.
-            Check.Throws<IdeaInputException>(() =>
-                repo.Update(id, new JsonObject { ["title"] = "Rejected title", ["status"] = "INVALID" }, fromUi: true));
-            Check.Equal("Original", repo.Idea(id)!["title"]!.Str());
-
-            repo.Add(IdeaOps.CreateIdea(new JsonObject { ["title"] = "Other" }, repo.TakenIds(), "user", null));
-            Check.Equal("Original", repo.Idea(id)!["title"]!.Str(), "a rejected patch must not be committed by an unrelated update");
-            Check.Equal(1, (repo.Find(id)?.Revision ?? 0), "nor by burning a revision on the way");
-            env.Unload();
-        });
-
         r.Add("review: two instances must not write a stale snapshot over each other", async () =>
         {
             var home = T.TempDir("review-two-instances");

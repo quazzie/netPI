@@ -294,13 +294,18 @@ public static class IdeasNoticeTests
         // .git): the project's own checkout, a linked worktree of it, and an unrelated repository. Select them all with
         // -Only "notice: attribution".
 
-        r.Add("notice: attribution: a relative cwd counts as the session's own directory", () =>
+        r.Add("notice: attribution: a relative cwd is resolved against the run's directory, and its repository decides", () =>
         {
-            using var env = GitRepo();
+            using var env = GitRepo(probed: true);
             if (!env.GitAvailable) Check.Skip("no git on PATH");
+            // The probe only answers for a directory that exists: without it the fallback would decide, and the
+            // fallback takes every relative cwd for the session's own (the probe-less case below).
+            Directory.CreateDirectory(Path.Combine(env.Main, "plugins"));
             var run = env.Run();
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", "plugins", run, env.Project), "relative: resolved against the run's cwd, which is the project");
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", null, run, env.Project), "no cwd: the run's own directory");
+            Check.False(IdeaCommitNoticeHook.InProject("git commit -m x", Path.GetRelativePath(env.Main, env.Unrelated), run, env.Project),
+                "a relative cwd that leads into another repository is that repository's commit");
         });
 
         r.Add("notice: attribution: git -C a worktree of the same repository is the project's commit", async () =>

@@ -22,13 +22,14 @@
    */
   let { step, chat, base, live = false } = $props();
 
-  const call = $derived(step.call);
+  // a call that is still streaming (preparing) has no arguments yet: a tool that already runs (tool.start) carries them
+  const lt = $derived(chat.live.get(step.call.id));
+  const call = $derived(step.call.arguments === undefined && lt?.arguments ? { ...step.call, arguments: lt.arguments } : step.call);
   const result = $derived(step.result);
   const args = $derived(parseArgs(call));
   // a tool with actions (ssh, process, agents) is shown as the tool of its action
   const name = $derived(viewName(call.name, args));
   const meta = $derived(toolMeta(name));
-  const lt = $derived(chat.live.get(call.id));
   // opened mid-run: tool.start was missed, but the agent's activity names the tool that is executing
   const runningNow = $derived.by(() => {
     if (!live || result || lt) return false;
@@ -65,7 +66,7 @@
     }
   }
   const status = $derived(
-    step.preparing
+    step.preparing && !lt
       ? 'preparing'
       : approval
         ? 'approval'

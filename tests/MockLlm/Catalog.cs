@@ -15,13 +15,14 @@ public sealed class MockModel
     public string? DefaultEffort { get; init; }
     /// <summary>loaded | unloaded | stopped | offline</summary>
     public string Status { get; init; } = "loaded";
+    public long Created { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
     public JsonObject ToAiProxyJson(long created) => new()
     {
         ["id"] = Id,
         ["object"] = "model",
         ["owned_by"] = OwnedBy,
-        ["created"] = created,
+        ["created"] = Created,
         ["context_window"] = ContextWindow,
         ["max_output_tokens"] = MaxOutputTokens,
         ["concurrency"] = Concurrency,

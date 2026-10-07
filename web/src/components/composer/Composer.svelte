@@ -39,6 +39,8 @@
   const ctxInfo = $derived(app.context.get(session.id));
   const used = $derived(ctxInfo?.used ?? session.contextTokens ?? 0);
   const win = $derived(ctxInfo?.window ?? model?.contextWindow ?? 0);
+  // A Claude CLI session keeps its own conversation: the ring is the CLI's real context, and its popout carries the subscription's usage.
+  const claudeCli = $derived(model?.provider === 'claude-cli');
   // every compaction appends a summary message (meta.kind 'compaction'), so the loaded history is the count;
   // chat.hasMore means older messages sit outside the window, so the count is a lower bound
   const compactions = $derived(chat.messages.filter((m) => m.role === 'summary' && m.meta?.kind === 'compaction'));
@@ -461,7 +463,10 @@
         <PlanPill {session} />
         <span class="spacer"></span>
         <ChatCost sessionId={session.id} />
-        {#if used || win}<ContextRing {used} window={win} sessionId={session.id} {compactions} historyTruncated={chat.hasMore} />{/if}
+        {#if used || win}
+          <ContextRing {used} window={win} sessionId={session.id} {compactions} historyTruncated={chat.hasMore}
+            ownContext={!!model?.managesOwnContext} claudeUsage={claudeCli} />
+        {/if}
         {#if running && !canSend}
           <button class="send stop" title="Stop (Esc)" aria-label="Stop" onclick={() => abortAgent(session.id)}>
             <Icon name="stop" size={14} />

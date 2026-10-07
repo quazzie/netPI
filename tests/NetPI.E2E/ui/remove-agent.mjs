@@ -26,8 +26,6 @@ const check = (name, ok, detail = '') => {
   checks.push({ name, ok: !!ok, detail: String(detail) });
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? ` (${detail})` : ''}`);
 };
-// [dbg-*] console lines the page emits during the flow: evidence for a failed check
-const dbg = [];
 const shot = async (page, name) => {
   await page.screenshot({ path: path.join(OUT, `${name}.png`) });
   console.log(`  screenshot ${name}.png`);
@@ -74,7 +72,6 @@ try {
   const context = await browser.newContext({ viewport: { width: 1200, height: 900 }, colorScheme: 'dark' });
   const page = await context.newPage();
   page.on('console', (m) => {
-    if (m.type() === 'debug' && m.text().startsWith('[dbg-')) dbg.push(m.text());
     if (m.type() === 'error') errors.push(`[console] ${m.text()}`);
   });
   page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
@@ -117,8 +114,14 @@ try {
   await confirm.getByRole('button', { name: 'Remove', exact: true }).click();
   await confirm.waitFor({ state: 'detached', timeout: 5_000 }).catch(() => {});
 
-  // give the RPC a moment (it must not need 30 s to time out)
-  await page.waitForTimeout(2000);
+  // wait for the host's answer (it must not need 30 s to time out) and for the row to go, instead of a fixed pause:
+  // the list follows the settings.changed event, which the host sends after it answered
+  const answered = () => {
+    const f = sent.find((x) => x.m === 'settings.set' && x.p?.path === `agents.${AGENT}`);
+    return !!f && received.some((r) => r.id === f.id);
+  };
+  for (const end = Date.now() + 10_000; !answered() && Date.now() < end; ) await page.waitForTimeout(50);
+  await row.first().waitFor({ state: 'detached', timeout: 5_000 }).catch(() => {});
 
   const setFrames = sent.filter((f) => f.m === 'settings.set' && f.p?.path === `agents.${AGENT}`);
   check(
@@ -160,5 +163,5 @@ try {
 }
 const ok = checks.every((c) => c.ok);
 if (!ok) exitCode = 1;
-console.log(JSON.stringify({ ok, checks, errors, dbg }));
+console.log(JSON.stringify({ ok, checks, errors }));
 process.exit(exitCode);

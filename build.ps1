@@ -13,7 +13,8 @@
                                so every chat that holds one of their tools gets a "tools" notice; the script says which
                                plugins and how many chats are mid-turn before it does.
     .\build.ps1 -Publish -NextStart
-                               install nothing now: everything waits in artifacts\app\.pending for the next start.
+                               the host files and plugins wait in artifacts\app\.pending for the next start; the web
+                               UI is swapped in place (a window refresh picks it up — the server reads it from disk).
     .\build.ps1 -Pending       what a restart would bring (.pending, and the host files in .old).
     .\build.ps1 -Discard       drop the staged build in .pending (the host files in .old belong to the running app).
 
@@ -361,14 +362,12 @@ if ($Publish) {
             $newContracts = @($runningContracts | Where-Object { $builtContracts -notcontains $_ }).Count -gt 0
             if (Test-Path $pendingDir) { Remove-Item -Recurse -Force $pendingDir }
 
-            # web UI: replaced as a whole, like a normal build does (a file being served may stay; it is overwritten then)
+            # web UI: always swapped in place, even with -NextStart: the server reads wwwroot from disk per request, so a
+            # running app picks the new UI up on the next window refresh (a file being served may stay; it is overwritten
+            # then). -NextStart defers the host files and plugins only.
             $web = Join-Path $app 'wwwroot'
             $webChanged = @(Get-Changed (Join-Path $dev 'wwwroot') $web).Count -gt 0
-            if ($webChanged -and $defer) {
-                New-Item -ItemType Directory -Force $pendingDir | Out-Null
-                Copy-Item -Recurse (Join-Path $dev 'wwwroot') (Join-Path $pendingDir 'wwwroot')
-            }
-            elseif ($webChanged) {
+            if ($webChanged) {
                 Remove-Item -LiteralPath $web -Recurse -Force -ErrorAction SilentlyContinue
                 New-Item -ItemType Directory -Force $web | Out-Null
                 Copy-Item -Path (Join-Path $dev 'wwwroot\*') -Destination $web -Recurse -Force
@@ -398,7 +397,7 @@ if ($Publish) {
                 $why = if ($newContracts) { 'The contracts changed: the running NetPI keeps its plugins' } else { 'The running NetPI keeps its plugins' }
                 Write-Host "$why; the rebuilt ones wait in artifacts\app\.pending for its next start: $($pluginNames -join ', ')" -ForegroundColor Yellow
             }
-            if ($webChanged -and $defer) { Write-Host 'The new web UI waits in artifacts\app\.pending for the next start.' -ForegroundColor Yellow }
+            if ($webChanged) { Write-Host 'The new web UI is in place: refresh the window to pick it up.' -ForegroundColor Green }
             if ($keptSymbols.Count) {
                 Write-Host "Symbols in use were kept: $($keptSymbols -join ', ') (stack traces lack line numbers until a publish with NetPI closed)." -ForegroundColor DarkYellow
             }

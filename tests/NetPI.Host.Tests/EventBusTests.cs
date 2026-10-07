@@ -76,12 +76,16 @@ public static class EventBusTests
             var started = new ManualResetEventSlim();
             var release = new ManualResetEventSlim();
             var slowSeen = new List<int>(); var fastSeen = new List<int>();
+            var fastTook = new SemaphoreSlim(0);
             using var _ = bus.Subscribe("t", e => { if (slowSeen.Count == 0) { started.Set(); release.Wait(5000); } slowSeen.Add((int)e.Data!); });
-            using var fast = bus.Subscribe("t", e => fastSeen.Add((int)e.Data!));
+            using var fast = bus.Subscribe("t", e => { fastSeen.Add((int)e.Data!); fastTook.Release(); });
             for (var i = 1; i <= 50; i++)
             {
                 bus.Publish("t", i);
-                await Task.Delay(2);   // at a pace the fast line keeps up with; the wedged one cannot
+                // at the pace the fast line keeps up with (it has taken this event before the next is published); the
+                // wedged one cannot. Waiting for the event, not a fixed 2 ms (a 15.6 ms timer tick on Windows, and no
+                // promise at all on a loaded machine).
+                Check.True(await fastTook.WaitAsync(TimeSpan.FromSeconds(10)), "the fast line took event " + i + " while the other is wedged");
             }
             Check.True(started.Wait(5000), "the slow subscriber started");
             release.Set();
@@ -171,10 +175,46 @@ public static class EventBusTests
             Check.Equal("t.one,t.two", string.Join(",", received.Take(2)), "the events published before the flush were delivered, in order");
         });
 
+        r.Add("bus: a steady publisher does not keep a flush out of a busy line: its owed marker takes the room the line makes first", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 1);
+            var wedged = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            // busy, not stuck: after the first event every event takes 30 ms, longer than the dispatcher's 20 ms retry tick
+            using var _ = bus.Subscribe("t", e =>
+            {
+                if (!wedged.IsSet) { wedged.Set(); release.Wait(10_000); return; }
+                Thread.Sleep(30);
+            });
+            bus.Publish("t");
+            Check.True(wedged.Wait(5000), "the line is inside its first event");
+            bus.Publish("t");                // its one slot is taken
+            var flush = bus.FlushAsync();    // so the marker cannot be queued: the line owes it
+            // a publisher that keeps going: a few events every timer tick, all for the busy line
+            var stop = new ManualResetEventSlim();
+            var publisher = Task.Run(() => { while (!stop.IsSet) { for (var i = 0; i < 5; i++) bus.Publish("t"); Thread.Sleep(1); } });
+            try
+            {
+                await Task.Delay(50);
+                release.Set();   // the line moves again, one event per 30 ms: each one it takes makes room for the marker
+                var back = await Task.WhenAny(flush, Task.Delay(5000)) == flush;
+                Check.True(back, "the flush came back while the publisher kept publishing (the marker went into the room the line made, not the next event): " + bus.StaleFlush() + " dropped " + bus.Dropped + " delivered " + bus.Activity().Delivered + " backlog " + bus.Backlog);
+            }
+            finally
+            {
+                stop.Set();
+                release.Set();
+                await publisher;
+            }
+            await flush.WaitAsync(TimeSpan.FromSeconds(10));
+        });
+
         r.Add("bus: disposing the bus unblocks a flush that is still waiting for its marker", async () =>
         {
             const int input = 2;
-            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 1, inputCapacity: input);
+            // The wedged line keeps the dispatcher retrying the marker and holds its worker: the dispose gives up on
+            // both after its grace, which need not be the production 5 s + 2 s to show that the flush comes back.
+            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 1, inputCapacity: input, disposeGrace: TimeSpan.FromMilliseconds(200));
             var inside = new ManualResetEventSlim();
             var release = new ManualResetEventSlim();
             using var _ = bus.Subscribe("x", e => { inside.Set(); release.Wait(5000); });
@@ -252,8 +292,8 @@ public static class EventBusTests
             bus.Publish("t");
             Check.True(started.Wait(5000), "the subscriber is inside its handler");
             var flush = bus.FlushAsync();   // its marker waits on the wedged line
-            await Task.Delay(400);         // well past the stale threshold: while it lasts, it is named
-            Check.True(bus.StaleFlush() is not null, "the wedged flush is reported while it lasts: " + bus.StaleFlush());
+            // past the stale threshold, while it lasts, it is named (asked until it is: StaleFlush says it once per 10 s)
+            await WaitFor(() => bus.StaleFlush() is not null, "the wedged flush is reported while it lasts");
             release.Set();
             await flush.WaitAsync(TimeSpan.FromSeconds(5));
             for (var i = 0; i < 5; i++)
@@ -350,7 +390,8 @@ public static class EventBusTests
             var log = new CapturingLogger();
             await using var bus = new EventBus(NullLogger.Instance);
             var gate = new object();
-            using var dog = new StallWatchdog(bus, log, TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(30), work => work(), gate);
+            // (a held gate counts a tick per miss, and a miss is the tick plus a 60 ms try: 100 ms is four misses, ~0.4 s)
+            using var dog = new StallWatchdog(bus, log, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(30), work => work(), gate);
             // a thread that holds the gate: a deadlocked statement looks like this from outside
             var release = new ManualResetEventSlim();
             var holding = new ManualResetEventSlim();

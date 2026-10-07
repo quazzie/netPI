@@ -21,6 +21,7 @@ export class LiveTool {
   startedAt = Date.now();
   name = '';
   label = '';
+  arguments = null; // the call's JSON arguments, when tool.start carried them (a call the provider runs itself is still streaming in the chat)
   #buf = '';
   #flush = () => {
     this.output = this.#buf;
@@ -29,6 +30,7 @@ export class LiveTool {
   constructor(d) {
     this.name = d?.name ?? '';
     this.label = d?.label ?? '';
+    this.arguments = d?.arguments ?? null;
   }
   append(chunk) {
     this.#buf += chunk;

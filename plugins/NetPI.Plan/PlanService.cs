@@ -63,6 +63,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
         if (session.Kind == "subagent") throw new RpcException("bad_request", "A subagent's chat has no plan mode: start it in the chat that spawned it.");
         if (PlanMode.Active(session)) return session;
         session = PlanMode.Set(ctx.Sessions, sessionId, PlanMode.Planning);
+        Announce(session);
         Changed(sessionId, mode: PlanMode.Planning);
         return session;
     }
@@ -82,12 +83,23 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                 store.Put(d);
                 doc = d;
             }
-            PlanMode.Set(ctx.Sessions, sessionId, null);
+            Announce(PlanMode.Set(ctx.Sessions, sessionId, null));
             if (doc is not null && _plans.TryGetValue(doc["id"]!.GetValue<string>(), out var w)) w.Decision.TrySetResult(new PlanDecision("cancel"));
         }
         finally { _gate.Release(); }
         Changed(sessionId, doc, "off");
         return true;
+    }
+
+    /// <summary>
+    /// A messageless chat is transient: the session service mutates it in memory and announces nothing about it (no
+    /// session.updated), so a window that knows the chat only by its row would never see the mode. Announce it the way a
+    /// stored session would be (the workspaces plugin does the same for a binding); a stored session is announced by the
+    /// service itself, so the guard keeps it to one announce per change.
+    /// </summary>
+    private void Announce(SessionInfo session)
+    {
+        if (session.MessageCount == 0) ctx.Events.Publish(EventTypes.SessionUpdated, new { session });
     }
 
     public string Status(string sessionId)
@@ -510,6 +522,8 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                 await ctx.Rpc.InvokeAsync("sessions.setWorkspace", new JsonObject { ["id"] = created.Id, ["workspaceId"] = workspace }, ct).ConfigureAwait(false);
             if (SessionAgent.Of(from) is { Length: > 0 } agent && ctx.Rpc.Exists("agents.use"))
                 await ctx.Rpc.InvokeAsync("agents.use", new JsonObject { ["sessionId"] = created.Id, ["agent"] = agent }, ct).ConfigureAwait(false);
+            if (ctx.Rpc.Exists("profiles.applyAuto"))
+                await ctx.Rpc.InvokeAsync("profiles.applyAuto", new JsonObject { ["sessionId"] = created.Id }, ct).ConfigureAwait(false);
             if (ideaId is not null && ctx.Rpc.Exists("ideas.attach"))
                 await ctx.Rpc.InvokeAsync("ideas.attach", new JsonObject { ["sessionId"] = created.Id, ["id"] = ideaId }, ct).ConfigureAwait(false);
             var runtime = ctx.Services.Get<IAgentRuntime>() ?? throw new RpcException("unavailable", "The agent runtime is not running.");

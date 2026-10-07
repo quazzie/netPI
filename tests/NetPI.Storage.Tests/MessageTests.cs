@@ -116,6 +116,7 @@ public static class MessageTests
             Check.Equal("4,5", string.Join(",", Page(limit: 2)));
             Check.Equal("1,2", string.Join(",", Page(before: 3)));
             Check.Equal("2", string.Join(",", Page(before: 3, limit: 1)));
+            Check.Equal("1,2", string.Join(",", Page(before: 3, limit: 10)), "fewer left before the seq than the limit: what there is");
             Check.Equal("1,2,3,4,5", string.Join(",", Page(limit: 0)), "a limit of nothing is no limit");
             Check.Equal("", string.Join(",", Page(before: 1)), "a page may be empty");
             Check.Equal(0, store.Sessions.GetMessages("nope").Count, "a session with no messages has none");

@@ -20,8 +20,9 @@ public static class ControlTests
             Check.Equal(1L, steered.L("queuedMessages"));
             var queueEv = await env.Client.WaitFor(mark, e => e.Type == "agent.queue" && e.Sid == sid && e.D.Arr("items").Any(), "agent.queue with the steer");
             Check.Equal("steer", queueEv.D.Arr("items").First().S("mode"));
-            var queue = await env.Rpc("agent.queue", new { sessionId = sid });
-            Check.True(queue.Arr().Count() <= 1, "agent.queue RPC");
+            // by now the steer may have been delivered already: the RPC answers it, or nothing, never anything else
+            var queue = (await env.Rpc("agent.queue", new { sessionId = sid })).Arr().ToList();
+            Check.True(queue.Count <= 1 && queue.All(i => i.S("mode") == "steer"), "agent.queue RPC: the steer or nothing, got " + queue.Count);
 
             var done = await env.WaitIdle(sid, mark, agent.L("runs"));
             var run = await env.Result(sid, mark, done);

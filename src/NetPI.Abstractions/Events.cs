@@ -101,4 +101,7 @@ public static class EventTypes
     public const string UiChanged = "ui.changed";
     public const string SettingsChanged = "settings.changed";
     public const string UsageRecorded = "usage.recorded";
+    /// <summary>The owner's Claude subscription usage changed (the Claude CLI provider's monitor fetched it): the usage snapshot.
+    /// Account-wide, not session scoped.</summary>
+    public const string UsageClaude = "usage.claude";
 }

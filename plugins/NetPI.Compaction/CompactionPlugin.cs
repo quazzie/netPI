@@ -55,6 +55,8 @@ public sealed class CompactionPlugin : INetPiPlugin
 
         var model = await service.ResolveSessionModelAsync(session, ct).ConfigureAwait(false)
                     ?? throw new RpcException("no_model", "No model is available for this session.");
+        if (model.ManagesOwnContext)
+            return $"{model.Provider} keeps and compacts this chat's context itself, so there is nothing to compact here.";
         try
         {
             var result = await service.CompactAsync(new CompactionRequest
@@ -111,6 +113,7 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
         var o = service.Options();
         if (!o.Enabled) return;
         var run = turn.Run;
+        if (run.Model.ManagesOwnContext) return; // the backend compacts its own session
         var window = CompactionService.WindowFor(run.Model, o);
         var overhead = ModelMessages.EstimateTokens(turn.SystemPrompt) + CompactionPlanner.EstimateTools(turn.Tools);
         var estimate = EstimateContext(turn, overhead);

@@ -34,6 +34,8 @@ public sealed class IdeaVerifyQueue : IDisposable
     /// <summary>The wait before the first retry (<c>ideas.verifyRetrySeconds</c>); it doubles with every attempt.</summary>
     public const int DefaultRetrySeconds = 30;
     private const int MaxBackoffSeconds = 600;
+    /// <summary>What one second of the backoff lasts: a second, except in the tests, which run the doubling in milliseconds.</summary>
+    internal TimeSpan BackoffUnit { get; set; } = TimeSpan.FromSeconds(1);
     /// <summary>How long the queue looks again after an attempt said "not now" (the run or the project is busy).</summary>
     internal TimeSpan PostponeStep { get; set; } = TimeSpan.FromSeconds(15);
     /// <summary>How often a proposal may be told "not now" before it is handed back: a chat that never stops working must not hold the check's claim and a queue place for ever.</summary>
@@ -126,7 +128,7 @@ public sealed class IdeaVerifyQueue : IDisposable
                 return false;
             }
             var work = _ctx.Services.Get<IBackgroundWork>();
-            var job = new Job(key, sessionId, projectId, attempt, giveUp, reason) { Due = DateTimeOffset.UtcNow.AddSeconds(Backoff(0)) };
+            var job = new Job(key, sessionId, projectId, attempt, giveUp, reason) { Due = DateTimeOffset.UtcNow + Backoff(0) * BackoffUnit };
             job.WorkId = work?.Begin(Purpose, null, sessionId, projectId);
             work?.Set(job.WorkId!, "waiting", $"{reason}; no attempt yet, the next one in about {Backoff(0):0} s");
             _jobs[key] = job;
@@ -223,7 +225,7 @@ public sealed class IdeaVerifyQueue : IDisposable
             return;
         }
         var seconds = Backoff(job.Tries);
-        job.Due = DateTimeOffset.UtcNow.AddSeconds(seconds);
+        job.Due = DateTimeOffset.UtcNow + seconds * BackoffUnit;
         work?.Set(job.WorkId!, "waiting", Deferred(job, seconds));
         _ctx.Logger.LogWarning("Ideas: the deferred verification {Key} is still waiting ({Reason}); attempt {Tries} of {Max}, the next one in about {Seconds:0} s",
             job.Key, job.Reason, job.Tries, MaxTries, seconds);

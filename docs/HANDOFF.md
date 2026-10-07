@@ -12,10 +12,19 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 | Old NetPI v1 | its data was moved to `%USERPROFILE%\.netpi\legacy-netpi-v1\`. Reference only; don't run it against the new data folder |
 | Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\archived\apps\AiSwitcher-legacy`) → nInfer `:8080` (source `C:\AI\Projects\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
 | Claude | Anthropic Messages API with an API key (`providers.anthropic.apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far (no API key available) |
+| Claude CLI | `providers.claudeCli` runs `claude -p` on the owner's subscription: the agent is Claude Code, in the session's workspace, with the CLI's own tools (NetPI's are not used; `tools`, `permissionMode` in docs/SETTINGS.md). A chat keeps one CLI session (`--resume`, only the new messages are sent). Needs the standalone CLI (`irm https://claude.ai/install.ps1 \| iex`, then `claude auth login`). Verified live 2026-10-06 (Sonnet, Max login, read and write); `NETPI_CLAUDE_CLI_LIVE=1` runs the live test |
 | OpenRouter | `providers.openrouter.apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
 | Plans | `docs/plans/`: active plans (open questions at the end); `docs/archive/`: one dated record per completed plan (what was done, results, commits) |
 
 ## Current state (2026-09-28)
+
+### Schedules tab and tool (2026-10-06)
+
+The Schedules plugin (idea-1y1174) gained its missing surfaces: the **Schedules tab** (right panel, `plugins/NetPI.Schedules/ui/`, bundle `wwwroot/ui.js`) and the **`schedules` tool** (`SchedulesTool.cs`: list/get/history/add/update/run — no delete, up to the user; a scheduled chat cannot grow the set, cap 50). Zero new RPCs, events or settings. Covered by `SchedulesToolTests` (Aux), `ui.schedules-tab` (E2E) and the updated `RpcReadOnlyTests`.
+
+### Local catalog refresh (2026-10-06)
+
+Local OpenAI-compatible providers now refresh in the background, and backend metadata changes publish models.changed even under the same model ID. Validation and staging details: [catalog refresh](archive/2026-10-06-catalog-refresh.md).
 
 ### Storage port and the core diet (2026-10-02)
 

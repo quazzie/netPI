@@ -10,7 +10,8 @@ namespace NetPI.Profiles;
 /// Before the first message that is free; in a started chat the profile switch invalidates the chat's prompt revision, so
 /// the prompt is rendered again at the next model call (one full re-read; no <c>context.reset</c> call is needed) and a
 /// <c>profile</c> notice tells the model. Subagents do not get profiles: their owner chooses their tools.
-/// <para>RPC: <c>profiles.list</c>, <c>profiles.apply { sessionId, profile }</c>.</para>
+/// Chats the app starts by itself call <c>profiles.applyAuto</c>, which uses <c>profiles.autoProfile</c> in place of the global default.
+/// <para>RPC: <c>profiles.list</c>, <c>profiles.apply { sessionId, profile }</c>, <c>profiles.applyAuto { sessionId, toolsOff? }</c>.</para>
 /// </summary>
 [NetPiPlugin("netpi.profiles", Name = "Profiles", Description = "Named instructions and tools for chats, with a default per project", Order = 45)]
 public sealed class ProfilesPlugin : INetPiPlugin
@@ -34,6 +35,14 @@ public sealed class ProfilesPlugin : INetPiPlugin
             return await profiles.ApplyAsync(sessionId, string.IsNullOrWhiteSpace(id) || id == ProfileService.None ? null : id, token)
                 .ConfigureAwait(false);
         }, "Give a chat a profile (null = none): { sessionId, profile } → SessionInfo. In a started chat the system prompt is rendered again at the next model call (one full re-read).");
+        context.Rpc.Register("profiles.applyAuto", async (req, token) =>
+        {
+            var off = req.Prop("toolsOff") is { ValueKind: System.Text.Json.JsonValueKind.Array } a
+                ? a.EnumerateArray().Where(e => e.ValueKind == System.Text.Json.JsonValueKind.String).Select(e => e.GetString()!).ToList()
+                : null;
+            return await profiles.ApplyAutoAsync(req.Required("sessionId"), off, token).ConfigureAwait(false);
+        }, "Give a chat the app starts by itself (a plan carried out, idea work, a schedule) the automatic profile (settings profiles.autoProfile; its project's default first): " +
+           "{ sessionId, toolsOff? (tools kept off whatever the profile says) } → SessionInfo.");
         return Task.CompletedTask;
     }
 }

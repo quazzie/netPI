@@ -27,6 +27,7 @@ public static class PlanTests
         t.Add("plan: the plugin reloading ends the wait as withdrawn, and the same plan submitted again keeps its revision", ReloadDuringWait);
         t.Add("plan: /plan enters (with a task it starts the run), shows, leaves; the chat is told once per change", Command);
         t.Add("plan: a fork starts without plan mode", ForkReset);
+        t.Add("plan: a messageless chat's enter and exit are announced with session.updated, so a window's row sees the mode", MessagelessAnnounce);
     }
 
     private static async Task<TestHost> StartAsync()
@@ -702,5 +703,35 @@ public static class PlanTests
         var fork = h.Fork(s.Id);
         Check.Equal(null, ModeOf(h, fork.Id), "the fork is not in plan mode");
         Check.Equal("planning", ModeOf(h, s.Id), "the original still is");
+    }
+
+    /// <summary>
+    /// A messageless chat is transient, and the session service announces nothing about it: the plugin announces its
+    /// enter and exit itself (session.updated), so a window's session row sees the mode. A stored chat is announced by
+    /// the service, and the plugin's guard skips, so there is exactly one announce per transition.
+    /// </summary>
+    private static async Task MessagelessAnnounce()
+    {
+        await using var h = await StartAsync();
+        var s = h.NewSession();
+        List<JsonObject> Updated() =>
+            h.Bus.OfType("session.updated").Select(FakeBus.Data).Where(d => (string?)d["session"]?["id"] == s.Id).ToList();
+        await h.Rpc.InvokeAsync("plan.enter", new { sessionId = s.Id });
+        var on = Updated().Single();
+        Check.Equal("planning", (string?)on["session"]?["meta"]?["planMode"]?["state"], "the enter is announced");
+        await h.Rpc.InvokeAsync("plan.exit", new { sessionId = s.Id });
+        var off = Updated().Last();
+        Check.True(off["session"]?["meta"]?["planMode"] is null, "the exit is announced too");
+        Check.Equal(2, Updated().Count, "one announce per change");
+
+        // the chat materializes: from then on the service announces, and the plugin's guard skips
+        h.Catalog.Handler = (r, ct) => Reply.Text("ok");
+        await h.SendAsync(s.Id, "hello");
+        await h.IdleAsync(s.Id);
+        var baseline = Updated().Count;
+        await h.Rpc.InvokeAsync("plan.enter", new { sessionId = s.Id });
+        Check.Equal(baseline + 1, Updated().Count, "the stored chat's enter is announced once (the service's)");
+        await h.Rpc.InvokeAsync("plan.exit", new { sessionId = s.Id });
+        Check.Equal(baseline + 2, Updated().Count, "and so is the exit");
     }
 }

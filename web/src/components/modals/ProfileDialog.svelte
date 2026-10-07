@@ -10,7 +10,7 @@
   import { confirmDialog } from '../../lib/state/ui.svelte.js';
   import { listedTools } from '../../lib/tools.js';
 
-  let { id, profile, categories = [], opening = '', isDefault = false, onclose } = $props();
+  let { id, profile, categories = [], opening = '', isDefault = false, isAuto = false, onclose } = $props();
 
   // the tools the profile switches off; an older list may name a merged tool by one of its actions (ssh_run for ssh),
   // and a change writes the list back with the current names
@@ -46,6 +46,7 @@
     if (!ok) return;
     onclose?.();
     if (isDefault) await setSetting('profiles.defaultProfile', null);
+    if (isAuto) await setSetting('profiles.autoProfile', null);
     await setSetting(`profiles.${id}`, null);
   }
 </script>
@@ -70,6 +71,7 @@
     </label>
 
     <label class="np-check default"><input type="checkbox" checked={isDefault} onchange={(e) => setSetting('profiles.defaultProfile', e.currentTarget.checked ? id : null)} /> New chats start with this profile (unless their project has its own)</label>
+    <label class="np-check default"><input type="checkbox" checked={isAuto} onchange={(e) => setSetting('profiles.autoProfile', e.currentTarget.checked ? id : null)} /> Chats NetPI starts itself use this profile (idea work, a plan approved in a new chat, schedules)</label>
 
     <div class="lbl tools-title">Tools</div>
     {#each categories as [cat, list] (cat)}

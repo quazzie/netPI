@@ -95,6 +95,7 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
         long? thinkStart = null, thinkEnd = null;
         long? firstToken = null; // the call's first thinking, text or tool call (as diag.calls measures it)
         Usage? lastUsage = null;
+        var providerTools = new Dictionary<string, string>(); // calls the provider runs itself, between running and done
         ChatMessage? final = null;
         var contextTokens = 0L;
 
@@ -136,6 +137,27 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
                         rt.SetActivity(state, $"preparing {t.Name}");
                         break;
                     case ToolCallArgsDelta:
+                        break;
+                    case ProviderToolRunning r:
+                        emitter.Flush();
+                        providerTools[r.Id] = r.Name;
+                        rt.Emit(EventTypes.ToolStart, new JsonObject
+                        {
+                            ["sessionId"] = SessionId, ["agentId"] = AgentId, ["callId"] = r.Id, ["name"] = r.Name,
+                            ["label"] = r.Name, ["arguments"] = r.Arguments,
+                        }, SessionId);
+                        rt.SetActivity(state, $"tool: {r.Name}");
+                        break;
+                    case ProviderToolOutput o:
+                        rt.Emit(EventTypes.ToolOutput, new JsonObject { ["sessionId"] = SessionId, ["callId"] = o.Id, ["chunk"] = o.Text }, SessionId);
+                        break;
+                    case ProviderToolDone d:
+                        rt.Emit(EventTypes.ToolEnd, new JsonObject
+                        {
+                            ["sessionId"] = SessionId, ["callId"] = d.Id, ["name"] = providerTools.GetValueOrDefault(d.Id), ["isError"] = d.IsError,
+                        }, SessionId);
+                        providerTools.Remove(d.Id);
+                        rt.SetActivity(state, "writing");
                         break;
                     case UsageUpdate u:
                         lastUsage = u.Usage;

@@ -279,7 +279,7 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
                 if (reasoning.Efforts is { } efforts)
                     foreach (var effort in efforts) sb.Append(effort).Append(',');
             }
-            sb.Append('\n');
+            sb.Append('|').Append(m.IsLocal).Append('|').Append(m.Extra?.ToJsonString()).Append('\n');
         }
         return sb.ToString();
     }

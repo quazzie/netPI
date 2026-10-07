@@ -272,7 +272,8 @@ internal sealed class ServerManager : IAsyncDisposable
         {
             while (!ct.IsCancellationRequested)
             {
-                if (state.Connection is not null && state.Connection.ListChanged && listener is null)
+                // Either list may announce changes: a server that publishes only resources is listened to as well.
+                if (state.Connection is not null && (state.Connection.ListChanged || state.Connection.ResourceListChanged) && listener is null)
                     listener = ListenAsync(state, ct);
                 Command command;
                 using (var wait = CancellationTokenSource.CreateLinkedTokenSource(ct))
