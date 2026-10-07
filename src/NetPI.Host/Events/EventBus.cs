@@ -284,16 +284,16 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
         while (true)
         {
             // A flush marker waiting on a full subscriber's line still has to get there: retry it on a slow tick,
-            // and keep delivering whatever input arrives in the meantime — even when the bus is otherwise quiet.
-            if (HasDebt())
+            // and keep delivering whatever input arrives in the meantime — even when the bus is otherwise quiet. The
+            // marker goes first into whatever room its line has made, before each item delivered after it: input
+            // delivered first fills that room again with events published after the flush, and a steady publisher
+            // kept the marker out for as long as it published.
+            while (HasDebt())
             {
                 RetryDebt();
-                while (HasDebt())
-                {
-                    while (reader.TryRead(out var item)) Deliver(item);
-                    RetryDebt();
-                    if (HasDebt()) await Task.Delay(20).ConfigureAwait(false);
-                }
+                if (!HasDebt()) break;
+                if (reader.TryRead(out var item)) Deliver(item);
+                else await Task.Delay(20).ConfigureAwait(false);
             }
             if (!await reader.WaitToReadAsync().ConfigureAwait(false)) return;
             while (reader.TryRead(out var item)) Deliver(item);

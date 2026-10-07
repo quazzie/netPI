@@ -175,6 +175,40 @@ public static class EventBusTests
             Check.Equal("t.one,t.two", string.Join(",", received.Take(2)), "the events published before the flush were delivered, in order");
         });
 
+        r.Add("bus: a steady publisher does not keep a flush out of a busy line: its owed marker takes the room the line makes first", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 1);
+            var wedged = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            // busy, not stuck: after the first event every event takes 30 ms, longer than the dispatcher's 20 ms retry tick
+            using var _ = bus.Subscribe("t", e =>
+            {
+                if (!wedged.IsSet) { wedged.Set(); release.Wait(10_000); return; }
+                Thread.Sleep(30);
+            });
+            bus.Publish("t");
+            Check.True(wedged.Wait(5000), "the line is inside its first event");
+            bus.Publish("t");                // its one slot is taken
+            var flush = bus.FlushAsync();    // so the marker cannot be queued: the line owes it
+            // a publisher that keeps going: a few events every timer tick, all for the busy line
+            var stop = new ManualResetEventSlim();
+            var publisher = Task.Run(() => { while (!stop.IsSet) { for (var i = 0; i < 5; i++) bus.Publish("t"); Thread.Sleep(1); } });
+            try
+            {
+                await Task.Delay(50);
+                release.Set();   // the line moves again, one event per 30 ms: each one it takes makes room for the marker
+                var back = await Task.WhenAny(flush, Task.Delay(5000)) == flush;
+                Check.True(back, "the flush came back while the publisher kept publishing (the marker went into the room the line made, not the next event): " + bus.StaleFlush() + " dropped " + bus.Dropped + " delivered " + bus.Activity().Delivered + " backlog " + bus.Backlog);
+            }
+            finally
+            {
+                stop.Set();
+                release.Set();
+                await publisher;
+            }
+            await flush.WaitAsync(TimeSpan.FromSeconds(10));
+        });
+
         r.Add("bus: disposing the bus unblocks a flush that is still waiting for its marker", async () =>
         {
             const int input = 2;
