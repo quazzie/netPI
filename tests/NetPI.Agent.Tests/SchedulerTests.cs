@@ -21,7 +21,7 @@ public static class SchedulerTests
         t.Add("scheduler: unassigned runs queue with the others by priority and arrival, and are cancelled, timed out and refused like them", LateBindingOrderAndEnds);
         t.Add("scheduler: any agent: every agent that can take work, a free one first, the last one as the tie-break", AnyAgentCandidates);
         t.Add("agents: a chat's run goes to the first agent on its model that frees up, not the one it was queued behind", RunsGoToTheFirstFreeAgent);
-        t.Add("agents: a chat on \"any\" runs on whichever agent is free and its model follows (agents.use any, agent_spawn any)", ChatsOnAnyAgent);
+        t.Add("agents: a chat on \"any\" runs on whichever agent is free and its model follows (agents.use any)", ChatsOnAnyAgent);
         t.Add("scheduler: stop fails waiters; runs survive a reload of the agents plugin", ReloadDuringWait);
         t.Add("scheduler: budget exceeded + usage.summary", Budget);
         t.Add("scheduler: runs without the agents plugin", NoAgentsPlugin);
