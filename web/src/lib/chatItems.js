@@ -191,10 +191,11 @@ export function createItemBuilder() {
 
 /**
  * The message being streamed, as render items laid out the way the finished message will be: thinking and tool calls
- * are steps that join the open steps group, text is a text item. Tool steps carry their final key (c<callId>), so their
- * rows stay in place when message.added replaces the stream; nothing changes height at that moment.
- *   stream step  { kind:'thinking', key:'k.stream', part, msg:null, stream } | { kind:'tool', …, preparing:true }
- *   stream text  { kind:'text', key:'t.stream', text, msg:null, last:true, stream }
+ * are steps that join the open steps group, text is a text item, in the order they arrived (stream.segments: a provider
+ * that runs its own loop streams text, tool, text… in one call, idea-xg7ayy). Tool steps carry their final key
+ * (c<callId>), so their rows stay in place when message.added replaces the stream; nothing changes height at that moment.
+ *   stream step  { kind:'thinking', key:'k.stream.<i>', part, msg:null, stream: <its timing> } | { kind:'tool', …, preparing:true }
+ *   stream text  { kind:'text', key:'t.stream.<i>', text, msg:null, last, stream, done } (done: a later segment follows it)
  *   stream ask   { kind:'ask', key:'a<callId>', call, result:null, msg:null, preparing:true }  (ask_user: its card, not a step)
  */
 export function withStream(items, stream) {
@@ -211,12 +212,20 @@ export function withStream(items, stream) {
     if (group) out.push(group);
     group = null;
   };
-  if (stream.thinking) push({ kind: 'thinking', key: 'k.stream', part: { type: 'thinking', text: stream.thinking }, msg: null, stream });
-  if (stream.text.trim()) {
-    flush();
-    out.push({ kind: 'text', key: 't.stream', text: stream.text, msg: null, last: true, stream });
-  }
-  for (const t of stream.tools) {
+  const segs = stream.segments ?? [];
+  const lastText = segs.findLastIndex((s) => s.kind === 'text' && s.text.trim());
+  segs.forEach((s, i) => {
+    if (s.kind === 'thinking') {
+      push({ kind: 'thinking', key: `k.stream.${i}`, part: { type: 'thinking', text: s.text }, msg: null, stream: s.timing });
+      return;
+    }
+    if (s.kind === 'text') {
+      if (!s.text.trim()) return;
+      flush();
+      out.push({ kind: 'text', key: `t.stream.${i}`, text: s.text, msg: null, last: i === lastText, stream, done: i !== segs.length - 1 });
+      return;
+    }
+    const t = s;
     const call = { type: 'tool_call', id: t.callId, name: t.name };
     if (t.name === 'ask_user') {
       flush();
@@ -225,7 +234,7 @@ export function withStream(items, stream) {
       flush();
       out.push({ kind: t.name === 'plan_submit' ? 'plan' : 'planenter', key: `p${t.callId}`, call, result: null, msg: null, preparing: true });
     } else push({ kind: 'tool', key: `c${t.callId}`, call, result: null, resultMsg: null, msg: null, preparing: true });
-  }
+  });
   flush();
   return out;
 }

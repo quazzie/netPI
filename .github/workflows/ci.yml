@@ -112,7 +112,8 @@ jobs:
 
       # The other Node checks, each its own step so the job log names the one that failed: the kernel references only
       # the contracts and names no plugin-owned type; every plugin tab's mount and refresh loop; the projects module and
-      # the dialog views on it; rpc's one deadline per call; where a streaming answer may be cut for rendering.
+      # the dialog views on it; rpc's one deadline per call; where a streaming answer may be cut for rendering; the order a
+      # streaming answer's text, thinking and tool calls are laid out in.
       - name: The core stays small
         run: node scripts/core-size.mjs
       - name: The tab lifecycle
@@ -123,6 +124,8 @@ jobs:
         run: node web/scripts/check-rpc-deadline.mjs
       - name: The live split
         run: node web/scripts/check-live-split.mjs
+      - name: The stream order
+        run: node web/scripts/check-stream-order.mjs
 
       - name: Run the mock e2e
         run: npm run e2e

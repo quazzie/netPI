@@ -58,6 +58,14 @@ export class StreamState {
   text = $state('');
   thinking = $state('');
   tools = $state.raw([]); // [{ callId, name }]
+  /**
+   * The answer in the order it arrives: { kind: 'thinking', text, timing: { thinkingStartedAt, thinkingEndedAt } } |
+   * { kind: 'text', text } | { kind: 'tool', callId, name }. One model call of a provider that runs its own loop (the
+   * Claude CLI) is text, tool, text, tool…: laid out from these the live answer reads like the finished one, where the
+   * joined text above was one wall of paragraphs until the message replaced it (idea-xg7ayy). A thinking run's timing
+   * object is replaced only when it ends, so a row that shows it keeps its timer.
+   */
+  segments = $state.raw([]);
   model = $state(null);
   agentId = null;
   startedAt = $state(0);
@@ -65,10 +73,30 @@ export class StreamState {
   thinkingEndedAt = $state(0);
   #text = '';
   #thinking = '';
+  #segs = [];
   #flush = () => {
     this.text = this.#text;
     this.thinking = this.#thinking;
+    this.segments = this.#segs.slice();
   };
+
+  /** Text and thinking continue the run they belong to; a different kind after them starts a new run (and ends a thinking one). */
+  #append(kind, t) {
+    if (!t) return;
+    const at = this.#segs.length - 1;
+    const last = this.#segs[at];
+    if (last?.kind === kind) {
+      this.#segs[at] = { ...last, text: last.text + t };
+      return;
+    }
+    this.#endThinking();
+    this.#segs.push(kind === 'thinking' ? { kind, text: t, timing: { thinkingStartedAt: Date.now(), thinkingEndedAt: 0 } } : { kind, text: t });
+  }
+  #endThinking() {
+    const at = this.#segs.length - 1;
+    const last = this.#segs[at];
+    if (last?.kind === 'thinking' && !last.timing.thinkingEndedAt) this.#segs[at] = { ...last, timing: { ...last.timing, thinkingEndedAt: Date.now() } };
+  }
 
   start(d) {
     this.clear();
@@ -86,24 +114,31 @@ export class StreamState {
       if (this.thinkingStartedAt && !this.thinkingEndedAt) this.thinkingEndedAt = Date.now();
       this.#text += d.text ?? '';
     }
+    this.#append(d.kind === 'thinking' ? 'thinking' : 'text', d.text ?? '');
     nextFrame(this.#flush);
   }
   tool(d) {
     if (!this.active) this.start({});
     if (this.thinkingStartedAt && !this.thinkingEndedAt) this.thinkingEndedAt = Date.now();
+    this.#endThinking();
+    this.#segs.push({ kind: 'tool', callId: d.callId, name: d.name });
     this.tools = [...this.tools, { callId: d.callId, name: d.name }];
+    flushNow(this.#flush);
   }
   reset() {
     this.#text = '';
     this.#thinking = '';
+    this.#segs = [];
     flushNow(this.#flush);
     this.text = '';
     this.thinking = '';
     this.tools = [];
+    this.segments = [];
     this.thinkingStartedAt = 0;
     this.thinkingEndedAt = 0;
   }
   end() {
+    this.#endThinking();
     flushNow(this.#flush);
     if (this.thinkingStartedAt && !this.thinkingEndedAt) this.thinkingEndedAt = Date.now();
     this.ended = true;
@@ -111,12 +146,14 @@ export class StreamState {
   clear() {
     this.#text = '';
     this.#thinking = '';
+    this.#segs = [];
     flushNow(this.#flush);
     this.active = false;
     this.ended = false;
     this.text = '';
     this.thinking = '';
     this.tools = [];
+    this.segments = [];
     this.model = null;
     this.startedAt = 0;
     this.thinkingStartedAt = 0;

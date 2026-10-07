@@ -36,11 +36,13 @@
       blocks = [...blocks, renderMarkdown(text.slice(cut, at), { cache: false })];
       cut = at;
     }
-    // the caret goes inside the last paragraph so it follows the text
-    tail = renderMarkdown(text.slice(cut), { cache: false }).replace(/<\/p>\s*$/, '<span class="caret"></span></p>');
+    // the caret goes inside the last paragraph so it follows the text; a text run the stream has moved past (a tool call
+    // or thinking came after it) is finished and has none
+    tail = renderMarkdown(text.slice(cut), { cache: false }).replace(/<\/p>\s*$/, item.done ? '</p>' : '<span class="caret"></span></p>');
   }
   $effect(() => {
     const t = item.text;
+    void item.done; // finished: render once more, without the caret
     if (!streaming || !t || timer) return;
     const wait = 100 - (performance.now() - last);
     if (wait <= 0) render();
