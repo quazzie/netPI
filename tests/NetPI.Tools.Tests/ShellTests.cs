@@ -425,9 +425,14 @@ public static class ShellTests
         {
             var (svc, _, _) = NewService();
             var dir = T.TempDir("bash");
-            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(700));
+            // Aborted once the background sleep exists (it is started before the marker is printed), not after a fixed
+            // 700 ms: on a slow start that killed bash before it had forked anything, and the EOF below proved nothing.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var started = false;
+            var ctx = T.Ctx(dir, output: c => { if (c.Contains("started", StringComparison.Ordinal)) { started = true; cts.Cancel(); } });
             var sw = Stopwatch.StartNew();
-            var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30 & sleep 30" }), cts.Token);
+            var res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "sleep 30 & echo started; sleep 30" }), cts.Token);
+            Check.True(started, "aborted after the background child was started");
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(8));
             ToolCheck.Error(res, "[aborted");
             Check.True(T.D(res).Bool("outputEof"), "captured output reached EOF after the abort");
