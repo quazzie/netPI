@@ -522,6 +522,8 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                 await ctx.Rpc.InvokeAsync("sessions.setWorkspace", new JsonObject { ["id"] = created.Id, ["workspaceId"] = workspace }, ct).ConfigureAwait(false);
             if (SessionAgent.Of(from) is { Length: > 0 } agent && ctx.Rpc.Exists("agents.use"))
                 await ctx.Rpc.InvokeAsync("agents.use", new JsonObject { ["sessionId"] = created.Id, ["agent"] = agent }, ct).ConfigureAwait(false);
+            if (ctx.Rpc.Exists("profiles.applyAuto"))
+                await ctx.Rpc.InvokeAsync("profiles.applyAuto", new JsonObject { ["sessionId"] = created.Id }, ct).ConfigureAwait(false);
             if (ideaId is not null && ctx.Rpc.Exists("ideas.attach"))
                 await ctx.Rpc.InvokeAsync("ideas.attach", new JsonObject { ["sessionId"] = created.Id, ["id"] = ideaId }, ct).ConfigureAwait(false);
             var runtime = ctx.Services.Get<IAgentRuntime>() ?? throw new RpcException("unavailable", "The agent runtime is not running.");

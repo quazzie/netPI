@@ -16,9 +16,11 @@
 
   let { doc, opening = '' } = $props();
 
-  const RESERVED = new Set(['defaultProfile', 'none']);
+  const RESERVED = new Set(['defaultProfile', 'autoProfile', 'none']);
   const profiles = $derived(Object.entries(doc?.profiles ?? {}).filter(([id, v]) => !RESERVED.has(id) && v && typeof v === 'object'));
   const defaultId = $derived(typeof doc?.profiles?.defaultProfile === 'string' ? doc.profiles.defaultProfile : '');
+  // '' = the same as new chats; 'none' = no profile
+  const autoId = $derived(typeof doc?.profiles?.autoProfile === 'string' ? doc.profiles.autoProfile : '');
 
   // the tools a profile can switch: every active tool once (tools.disabled and disabled plugins are not offered)
   let tools = $state([]);
@@ -80,6 +82,15 @@
     </select>
     <span class="np-dim">unless their project has its own (Projects dialog).</span>
   </label>
+  <label class="default">
+    <span>Chats NetPI starts itself use</span>
+    <select class="np-input" value={autoId} onchange={(e) => setSetting('profiles.autoProfile', e.currentTarget.value || null)} aria-label="Profile for automatic chats">
+      <option value="">the default above</option>
+      <option value="none">no profile</option>
+      {#each profiles as [id, p] (id)}<option value={id}>{p.name || id}</option>{/each}
+    </select>
+    <span class="np-dim">idea work, a plan approved in a new chat, schedules; a project's own profile still wins.</span>
+  </label>
 
   {#each profiles as [id, p] (id)}
     {@const on = onCount(p)}
@@ -87,7 +98,7 @@
       title={p.name || id}
       icon="user"
       subtitle={firstLine(p.prompt?.trim() || opening)}
-      badges={[defaultId === id ? { text: 'default', tone: 'accent' } : null, { text: on === toolCount ? 'all tools' : `${on} of ${toolCount} tools` }]}
+      badges={[defaultId === id ? { text: 'default', tone: 'accent' } : null, autoId === id ? { text: 'automatic chats', tone: 'accent' } : null,{ text: on === toolCount ? 'all tools' : `${on} of ${toolCount} tools` }]}
       onclick={() => (openId = id)}
       data-profile={id}
     />
@@ -105,7 +116,7 @@
 </div>
 
 {#if openId}
-  <ProfileDialog id={openId} profile={doc?.profiles?.[openId]} {categories} {opening} isDefault={defaultId === openId} onclose={() => (openId = null)} />
+  <ProfileDialog id={openId} profile={doc?.profiles?.[openId]} {categories} {opening} isDefault={defaultId === openId} isAuto={autoId === openId} onclose={() => (openId = null)} />
 {/if}
 
 <style>

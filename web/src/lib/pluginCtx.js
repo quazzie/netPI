@@ -95,7 +95,7 @@ export function createPluginCtx(tab, sessionId = null) {
       },
       // A new chat (in opts.projectId's project, if any) that starts at once on `text`.
       startChat: async (opts) => {
-        const s = await newSession({ projectId: opts?.projectId ?? null, title: opts?.title });
+        const s = await newSession({ projectId: opts?.projectId ?? null, title: opts?.title, auto: true });
         if (s) await sendMessage(s.id, String(opts?.text ?? ''), [], 'auto');
       },
       insertText: (text) => {

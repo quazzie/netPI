@@ -457,7 +457,8 @@ the same Esc stack, `escLayer()` in `Modal.svelte`).
   overrides and a daily cap; the price, context, local/cloud and today's spend come from `agents.list`. "Add agent" opens
   the model list and then the new agent's dialog (the id is a slug of the model). `BudgetView` shows this period against the monthly
   and daily budgets and what each model cost (`usage.summary`), above the budget settings.
-- **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`) and one row per profile (its name,
+- **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`), "Chats NetPI starts itself use"
+  (`profiles.autoProfile`; the UI starts of idea work pass `newSession({ auto: true })`, which calls `profiles.applyAuto`) and one row per profile (its name,
   the first line of its instructions, its tools); `ProfileDialog` edits one: the name, the instructions that replace the
   opening of the system prompt (they start as the current opening; unchanged they stay unset), whether new chats
   start with it, and the tools as checkboxes by category (with all on / all off per category).
