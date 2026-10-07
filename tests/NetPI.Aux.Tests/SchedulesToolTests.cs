@@ -43,8 +43,15 @@ public static class SchedulesToolTests
             Check.Contains(list.Content, "now ", "the machine's now, so a once time can be computed");
             Check.NotContains(list.Content, "{", "Content is plain text; the JSON is Details only");
             Check.NotContains(list.Content, "}");
-            var details = (JsonNode)JsonSerializer.SerializeToNode(empty.Details)!;
+            var details = (JsonNode)JsonSerializer.SerializeToNode(list.Details)!;
             Check.Equal("schedules", S(details["kind"]));
+            var schedules = details["schedules"]!.AsArray().Select(s => s!.AsObject()).ToList();
+            Check.Equal(string.Join(",", new[] { a, b }.Order(StringComparer.Ordinal)),
+                string.Join(",", schedules.Select(s => S(s["id"])).Order(StringComparer.Ordinal)), "both schedules, as the full objects");
+            var hourly = schedules.Single(s => S(s["id"]) == a);
+            Check.Equal("Hourly", S(hourly["name"]));
+            Check.Equal("every", S(hourly["cadence"]!["kind"]));
+            Check.True(S(details["now"]) is { Length: > 0 }, "and the machine's now");
         });
 
         r.Add("schedules tool: add defaults the project to the calling session's, \"\" clears it, and the result echoes now", async () =>

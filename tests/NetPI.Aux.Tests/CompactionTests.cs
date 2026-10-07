@@ -358,6 +358,13 @@ public static class CompactionTests
             turn.LastContextTokens = 39_200; // far over the threshold of a 40k window
             await env.Hook.OnBeforeModelCallAsync(turn);
             Check.Equal(0, env.Ctx.ModelsFake.Requests.Count, "no summarizer call for a backend that compacts itself");
+
+            // /compact (compaction.run) says so instead of summarizing.
+            await new CompactionPlugin().StartAsync(env.Ctx, CancellationToken.None);
+            var said = (string?)await env.Ctx.RpcFake.Call("compaction.run", new JsonObject { ["sessionId"] = env.Session.Id });
+            Check.Contains(said, "keeps and compacts this chat's context itself");
+            Check.Equal(0, env.Ctx.ModelsFake.Requests.Count, "and /compact calls no summarizer either");
+            Check.Equal(0, env.Ctx.SessionsFake.MarkCompactedCalls.Count, "nothing was compacted");
         });
 
         r.Add("compaction: settings (disabled, threshold, reserve)", async () =>
@@ -598,16 +605,19 @@ public static class CompactionTests
             Check.Equal(10_000, req.MaxOutputTokens, "the whole budget (a quarter of the 40k window), not half of it");
         });
 
-        r.Add("compaction: after a failed auto-compaction the next model calls wait, unless the context grows", async () =>
+        r.Add("compaction: a failed auto-compaction never breaks the run, and the next model calls wait unless the context grows", async () =>
         {
             var env = new Env();
             env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "length", Parts = [new ThinkingPart { Text = "..." }] };
             env.Conversation(13);
-            await env.Hook.OnBeforeModelCallAsync(env.Turn());
+            await env.Hook.OnBeforeModelCallAsync(env.Turn());   // the summarizer fails: the hook does not throw
+            Check.Equal(0, env.Ctx.SessionsFake.MarkCompactedCalls.Count, "nothing was compacted");
             var tried = env.Ctx.ModelsFake.Requests.Count();
             Check.True(tried > 0 && env.Hook.BackingOff(env.Session.Id));
             var failed = (JsonObject)env.Ctx.Bus.OfType(EventTypes.AgentNotice).Last().Data!;
+            Check.Contains(failed["text"].Str(), "Auto-compaction failed");
             Check.Contains(failed["text"].Str(), $"tried again after {CompactionHook.BackoffCalls} model calls");
+            Check.Equal("compaction/failed/auto", $"{failed["kind"].Str()}/{failed["phase"].Str()}/{failed["mode"].Str()}", "the failure replaces the kept banner");
 
             for (var i = 0; i < CompactionHook.BackoffCalls; i++) await env.Hook.OnBeforeModelCallAsync(env.Turn());
             Check.Equal(tried, env.Ctx.ModelsFake.Requests.Count(), "no summarizer call while it waits");
@@ -661,18 +671,6 @@ public static class CompactionTests
             Check.Equal("test/small", scheduler.Acquired.Single().Key);
             Check.Equal("agt_1", scheduler.Acquired.Single().AgentId);
             Check.Equal(1, scheduler.Released);
-        });
-
-        r.Add("compaction: summarizer failure never breaks the run", async () =>
-        {
-            var env = new Env();
-            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new ThinkingPart { Text = "..." }], StopReason = "length" };
-            env.Conversation(13);
-            await env.Hook.OnBeforeModelCallAsync(env.Turn());
-            Check.Equal(0, env.Ctx.SessionsFake.MarkCompactedCalls.Count);
-            var failed = (JsonObject)env.Ctx.Bus.OfType(EventTypes.AgentNotice).Last().Data!;
-            Check.Contains(failed["text"].Str(), "Auto-compaction failed");
-            Check.Equal("compaction/failed/auto", $"{failed["kind"].Str()}/{failed["phase"].Str()}/{failed["mode"].Str()}", "the failure replaces the kept banner");
         });
 
         r.Add("compaction: compaction.run RPC, /compact command, busy agent, slots", async () =>

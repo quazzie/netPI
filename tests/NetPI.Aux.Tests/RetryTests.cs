@@ -130,9 +130,11 @@ public static class RetryTests
             Check.Equal(1, script.Calls);
         });
 
-        r.Add("retry: context overflow is not retried", async () =>
+        r.Add("retry: context overflow is not retried, even when the error is marked transient", async () =>
         {
-            var script = new Script((_, _) => Fail(new ModelException("prompt is too long", false, 400) { ContextOverflow = true }));
+            // Transient on purpose: a non-transient error is rethrown anyway (the test above), so only a transient one
+            // shows that the overflow flag is what stops the retry (the same prompt would overflow every time).
+            var script = new Script((_, _) => Fail(new ModelException("prompt is too long", true, 400) { ContextOverflow = true }));
             var ex = await Check.ThrowsAsync<ModelException>(() => Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None)));
             Check.True(ex.ContextOverflow);
             Check.Equal(1, script.Calls);

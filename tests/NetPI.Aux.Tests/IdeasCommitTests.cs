@@ -292,6 +292,10 @@ public static class IdeasCommitTests
             var idea = await env.AddIdea("Finished somewhere else", "- move the writer\n- keep the reader working");
             env.Repo.Commit($"first {idea}");
             await env.Check!.SweepNowAsync();
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "the first commit is read");
+
+            // The completion evidence is read in the repository the sweep is on, and this hash is not in it: an
+            // unavailable patch is missing evidence, not a failure of the check (idea-g6siz0).
             env.Unreadable.Add(env.Repo.Commits[0].Hash);   // a commit made in another repository
             env.Repo.Commit($"second {idea}");
 
@@ -303,6 +307,10 @@ public static class IdeasCommitTests
             Check.Equal(2, (review["requirements"] as JsonArray)!.Count, "with what a reviewer has to support");
             Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "and the sweep still moves on: missing evidence is not a failure that pins it");
             Check.Equal(0, await env.Cards(), "nothing is offered on evidence that is not there");
+            Check.Equal(0, IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home).Unread().Count,
+                "and the commit is not recorded unread either: it was read, only its patch was missing");
+            Check.Contains(IdeaOps.Str((await env.Rpc("ideas.get", new JsonObject { ["id"] = idea }))["commits"]![0]!["repo"]), env.Repo.Path,
+                "every commit entry says which repository it was made in");
             env.Ctx.Unload();
         });
 
@@ -712,6 +720,8 @@ public static class IdeasCommitTests
         r.Add("ideas commits: nothing is offered for a commit that only advances an idea", async () =>
         {
             var env = new Env();
+            // The verifier would bless the completion: the done question's MORE is the only thing that keeps the card away.
+            env.Ctx.ModelsFake.VerifierResponder = _ => VerifiedTrue();
             await env.StartAsync();
             var idea = await env.AddIdea("Two parts", "Part one is done; part two is not.");
             env.Link = labels => new() { [labels[0]!.Str()!] = 0.95, [labels[^1]!.Str()!] = 0.03 };
@@ -727,6 +737,7 @@ public static class IdeasCommitTests
             await env.Check!.SweepNowAsync();
             Check.Equal(1, (await env.CommitsOn(idea)).Count, "the commit is recorded");
             Check.Equal(0, await env.Cards(), "but it is not an offer");
+            Check.Equal("more", await DoneResult(env), "the done question answered MORE");
             env.Ctx.Unload();
         });
 
@@ -751,29 +762,6 @@ public static class IdeasCommitTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas commits: a linked commit this repository cannot read is skipped, not read again for ever", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var idea = await env.AddIdea("Finished somewhere else", "The commit that finishes it was made in another repository.");
-            env.Repo.Commit($"first {idea}");
-            await env.Check!.SweepNowAsync();
-            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "the first commit is linked");
-
-            // The completion evidence is read in the repository the sweep is on, and this hash is not in it: an
-            // unavailable patch is missing evidence, not a failure of the check (idea-g6siz0).
-            env.Unreadable.Add(env.Repo.Commits[0].Hash);
-            env.Repo.Commit($"second {idea}");
-            await env.Check.SweepNowAsync();
-            Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "the cursor moved past it instead of pinning the sweep");
-            Check.Equal(0, await env.Cards(), "no offer was made on evidence we do not have");
-            Check.Equal(0, IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home).Unread().Count,
-                "and the commit is not recorded unread either: it was read, only its patch was missing");
-            Check.Contains(IdeaOps.Str((await env.Rpc("ideas.get", new JsonObject { ["id"] = idea }))["commits"]![0]!["repo"]), env.Repo.Path,
-                "every commit entry says which repository it was made in");
-            env.Ctx.Unload();
-        });
-
         r.Add("ideas commits: a sweep passes back the git directories it was answered with, so only git log runs", async () =>
         {
             var env = new Env();
@@ -795,6 +783,8 @@ public static class IdeasCommitTests
         r.Add("ideas commits: an unchanged repository skips the periodic sweep until a ref moves", async () =>
         {
             var env = new Env();
+            // The verifier would bless the completion, so "not offered" at the end is the done question's MORE.
+            env.Ctx.ModelsFake.VerifierResponder = _ => VerifiedTrue();
             // The git directory the fake repository stands in for: what the periodic check marks (the HEAD, the refs
             // directory, the packed refs) are real files here, so an unchanged repository really is unchanged.
             var gitDir = env.Repo.GitDir;
@@ -834,6 +824,7 @@ public static class IdeasCommitTests
             Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "a moved ref wakes the sweep");
             Check.Equal(1, (await env.CommitsOn(idea)).Count, "and the commit is linked");
             Check.Equal(0, await env.Cards(), "but not offered: the commits do not finish it");
+            Check.Equal("more", await DoneResult(env), "the done question answered MORE");
             env.Ctx.Unload();
         });
 
@@ -880,6 +871,21 @@ public static class IdeasCommitTests
         var answer = new JsonObject();
         foreach (var (k, v) in probs) answer[k] = v;
         return new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = answer }) };
+    }
+
+    /// <summary>A verifier that accepts the completion: with it, only the done question can keep a card away (the
+    /// Env's own verifier refuses every completion, which would hide what the done question answered).</summary>
+    private static ChatMessage VerifiedTrue() => new()
+    {
+        Role = MessageRole.Assistant,
+        Parts = [new TextPart { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"The complete patch and tests satisfy the whole plan\"}" }],
+    };
+
+    /// <summary>What the newest done question decided, as ideas.decisions records it: "offered" or "more".</summary>
+    private static async Task<string?> DoneResult(Env env)
+    {
+        var log = (JsonObject)NetPiJson.ToNode(await env.Ctx.RpcFake.Call("ideas.decisions", new JsonObject { ["site"] = "done" }))!;
+        return (log["rows"] as JsonArray)?.FirstOrDefault()?["result"].Str();
     }
 
     /// <summary>The start sweeps in the background; these waits are the test's way in.</summary>
