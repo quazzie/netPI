@@ -419,7 +419,7 @@ Coverage (run `--list` for the names):
 - **hot reload**: overwriting `NetPI.Nudge.dll` → `plugins.changed`, reload, `plugins.unloaded { collected: true }`, still
   works; `plugins.reload` of providers/tools/hooks/agents/context; reloading the agent runtime mid-run; reloading the provider
   while a stream is open.
-- **server**: session-scoped events only reach subscribed clients, HTTP RPC fallback and auth, external `settings.json`
+- **server**: session-scoped events only reach subscribed clients (HTTP RPC and its auth are the Host suite's), external `settings.json`
   edits applied live, automatic session titles, projects CRUD, SIGTERM during a run → exit 0 → restart keeps sessions,
   messages and projects.
 - **UI** (`ui/smoke.mjs`, Playwright): open a prepared session, send `[s:tools]` (streaming block, tool rows, diff, final

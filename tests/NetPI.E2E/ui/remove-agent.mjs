@@ -26,8 +26,6 @@ const check = (name, ok, detail = '') => {
   checks.push({ name, ok: !!ok, detail: String(detail) });
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? ` (${detail})` : ''}`);
 };
-// [dbg-*] console lines the page emits during the flow: evidence for a failed check
-const dbg = [];
 const shot = async (page, name) => {
   await page.screenshot({ path: path.join(OUT, `${name}.png`) });
   console.log(`  screenshot ${name}.png`);
@@ -74,7 +72,6 @@ try {
   const context = await browser.newContext({ viewport: { width: 1200, height: 900 }, colorScheme: 'dark' });
   const page = await context.newPage();
   page.on('console', (m) => {
-    if (m.type() === 'debug' && m.text().startsWith('[dbg-')) dbg.push(m.text());
     if (m.type() === 'error') errors.push(`[console] ${m.text()}`);
   });
   page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
@@ -166,5 +163,5 @@ try {
 }
 const ok = checks.every((c) => c.ok);
 if (!ok) exitCode = 1;
-console.log(JSON.stringify({ ok, checks, errors, dbg }));
+console.log(JSON.stringify({ ok, checks, errors }));
 process.exit(exitCode);

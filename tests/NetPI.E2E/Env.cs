@@ -545,10 +545,10 @@ public sealed class Env : IAsyncDisposable
         await Rpc("sessions.create", new { title = title ?? "e2e", projectId, model, reasoning });
 
     /// <summary>Send a message and wait until the session's agent is idle again. Returns the run's events and the transcript.</summary>
-    public async Task<RunResult> Run(string sessionId, string text, int timeoutMs = 60_000, string? mode = null)
+    public async Task<RunResult> Run(string sessionId, string text, int timeoutMs = 60_000)
     {
         var mark = Client.Mark();
-        var agent = await Rpc("agent.send", new { sessionId, text, mode });
+        var agent = await Rpc("agent.send", new { sessionId, text });
         var runs = agent.L("runs");
         var done = await WaitIdle(sessionId, mark, runs, timeoutMs);
         return await Result(sessionId, mark, done);

@@ -1,5 +1,3 @@
-using System.Net;
-using System.Text;
 using System.Text.Json;
 
 namespace NetPI.E2E;
@@ -441,7 +439,9 @@ public static class AdvancedTests
             Check.Contains(again.FinalText, "TEXTCALL-DONE");
         });
 
-        r.Add("server.websocket-scope", "websocket: session-scoped events only reach subscribers; HTTP RPC fallback and auth", async () =>
+        // HTTP RPC and its auth (401, the token, 404 for a missing session) are the Host suite's "server: /api/health is open;
+        // RPC needs the token..." on the same server code; what only a real runtime shows is which of its events are scoped.
+        r.Add("server.websocket-scope", "websocket: a run's session-scoped events only reach that session's subscribers, its broadcast ones reach everyone", async () =>
         {
             var a = (await env.NewSession()).S("id")!;
             var b = (await env.NewSession()).S("id")!;
@@ -456,17 +456,6 @@ public static class AdvancedTests
             Check.False(evs.Any(e => e.Sid == b), "no scoped events of session b");
             Check.True(evs.Any(e => e.Type == "stream.delta" && e.Sid == a), "stream events of session a");
             Check.True(evs.Any(e => e.Type == "agent.status" && e.D.P("agent").S("sessionId") == b), "broadcast events of b still arrive");
-
-            using var ok = new HttpRequestMessage(HttpMethod.Post, $"{env.BaseUrl}/api/rpc/sessions.get") { Content = new StringContent($"{{\"id\":\"{a}\"}}", Encoding.UTF8, "application/json") };
-            ok.Headers.Add("X-NetPI-Token", Env.Token);
-            var resp = await env.Http.SendAsync(ok);
-            Check.Equal(HttpStatusCode.OK, resp.StatusCode);
-            using (var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync())) Check.Equal(a, doc.RootElement.S("id"));
-            var anon = await env.Http.PostAsync($"{env.BaseUrl}/api/rpc/sessions.list", new StringContent("{}"));
-            Check.Equal(HttpStatusCode.Unauthorized, anon.StatusCode);
-            using var missing = new HttpRequestMessage(HttpMethod.Post, $"{env.BaseUrl}/api/rpc/sessions.get") { Content = new StringContent("{\"id\":\"ses_nope\"}") };
-            missing.Headers.Add("X-NetPI-Token", Env.Token);
-            Check.Equal(HttpStatusCode.NotFound, (await env.Http.SendAsync(missing)).StatusCode);
         });
 
         r.Add("settings.live-edit", "settings: editing settings.json on disk applies live (settings.changed, default model)", async () =>

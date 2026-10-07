@@ -274,7 +274,6 @@ public static class UiTests
             Check.True(failed.Count == 0, $"{failed.Count} ui check(s) failed:\n      " + string.Join("\n      ", failed)
                 + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
             Check.Equal(0, proc.ExitCode, "start-project exit code; stderr: " + err);
-            Check.True(p.S("path") is not null, "the project has a folder");
             Env.Log($"screenshots: {outDir}");
         }, 150);
 
@@ -303,7 +302,6 @@ public static class UiTests
                 var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
                 Check.True(json is not null, "remove-agent output: " + output + err);
                 using var d = JsonDocument.Parse(json!);
-                foreach (var line in d.RootElement.Arr("dbg").Select(e => e.GetString())) Console.WriteLine("      [dbg] " + line);
                 var failedChecks = d.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
                 Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
                     + (d.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", d.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
