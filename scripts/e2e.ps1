@@ -84,6 +84,7 @@ try {
     if ($Tag) { foreach ($t in $Tag) { $selectTags.Add($t) } }
     if ($Only) { foreach ($o in $Only) { $selectIds.Add($o) } }
     $runSelfTest = $SelfTest
+    $full = $false
     if ($Changed) {
         $files = [System.Collections.Generic.HashSet[string]]::new()
         $mergeBase = (git merge-base HEAD $Base 2>$null)
@@ -221,7 +222,9 @@ try {
     if (-not (Test-Path $dll)) { throw "$dll is missing: run without -SkipBuild" }
 
     # ------------------------------------------------------------------ run
-    if ($runSelfTest -and -not $Only -and -not $Tag -and -not $Smoke -and -not $Failed -and $selectTags.Count -eq 0 -and $selectIds.Count -eq 0) {
+    # Only the self-test when nothing else was selected; a -Changed that needs the full run (a contract changed) cleared the
+    # selection to mean "everything", and must not end here after the self-test as if nothing were selected
+    if ($runSelfTest -and -not $full -and -not $Only -and -not $Tag -and -not $Smoke -and -not $Failed -and $selectTags.Count -eq 0 -and $selectIds.Count -eq 0) {
         & dotnet $dll --self-test
         exit $LASTEXITCODE
     }

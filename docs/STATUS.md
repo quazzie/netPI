@@ -27,8 +27,15 @@ were green (Providers 68 passed, 495 checks; Tools 79; Agent 195; Aux 335; Host 
 
 The repository is on GitHub (`quazzie/netPI`) and `.github/workflows/ci.yml` runs on every push, on `windows-latest`:
 the six unit suites, the mock UI suite and the real-server e2e suite (the Linux build and the suites on Linux are not
-run there yet). **The runs on `master` of 2026-10-05 were not green**; the Windows-runner failures are under
-investigation and this page says so until they are fixed:
+run there yet). **The runs on `master` of 2026-10-05 were not green.** Both causes were in the environment and are
+fixed in the code (idea-gkx7io), but a green run on the pushed `master` is still to be confirmed:
+
+- the runner has no git identity, and `workspaces.integrate` merges: the Aux fixture gives its repository one, and both
+  .NET jobs set a global one, as a developer's machine has;
+- the e2e "where" check guessed Git Bash's `/tmp` mount, which is TEMP only while both are spelled alike (the runner's
+  TEMP is `C:\Users\RUNNER~1\…`): the scenario prints `pwd -W` and the test compares it with Windows' long name.
+
+The failures of those runs:
 
 | Job | Result on 2026-10-05 |
 |---|---|
@@ -60,7 +67,7 @@ are for shared contracts or cross-cutting behavior.
   the configured slots; persistent budget reservations are shared across the old and new plugin instances either way.
 - Linux/macOS and paid/live-provider billing behavior were not validated in this change. The Anthropic provider
   still needs verification against the real API. CI (`.github/workflows/ci.yml`) runs on every push, on Windows
-  only, and its 2026-10-05 runs are not green (see Validation).
+  only; its 2026-10-05 runs were not green, and the fix is not yet confirmed by a pushed run (see Validation).
 - `src/NetPI.Desktop` references the WebView2 SDK as a floating `1.0.*`: every restore may resolve a newer package,
   so two desktop builds days apart are not the same bytes and a package regression would arrive unannounced. Pin it
   to the version a Windows restore resolves (`obj/project.assets.json` names it); the exact version is not known

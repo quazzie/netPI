@@ -78,6 +78,10 @@ public static class WorkspaceTests
             GitAvailable = git && TestGit.Run(ProjectPath, "init", "-q", "-b", "main");
             if (GitAvailable)
             {
+                // the repository's own identity: workspaces.integrate merges, and a merge commit needs a committer that
+                // a CI runner (no global git identity) does not have (idea-gkx7io)
+                TestGit.Run(ProjectPath, "config", "user.name", "t");
+                TestGit.Run(ProjectPath, "config", "user.email", "t@t");
                 File.WriteAllText(Path.Combine(ProjectPath, "README.md"), "base\n");
                 TestGit.Run(ProjectPath, "add", "-A");
                 TestGit.Run(ProjectPath, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");

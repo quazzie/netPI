@@ -262,7 +262,9 @@ public sealed partial class ScenarioEngine
         var file = tag.P("file", "where.txt");
         if (step == 0)
             return new Plan { Text = "Checking the working directory." }
-                .Call("bash", Obj(("command", "pwd")))
+                // Git Bash's pwd -W prints the Windows path (C:/Users/…), so the e2e compares real paths instead of guessing
+                // its mount table (/tmp is TEMP only while both are spelled alike, idea-gkx7io); plain pwd elsewhere
+                .Call("bash", Obj(("command", "pwd -W 2>/dev/null || pwd")))
                 .Call("write", Obj(("path", file), ("content", "written by the mock\n")));
         var results = ToolResults(after);
         var pwd = results.Count >= 2 ? results[^2].Text.Trim() : "?";

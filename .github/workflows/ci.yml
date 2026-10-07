@@ -45,6 +45,13 @@ jobs:
         with:
           dotnet-version: '10.0'
 
+      # The runner has no git identity, and some tests commit or merge through NetPI's own git calls (workspaces.integrate),
+      # which cannot pass -c user.name: give it one, as a developer's machine has (idea-gkx7io)
+      - name: Git identity
+        run: |
+          git config --global user.name "NetPI CI"
+          git config --global user.email "ci@netpi.invalid"
+
       # scripts/test.ps1 generates one solution of the six suite projects and builds it (an implicit restore pulls in
       # the plugins they exercise; the desktop shell is not in their graph), then runs each suite and prints, for every
       # failed test, its message and the last lines it printed. The full output is kept in artifacts/testlogs.
@@ -139,6 +146,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Git identity
+        run: |
+          git config --global user.name "NetPI CI"
+          git config --global user.email "ci@netpi.invalid"
 
       # scripts/e2e.ps1 builds the solution into artifacts/dev/app (nothing is published or installed), then runs the backend
       # tests sharded, each shard with its own server and mock model server on free ports. Every failure of the run is listed at

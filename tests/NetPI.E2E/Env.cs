@@ -601,16 +601,27 @@ public sealed class Env : IAsyncDisposable
     }
 
     /// <summary>
-    /// How bash's pwd prints the directory it was started in. Git Bash maps it through its mount table: the user's temp
-    /// folder (where the E2E work dir lives) is /tmp, other paths are /c/Users/….
+    /// What the mock's "where" scenario prints for the directory bash was started in: Git Bash's <c>pwd -W</c>, the
+    /// Windows path with forward slashes and every 8.3 name expanded (plain <c>pwd</c> elsewhere). Windows is asked for the
+    /// long name instead of guessing Git Bash's mount table: /tmp is the user's temp folder only while both are spelled
+    /// alike, and GitHub's runner sets TEMP to C:\Users\RUNNER~1\… while bash prints /c/Users/runneradmin/… (idea-gkx7io).
     /// </summary>
     public static string BashPath(string dir)
     {
         if (!OperatingSystem.IsWindows() || dir.Length < 2 || dir[1] != ':') return dir;
-        var temp = Path.TrimEndingDirectorySeparator(Path.GetTempPath());
-        if (dir.StartsWith(temp + "\\", StringComparison.OrdinalIgnoreCase)) return "/tmp/" + dir[(temp.Length + 1)..].Replace('\\', '/');
-        return "/" + char.ToLowerInvariant(dir[0]) + dir[2..].Replace('\\', '/');
+        var full = LongPath(Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir)));
+        return char.ToUpperInvariant(full[0]) + full[1..].Replace('\\', '/');
     }
+
+    private static string LongPath(string path)
+    {
+        var buffer = new char[1024];
+        var length = GetLongPathNameW(path, buffer, (uint)buffer.Length);
+        return length == 0 || length >= buffer.Length ? path : new string(buffer, 0, (int)length);
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+    private static extern uint GetLongPathNameW(string lpszShortPath, [System.Runtime.InteropServices.Out] char[] lpszLongPath, uint cchBuffer);
 
     public async ValueTask DisposeAsync()
     {
