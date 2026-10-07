@@ -166,7 +166,8 @@
    "path": "plugins/NetPI.Providers.AiProxy/",
    "tags": [
     "provider",
-    "usage"
+    "usage",
+    "models"
    ]
   },
   {
@@ -221,7 +222,6 @@
   {
    "path": "plugins/NetPI.Schedules/",
    "tags": [
-    "schedules",
     "smoke"
    ],
    "ids": [
@@ -348,7 +348,8 @@
     "startup",
     "chat",
     "tools",
-    "provider"
+    "provider",
+    "models"
    ]
   },
   {
@@ -375,7 +376,8 @@
     "slots",
     "subagents",
     "ask",
-    "ideas"
+    "ideas",
+    "plan"
    ]
   },
   {
