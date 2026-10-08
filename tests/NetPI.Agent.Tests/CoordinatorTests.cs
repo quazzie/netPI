@@ -11,6 +11,110 @@ public static class CoordinatorTests
         t.Add("coordinator: dispatch checks the agent, profile, project and workspace first, and a refused one leaves nothing", DispatchValidates);
         t.Add("coordinator: dispatch makes the chat, its workspace, agent and profile, fills in the brief and sends it, in one call", DispatchRuns);
         t.Add("coordinator: runs.result is the run's report, status, todo and workspace in one answer", Result);
+        t.Add("tasks: a task waits for the one it depends on, starts when that one's run ended well, and the queue records how each ended", TasksInOrder);
+        t.Add("tasks: a failed task blocks its dependents until it runs again; hold, cycles, an unknown agent; one free instance runs one task", TasksRules);
+    }
+
+    private static async Task<JsonObject> Task1(TestHost h, string id) =>
+        ((JsonArray)(await h.Rpc.CallAsync("tasks.list", new { project = "MarioV3" }))!).OfType<JsonObject>().Single(x => (string?)x["id"] == id);
+
+    private static async Task Status(TestHost h, string id, string status)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        JsonObject task;
+        while ((string?)(task = await Task1(h, id))["status"] != status)
+        {
+            if (sw.ElapsedMilliseconds > 15_000) throw new AssertException($"{id} did not become {status}: {task.ToJsonString()}");
+            await Task.Delay(25);
+        }
+    }
+
+    /// <summary>
+    /// The queue (idea-lsj5u2): WP02 waits for WP01 (done), WP01 starts at once on its agent's free instance, and WP02 is
+    /// dispatched when WP01's run has ended well; each task's chat is its own, with the brief sent.
+    /// </summary>
+    private static async Task TasksInOrder()
+    {
+        var (h, _) = await Start();
+        await using var _h = h;
+        var gate = new TaskCompletionSource();
+        h.Catalog.Handler = (r, ct) => r.Messages.Any(m => m.Text.Contains("first package"))
+            ? Reply.Text("WP01 done.", c => gate.Task.WaitAsync(c))
+            : Reply.Text("WP02 done.");
+        var a = (await h.Rpc.CallAsync("tasks.add", new { project = "MarioV3", title = "WP01", text = "The first package.", agent = "qwen" }))!;
+        var aId = (string)a["id"]!;
+        Check.Equal("qwen-local", (string?)a["agent"], "the agent is resolved now, as a dispatch resolves it");
+        var b = (await h.Rpc.CallAsync("tasks.add", new { project = "MarioV3", title = "WP02", text = "The second package.", agent = "qwen-local", after = new[] { aId } }))!;
+        var bId = (string)b["id"]!;
+        Check.Equal(false, (bool?)b["ready"]);
+        Check.Contains(b["waitingFor"]!.ToJsonString(), aId, "it says what it waits for");
+
+        await Status(h, aId, "running");
+        var aSession = (string)(await Task1(h, aId))["sessionId"]!;
+        Check.Equal("WP01", h.Sessions.GetSession(aSession)!.Title);
+        Check.Equal("queued", (string?)(await Task1(h, bId))["status"], "WP02 waits while WP01 runs");
+
+        gate.SetResult();
+        await Status(h, aId, "done");
+        await Status(h, bId, "done"); // it runs at once and ends at once: its "running" is too short to catch
+        var bTask = await Task1(h, bId);
+        Check.False(bTask["sessionId"]!.GetValue<string>() == aSession, "a chat of its own");
+        Check.Equal("WP02 done.", h.Messages((string)bTask["sessionId"]!)[^1].Text);
+        Check.Equal(2, ((JsonArray)(await h.Rpc.CallAsync("tasks.list", new { project = "MarioV3", status = "done" }))!).Count);
+    }
+
+    private static async Task TasksRules()
+    {
+        var (h, _) = await Start();
+        await using var _h = h;
+        h.Settings.Set("tasks.autoDispatch", JsonValue.Create(false));
+        h.Catalog.Handler = (r, ct) => r.Messages.Any(m => m.Text.Contains("break"))
+            ? Reply.Fail(new ModelException("the model broke", false))
+            : Reply.Text("ok");
+        var a = (string)(await h.Rpc.CallAsync("tasks.add", new { project = "MarioV3", title = "A", text = "please break", agent = "qwen-local" }))!["id"]!;
+        var b = (string)(await h.Rpc.CallAsync("tasks.add", new { project = "MarioV3", title = "B", text = "fine", agent = "qwen-local", after = new object[] { new { task = a, when = "done" } } }))!["id"]!;
+
+        // the checks a dispatch would make come first, and a circle is refused
+        Check.Equal("bad_request", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.CallAsync("tasks.add", new { project = "MarioV3", title = "C", text = "x", agent = "nobody" }))).Code);
+        Check.Equal("bad_request", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.CallAsync("tasks.update", new { id = a, after = new[] { b } }))).Code, "a circle");
+        Check.Equal("bad_request", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.CallAsync("tasks.add", new { project = "MarioV3", title = "D", text = "x", after = new[] { "task-none" } }))).Code);
+
+        // dispatch off: nothing starts
+        await Task.Delay(300);
+        Check.Equal("queued", (string?)(await Task1(h, a))["status"], "tasks.autoDispatch off: the queue only keeps them");
+
+        // on: A runs and fails; B stays queued and says why, until A is queued again
+        h.Settings.Set("tasks.autoDispatch", JsonValue.Create(true));
+        await h.Rpc.CallAsync("tasks.update", new { id = b, hold = true });
+        await h.Rpc.CallAsync("tasks.update", new { id = a, title = "A" }); // any change pumps the queue
+        await Status(h, a, "failed");
+        Check.Contains((string?)(await Task1(h, a))["error"] ?? "", "broke");
+        var waiting = (await Task1(h, b))["waitingFor"]!.ToJsonString();
+        Check.Contains(waiting, "held", "hold is a reason too");
+        Check.Contains(waiting, "failed", "and the failed one it waits for");
+
+        h.Catalog.Handler = (r, ct) => Reply.Text("ok");
+        await h.Rpc.CallAsync("tasks.update", new { id = a, status = "queued" });
+        await Status(h, a, "done");
+        Check.Equal("queued", (string?)(await Task1(h, b))["status"], "held: not dispatched although A is done");
+        await h.Rpc.CallAsync("tasks.update", new { id = b, hold = false });
+        await Status(h, b, "done");
+
+        // one instance of the agent: two ready tasks run one after the other
+        var gate = new TaskCompletionSource();
+        h.Catalog.Handler = (r, ct) => Reply.Text("slow", c => gate.Task.WaitAsync(c));
+        h.Settings.Set("agents.solo-on", JsonNode.Parse("""{ "model": "fake/solo", "instances": 1 }"""));
+        await h.Bus.DrainAsync();
+        var x = (string)(await h.Rpc.CallAsync("tasks.add", new { project = "MarioV3", title = "X", text = "x", agent = "solo-on" }))!["id"]!;
+        var y = (string)(await h.Rpc.CallAsync("tasks.add", new { project = "MarioV3", title = "Y", text = "y", agent = "solo-on" }))!["id"]!;
+        await Status(h, x, "running");
+        await Task.Delay(300);
+        Check.Equal("queued", (string?)(await Task1(h, y))["status"], "the one instance is busy: Y waits in the queue, not in the scheduler");
+        gate.SetResult();
+        await Status(h, y, "done");
+
+        Check.Equal(true, NetPiJson.ToNode(await h.Rpc.InvokeAsync("tasks.remove", new { id = x }))!.GetValue<bool>());
+        Check.False(((JsonArray)(await h.Rpc.CallAsync("tasks.list", new { project = "MarioV3" }))!).OfType<JsonObject>().Any(t => (string?)t["id"] == x));
     }
 
     private static async Task<(TestHost H, ProjectInfo Project)> Start()

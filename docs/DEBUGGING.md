@@ -81,6 +81,8 @@ node scripts/netpi.mjs events --types tool.,message.added --json                
 **For a coordinator** the other pieces are RPC methods (PROTOCOL.md): `sessions.dispatch` (one call: validate, create,
 bind, agent, profile, send), `runs.result` (the run's report, status, todo, commits, the latest test tally; `--pick report` prints just the text),
 `agent.promote` (a queued follow-up read at the next step), `workspaces.integrate { baseFirst, verify }` (the merge loop),
+`tasks.add` / `tasks.list` (a project's queue of work packages with `after` conditions, done or merged, each dispatched when
+it is ready and its agent has a free instance; the markdown table of preconditions and the hand dispatch it replaces),
 and the `process.idle` event. `agent.send` with `mode: "queue"` to a chat whose run has gone on for 10 minutes prints a
 warning: the message waits until that run ends.
 

@@ -299,6 +299,7 @@ where a chat runs, the profile who it is.
 | `budget.onLimit` | `"stop"` | when a budget is spent: `"stop"` paid calls, or `"ask"`: your chats stop with "let this chat go over" (`budget.allow`), subagents stop |
 | `budget.keepCallsDays` | `90` | days the ledger keeps its row per model call (at least 62; `0` keeps every row). Older settled rows are deleted at start and every 5000 calls; the totals per period, day, agent and chat (`session_usage`) stay, so only `usage.chats` of a period older than that comes back empty (idea-sdevr6) |
 
+
 Every provider attempt (including each retry) is recorded in the ledger the Agents plugin keeps in `ctx.Data`.
 Before dispatch, paid calls reserve
 their estimate at the configured/catalog price: the input counted in tokens at the cache-read rate (in an agent
@@ -590,3 +591,11 @@ milliseconds; anything unexpected answers "not supported", so a call never fails
 | `mcp.maxResourceChars` | 20000 | Characters per resource read; a larger one is written to a file |
 | `mcp.maxBinaryBytes` | 2000000 | Decoded image limit |
 | `mcp.refreshSeconds` | 60 | Polling fallback |
+
+## Task queue
+
+The coordinator's queue of work packages (`tasks.*`, docs/PROTOCOL.md).
+
+| key | default | |
+|---|---|---|
+| `tasks.autoDispatch` | `true` | the coordinator's task queue (`tasks.add`) dispatches a queued task once its conditions hold and its agent has a free instance; off, it keeps them all queued (idea-lsj5u2) |
