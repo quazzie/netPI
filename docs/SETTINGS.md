@@ -592,6 +592,15 @@ milliseconds; anything unexpected answers "not supported", so a call never fails
 | `mcp.maxBinaryBytes` | 2000000 | Decoded image limit |
 | `mcp.refreshSeconds` | 60 | Polling fallback |
 
+## Language servers
+
+The `lsp` tool's servers (docs/TOOLS.md).
+
+| key | default | |
+|---|---|---|
+| `lsp.maxServers` | `3` | language servers running at once (one per language and workspace root); starting one more stops the least recently used. Each holds a project in memory |
+| `lsp.idleMinutes` | `15` | a server nobody asked for this long is stopped; the next request starts it again |
+
 ## Task queue
 
 The coordinator's queue of work packages (`tasks.*`, docs/PROTOCOL.md).

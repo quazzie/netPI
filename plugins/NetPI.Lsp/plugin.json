@@ -1,0 +1,18 @@
+{
+  "id": "netpi.lsp",
+  "name": "Language servers",
+  "description": "lsp: diagnostics, definitions and symbols from language servers (C#, Svelte, JavaScript/TypeScript)",
+  "downloads": [
+    {
+      "what": "csharp-ls 0.28.0 (MIT), the C# language server",
+      "url": "https://api.nuget.org/v3-flatcontainer/csharp-ls/0.28.0/csharp-ls.0.28.0.nupkg",
+      "sha256": "8f815e4f22674106a8244beba07e4b4b062e31528e404aa8489312effb8c0e0c",
+      "into": "<home>/lsp/servers/csharp-ls-0.28.0"
+    },
+    {
+      "what": "svelte-language-server 0.18.4 (MIT), typescript-language-server 6.0.1 (Apache-2.0), typescript 5.9.3 (Apache-2.0) and their dependencies",
+      "how": "npm ci --ignore-scripts from servers/js/package.json and package-lock.json (every package checked against the lockfile's sha512)",
+      "into": "<home>/lsp/servers/js-svelte-0.18.4-ts-6.0.1"
+    }
+  ]
+}

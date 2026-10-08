@@ -147,6 +147,7 @@ NetPI.Contracts: the higher abstractions'       │   NetPI.Ideas · NetPI.Work 
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Workspaces   checkouts, bindings, worktrees (the plugin that owns them)
                                                 │   NetPI.Coordinator  one-call dispatch and run results for an outside coordinator
                                                 │   NetPI.Mcp          external MCP servers: mcp_search, mcp_call, mcp_resource
+                                                │   NetPI.Lsp          language servers (C#, Svelte, JS/TS): the lsp tool
                                                 │   NetPI.Memory · NetPI.Embeddings   memory_search over past chats
                                                 │   NetPI.Decide · NetPI.Backup
                                                 └─ ~/.netpi/plugins/ (your own)

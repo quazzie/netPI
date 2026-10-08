@@ -158,6 +158,11 @@ runs against those aliases of your `~/.ssh/config` (Linux hosts whose keys are s
 (including a 5 MB file), `cwd`, scp both ways, and a timeout and an abort that must end the remote processes. It works
 under `/tmp/netpi-ssh-test-*` and removes it.
 
+The `lsp` tool tests (`LspTests.cs`) run the LSP client on in-memory pipes and the server pool on small fake servers in
+node (skipped without node). With `NETPI_LSP_LIVE=1` the `lsp: live` test downloads and installs the real servers (csharp-ls,
+svelte-language-server, typescript-language-server) into the test's temp folder, never `<home>`, and asks them about a
+small C# project and JS, TS and Svelte files with errors (about 30 s with a warm npm cache).
+
 ## Mock model server (`tests/MockLlm`)
 
 A scripted stand-in for AiProxy and the Anthropic API. It streams realistic SSE (reasoning/thinking deltas, text deltas,

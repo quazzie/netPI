@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Language servers for the lsp tool (idea-fe26oh). No package: the servers are downloaded on first use, pinned and
+       checked (LspInstaller, plugin.json); the npm lockfile the JS servers install from ships with the plugin. -->
+  <ItemGroup>
+    <Content Include="servers/js/package.json;servers/js/package-lock.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Tools.Tests" />
+  </ItemGroup>
+</Project>

@@ -79,7 +79,7 @@ machine state. Live Anthropic, paid billing reconciliation, and Linux/macOS stil
     (`shared/ProviderKit/ProviderErrors.cs`), up to `retry.maxAttempts`; after that the error surfaces unchanged, with
     its request id. The e2e suite pins this (`retry.503`, `retry.in-stream-errors`).
 - **Narrow side panels.** The user keeps them at about 230–320px. Every tab is designed narrow first: no horizontal scroll, single-line rows with truncation. Screenshots the user shares are weak references only; the design is our own.
-- **Minimal dependencies.** The only NuGet package is WebView2. SQLite is a P/Invoke wrapper over the OS library. The UI uses Svelte 5 + Vite with marked, DOMPurify and highlight.js. Ask before adding dependencies.
+- **Minimal dependencies.** The only NuGet package is WebView2. SQLite is a P/Invoke wrapper over the OS library. The UI uses Svelte 5 + Vite with marked, DOMPurify and highlight.js. Ask before adding dependencies. The one exception the owner decided (idea-fe26oh): `NetPI.Lsp` downloads its language servers at runtime (csharp-ls from nuget.org, the JS servers through `npm ci`), pinned and checked, named in its `plugin.json`; nothing is added to the build.
 - **Committed UI builds.** The built bundles (`web/dist`, `plugins/*/wwwroot/ui.js`) are committed, so building needs Node only when the UI changes.
 - **Line endings.** The file tools are CRLF/LF agnostic and preserve each file's line endings and BOM.
 

@@ -1,0 +1,10 @@
+{
+  "name": "netpi-lsp-js",
+  "private": true,
+  "description": "The Svelte and JavaScript language servers NetPI.Lsp installs on first use (npm ci: every package is checked against package-lock.json).",
+  "dependencies": {
+    "svelte-language-server": "0.18.4",
+    "typescript": "5.9.3",
+    "typescript-language-server": "6.0.1"
+  }
+}

@@ -15,6 +15,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Plan` | `netpi.plan` | `plan_submit` `plan_enter` | `plan.*` (see `docs/PROTOCOL.md`), the `/plan` command |
 | `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
+| `plugins/NetPI.Lsp` | `netpi.lsp` | `lsp` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
 | `plugins/NetPI.Memory` | `netpi.memory` | `memory_search` | `memory.search`, `memory.reindex` |
 | `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
@@ -512,6 +513,30 @@ A session that is bound but not isolated (an attached or shared checkout) is not
 other workers of the project see, and `workspace info` says so.
 
 ---
+
+## Code intelligence (`lsp`, `category: "code"`)
+
+`lsp` asks a language server about code (idea-fe26oh), read-only: `diagnostics { files? }` (errors and warnings, default: the
+files `git status` reports changed under the chat's folder, at most 20 files and 200 lines), `definition { file, line, column }`
+(1-based) and `symbols { file }` (an outline) or `symbols { query, language?, file? }` (a workspace search; the language
+defaults to C# when the folder has a project or solution). C# runs on csharp-ls 0.28.0, `.svelte` on svelte-language-server
+0.18.4, JavaScript/TypeScript on typescript-language-server 6.0.1 with TypeScript 5.9.3. Each is installed on its first use
+into `<home>/lsp/servers`, pinned and checked before anything runs: the csharp-ls nupkg against its SHA-256, the JS servers
+with `npm ci --ignore-scripts` from the package.json and package-lock.json the plugin ships (npm checks every package's
+sha512); `plugin.json` names both downloads. A failed or refused install is the call's error, never a hang.
+
+A server is started per workspace root on its first request (the first C# call loads the project: up to a few minutes), at
+most `lsp.maxServers` at once (the least recently used stops), and stopped after `lsp.idleMinutes` unused. Installs and starts
+run outside the pool's lock and are shared by whoever asks meanwhile, so a C# project loading never holds up a TypeScript
+question. Every request sends the file as it is on disk now, so another session's edit is never answered stale. Diagnostics
+are asked for: csharp-ls and svelte-language-server answer `textDocument/diagnostic`; typescript-language-server only
+publishes (and nothing while a clean file stays clean), so its tsserver is asked directly through the
+`typescript.tsserverRequest` command it offers (syntactic and semantic diagnostics). A server that offers neither has its
+published diagnostics waited for, and the answer says when they may be stale. One call asks for at most 2 minutes; a server
+that cannot start, or a file it did not answer, is named in the answer while the other files are still checked. The JS
+servers search workspace symbols in the projects of the files they have open: `file` names one of the project to search,
+else one under a `src` folder is opened first. `tests/NetPI.Tools.Tests/LspTests.cs` covers the client, the pool (fake servers
+in node), the install check and git's changed files, and with `NETPI_LSP_LIVE=1` runs all three servers for real.
 
 ## Web tools (`category: "web"`)
 

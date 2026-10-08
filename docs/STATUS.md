@@ -77,7 +77,7 @@ are for shared contracts or cross-cutting behavior.
 
 ## Useful next capabilities
 
-Language-server diagnostics and PDF/Office reading remain backlog items; scheduled runs are `netpi.schedules` (RPC only for now, no tab). MCP, partial rollback
+PDF/Office reading remains a backlog item (language-server diagnostics arrived as the `lsp` tool, docs/TOOLS.md); scheduled runs are `netpi.schedules` (RPC only for now, no tab). MCP, partial rollback
 and worktree automation were deliberately deferred or dropped in the earlier harness plan; they are not accidental
 omissions. See [the archived harness decisions](archive/2026-09-26-harness-gaps.md).
 
