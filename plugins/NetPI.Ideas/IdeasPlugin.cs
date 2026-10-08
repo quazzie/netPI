@@ -26,14 +26,16 @@ public sealed class IdeasPlugin : INetPiPlugin
     {
         var work = new IdeaWork(context);
         context.Services.Register<IBackgroundWork>(work);
-        context.Rpc.RegisterReadOnly("ideas.work", (_, _) => Task.FromResult<object?>(work.Snapshot()), "Background idea checks: waits, running work and recent outcomes with reasons");
-        context.Rpc.RegisterReadOnly("ideas.capabilities", (_, _) => Task.FromResult<object?>(new
+        context.Rpc.Register(new RpcMethod("ideas.work", "Background idea checks: waits, running work and recent outcomes with reasons", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(work.Snapshot()));
+        context.Rpc.Register(new RpcMethod("ideas.capabilities", "Availability of optional Ideas enhancements, independently of backlog storage", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(new
         {
             decisions = DecisionCapabilities.Available(context.Services, context.Rpc, "decide.decision"),
             history = context.Services.Get<IGitHistory>() is not null || context.Rpc.Exists("files.commits"),
             models = context.Models.Cached.Count > 0,
             embeddings = context.Services.Get<IEmbeddingService>() is { Model: not null, Available: true },
-        }), "Availability of optional Ideas enhancements, independently of backlog storage");
+        }));
         RegisterSettings(context);
 
         var repo = IdeasRepository.Open(context.Data, context.Services.Get<IStorageAccess>(), context.Logger, context.Paths.Home);
@@ -57,9 +59,9 @@ public sealed class IdeasPlugin : INetPiPlugin
 
         // The commits the sweep could not decide after its bound of attempts (idea-kooctc): the cursor has moved past
         // them, and the record is what is re-read on demand.
-        context.Rpc.RegisterReadOnly("ideas.unread", (_, _) => Task.FromResult<object?>(
-            new JsonArray(repo.Unread().Select(u => (JsonNode)u).ToArray())),
-            "The commits the commit sweep could not decide after its bound of attempts: { } → [{ repo, hash, subject, tries, error, at }]. The cursor has moved past them, so later commits are read; the record is what is re-read on demand");
+        context.Rpc.Register(new RpcMethod("ideas.unread", "The commits the commit sweep could not decide after its bound of attempts: { } → [{ repo, hash, subject, tries, error, at }]. The cursor has moved past them, so later commits are read; the record is what is re-read on demand", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(
+            new JsonArray(repo.Unread().Select(u => (JsonNode)u).ToArray())));
 
         context.Tools.Register(new IdeasTool(repo, locator, vectors));
         RegisterMeaningSearch(context, repo, vectors, outcomes);
@@ -129,12 +131,14 @@ public sealed class IdeasPlugin : INetPiPlugin
 
     private static void RegisterMeaningSearch(IPluginContext context, IdeasRepository repo, IdeaVectors vectors, IdeaOutcomes outcomes)
     {
-        context.Rpc.RegisterReadOnly("ideas.decisions", (request, _) => Task.FromResult<object?>(new JsonObject
+        context.Rpc.Register(new RpcMethod("ideas.decisions", "What the idea checks decided and what came of it: { site? (attach|link|done|notice|save), result?, limit? (50) } → { summary: { site: { result: count } }, rows: [{ site, result, at, ideaId?, p?, runnerUp?, none?, threshold?, score?, text?, … }] } (newest first)", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("result"), RpcParam.Opt("site")]),
+            (request, _) => Task.FromResult<object?>(new JsonObject
         {
             ["summary"] = outcomes.Summary(),
             ["rows"] = new JsonArray(outcomes.List(request.Str("site"), request.Str("result"), request.Int("limit") ?? 50).Select(r => (JsonNode)r).ToArray()),
-        }), "What the idea checks decided and what came of it: { site? (attach|link|done|notice|save), result?, limit? (50) } → { summary: { site: { result: count } }, rows: [{ site, result, at, ideaId?, p?, runnerUp?, none?, threshold?, score?, text?, … }] } (newest first)");
-        context.Rpc.RegisterReadOnly("ideas.similar", async (request, token) =>
+        }));
+        context.Rpc.Register(new RpcMethod("ideas.similar", "Ideas closest in meaning (embeddings): { id | text, limit? (5), status? (active), projectId? } → { available, ideas: [{ id, title, status, score }] }; available false when there are no embeddings", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("id"), RpcParam.Opt("projectId"), RpcParam.Opt("status"), RpcParam.Opt("text")]),
+            async (request, token) =>
         {
             var limit = Math.Clamp(request.Int("limit") ?? 5, 1, 50);
             var id = request.Str("id");
@@ -156,17 +160,19 @@ public sealed class IdeasPlugin : INetPiPlugin
                     ["score"] = s.Score,
                 }).ToArray()),
             };
-        }, "Ideas closest in meaning (embeddings): { id | text, limit? (5), status? (active), projectId? } → { available, ideas: [{ id, title, status, score }] }; available false when there are no embeddings");
-        context.Rpc.Register("ideas.reindex", async (_, token) =>
+        });
+        context.Rpc.Register(new RpcMethod("ideas.reindex", "Bring the backlog's embeddings in step now (normally done in the background after every change): { } → { enabled, model?, indexed?, unchanged?, removed? }", ReadOnly: false, Params: []),
+            async (_, token) =>
         {
             try { return await vectors.ReindexAsync(token).ConfigureAwait(false); }
             catch (EmbeddingException ex) { throw new RpcException(ex.Code, ex.Message); }
-        }, "Bring the backlog's embeddings in step now (normally done in the background after every change): { } → { enabled, model?, indexed?, unchanged?, removed? }");
+        });
     }
 
     private void RegisterVerifyUpdate(IPluginContext context, IdeasRepository repo)
     {
-        context.Rpc.Register("ideas.verifyUpdate", async (request, token) =>
+        context.Rpc.Register(new RpcMethod("ideas.verifyUpdate", "Verify a proposed update against evidence and apply only to the captured revision: {id,expectedRevision,patch,evidence}; conflicting or unverifiable updates remain unapplied", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Req("expectedRevision", RpcParamType.Integer), RpcParam.Req("patch", RpcParamType.Object), RpcParam.Req("evidence")]),
+            async (request, token) =>
         {
             var id = request.Required("id");
             var current = repo.Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
@@ -180,7 +186,7 @@ public sealed class IdeasPlugin : INetPiPlugin
             if (!verdict.Verified || IdeaRuns.ProjectBusy(context, projectId)) return new { applied = false, reason = verdict.Verified ? "Project became busy" : verdict.Reason };
             var changed = repo.Update(id, patch, fromUi: true, expectedRevision: current.Revision);
             return new { applied = true, reason = verdict.Reason, idea = changed.Doc };
-        }, "Verify a proposed update against evidence and apply only to the captured revision: {id,expectedRevision,patch,evidence}; conflicting or unverifiable updates remain unapplied");
+        });
     }
 
     private void RegisterCommitChecks(IPluginContext context, IdeasRepository repo, IdeaSaveCheck saveCheck, IdeaVectors vectors, IdeaOutcomes outcomes)
@@ -256,34 +262,42 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
 
     public void Register(IRpcRegistry rpc)
     {
-        rpc.RegisterReadOnly("ideas.list", List, "The ideas backlog: { } → { storage: { backend, database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }");
-        rpc.RegisterReadOnly("ideas.picks", Picks,
-            "Ideas to offer where a session is about to start (the welcome screen): { projectId?, limit? } → { picks: [{ id, title, summary, status, priority, projectId?, projectName?, updatedAt }] }. " +
+        rpc.Register(new RpcMethod("ideas.list", "The ideas backlog: { projectId? (an id or name; global: the unbound ones), limit? } → { storage: { backend, database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }", ReadOnly: true, Params: [RpcParam.Opt("projectId", RpcParamType.String, "a project's id or name; global for the unbound ideas"), RpcParam.Opt("limit", RpcParamType.Integer)]),
+            List);
+        rpc.Register(new RpcMethod("ideas.picks", "Ideas to offer where a session is about to start (the welcome screen): { projectId?, limit? } → { picks: [{ id, title, summary, status, priority, projectId?, projectName?, updatedAt }] }. " +
             "Lean on purpose (no sections, images or commits) so a window can read it on every start: the target project's own " +
-            $"open/planned ideas first, then the global ones, at most {IdeasRpc.DefaultPickLimit} unless a limit is asked for");
-        rpc.RegisterReadOnly("ideas.get", Get, "{ id } → idea (with its revision)");
-        rpc.RegisterReadOnly("ideas.review", Review,
-            "Why an idea's completion is not judged automatically, and what a reviewer has to read: { id } → { ideaId, revision, review: { limit, at, revision, commits: [{ hash, short, subject, repo, files?, note? }], requirements: [...] } | null }. " +
-            "The automatic completion stays blocked until the requirements are supported; the same state is a \"Needs review\" section on the idea");
-        rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, images? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project");
-        rpc.Register("ideas.addImage", Attach,
-            "Store an image for an idea and return its reference: { data (base64), mediaType, name? } → { path, name, mediaType, bytes }. " +
-            $"The file lands in {IdeaImages.Dir} under the home and the idea keeps the reference; at most {IdeaImages.MaxPerIdea} per idea, {IdeaImages.MaxBytes / (1024 * 1024)} MB each");
-        rpc.Register("ideas.removeImage", Detach, "Delete a stored idea image: { path } → true (only files this host wrote)");
-        rpc.RegisterReadOnly("ideas.image", Image,
-            "Read a stored idea image back for display: { path } → { path, name, mediaType, bytes, data (base64) }. Only files under " +
-            $"{IdeaImages.Dir}; the card fetches one when it opens, so a backlog of ideas carries no image bytes");
-        rpc.Register("ideas.update", Update,
-            "{ id, patch, expectedRevision?, expectedUpdatedAt? } → idea; patch.project: a project id/name or { id, name? } rebinds, null (or \"global\") unbinds; " +
-            "expectedRevision: refused with \"conflict\" when the idea changed since it was read (expectedUpdatedAt is the older, second-precision form of the same check)");
-        rpc.Register("ideas.delete", Delete, "{ id } → true");
-        rpc.Register("ideas.reorder", Reorder, "{ ids: string[] } → true");
-        rpc.RegisterReadOnly("ideas.toPrompt", ToPrompt, "{ id } → markdown prompt text");
-        rpc.Register("ideas.quickAdd", QuickAdd, "/idea command: { sessionId, args } → status text");
-        rpc.Register("ideas.export", Export,
-            "A portable snapshot of the backlog as JSON: { path?, json? } → { file?, json, validated? } — a versioned document with stable ids, the user's order and unknown fields; nothing is written to disk unless a path is given");
-        rpc.Register("ideas.import", Import,
-            "Take a snapshot in: { json | path, mode?: \"merge\" (default) | \"replace\" | \"validate\" } → { ideas, cards, conflicts, imported? } — merge never overwrites what is already here");
+            $"open/planned ideas first, then the global ones, at most {IdeasRpc.DefaultPickLimit} unless a limit is asked for", ReadOnly: true, Params: [RpcParam.Opt("projectId"), RpcParam.Opt("limit", RpcParamType.Integer)]),
+            Picks);
+        rpc.Register(new RpcMethod("ideas.get", "{ id } → idea (with its revision)", ReadOnly: true, Params: [RpcParam.Req("id")]),
+            Get);
+        rpc.Register(new RpcMethod("ideas.review", "Why an idea's completion is not judged automatically, and what a reviewer has to read: { id } → { ideaId, revision, review: { limit, at, revision, commits: [{ hash, short, subject, repo, files?, note? }], requirements: [...] } | null }. " +
+            "The automatic completion stays blocked until the requirements are supported; the same state is a \"Needs review\" section on the idea", ReadOnly: true, Params: [RpcParam.Req("id")]),
+            Review);
+        rpc.Register(new RpcMethod("ideas.add", "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, images? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project", ReadOnly: false, Params: [RpcParam.Req("idea", RpcParamType.Object, "{ title, summary?, status?, priority?, tags?, sections?, images? }"), RpcParam.Opt("sessionId"), RpcParam.Opt("projectId", RpcParamType.String, "a project's id or name; global for none"), RpcParam.Opt("prepend", RpcParamType.Boolean)]),
+            Add);
+        rpc.Register(new RpcMethod("ideas.addImage", "Store an image for an idea and return its reference: { data (base64), mediaType, name? } → { path, name, mediaType, bytes }. " +
+            $"The file lands in {IdeaImages.Dir} under the home and the idea keeps the reference; at most {IdeaImages.MaxPerIdea} per idea, {IdeaImages.MaxBytes / (1024 * 1024)} MB each", ReadOnly: false, Params: [RpcParam.Req("data", RpcParamType.String, "base64"), RpcParam.Req("mediaType"), RpcParam.Opt("name")]),
+            Attach);
+        rpc.Register(new RpcMethod("ideas.removeImage", "Delete a stored idea image: { path } → true (only files this host wrote)", ReadOnly: false, Params: [RpcParam.Req("path")]),
+            Detach);
+        rpc.Register(new RpcMethod("ideas.image", "Read a stored idea image back for display: { path } → { path, name, mediaType, bytes, data (base64) }. Only files under " +
+            $"{IdeaImages.Dir}; the card fetches one when it opens, so a backlog of ideas carries no image bytes", ReadOnly: true, Params: [RpcParam.Req("path")]),
+            Image);
+        rpc.Register(new RpcMethod("ideas.update", "{ id, patch, expectedRevision?, expectedUpdatedAt? } → idea; patch.project: a project id/name or { id, name? } rebinds, null (or \"global\") unbinds; " +
+            "expectedRevision: refused with \"conflict\" when the idea changed since it was read (expectedUpdatedAt is the older, second-precision form of the same check)", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Req("patch", RpcParamType.Object, "{ status?, addSections?, ... }"), RpcParam.Opt("expectedRevision", RpcParamType.Integer), RpcParam.Opt("expectedUpdatedAt")]),
+            Update);
+        rpc.Register(new RpcMethod("ideas.delete", "{ id } → true", ReadOnly: false, Params: [RpcParam.Req("id")]),
+            Delete);
+        rpc.Register(new RpcMethod("ideas.reorder", "{ ids: string[] } → true", ReadOnly: false, Params: [RpcParam.Req("ids", RpcParamType.Array)]),
+            Reorder);
+        rpc.Register(new RpcMethod("ideas.toPrompt", "{ id } → markdown prompt text", ReadOnly: true, Params: [RpcParam.Req("id")]),
+            ToPrompt);
+        rpc.Register(new RpcMethod("ideas.quickAdd", "/idea command: { sessionId, args } → status text", ReadOnly: false, Params: [RpcParam.Opt("sessionId"), RpcParam.Opt("args", RpcParamType.String, "/idea's text: the title"), RpcParam.Opt("projectId")]),
+            QuickAdd);
+        rpc.Register(new RpcMethod("ideas.export", "A portable snapshot of the backlog as JSON: { path?, json? } → { file?, json, validated? } — a versioned document with stable ids, the user's order and unknown fields; nothing is written to disk unless a path is given", ReadOnly: false, Params: [RpcParam.Opt("path")]),
+            Export);
+        rpc.Register(new RpcMethod("ideas.import", "Take a snapshot in: { json | path, mode?: \"merge\" (default) | \"replace\" | \"validate\" } → { ideas, cards, conflicts, imported? } — merge never overwrites what is already here", ReadOnly: false, Params: [RpcParam.Opt("json", RpcParamType.Object), RpcParam.Opt("path"), RpcParam.Opt("mode", RpcParamType.String, "merge (default) or replace")]),
+            Import);
     }
 
     /// <summary>The repository's exceptions as RPC codes: a storage failure or a bad input is the caller's answer, not a crash.
@@ -315,10 +329,20 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
     {
         ct.ThrowIfCancellationRequested();
         var storage = _repo.Storage();
+        // projectId (an id or a name; "global" for the unbound ideas) and limit narrow the list: a script passed them for a
+        // long time and got every project's ideas back, which a declared method now refuses rather than ignores (idea-yvcy8b)
+        IEnumerable<JsonObject> ideas = _repo.All();
+        if (req.Str("projectId") is { Length: > 0 } project)
+        {
+            var global = project.Equals("global", StringComparison.OrdinalIgnoreCase);
+            var resolved = global ? null : _locator.ResolveRef(project) ?? throw new RpcException("not_found", $"No project '{project}'.");
+            ideas = ideas.Where(i => i["project"]?["id"]?.GetValue<string>() is { } id ? !global && id == resolved!.Id : global);
+        }
+        if (req.Int("limit") is { } limit) ideas = ideas.Take(Math.Max(0, limit));
         return Task.FromResult<object?>(new JsonObject
         {
             ["storage"] = storage,
-            ["ideas"] = new JsonArray(_repo.All().Select(i => (JsonNode?)i).ToArray()),
+            ["ideas"] = new JsonArray(ideas.Select(i => (JsonNode?)i).ToArray()),
             // Legacy hints, kept so an older UI still has something to show: the file is not written any more.
             ["file"] = _locator.LegacyFile(),
             ["fileName"] = _locator.FileName(),

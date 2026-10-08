@@ -35,32 +35,36 @@ public sealed class FilesPlugin : INetPiPlugin
         foreach (var tool in CreateTools(context.Settings))
             context.Tools.Register(tool);
 
-        context.Rpc.RegisterReadOnly("files.search", async (req, token) =>
+        context.Rpc.Register(new RpcMethod("files.search", "Fuzzy file-name search for @ mentions: { sessionId?, cwd?, query, limit? } → { path, rel, isDir }[]", ReadOnly: true, Params: [RpcParam.Opt("q"), RpcParam.Opt("query"), RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("sessionId"), RpcParam.Opt("cwd")]),
+            async (req, token) =>
         {
             var root = ResolveRoot(context, req);
             return await _index.SearchAsync(root, req.Str("query") ?? req.Str("q"), req.Int("limit") ?? 50, token).ConfigureAwait(false);
-        }, "Fuzzy file-name search for @ mentions: { sessionId?, cwd?, query, limit? } → { path, rel, isDir }[]");
+        });
 
-        context.Rpc.RegisterReadOnly("files.list", (req, token) =>
+        context.Rpc.Register(new RpcMethod("files.list", "List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries: { name, rel, isDir, size?, mtime?, ignored? }[], truncated, total } (one directory lists at most FileIndex.MaxListedEntries = 10000 entries; a bigger one is capped and the rest is counted)", ReadOnly: true, Params: [RpcParam.Opt("dir"), RpcParam.Opt("sessionId"), RpcParam.Opt("cwd")]),
+            (req, token) =>
         {
             var root = ResolveRoot(context, req);
             return Task.FromResult<object?>(_index.List(root, req.Str("dir")));
-        }, "List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries: { name, rel, isDir, size?, mtime?, ignored? }[], truncated, total } (one directory lists at most FileIndex.MaxListedEntries = 10000 entries; a bigger one is capped and the rest is counted)");
+        });
 
-        context.Rpc.Register("files.open", (req, _) =>
+        context.Rpc.Register(new RpcMethod("files.open", "Open a path with the operating system (files in their default app, folders in the file manager): { path, sessionId?, cwd?, confirm?, user? } → { path, action }, where action 'confirm' is a path outside the session's workspace: ask the user, then call again with confirm: true. Without user? the rules stay conservative (text and code in an editor, executables and other binaries only revealed); with user: true — the user picked this file deliberately — every file opens with its default program, executables and scripts included, like a double click in the file manager", ReadOnly: false, Params: [RpcParam.Req("path"), RpcParam.Opt("confirm", RpcParamType.Boolean), RpcParam.Opt("user", RpcParamType.Boolean)]),
+            (req, _) =>
         {
             var (path, action) = FileOpener.Decide(context, ResolveRoot(context, req), req.Required("path"), req.Bool("confirm") ?? false, req.Bool("user") ?? false);
             if (action != "confirm") FileOpener.Run(path, action);
             return Task.FromResult<object?>(new { path, action });
-        }, "Open a path with the operating system (files in their default app, folders in the file manager): { path, sessionId?, cwd?, confirm?, user? } → { path, action }, where action 'confirm' is a path outside the session's workspace: ask the user, then call again with confirm: true. Without user? the rules stay conservative (text and code in an editor, executables and other binaries only revealed); with user: true — the user picked this file deliberately — every file opens with its default program, executables and scripts included, like a double click in the file manager");
+        });
 
-        context.Rpc.RegisterReadOnly("files.git", async (req, token) =>
-            await GitStatus.ReadAsync(ResolveRoot(context, req), token).ConfigureAwait(false),
-            "The workspace's changes since the last commit, for the Files tab: { sessionId?, cwd? } → { repo, root, workspaceId?, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted } | null (not a git repository)");
+        context.Rpc.Register(new RpcMethod("files.git", "The workspace's changes since the last commit, for the Files tab: { sessionId?, cwd? } → { repo, root, workspaceId?, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted } | null (not a git repository)", ReadOnly: true, Params: [RpcParam.Opt("sessionId"), RpcParam.Opt("cwd")]),
+            async (req, token) =>
+            await GitStatus.ReadAsync(ResolveRoot(context, req), token).ConfigureAwait(false));
 
         // What the Files tab keys its refreshes on: the workspace identity and version, so a late answer computed for
         // the previous root is recognizably stale instead of being merged into the new one.
-        context.Rpc.RegisterReadOnly("files.scope", (req, _) =>
+        context.Rpc.Register(new RpcMethod("files.scope", "Identity and version of what the Files tab is showing: { sessionId?, cwd? } → { sessionId, root, workspaceId?, branch?, isolated, identity?, version }", ReadOnly: true, Params: [RpcParam.Opt("sessionId"), RpcParam.Opt("cwd")]),
+            (req, _) =>
         {
             var sessionId = req.Str("sessionId");
             var session = sessionId is { Length: > 0 } ? context.Sessions?.GetSession(sessionId) : null;
@@ -76,12 +80,12 @@ public sealed class FilesPlugin : INetPiPlugin
                 identity = session is not null && resolver is not null ? resolver.IdentityOf(session) : null,
                 version = binding?.Version ?? 0,
             });
-        }, "Identity and version of what the Files tab is showing: { sessionId?, cwd? } → { sessionId, root, workspaceId?, branch?, isolated, identity?, version }");
+        });
 
         var history = new GitHistory(context);
         context.Services.Register<IGitHistory>(history);
-        context.Rpc.RegisterReadOnly("files.commits", async (req, token) => await history.ReadAsync(NetPiJson.ToNode(req.Params) as System.Text.Json.Nodes.JsonObject ?? new(), token).ConfigureAwait(false),
-            "Repository history: { sessionId?, cwd?, gitDir?, commonDir?, since?, until?, limit? } → { repo, gitDir, commonDir, reachable, commits } | null (gitDir/commonDir, when given, are reused instead of re-resolved: only the git log runs)");
+        context.Rpc.Register(new RpcMethod("files.commits", "Repository history: { sessionId?, cwd?, gitDir?, commonDir?, since?, until?, limit? } → { repo, gitDir, commonDir, reachable, commits } | null (gitDir/commonDir, when given, are reused instead of re-resolved: only the git log runs)", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("sessionId"), RpcParam.Opt("cwd"), RpcParam.Opt("commonDir"), RpcParam.Opt("gitDir"), RpcParam.Opt("hash"), RpcParam.Opt("since"), RpcParam.Opt("until")]),
+            async (req, token) => await history.ReadAsync(NetPiJson.ToNode(req.Params) as System.Text.Json.Nodes.JsonObject ?? new(), token).ConfigureAwait(false));
 
         // Left-panel file tree of the active session's workspace.
         context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });

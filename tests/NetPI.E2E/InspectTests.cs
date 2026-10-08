@@ -107,6 +107,15 @@ public static class InspectTests
             Check.True(missing.Count == 0, $"{missing.Count} method(s) the server registers are not in docs/PROTOCOL.md: {string.Join(", ", missing)}");
             Check.True(stale.Count == 0, $"{stale.Count} method row(s) in docs/PROTOCOL.md name a method the server does not have: {string.Join(", ", stale)}");
         });
+        r.Add("inspect.rpc-params", "rpc: every method the server registers declares its parameters, so rpc.list shows them and a mistyped one is refused (idea-yvcy8b)", async () =>
+        {
+            var methods = (await env.Rpc("rpc.list")).Arr().ToList();
+            Check.True(methods.Count > 100, $"the server registers its methods ({methods.Count})");
+            // desktop.* is the WinForms shell's own (src/NetPI.Desktop), registered only when the host runs inside it
+            var bare = methods.Where(m => !m.TryGetProperty("params", out var p) || p.ValueKind != System.Text.Json.JsonValueKind.Array)
+                .Select(m => m.S("method")!).Where(m => !m.StartsWith("desktop.", StringComparison.Ordinal)).Order(StringComparer.Ordinal).ToList();
+            Check.True(bare.Count == 0, $"{bare.Count} method(s) registered without declared parameters (RpcMethod with RpcParams): {string.Join(", ", bare)}");
+        });
         r.Add("inspect.settings-docs", "docs: every setting the server's plugins declare (settings.schema) is in docs/SETTINGS.md (idea-yvcy8b)", async () =>
         {
             var keys = new HashSet<string>(StringComparer.Ordinal);

@@ -24,7 +24,8 @@ public sealed class DiagnosticsPlugin : INetPiPlugin
         var reloads = new Reloads(context);
         context.Events.Subscribe(EventTypes.PluginsReloaded, reloads.OnEvent);
         var inspect = new Inspector(context, recorder, reloads);
-        context.Rpc.RegisterReadOnly("diag.capabilities", (_, _) => Task.FromResult<object?>(new
+        context.Rpc.Register(new RpcMethod("diag.capabilities", "Plugin base registrations and optional capability availability; registry presence does not prove endpoint health", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(new
         {
             plugins = context.Services.Get<IPluginManager>()?.List().Select(p => new { p.Id, p.State, p.Error,
                 methods = context.Rpc.List().Where(m => m.PluginId == p.Id).Select(m => m.Method).ToArray(),
@@ -37,43 +38,43 @@ public sealed class DiagnosticsPlugin : INetPiPlugin
                 new { feature = "gitHistory", available = context.Services.Get<IGitHistory>() is not null || context.Rpc.Exists("files.commits"), reason = "Requires a Git history capability and a repository" },
                 new { feature = "contextPreview", available = context.Rpc.Exists("context.preview"), reason = "Requires a context preview provider" },
             },
-        }), "Plugin base registrations and optional capability availability; registry presence does not prove endpoint health");
-        context.Rpc.RegisterReadOnly("diag.overview", async (_, rpcCt) => await inspect.OverviewAsync(rpcCt).ConfigureAwait(false),
-            "Start here: app, process, plugins, models, agents with holders and waiters, active runs, model calls, running tools and processes, problems, the other diag methods");
-        context.Rpc.RegisterReadOnly("diag.problems", async (_, rpcCt) => await inspect.ProblemsAsync(rpcCt).ConfigureAwait(false),
-            "What looks wrong now, worst first → { severity: error|warn|info, area, message, hint }[]");
-        context.Rpc.RegisterReadOnly("diag.calls", (req, _) => Task.FromResult<object?>(inspect.Calls(req)),
-            "Model calls, newest first (running ones too): { limit? (50), sessionId?, runId?, agent?, errors?, running?, detail? } → { id, startedAt, state, model, purpose, agent, sessionId, runId, firstTokenMs, durationMs, attempts, tokens, stopReason, error }[]");
-        context.Rpc.RegisterReadOnly("diag.call", (req, _) => Task.FromResult<object?>(inspect.Call(req)),
-            "One model call in detail: { id } → the diag.calls fields plus the request's size, the response, retries, notices and the error's type/status");
-        context.Rpc.RegisterReadOnly("diag.tools", (req, _) => Task.FromResult<object?>(inspect.Tools(req)),
-            "Tool calls, newest first: { limit? (50), sessionId?, name?, errors?, running? } → { callId, name, sessionId, runId, startedAt, state, durationMs, arguments, result (preview) }[]");
-        context.Rpc.RegisterReadOnly("diag.tool", (req, _) => Task.FromResult<object?>(inspect.Tool(req)),
-            "One tool call in full: { callId, sessionId? } → { callId, name, sessionId, state, durationMs, arguments (parsed), isError, result (the text the model got), images, details }");
-        context.Rpc.RegisterReadOnly("diag.journal", (req, _) => Task.FromResult<object?>(inspect.Journal(req)),
-            "The events that matter as a timeline, oldest first (no per-token events): { limit? (100), type? (prefix), sessionId?, sinceSeq? } → { seq, time, type, sessionId, source, data }[]");
-        context.Rpc.RegisterReadOnly("diag.run", async (req, rpcCt) => await inspect.RunAsync(req, rpcCt).ConfigureAwait(false),
-            "One run in depth: { sessionId | agentId } → { run, statusSince, session, slot, queue, children, calls, tools, journal, messages }");
-        context.Rpc.RegisterReadOnly("diag.settings", async (_, rpcCt) => await inspect.SettingsAsync(rpcCt).ConfigureAwait(false),
-            "The settings document without secrets → { file, settings }");
-        context.Rpc.RegisterReadOnly("diag.logs", async (req, rpcCt) => await inspect.LogsAsync(req, rpcCt).ConfigureAwait(false),
-            "Log entries, oldest first: { limit? (200), level? (debug|info|warn|error: at least), category?, contains?, sinceMinutes? } → { time, level, category, message, exception }[]");
-        context.Rpc.RegisterReadOnly("diag.failures", (req, _) => Task.FromResult<object?>(inspect.Failures(req)),
-            "Failed requests the providers saved (logs/failed-requests), newest first: { limit? (20) } → { name, time, bytes, provider, model, sessionId, transport, requestId, responseId, error }[]");
-        context.Rpc.RegisterReadOnly("diag.failure", (req, _) => Task.FromResult<object?>(inspect.Failure(req)),
-            "One saved failed request with its body: { name, offset?, limit? (or maxChars, default 200000), summary? } → { name, bytes, offset, returned, truncated, nextOffset?, content, shape? }" +
-            " — offset/limit page through a body too large to hand over whole; summary adds its shape (the ordered input[]/messages[] kinds, no payload)");
-        context.Rpc.RegisterReadOnly("diag.toolsets", async (req, rpcCt) => await inspect.ToolSetsAsync(req.Required("sessionId"), rpcCt).ConfigureAwait(false),
-            "A session's tools now and every change with its cause (the context plugin's context.toolsets): { sessionId } → { sessionId, tools, baseline, changes: [{ seq, time, added, removed, cause, plugins }], reloads }");
+        }));
+        context.Rpc.Register(new RpcMethod("diag.overview", "Start here: app, process, plugins, models, agents with holders and waiters, active runs, model calls, running tools and processes, problems, the other diag methods", ReadOnly: true, Params: []),
+            async (_, rpcCt) => await inspect.OverviewAsync(rpcCt).ConfigureAwait(false));
+        context.Rpc.Register(new RpcMethod("diag.problems", "What looks wrong now, worst first → { severity: error|warn|info, area, message, hint }[]", ReadOnly: true, Params: []),
+            async (_, rpcCt) => await inspect.ProblemsAsync(rpcCt).ConfigureAwait(false));
+        context.Rpc.Register(new RpcMethod("diag.calls", "Model calls, newest first (running ones too): { limit? (50), sessionId?, runId?, agent?, errors?, running?, detail? } → { id, startedAt, state, model, purpose, agent, sessionId, runId, firstTokenMs, durationMs, attempts, tokens, stopReason, error }[]", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("sessionId"), RpcParam.Opt("runId"), RpcParam.Opt("agentId"), RpcParam.Opt("agent"), RpcParam.Opt("errors", RpcParamType.Boolean), RpcParam.Opt("running", RpcParamType.Boolean), RpcParam.Opt("detail", RpcParamType.Boolean)]),
+            (req, _) => Task.FromResult<object?>(inspect.Calls(req)));
+        context.Rpc.Register(new RpcMethod("diag.call", "One model call in detail: { id } → the diag.calls fields plus the request's size, the response, retries, notices and the error's type/status", ReadOnly: true, Params: [RpcParam.Opt("id"), RpcParam.Opt("correlationId")]),
+            (req, _) => Task.FromResult<object?>(inspect.Call(req)));
+        context.Rpc.Register(new RpcMethod("diag.tools", "Tool calls, newest first: { limit? (50), sessionId?, name?, errors?, running? } → { callId, name, sessionId, runId, startedAt, state, durationMs, arguments, result (preview) }[]", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("sessionId"), RpcParam.Opt("name"), RpcParam.Opt("errors", RpcParamType.Boolean), RpcParam.Opt("running", RpcParamType.Boolean)]),
+            (req, _) => Task.FromResult<object?>(inspect.Tools(req)));
+        context.Rpc.Register(new RpcMethod("diag.tool", "One tool call in full: { callId, sessionId? } → { callId, name, sessionId, state, durationMs, arguments (parsed), isError, result (the text the model got), images, details }", ReadOnly: true, Params: [RpcParam.Req("callId"), RpcParam.Opt("sessionId")]),
+            (req, _) => Task.FromResult<object?>(inspect.Tool(req)));
+        context.Rpc.Register(new RpcMethod("diag.journal", "The events that matter as a timeline, oldest first (no per-token events): { limit? (100), type? (prefix), sessionId?, sinceSeq? } → { seq, time, type, sessionId, source, data }[]", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("type", RpcParamType.String, "an event type or its prefix"), RpcParam.Opt("sessionId"), RpcParam.Opt("sinceSeq")]),
+            (req, _) => Task.FromResult<object?>(inspect.Journal(req)));
+        context.Rpc.Register(new RpcMethod("diag.run", "One run in depth: { sessionId | agentId } → { run, statusSince, session, slot, queue, children, calls, tools, journal, messages }", ReadOnly: true, Params: [RpcParam.Opt("sessionId"), RpcParam.Opt("agentId"), RpcParam.Opt("runId")]),
+            async (req, rpcCt) => await inspect.RunAsync(req, rpcCt).ConfigureAwait(false));
+        context.Rpc.Register(new RpcMethod("diag.settings", "The settings document without secrets → { file, settings }", ReadOnly: true, Params: []),
+            async (_, rpcCt) => await inspect.SettingsAsync(rpcCt).ConfigureAwait(false));
+        context.Rpc.Register(new RpcMethod("diag.logs", "Log entries, oldest first: { limit? (200), level? (debug|info|warn|error: at least), category?, contains?, sinceMinutes? } → { time, level, category, message, exception }[]", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("level", RpcParamType.String, "debug, info, warn or error: at least"), RpcParam.Opt("category"), RpcParam.Opt("contains"), RpcParam.Opt("sinceMinutes", RpcParamType.Integer)]),
+            async (req, rpcCt) => await inspect.LogsAsync(req, rpcCt).ConfigureAwait(false));
+        context.Rpc.Register(new RpcMethod("diag.failures", "Failed requests the providers saved (logs/failed-requests), newest first: { limit? (20) } → { name, time, bytes, provider, model, sessionId, transport, requestId, responseId, error }[]", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer)]),
+            (req, _) => Task.FromResult<object?>(inspect.Failures(req)));
+        context.Rpc.Register(new RpcMethod("diag.failure", "One saved failed request with its body: { name, offset?, limit? (or maxChars, default 200000), summary? } → { name, bytes, offset, returned, truncated, nextOffset?, content, shape? }" +
+            " — offset/limit page through a body too large to hand over whole; summary adds its shape (the ordered input[]/messages[] kinds, no payload)", ReadOnly: true, Params: [RpcParam.Req("name"), RpcParam.Opt("offset", RpcParamType.Integer), RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("maxChars", RpcParamType.Integer), RpcParam.Opt("summary", RpcParamType.Boolean)]),
+            (req, _) => Task.FromResult<object?>(inspect.Failure(req)));
+        context.Rpc.Register(new RpcMethod("diag.toolsets", "A session's tools now and every change with its cause (the context plugin's context.toolsets): { sessionId } → { sessionId, tools, baseline, changes: [{ seq, time, added, removed, cause, plugins }], reloads }", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
+            async (req, rpcCt) => await inspect.ToolSetsAsync(req.Required("sessionId"), rpcCt).ConfigureAwait(false));
 
         var diag = new DiagnosticsService(context);
         context.Tools.Register(new DiagTool(context));
-        context.Rpc.RegisterReadOnly("diag.snapshot", async (req, rpcCt) => await diag.SnapshotAsync(req.Int("events") ?? 200, rpcCt).ConfigureAwait(false),
-            "Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }");
-        context.Rpc.RegisterReadOnly("diag.event", (req, _) => Task.FromResult<object?>(diag.Event(ParseSeq(req))),
-            "Full data of a recent bus event: { seq } → { seq, type, sessionId, time, source, ui, data }");
-        context.Rpc.Register("diag.reload", async (req, rpcCt) => await diag.ReloadAsync(req.Str("args") ?? req.Str("id"), rpcCt).ConfigureAwait(false),
-            "/reload command: { args?: pluginId } → status text (no id = all plugins; the diag tool cannot call this)");
+        context.Rpc.Register(new RpcMethod("diag.snapshot", "Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }", ReadOnly: true, Params: [RpcParam.Opt("events", RpcParamType.Integer)]),
+            async (req, rpcCt) => await diag.SnapshotAsync(req.Int("events") ?? 200, rpcCt).ConfigureAwait(false));
+        context.Rpc.Register(new RpcMethod("diag.event", "Full data of a recent bus event: { seq } → { seq, type, sessionId, time, source, ui, data }", ReadOnly: true, Params: [RpcParam.Req("seq")]),
+            (req, _) => Task.FromResult<object?>(diag.Event(ParseSeq(req))));
+        context.Rpc.Register(new RpcMethod("diag.reload", "/reload command: { args?: pluginId } → status text (no id = all plugins; the diag tool cannot call this)", ReadOnly: false, Params: [RpcParam.Opt("args", RpcParamType.String, "/reload's text: a plugin id, or nothing for all"), RpcParam.Opt("id"), RpcParam.Opt("sessionId", RpcParamType.String, "the chat a slash command came from (unused)")]),
+            async (req, rpcCt) => await diag.ReloadAsync(req.Str("args") ?? req.Str("id"), rpcCt).ConfigureAwait(false));
 
         context.Ui.AddTab(new UiTabInfo { Id = "diagnostics", Title = "Diagnostics", Panel = UiPanel.Right, Icon = "bug", Order = 90, Module = "ui.js" });
         context.Ui.AddCommand(new SlashCommandInfo

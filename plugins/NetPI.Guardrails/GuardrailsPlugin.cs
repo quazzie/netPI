@@ -53,15 +53,15 @@ public sealed class GuardrailsPlugin : INetPiPlugin
         });
         var outcomes = new GuardOutcomes(context.Data, context.Logger);
         var approvals = _approvals = new Approvals(context, outcomes);
-        context.Rpc.RegisterReadOnly("guard.outcomes", (req, _) => Task.FromResult<object?>(outcomes.Read(req.Str("result"), req.Int("limit") ?? 50)),
-            "What became of the guard questions: { result? (cleared|session|allowed|allowed-session|denied|steered|cancelled|stopped|subagent), limit? (50) } → { summary: { result: count }, rows: [{ at, result, sessionId, tool, kind, rule, subject, opinion? }] } (newest first)");
+        context.Rpc.Register(new RpcMethod("guard.outcomes", "What became of the guard questions: { result? (cleared|session|allowed|allowed-session|denied|steered|cancelled|stopped|subagent), limit? (50) } → { summary: { result: count }, rows: [{ at, result, sessionId, tool, kind, rule, subject, opinion? }] } (newest first)", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("result")]),
+            (req, _) => Task.FromResult<object?>(outcomes.Read(req.Str("result"), req.Int("limit") ?? 50)));
         context.Services.Register<IAgentHook>(new GuardHook(context, approvals, new SecondOpinion(context)));
-        context.Rpc.RegisterReadOnly("guard.pending", (req, _) => Task.FromResult<object?>(approvals.List(req.Str("sessionId"))),
-            "Tool calls waiting for the user's OK (guardrails ask rules): { sessionId? } → { approvalId, sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }[]");
-        context.Rpc.Register("guard.answer", (req, _) => Task.FromResult<object?>(approvals.Answer(req.Required("approvalId"), req.Bool("allow") ?? false,
-                forSession: string.Equals(req.Str("scope"), "session", StringComparison.OrdinalIgnoreCase))),
-            "Allow or refuse a tool call that waits for the user's OK: { approvalId, allow, scope?: \"once\" | \"session\" } → true; scope session (with allow) " +
-            "allows the rule that asked for the rest of that chat, and the other calls of that chat waiting on the same rule");
+        context.Rpc.Register(new RpcMethod("guard.pending", "Tool calls waiting for the user's OK (guardrails ask rules): { sessionId? } → { approvalId, sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }[]", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
+            (req, _) => Task.FromResult<object?>(approvals.List(req.Str("sessionId"))));
+        context.Rpc.Register(new RpcMethod("guard.answer", "Allow or refuse a tool call that waits for the user's OK: { approvalId, allow, scope?: \"once\" | \"session\" } → true; scope session (with allow) " +
+            "allows the rule that asked for the rest of that chat, and the other calls of that chat waiting on the same rule", ReadOnly: false, Params: [RpcParam.Req("approvalId"), RpcParam.Opt("allow", RpcParamType.Boolean), RpcParam.Opt("scope")]),
+            (req, _) => Task.FromResult<object?>(approvals.Answer(req.Required("approvalId"), req.Bool("allow") ?? false,
+                forSession: string.Equals(req.Str("scope"), "session", StringComparison.OrdinalIgnoreCase))));
         return Task.CompletedTask;
     }
 

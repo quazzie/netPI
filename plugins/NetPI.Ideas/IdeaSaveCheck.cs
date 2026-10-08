@@ -78,12 +78,12 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo, Idea
 
     public void Register(IRpcRegistry rpc)
     {
-        rpc.Register("ideas.closed", Closed,
-            "A session tab was closed: { sessionId } → { checked: bool, reason } — attaches the chat to the idea it worked on and offers a card when it leaves an unsaved plan (background)");
-        rpc.RegisterReadOnly("ideas.suggestions", Suggestions,
-            "Cards waiting for the user (a plan a closed chat left unsaved, an idea a commit may have finished): { } → { suggestions: [...] }");
-        rpc.Register("ideas.resolve", Resolve,
-            "Answer a card: { id, action: \"save\" | \"done\" | \"discard\", edit?: { title?, summary? } } → { saved: idea | null, discarded }");
+        rpc.Register(new RpcMethod("ideas.closed", "A session tab was closed: { sessionId } → { checked: bool, reason } — attaches the chat to the idea it worked on and offers a card when it leaves an unsaved plan (background)", ReadOnly: false, Params: [RpcParam.Req("sessionId")]),
+            Closed);
+        rpc.Register(new RpcMethod("ideas.suggestions", "Cards waiting for the user (a plan a closed chat left unsaved, an idea a commit may have finished): { } → { suggestions: [...] }", ReadOnly: true, Params: []),
+            Suggestions);
+        rpc.Register(new RpcMethod("ideas.resolve", "Answer a card: { id, action: \"save\" | \"done\" | \"discard\", edit?: { title?, summary? } } → { saved: idea | null, discarded }", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Opt("action"), RpcParam.Opt("edit", RpcParamType.Object)]),
+            Resolve);
     }
 
     // ------------------------------------------------------------------ the check

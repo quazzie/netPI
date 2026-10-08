@@ -55,24 +55,26 @@ public sealed class ShellPlugin : INetPiPlugin
         // A running process keeps the ownership of the directory it was started in: the workspace plugin refuses to
         // delete a checkout that still has one working in it.
         context.Services.Register<IWorkspaceProcesses>(new WorkspaceProcesses(registry));
-        context.Rpc.RegisterReadOnly("processes.list", (_, _) =>
-            Task.FromResult<object?>(registry.List().Select(p => p.ToInfo()).ToList()),
-            "Running and recent shell processes → ProcessInfo[]");
+        context.Rpc.Register(new RpcMethod("processes.list", "Running and recent shell processes → ProcessInfo[]", ReadOnly: true, Params: []),
+            (_, _) =>
+            Task.FromResult<object?>(registry.List().Select(p => p.ToInfo()).ToList()));
 
-        context.Rpc.RegisterReadOnly("processes.output", (req, _) =>
+        context.Rpc.Register(new RpcMethod("processes.output", "Tail of a process's output: { id, tail? } → string", ReadOnly: true, Params: [RpcParam.Req("id"), RpcParam.Opt("tail", RpcParamType.Integer)]),
+            (req, _) =>
         {
             var id = req.Required("id");
             var p = registry.Get(id) ?? throw new RpcException("not_found", $"No process {id}");
             var tail = Math.Clamp(req.Int("tail") ?? 500, 1, 20_000);
             return Task.FromResult<object?>(p.Output.Tail(tail, 1024 * 1024));
-        }, "Tail of a process's output: { id, tail? } → string");
+        });
 
-        context.Rpc.Register("processes.kill", (req, _) =>
+        context.Rpc.Register(new RpcMethod("processes.kill", "Kill a process tree: { id } → bool", ReadOnly: false, Params: [RpcParam.Req("id")]),
+            (req, _) =>
         {
             var id = req.Required("id");
             var p = registry.Get(id) ?? throw new RpcException("not_found", $"No process {id}");
             return Task.FromResult<object?>(p.Kill());
-        }, "Kill a process tree: { id } → bool");
+        });
 
         var bash = ShellLocator.FindBash(context.Settings);
         var pwsh = ShellLocator.FindPwsh(context.Settings, out var legacy);

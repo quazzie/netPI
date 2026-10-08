@@ -14,8 +14,8 @@ public sealed class WorkPlugin : INetPiPlugin
     {
         var rpc = context.Rpc;
         var logger = context.Logger;
-        context.Rpc.RegisterReadOnly("work.snapshot", async (_, rpcCt) => await SnapshotAsync(rpc, logger, rpcCt).ConfigureAwait(false),
-            "Aggregated overview for the Work tab → { agents, unassigned, runs, processes, usage, time, errors? }");
+        context.Rpc.Register(new RpcMethod("work.snapshot", "Aggregated overview for the Work tab → { agents, unassigned, runs, processes, usage, time, errors? }", ReadOnly: true, Params: []),
+            async (_, rpcCt) => await SnapshotAsync(rpc, logger, rpcCt).ConfigureAwait(false));
         context.Ui.AddTab(new UiTabInfo { Id = "work", Title = "Work", Panel = UiPanel.Right, Icon = "work", Order = 10, Module = "ui.js" });
         return Task.CompletedTask;
     }

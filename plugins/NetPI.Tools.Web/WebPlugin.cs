@@ -53,12 +53,13 @@ public sealed class WebPlugin : INetPiPlugin
         context.Tools.Register(new BrowserTool(context, browser));
         new BrowserView(context, browser).Register();
         context.Ui.AddTab(new UiTabInfo { Id = "browser", Title = "Browser", Panel = UiPanel.Session, Icon = "globe", Order = 10, Module = "ui.js" });
-        context.Rpc.RegisterReadOnly("browser.extension", (_, _) => Task.FromResult<object?>(new
+        context.Rpc.Register(new RpcMethod("browser.extension", "The NetPI Chrome extension: where to load it from (chrome://extensions → Load unpacked) and whether it is connected → { folder, connected, hello }", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(new
         {
             folder = browser.Relay.Folder,
             connected = browser.Relay.IsOpen,
             hello = browser.Relay.Hello,
-        }), "The NetPI Chrome extension: where to load it from (chrome://extensions → Load unpacked) and whether it is connected → { folder, connected, hello }");
+        }));
         context.Events.Subscribe(EventTypes.SessionDeleted, e =>
         {
             if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) _ = browser.CloseTabAsync(id);

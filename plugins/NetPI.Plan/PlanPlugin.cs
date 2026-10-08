@@ -47,13 +47,14 @@ public sealed class PlanPlugin : INetPiPlugin
             ],
         });
 
-        context.Rpc.Register("plan.enter", (req, _) => Task.FromResult<object?>(new JsonObject { ["mode"] = PlanMode.State(service.Enter(req.Required("sessionId"))) }),
-            "Put a chat in plan mode: { sessionId } → { mode }");
-        context.Rpc.Register("plan.exit", async (req, _) => await service.ExitAsync(req.Required("sessionId")).ConfigureAwait(false),
-            "Leave plan mode (a plan being decided is cancelled): { sessionId } → bool (false: it was not in plan mode)");
-        context.Rpc.RegisterReadOnly("plan.get", (req, _) => Task.FromResult<object?>(Get(context, store, req)),
-            "A plan with its revisions and markdown: { planId } or { sessionId } (the chat's current, else latest plan) → plan | null");
-        context.Rpc.RegisterReadOnly("plan.list", (req, _) =>
+        context.Rpc.Register(new RpcMethod("plan.enter", "Put a chat in plan mode: { sessionId } → { mode }", ReadOnly: false, Params: [RpcParam.Req("sessionId")]),
+            (req, _) => Task.FromResult<object?>(new JsonObject { ["mode"] = PlanMode.State(service.Enter(req.Required("sessionId"))) }));
+        context.Rpc.Register(new RpcMethod("plan.exit", "Leave plan mode (a plan being decided is cancelled): { sessionId } → bool (false: it was not in plan mode)", ReadOnly: false, Params: [RpcParam.Req("sessionId")]),
+            async (req, _) => await service.ExitAsync(req.Required("sessionId")).ConfigureAwait(false));
+        context.Rpc.Register(new RpcMethod("plan.get", "A plan with its revisions and markdown: { planId } or { sessionId } (the chat's current, else latest plan) → plan | null", ReadOnly: true, Params: [RpcParam.Opt("planId"), RpcParam.Opt("sessionId")]),
+            (req, _) => Task.FromResult<object?>(Get(context, store, req)));
+        context.Rpc.Register(new RpcMethod("plan.list", "Plans: { sessionId?, status? } → plan[] (without revision bodies; waiting: a run waits for the decision). Without a chat: the ones awaiting or being revised", ReadOnly: true, Params: [RpcParam.Opt("sessionId"), RpcParam.Opt("status")]),
+            (req, _) =>
         {
             var plans = req.Str("sessionId") is { } sid ? store.ForSession(sid, req.Str("status")) : store.WithStatus(req.Str("status") is { } s ? [s] : [PlanStore.Awaiting, PlanStore.Revising]);
             return Task.FromResult<object?>(new JsonArray([.. plans.Select(p =>
@@ -62,15 +63,15 @@ public sealed class PlanPlugin : INetPiPlugin
                 view["waiting"] = service.Waits(p["id"]!.GetValue<string>());
                 return (JsonNode)view;
             })]));
-        }, "Plans: { sessionId?, status? } → plan[] (without revision bodies; waiting: a run waits for the decision). Without a chat: the ones awaiting or being revised");
-        context.Rpc.Register("plan.answer", async (req, token) => await service.AnswerAsync(req.Required("planId"), req.Required("decision"), req.Str("feedback"), req.Bool("newChat") == true, token).ConfigureAwait(false),
-            "Decide a plan: { planId, decision: approve | revise | save | file | cancel, feedback? (required to revise, a note on approve), newChat? (approve: carry it out in a new chat that replaces this one) } → { planId, status, ideaId?, newSessionId?, path?, todos? }");
-        context.Rpc.RegisterReadOnly("plan.offers", (req, _) => Task.FromResult<object?>(service.Offers(req.Str("sessionId"))),
-            "Plan-mode offers waiting for the user (plan_enter): { sessionId? } → { id, sessionId, callId, reason, askedAt }[]");
-        context.Rpc.Register("plan.enterAnswer", (req, _) => Task.FromResult<object?>(service.AnswerEnter(req.Required("id"), req.Bool("enter") == true)),
-            "Answer a plan-mode offer: { id, enter } → true");
-        context.Rpc.Register("plan.command", async (req, token) => await Command(context, service, req.Required("sessionId"), req.Str("args")?.Trim() ?? "", token).ConfigureAwait(false),
-            "/plan command: { sessionId, args } → status text");
+        });
+        context.Rpc.Register(new RpcMethod("plan.answer", "Decide a plan: { planId, decision: approve | revise | save | file | cancel, feedback? (required to revise, a note on approve), newChat? (approve: carry it out in a new chat that replaces this one) } → { planId, status, ideaId?, newSessionId?, path?, todos? }", ReadOnly: false, Params: [RpcParam.Req("planId"), RpcParam.Req("decision"), RpcParam.Opt("feedback"), RpcParam.Opt("newChat", RpcParamType.Boolean)]),
+            async (req, token) => await service.AnswerAsync(req.Required("planId"), req.Required("decision"), req.Str("feedback"), req.Bool("newChat") == true, token).ConfigureAwait(false));
+        context.Rpc.Register(new RpcMethod("plan.offers", "Plan-mode offers waiting for the user (plan_enter): { sessionId? } → { id, sessionId, callId, reason, askedAt }[]", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
+            (req, _) => Task.FromResult<object?>(service.Offers(req.Str("sessionId"))));
+        context.Rpc.Register(new RpcMethod("plan.enterAnswer", "Answer a plan-mode offer: { id, enter } → true", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Opt("enter", RpcParamType.Boolean)]),
+            (req, _) => Task.FromResult<object?>(service.AnswerEnter(req.Required("id"), req.Bool("enter") == true)));
+        context.Rpc.Register(new RpcMethod("plan.command", "/plan command: { sessionId, args } → status text", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("args", RpcParamType.String, "/plan's text: a task, off or show"), RpcParam.Opt("planId")]),
+            async (req, token) => await Command(context, service, req.Required("sessionId"), req.Str("args")?.Trim() ?? "", token).ConfigureAwait(false));
         context.Ui.AddCommand(new SlashCommandInfo
         {
             Name = "plan", Description = "Plan mode: explore read-only and submit a plan to approve (/plan off leaves it)",

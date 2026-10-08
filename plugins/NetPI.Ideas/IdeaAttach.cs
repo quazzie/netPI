@@ -13,8 +13,8 @@ namespace NetPI.Ideas;
 public sealed class IdeaAttach(IPluginContext ctx, IdeasRepository repo)
 {
     public void Register(IRpcRegistry rpc) =>
-        rpc.Register("ideas.attach", Attach,
-            "Add an idea to a chat: { sessionId, id } → { noticeId } — a notice (kind \"idea\") with the idea's title, summary and sections; the session is recorded on the idea");
+        rpc.Register(new RpcMethod("ideas.attach", "Add an idea to a chat: { sessionId, id } → { noticeId } — a notice (kind \"idea\") with the idea's title, summary and sections; the session is recorded on the idea", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Req("sessionId")]),
+            Attach);
 
     public Task<object?> Attach(RpcRequest req, CancellationToken ct)
     {

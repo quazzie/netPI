@@ -31,14 +31,15 @@ public sealed class MemoryPlugin : INetPiPlugin
         });
         var index = context.Track(new MemoryIndex(context));
         context.Tools.Register(new MemorySearchTool(context, index));
-        context.Rpc.RegisterReadOnly("memory.search", async (r, rct) =>
+        context.Rpc.Register(new RpcMethod("memory.search", "Past chats closest in meaning: { query, limit? (5), projectId?, excludeSessionId? } → { available, chats: [{ sessionId, title, projectId, updatedAt, score, snippet }] }", ReadOnly: true, Params: [RpcParam.Req("query"), RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("projectId"), RpcParam.Opt("excludeSessionId")]),
+            async (r, rct) =>
         {
             var query = r.Required("query");
             var hits = await index.SearchAsync(query, r.Int("limit") ?? 5, r.Str("projectId"), r.Str("excludeSessionId"), rct).ConfigureAwait(false);
             return new JsonObject { ["available"] = hits is not null, ["chats"] = MemoryIndex.Json(hits ?? []) };
-        }, "Past chats closest in meaning: { query, limit? (5), projectId?, excludeSessionId? } → { available, chats: [{ sessionId, title, projectId, updatedAt, score, snippet }] }");
-        context.Rpc.Register("memory.reindex", async (_, rct) => await index.SweepAsync(rct).ConfigureAwait(false),
-            "Embed the chats that changed since they were last embedded, now: { } → { enabled, indexed?, unchanged?, removed? }");
+        });
+        context.Rpc.Register(new RpcMethod("memory.reindex", "Embed the chats that changed since they were last embedded, now: { } → { enabled, indexed?, unchanged?, removed? }", ReadOnly: false, Params: []),
+            async (_, rct) => await index.SweepAsync(rct).ConfigureAwait(false));
         // the host publishes { id } as the payload (no session on the envelope), like sessions.delete does
         context.Track(context.Events.Subscribe(EventTypes.SessionDeleted, e => index.Forget(e.As<JsonObject>()?["id"]?.GetValue<string>() ?? e.SessionId)));
         index.Start();

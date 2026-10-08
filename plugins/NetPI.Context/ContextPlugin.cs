@@ -68,28 +68,30 @@ public sealed class ContextPlugin : INetPiPlugin
                 prompts.Fork(from, to, d["upToSeq"]?.GetValue<long>() ?? 0);
         });
 
-        context.Rpc.RegisterReadOnly("context.preview", async (req, token) =>
+        context.Rpc.Register(new RpcMethod("context.preview", "The system prompt and tools a session is sent: { sessionId } → { systemPrompt, frozen, tools, estimatedTokens }", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
+            async (req, token) =>
         {
             var sessionId = req.Required("sessionId");
             return await PreviewAsync(context, builder, sessionId, token).ConfigureAwait(false);
-        }, "The system prompt and tools a session is sent: { sessionId } → { systemPrompt, frozen, tools, estimatedTokens }");
+        });
 
         // a profile switch: the next model call renders the prompt again and takes a new tool baseline (one full re-read)
-        context.Rpc.Register("context.reset", (req, _) =>
+        context.Rpc.Register(new RpcMethod("context.reset", "Forget a session's frozen system prompt and tool baseline; its next model call renders them again: { sessionId } → true", ReadOnly: false, Params: [RpcParam.Req("sessionId")]),
+            (req, _) =>
         {
             var id = req.Required("sessionId");
             context.Sessions.UpdateSession(id, SessionPrompt.Invalidate);
             prompts.Reset(id);
             return Task.FromResult<object?>(true);
-        }, "Forget a session's frozen system prompt and tool baseline; its next model call renders them again: { sessionId } → true");
+        });
 
-        context.Rpc.RegisterReadOnly("context.prompts", (req, _) =>
-            Task.FromResult<object?>(PromptsJson(context, prompts, req.Required("sessionId"))),
-            "The system prompts a session was sent, with their tools: { sessionId } → { prompts: [{ version, afterSeq, createdAt, systemPrompt, tools: [{ name, description, parameters? }] }] }");
+        context.Rpc.Register(new RpcMethod("context.prompts", "The system prompts a session was sent, with their tools: { sessionId } → { prompts: [{ version, afterSeq, createdAt, systemPrompt, tools: [{ name, description, parameters? }] }] }", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
+            (req, _) =>
+            Task.FromResult<object?>(PromptsJson(context, prompts, req.Required("sessionId"))));
 
-        context.Rpc.RegisterReadOnly("context.toolsets", (req, _) =>
-            Task.FromResult<object?>(ToolSets.Build(context, toolNotices, prompts, req.Required("sessionId"))),
-            "A session's tools now and every change since its first model call, with the cause: { sessionId } → { sessionId, tools, baseline: { tools, sinceSeq } | null, changes: [{ seq, time, added, removed, cause: plugin-reload|profile|user|settings|unknown, plugins, text }], reloads: [{ ids, time, kind }] }");
+        context.Rpc.Register(new RpcMethod("context.toolsets", "A session's tools now and every change since its first model call, with the cause: { sessionId } → { sessionId, tools, baseline: { tools, sinceSeq } | null, changes: [{ seq, time, added, removed, cause: plugin-reload|profile|user|settings|unknown, plugins, text }], reloads: [{ ids, time, kind }] }", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
+            (req, _) =>
+            Task.FromResult<object?>(ToolSets.Build(context, toolNotices, prompts, req.Required("sessionId"))));
         return Task.CompletedTask;
     }
 

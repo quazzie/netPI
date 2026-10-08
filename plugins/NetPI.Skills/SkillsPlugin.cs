@@ -35,7 +35,8 @@ public sealed class SkillsPlugin : INetPiPlugin
         var loader = new SkillLoader(context, _userHome);
         context.Services.Register<IAgentHook>(new SkillNotices(context, loader));
         context.Tools.Register(new SkillTool(loader, context));
-        context.Rpc.RegisterReadOnly("skills.list", (req, _) =>
+        context.Rpc.Register(new RpcMethod("skills.list", "Skills that apply to a session or a project folder: { sessionId } | { projectId } → { skills: [{ name, description, path, scope, listed, userOnly, disabled, license?, compatibility? }], problems: [{ path, level, message }] }", ReadOnly: true, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("projectId")]),
+            (req, _) =>
         {
             string cwd;
             if (req.Str("projectId") is { Length: > 0 } projectId)
@@ -49,7 +50,7 @@ public sealed class SkillsPlugin : INetPiPlugin
                 cwd = SessionWorkspace.Of(session) is not null && resolver is not null ? resolver.CwdOf(session) : context.Sessions.GetCwd(session);
             }
             return Task.FromResult<object?>(ToJson(loader.Discover(cwd)));
-        }, "Skills that apply to a session or a project folder: { sessionId } | { projectId } → { skills: [{ name, description, path, scope, listed, userOnly, disabled, license?, compatibility? }], problems: [{ path, level, message }] }");
+        });
         return Task.CompletedTask;
     }
 

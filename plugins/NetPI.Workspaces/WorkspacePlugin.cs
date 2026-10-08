@@ -68,22 +68,24 @@ public sealed class WorkspacePlugin : INetPiPlugin
 
     private static void RegisterRpcs(IPluginContext ctx, WorkspaceStore store, WorkspaceResolver resolver, WorkspaceProvisioner provisioner, GitProbe git)
     {
-        ctx.Rpc.RegisterReadOnly("workspaces.list", (req, _) => Task.FromResult<object?>(store.ListWorkspaces(req.Str("projectId"))),
-            "Workspaces, newest first: { projectId? } → WorkspaceInfo[]");
+        ctx.Rpc.Register(new RpcMethod("workspaces.list", "Workspaces, newest first: { projectId? } → WorkspaceInfo[]", ReadOnly: true, Params: [RpcParam.Opt("projectId")]),
+            (req, _) => Task.FromResult<object?>(store.ListWorkspaces(req.Str("projectId"))));
 
-        ctx.Rpc.RegisterReadOnly("workspaces.get", (req, _) =>
+        ctx.Rpc.Register(new RpcMethod("workspaces.get", "One workspace: { id } → WorkspaceInfo", ReadOnly: true, Params: [RpcParam.Req("id")]),
+            (req, _) =>
         {
             var id = req.Required("id");
             return Task.FromResult<object?>(store.GetWorkspace(id) ?? throw new RpcException("not_found", $"Workspace {id} not found"));
-        }, "One workspace: { id } → WorkspaceInfo");
+        });
 
-        ctx.Rpc.Register("sessions.setWorkspace", (req, _) =>
+        ctx.Rpc.Register(new RpcMethod("sessions.setWorkspace", "Bind/unbind a session's workspace: { id, workspaceId: string|null } → SessionInfo (publishes session.workspace). " +
+           "A bound workspace that is missing is an error, never a fall back to the project checkout.", ReadOnly: false, Params: [RpcParam.Req("id", RpcParamType.String, "the session's id"), RpcParam.Opt("workspaceId", RpcParamType.String, "none unbinds")]),
+            (req, _) =>
         {
             try { store.SetSessionWorkspace(req.Required("id"), req.Str("workspaceId")); }
             catch (KeyNotFoundException ex) { throw new RpcException("not_found", ex.Message); }
             return Task.FromResult<object?>(ctx.Sessions.GetSession(req.Required("id")));
-        }, "Bind/unbind a session's workspace: { id, workspaceId: string|null } → SessionInfo (publishes session.workspace). " +
-           "A bound workspace that is missing is an error, never a fall back to the project checkout.");
+        });
 
         // A directory is busy when a process the shell registry knows about is running in it: a background process keeps
         // its workspace's ownership, and a workspace with a live process in it is not one to delete under it.
@@ -93,7 +95,8 @@ public sealed class WorkspacePlugin : INetPiPlugin
             catch { return false; }
         };
 
-        ctx.Rpc.RegisterReadOnly("workspaces.resolve", (req, _) =>
+        ctx.Rpc.Register(new RpcMethod("workspaces.resolve", "What a session's workspace resolves to: { sessionId } → { workspaceId, root, branch, baseCommit, kind, isolated, ownerSessionId, identity, projectId, available, error? }", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
+            (req, _) =>
         {
             var session = Session(ctx, req.Str("sessionId"));
             var binding = resolver.ResolveLenient(session);
@@ -115,9 +118,10 @@ public sealed class WorkspacePlugin : INetPiPlugin
                 available = binding is not null || SessionWorkspace.Of(session) is null,
                 error = SessionWorkspace.Of(session) is { Length: > 0 } && binding is null ? Missing(session!) : null,
             });
-        }, "What a session's workspace resolves to: { sessionId } → { workspaceId, root, branch, baseCommit, kind, isolated, ownerSessionId, identity, projectId, available, error? }");
+        });
 
-        ctx.Rpc.RegisterReadOnly("workspaces.git", async (req, _) =>
+        ctx.Rpc.Register(new RpcMethod("workspaces.git", "Git evidence about a session's workspace root: { sessionId?, cwd? } → { root, topLevel?, commonDir?, branch?, head?, changes, isRepository }", ReadOnly: true, Params: [RpcParam.Opt("cwd"), RpcParam.Opt("sessionId")]),
+            async (req, _) =>
         {
             var root = Root(ctx, resolver, req.Str("sessionId"), req.Str("cwd"));
             var common = git.CommonDirOf(root);
@@ -132,14 +136,17 @@ public sealed class WorkspacePlugin : INetPiPlugin
                 changes = git.DescribeChanges(root),
                 isRepository = common is not null,
             });
-        }, "Git evidence about a session's workspace root: { sessionId?, cwd? } → { root, topLevel?, commonDir?, branch?, head?, changes, isRepository }");
+        });
 
-        ctx.Rpc.RegisterReadOnly("workspaces.listForProject", (req, _) =>
+        ctx.Rpc.Register(new RpcMethod("workspaces.listForProject", "The workspaces of a project, with their branches and owners: { projectId } → WorkspaceInfo[]", ReadOnly: true, Params: [RpcParam.Opt("projectId")]),
+            (req, _) =>
             Task.FromResult<object?>(store
                 .ListWorkspaces(req.Str("projectId"))
-                .Select(Describe)), "The workspaces of a project, with their branches and owners: { projectId } → WorkspaceInfo[]");
+                .Select(Describe)));
 
-        ctx.Rpc.Register("workspaces.create", async (req, ct) =>
+        ctx.Rpc.Register(new RpcMethod("workspaces.create", "Create a workspace for a worker: { projectId, name, ownerSessionId?, ownerAgentId?, isolated?, base? } → WorkspaceInfo " +
+           "(a git project gets a worktree and a branch from a recorded commit; a non-git project gets a plain folder)", ReadOnly: false, Params: [RpcParam.Opt("projectId"), RpcParam.Opt("name"), RpcParam.Opt("ownerSessionId"), RpcParam.Opt("ownerAgentId"), RpcParam.Opt("isolated", RpcParamType.Boolean), RpcParam.Opt("base")]),
+            async (req, ct) =>
         {
             var outcome = await provisioner.ProvisionAsync(new WorkspaceRequest(
                 req.Str("projectId"),
@@ -150,27 +157,33 @@ public sealed class WorkspacePlugin : INetPiPlugin
                 Base: req.Str("base")), ct).ConfigureAwait(false);
             if (!outcome.Ok) throw new RpcException("workspace_failed", outcome.Error!);
             return store.GetWorkspace(outcome.Binding!.WorkspaceId) is { } made ? Describe(made) : Describe(outcome.Binding!);
-        }, "Create a workspace for a worker: { projectId, name, ownerSessionId?, ownerAgentId?, isolated?, base? } → WorkspaceInfo " +
-           "(a git project gets a worktree and a branch from a recorded commit; a non-git project gets a plain folder)");
+        });
 
-        ctx.Rpc.Register("workspaces.attach", (req, _) =>
+        ctx.Rpc.Register(new RpcMethod("workspaces.attach", "Attach an existing checkout as a workspace: { path, projectId?, name?, ownerSessionId? } → WorkspaceInfo (a checkout of another repository than the project is refused)", ReadOnly: false, Params: [RpcParam.Req("path"), RpcParam.Opt("name"), RpcParam.Opt("ownerSessionId"), RpcParam.Opt("projectId")]),
+            (req, _) =>
         {
             var outcome = provisioner.Attach(req.Required("path"), req.Str("projectId"), req.Str("name") ?? "attached", req.Str("ownerSessionId"));
             if (!outcome.Ok) throw new RpcException("workspace_failed", outcome.Error!);
             return Task.FromResult<object?>(store.GetWorkspace(outcome.Binding!.WorkspaceId) is { } made ? Describe(made) : Describe(outcome.Binding!));
-        }, "Attach an existing checkout as a workspace: { path, projectId?, name?, ownerSessionId? } → WorkspaceInfo (a checkout of another repository than the project is refused)");
+        });
 
-        ctx.Rpc.Register("workspaces.delete", async (req, ct) =>
+        ctx.Rpc.Register(new RpcMethod("workspaces.delete", "Remove a managed workspace whose work is merged or durable and that nothing is using: { id } → { id, removed } " +
+           "(an attached or dirty or unmerged worktree is refused, never deleted)", ReadOnly: false, Params: [RpcParam.Req("id")]),
+            async (req, ct) =>
         {
             var id = req.Required("id");
             var workspace = store.GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
             var (ok, error) = await provisioner.RetireAsync(workspace, busy, ct).ConfigureAwait(false);
             if (!ok) throw new RpcException("workspace_busy", error!);
             return (object?)new { id, removed = true };
-        }, "Remove a managed workspace whose work is merged or durable and that nothing is using: { id } → { id, removed } " +
-           "(an attached or dirty or unmerged worktree is refused, never deleted)");
+        });
 
-        ctx.Rpc.Register("workspaces.integrate", async (req, ct) =>
+        ctx.Rpc.Register(new RpcMethod("workspaces.integrate", "Merge a workspace's branch into the project's branch, serialized per repository: { id, into? } → { id, branch, merged, verified } " +
+           "(the worktree's actual branch, refused when the record has gone stale; merged/verified from an ancestry check after the merge). " +
+           "Gated: { id, into?, baseFirst?, verify?, verifyShell? (pwsh|cmd|sh), verifyTimeoutSeconds? (900) } refuses while the worker runs or has " +
+           "uncommitted work, merges the base into the branch in its worktree, runs verify there, and only then fast-forwards the base → " +
+           "{ id, branch, into, baseMerge, verify: { exitCode, timedOut, passed, tail, … }, merged, verified, reason } (a failed verify is an answer with merged false, not an error)", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Opt("into"), RpcParam.Opt("baseFirst", RpcParamType.Boolean), RpcParam.Opt("verify"), RpcParam.Opt("verifyShell"), RpcParam.Opt("verifyTimeoutSeconds", RpcParamType.Integer)]),
+            async (req, ct) =>
         {
             var id = req.Required("id");
             var workspace = store.GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
@@ -198,19 +211,16 @@ public sealed class WorkspacePlugin : INetPiPlugin
             // Ancestry, not "the command said OK": the commit has to be an ancestor of the integration branch afterwards.
             var merged = provisioner.IsAncestor(workspace.Path, branch, into ?? provisioner.ProjectBranchOf(workspace) ?? "master");
             return new { id, branch, merged, verified = merged };
-        }, "Merge a workspace's branch into the project's branch, serialized per repository: { id, into? } → { id, branch, merged, verified } " +
-           "(the worktree's actual branch, refused when the record has gone stale; merged/verified from an ancestry check after the merge). " +
-           "Gated: { id, into?, baseFirst?, verify?, verifyShell? (pwsh|cmd|sh), verifyTimeoutSeconds? (900) } refuses while the worker runs or has " +
-           "uncommitted work, merges the base into the branch in its worktree, runs verify there, and only then fast-forwards the base → " +
-           "{ id, branch, into, baseMerge, verify: { exitCode, timedOut, passed, tail, … }, merged, verified, reason } (a failed verify is an answer with merged false, not an error)");
+        });
 
-        ctx.Rpc.Register("workspaces.canRetire", (req, _) =>
+        ctx.Rpc.Register(new RpcMethod("workspaces.canRetire", "Whether a workspace's checkout may be removed, and why not: { id } → { id, canRetire, reason? }", ReadOnly: true, Params: [RpcParam.Req("id")]),
+            (req, _) =>
         {
             var id = req.Required("id");
             var workspace = store.GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
             var (ok, reason) = provisioner.CanRetire(workspace, busy);
             return Task.FromResult<object?>(new { id, canRetire = ok, reason });
-        }, "Whether a workspace's checkout may be removed, and why not: { id } → { id, canRetire, reason? }", readOnly: true);
+        });
     }
 
     private static SessionInfo Session(IPluginContext ctx, string? sessionId) =>

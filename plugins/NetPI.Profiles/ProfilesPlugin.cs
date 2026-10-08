@@ -26,23 +26,25 @@ public sealed class ProfilesPlugin : INetPiPlugin
             if (e.As<JsonObject>()?["session"]?["id"]?.GetValue<string>() is { Length: > 0 } id) profiles.EnsureDefault(id);
         });
 
-        context.Rpc.RegisterReadOnly("profiles.list", (_, _) => Task.FromResult<object?>(profiles.ListJson()),
-            "The profiles: → { defaultProfile, profiles: { id, name, prompt, toolsOff }[] }");
-        context.Rpc.Register("profiles.apply", async (req, token) =>
+        context.Rpc.Register(new RpcMethod("profiles.list", "The profiles: → { defaultProfile, profiles: { id, name, prompt, toolsOff }[] }", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(profiles.ListJson()));
+        context.Rpc.Register(new RpcMethod("profiles.apply", "Give a chat a profile (null = none): { sessionId, profile } → SessionInfo. In a started chat the system prompt is rendered again at the next model call (one full re-read).", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("profile")]),
+            async (req, token) =>
         {
             var sessionId = req.Required("sessionId");
             var id = req.Str("profile");
             return await profiles.ApplyAsync(sessionId, string.IsNullOrWhiteSpace(id) || id == ProfileService.None ? null : id, token)
                 .ConfigureAwait(false);
-        }, "Give a chat a profile (null = none): { sessionId, profile } → SessionInfo. In a started chat the system prompt is rendered again at the next model call (one full re-read).");
-        context.Rpc.Register("profiles.applyAuto", async (req, token) =>
+        });
+        context.Rpc.Register(new RpcMethod("profiles.applyAuto", "Give a chat the app starts by itself (a plan carried out, idea work, a schedule) the automatic profile (settings profiles.autoProfile; its project's default first): " +
+           "{ sessionId, toolsOff? (tools kept off whatever the profile says) } → SessionInfo.", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("toolsOff", RpcParamType.Array)]),
+            async (req, token) =>
         {
             var off = req.Prop("toolsOff") is { ValueKind: System.Text.Json.JsonValueKind.Array } a
                 ? a.EnumerateArray().Where(e => e.ValueKind == System.Text.Json.JsonValueKind.String).Select(e => e.GetString()!).ToList()
                 : null;
             return await profiles.ApplyAutoAsync(req.Required("sessionId"), off, token).ConfigureAwait(false);
-        }, "Give a chat the app starts by itself (a plan carried out, idea work, a schedule) the automatic profile (settings profiles.autoProfile; its project's default first): " +
-           "{ sessionId, toolsOff? (tools kept off whatever the profile says) } → SessionInfo.");
+        });
         return Task.CompletedTask;
     }
 }

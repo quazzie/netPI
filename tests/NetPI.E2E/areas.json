@@ -448,7 +448,8 @@
   {
    "path": "docs/PROTOCOL.md",
    "ids": [
-    "inspect.protocol-docs"
+    "inspect.protocol-docs",
+    "inspect.rpc-params"
    ]
   },
   {

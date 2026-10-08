@@ -32,8 +32,8 @@ public sealed class CompactionPlugin : INetPiPlugin
         var service = new CompactionService(context);
         context.Services.Register<IAgentHook>(new CompactionHook(service, context.Logger));
 
-        context.Rpc.Register("compaction.run", (req, rpcCt) => RunAsync(context, service, req, rpcCt),
-            "Summarize older messages of a session: { sessionId, args? } → status string");
+        context.Rpc.Register(new RpcMethod("compaction.run", "Summarize older messages of a session: { sessionId, args? } → status string", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("args", RpcParamType.String, "/compact's text: instructions for the summary"), RpcParam.Opt("instructions")]),
+            (req, rpcCt) => RunAsync(context, service, req, rpcCt));
 
         context.Ui.AddCommand(new SlashCommandInfo
         {

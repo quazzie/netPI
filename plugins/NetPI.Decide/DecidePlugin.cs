@@ -38,7 +38,8 @@ public sealed class DecidePlugin : INetPiPlugin
         var client = new DecisionClient(context, http);
         context.Services.Register<IDecisionService>(client);
         context.Tools.Register(new DecideTool(context, client));
-        context.Rpc.Register("decide.ask", async (r, rct) =>
+        context.Rpc.Register(new RpcMethod("decide.ask", "Ask a decision model typed questions about one state: { state, questions, model? } → answers (TypeSafe shape)", ReadOnly: false, Params: [RpcParam.Req("questions", RpcParamType.Any), RpcParam.Req("state", RpcParamType.Any), RpcParam.Opt("model")]),
+            async (r, rct) =>
         {
             var questions = r.Prop("questions") ?? throw new RpcException("bad_request", "Missing parameter 'questions'");
             var state = r.Prop("state") ?? throw new RpcException("bad_request", "Missing parameter 'state'");
@@ -53,8 +54,9 @@ public sealed class DecidePlugin : INetPiPlugin
             }
             catch (DecisionException ex) { throw new RpcException(ex.Code, ex.Message); }
             catch (ArgumentException ex) { throw new RpcException("bad_request", ex.Message); }
-        }, "Ask a decision model typed questions about one state: { state, questions, model? } → answers (TypeSafe shape)");
-        context.Rpc.Register("decide.decision", async (r, rct) =>
+        });
+        context.Rpc.Register(new RpcMethod("decide.decision", "NInfer's /v1/decision through the same server: { messages, branches: [{ id, content, labels }], model?, share_state? } → { branches: [{ id, probabilities, mass }], usage, ms }; the messages are the shared state (NInfer caches them across requests)", ReadOnly: false, Params: [RpcParam.Req("messages", RpcParamType.Any), RpcParam.Req("branches", RpcParamType.Any), RpcParam.Opt("share_state", RpcParamType.Boolean), RpcParam.Opt("reasoning_effort"), RpcParam.Opt("model")]),
+            async (r, rct) =>
         {
             var messages = r.Prop("messages") ?? throw new RpcException("bad_request", "Missing parameter 'messages'");
             var branches = r.Prop("branches") ?? throw new RpcException("bad_request", "Missing parameter 'branches'");
@@ -63,7 +65,7 @@ public sealed class DecidePlugin : INetPiPlugin
             if (r.Str("reasoning_effort") is { } effort) body["reasoning_effort"] = effort;
             try { return await client.EvaluateAsync(new DecisionRequest { Model = r.Str("model"), Body = body, Conversation = true }, rct).ConfigureAwait(false); }
             catch (DecisionException ex) { throw new RpcException(ex.Code, ex.Message); }
-        }, "NInfer's /v1/decision through the same server: { messages, branches: [{ id, content, labels }], model?, share_state? } → { branches: [{ id, probabilities, mass }], usage, ms }; the messages are the shared state (NInfer caches them across requests)");
+        });
         return Task.CompletedTask;
     }
 }

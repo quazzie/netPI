@@ -34,7 +34,8 @@ public sealed class EmbeddingsPlugin : INetPiPlugin
         var http = context.Track(HttpFactory.Create());
         var client = new EmbeddingClient(context.Settings, http);
         context.Services.Register<IEmbeddingService>(client);
-        context.Rpc.Register("embed.texts", async (r, rct) =>
+        context.Rpc.Register(new RpcMethod("embed.texts", "Embed texts with the configured model: { texts: string[], kind?: \"document\" | \"query\" } → { model, dim, vectors } (normalized; a query gets embed.queryPrefix)", ReadOnly: false, Params: [RpcParam.Req("texts", RpcParamType.Array), RpcParam.Opt("kind", RpcParamType.String, "query or document")]),
+            async (r, rct) =>
         {
             var texts = r.Prop("texts") is { ValueKind: JsonValueKind.Array } arr
                 ? arr.EnumerateArray().Select(e => e.GetString() ?? "").ToList()
@@ -51,9 +52,9 @@ public sealed class EmbeddingsPlugin : INetPiPlugin
                 };
             }
             catch (EmbeddingException ex) { throw new RpcException(ex.Code, ex.Message); }
-        }, "Embed texts with the configured model: { texts: string[], kind?: \"document\" | \"query\" } → { model, dim, vectors } (normalized; a query gets embed.queryPrefix)");
-        context.Rpc.RegisterReadOnly("embed.status", (_, _) => Task.FromResult<object?>(client.Status()),
-            "The embedding client: { model, baseUrl, available, downUntil?, lastError?, calls, failures, p50Ms }");
+        });
+        context.Rpc.Register(new RpcMethod("embed.status", "The embedding client: { model, baseUrl, available, downUntil?, lastError?, calls, failures, p50Ms }", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(client.Status()));
         return Task.CompletedTask;
     }
 }

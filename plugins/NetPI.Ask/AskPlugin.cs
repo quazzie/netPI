@@ -24,10 +24,10 @@ public sealed class AskPlugin : INetPiPlugin
     {
         var pending = _pending = new PendingAsks(context);
         context.Tools.Register(new AskUserTool(pending));
-        context.Rpc.RegisterReadOnly("ask.pending", (req, _) => Task.FromResult<object?>(pending.List(req.Str("sessionId"))),
-            "Questions waiting for the user: { sessionId? } → { id, sessionId, callId, agentId, agentName, questions, askedAt }[]");
-        context.Rpc.Register("ask.answer", (req, _) => Task.FromResult<object?>(pending.Answer(req)),
-            "Answer a waiting question: { id, answers?: string[][] (the options picked, per question), text? } → true (id, or callId + sessionId for an older caller)");
+        context.Rpc.Register(new RpcMethod("ask.pending", "Questions waiting for the user: { sessionId? } → { id, sessionId, callId, agentId, agentName, questions, askedAt }[]", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
+            (req, _) => Task.FromResult<object?>(pending.List(req.Str("sessionId"))));
+        context.Rpc.Register(new RpcMethod("ask.answer", "Answer a waiting question: { id, answers?: string[][] (the options picked, per question), text? } → true (id, or callId + sessionId for an older caller)", ReadOnly: false, Params: [RpcParam.Opt("id", RpcParamType.String, "the question card's id"), RpcParam.Opt("sessionId"), RpcParam.Opt("callId"), RpcParam.Opt("answers", RpcParamType.Array, "the options picked, per question"), RpcParam.Opt("text", RpcParamType.String, "the user's own words")]),
+            (req, _) => Task.FromResult<object?>(pending.Answer(req)));
         return Task.CompletedTask;
     }
 

@@ -36,7 +36,8 @@ public sealed class AgentsMdPlugin : INetPiPlugin
         {
             if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) notices.OnProjectChanged(id);
         });
-        context.Rpc.RegisterReadOnly("agentsmd.list", (req, _) =>
+        context.Rpc.Register(new RpcMethod("agentsmd.list", "Instruction files that apply to a session or a project folder: { sessionId } | { projectId } → [{ path, bytes, scope }]", ReadOnly: true, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("projectId")]),
+            (req, _) =>
         {
             string cwd;
             var bound = false;
@@ -53,7 +54,7 @@ public sealed class AgentsMdPlugin : INetPiPlugin
             foreach (var f in loader.Discover(cwd, stopAtRepoRoot: bound))
                 arr.Add(new JsonObject { ["path"] = f.Path, ["bytes"] = f.Bytes, ["scope"] = f.Scope });
             return Task.FromResult<object?>(arr);
-        }, "Instruction files that apply to a session or a project folder: { sessionId } | { projectId } → [{ path, bytes, scope }]");
+        });
         return Task.CompletedTask;
     }
 }

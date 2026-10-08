@@ -16,10 +16,10 @@ internal sealed class IdeaRefine(IPluginContext ctx, IdeasRepository repo)
     internal static readonly string[] KeptTools = ["ideas", "ask_user", "todo_write"];
 
     public void Register(IRpcRegistry rpc) =>
-        rpc.Register("ideas.refine", RefineAsync,
-            "Task an agent to define an idea better: { id, hint? (what to focus on), agent? (an agent key; default: any available agent) } → { sessionId, title, agent } — " +
+        rpc.Register(new RpcMethod("ideas.refine", "Task an agent to define an idea better: { id, hint? (what to focus on), agent? (an agent key; default: any available agent) } → { sessionId, title, agent } — " +
             "a new chat on the idea's project, with the idea attached, in which the agent researches the code and rewrites the idea's summary and sections through the ideas tool; " +
-            "everything that can change files or run commands is switched off in it");
+            "everything that can change files or run commands is switched off in it", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Opt("agent"), RpcParam.Opt("hint")]),
+            RefineAsync);
 
     private async Task<object?> RefineAsync(RpcRequest req, CancellationToken ct)
     {

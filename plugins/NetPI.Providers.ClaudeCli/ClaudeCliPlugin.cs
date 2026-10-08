@@ -57,14 +57,14 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         try { usage.Restore(context.Data.Collection(UsageCollection, new CollectionSpec()).Get(UsageKey)); }
         catch (Exception ex) { context.Logger.LogDebug(ex, "claude-cli: no stored usage reading"); }
         usage.OnChanged = snap => context.Events.Publish(EventTypes.UsageClaude, snap);
-        context.Rpc.RegisterReadOnly("claudecli.usage", (_, _) => Task.FromResult<object?>(Options(context).Usage ? usage.Get() : new JsonObject { ["limits"] = new JsonArray() }),
-            "The Claude subscription usage as the Claude CLI reported it after its last call (session and weekly windows); empty before the first call");
-        context.Rpc.Register("claudecli.usage.refresh", async (_, rpcCt) =>
+        context.Rpc.Register(new RpcMethod("claudecli.usage", "The Claude subscription usage as the Claude CLI reported it after its last call (session and weekly windows); empty before the first call", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(Options(context).Usage ? usage.Get() : new JsonObject { ["limits"] = new JsonArray() }));
+        context.Rpc.Register(new RpcMethod("claudecli.usage.refresh", "Asks Anthropic for the live subscription usage with the Claude CLI's login token (at most once a minute; within it the stored reading is the answer) → the snapshot, as claudecli.usage; also published as usage.claude", ReadOnly: false, Params: []),
+            async (_, rpcCt) =>
             {
                 if (!Options(context).Usage) return new JsonObject { ["limits"] = new JsonArray() };
                 return await usage.RefreshAsync(fetchCt => ClaudeUsageApi.FetchAsync(Http, ClaudeUsageApi.CredentialsPath(), fetchCt), rpcCt).ConfigureAwait(false);
-            },
-            "Asks Anthropic for the live subscription usage with the Claude CLI's login token (at most once a minute; within it the stored reading is the answer) → the snapshot, as claudecli.usage; also published as usage.claude");
+            });
         // The plan comes from `claude auth status`: only once the provider is on (a NetPI that does not use the CLI starts
         // no CLI process, idea-irqqkj), and again when it is switched on later.
         void PlanWhenEnabled()

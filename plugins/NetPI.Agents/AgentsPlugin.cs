@@ -81,13 +81,14 @@ public sealed class AgentsPlugin : INetPiPlugin
         context.Tools.Register(new AgentChoicesTool(scheduler, usage));
         context.Services.Register<IPromptSection>(new AgentsPromptSection());
 
-        context.Rpc.RegisterReadOnly("agents.list", (_, _) => Task.FromResult<object?>(scheduler.Snapshot()),
-            "The agents (always) and other model calls in progress, with instances, owners, waiters, state, price and today's spend → AgentSlots[]");
-        context.Rpc.RegisterReadOnly("agents.unassigned", (_, _) => Task.FromResult<object?>(scheduler.Unassigned()),
-            "Runs waiting for any of several agents, in nobody's queue yet: the first agent with a free instance takes them → SlotHolder[]");
-        context.Rpc.RegisterReadOnly("agents.resources", (_, _) => Task.FromResult<object?>(scheduler.Resources()),
-            "Shared model resources, including calls admitted before a scheduler replacement → ModelResourceSlots[]");
-        context.Rpc.Register("agents.use", (r, _) =>
+        context.Rpc.Register(new RpcMethod("agents.list", "The agents (always) and other model calls in progress, with instances, owners, waiters, state, price and today's spend → AgentSlots[]", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(scheduler.Snapshot()));
+        context.Rpc.Register(new RpcMethod("agents.unassigned", "Runs waiting for any of several agents, in nobody's queue yet: the first agent with a free instance takes them → SlotHolder[]", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(scheduler.Unassigned()));
+        context.Rpc.Register(new RpcMethod("agents.resources", "Shared model resources, including calls admitted before a scheduler replacement → ModelResourceSlots[]", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(scheduler.Resources()));
+        context.Rpc.Register(new RpcMethod("agents.use", "Run a chat on an agent: { sessionId, agent } → SessionInfo (meta.agent, and the agent's model); agent \"any\": every run goes to whichever agent has a free instance first, and the chat's model follows it; agent null: none. The agent is where the chat runs by preference: a run goes to the first agent on that model with a free instance.", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("agent", RpcParamType.String, "an agent key; none clears the chat's agent")]),
+            (r, _) =>
         {
             var sid = r.Required("sessionId");
             context.Sessions.Require(sid);
@@ -108,8 +109,9 @@ public sealed class AgentsPlugin : INetPiPlugin
                 s.Meta[SessionAgent.MetaKey] = agent.Id;
                 s.Model = agent.Model;
             }));
-        }, "Run a chat on an agent: { sessionId, agent } → SessionInfo (meta.agent, and the agent's model); agent \"any\": every run goes to whichever agent has a free instance first, and the chat's model follows it; agent null: none. The agent is where the chat runs by preference: a run goes to the first agent on that model with a free instance.");
-        context.Rpc.Register("agents.setEnabled", (r, _) =>
+        });
+        context.Rpc.Register(new RpcMethod("agents.setEnabled", "Switch an agent on or off: { id, enabled } → AgentSlots[] (agents.<id>.disabled; runs on it finish, new ones are refused)", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Req("enabled", RpcParamType.Boolean)]),
+            (r, _) =>
         {
             var id = r.Required("id");
             var agent = scheduler.Agent(id) ?? throw new RpcException("not_found", $"There is no agent \"{id}\"");
@@ -117,19 +119,20 @@ public sealed class AgentsPlugin : INetPiPlugin
             context.Settings.Set($"agents.{agent.Id}.disabled", enabled ? null : JsonValue.Create(true));
             scheduler.Refresh();
             return Task.FromResult<object?>(scheduler.Snapshot());
-        }, "Switch an agent on or off: { id, enabled } → AgentSlots[] (agents.<id>.disabled; runs on it finish, new ones are refused)");
-        context.Rpc.RegisterReadOnly("usage.summary", (_, _) => Task.FromResult<object?>(usage.Summary()),
-            "Today's tokens per provider, the budget, this period's calls per model → { day, providers, budget, models }");
-        context.Rpc.RegisterReadOnly("usage.session", (r, _) => Task.FromResult<object?>(usage.SessionCost(r.Required("sessionId"))),
-            "What a chat cost: { sessionId } → { costUsd, calls, withSubagentsUsd, withSubagentsCalls }");
-        context.Rpc.RegisterReadOnly("usage.history", (r, _) => Task.FromResult<object?>(usage.History(r.Str("period"), r.Int("days") ?? 30)),
-            "What the usage tab shows: { period? (the day a budget period starts, default: the current one), days? (30) } → { period, current, end, resetDay, totals, allTime, periods[] (newest first), agents[], models[], days[], budget }");
-        context.Rpc.RegisterReadOnly("usage.chats", (r, _) => Task.FromResult<object?>(usage.Chats(r.Str("period"), r.Int("limit") ?? 10)),
-            "The chats that cost most in a period (a subagent counts for the chat that started it): { period?, limit? (10) } → { period, chats[], chatCount, noChat, totals, truncated }");
+        });
+        context.Rpc.Register(new RpcMethod("usage.summary", "Today's tokens per provider, the budget, this period's calls per model → { day, providers, budget, models }", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(usage.Summary()));
+        context.Rpc.Register(new RpcMethod("usage.session", "What a chat cost: { sessionId } → { costUsd, calls, withSubagentsUsd, withSubagentsCalls }", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
+            (r, _) => Task.FromResult<object?>(usage.SessionCost(r.Required("sessionId"))));
+        context.Rpc.Register(new RpcMethod("usage.history", "What the usage tab shows: { period? (the day a budget period starts, default: the current one), days? (30) } → { period, current, end, resetDay, totals, allTime, periods[] (newest first), agents[], models[], days[], budget }", ReadOnly: true, Params: [RpcParam.Opt("period", RpcParamType.String, "the day a budget period starts, yyyy-MM-dd"), RpcParam.Opt("days", RpcParamType.Integer)]),
+            (r, _) => Task.FromResult<object?>(usage.History(r.Str("period"), r.Int("days") ?? 30)));
+        context.Rpc.Register(new RpcMethod("usage.chats", "The chats that cost most in a period (a subagent counts for the chat that started it): { period?, limit? (10) } → { period, chats[], chatCount, noChat, totals, truncated }", ReadOnly: true, Params: [RpcParam.Opt("period"), RpcParam.Opt("limit", RpcParamType.Integer)]),
+            (r, _) => Task.FromResult<object?>(usage.Chats(r.Str("period"), r.Int("limit") ?? 10)));
         context.Ui.AddTab(new UiTabInfo { Id = "usage", Title = "Usage", Panel = UiPanel.Right, Icon = "dollar", Order = 12, Module = "ui.js" });
-        context.Rpc.RegisterReadOnly("budget.status", (_, _) => Task.FromResult<object?>(usage.BudgetStatus()),
-            "The budget: { monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }");
-        context.Rpc.Register("budget.allow", async (r, token) =>
+        context.Rpc.Register(new RpcMethod("budget.status", "The budget: { monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }", ReadOnly: true, Params: []),
+            (_, _) => Task.FromResult<object?>(usage.BudgetStatus()));
+        context.Rpc.Register(new RpcMethod("budget.allow", "Let a chat go over the budget until the period ends and continue it: { sessionId } (budget.onLimit \"ask\")", ReadOnly: false, Params: [RpcParam.Req("sessionId")]),
+            async (r, token) =>
         {
             var sid = r.Required("sessionId");
             context.Sessions.Require(sid);
@@ -148,7 +151,7 @@ public sealed class AgentsPlugin : INetPiPlugin
             status["executionAvailable"] = rt is not null;
             if (rt is null) status["continuationReason"] = "No executor capability is available; the allowance is saved. Continue explicitly when execution is available.";
             return status;
-        }, "Let a chat go over the budget until the period ends and continue it: { sessionId } (budget.onLimit \"ask\")");
+        });
 
         context.Events.Subscribe(EventTypes.SettingsChanged, e =>
         {

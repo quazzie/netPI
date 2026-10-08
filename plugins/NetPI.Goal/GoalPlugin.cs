@@ -59,8 +59,8 @@ public sealed class GoalPlugin : INetPiPlugin
 
         long? Budget(RpcRequest r) => r.Prop("tokenBudget") is { ValueKind: JsonValueKind.Number } b && b.TryGetInt64(out var n) ? n : null;
 
-        ctx.Rpc.RegisterReadOnly("goal.get", (r, _) => Result(goals.Get(r.Required("sessionId"))),
-            "The session's goal: { sessionId } → { id, objective, status, reason, tokenBudget, tokensUsed, continuations, … } | null");
+        ctx.Rpc.Register(new RpcMethod("goal.get", "The session's goal: { sessionId } → { id, objective, status, reason, tokenBudget, tokensUsed, continuations, … } | null", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
+            (r, _) => Result(goals.Get(r.Required("sessionId"))));
         // A model that works with its own tools (the Claude CLI) cannot call goal_update: a goal on it could never be completed,
         // and every continuation would be a whole run of its own, so it is refused up front (idea-hghbmg).
         async Task RefuseOwnToolsAsync(string sessionId, CancellationToken ct)
@@ -71,24 +71,24 @@ public sealed class GoalPlugin : INetPiPlugin
                 throw new RpcException("bad_request", Goals.OwnToolsReason(model.Ref));
         }
 
-        ctx.Rpc.Register("goal.set", async (r, ct) =>
+        ctx.Rpc.Register(new RpcMethod("goal.set", "Set a new goal (replaces the current one) and start working on it: { sessionId, objective, tokenBudget? }. Refused for a chat whose model works with its own tools (the Claude CLI): it cannot call goal_update", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("objective"), RpcParam.Opt("tokenBudget", RpcParamType.Integer)]),
+            async (r, ct) =>
             {
                 await RefuseOwnToolsAsync(r.Required("sessionId"), ct).ConfigureAwait(false);
                 return await Run(() => goals.Set(r.Required("sessionId"), r.Str("objective"), Budget(r) ?? 0, byModel: false)).ConfigureAwait(false);
-            },
-            "Set a new goal (replaces the current one) and start working on it: { sessionId, objective, tokenBudget? }. Refused for a chat whose model works with its own tools (the Claude CLI): it cannot call goal_update");
-        ctx.Rpc.Register("goal.edit", (r, _) => Run(() => goals.Edit(r.Required("sessionId"), r.Str("objective"), Budget(r))),
-            "Change the objective or token budget of the current goal: { sessionId, objective?, tokenBudget? }");
-        ctx.Rpc.Register("goal.pause", (r, _) => Run(() => goals.Pause(r.Required("sessionId"))),
-            "Pause the goal (the current run finishes; no new run starts): { sessionId }");
-        ctx.Rpc.Register("goal.resume", async (r, ct) =>
+            });
+        ctx.Rpc.Register(new RpcMethod("goal.edit", "Change the objective or token budget of the current goal: { sessionId, objective?, tokenBudget? }", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("objective"), RpcParam.Opt("tokenBudget", RpcParamType.Integer)]),
+            (r, _) => Run(() => goals.Edit(r.Required("sessionId"), r.Str("objective"), Budget(r))));
+        ctx.Rpc.Register(new RpcMethod("goal.pause", "Pause the goal (the current run finishes; no new run starts): { sessionId }", ReadOnly: false, Params: [RpcParam.Req("sessionId")]),
+            (r, _) => Run(() => goals.Pause(r.Required("sessionId"))));
+        ctx.Rpc.Register(new RpcMethod("goal.resume", "Resume a paused or blocked goal (counters reset; starts a run when idle): { sessionId }. Refused while the chat's model works with its own tools", ReadOnly: false, Params: [RpcParam.Req("sessionId")]),
+            async (r, ct) =>
             {
                 await RefuseOwnToolsAsync(r.Required("sessionId"), ct).ConfigureAwait(false);
                 return await Run(() => goals.Resume(r.Required("sessionId"))).ConfigureAwait(false);
-            },
-            "Resume a paused or blocked goal (counters reset; starts a run when idle): { sessionId }. Refused while the chat's model works with its own tools");
-        ctx.Rpc.Register("goal.clear", (r, _) => Run(() => goals.Clear(r.Required("sessionId"))),
-            "Remove the goal: { sessionId }");
+            });
+        ctx.Rpc.Register(new RpcMethod("goal.clear", "Remove the goal: { sessionId }", ReadOnly: false, Params: [RpcParam.Req("sessionId")]),
+            (r, _) => Run(() => goals.Clear(r.Required("sessionId"))));
     }
 }
 
