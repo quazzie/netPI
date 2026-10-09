@@ -53,8 +53,8 @@ internal sealed class CodeModeTool(IPluginContext ctx) : IAgentTool
             "find those with searchTools); callTool(name, args) resolves to { content, isError, details, images } and never throws " +
             "for the tool's error; text(v) and `return v` add output; console.log(...); image(block) shows an image; " +
             "searchTools(query, { limit }) and ALL_TOOLS list { name, description }; describeTool(name) gives the description and " +
-            "JSON-schema parameters; store(key, value) / load(key) keep small JSON across this chat's scripts (saved when the " +
-            "script succeeds).\n" +
+            "JSON-schema parameters (throws for an unknown name); store(key, value) / load(key) keep small JSON across this " +
+            "chat's scripts (saved when the script succeeds).\n" +
             "Calls that change something run one at a time, read-only ones in parallel; each passes the same policy checks as yours. " +
             "A failed script keeps its output so far; calls it made are not undone.",
         PromptGuidelines =

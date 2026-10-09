@@ -241,7 +241,11 @@ internal sealed class ScriptRunner(ScriptHost host, ScriptLimits limits)
         });
         const ALL_TOOLS = Object.freeze(JSON.parse(__tools()));
         const searchTools = (query, options) => JSON.parse(__search(String(query ?? ''), Number((options && options.limit) || 8)));
-        const describeTool = (name) => { const s = __describe(String(name)); return s ? JSON.parse(s) : undefined; };
+        const describeTool = (name) => {
+          const s = __describe(String(name));
+          if (!s) throw new Error("describeTool: unknown tool '" + String(name) + "'; find tools with searchTools(query) or ALL_TOOLS");
+          return JSON.parse(s);
+        };
         const text = (v) => { __out(__str(v)); };
         const image = (block) => {
           const why = __image(__json(block && block.images && block.images[0] ? block.images[0] : block));

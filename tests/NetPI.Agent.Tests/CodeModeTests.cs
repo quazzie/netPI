@@ -183,7 +183,7 @@ public static class CodeModeTests
                 text(ALL_TOOLS.map(t => t.name).sort().join(','));
                 text(searchTools('weather').map(t => t.name).join(','));
                 text(describeTool('stock_quote').parameters.properties.city.type);
-                text(String(describeTool('nope')));
+                try { describeTool('nope'); text('no throw'); } catch (e) { text(e.message); }
                 text('stock_quote' in tools);
                 try { await tools.nope({}); } catch (e) { text(e.message); }
                 """, tools: tools);
@@ -191,7 +191,7 @@ public static class CodeModeTests
             Check.Contains(o.Text, "stock_quote,weather_lookup");
             Check.Contains(o.Text, "==> text 2/6 <==\nweather_lookup\n");
             Check.Contains(o.Text, "\nstring\n");
-            Check.Contains(o.Text, "\nundefined\n");
+            Check.Contains(o.Text, "\ndescribeTool: unknown tool 'nope'; find tools with searchTools(query) or ALL_TOOLS\n");
             Check.Contains(o.Text, "\ntrue\n");
             Check.Contains(o.Text, "Unknown tool 'nope'");
         });

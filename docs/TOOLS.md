@@ -1298,7 +1298,7 @@ codemode (idea-w9ibt2).
     with images; at most 8).
   - `ALL_TOOLS` and `searchTools(query, { limit })` (the same ranking as `tool_search`, `ToolRanking` in the contracts)
     list `{ name, description }`; `describeTool(name)` gives `{ name, description, help?, guidelines?, readOnly, parameters }`
-    (JSON schema).
+    (JSON schema), and throws an error naming the tool for an unknown name.
   - `store(key, value)` / `load(key)`: small JSON values (64 KB each, 256 KB in all) kept across the chat's scripts in
     `meta.codemodeStore`, written only when the script succeeds; `store(key, undefined)` removes one.
 - **Nested calls** go through the runtime's pipeline (`INestedToolCalls` in the contracts, which the runtime puts in
