@@ -37,7 +37,7 @@ so the default applies again). The agents and the budget have their own page; th
 | `plugins.enabled` | `[]` | turn on plugins whose `plugin.json` says `enabled: false` |
 | `plugins.dirs` | `[]` | extra plugin folders (besides `<app>/plugins` and `~/.netpi/plugins`) |
 | `plugins.quiet` | `false` | while on, a plugin reload (a `/reload`, a build that replaced a plugin's files) is recorded and **not applied**: the running version keeps serving, so nothing swaps under a running chat and no in-memory plugin state is lost. Switching it off applies everything that piled up, in plugin start order. `diag.overview` lists what is waiting in `deferred`, and `plugins.reloaded` says `kind: "deferred"`. The one thing a git worktree cannot do: the running app is one process that every session shares. A switch in **Settings → General** |
-| `tools.deferred` | the default list | built-in tools kept out of requests until a chat uses them (called by name or found with `tool_search`); absent: `ToolExposure.DefaultDeferred` (all but the file and shell tools, `codemode`, `tool_search`, `ask_user`), `[]`: every built-in tool declared. Only in this file (docs/TOOLS.md, "Deferred tools") |
+| `tools.deferred` | the default list | built-in tools kept out of requests until a chat uses them (called by name or found with `tool_search`); absent: `ToolExposure.DefaultDeferred` (all but the file and shell tools, `codemode`, `tool_search`, `ask_user`), `[]`: every built-in tool declared; `"*"` (every tool) and `"!name"` (an exception) work too. A profile can have its own (`profiles.<id>.toolsDeferred`). Only in this file (docs/TOOLS.md, "Deferred tools") |
 | `tools.disabled` | `[]` | tool names hidden from every chat (e.g. `["pwsh"]`); only in this file: the dialog switches whole plugins, and each chat switches its own tools (the composer's tools button, `meta.toolsOff`) |
 | `logging.level` | `Information` | host log level (`~/.netpi/logs/netpi-YYYYMMDD.log`) |
 
@@ -231,6 +231,7 @@ the global default; a project's own default still wins. Such starters call `prof
 | `profiles.<id>.name` | shown in the pickers |
 | `profiles.<id>.prompt` | replaces the opening of the system prompt (the built-in "You are a coding agent…", or `context.customPrompt`); empty keeps it |
 | `profiles.<id>.toolsOff` | tools the chat starts without (checkboxes in the dialog); the chat's tools button can still change them |
+| `profiles.<id>.toolsDeferred` | the profile's own `tools.deferred` (written to the chat's `meta.toolsDeferred`): tool names, `"*"` for every tool, `"!name"` for an exception — `["*", "!codemode"]` sends codemode alone; unset: the setting. The dialog's "Deferred tools" field |
 | `profiles.defaultProfile` | the profile of new chats whose project has none |
 | `profiles.autoProfile` | the profile of chats NetPI starts by itself whose project has none: a profile id, `"none"`, or unset for `defaultProfile` |
 

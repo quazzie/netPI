@@ -112,7 +112,9 @@ internal sealed class ToolsSection(ISettings settings) : IPromptSection
         var more = Deferred(c);
         if (more.Count > 0)
         {
-            sb.Append("- More tools, not loaded yet: call one by name (it runs and stays loaded; {\"help\": true} gives its arguments) or find tools with tool_search:\n");
+            sb.Append("- More tools, not loaded yet: call one by name (it runs and stays loaded; {\"help\": true} gives its arguments)")
+              .Append(tools.Any(t => t.Name == "codemode") ? ", call it from a codemode script (tools.<name>(args))" : "")
+              .Append(" or find tools with tool_search:\n");
             foreach (var t in more) sb.Append("  - ").Append(t.Name).Append(": ").Append(SectionUtil.Summary(t.Description, 90)).Append('\n');
         }
         return ValueTask.FromResult<string?>(sb.Length == 0 ? null : "# Tools\n" + sb.ToString().TrimEnd());

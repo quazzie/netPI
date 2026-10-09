@@ -1,8 +1,9 @@
 <script>
   /**
-   * One profile (settings profiles.<id> = { name, prompt, toolsOff }) in its own dialog: the name, the instructions that
-   * open the system prompt (shown as the current opening until they are changed), the tools as checkboxes by category,
-   * and whether new chats start with it. Every field saves on its own.
+   * One profile (settings profiles.<id> = { name, prompt, toolsOff, toolsDeferred }) in its own dialog: the name, the
+   * instructions that open the system prompt (shown as the current opening until they are changed), the tools kept out of
+   * requests until used (empty: the setting tools.deferred), the tools as checkboxes by category, and whether new chats
+   * start with it. Every field saves on its own.
    */
   import Modal from './Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
@@ -21,6 +22,12 @@
   async function setPrompt(text) {
     const t = text.trim();
     await setSetting(`profiles.${id}.prompt`, !t || t === opening.trim() ? null : t);
+  }
+  // the deferred list as written: names, "*" for every tool, "!name" for an exception; empty = the global setting
+  const deferredText = $derived(Array.isArray(profile?.toolsDeferred) ? profile.toolsDeferred.join(', ') : '');
+  async function setDeferred(text) {
+    const list = text.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+    await setSetting(`profiles.${id}.toolsDeferred`, list.length ? list : null);
   }
   async function toggle(name, on) {
     const next = new Set(off);
@@ -72,6 +79,12 @@
 
     <label class="np-check default"><input type="checkbox" checked={isDefault} onchange={(e) => setSetting('profiles.defaultProfile', e.currentTarget.checked ? id : null)} /> New chats start with this profile (unless their project has its own)</label>
     <label class="np-check default"><input type="checkbox" checked={isAuto} onchange={(e) => setSetting('profiles.autoProfile', e.currentTarget.checked ? id : null)} /> Chats NetPI starts itself use this profile (idea work, a plan approved in a new chat, schedules)</label>
+
+    <label class="field">
+      <span class="lbl">Deferred tools <span class="np-dim">(kept out of requests until the chat uses one)</span></span>
+      <input class="np-input np-mono" value={deferredText} placeholder="empty: the setting tools.deferred" aria-label="Deferred tools" onchange={(e) => setDeferred(e.currentTarget.value)} />
+      <span class="hint np-dim">Tool names, * for every tool, !name for an exception: <span class="np-mono">*, !codemode</span> leaves codemode as the only tool sent. A deferred tool runs when the agent calls it by name.</span>
+    </label>
 
     <div class="lbl tools-title">Tools</div>
     {#each categories as [cat, list] (cat)}

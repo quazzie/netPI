@@ -70,7 +70,7 @@ type Part =
   | { type: 'image'; mediaType: string; data: string /* base64 */ };
 
 interface SessionInfo { id; title; projectId?; parentSessionId?; kind: 'chat'|'subagent'; model?; reasoning?; createdAt; updatedAt; archived; pinned; messageCount; contextTokens;
-  meta?: { goal?: Goal; toolsOff?: string[] /* tools switched off for this chat */; toolsLoaded?: string[] /* deferred tools loaded: by tool_search or a call by name */; profile?: string|null /* its profile */;
+  meta?: { goal?: Goal; toolsOff?: string[] /* tools switched off for this chat */; toolsLoaded?: string[] /* deferred tools loaded: by tool_search or a call by name */; toolsDeferred?: string[] /* its profile's deferred list, in place of tools.deferred */; profile?: string|null /* its profile */;
     identity?: string /* the opening of its system prompt, from the profile */; agent?: string /* the agent it runs on (agents.<id>) */;
     cwd?: string /* the folder it runs in: the workspace root when it is bound to one, else the project's */;
     workspaceId?: string /* the checkout it works in (WorkspaceInfo), when it is bound to one */;
@@ -165,7 +165,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `agent.promote` | netpi.runtime | `{ sessionId, id }` → `bool`: a queued follow-up (`mode: "queue"`, delivered after the run) becomes a steer, which the run takes at its next step, as `agent.send` with `mode: "steer"` would have. `false` when the input is not a queued follow-up (already delivered, already a steer, unknown). A follow-up waits for the whole run, and a worker's run can be its whole work package: this is how a coordinator gets an update it queued to a long run read now |
 | `runs.list` | netpi.runtime | `{ includeFinished? }` → `AgentInfo[]` |
 | `agent.get` | netpi.runtime | `{ id? , sessionId? }` → `AgentInfo\|null` |
-| `profiles.list` | netpi.profiles | → `{ defaultProfile, profiles: { id, name, prompt, toolsOff }[] }` |
+| `profiles.list` | netpi.profiles | → `{ defaultProfile, profiles: { id, name, prompt, toolsOff, toolsDeferred /* null: the setting tools.deferred */ }[] }` |
 | `profiles.apply` | netpi.profiles | `{ sessionId, profile: string\|null }` → `SessionInfo`: sets the chat's `meta.profile`, `meta.identity` and `meta.toolsOff` from the profile; in a started chat the prompt revision is invalidated (`meta.promptRevision`), so the next model call renders the system prompt again (one full re-read, without a `context.reset` call) and a `profile` notice is appended. Chats only |
 | `profiles.applyAuto` | netpi.profiles | `{ sessionId, toolsOff?: string[] }` → `SessionInfo`: for a chat NetPI starts by itself (a plan carried out in a new chat, idea work or refinement, a schedule run, `sessions.dispatch` without a profile): like `profiles.apply` with the chat's project default, else `profiles.autoProfile`, else `profiles.defaultProfile`; `toolsOff` stays off whatever the profile says. Chats only |
 | `context.reset` | netpi.context | `{ sessionId }` → `true`: forget the session's frozen system prompt and tool baseline; the next model call renders them again |

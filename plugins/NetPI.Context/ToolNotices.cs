@@ -42,12 +42,13 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         bool announced;
         lock (_gates.GetOrAdd(sessionId, static _ => new object()))
             announced = DefinitionNotices.Announce(ctx, store, _changes, turn, changed);
-        announced |= !known.SetEquals(names) && Announce(sessionId, turn.Tools, baseline, changed);
+        announced |= !known.SetEquals(names) && Announce(sessionId, turn.Tools, baseline, changed, turn.DeferredTools);
         if (announced) await turn.ReloadMessagesAsync().ConfigureAwait(false);
     }
 
     /// <summary>Appends a notice when the tools differ from what the context says, under a per-session lock.</summary>
-    internal bool Announce(string sessionId, IReadOnlyList<ToolDefinition> tools, ToolBaseline baseline, ToolChanges.MetaChange? changed = null)
+    internal bool Announce(string sessionId, IReadOnlyList<ToolDefinition> tools, ToolBaseline baseline, ToolChanges.MetaChange? changed = null,
+        IReadOnlyList<ToolDefinition>? deferred = null)
     {
         lock (_gates.GetOrAdd(sessionId, static _ => new object()))
         {
@@ -60,7 +61,8 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
             var session = ctx.Sessions.GetSession(sessionId);
             var off = SessionTools.Off(session);
             var cause = _changes.Cause(sessionId, added, removed, off, context, changed);
-            var notice = ChatMessage.NoticeText(Text(tools, added, removed, off, cause), Kind);
+            var stillCallable = (deferred ?? []).Select(d => d.Name).ToHashSet(StringComparer.Ordinal);
+            var notice = ChatMessage.NoticeText(Text(tools, added, removed, off, cause, stillCallable), Kind);
             notice.Meta!["added"] = new JsonArray(added.Select(n => (JsonNode?)n).ToArray());
             notice.Meta["removed"] = new JsonArray(removed.Select(n => (JsonNode?)n).ToArray());
             notice.Meta["cause"] = cause.Cause;
@@ -90,7 +92,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
     /// the user, the rest get the cause as one clause ("plugin reload netpi.tools.web") when there is one to name.
     /// </summary>
     internal static string Text(IReadOnlyList<ToolDefinition> tools, IReadOnlyList<string> added, IReadOnlyList<string> removed,
-        IReadOnlySet<string>? switchedOff = null, ToolChanges.Change? cause = null)
+        IReadOnlySet<string>? switchedOff = null, ToolChanges.Change? cause = null, IReadOnlySet<string>? deferred = null)
     {
         var sb = new StringBuilder("Your tools changed.");
         if (added.Count > 0)
@@ -100,8 +102,11 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
             sb.Append('.');
         }
         var byUser = removed.Where(n => switchedOff?.Contains(n) == true).ToList();
-        var gone = removed.Where(n => switchedOff?.Contains(n) != true).ToList();
+        // a tool that left the request but is deferred is still a call away: not gone
+        var held = removed.Where(n => switchedOff?.Contains(n) != true && deferred?.Contains(n) == true).ToList();
+        var gone = removed.Where(n => switchedOff?.Contains(n) != true && deferred?.Contains(n) != true).ToList();
         if (byUser.Count > 0) sb.Append(" The user switched off for this session: ").Append(string.Join(", ", byUser)).Append('.');
+        if (held.Count > 0) sb.Append(" Deferred, out of your tool list but callable by name: ").Append(string.Join(", ", held)).Append('.');
         if (gone.Count > 0)
         {
             sb.Append(" No longer available: ").Append(string.Join(", ", gone));

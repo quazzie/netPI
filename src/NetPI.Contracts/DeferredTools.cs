@@ -79,13 +79,18 @@ public static class ToolSelection
 /// <summary>
 /// Which tools are declared to the model and which are deferred: registered and callable, but not sent until the chat loads
 /// them (<c>tool_search</c>, or a call by name; <see cref="LoadedTools"/>), so a request carries the tools a chat uses, not
-/// every tool there is. A tool is deferred when its definition says so (an MCP server's unpinned tools) or when the setting
-/// <c>tools.deferred</c> names it (<see cref="DefaultDeferred"/> when the setting is absent; <c>[]</c> declares every built-in
-/// tool). A subagent's explicit tool list declares the tools it names that the setting would defer.
+/// every tool there is. A tool is deferred when its definition says so (an MCP server's unpinned tools) or when the chat's
+/// deferred list names it: the session's <c>meta.toolsDeferred</c> (a profile's <c>toolsDeferred</c>, written when the profile
+/// is applied), else the setting <c>tools.deferred</c>, else <see cref="DefaultDeferred"/>. <c>[]</c> declares every tool the
+/// definition does not defer. An entry is a tool name, <c>"*"</c> (every tool) or <c>"!name"</c> (not this one, whatever
+/// else matches): <c>["*", "!codemode"]</c> declares codemode alone. A subagent's explicit tool list declares the tools it
+/// names that the list would defer.
 /// </summary>
 public sealed class ToolExposure
 {
     public const string Setting = "tools.deferred";
+    /// <summary>The session's own list (from its profile), in place of the setting.</summary>
+    public const string MetaKey = "toolsDeferred";
 
     /// <summary>
     /// The built-in tools deferred by default: everything but the file and shell tools a chat works with all the time,
@@ -99,37 +104,62 @@ public sealed class ToolExposure
         "todo_write", "web_fetch", "web_search", "windows", "workspace",
     ];
 
-    private readonly HashSet<string> _configured;
+    private readonly DeferredList _list;
     private readonly HashSet<string> _loaded;
     private readonly IReadOnlyList<string>? _allowlist;
 
-    private ToolExposure(HashSet<string> configured, HashSet<string> loaded, IReadOnlyList<string>? allowlist)
+    private ToolExposure(DeferredList list, HashSet<string> loaded, IReadOnlyList<string>? allowlist)
     {
-        _configured = configured;
+        _list = list;
         _loaded = loaded;
         _allowlist = allowlist;
     }
 
-    /// <summary>The exposure for one agent's session: the setting, the session's loaded tools, the agent's tool list.</summary>
+    /// <summary>The exposure for one agent's session: its deferred list, its loaded tools, the agent's tool list.</summary>
     public static ToolExposure For(ISettings? settings, AgentInfo? agent, SessionInfo? session) =>
-        new(Configured(settings), LoadedTools.Of(session), agent?.ToolAllowlist);
+        new(DeferredList.Parse(Entries(settings, session)), LoadedTools.Of(session), agent?.ToolAllowlist);
 
-    /// <summary>The names <c>tools.deferred</c> defers (the default list when it is not set or cannot be read).</summary>
-    public static HashSet<string> Configured(ISettings? settings)
+    /// <summary>The chat's deferred list as written: the session's <c>meta.toolsDeferred</c>, else the setting, else the default.</summary>
+    public static IReadOnlyList<string> Entries(ISettings? settings, SessionInfo? session)
     {
+        if (session?.Meta?[MetaKey] is JsonArray own)
+            return [.. own.OfType<JsonValue>().Select(v => v.TryGetValue<string>(out var s) ? s : null).OfType<string>()];
         List<string>? list = null;
         try { list = settings?.Get<List<string>>(Setting); } catch { }
-        return new HashSet<string>((list ?? [.. DefaultDeferred]).Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim()),
-            StringComparer.OrdinalIgnoreCase);
+        return list ?? [.. DefaultDeferred];
+    }
+
+    /// <summary>A deferred list: names, <c>"*"</c> for every tool, <c>"!name"</c> for an exception.</summary>
+    private sealed class DeferredList
+    {
+        private bool _all;
+        private readonly HashSet<string> _names = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _except = new(StringComparer.OrdinalIgnoreCase);
+
+        public static DeferredList Parse(IEnumerable<string> entries)
+        {
+            var list = new DeferredList();
+            foreach (var raw in entries)
+            {
+                var e = raw?.Trim() ?? "";
+                if (e.Length == 0) continue;
+                if (e == "*") list._all = true;
+                else if (e[0] == '!') { if (e.Length > 1) list._except.Add(e[1..].Trim()); }
+                else list._names.Add(e);
+            }
+            return list;
+        }
+
+        public bool Names(string tool) => !_except.Contains(tool) && (_all || _names.Contains(tool));
     }
 
     /// <summary>The session's loaded tools.</summary>
     public IReadOnlySet<string> Loaded => _loaded;
 
-    /// <summary>Not declared unless loaded: deferred by its definition, or by the setting and not named by the agent's tool list.</summary>
+    /// <summary>Not declared unless loaded: deferred by its definition, or by the chat's list and not named by the agent's tool list.</summary>
     public bool IsDeferred(ToolDefinition definition) =>
         definition.Deferred
-        || (_configured.Contains(definition.Name) && !(_allowlist?.Contains(definition.Name, StringComparer.OrdinalIgnoreCase) ?? false));
+        || (_list.Names(definition.Name) && !(_allowlist?.Contains(definition.Name, StringComparer.OrdinalIgnoreCase) ?? false));
 
     /// <summary>Whether the model is sent this definition: not deferred, or loaded into the session.</summary>
     public bool IsDeclared(ToolDefinition definition) => !IsDeferred(definition) || _loaded.Contains(definition.Name);

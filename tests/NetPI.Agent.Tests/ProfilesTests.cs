@@ -11,6 +11,34 @@ public static class ProfilesTests
         t.Add("profiles: switching before the first message is free; after it the prompt is rendered again, with a notice and no stray tools notice", Switching);
         t.Add("profiles: a chat the app starts itself gets the automatic profile (its project's default first), and what its starter keeps off stays off", Automatic);
         t.Add("profiles: an older chat is never changed by a new default; subagents get no profile, their owner's tools or the ones it names", Boundaries);
+        t.Add("profiles: a profile's deferred list (\"*\", \"!name\") replaces tools.deferred for its chats; the rest is a call by name away", DeferredList);
+    }
+
+    private static async Task DeferredList()
+    {
+        await using var h = await Start();
+        h.Settings.Set("profiles.solo", JsonNode.Parse("""{ "name": "Solo", "toolsDeferred": ["*", "!read"] }"""));
+        var s = h.NewSession();
+        await h.Rpc.CallAsync("profiles.apply", new { sessionId = s.Id, profile = "solo" });
+        var step = 0;
+        h.Catalog.Handler = (r, ct) => r.SessionId != s.Id || step++ > 0 ? Reply.Text("done") : Reply.Tool("bash", new { command = "echo hi" });
+        await Turn(h, s.Id, "go");
+        var first = h.Catalog.Requests.First(r => r.SessionId == s.Id);
+        Check.Equal("read", string.Join(",", first.Tools.Select(t => t.Name)), "only the exception is declared");
+        Check.Contains(first.SystemPrompt!, "More tools, not loaded yet");
+        Check.Contains(first.SystemPrompt!, "  - bash:");
+        Check.False(h.Messages(s.Id).SelectMany(m => m.ToolResults).Single().IsError, "a deferred tool called by name runs");
+        Check.True(Sent(h, s.Id).Contains("bash"), "and is declared from the next call");
+        Check.Equal("""["*","!read"]""", h.Sessions.GetSession(s.Id)!.Meta?[ToolExposure.MetaKey]?.ToJsonString());
+
+        // a profile without a list leaves the chat on the setting (the test host declares everything)
+        await h.Rpc.CallAsync("profiles.apply", new { sessionId = s.Id, profile = "coder" });
+        Check.Equal(null, h.Sessions.GetSession(s.Id)!.Meta?[ToolExposure.MetaKey]);
+        await Turn(h, s.Id, "again");
+        var sent = Sent(h, s.Id);
+        Check.True(sent.Contains("write") && sent.Contains("ssh_run"), string.Join(",", sent));
+        var listed = (await h.Rpc.CallAsync("profiles.list"))!["profiles"]!.AsArray().Single(p => (string?)p!["id"] == "solo")!;
+        Check.Equal("""["*","!read"]""", listed["toolsDeferred"]!.ToJsonString());
     }
 
     private const string Admin = "You are a system administrator for the hosts in ~/.ssh/config.";

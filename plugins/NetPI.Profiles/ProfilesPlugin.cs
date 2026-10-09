@@ -3,10 +3,11 @@ using System.Text.Json.Nodes;
 namespace NetPI.Profiles;
 
 /// <summary>
-/// Profiles: named instructions and tools for chats (settings <c>profiles.&lt;id&gt; = { name, prompt, toolsOff }</c> and
+/// Profiles: named instructions and tools for chats (settings <c>profiles.&lt;id&gt; = { name, prompt, toolsOff, toolsDeferred? }</c> and
 /// <c>profiles.defaultProfile</c>). A new chat gets its project's default profile (<c>project.meta.profile</c>, or
 /// <c>"none"</c>) or else the global default. Applying a profile sets the chat's <c>meta.profile</c>, <c>meta.identity</c>
-/// (the opening of its system prompt, rendered by the context plugin) and <c>meta.toolsOff</c> (its tool switches).
+/// (the opening of its system prompt, rendered by the context plugin), <c>meta.toolsOff</c> (its tool switches) and
+/// <c>meta.toolsDeferred</c> (the tools kept out of its requests until used, in place of <c>tools.deferred</c>).
 /// Before the first message that is free; in a started chat the profile switch invalidates the chat's prompt revision, so
 /// the prompt is rendered again at the next model call (one full re-read; no <c>context.reset</c> call is needed) and a
 /// <c>profile</c> notice tells the model. Subagents do not get profiles: their owner chooses their tools.
@@ -26,7 +27,7 @@ public sealed class ProfilesPlugin : INetPiPlugin
             if (e.As<JsonObject>()?["session"]?["id"]?.GetValue<string>() is { Length: > 0 } id) profiles.EnsureDefault(id);
         });
 
-        context.Rpc.Register(new RpcMethod("profiles.list", "The profiles: → { defaultProfile, profiles: { id, name, prompt, toolsOff }[] }", ReadOnly: true, Params: []),
+        context.Rpc.Register(new RpcMethod("profiles.list", "The profiles: → { defaultProfile, profiles: { id, name, prompt, toolsOff, toolsDeferred }[] }", ReadOnly: true, Params: []),
             (_, _) => Task.FromResult<object?>(profiles.ListJson()));
         context.Rpc.Register(new RpcMethod("profiles.apply", "Give a chat a profile (null = none): { sessionId, profile } → SessionInfo. In a started chat the system prompt is rendered again at the next model call (one full re-read).", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("profile")]),
             async (req, token) =>

@@ -69,6 +69,8 @@ internal sealed class SubagentPlanner(IPluginContext ctx)
             ["agentInstructions"] = instructions,
         };
         if (off.Count > 0) meta[SessionTools.MetaKey] = new JsonArray([.. off.Order(StringComparer.Ordinal).Select(n => (JsonNode?)n)]);
+        // the parent chat's deferred list (its profile's) carries over; the tools the owner names are declared anyway
+        if (parentSession?.Meta?[ToolExposure.MetaKey] is JsonArray deferred) meta[ToolExposure.MetaKey] = deferred.DeepClone();
         if (anyAgent) meta[SessionAgent.MetaKey] = SessionAgent.Any;
         else if (agent is not null) meta[SessionAgent.MetaKey] = agent.Key;
         // The child's checkout is attached to its session like any other binding: the workspace and the folder it runs in.

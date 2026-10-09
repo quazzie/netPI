@@ -1242,7 +1242,10 @@ details: the same value as JSON (the chat shows it)
 
 Deferred tools are registered and callable but not sent to the model, so a big catalogue (an MCP server with 250 tools)
 costs nothing per request. One rule decides (`ToolExposure` in the contracts): a tool is deferred when its definition says
-so (an MCP server's unpinned tools) or when the setting `tools.deferred` names it. Without the setting the default list
+so (an MCP server's unpinned tools) or when the chat's deferred list names it: its profile's `toolsDeferred` (the chat's
+`meta.toolsDeferred`, which a subagent takes from its parent), else the setting `tools.deferred`. An entry is a tool name,
+`"*"` (every tool) or `"!name"` (an exception): `["*", "!codemode"]` sends codemode alone, and the model reaches the rest
+from a script or by name. Without the setting the default list
 (`ToolExposure.DefaultDeferred`) defers every built-in tool but the file and shell tools (`read`, `write`, `edit`, `grep`,
 `find`, `ls`, `bash`, `pwsh`, `git`, `process`), `codemode`, `tool_search` and `ask_user`: a request carries ~2 000
 tokens of tool definitions instead of ~6 000. `[]` declares every built-in tool. A subagent spawned with a `tools` list

@@ -3,8 +3,11 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.Profiles;
 
-/// <summary>A profile from the settings: the opening of the system prompt and the tools switched off.</summary>
-internal sealed record Profile(string Id, string Name, string? Prompt, IReadOnlyList<string> ToolsOff);
+/// <summary>
+/// A profile from the settings: the opening of the system prompt, the tools switched off, and the tools kept out of
+/// requests until used (<see cref="ToolExposure"/>; null: the setting <c>tools.deferred</c>).
+/// </summary>
+internal sealed record Profile(string Id, string Name, string? Prompt, IReadOnlyList<string> ToolsOff, IReadOnlyList<string>? ToolsDeferred = null);
 
 internal sealed class ProfileService(IPluginContext ctx)
 {
@@ -33,7 +36,10 @@ internal sealed class ProfileService(IPluginContext ctx)
             var off = o["toolsOff"] is JsonArray a
                 ? a.Select(Str).OfType<string>().Select(n => n.Trim()).Where(n => n.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
                 : [];
-            list.Add(new Profile(id, Str(o["name"]) is { Length: > 0 } name ? name.Trim() : id, Str(o["prompt"]) is { } p && p.Trim().Length > 0 ? p.Trim() : null, off));
+            List<string>? deferred = o["toolsDeferred"] is JsonArray d
+                ? [.. d.Select(Str).OfType<string>().Select(n => n.Trim()).Where(n => n.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase)]
+                : null;
+            list.Add(new Profile(id, Str(o["name"]) is { Length: > 0 } name ? name.Trim() : id, Str(o["prompt"]) is { } p && p.Trim().Length > 0 ? p.Trim() : null, off, deferred));
         }
         return [.. list.OrderBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase)];
     }
@@ -125,7 +131,7 @@ internal sealed class ProfileService(IPluginContext ctx)
         return Task.FromResult(ctx.Sessions.GetSession(sessionId) ?? updated);
     }
 
-    /// <summary>The chat's profile, the opening of its prompt and its tool switches, all from the profile.</summary>
+    /// <summary>The chat's profile, the opening of its prompt, its tool switches and its deferred list, all from the profile.</summary>
     private SessionInfo Write(string sessionId, Profile? profile, IReadOnlyList<string>? alsoOff = null) =>
         ctx.Sessions.UpdateSession(sessionId, s =>
         {
@@ -137,6 +143,9 @@ internal sealed class ProfileService(IPluginContext ctx)
             var off = (profile?.ToolsOff ?? []).Concat(alsoOff ?? []).Where(n => !string.IsNullOrWhiteSpace(n)).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToList();
             if (off.Count > 0) s.Meta[SessionTools.MetaKey] = new JsonArray([.. off.Select(n => (JsonNode?)n)]);
             else s.Meta.Remove(SessionTools.MetaKey);
+            // the profile's deferred list, in the order written ("*" before its "!" exceptions reads best); none: the setting's
+            if (profile?.ToolsDeferred is { } deferred) s.Meta[ToolExposure.MetaKey] = new JsonArray([.. deferred.Select(n => (JsonNode?)n)]);
+            else s.Meta.Remove(ToolExposure.MetaKey);
         });
 
     public JsonObject ListJson() => new()
@@ -148,6 +157,7 @@ internal sealed class ProfileService(IPluginContext ctx)
             ["name"] = p.Name,
             ["prompt"] = p.Prompt,
             ["toolsOff"] = new JsonArray([.. p.ToolsOff.Select(n => (JsonNode?)n)]),
+            ["toolsDeferred"] = p.ToolsDeferred is { } d ? new JsonArray([.. d.Select(n => (JsonNode?)n)]) : null,
         })]),
     };
 
