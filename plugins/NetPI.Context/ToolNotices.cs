@@ -96,7 +96,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         if (added.Count > 0)
         {
             sb.Append(" New: ").Append(string.Join(", ", added));
-            if (cause?.Cause == ToolChanges.ToolSearch) sb.Append(" (").Append(cause.Clause).Append(')');
+            if (cause?.Cause == ToolChanges.ToolsLoaded) sb.Append(" (").Append(cause.Clause).Append(')');
             sb.Append('.');
         }
         var byUser = removed.Where(n => switchedOff?.Contains(n) == true).ToList();

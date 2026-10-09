@@ -59,7 +59,7 @@ public sealed partial class IdeaCommitNoticeHook(
         // asks for, so it is left to the background commit check, which asks the user (idea-hghbmg)
         if (call.ProviderExecuted) return ValueTask.CompletedTask;
         // Nothing to update without the tool, and nothing to say without a project: ideas are stamped with one.
-        if (!turn.Tools.Any(t => t.Name == "ideas")) return ValueTask.CompletedTask;
+        if (!turn.Tools.Concat(turn.DeferredTools).Any(t => t.Name == "ideas")) return ValueTask.CompletedTask;
         if (run.Project is not { } project) return ValueTask.CompletedTask;
 
         var args = Arguments(call.Arguments);

@@ -175,7 +175,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// </summary>
     internal List<IAgentTool> ToolsFor(AgentInfo? agent, SessionInfo? session, bool includeOff = false)
     {
-        return ToolSelection.Eligible(Ctx.Tools, agent, session, ToolSelection.MaxDepth(Ctx.Settings), includeOff);
+        return ToolSelection.Eligible(Ctx.Tools, agent, session, Ctx.Settings, includeOff);
     }
 
     // ---------------------------------------------------------------- registry

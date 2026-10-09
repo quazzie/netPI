@@ -24,8 +24,8 @@ internal sealed class ToolChanges(IPluginContext ctx)
     public const string Settings = "settings";
     public const string Unknown = "unknown";
     public const string RemoteServer = "remote-server";
-    /// <summary>The model loaded deferred tools with <c>tool_search</c> (<c>meta.toolsLoaded</c>).</summary>
-    public const string ToolSearch = "tool-search";
+    /// <summary>The model loaded deferred tools, with <c>tool_search</c> or by calling one by name (<c>meta.toolsLoaded</c>).</summary>
+    public const string ToolsLoaded = "loaded";
     private readonly Dictionary<string, (string Server, string Reason, DateTimeOffset Time)> _remote = new(StringComparer.Ordinal);
     public void OnRemoteToolsChanged(BusEvent e)
     {
@@ -89,7 +89,7 @@ internal sealed class ToolChanges(IPluginContext ctx)
             new(ToolChanges.Settings, ids, $"{(ids.Count == 1 ? "plugin" : "plugins")} {string.Join(", ", ids)} switched {(kind == "enabled" ? "on" : "off")}");
         public static Change Setting(string name) => new(ToolChanges.Settings, [], "the setting " + name + " changed");
         public static readonly Change Unknown = new(ToolChanges.Unknown, [], "");
-        public static readonly Change Loaded = new(ToolChanges.ToolSearch, [], "loaded by tool_search");
+        public static readonly Change Loaded = new(ToolChanges.ToolsLoaded, [], "loaded for this chat");
     }
 
     /// <summary><c>plugins.reloaded</c>: remember it, for the next notice, the tool-set history and the diagnostics tab.</summary>
@@ -180,7 +180,7 @@ internal sealed class ToolChanges(IPluginContext ctx)
         if (removed.Count > 0 && removed.All(n => switchedOff.Contains(n))) return Change.User;
         // the host says which meta keys changed, so a profile switch is named by what it wrote, not by message order
         if (pending is { } change && change.Has(SessionProfile.MetaKey)) return Change.Profile;
-        // tool_search wrote meta.toolsLoaded: it only ever adds, so a change that only added tools is its load
+        // meta.toolsLoaded (tool_search, a call by name) only ever grows, so a change that only added tools is a load
         if (pending is { } load && load.Has(LoadedTools.MetaKey) && removed.Count == 0 && added.Count > 0) return Change.Loaded;
         // fallback: the profiles plugin appends its notice right before the call that sees the profile's tools, and a
         // chat that started before this plugin did has no event to read

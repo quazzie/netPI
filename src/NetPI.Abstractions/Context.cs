@@ -8,6 +8,8 @@ public sealed class PromptContext
     public required string Cwd { get; init; }
     public required ModelInfo Model { get; init; }
     public required IReadOnlyList<ToolDefinition> Tools { get; init; }
+    /// <summary>The tools the agent may call that are deferred (not in <see cref="Tools"/>): a call by name runs one.</summary>
+    public IReadOnlyList<ToolDefinition> DeferredTools { get; init; } = [];
     public AgentInfo? Agent { get; init; }
     public bool IsSubagent => Agent?.IsSubagent ?? false;
     /// <summary>Extra instructions (e.g. subagent role) appended at the end.</summary>

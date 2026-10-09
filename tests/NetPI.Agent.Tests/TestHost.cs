@@ -153,6 +153,9 @@ public sealed class TestHost : IAsyncDisposable
             TempDir = Root, PluginDirs = [], DefaultWorkspace = Workspace,
         };
         Settings = new FakeSettings(Bus);
+        // Every built-in tool declared, as the tests of the features behind them expect: the default deferral
+        // (ToolExposure.DefaultDeferred) has tests of its own, which clear this.
+        Settings.Set(ToolExposure.Setting, new JsonArray());
         Tools = new FakeTools(settings: Settings);
         // The host selects a provider by setting; the tests run the memory one (in process, nothing on disk).
         Storage = new NetPI.Host.Storage.Memory.MemoryStorageProvider().Open(new StorageOpenOptions

@@ -37,7 +37,8 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
         lock (_gates.GetOrAdd(turn.Run.Session.Id, static _ => new object()))
         {
             var set = loader.Discover(turn.Run.Cwd);
-            if (turn.Tools.Any(t => t.Name == SkillTool.Name) && Catalog(turn.Run.Session, turn.Messages, set) is { } catalog)
+            // the skill tool deferred is still the skill tool: the model calls it by name from the catalog
+            if (turn.Tools.Concat(turn.DeferredTools).Any(t => t.Name == SkillTool.Name) && Catalog(turn.Run.Session, turn.Messages, set) is { } catalog)
             {
                 ctx.Sessions.AppendMessage(turn.Run.Session.Id, catalog);
                 appended = true;

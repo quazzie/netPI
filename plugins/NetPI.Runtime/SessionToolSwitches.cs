@@ -21,6 +21,7 @@ internal static class SessionToolSwitches
         var tools = new JsonArray();
         var available = runtime.ToolsFor(runtime.GetBySession(sessionId), session, includeOff: true);
         var registered = available.Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var exposure = ToolExposure.For(ctx.Settings, runtime.GetBySession(sessionId), session);
         foreach (var t in available)
         {
             var d = t.Definition;
@@ -31,7 +32,8 @@ internal static class SessionToolSwitches
                 ["category"] = d.Category,
                 ["description"] = d.Description,
                 ["readOnly"] = d.ReadOnly,
-                ["deferred"] = d.Deferred,
+                ["deferred"] = exposure.IsDeferred(d),
+                ["loaded"] = exposure.IsDeferred(d) && exposure.Loaded.Contains(d.Name),
                 ["pluginId"] = plugins.GetValueOrDefault(t),
                 ["on"] = !ToolLists.Names(off, d.Name, registered),
             });

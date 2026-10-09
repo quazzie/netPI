@@ -89,6 +89,9 @@ internal sealed class EnvironmentSection : IPromptSection
 /// line carry the same text); with <c>context.toolDescriptions</c> also one line per tool (descriptions and schemas are
 /// always sent with the tool definitions). Everything feature-specific comes from the plugin that owns it: tools bring
 /// their own bullets, other plugins register their own sections.
+/// <para>The built-in tools <c>tools.deferred</c> keeps out of the request are named here, one short line each, so the model
+/// knows they exist and calls one by name (that loads it) or finds it with <c>tool_search</c>. An MCP server's deferred
+/// tools are not listed: there can be hundreds, and <c>mcp_search</c>/<c>tool_search</c> find them.</para>
 /// </summary>
 internal sealed class ToolsSection(ISettings settings) : IPromptSection
 {
@@ -106,8 +109,18 @@ internal sealed class ToolsSection(ISettings settings) : IPromptSection
             sb.Append("- ").Append(g).Append('\n');
         // tool descriptions are short; the details come on request (the runtime answers {"help": true} for every tool)
         if (tools.Count > 0) sb.Append("- Any tool called with {\"help\": true} returns its full manual instead of running.\n");
+        var more = Deferred(c);
+        if (more.Count > 0)
+        {
+            sb.Append("- More tools, not loaded yet: call one by name (it runs and stays loaded; {\"help\": true} gives its arguments) or find tools with tool_search:\n");
+            foreach (var t in more) sb.Append("  - ").Append(t.Name).Append(": ").Append(SectionUtil.Summary(t.Description, 90)).Append('\n');
+        }
         return ValueTask.FromResult<string?>(sb.Length == 0 ? null : "# Tools\n" + sb.ToString().TrimEnd());
     }
+
+    /// <summary>The deferred tools the setting defers (not an MCP server's), by name.</summary>
+    private static List<ToolDefinition> Deferred(PromptContext c) =>
+        [.. c.DeferredTools.Where(d => !d.Deferred).OrderBy(d => d.Name, StringComparer.Ordinal)];
 
     /// <summary>The tools' guideline lines, trimmed, each once.</summary>
     internal static IEnumerable<string> Guidelines(IEnumerable<ToolDefinition> tools) =>

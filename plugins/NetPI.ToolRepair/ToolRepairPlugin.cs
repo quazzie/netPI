@@ -28,7 +28,8 @@ public sealed class ToolRepairHook(ILogger? logger = null) : IAgentHook
 
     public ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
     {
-        var repaired = ToolCallRepair.Repair(assistant, turn.Tools);
+        // a deferred tool is called by name like any other, so a textual call to one is a call too
+        var repaired = ToolCallRepair.Repair(assistant, [.. turn.Tools, .. turn.DeferredTools]);
         if (repaired is null) return ValueTask.FromResult<TurnDecision?>(null);
         logger?.LogInformation("Repaired {Count} textual tool call(s) in session {Session}: {Names}", repaired.ToolCalls.Count(),
             assistant.SessionId, string.Join(", ", repaired.ToolCalls.Select(c => c.Name)));

@@ -86,8 +86,10 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             // 3. turn context + hooks
             var promptRevision = SessionPrompt.Revision(session);
             var tools = rt.ToolsFor(Info, session);
-            var defs = ToolSelection.Visible(tools, session);
-            var prompt = await BuildPromptAsync(session, project, cwd, model, defs, ct).ConfigureAwait(false);
+            var exposure = ToolExposure.For(Ctx.Settings, Info, session);
+            var defs = ToolSelection.Visible(tools, exposure);
+            IReadOnlyList<ToolDefinition> deferred = [.. tools.Where(t => !exposure.IsDeclared(t.Definition)).Select(t => t.Definition)];
+            var prompt = await BuildPromptAsync(session, project, cwd, model, defs, deferred, ct).ConfigureAwait(false);
             if (Ctx.Sessions.GetSession(SessionId) is { } afterPrompt && SessionPrompt.Revision(afterPrompt) != promptRevision) continue;
             AgentTurnContext turn = null!;
             turn = new AgentTurnContext
@@ -97,6 +99,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 SystemPrompt = prompt,
                 Messages = [.. Ctx.Sessions.GetContextMessages(SessionId)],
                 Tools = defs,
+                DeferredTools = deferred,
                 LastContextTokens = Math.Max(0, _lastContextTokens),
                 ReloadMessagesAsync = () =>
                 {
@@ -464,7 +467,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     // ---------------------------------------------------------------- prompt
 
     private async Task<string> BuildPromptAsync(SessionInfo session, ProjectInfo? project, string cwd, ModelInfo model,
-        IReadOnlyList<ToolDefinition> defs, CancellationToken ct)
+        IReadOnlyList<ToolDefinition> defs, IReadOnlyList<ToolDefinition> deferred, CancellationToken ct)
     {
         var capturedRevision = SessionPrompt.Revision(session);
         var pc = new PromptContext
@@ -474,6 +477,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             Cwd = cwd,
             Model = model,
             Tools = defs,
+            DeferredTools = deferred,
             Agent = rt.Snapshot(state),
             Instructions = state.Instructions,
         };

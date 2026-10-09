@@ -49,9 +49,10 @@ internal sealed class ToolSearchTool(IPluginContext ctx, AgentRuntime runtime) :
 
         var session = ctx.Sessions.Require(context.SessionId);
         var eligible = context.EligibleTools?.Invoke() ?? runtime.ToolsFor(runtime.GetBySession(context.SessionId), session);
-        var loaded = LoadedTools.Of(session);
+        var exposure = ToolExposure.For(ctx.Settings, runtime.GetBySession(context.SessionId), session);
+        var loaded = exposure.Loaded;
         // what a search can offer: deferred tools this chat may call, not the gateways (mcp_call) that reach them another way
-        var candidates = eligible.Where(t => t.Definition.Deferred && t is not IIndirectAgentTool).ToList();
+        var candidates = eligible.Where(t => exposure.IsDeferred(t.Definition) && t is not IIndirectAgentTool).ToList();
         if (candidates.Count == 0)
             return Task.FromResult(ToolResult.Ok("No tools to search: every tool you can use is already declared to you.",
                 Details([], [])));
@@ -65,14 +66,7 @@ internal sealed class ToolSearchTool(IPluginContext ctx, AgentRuntime runtime) :
         // a loaded name whose tool is gone (its MCP server is down) keeps its place for when it is back, but takes no room
         var room = Math.Max(0, MaxLoaded - candidates.Count(t => loaded.Contains(t.Definition.Name)));
         var loading = fresh.Take(room).ToList();
-        if (loading.Count > 0)
-            ctx.Sessions.UpdateSession(context.SessionId, s =>
-            {
-                var names = LoadedTools.Of(s);
-                foreach (var d in loading) names.Add(d.Name);
-                s.Meta ??= new JsonObject();
-                s.Meta[LoadedTools.MetaKey] = new JsonArray([.. names.Order(StringComparer.Ordinal).Select(n => (JsonNode?)n)]);
-            });
+        LoadedTools.Add(ctx.Sessions, context.SessionId, loading.Select(d => d.Name));
 
         var sb = new StringBuilder();
         if (loading.Count > 0)

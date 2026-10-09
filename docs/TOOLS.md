@@ -41,9 +41,9 @@ Every request carries the active tools (the highest-priority registration per na
   sets them when it is applied). Before the first message that is free. In a started chat the change applies from the next model call: tool definitions lead the
   request, so the model re-reads the conversation once (slower on a local model, a full-price read on a paid one), and a
   `tools` notice tells it ("The user switched off for this session: bash.");
-- deferred tools (`ToolDefinition.Deferred`, today an MCP server's unpinned tools) the chat has not loaded with
-  [`tool_search`](#tool_search-deferred-tools), and deferred-tool infrastructure (`tool_search`, `mcp_search`, `mcp_call`)
-  when the chat has no deferred tool it could reach;
+- deferred tools the chat has not loaded (see [Deferred tools](#tool_search-deferred-tools)): an MCP server's unpinned
+  tools (`ToolDefinition.Deferred`) and the built-in tools `tools.deferred` names, and deferred-tool infrastructure
+  (`tool_search`, `mcp_search`, `mcp_call`) when the chat has no deferred tool it could reach;
 - for a subagent: the tools its owner chose. With an `agent_spawn` `tools` list exactly those, even tools the owner
   does not have (a limited orchestrator can dispatch an agent with the `ssh` tool; unknown names get the list of
   tools); without one the owner's tools (its allowlist, and its session's switched-off tools, copied to the subagent's
@@ -1241,7 +1241,18 @@ details: the same value as JSON (the chat shows it)
 ## `tool_search` (deferred tools)
 
 Deferred tools are registered and callable but not sent to the model, so a big catalogue (an MCP server with 250 tools)
-costs nothing per request. `tool_search { query, limit? (5, at most 10) }` (plugins/NetPI.Runtime) ranks the deferred
+costs nothing per request. One rule decides (`ToolExposure` in the contracts): a tool is deferred when its definition says
+so (an MCP server's unpinned tools) or when the setting `tools.deferred` names it. Without the setting the default list
+(`ToolExposure.DefaultDeferred`) defers every built-in tool but the file and shell tools (`read`, `write`, `edit`, `grep`,
+`find`, `ls`, `bash`, `pwsh`, `git`, `process`), `codemode`, `tool_search` and `ask_user`: a request carries ~2 000
+tokens of tool definitions instead of ~6 000. `[]` declares every built-in tool. A subagent spawned with a `tools` list
+gets the tools it names declared even when the setting defers them.
+
+The system prompt's Tools section names the built-in tools the setting defers, one line each ("More tools, not loaded
+yet: …"), so the model knows they exist. **A deferred tool called by name runs** and is loaded with it: from the next call
+it is declared with its schema (`{"help": true}` gives the arguments before). An MCP server's tools are not listed (there
+can be hundreds); `tool_search` and `mcp_search` find them.
+ `tool_search { query, limit? (5, at most 10) }` (plugins/NetPI.Runtime) ranks the deferred
 tools the chat may call and has not loaded (switched-off tools, a subagent's allowlist and the gateways stay out) and
 **loads** the matches: their names go into the session's `meta.toolsLoaded` (`LoadedTools` in the contracts), and from
 the next model call on they are declared like any other tool, with their own schemas, and called directly. The idea is
@@ -1253,9 +1264,8 @@ pi 1.0's `tool_search`.
 - The description names no tool, so it stays the same while MCP servers connect and the request prefix keeps.
 - A chat keeps at most 40 loaded tools (every one is in each request from then on); past that the result says so. A
   loaded name whose tool is gone (its MCP server is down) stays, for when it is back, but takes no room.
-- Calling a deferred tool that is not loaded fails with "`<name>` is not loaded. Load it with tool_search first".
-- The load is a meta change, so the next call gets a `tools` notice with cause `tool-search` ("New: x (loaded by
-  tool_search)") carrying the new tools' guidelines. Loading changes the request's tool list, so the model re-reads the
+- The load (by `tool_search` or a call by name) is a meta change, so the next call gets a `tools` notice with cause
+  `loaded` ("New: x (loaded for this chat)") carrying the new tools' guidelines. Loading changes the request's tool list, so the model re-reads the
   conversation once, as with any tool change.
 - The list survives a restart; a fork keeps it; a tool switched off for the chat stays off.
 

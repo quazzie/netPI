@@ -181,6 +181,11 @@ public sealed class AgentTurnContext
     /// <summary>Messages sent to the model (mutable before the call).</summary>
     public required List<ChatMessage> Messages { get; set; }
     public required IReadOnlyList<ToolDefinition> Tools { get; set; }
+    /// <summary>
+    /// The tools the agent may call that are deferred, not declared in <see cref="Tools"/>: a call by name runs one (and
+    /// loads it). What a hook keys on "the agent can use tool X" checks both lists; "the request declares X" only Tools.
+    /// </summary>
+    public IReadOnlyList<ToolDefinition> DeferredTools { get; set; } = [];
     /// <summary>Reload <see cref="Messages"/> from the session store (e.g. after compaction).</summary>
     public required Func<Task> ReloadMessagesAsync { get; init; }
     /// <summary>Last known context size (tokens) from the previous call's usage, 0 if unknown.</summary>

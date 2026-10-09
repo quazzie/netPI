@@ -242,8 +242,8 @@ public static class McpTests
             var search=new McpSearchTool(ctx,manager); var call=new McpCallTool(ctx,manager);
             ctx.Tools.Register(search);ctx.Tools.Register(call);
             Check.Equal(250,manager.Catalog().Count);
-            var eligible=ToolSelection.Eligible(ctx.Tools,null,ctx.Sessions.GetSession("ses_1"));
-            Check.Equal("mcp_call,mcp_search",string.Join(",",ToolSelection.Visible(eligible,ctx.Sessions.GetSession("ses_1")).Select(t=>t.Name)));
+            var eligible=ToolSelection.Eligible(ctx.Tools,null,ctx.Sessions.GetSession("ses_1"),ctx.Settings);
+            Check.Equal("mcp_call,mcp_search",string.Join(",",ToolSelection.Visible(eligible,ToolExposure.For(ctx.Settings,null,ctx.Sessions.GetSession("ses_1"))).Select(t=>t.Name)));
             var target=manager.Catalog().Single(t=>t.RemoteName=="weather");
             var context=Context(ctx);
             var envelope=T.Args(new {id=target.Definition.Name,revision=target.Definition.Revision,arguments=new {city="Oslo"}});
@@ -261,7 +261,7 @@ public static class McpTests
             await Check.ThrowsAsync<McpException>(()=>call.ResolveAsync(context,envelope,CancellationToken.None).AsTask());
             await call.ResolveAsync(Context(ctx,"fork"),envelope,CancellationToken.None);
             var agent=new AgentInfo {Id="a",SessionId="ses_1",ToolAllowlist=["mcp_call"]};
-            Check.False(ToolSelection.Eligible(ctx.Tools,agent,ctx.Sessions.GetSession("ses_1")).Contains(target));
+            Check.False(ToolSelection.Eligible(ctx.Tools,agent,ctx.Sessions.GetSession("ses_1"),ctx.Settings).Contains(target));
             await manager.DisposeAsync();ctx.Unload();Check.Equal(0,ctx.Tools.All.Count);
         });
         r.Add("mcp: a cold start does not wait for a slow server, which connects in the background",async () => {

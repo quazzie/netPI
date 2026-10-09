@@ -36,7 +36,7 @@ public static class DeferredToolsTests
 
     public static void Register(TestRunner t)
     {
-        t.Add("deferred: tool_search loads a deferred tool for the next call, with a tools notice naming the cause", async () => {
+        t.Add("deferred: tool_search loads a deferred tool for the next call, a call by name runs and loads one, with tools notices naming the cause", async () => {
             await using var h = await TestHost.StartAsync();
             var ctx = new TestPluginContext(h, "netpi.test");
             var weather = new Deferred("weather_lookup", "Current weather and forecast for a city.");
@@ -45,9 +45,9 @@ public static class DeferredToolsTests
             var session = h.NewSession(); var stage = 0;
             h.Catalog.Handler = (r, ct) => stage++ switch
             {
-                0 => Reply.Tools(Reply.Call("weather_lookup", new { city = "Oslo" })),
-                1 => Reply.Tools(Reply.Call("tool_search", new { query = "weather forecast" })),
-                2 => Reply.Tools(Reply.Call("weather_lookup", new { city = "Oslo" })),
+                0 => Reply.Tools(Reply.Call("tool_search", new { query = "weather forecast" })),
+                1 => Reply.Tools(Reply.Call("weather_lookup", new { city = "Oslo" })),
+                2 => Reply.Tools(Reply.Call("stock_quote", new { city = "ACME" })),
                 _ => Reply.Text("done"),
             };
             await h.SendAsync(session.Id, "weather in Oslo?"); await h.IdleAsync(session.Id);
@@ -55,23 +55,55 @@ public static class DeferredToolsTests
             Check.Equal(4, requests.Count);
             Check.True(requests[0].Tools.Any(d => d.Name == "tool_search"), "a chat with deferred tools is sent tool_search");
             Check.False(requests[0].Tools.Any(d => d.Name == "weather_lookup"));
-            Check.False(requests[1].Tools.Any(d => d.Name == "weather_lookup"));
-            Check.True(requests[2].Tools.Any(d => d.Name == "weather_lookup"), "loaded from the next call");
-            Check.False(requests[2].Tools.Any(d => d.Name == "stock_quote"), "only the match is loaded");
+            Check.True(requests[1].Tools.Any(d => d.Name == "weather_lookup"), "loaded from the next call");
+            Check.False(requests[1].Tools.Any(d => d.Name == "stock_quote"), "only the match is loaded");
+            Check.False(requests[2].Tools.Any(d => d.Name == "stock_quote"));
+            Check.True(requests[3].Tools.Any(d => d.Name == "stock_quote"), "a call by name loads the tool");
             var results = h.Messages(session.Id).SelectMany(m => m.ToolResults).ToList();
-            Check.True(results[0].IsError); Check.Contains(results[0].Content, "tool_search");
-            Check.Contains(results[1].Content, "weather_lookup"); Check.NotContains(results[1].Content, "stock_quote");
-            Check.False(results[2].IsError); Check.Equal(1, weather.Calls.Count);
-            Check.Equal("[\"weather_lookup\"]", h.Sessions.GetSession(session.Id)!.Meta?[LoadedTools.MetaKey]?.ToJsonString());
-            var notice = h.Messages(session.Id).Single(m => m.MetaString("kind") == "tools");
-            Check.Equal("tool-search", notice.MetaString("cause"));
-            Check.Contains(notice.Text, "loaded by tool_search");
+            Check.Contains(results[0].Content, "weather_lookup"); Check.NotContains(results[0].Content, "stock_quote");
+            Check.False(results[1].IsError); Check.Equal(1, weather.Calls.Count);
+            Check.False(results[2].IsError, "a deferred tool called by name runs"); Check.Equal(1, stocks.Calls.Count);
+            Check.Equal("[\"stock_quote\",\"weather_lookup\"]", h.Sessions.GetSession(session.Id)!.Meta?[LoadedTools.MetaKey]?.ToJsonString());
+            var notices = h.Messages(session.Id).Where(m => m.MetaString("kind") == "tools").ToList();
+            Check.Equal(2, notices.Count);
+            Check.True(notices.All(n => n.MetaString("cause") == "loaded"));
+            Check.Contains(notices[0].Text, "New: weather_lookup (loaded for this chat)");
 
             // loaded is not a way around the chat's own switches
             await h.Rpc.CallAsync("agent.setTools", new { sessionId = session.Id, off = new[] { "weather_lookup" } });
             h.Catalog.Handler = (r, ct) => Reply.Text("done");
             await h.SendAsync(session.Id, "again"); await h.IdleAsync(session.Id);
             Check.False(h.Catalog.Requests.Last().Tools.Any(d => d.Name == "weather_lookup"));
+            ctx.Unload();
+        });
+        t.Add("deferred: the default tools.deferred keeps built-in tools out until used, the prompt names them, a subagent's list declares them", async () => {
+            await using var h = await TestHost.StartAsync();
+            h.Settings.Set(ToolExposure.Setting, null);   // the default list (the test host declares everything)
+            var ctx = new TestPluginContext(h, "netpi.test");
+            var fetch = new Deferred("web_fetch", "Fetch a web page as Markdown.", deferred: false);
+            var lsp = new Deferred("lsp", "Diagnostics, definitions and symbols from a language server.", deferred: false);
+            var notes = new Deferred("read_notes", "Read the notes.", deferred: false);
+            ctx.Tools.Register(fetch); ctx.Tools.Register(lsp); ctx.Tools.Register(notes);
+            var session = h.NewSession(); var stage = 0;
+            h.Catalog.Handler = (r, ct) => r.SessionId != session.Id ? Reply.Text("child done")
+                : stage++ == 0 ? Reply.Tools(Reply.Call("web_fetch", new { city = "https://example.com" })) : Reply.Text("done");
+            await h.SendAsync(session.Id, "fetch it"); await h.IdleAsync(session.Id);
+            var requests = h.Catalog.Requests.Where(r => r.SessionId == session.Id).ToList();
+            var first = requests[0].Tools.Select(d => d.Name).ToList();
+            Check.True(first.Contains("read_notes") && first.Contains("tool_search"), string.Join(",", first));
+            Check.False(first.Contains("web_fetch") || first.Contains("lsp") || first.Contains("agent_spawn"), string.Join(",", first));
+            Check.Contains(requests[0].SystemPrompt, "More tools, not loaded yet");
+            Check.Contains(requests[0].SystemPrompt, "  - web_fetch: Fetch a web page as Markdown.");
+            Check.Contains(requests[0].SystemPrompt, "  - lsp: Diagnostics");
+            Check.Equal(1, fetch.Calls.Count);
+            Check.True(requests[1].Tools.Any(d => d.Name == "web_fetch"), "called by name: declared from the next call");
+            Check.False(requests[1].Tools.Any(d => d.Name == "lsp"));
+
+            // a subagent given lsp by name has it declared from its first call
+            var child = await h.Runtime.SpawnAsync(new SpawnRequest { ParentAgentId = h.Runtime.GetBySession(session.Id)!.Id, Task = "check the code", Tools = ["lsp", "read_notes"] });
+            await h.StatusAsync(child.Id, AgentStatus.Completed);
+            var childTools = h.Catalog.Requests.First(r => r.SessionId == child.SessionId).Tools.Select(d => d.Name).ToList();
+            Check.True(childTools.Contains("lsp"), string.Join(",", childTools));
             ctx.Unload();
         });
         t.Add("deferred: tool_search is not sent without deferred tools, and ranks by name and words", async () => {

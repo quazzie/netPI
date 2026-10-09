@@ -117,7 +117,8 @@ internal sealed class AgentsPromptSection : IPromptSection
 
     public ValueTask<string?> RenderAsync(PromptContext c, CancellationToken ct)
     {
-        bool Has(string name) => c.Tools.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
+        // a deferred agent_spawn is still one call away: the guidance holds for the call by name
+        bool Has(string name) => c.Tools.Concat(c.DeferredTools).Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
         if (!Has("agent_spawn")) return ValueTask.FromResult<string?>(null);
         return ValueTask.FromResult<string?>("# Agents\n- " +
             (Has("agent_choices") ? "Before you delegate, look at agent_choices and choose" : "Choose") +

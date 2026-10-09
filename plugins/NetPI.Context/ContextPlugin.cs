@@ -108,6 +108,9 @@ public sealed class ContextPlugin : INetPiPlugin
         var agent = ctx.Services.Get<IAgentRuntime>()?.GetBySession(sessionId);
         var tools = ActiveTools(ctx, agent, session);
         var defs = tools.Select(t => t.Definition).ToList();
+        var exposure = ToolExposure.For(ctx.Settings, agent, session);
+        var deferred = ToolSelection.Eligible(ctx.Tools, agent, session, ctx.Settings)
+            .Where(t => !exposure.IsDeclared(t.Definition)).Select(t => t.Definition).ToList();
         var builder = ctx.Services.Get<ISystemPromptBuilder>() ?? fallback;
         var pc = new PromptContext
         {
@@ -116,6 +119,7 @@ public sealed class ContextPlugin : INetPiPlugin
             Cwd = cwd,
             Model = model,
             Tools = defs,
+            DeferredTools = deferred,
             Agent = agent,
         };
         // Previewing must not freeze the prompt of a session that has not called a model yet.
@@ -181,7 +185,6 @@ public sealed class ContextPlugin : INetPiPlugin
     /// </summary>
     internal static List<IAgentTool> ActiveTools(IPluginContext ctx, AgentInfo? agent, SessionInfo? session = null)
     {
-        var maxDepth = ToolSelection.MaxDepth(ctx.Settings);
-        return [.. ToolSelection.Declared(ToolSelection.Eligible(ctx.Tools, agent, session, maxDepth), session)];
+        return [.. ToolSelection.Declared(ToolSelection.Eligible(ctx.Tools, agent, session, ctx.Settings), ToolExposure.For(ctx.Settings, agent, session))];
     }
 }
