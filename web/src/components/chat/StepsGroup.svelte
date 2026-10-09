@@ -19,13 +19,15 @@
   let { item, chat, base, live = false, active = false } = $props();
 
   const n = $derived(item.steps.length);
+  // the stored result, or the live one of a call the provider ran itself (tool.result), as ToolRow shows it
+  const resultOf = (s) => s.result ?? chat.live.get(s.call.id)?.result ?? null;
   // a tool call that waits for the user's OK (a guardrail) keeps its group open, so its Allow / No can be seen
-  const approving = $derived(item.steps.some((s) => s.kind === 'tool' && !s.result && approvalFor(chat.id, s.call.id)));
+  const approving = $derived(item.steps.some((s) => s.kind === 'tool' && !resultOf(s) && approvalFor(chat.id, s.call.id)));
   const collapsible = $derived(approving ? false : prefs.steps === 'folded' ? n > 0 : prefs.steps === 'done' ? !live && n > 3 : false);
   const open = $derived(collapsible ? (chat.expanded.get(item.key) ?? false) : true);
   const span = $derived(Number.isFinite(item.startMs) && item.endMs > item.startMs ? item.endMs - item.startMs : null);
   const counts = $derived(collapsible ? stepCounts(item.steps) : null);
-  const failed = $derived(item.steps.reduce((a, s) => a + (s.kind === 'tool' && s.result?.isError ? 1 : 0), 0));
+  const failed = $derived(item.steps.reduce((a, s) => a + (s.kind === 'tool' && resultOf(s)?.isError ? 1 : 0), 0));
   // the numbers of a model turn go under its last step: a tool call of a message that ended in tool_use (its thinking
   // can sit in an earlier group, before its text; a turn that ends in an answer has them in the answer's footer)
   const endsTurn = (i) => {

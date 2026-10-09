@@ -2852,6 +2852,42 @@ log('fast steps: layout stability');
 }
 
 }
+// ------------------------------------------------------------------ provider tools: each result shows when its call finishes
+if (want('provider tools: results live')) {
+log('provider tools: results live');
+{
+  // the Claude CLI runs its own tools inside one model call; their tool messages are stored only after the assistant message,
+  // at the call's end. tool.result brings each result the moment the call finishes: the row is done, with its body, mid-call,
+  // and the stored messages change nothing on screen (the mock holds the stream, then the tool messages, so both can be seen)
+  await newTab();
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  await ta.fill('[cli hold=6000 stored=3000] Look at the tree.');
+  await ta.press('Enter');
+  const bashRow = page.locator('.tool', { has: page.locator('.summary', { hasText: 'git status --short' }) });
+  await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
+  await page.waitForFunction(() => [...document.querySelectorAll('.tool')].filter((t) => t.dataset.status === 'ok').length >= 2, null, { timeout: 15_000 });
+  const stored = async () => ((await rpcCall('sessions.messages', { id: sid })).messages ?? []).map((m) => m.role);
+  const midRoles = await stored();
+  const streaming = (await page.locator('.composer.running').count()) > 0;
+  check('provider tools: both rows are done while the model call still runs', streaming && !midRoles.includes('assistant') && !midRoles.includes('tool'), `running ${streaming}; stored: ${midRoles.join(',')}`);
+  await bashRow.locator('.line').click();
+  const body = await bashRow.locator('.body').innerText().catch(() => '');
+  check('provider tools: the result is in the row before anything is stored', body.includes('notes.txt'), JSON.stringify(body.slice(0, 120)));
+  const snap = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('.tool')].map((t) => ({ s: t.dataset.status, top: Math.round(t.getBoundingClientRect().top), h: Math.round(t.getBoundingClientRect().height), body: t.querySelector('.body')?.innerText ?? '' })),
+    );
+  const before = await snap();
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 });
+  await page.waitForTimeout(400);
+  const endRoles = await stored();
+  const after = await snap();
+  check('provider tools: the tool messages are stored after the assistant message', endRoles.slice(-3).join(',') === 'assistant,tool,tool', endRoles.join(','));
+  check('provider tools: the stored messages change nothing on screen', JSON.stringify(before) === JSON.stringify(after), `${JSON.stringify(before)} → ${JSON.stringify(after)}`);
+  await shot(page, '27b-provider-tools-live');
+}
+
+}
 // ------------------------------------------------------------------ compaction banner: kept until the model answers again
 if (want('compaction banner')) {
 log('compaction banner');

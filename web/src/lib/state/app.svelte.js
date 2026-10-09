@@ -773,6 +773,7 @@ const SCOPED = new Set([
   'stream.end',
   'tool.start',
   'tool.output',
+  'tool.result',
   'tool.end',
   'agent.queue',
   'agent.notice',

@@ -351,7 +351,9 @@ into locals first, because after the parent clears the modal state or the row re
    like its finished message instead of one wall of text with every tool below it; only the text run still being
    written shows the caret, and each thinking run has its own timer (idea-xg7ayy, `web/scripts/check-stream-order.mjs`).
    The final `message.added` replaces the stream items with the message's own, which are laid out the same. `tool.output` chunks go to `LiveTool` buffers, which keep the last 200KB, flushed the
-   same way.
+   same way. `tool.result` (a call the provider ran itself, the Claude CLI's) sets `LiveTool.result`: `ToolRow` and
+   `StepsGroup` use it while the stored result is missing, so the row turns done with its result when the call finishes,
+   and the tool message stored when the model call ends changes nothing on screen.
 5. **Markdown** (`lib/markdown.js`). Parsing is marked (GFM) followed by DOMPurify, memoized by source text
    with an LRU of 600 entries. A message is model-written text that may have been copied off a page, so raw HTML
    is shown rather than rendered, an image becomes the link it points at (an `<img src>` would load — and

@@ -12,10 +12,13 @@ const SLACK = 20; // trim only when this far over the cap (avoids trimming on ev
 const OUTPUT_CAP = 200_000; // live tool output kept per call (tail)
 const LRU_MAX = 5;
 
-/** Live state of a running (or just finished) tool call, fed by tool.start/output/end. */
+/** Live state of a running (or just finished) tool call, fed by tool.start/output/result/end. */
 export class LiveTool {
   output = $state('');
   status = $state('running'); // running | done | error
+  // the result of a call the provider ran itself (tool.result), as the tool message will hold it: the row shows it the
+  // moment the call finishes, not when the whole model call ends and the message is stored. The stored one wins.
+  result = $state.raw(null);
   durationMs = $state(null);
   truncated = $state(false);
   startedAt = Date.now();
@@ -43,6 +46,9 @@ export class LiveTool {
       this.truncated = true;
     }
     nextFrame(this.#flush);
+  }
+  setResult(d) {
+    this.result = { type: 'tool_result', callId: d.callId, name: d.name ?? this.name, content: d.content ?? '', isError: !!d.isError, details: d.details ?? null };
   }
   end(d) {
     flushNow(this.#flush);
@@ -439,6 +445,9 @@ export class ChatStore {
         this.#liveFor(d).append(d.chunk ?? '');
         break;
       }
+      case 'tool.result':
+        this.#liveFor(d).setResult(d);
+        break;
       case 'tool.end':
         this.live.get(d.callId)?.end(d);
         break;

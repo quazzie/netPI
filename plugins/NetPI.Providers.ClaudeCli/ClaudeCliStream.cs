@@ -145,8 +145,10 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         {
             if (block.Str("type") != "tool_result" || block.Str("tool_use_id") is not { } id || !_toolsById.TryGetValue(id, out var call)) continue;
             var isError = block.Bool("is_error", false);
-            call.ProviderData![ToolCallPart.ResultKey] = new JsonObject { ["content"] = ResultText(block?["content"]), ["isError"] = isError };
-            asm.Pending.Add(new ProviderToolDone(id, isError));
+            var content = ResultText(block?["content"]);
+            call.ProviderData![ToolCallPart.ResultKey] = new JsonObject { ["content"] = content, ["isError"] = isError };
+            // the result goes with the done signal too, so the chat shows it now, not when the whole call ends
+            asm.Pending.Add(new ProviderToolDone(id, isError, content));
         }
     }
 

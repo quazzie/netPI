@@ -94,8 +94,9 @@ public sealed record ToolCallArgsDelta(string Id, string Delta) : ModelStreamEve
 public sealed record ProviderToolRunning(string Id, string Name, string Arguments) : ModelStreamEvent;
 /// <summary>Progress of such a call (a subagent's own tool use): live output of the call's row (<c>tool.output</c>).</summary>
 public sealed record ProviderToolOutput(string Id, string Text) : ModelStreamEvent;
-/// <summary>Such a call has finished (<c>tool.end</c>); its result follows with the assistant message.</summary>
-public sealed record ProviderToolDone(string Id, bool IsError) : ModelStreamEvent;
+/// <summary>Such a call has finished (<c>tool.end</c>). <paramref name="Content"/>: its result as the provider reported it, shown at
+/// once (<c>tool.result</c>); it is stored as the call's tool message after the assistant message, as without it.</summary>
+public sealed record ProviderToolDone(string Id, bool IsError, string? Content) : ModelStreamEvent;
 public sealed record UsageUpdate(Usage Usage) : ModelStreamEvent;
 /// <summary>Discard everything streamed so far in this call (used by retry middleware).</summary>
 public sealed record StreamReset(string Reason) : ModelStreamEvent;

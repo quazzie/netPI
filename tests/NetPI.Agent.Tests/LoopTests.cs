@@ -22,7 +22,7 @@ public static class LoopTests
         t.Add("loop: abort during a tool call", AbortDuringTool);
         t.Add("loop: abort during a tool that swallows cancellation stops the batch", AbortDuringSwallowingTool);
         t.Add("loop: a call the provider ran itself is recorded, not executed, and the run ends", ProviderExecutedCallIsRecordedNotRun);
-        t.Add("loop: a provider's own tool is reported live: one start, its output, one end", ProviderToolIsReportedLive);
+        t.Add("loop: a provider's own tool is reported live: one start, its output, its result, one end; the result is stored once, after the assistant", ProviderToolIsReportedLive);
         t.Add("loop: a provider's own tool that never finished is closed by the runner as an error", ProviderToolNeverFinishedIsClosed);
         t.Add("loop: a provider's own tool cut off with its stream ends as interrupted", ProviderToolCutOffIsInterrupted);
         t.Add("loop: the after-call hooks see a provider's own call, under the NetPI tool it stands for", ProviderCallReachesAfterHooks);
@@ -514,9 +514,25 @@ public static class LoopTests
         Check.Contains((string?)start["arguments"], "a.cs");
         var output = FakeBus.Data(h.Bus.OfType(EventTypes.ToolOutput).Single());
         Check.Equal("↳ Grep x\n", (string?)output["chunk"]);
-        var order = h.Bus.All.Select(e => e.Type).Where(t => t is EventTypes.ToolStart or EventTypes.ToolOutput or EventTypes.ToolEnd).ToList();
-        Check.Equal("tool.start,tool.output,tool.end", string.Join(",", order));
-        Check.Equal("cli result", h.Messages(s.Id).Single(m => m.Role == MessageRole.Tool).ToolResults.Single().Content);
+        var order = h.Bus.All.Select(e => e.Type).Where(t => t is EventTypes.ToolStart or EventTypes.ToolOutput or EventTypes.ToolResult or EventTypes.ToolEnd).ToList();
+        Check.Equal("tool.start,tool.output,tool.result,tool.end", string.Join(",", order));
+
+        // the result is shown the moment the provider reports it, before the call's messages are stored
+        var shown = FakeBus.Data(h.Bus.OfType(EventTypes.ToolResult).Single());
+        Check.Equal("tu_live", (string?)shown["callId"]);
+        Check.Equal("Read", (string?)shown["name"]);
+        Check.Equal("cli result", (string?)shown["content"]);
+        Check.Equal(false, shown["isError"]!.GetValue<bool>());
+        Check.Equal(true, shown["details"]!["providerExecuted"]!.GetValue<bool>());
+        var all = h.Bus.All.ToList();
+        var stored = all.FindIndex(e => e.Type == EventTypes.MessageAdded && FakeBus.Data(e)["message"]?["role"]?.ToString() == "assistant");
+        Check.True(all.FindIndex(e => e.Type == EventTypes.ToolResult) < stored, "shown before the assistant message is stored");
+
+        // still stored once, as the tool message after its assistant message
+        var msgs = h.Messages(s.Id);
+        Check.Equal("User,Notice,Assistant,Tool", string.Join(",", msgs.Select(m => m.Role)));
+        Check.Equal("cli result", msgs[3].ToolResults.Single().Content);
+        Check.True(msgs[2].ToolCalls.Single().ProviderData![ToolCallPart.ResultKey] is null, "not kept on the call too");
     }
 
     /// <summary>The provider announced the call but never finished it (the CLI died): the runner closes the call, or its row would spin for ever.</summary>
@@ -611,7 +627,7 @@ public static class LoopTests
         yield return new ProviderToolOutput("tu_live", "↳ Grep x\n");
         if (finish)
         {
-            yield return new ProviderToolDone("tu_live", false);
+            yield return new ProviderToolDone("tu_live", false, "cli result");
             call.ProviderData[ToolCallPart.ResultKey] = new JsonObject { ["content"] = "cli result", ["isError"] = false };
         }
         yield return new StreamCompleted(Reply.Message(call, new TextPart { Text = "ok" }));

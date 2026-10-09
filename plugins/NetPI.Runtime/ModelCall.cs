@@ -164,6 +164,14 @@ internal sealed class ModelCall(AgentRuntime rt, AgentState state, RunState run)
                         rt.Emit(EventTypes.ToolOutput, new JsonObject { ["sessionId"] = SessionId, ["callId"] = o.Id, ["chunk"] = o.Text }, SessionId);
                         break;
                     case ProviderToolDone d:
+                        // the result is shown now; it is stored after the assistant message (RecordProviderExecutedAsync), where the
+                        // transcript needs it, and the after-call hooks see it there
+                        if (d.Content is not null)
+                            rt.Emit(EventTypes.ToolResult, new JsonObject
+                            {
+                                ["sessionId"] = SessionId, ["callId"] = d.Id, ["name"] = providerTools.GetValueOrDefault(d.Id),
+                                ["content"] = d.Content, ["isError"] = d.IsError, ["details"] = new JsonObject { ["providerExecuted"] = true },
+                            }, SessionId);
                         rt.Emit(EventTypes.ToolEnd, new JsonObject
                         {
                             ["sessionId"] = SessionId, ["callId"] = d.Id, ["name"] = providerTools.GetValueOrDefault(d.Id), ["isError"] = d.IsError,

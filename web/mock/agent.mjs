@@ -363,6 +363,54 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
     await streamAssistant(sid, run, { text: 'nginx on **nuc** now listens on 8080. The error log is in `logs/nuc-error.log`; reload nginx when you are ready.' });
   }
 
+  /**
+   * "[cli]": one model call of a provider that runs its own tools (the Claude CLI): text, a Bash call, text, a Read call, text,
+   * in one stream. Each call's result comes live (tool.result) the moment it finishes; the tool messages are stored only after
+   * the assistant message, at the call's end, like plugins/NetPI.Runtime (RecordProviderExecutedAsync), after the after-call hooks'
+   * pause. The holds (`hold`: the stream after the last result; `stored`: before the tool messages) let a test look in between.
+   */
+  async function cliScript(sid, run, input) {
+    const ref = modelRef(sid);
+    const [provider, model] = ref.split('/');
+    const agent = agentFor(sid);
+    const t0 = Date.now();
+    const hold = Number(/hold=(\d+)/.exec(input)?.[1] ?? 1500);
+    const stored = Number(/stored=(\d+)/.exec(input)?.[1] ?? 600);
+    const bash = { id: newId('call'), name: 'Bash', args: { command: 'git status --short' }, content: 'M src/x.cs\n?? notes.txt', ms: 900 };
+    const read = { id: newId('call'), name: 'Read', args: { file_path: 'src/x.cs' }, content: '1\tclass X {}\n', ms: 300 };
+    const texts = ['Checking the tree.', 'Now the file.', 'One change, in `src/x.cs`.'];
+    publish('stream.start', { sessionId: sid, agentId: agent.id, model: ref }, sid);
+    const say = async (t) => {
+      setStatus(sid, { activity: 'writing' });
+      for (const chunk of chunks(t, 6)) {
+        await sleep(30, run);
+        publish('stream.delta', { sessionId: sid, kind: 'text', text: chunk }, sid);
+      }
+    };
+    const runs = async (t) => {
+      publish('stream.tool', { sessionId: sid, callId: t.id, name: t.name }, sid);
+      await sleep(120, run);
+      publish('tool.start', { sessionId: sid, agentId: agent.id, callId: t.id, name: t.name, label: t.name, arguments: JSON.stringify(t.args) }, sid);
+      setStatus(sid, { activity: `tool: ${t.name}` });
+      await sleep(t.ms, run);
+      publish('tool.result', { sessionId: sid, callId: t.id, name: t.name, content: t.content, isError: false, details: { providerExecuted: true } }, sid);
+      publish('tool.end', { sessionId: sid, callId: t.id, name: t.name, isError: false }, sid);
+    };
+    await say(texts[0]);
+    await runs(bash);
+    await say(texts[1]);
+    await runs(read);
+    await say(texts[2]);
+    await sleep(hold, run);
+    publish('stream.end', { sessionId: sid }, sid);
+    const parts = [text(texts[0]), call(bash.id, bash.name, bash.args), text(texts[1]), call(read.id, read.name, read.args), text(texts[2])];
+    for (const p of parts) if (p.type === 'tool_call') p.providerData = { executed: true, live: true };
+    append(sid, 'assistant', parts, { provider, model, stopReason: 'stop', usage: usage(15000, 60, 12000), durationMs: Date.now() - t0 });
+    await sleep(stored, run);
+    for (const t of [bash, read]) append(sid, 'tool', [result(t.id, t.name, t.content, { providerExecuted: true }, { durationMs: null })]); // stored without a duration, as the runtime does
+    agent.toolCalls += 2;
+  }
+
   /** "[fast]": quick steps (thinking, read/grep/bash/edit) with model latency between them, for layout stability. */
   async function fastScript(sid, run) {
     const cwd = projectPath(sid);
@@ -768,6 +816,7 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
     if (/\[web\]/i.test(input)) return webScript(sid, run);
     if (/\[compact\]/i.test(input)) return compactScript(sid, run);
     if (/\[fast\]/i.test(input)) return fastScript(sid, run);
+    if (/\[cli\b/i.test(input)) return cliScript(sid, run, input);
     if (/\[ssh\]/i.test(input)) return sshScript(sid, run);
     if (/\[budget\]/i.test(input)) {
       // the budget stopped a paid call (budget.onLimit "ask"): the notice offers to let this chat go over

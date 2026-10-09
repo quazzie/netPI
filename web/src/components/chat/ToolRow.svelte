@@ -25,7 +25,8 @@
   // a call that is still streaming (preparing) has no arguments yet: a tool that already runs (tool.start) carries them
   const lt = $derived(chat.live.get(step.call.id));
   const call = $derived(step.call.arguments === undefined && lt?.arguments ? { ...step.call, arguments: lt.arguments } : step.call);
-  const result = $derived(step.result);
+  // a call the provider ran itself shows its result as soon as it finished (tool.result), before the tool message is stored
+  const result = $derived(step.result ?? lt?.result ?? null);
   const args = $derived(parseArgs(call));
   // a tool with actions (ssh, process, agents) is shown as the tool of its action
   const name = $derived(viewName(call.name, args));

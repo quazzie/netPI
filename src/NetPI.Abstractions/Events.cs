@@ -82,6 +82,9 @@ public static class EventTypes
     public const string ToolStart = "tool.start";
     public const string ToolOutput = "tool.output";
     public const string ToolEnd = "tool.end";
+    /// <summary>The result of a call the provider ran itself, the moment it finished: <c>{ sessionId, callId, name, content, isError, details }</c>.
+    /// Shown live only; the tool message stored after the assistant message is the record.</summary>
+    public const string ToolResult = "tool.result";
     public const string AgentStatus = "agent.status";
     public const string AgentQueue = "agent.queue";
     public const string AgentNotice = "agent.notice";

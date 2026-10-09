@@ -20,10 +20,10 @@ public sealed class Recorder
     private const int SummaryChars = 400;
     private const int TextPreviewChars = 160;
 
-    /// <summary>Events too frequent to keep (every token, every output chunk).</summary>
+    /// <summary>Events too frequent to keep (every token, every output chunk), or whose payload the transcript keeps (tool.result).</summary>
     private static readonly HashSet<string> Skipped = new(StringComparer.Ordinal)
     {
-        EventTypes.StreamDelta, EventTypes.StreamTool, EventTypes.ToolOutput, ProcessEvents.Output,
+        EventTypes.StreamDelta, EventTypes.StreamTool, EventTypes.ToolOutput, EventTypes.ToolResult, ProcessEvents.Output,
     };
 
     private readonly IPluginContext _ctx;

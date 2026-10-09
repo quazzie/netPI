@@ -199,10 +199,10 @@ internal static class ClaudeCliTests
             {
                 ProviderToolRunning r when r.Id == "tu_1" && r.Name == "Read" && r.Arguments == "{\"file_path\":\"src/x.cs\"}" => "running",
                 ProviderToolOutput o when o.Id == "tu_1" && o.Text == "↳ Grep foo\n" => "output",
-                ProviderToolDone d when d.Id == "tu_1" && !d.IsError => "done",
+                ProviderToolDone d when d.Id == "tu_1" && !d.IsError && d.Content == "file text" => "done",
                 _ => null,
             }).Where(x => x is not null).ToList();
-            t.Eq("running,output,done", string.Join(",", order), "running, then a subagent's progress, then done");
+            t.Eq("running,output,done", string.Join(",", order), "running, then a subagent's progress, then done with its result");
             t.Check(call.ProviderLive, "the call is marked as reported live");
             t.Eq("read", call.ProviderAs, "named for the hooks as the NetPI tool it stands for");
             t.Eq(2000L, done.Usage!.CacheReadTokens, "context size is the last turn's");
