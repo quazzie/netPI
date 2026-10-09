@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Acornima;
+using Acornima.Ast;
 using Jint;
 using Jint.Native;
 using Jint.Runtime;
@@ -90,13 +92,32 @@ internal sealed class ScriptRunner(ScriptHost host, ScriptLimits limits)
         engine.SetValue("__store", new Func<string, string?, string?>((key, json) => host.Store.Set(key, json)));
         engine.SetValue("__call", new Func<string, string, JsValue>((name, args) => Call(engine, name, args, calls)));
 
+        // the body on the function's first line, so an error's line number is the script's own
+        const string Head = "(async function () {";
+        Prepared<Script> script;
+        try
+        {
+            script = Engine.PrepareScript(Head + code + "\n})().then("
+                + "v => __done(true, v === undefined ? '' : typeof v === 'string' ? v : __json(v)),"
+                + "e => __done(false, __error(e)));", strict: true);
+        }
+        catch (ScriptPreparationException pe) when (pe.InnerException is ParseErrorException ex)
+        {
+            // parsed before anything runs: a script that does not parse made no call
+            var column = ex.LineNumber == 1 ? ex.Column - Head.Length : ex.Column;
+            Fail($"the script does not parse, so nothing ran: SyntaxError: {ex.Error.Description} (line {ex.LineNumber}, column {column + 1})");
+            return;
+        }
+        catch (Exception ex)
+        {
+            Fail("the script could not be prepared, so nothing ran: " + ex.Message);
+            return;
+        }
+
         try
         {
             engine.Execute(Prelude);
-            // the body on the function's first line, so an error's line number is the script's own
-            engine.Execute("(async function () {" + code + "\n})().then("
-                + "v => __done(true, v === undefined ? '' : typeof v === 'string' ? v : __json(v)),"
-                + "e => __done(false, __error(e)));");
+            engine.Execute(script);
             engine.Advanced.ProcessTasks();
             while (_ok is null)
             {

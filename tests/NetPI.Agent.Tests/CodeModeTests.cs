@@ -172,8 +172,11 @@ public static class CodeModeTests
             Check.False(o.Ok); Check.Contains(o.Text, "out of memory");
             o = await Run("function f() { return f(); } f();");
             Check.False(o.Ok); Check.Contains(o.Text, "recursion");
-            o = await Run("this is not javascript");
-            Check.False(o.Ok); Check.Contains(o.Text, "Script error:");
+            o = await Run("text('ran');\nthis is not javascript");
+            Check.False(o.Ok); Check.Contains(o.Text, "Script error: the script does not parse, so nothing ran: SyntaxError: ");
+            Check.Contains(o.Text, "(line 2, column 6)"); Check.False(o.Text.Contains("ran\n"), o.Text);
+            o = await Run("const x = ;");
+            Check.False(o.Ok); Check.Contains(o.Text, "(line 1, column 11)");
         });
 
         t.Add("codemode: discovery — ALL_TOOLS, searchTools, describeTool, an unknown tool's error", async () =>
@@ -194,6 +197,7 @@ public static class CodeModeTests
             Check.Contains(o.Text, "\ndescribeTool: unknown tool 'nope'; find tools with searchTools(query) or ALL_TOOLS\n");
             Check.Contains(o.Text, "\ntrue\n");
             Check.Contains(o.Text, "Unknown tool 'nope'");
+            Check.Contains(o.Text, "find callable tools with searchTools(query)");
         });
 
         t.Add("codemode: a nested tool cannot run a script", async () =>

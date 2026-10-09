@@ -15,6 +15,10 @@ internal sealed class ScriptHost(INestedToolCalls nested, ScriptStore store, Act
     /// <summary>How many calls the result's record lists (the rest are counted); arguments are cut to <see cref="MaxRecordedArgs"/>.</summary>
     public const int MaxRecordedCalls = 256;
     public const int MaxRecordedArgs = 2000;
+    /// <summary>Added to the error of a call to a tool a script cannot call.</summary>
+    public const string UnknownToolHint =
+        "In a script, find callable tools with searchTools(query) or ALL_TOOLS; deferred and MCP tools are called by name, " +
+        "without tool_search, mcp_search or mcp_call (which a script cannot call).";
 
     private readonly List<JsonObject> _calls = [];
     private int _callCount;
@@ -60,7 +64,11 @@ internal sealed class ScriptHost(INestedToolCalls nested, ScriptStore store, Act
         var result = await nested.CallAsync(name, args, ct).ConfigureAwait(false);
         Record(name, argsText, result.IsError, (long)(DateTime.UtcNow - started).TotalMilliseconds);
 
-        var envelope = new JsonObject { ["content"] = Cap(result.Content ?? ""), ["isError"] = result.IsError };
+        var content = result.Content ?? "";
+        // a name the script cannot call: say where to look, and that the loaders are not needed here
+        if (result.IsError && !nested.Tools.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase)))
+            content += " " + UnknownToolHint;
+        var envelope = new JsonObject { ["content"] = Cap(content), ["isError"] = result.IsError };
         if (result.Details is not null)
         {
             try { envelope["details"] = NetPiJson.ToNode(result.Details); } catch { }

@@ -1288,7 +1288,11 @@ codemode (idea-w9ibt2).
   the body of an async function (top-level `await` and `return`) in strict mode. The sandbox has no Node, files, network,
   timers or .NET: only strings cross into the script, through the globals below. Bounds: `codemode.timeoutSeconds` (600,
   or the call's `timeoutSeconds`, at most 3600) for the whole script, `codemode.memoryMb` (256), recursion depth 1000,
-  4 000 000 characters of output. A script that waits on a promise nothing can settle fails at once.
+  4 000 000 characters of output. The codemode result itself is then capped like any tool result: past
+  `agent.maxToolResultChars` (20000) it goes to a file and the model gets its start and end, so a script prints a summary
+  or a slice of large data. A script that waits on a promise nothing can settle fails at once. The script is parsed
+  before anything runs: one that does not parse fails with
+  `the script does not parse, so nothing ran: SyntaxError: <message> (line L, column C)` (the script's own line and column).
 - **Globals:**
   - `tools.<name>(args)` resolves to the tool's text and throws on its error; `callTool(name, args)` resolves to
     `{ content, isError, details?, images? }` and never throws for the tool's own error. Results reach the script whole up
@@ -1306,7 +1310,8 @@ codemode (idea-w9ibt2).
   included, loaded or not, so a script reaches a whole MCP catalogue without declaring it — the before-call hooks
   (guardrails, plan mode, the workspace guard) may block or rewrite it, and the after-call hooks see it. Calls that change
   something run one at a time, read-only ones up to four at once. Gateways (`mcp_call`), `tool_search`/`mcp_search` and
-  `codemode` itself are not callable from a script, and a nested tool gets no nested-call service of its own. Nested calls
+  `codemode` itself are not callable from a script (a script needs no loader; a call to a name it cannot call gets a hint
+  to `searchTools`/`ALL_TOOLS` added to its error), and a nested tool gets no nested-call service of its own. Nested calls
   are not transcript messages: the codemode result records them. They count as tool calls of the run.
 - The live output shows each call (`→ name {args}`) and each output line as it happens.
 
