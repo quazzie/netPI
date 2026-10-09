@@ -5,7 +5,7 @@ namespace NetPI.Context;
 
 /// <summary>
 /// Tells the model when its tools change during a session (a plugin loaded, reloaded or disabled, <c>tools.disabled</c>, the
-/// session's own switches <c>meta.toolsOff</c>).
+/// session's own switches <c>meta.toolsOff</c>, deferred tools loaded by <c>tool_search</c>).
 /// Every request already carries the current tool definitions, but the frozen system prompt still has the guidelines of
 /// the first call and nothing in the conversation says what changed, so a "tools" notice names the added and removed
 /// tools, says why (<see cref="ToolChanges"/>, kept in the notice's meta) and carries the new tools' guidelines. The
@@ -93,7 +93,12 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         IReadOnlySet<string>? switchedOff = null, ToolChanges.Change? cause = null)
     {
         var sb = new StringBuilder("Your tools changed.");
-        if (added.Count > 0) sb.Append(" New: ").Append(string.Join(", ", added)).Append('.');
+        if (added.Count > 0)
+        {
+            sb.Append(" New: ").Append(string.Join(", ", added));
+            if (cause?.Cause == ToolChanges.ToolSearch) sb.Append(" (").Append(cause.Clause).Append(')');
+            sb.Append('.');
+        }
         var byUser = removed.Where(n => switchedOff?.Contains(n) == true).ToList();
         var gone = removed.Where(n => switchedOff?.Contains(n) != true).ToList();
         if (byUser.Count > 0) sb.Append(" The user switched off for this session: ").Append(string.Join(", ", byUser)).Append('.');

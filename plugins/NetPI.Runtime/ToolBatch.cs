@@ -167,8 +167,10 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
         var original = call.Arguments;
         try
         {
-            if (tool is null) prepared.Early = ToolResult.Error($"Unknown tool '{call.Name}'. Available tools: {string.Join(", ", ToolSelection.Visible(tools).Select(t => t.Name))}.");
-            else if (tool.Definition.Deferred) prepared.Early = ToolResult.Error("This tool is deferred. Discover its schema and use its invocation gateway.");
+            var session = Ctx.Sessions.GetSession(SessionId) ?? rc.Session;
+            if (tool is null) prepared.Early = ToolResult.Error($"Unknown tool '{call.Name}'. Available tools: {string.Join(", ", ToolSelection.Visible(tools, session).Select(t => t.Name))}.");
+            else if (!ToolSelection.IsDeclared(tool.Definition, LoadedTools.Of(session)))
+                prepared.Early = ToolResult.Error($"{call.Name} is not loaded. Load it with tool_search first; it is callable from your next call.");
             else
             {
                 prepared.Args = ParseArgs(call.Arguments);

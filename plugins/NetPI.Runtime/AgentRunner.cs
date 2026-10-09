@@ -86,7 +86,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             // 3. turn context + hooks
             var promptRevision = SessionPrompt.Revision(session);
             var tools = rt.ToolsFor(Info, session);
-            var defs = ToolSelection.Visible(tools);
+            var defs = ToolSelection.Visible(tools, session);
             var prompt = await BuildPromptAsync(session, project, cwd, model, defs, ct).ConfigureAwait(false);
             if (Ctx.Sessions.GetSession(SessionId) is { } afterPrompt && SessionPrompt.Revision(afterPrompt) != promptRevision) continue;
             AgentTurnContext turn = null!;

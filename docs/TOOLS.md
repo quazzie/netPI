@@ -41,6 +41,9 @@ Every request carries the active tools (the highest-priority registration per na
   sets them when it is applied). Before the first message that is free. In a started chat the change applies from the next model call: tool definitions lead the
   request, so the model re-reads the conversation once (slower on a local model, a full-price read on a paid one), and a
   `tools` notice tells it ("The user switched off for this session: bash.");
+- deferred tools (`ToolDefinition.Deferred`, today an MCP server's unpinned tools) the chat has not loaded with
+  [`tool_search`](#tool_search-deferred-tools), and deferred-tool infrastructure (`tool_search`, `mcp_search`, `mcp_call`)
+  when the chat has no deferred tool it could reach;
 - for a subagent: the tools its owner chose. With an `agent_spawn` `tools` list exactly those, even tools the owner
   does not have (a limited orchestrator can dispatch an agent with the `ssh` tool; unknown names get the list of
   tools); without one the owner's tools (its allowlist, and its session's switched-off tools, copied to the subagent's
@@ -1235,9 +1238,36 @@ content: the RPC's JSON, as the model reads it
 details: the same value as JSON (the chat shows it)
 ```
 
+## `tool_search` (deferred tools)
+
+Deferred tools are registered and callable but not sent to the model, so a big catalogue (an MCP server with 250 tools)
+costs nothing per request. `tool_search { query, limit? (5, at most 10) }` (plugins/NetPI.Runtime) ranks the deferred
+tools the chat may call and has not loaded (switched-off tools, a subagent's allowlist and the gateways stay out) and
+**loads** the matches: their names go into the session's `meta.toolsLoaded` (`LoadedTools` in the contracts), and from
+the next model call on they are declared like any other tool, with their own schemas, and called directly. The idea is
+pi 1.0's `tool_search`.
+
+- Ranking: a query that is a tool's exact name first, then Okapi BM25 over the name (also with `_` as spaces), label,
+  category, description, help and the parameters' names and descriptions; camelCase splits, stop words drop, a naive
+  singular form (`issues` finds `issue`).
+- The description names no tool, so it stays the same while MCP servers connect and the request prefix keeps.
+- A chat keeps at most 40 loaded tools (every one is in each request from then on); past that the result says so. A
+  loaded name whose tool is gone (its MCP server is down) stays, for when it is back, but takes no room.
+- Calling a deferred tool that is not loaded fails with "`<name>` is not loaded. Load it with tool_search first".
+- The load is a meta change, so the next call gets a `tools` notice with cause `tool-search` ("New: x (loaded by
+  tool_search)") carrying the new tools' guidelines. Loading changes the request's tool list, so the model re-reads the
+  conversation once, as with any tool change.
+- The list survives a restart; a fork keeps it; a tool switched off for the chat stays off.
+
+```ts
+content: "Loaded N tools, callable from your next call:
+- name: first line of its description" (+ "Already loaded:" …)
+details: { kind: "tool-search", loaded: string[] /* this call */, matches: string[] /* ranked */ }
+```
+
 ## Deferred MCP tools
 
-[NetPI.Mcp](PLUGIN-MCP.md) registers concrete external tools but sends only `mcp_search`, `mcp_call` and `mcp_resource` by default. `mcp_search {query,server?,detail?:"summary"|"schema",limit?:1..5}` returns bounded summaries or one selected schema and revision. `mcp_call {id,revision,arguments}` resolves the eligible concrete tool before policy hooks. Pinned tools expose ordinary schemas. `mcp_resource {uri,server?}` reads one remote resource; results are tagged `kind:"tool"` or `kind:"resource"` so a search for a document and a search for a capability rank in one pool. Only a URI the server advertised can be read.
+[NetPI.Mcp](PLUGIN-MCP.md) registers concrete external tools but sends only `mcp_search`, `mcp_call` and `mcp_resource` by default. To call one directly, load it with [`tool_search`](#tool_search-deferred-tools); `mcp_search` + `mcp_call` reach it without loading it. `mcp_search {query,server?,detail?:"summary"|"schema",limit?:1..5}` returns bounded summaries or one selected schema and revision. `mcp_call {id,revision,arguments}` resolves the eligible concrete tool before policy hooks. Pinned tools expose ordinary schemas. `mcp_resource {uri,server?}` reads one remote resource; results are tagged `kind:"tool"` or `kind:"resource"` so a search for a document and a search for a capability rank in one pool. Only a URI the server advertised can be read.
 
 Discovery result Details: `{kind:"mcp-discovery",schemas:[{id,revision,serverId}]}`; these retained disclosures authorize the exact revision. Remote result Details: `{kind:"mcp",serverId,tool,structuredContent,content:[metadata]}`, with indirect dispatch adding `resolvedTool` and effective `arguments`. Text/structured content is model-facing; supported images use ImagePart. Binary data is excluded from metadata and text, resource links remain links.
 

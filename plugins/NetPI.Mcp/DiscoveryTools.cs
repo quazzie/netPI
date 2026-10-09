@@ -29,7 +29,7 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
     {
         Name = "mcp_search", Label = "Find MCP tool", Category = "mcp", ReadOnly = true, SummaryArg = "query",
         Description = "Find external tools and resources. Search summaries, then request detail=schema for one exact tool id before mcp_call; read a resource's uri with mcp_resource.",
-        PromptGuidelines = ["For external capabilities, use mcp_search, inspect only the selected schema, then mcp_call with its revision.", "A resource uri from mcp_search is read with mcp_resource."],
+        PromptGuidelines = ["For an external tool you will call more than once, load it with tool_search and call it directly; for a one-off call, use mcp_search, inspect only the selected schema, then mcp_call with its revision.", "A resource uri from mcp_search is read with mcp_resource."],
         Parameters = JsonNode.Parse("""{"type":"object","properties":{"query":{"type":"string"},"server":{"type":"string"},"detail":{"type":"string","enum":["summary","schema"]},"limit":{"type":"integer","minimum":1,"maximum":5}},"required":["query"],"additionalProperties":false}""")!.AsObject(),
     };
     internal static IReadOnlyList<IAgentTool> Eligible(IPluginContext ctx, ToolContext context) =>

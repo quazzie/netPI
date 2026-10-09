@@ -243,7 +243,7 @@ public static class McpTests
             ctx.Tools.Register(search);ctx.Tools.Register(call);
             Check.Equal(250,manager.Catalog().Count);
             var eligible=ToolSelection.Eligible(ctx.Tools,null,ctx.Sessions.GetSession("ses_1"));
-            Check.Equal("mcp_call,mcp_search",string.Join(",",ToolSelection.Visible(eligible).Select(t=>t.Name)));
+            Check.Equal("mcp_call,mcp_search",string.Join(",",ToolSelection.Visible(eligible,ctx.Sessions.GetSession("ses_1")).Select(t=>t.Name)));
             var target=manager.Catalog().Single(t=>t.RemoteName=="weather");
             var context=Context(ctx);
             var envelope=T.Args(new {id=target.Definition.Name,revision=target.Definition.Revision,arguments=new {city="Oslo"}});
