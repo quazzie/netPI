@@ -5,6 +5,7 @@
     <Project Path="plugins/NetPI.Runtime/NetPI.Runtime.csproj" />
     <Project Path="plugins/NetPI.AgentsMd/NetPI.AgentsMd.csproj" />
     <Project Path="plugins/NetPI.Ask/NetPI.Ask.csproj" />
+    <Project Path="plugins/NetPI.CodeMode/NetPI.CodeMode.csproj" />
     <Project Path="plugins/NetPI.Compaction/NetPI.Compaction.csproj" />
     <Project Path="plugins/NetPI.Context/NetPI.Context.csproj" />
     <Project Path="plugins/NetPI.Coordinator/NetPI.Coordinator.csproj" />

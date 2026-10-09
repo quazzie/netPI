@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <!-- The script engine: Jint, a JavaScript interpreter in managed code (MIT; Acornima parses for it). No native code, no
+         Node: a script reaches nothing but what this plugin hands it, and its memory, recursion and run time are bounded by
+         the engine's own constraints. Pinned exactly: the plugin's bytes must not change under an unchanged source. -->
+    <PackageReference Include="Jint" Version="[4.17.0]" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Agent.Tests" />
+  </ItemGroup>
+</Project>

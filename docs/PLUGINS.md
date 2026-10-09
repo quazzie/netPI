@@ -32,7 +32,7 @@ plugin's service with no error), dynamic-loading settings and copying `wwwroot/*
 Two shared assemblies, both in `src/` and both in the host's default load context: **`NetPI.Abstractions`** is the
 harness's own vocabulary (tools, context, sessions, models, the loop's contract, the storage port), and
 **`NetPI.Contracts`** holds what is built on it — agent slots and the scheduler, workspaces, decisions, resource
-leases, deferred tools, and the event names the plugins publish (`WorkspaceEvents`, `AgentSchedulerEvents`,
+leases, deferred tools, nested tool calls (`INestedToolCalls`) and tool ranking (`ToolRanking`), and the event names the plugins publish (`WorkspaceEvents`, `AgentSchedulerEvents`,
 `ProcessEvents`). A plugin that speaks none of those references only Abstractions. The kernel references only
 Abstractions, which is what keeps the core small (`node scripts/core-size.mjs`).
 

@@ -6,6 +6,7 @@ TestHost.Verbose = args.Contains("-v");
 var filters = args.Where(a => a != "-v").ToArray();
 var runner = new TestRunner { Name = "Agent", RunOnThreadPool = true };
 DeferredToolsTests.Register(runner);
+CodeModeTests.Register(runner);
 LoopTests.Register(runner);
 SubagentTests.Register(runner);
 SubagentWorkspaceTests.Register(runner);

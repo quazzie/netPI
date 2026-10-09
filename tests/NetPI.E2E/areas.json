@@ -216,7 +216,8 @@
     "control",
     "chat",
     "scheduling",
-    "sessions"
+    "sessions",
+    "codemode"
    ]
   },
   {
@@ -265,6 +266,12 @@
    "path": "plugins/NetPI.Tools.Media/",
    "tags": [
     "provider"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.CodeMode/",
+   "tags": [
+    "codemode"
    ]
   },
   {

@@ -592,6 +592,15 @@ milliseconds; anything unexpected answers "not supported", so a call never fails
 | `mcp.maxBinaryBytes` | 2000000 | Decoded image limit |
 | `mcp.refreshSeconds` | 60 | Polling fallback |
 
+## Code mode
+
+The `codemode` tool's scripts (docs/TOOLS.md).
+
+| key | default | |
+|---|---|---|
+| `codemode.timeoutSeconds` | `600` | a script still running after this is stopped (a call can ask for its own `timeoutSeconds`, at most 3600) |
+| `codemode.memoryMb` | `256` | what one script may allocate |
+
 ## Language servers
 
 The `lsp` tool's servers (docs/TOOLS.md).

@@ -1,0 +1,5 @@
+{
+  "id": "netpi.codemode",
+  "name": "Code mode",
+  "description": "The codemode tool: the agent writes one JavaScript script that calls its tools (in parallel, filtered) and only the script's output reaches the model."
+}

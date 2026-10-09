@@ -16,6 +16,23 @@ public static class AdvancedTests
 
     public static void Register(TestRunner r, Env env)
     {
+        r.Add("codemode.script", "codemode: a script on the real server calls two tools at once; the nested calls are recorded, not stored as messages", async () =>
+        {
+            var s = await env.NewSession();
+            var run = await env.Run(s.S("id")!, "Look two things up at once [s:codemode]");
+            Check.Contains(run.FinalText, "The script ran.");
+            Check.Contains(run.FinalText, "CODEMODE-DONE");
+            var result = run.Parts("tool_result").Single();
+            Check.Equal("codemode", result.S("name"));
+            Check.False(result.B("isError"), result.S("content") ?? "");
+            Check.Contains(result.S("content"), "Script completed");
+            Check.Contains(result.S("content"), "choices: true");
+            var details = result.P("details");
+            Check.Equal("codemode", details.S("kind"));
+            Check.Equal(2, details.Arr("calls").Count());
+            Check.Equal(1, run.OfType("tool.start").Count(), "one tool row: the script's");
+        });
+
         r.Add("subagents.wait-steer", "wait + steer: a user message interrupts agent_wait; a late report arrives as an agent-result notice", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);

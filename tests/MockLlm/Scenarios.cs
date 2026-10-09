@@ -142,6 +142,7 @@ public sealed partial class ScenarioEngine
                 "sub" => Sub(req, tag),
                 "ideas" => Ideas(tag, step, after),
                 "ask" => Ask(step, after),
+                "codemode" => CodeMode(step, after),
                 "plan" => PlanFlow(tag, step, after),
                 "long" => Long(tag, msgs),
                 _ => Echo(req, anchor >= 0 ? msgs[anchor] : msgs.LastOrDefault(m => m.Role == "user" && !m.IsNotice), step),
@@ -516,6 +517,20 @@ public sealed partial class ScenarioEngine
                     ("question", "Which way?"),
                     ("options", new JsonArray(Obj(("label", "Fast")), Obj(("label", "Thorough")))))))));
         return Final("Answer received: " + FirstLine(ToolResults(after).LastOrDefault()?.Text) + "\n\nASK-DONE");
+    }
+
+    /// <summary>Code mode: one script calls two tools at once; only its output comes back.</summary>
+    private static Plan CodeMode(int step, List<NMsg> after)
+    {
+        if (step == 0)
+            return new Plan { Thinking = "Two lookups at once, in one script." }
+                .Call("codemode", Obj(("code", """
+                    const [choices, listing] = await Promise.all([tools.agent_choices({}), tools.ls({ path: '.' })]);
+                    text('choices: ' + (choices.length > 0));
+                    return 'CODEMODE-LISTED ' + typeof listing;
+                    """)));
+        var result = ToolResults(after).LastOrDefault()?.Text ?? "";
+        return Final((result.Contains("CODEMODE-LISTED string") ? "The script ran." : "The script did not run: " + FirstLine(result)) + "\n\nCODEMODE-DONE");
     }
 
     /// <summary>Plan mode: a write that is blocked, the plan, and (once the user decided) the write again.</summary>

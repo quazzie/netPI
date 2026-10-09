@@ -9,11 +9,15 @@ namespace NetPI.Runtime;
 /// One tool batch of a turn: the calls the model asked for, prepared (a gateway resolved, a hook may rewrite the
 /// arguments), invoked and finished — and what a steer, an abort or a stop does to the calls that never ran.
 /// </summary>
-internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunContext rc, Func<bool> hasSteering)
+internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, AgentRunContext rc, Func<bool> hasSteering)
 {
     private IPluginContext Ctx => rt.Ctx;
     private string SessionId => state.Info.SessionId;
     private string AgentId => state.Info.Id;
+    // for the nested calls (ToolBatch.Nested.cs): a primary constructor's parameters are not members
+    private AgentRuntime Rt => rt;
+    private AgentState State => state;
+    private AgentRunContext Rc => rc;
 
     private List<IAgentTool> ActiveTools(SessionInfo session) => rt.ToolsFor(state.Info, session);
 
@@ -86,7 +90,7 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
                 {
                     ToolResultPart result;
                     await slots.WaitAsync(ct).ConfigureAwait(false);
-                    try { result = await InvokeAsync(p, ct).ConfigureAwait(false); }
+                    try { result = await InvokeAsync(turn, p, ct).ConfigureAwait(false); }
                     finally { slots.Release(); }
                     await finish.WaitAsync(CancellationToken.None).ConfigureAwait(false);
                     try
@@ -106,7 +110,7 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
                     var (p, changed) = await PrepareAsync(turn, calls[i], tools, ct).ConfigureAwait(false);
                     started.Add(calls[i].Id);
                     argsChanged |= changed;
-                    var result = await InvokeAsync(p, ct).ConfigureAwait(false);
+                    var result = await InvokeAsync(turn, p, ct).ConfigureAwait(false);
                     await FinishAsync(turn, p, result, done, ct).ConfigureAwait(false);
 
                     if (i < calls.Count - 1 && hasSteering())
@@ -236,7 +240,7 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
         return (prepared, changed);
     }
 
-    private async Task<ToolResultPart> InvokeAsync(PreparedCall p, CancellationToken ct)
+    private async Task<ToolResultPart> InvokeAsync(AgentTurnContext turn, PreparedCall p, CancellationToken ct)
     {
         ToolResult result;
         if (p.Early is not null || p.Tool is null)
@@ -248,6 +252,8 @@ internal sealed class ToolBatch(AgentRuntime rt, AgentState state, AgentRunConte
             ct.ThrowIfCancellationRequested(); // never start a tool for a run that was aborted meanwhile
             using var output = new ToolOutputEmitter(Ctx.Events, SessionId, p.Call.Id);
             var context = CallContext(p.Call.Id, output.Write);
+            // a tool may call tools through the same pipeline (a codemode script); its nested calls get no such service
+            context.Features.Set<INestedToolCalls>(new NestedCalls(this, turn, p));
             try
             {
                 if (!StillEligible(p)) result = ToolResult.Error("The tool was disabled or replaced before execution.");

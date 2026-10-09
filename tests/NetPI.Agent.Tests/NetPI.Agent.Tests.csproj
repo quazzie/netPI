@@ -23,6 +23,7 @@
     <Compile Include="../Shared/Fakes.cs" Link="SharedFakes.cs" />
     <Compile Include="../Shared/Usings.cs" Link="SharedUsings.cs" />
     <ProjectReference Include="../../plugins/NetPI.Mcp/NetPI.Mcp.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.CodeMode/NetPI.CodeMode.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Agents/NetPI.Agents.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Ask/NetPI.Ask.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Context/NetPI.Context.csproj" />

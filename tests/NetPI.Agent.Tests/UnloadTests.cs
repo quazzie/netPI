@@ -31,7 +31,7 @@ public static class UnloadTests
         return dir?.FullName;
     }
 
-    private static readonly string[] PluginNames = ["NetPI.Agents", "NetPI.Context", "NetPI.AgentsMd", "NetPI.Runtime", "NetPI.Tools.Agents"];
+    private static readonly string[] PluginNames = ["NetPI.Agents", "NetPI.Context", "NetPI.AgentsMd", "NetPI.Runtime", "NetPI.Tools.Agents", "NetPI.CodeMode"];
 
     private static async Task LoadRunUnload()
     {
@@ -90,6 +90,16 @@ public static class UnloadTests
             await runtime.SendAsync(parent.Id, new UserInput { Text = "go" });
             await h.IdleAsync(parent.Id, 15_000);
             Check.Equal("parent done", h.Messages(parent.Id)[^1].Text);
+            // a script on the engine (Jint) the code mode plugin carries: its load context must go too
+            var scripted = h.NewSession(model: "fake/solo");
+            h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
+                ? Reply.Text("script done")
+                : Reply.Tools(Reply.Call("codemode", new { code = "const r = await tools.agent_choices({}); store('n', r.length); return r.length > 0 ? 'choices' : 'none';" }));
+            await runtime.SendAsync(scripted.Id, new UserInput { Text = "script" });
+            await h.IdleAsync(scripted.Id, 15_000);
+            var script = h.Messages(scripted.Id).SelectMany(m => m.ToolResults).Single();
+            Check.False(script.IsError, script.Content);
+            Check.Contains(script.Content, "choices");
             var preview = await h.Rpc.CallAsync("context.preview", new { sessionId = parent.Id });
             Check.Contains((string?)preview!["systemPrompt"], "# Environment");
             await h.Rpc.CallAsync("agents.list");

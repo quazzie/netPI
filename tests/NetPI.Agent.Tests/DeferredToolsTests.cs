@@ -88,11 +88,11 @@ public static class DeferredToolsTests
                 Def("pull_requests_list", "List the pull requests of a repository."),
                 Def("weather_lookup", "Current weather for a city."),
             };
-            Check.Equal("issue_create", NetPI.Runtime.ToolSearchTool.Rank(tools, "create issues").First().Name, "plural and stop words");
-            Check.Equal("pull_requests_list", NetPI.Runtime.ToolSearchTool.Rank(tools, "pullRequest").First().Name, "camelCase splits");
-            Check.Equal("weather_lookup", NetPI.Runtime.ToolSearchTool.Rank(tools, "WEATHER_LOOKUP").First().Name, "exact name");
-            Check.Equal(0, NetPI.Runtime.ToolSearchTool.Rank(tools, "the of and").Count);
-            Check.Equal(0, NetPI.Runtime.ToolSearchTool.Rank(tools, "spreadsheet").Count);
+            Check.Equal("issue_create", ToolRanking.Rank(tools, "create issues").First().Name, "plural and stop words");
+            Check.Equal("pull_requests_list", ToolRanking.Rank(tools, "pullRequest").First().Name, "camelCase splits");
+            Check.Equal("weather_lookup", ToolRanking.Rank(tools, "WEATHER_LOOKUP").First().Name, "exact name");
+            Check.Equal(0, ToolRanking.Rank(tools, "the of and").Count);
+            Check.Equal(0, ToolRanking.Rank(tools, "spreadsheet").Count);
         });
         t.Add("deferred: runtime search schema call with 250 tools keeps two schemas and effective hooks", async () => {
             await using var h=await TestHost.StartAsync();

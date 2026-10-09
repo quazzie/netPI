@@ -1260,9 +1260,48 @@ pi 1.0's `tool_search`.
 - The list survives a restart; a fork keeps it; a tool switched off for the chat stays off.
 
 ```ts
-content: "Loaded N tools, callable from your next call:
-- name: first line of its description" (+ "Already loaded:" …)
+content: "Loaded N tools, callable from your next call:\n- name: first line of its description" (+ "Already loaded:" …)
 details: { kind: "tool-search", loaded: string[] /* this call */, matches: string[] /* ranked */ }
+```
+
+## Code mode (`codemode`, plugins/NetPI.CodeMode)
+
+`codemode { code, timeoutSeconds? }` runs one JavaScript script that calls the chat's tools; only what the script outputs
+reaches the model. It is for work whose calls matter only together: many lookups in parallel (`Promise.all`), large
+results filtered or aggregated before the model sees them, calls chained without a model turn each. After pi 1.0's
+codemode (idea-w9ibt2).
+
+- **Engine:** [Jint](https://github.com/sebastienros/jint) 4.17 (managed, MIT; the plugin's only package, pinned). `code` is
+  the body of an async function (top-level `await` and `return`) in strict mode. The sandbox has no Node, files, network,
+  timers or .NET: only strings cross into the script, through the globals below. Bounds: `codemode.timeoutSeconds` (600,
+  or the call's `timeoutSeconds`, at most 3600) for the whole script, `codemode.memoryMb` (256), recursion depth 1000,
+  4 000 000 characters of output. A script that waits on a promise nothing can settle fails at once.
+- **Globals:**
+  - `tools.<name>(args)` resolves to the tool's text and throws on its error; `callTool(name, args)` resolves to
+    `{ content, isError, details?, images? }` and never throws for the tool's own error. Results reach the script whole up
+    to 1 MiB (past that the middle is cut), not cut to `agent.maxToolResultChars`.
+  - `text(v)` and `return v` add output (strings as is, other values as JSON); `console.log/info/warn/error/debug` add
+    lines to a `<console_output>` block; `image(block)` attaches an image (`{ mediaType, data }`, or a `callTool` result
+    with images; at most 8).
+  - `ALL_TOOLS` and `searchTools(query, { limit })` (the same ranking as `tool_search`, `ToolRanking` in the contracts)
+    list `{ name, description }`; `describeTool(name)` gives `{ name, description, help?, guidelines?, readOnly, parameters }`
+    (JSON schema).
+  - `store(key, value)` / `load(key)`: small JSON values (64 KB each, 256 KB in all) kept across the chat's scripts in
+    `meta.codemodeStore`, written only when the script succeeds; `store(key, undefined)` removes one.
+- **Nested calls** go through the runtime's pipeline (`INestedToolCalls` in the contracts, which the runtime puts in
+  `ToolContext.Features` of every call the model makes): the tool must be eligible for the chat — deferred tools
+  included, loaded or not, so a script reaches a whole MCP catalogue without declaring it — the before-call hooks
+  (guardrails, plan mode, the workspace guard) may block or rewrite it, and the after-call hooks see it. Calls that change
+  something run one at a time, read-only ones up to four at once. Gateways (`mcp_call`), `tool_search`/`mcp_search` and
+  `codemode` itself are not callable from a script, and a nested tool gets no nested-call service of its own. Nested calls
+  are not transcript messages: the codemode result records them. They count as tool calls of the run.
+- The live output shows each call (`→ name {args}`) and each output line as it happens.
+
+```ts
+content: "Script completed in 1.2 s.\n<text items, each after '==> text i/n <==' when there are several>\n<console_output>…</console_output>"
+         // a failed script: "Script failed in …", its output so far, then "Script error: <name>: <message>" and stack lines
+images?: the image() images
+details: { kind: "codemode", ok, durationMs, callCount, calls: [{ name, arguments /* ≤ 2000 chars */, isError, durationMs }] /* first 256 */, timedOut? }
 ```
 
 ## Deferred MCP tools
