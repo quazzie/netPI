@@ -47,10 +47,7 @@ public static class IdeasTests
         public Env()
         {
             Ctx = new FakePluginContext(T.TempDir("ideas-home"));
-            Ctx.ModelsFake.VerifierResponder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"The scripted evidence supports this proposal\"}" }] };
-            Ctx.SettingsFake.Set("ideas.applyVerifiedUpdates", false); // These cases exercise verified review cards.
-            // The checks decide on a model that has to exist, and the commit sweep and the recall both go through
-            // admission before they ask, so the catalog needs one.
+            // a model in the catalog, for the chats ideas.refine starts
             Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             ProjectDir = T.TempDir("ideas-proj");
             Project = Ctx.SessionsFake.CreateProject("Demo", ProjectDir);
@@ -63,7 +60,7 @@ public static class IdeasTests
 
         public async Task StartAsync() => await new IdeasPlugin().StartAsync(Ctx, CancellationToken.None);
 
-        /// <summary>The name the JSON backlog had: nothing reads that file any more, it is reported as a hint.</summary>
+        /// <summary>The file earlier versions kept the backlog in: nothing reads or writes it now.</summary>
         public string File => Path.Combine(Ctx.Paths.Home, "ideas.json");
 
         /// <summary>The backlog as the UI reads it: collections in the store, not a file.</summary>
@@ -93,11 +90,6 @@ public static class IdeasTests
     private static void Ok(ToolResult r) { if (r.IsError) throw new AssertException("tool error: " + r.Content); }
 
     private static JsonObject Idea(ToolResult r) => (JsonObject)((JsonObject)NetPiJson.ToNode(r.Details)!)["idea"]!;
-
-    /// <summary>What the commit check's fake `files.commits` answers with: the real method's own types.</summary>
-    private sealed record CommitsResult(string Repo, string GitDir, string CommonDir, IReadOnlyList<GitCommit> Commits, bool Reachable);
-
-    private sealed record GitCommit(string Hash, string Short, string Subject, string Author, string At);
 
     public static void Register(TestRunner r)
     {

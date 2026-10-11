@@ -1,14 +1,10 @@
-// Mock ideas backlog (docs/PLUGIN-IDEAS.md): one global "file" (~/.netpi/ideas.json), every idea carrying
-// a project property.
-import os from 'node:os';
-import path from 'node:path';
+// Mock ideas backlog (docs/PLUGIN-IDEAS.md): one backlog in the store, every idea carrying a project property.
 import { store, pushMessage, text, mkSession, agentFor } from './store.mjs';
 
 const STATUSES = ['open', 'parked', 'planned', 'in-progress', 'done', 'rejected'];
 const SYN = { 'in progress': 'in-progress', wip: 'in-progress', deferred: 'parked', todo: 'open' };
 const KINDS = ['note', 'research', 'plan', 'requirements', 'design', 'decision', 'blocker', 'links', 'todo'];
 const KSYN = { spec: 'requirements', tasks: 'todo', findings: 'research' };
-const GLOBAL = path.join(os.homedir(), '.netpi', 'ideas.json');
 
 const rid = (n) => Math.random().toString(36).slice(2, 2 + n).padEnd(n, '0');
 const now = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
@@ -20,13 +16,12 @@ function err(code, message) {
 }
 
 export function createIdeas({ publish }) {
-  const file = GLOBAL;
-  const doc = { ideas: [], exists: false };
+  const doc = { ideas: [] };
   // Attached image bytes, keyed by their reference path (the host writes them under <home>/idea-images).
   const files = new Map();
   const refines = []; // what ideas.refine was asked, for the walkthrough to look at
 
-  const changed = () => setTimeout(() => publish('ideas.changed', { file }), 250);
+  const changed = () => setTimeout(() => publish('ideas.changed', { backend: 'sqlite', database: 'netpi.db', scope: 'netpi.ideas', schemaVersion: 2 }), 250);
 
   function find(id) {
     const i =
@@ -81,7 +76,7 @@ export function createIdeas({ publish }) {
   const section = (s) => ({ id: `sec-${rid(4)}`, kind: kind(s.kind), ...(s.title ? { title: s.title } : {}), content: s.content ?? '', updatedAt: now() });
 
   const api = {
-    'ideas.list': () => ({ file, fileName: 'ideas.json', exists: doc.exists, ideas: doc.ideas }),
+    'ideas.list': () => ({ storage: { backend: 'sqlite', database: 'netpi.db', scope: 'netpi.ideas', schemaVersion: 2, editableFile: false, importExport: 'json' }, ideas: doc.ideas }),
     // The lean, ranked list the welcome screen reads on every window start (idea-ky14bu): the target project's own
     // open/planned ideas first, then the global ones. Same rule as plugins/NetPI.Ideas (IdeaOps.Picks).
     'ideas.picks': (p) => {
@@ -138,7 +133,6 @@ export function createIdeas({ publish }) {
       };
       if (proj) idea.project = proj;
       p.prepend ? doc.ideas.unshift(idea) : doc.ideas.push(idea);
-      doc.exists = true;
       changed();
       return idea;
     },
@@ -230,7 +224,7 @@ export function createIdeas({ publish }) {
       const idea = find(p.id);
       const proj = idea.project ? (idea.project.name ?? idea.project.id) : 'global';
       const lines = [
-        `Implement the following idea from the ideas backlog (\`${idea.id}\` in ${GLOBAL}).`,
+        `Implement the following idea from the ideas backlog (\`${idea.id}\`).`,
         'Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with the ideas tool (action update): set the status to "in-progress" when you start and "done" when finished, and add a note section for anything important you learn.',
         '',
         `# ${idea.title}`,
@@ -344,7 +338,6 @@ export function createIdeas({ publish }) {
       // unbound ("global")
       mk({ title: 'Try a local reranker for @ mentions', summary: 'Rank files by recent edits and open tabs.', tags: ['ui'], age: 3 }),
     ];
-    doc.exists = true;
   }
 
   return { api, seed };

@@ -147,8 +147,6 @@ public sealed class FakeSessionStore : ISessionStore
 public sealed class FakeModelCatalog : IModelCatalog
 {
     public Func<ModelRequest, CancellationToken, Task<ChatMessage>>? AsyncResponder { get; set; }
-    /// <summary>Explicit second-pass verification script, separate from draft generation.</summary>
-    public Func<ModelRequest, ChatMessage>? VerifierResponder { get; set; }
     /// <summary>When set, StreamAsync serves this instead of throwing: a scripted answer as stream events, so a test
     /// can drive the runner's streaming path (the real loop).</summary>
     public Func<ModelRequest, CancellationToken, IAsyncEnumerable<ModelStreamEvent>>? StreamResponder { get; set; }
@@ -180,8 +178,7 @@ public sealed class FakeModelCatalog : IModelCatalog
     {
         Requests.Enqueue(request);
         if (AsyncResponder is { } asyncResponder) return asyncResponder(request, ct);
-        var response = request.SystemPrompt?.StartsWith("Independently verify", StringComparison.Ordinal) == true && VerifierResponder is { } verifier
-            ? verifier(request) : Responder(request);
+        var response = Responder(request);
         if (StrictOutput && request.MaxOutputTokens is > 0 and var max)
         {
             var tokens = response.Parts.OfType<TextPart>().Sum(p => ModelMessages.EstimateTokens(p.Text));

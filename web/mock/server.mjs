@@ -891,8 +891,6 @@ const handlers = {
   },
   'mock.filesOpened': () => filesOpened,
   'mock.filesOpenCalls': () => filesOpenCalls,
-  // test helper: the chat whose user turns contain this phrase leaves the given plan when its tab is closed
-  // test helper: offer the commit check's card for the idea whose title contains this phrase
   // test helpers: slow the process tails and observe who asks for them (the e2e leak check)
   'mock.procTailDelay': (p) => ((procTailDelayMs = p.ms ?? 0), true),
   'mock.procStats': () => work.procStats(),
