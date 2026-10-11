@@ -116,6 +116,24 @@ public static class UiTests
             await RunUiScript(env, "ideas-tab.mjs", 180);
         }, 210);
 
+        r.Add("ui.diagnostics-tab", "ui: the Diagnostics tab — a plugin that fails to load listed first, reload, events, logs, the context with skills and tool changes, and the Calls view polling single-flight with slow answers and stopping when it is left", async () =>
+        {
+            // The script writes a broken plugin into this server's app copy and takes it out again; it switches the shell plugin off and on.
+            await RunUiScript(env, "diagnostics-tab.mjs", 150);
+        }, 180);
+
+        r.Add("ui.files-tab", "ui: the Files tab — select vs open (files.open answered by the test), @ mention, the git line and its changes, the context menu, search, no files.scope per message, and a workspace switch that drops a late answer and reruns the search", async () =>
+        {
+            // The script makes its own git project (two commits ahead of an upstream) and a second one, and removes them.
+            await RunUiScript(env, "files-tab.mjs", 150);
+        }, 180);
+
+        r.Add("ui.mcp-tab", "ui: the MCP tab against real servers — the fixture's tools (one rejected), a server that fails, a tool's details, read-only from the hint and the server list, the filter, and a switch that saves the configuration", async () =>
+        {
+            // The servers are this suite's MCP fixture in its "ui" mode and a command that does not exist; the script removes them.
+            await RunUiScript(env, "mcp-tab.mjs", 120, "--fixture", typeof(McpTests).Assembly.Location);
+        }, 150);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id

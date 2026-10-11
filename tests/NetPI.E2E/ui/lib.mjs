@@ -116,16 +116,28 @@ export async function openApp(page) {
  * when that tab is already the one showing (a click on the active tab folds the panel). */
 export async function openStripTab(page, side, name) {
   const t = page.locator(`.panel.${side} .strip-tab`, { hasText: name });
-  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
-  if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
+  // Shortly after a load the app restores the panel's last tab from the server, which can undo a click made before it:
+  // the tab has to still be the one showing a moment later.
+  for (let i = 0; i < 4; i++) {
+    if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
+    if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
+    await page.waitForTimeout(250);
+    if ((await t.getAttribute('aria-selected')) === 'true' && (await page.locator(`.panel.${side}.open`).count())) return;
+  }
 }
 
-/** Opens a session from the sessions panel by (a part of) its title. */
+/** Opens a session from the sessions panel by (a part of) its title. A row that is not shown (a folded group, a long list)
+ * is found through the session search, which shows matches inside folded groups; the search is cleared again. */
 export async function openSession(page, title) {
   await openStripTab(page, 'left', 'Sessions');
-  const row = page.locator('.srow', { hasText: title }).first();
+  const row = page.locator('.panel.left .srow', { hasText: title }).first();
+  await row.waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {});
+  const search = page.locator('.panel.left').getByPlaceholder('Search sessions');
+  const searched = !(await row.isVisible());
+  if (searched) await search.fill(title);
   await row.waitFor({ timeout: 15_000 });
   await row.click();
+  if (searched) await search.fill('');
   await page.locator('.composer textarea').waitFor({ timeout: 10_000 });
 }
 
@@ -146,18 +158,21 @@ export const paneShows = (page, includes = '', ms = 10_000) =>
  * restore(), which is the reconnect path without restarting the server (context.setOffline does not close a socket that
  * is already open). Install it before the page opens the app.
  * A frame: { n, dir: 'out' | 'in', t: 'rpc' | 'res' | 'ev' | …, id, m (the method of a call, and of the call an answer
- * answers), type (event), sid, msg (parsed) }. Holding the answers to one method: socket.hold((f) => f.t === 'res' && f.m === 'x').
+ * answers), type (event), sid, msg (parsed), at (when the tap saw it), deliveredAt (an answer or event: when the page got
+ * it) }. Holding the answers to one method: socket.hold((f) => f.t === 'res' && f.m === 'x').
  */
 export async function tapSocket(page) {
   const frames = [];
   const holds = [];
+  const delays = [];
+  const intercepts = [];
   const live = new Set();
   const methods = new Map(); // call id → method, so an answer frame names the call it answers
   let down = false;
   const record = (dir, data) => {
     let msg = null;
     try { msg = JSON.parse(String(data)); } catch {}
-    const f = { n: frames.length, dir, t: msg?.t, id: msg?.id, m: msg?.m, type: msg?.type, sid: msg?.sid, msg };
+    const f = { n: frames.length, dir, t: msg?.t, id: msg?.id, m: msg?.m, type: msg?.type, sid: msg?.sid, msg, at: Date.now(), deliveredAt: null };
     if (f.t === 'rpc') methods.set(f.id, f.m);
     else if (f.t === 'res') f.m = methods.get(f.id);
     frames.push(f);
@@ -169,12 +184,27 @@ export async function tapSocket(page) {
     const server = ws.connectToServer();
     const pair = { ws, server };
     live.add(pair);
-    ws.onMessage((data) => { record('out', data); server.send(data); });
+    const deliver = (f, data) => {
+      if (!live.has(pair)) return;
+      f.deliveredAt = Date.now();
+      ws.send(data);
+    };
+    ws.onMessage((data) => {
+      const f = record('out', data);
+      // an intercepted call never reaches the server: the test answers it (or leaves it unanswered)
+      const icp = intercepts.find((i) => i.match(f));
+      if (!icp) return server.send(data);
+      f.intercepted = true;
+      const answer = icp.answer?.(f);
+      if (answer) deliver(record('in', JSON.stringify(answer)), JSON.stringify(answer));
+    });
     server.onMessage((data) => {
       const f = record('in', data);
       const hold = holds.find((h) => h.match(f));
-      if (hold) hold.queue.push(() => { if (live.has(pair)) ws.send(data); });
-      else ws.send(data);
+      const delay = delays.find((d) => d.match(f));
+      if (hold) hold.queue.push(() => deliver(f, data));
+      else if (delay) setTimeout(() => deliver(f, data), delay.ms);
+      else deliver(f, data);
     });
     ws.onClose((code, reason) => { live.delete(pair); server.close({ code, reason }).catch(() => {}); });
     server.onClose((code, reason) => { live.delete(pair); ws.close({ code, reason }).catch(() => {}); });
@@ -204,6 +234,36 @@ export async function tapSocket(page) {
           for (const deliver of h.queue.splice(0)) deliver();
         },
       };
+    },
+    /** Delays every server frame `match` accepts by `ms` (each on its own; the others pass). Returns a function that ends it. */
+    delay(match, ms) {
+      const d = { match, ms };
+      delays.push(d);
+      return () => { const i = delays.indexOf(d); if (i >= 0) delays.splice(i, 1); };
+    },
+    /** Keeps every page frame `match` accepts from the server; `answer(frame)` returns the frame the page gets instead
+     * (e.g. { t: 'res', id: f.id, r: true }), or nothing for no answer. Returns a function that ends it. */
+    intercept(match, answer) {
+      const i = { match, answer };
+      intercepts.push(i);
+      return () => { const k = intercepts.indexOf(i); if (k >= 0) intercepts.splice(k, 1); };
+    },
+    /** Calls of `method` (after a mark) whose answer has not reached the page yet. */
+    inFlight: (method, n = 0) => since(n).filter((f) => f.dir === 'out' && f.t === 'rpc' && f.m === method
+      && !frames.some((a) => a.dir === 'in' && a.t === 'res' && a.id === f.id && a.deliveredAt != null)).length,
+    /** The most calls of `method` (after a mark) that were ever in flight at once, from the page's side. */
+    maxInFlight(method, n = 0) {
+      const marks = [];
+      for (const c of since(n).filter((f) => f.dir === 'out' && f.t === 'rpc' && f.m === method)) {
+        marks.push([c.at, 1]);
+        const a = frames.find((x) => x.dir === 'in' && x.t === 'res' && x.id === c.id && x.deliveredAt != null);
+        if (a) marks.push([a.deliveredAt, -1]);
+      }
+      marks.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+      let now = 0;
+      let max = 0;
+      for (const [, d] of marks) max = Math.max(max, (now += d));
+      return max;
     },
     /** Closes the page's connection and refuses new ones until restore(); with http (the default) the UI's HTTP fallback fails too. */
     async drop({ http = true } = {}) {

@@ -54,6 +54,17 @@ internal static class McpFixture
             {
                 var count = int.TryParse(mode, out var size) ? size : mode == "large" ? 250 : 1;
                 var tools = new JsonArray();
+                if (mode == "ui")
+                {
+                    // The MCP tab's test (ui/mcp-tab.mjs): a tool that says it only reads, one the server's readOnly list
+                    // names, one that may change things, and one whose schema the plugin rejects.
+                    JsonNode Schema() => JsonNode.Parse("""{"type":"object","properties":{"query":{"type":"string"}}}""")!;
+                    tools.Add(new JsonObject { ["name"]="lookup", ["description"]="Look something up", ["inputSchema"]=Schema(), ["annotations"]=new JsonObject { ["readOnlyHint"]=true } });
+                    tools.Add(new JsonObject { ["name"]="status", ["description"]="The state of a thing", ["inputSchema"]=Schema() });
+                    tools.Add(new JsonObject { ["name"]="act", ["description"]="Change a thing", ["inputSchema"]=Schema() });
+                    tools.Add(new JsonObject { ["name"]="broken", ["description"]="A schema that is not one", ["inputSchema"]="nope" });
+                    count = 0;
+                }
                 for (var i=0; i<count; i++) tools.Add(mode == "typed" && i == 0 ? Typed() : new JsonObject { ["name"]=i==0 ? "weather" : "weather_"+i, ["description"]=changed ? "Get UPDATED city weather" : "Get city weather", ["inputSchema"]=JsonNode.Parse("""{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}""") });
                 await Send(Reply(request, new JsonObject { ["tools"]=tools }));
             }
