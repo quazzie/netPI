@@ -8,6 +8,7 @@ var runner = new TestRunner { Name = "Agent", RunOnThreadPool = true };
 DeferredToolsTests.Register(runner);
 CodeModeTests.Register(runner);
 LoopTests.Register(runner);
+StreamReplayTests.Register(runner);
 SubagentTests.Register(runner);
 SubagentWorkspaceTests.Register(runner);
 SchedulerTests.Register(runner);

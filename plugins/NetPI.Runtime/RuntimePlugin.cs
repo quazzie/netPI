@@ -5,7 +5,7 @@ namespace NetPI.Runtime;
 
 /// <summary>
 /// The agent runtime (<see cref="IAgentRuntime"/>) and its RPC methods: <c>agent.send</c>, <c>agent.abort</c>,
-/// <c>agent.queue</c>, <c>agent.dequeue</c>, <c>runs.list</c>, <c>agent.get</c>, and the per-session tool switches
+/// <c>agent.queue</c>, <c>agent.dequeue</c>, <c>runs.list</c>, <c>agent.get</c>, <c>agent.stream</c>, and the per-session tool switches
 /// <c>agent.tools</c>, <c>agent.setTools</c>.
 /// <para>Settings: <c>agent.maxTurns</c> (200), <c>agent.defaultMaxOutputTokens</c> (16384), <c>agent.maxToolResultChars</c> (20000),
 /// <c>agent.parallelReadOnlyTools</c> (true), <c>agents.maxDepth</c> (3).</para>
@@ -107,6 +107,19 @@ public sealed class RuntimePlugin : INetPiPlugin
             var info = id is not null ? runtime.Get(id) : sessionId is not null ? runtime.GetBySession(sessionId) : null;
             return Task.FromResult<object?>(info);
         }, "One agent: { id? , sessionId? } → AgentInfo | null", true, RpcParam.Opt("id", RpcParamType.String, "the agent's id"), RpcParam.Opt("sessionId"));
+
+        // a page that opens a chat mid-answer, or reconnects, has missed the start of it (StreamReplay)
+        var replay = new StreamReplay(context);
+        Rpc("agent.stream", async (req, ct) =>
+        {
+            var sessionId = req.Required("sessionId");
+            // complete up to what the bus has dispatched by now: the page's socket is another subscriber and may be ahead
+            // of this one, so an event it passed over before the page subscribed would be in neither (StreamReplay)
+            var upTo = context.Events.Recent(1) is [var last] ? last.Seq : 0;
+            for (var i = 0; i < 400 && replay.Seq < upTo; i++) await Task.Delay(5, ct).ConfigureAwait(false);
+            return replay.Snapshot(sessionId);
+        },
+            "What a chat's answer has streamed so far, for a page that opens it mid-answer: { sessionId } → { seq, events: [{ type, d, seq }] } (the stream.* events of the model call in flight, the tool.* events of the calls still running; complete up to seq)", true, session);
 
         Rpc("agent.tools", (req, _) =>
             Task.FromResult<object?>(SessionToolSwitches.Info(context, runtime, req.Required("sessionId"))),

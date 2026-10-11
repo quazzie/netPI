@@ -116,6 +116,11 @@ plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/www
   socket that has been silent for 45s is treated as dead.
 - On every (re)connect the client re-sends the `sub` set (the open tabs), reloads every list, and reloads the
   active chat's messages. Cached background chats are marked stale and reload when shown.
+- A chat shown that was not following its events (new to the page, evicted from the cache, or stale after a reconnect)
+  has missed what its answer has streamed so far: while its run is busy, `showChat` (`lib/state/app.svelte.js`) asks for it
+  after subscribing (`agent.stream`: the stream so far and the running calls' output, complete up to a seq), and
+  `ChatStore.catchUpStream` holds what arrives meanwhile, then applies both in seq order without the stream and tool
+  events the copy already holds. Without it a chat opened mid-answer started at the next delta, and a reconnect left a gap.
 - `conn` (`$state`) holds `{ status: connecting|open|reconnecting, retryAt, clientId, version }`. The top bar
   reads it.
 

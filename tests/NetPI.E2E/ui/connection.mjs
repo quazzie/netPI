@@ -14,6 +14,8 @@ import { run, check, shot, openApp, openStripTab, openSession, rpc, send, gates,
 const QWEN = 'aiproxy/qwen3.8-27b';
 const CLAUDE = 'anthropic/claude-haiku-4-5';
 const PAID = `wn-${STAMP}`;
+// what [s:slow] streams, part by part (tests/MockLlm Scenarios.Slow)
+const SLOW = `Slow answer:${Array.from({ length: 24 }, (_, i) => ` part ${i + 1}.`).join('')} SLOW-DONE`;
 
 await run('connection', async ({ page, context, socket, errors }) => {
   const dir = newDir(`conn-${STAMP}`);
@@ -34,13 +36,13 @@ await run('connection', async ({ page, context, socket, errors }) => {
 
     // ---- a plugin tab follows its bundle: a new version remounts it (ui.changed), a bundle that fails says so, Retry loads
     await openStripTab(page, 'right', 'Usage');
-    await page.waitForSelector('.plugin-root .usage', { timeout: 10_000 });
-    await page.evaluate(() => (window.__e2eRoot = document.querySelector('.plugin-root:has(.usage)')));
+    await page.waitForSelector('.plugin-root > .usage', { timeout: 10_000 });
+    await page.evaluate(() => (window.__e2eRoot = document.querySelector('.plugin-root:has(> .usage)')));
     const change = () => fs.appendFileSync(bundle, `\n// e2e ${Date.now()}\n`); // a changed file: the same bytes are no new version
     change();
     await page.waitForFunction(() => window.__e2eRoot && !window.__e2eRoot.isConnected, null, { timeout: 10_000 }).catch(() => {});
-    await page.waitForSelector('.plugin-root .usage', { timeout: 10_000 }).catch(() => {});
-    check('a plugin tab remounts when its bundle changes (ui.changed)', await page.evaluate(() => !window.__e2eRoot.isConnected && !!document.querySelector('.plugin-root .usage')));
+    await page.waitForSelector('.plugin-root > .usage', { timeout: 10_000 }).catch(() => {});
+    check('a plugin tab remounts when its bundle changes (ui.changed)', await page.evaluate(() => !window.__e2eRoot.isConnected && !!document.querySelector('.plugin-root > .usage')));
     await page.route('**/plugins/netpi.agents/ui.js*', (r) => r.fulfill({ status: 500, body: 'boom' }));
     change();
     await page.waitForSelector('.plugin-tab .state.error', { timeout: 10_000 }).catch(() => {});
@@ -48,8 +50,8 @@ await run('connection', async ({ page, context, socket, errors }) => {
     await shot(page, 'ui-conn-01-plugin-error');
     await page.unroute('**/plugins/netpi.agents/ui.js*');
     await page.locator('.plugin-tab .state.error button', { hasText: 'Retry' }).first().click();
-    await page.waitForSelector('.plugin-root .usage', { timeout: 10_000 }).catch(() => {});
-    check('Retry loads it again', (await page.locator('.plugin-root .usage').count()) > 0);
+    await page.waitForSelector('.plugin-root > .usage', { timeout: 10_000 }).catch(() => {});
+    check('Retry loads it again', (await page.locator('.plugin-root > .usage').count()) > 0);
     fs.writeFileSync(bundle, original);
     // the failed bundle's two console errors are the ones this part expects
     for (let i = errors.length - 1; i >= 0; i--) if (/status of 500|failed to load tab usage/.test(errors[i])) errors.splice(i, 1);
@@ -81,6 +83,35 @@ await run('connection', async ({ page, context, socket, errors }) => {
     check('on reconnect the finished run\'s stale partial answer is gone', (await page.locator('.assistant.live, .thinking.live').count()) === 0, `${await page.locator('.assistant.live, .thinking.live').count()} live blocks`);
     check('…and the stored answer shows', (await answer.count()) === 1);
     await shot(page, 'ui-conn-02-ended-offline');
+
+    // ---- the answer so far (agent.stream): a chat opened while its answer streams shows it from its start, and a page that
+    // lost its connection mid-answer shows it without the part that streamed meanwhile missing
+    const live = page.locator('.assistant.live');
+    const liveText = async () => ((await live.innerText().catch(() => '')) ?? '').replace(/\s+/g, ' ').trim();
+    const midTitle = `Mid-answer ${STAMP}`;
+    const mid = await chat(midTitle);
+    await send(mid, 'Hello. [s:say]');
+    await rpc('agent.send', { sessionId: mid, text: 'Take your time. [s:slow ms=8000]' });
+    await until('a few parts streamed', async () => ((await rpc('agent.get', { sessionId: mid }))?.activity ?? '') === 'writing', 10_000).catch(() => {});
+    await new Promise((r) => setTimeout(r, 1500)); // the chat is not open: its parts so far go by unseen
+    await openSession(page, midTitle);
+    await live.waitFor({ timeout: 5000 }).catch(() => {});
+    const opened = await liveText();
+    check('a chat opened while its answer streams shows the answer from its start', opened.startsWith('Slow answer: part 1.') && SLOW.startsWith(opened), JSON.stringify(opened.slice(0, 80)));
+    await waitIdle(mid, 2, 30_000).catch(() => {});
+
+    await rpc('agent.send', { sessionId: mid, text: 'Once more. [s:slow ms=8000]' });
+    await until('the answer streaming in the open chat', async () => (await liveText()).includes('part 3.'), 10_000).catch(() => {});
+    const before = await liveText();
+    await socket.drop();
+    await new Promise((r) => setTimeout(r, 1500)); // parts stream while the page cannot hear them
+    await socket.restore();
+    await page.waitForSelector('.conn[data-status="open"]', { timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(800);
+    const after = await liveText();
+    check('after a reconnect mid-answer the answer has no gap: what streamed meanwhile is there',
+      after.length > before.length && after.startsWith('Slow answer: part 1.') && SLOW.startsWith(after), `${JSON.stringify(before.slice(-30))} → ${JSON.stringify(after.slice(-60))}`);
+    await waitIdle(mid, 3, 30_000).catch(() => {});
 
     // ---- a connection that goes and comes back: the page reconnects and subscribes again, so a run's events reach it
     await socket.drop();

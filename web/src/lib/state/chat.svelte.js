@@ -209,6 +209,7 @@ export class ChatStore {
   #noticeTimer = 0;
   #loadSeq = 0;
   #msgEvents = null; // message events that landed while a load was in flight (its page cannot have them)
+  #held = null; // [type, d, seq] of what lands while catchUpStream asks for the answer so far
   #queueRev = 0; // bumped by every queue change, so a snapshot taken before one cannot undo it
 
   constructor(id) {
@@ -254,7 +255,7 @@ export class ChatStore {
         const held = this.#msgEvents;
         this.#msgEvents = null;
         this.loading = false;
-        for (const [type, d] of held) this.handle(type, d);
+        for (const [type, d, s] of held) this.handle(type, d, s);
       }
     }
     rpc('agent.queue', { sessionId: this.id }, { timeout: 8000 })
@@ -369,11 +370,15 @@ export class ChatStore {
     this.messages = next;
   }
 
-  /** Scoped event for this session. */
-  handle(type, d) {
+  /** Scoped event for this session; `seq` is the bus's (catchUpStream orders by it). */
+  handle(type, d, seq = 0) {
+    if (this.#held) {
+      this.#held.push([type, d, seq]);
+      return;
+    }
     // the message window is read as a whole: what lands during a load is newer than the page it waits for
     if (this.#msgEvents && (type === 'message.added' || type === 'message.updated')) {
-      this.#msgEvents.push([type, d]);
+      this.#msgEvents.push([type, d, seq]);
       return;
     }
     switch (type) {
@@ -493,6 +498,36 @@ export class ChatStore {
     if (this.stream.active && this.stream.ended) this.stream.clear();
     if (this.notice && this.notice.level !== 'error') this.notice = null;
     for (const t of this.live.values()) if (t.status === 'running') t.status = 'done';
+  }
+
+  /**
+   * A chat that was not following its events (just opened, evicted, or back from a lost connection) has missed what its
+   * answer has streamed so far, and the output of the calls still running: the server keeps that (agent.stream), complete
+   * up to a seq. What lands meanwhile waits; then the server's copy replaces this chat's stream and those calls' output,
+   * and everything is applied in seq order, without the stream and tool events the copy already holds. The page must be
+   * subscribed to the chat before this is called, so nothing between the copy and the live events is lost.
+   */
+  async catchUpStream() {
+    if (this.#held) return;
+    this.#held = [];
+    let snap = null;
+    try {
+      snap = await rpc('agent.stream', { sessionId: this.id });
+    } catch {
+      // nothing better to show than what arrives
+    }
+    const held = this.#held;
+    this.#held = null;
+    let events = held;
+    if (snap) {
+      const copied = (type) => type.startsWith('stream.') || type.startsWith('tool.');
+      const copy = (snap.events ?? []).map((e) => [e.type, e.d ?? {}, e.seq]);
+      clearTimeout(this.#endTimer);
+      this.stream.clear();
+      for (const [type, d] of copy) if (type === 'tool.start') this.live.delete(d.callId);
+      events = copy.concat(held.filter(([type, , seq]) => !copied(type) || !seq || seq > snap.seq)).sort((a, b) => (a[2] || 0) - (b[2] || 0));
+    }
+    for (const [type, d, seq] of events) this.handle(type, d, seq);
   }
 
   /** Reconcile the transient state against the server's truth for this session's run: a run that ended while we

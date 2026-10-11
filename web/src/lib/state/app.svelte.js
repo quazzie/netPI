@@ -324,7 +324,7 @@ async function loadAll({ reconnect }) {
     const active = app.openTabs.includes(saved?.active) ? saved.active : (app.openTabs[0] ?? null);
     app.activeId = active;
     resubscribe();
-    if (active) getChat(active).load();
+    if (active) showChat(getChat(active));
   } else {
     // we may have missed events: refresh the active chat, mark the others stale
     resubscribe();
@@ -335,13 +335,18 @@ async function loadAll({ reconnect }) {
       // a run that is still busy keeps its live state
       if (agentsNow) c.reconcile(!!agentsNow.get(c.id) && BUSY.has(agentsNow.get(c.id).status));
     }
-    if (app.activeId) {
-      const c = getChat(app.activeId);
-      c.stale = false;
-      c.load();
-    }
+    if (app.activeId) showChat(getChat(app.activeId));
   }
   app.ready = true;
+}
+
+// A chat about to be shown that has not been following its events (new to this page, evicted from the cache, or stale
+// after a reconnect): its messages, and while its run is busy what its answer has streamed so far, which an unsubscribed
+// page has missed. It is subscribed before this (resubscribe), so the copy and the live events meet.
+function showChat(c) {
+  if (c.loaded && !c.stale) return;
+  c.load();
+  if (BUSY.has(app.agents.get(c.id)?.status)) c.catchUpStream();
 }
 
 // ------------------------------------------------------------------------------------------ actions
@@ -359,9 +364,8 @@ export function activate(id) {
   loadWorkspace(id);   // the composer and the Files tab read this; it is per session and may change at any time
   app.unread.delete(id);
   app.errored.delete(id);
-  const c = getChat(id);
-  if (!c.loaded || c.stale) c.load();
   resubscribe();
+  showChat(getChat(id));
   persistTabs();
 }
 
@@ -403,12 +407,9 @@ export function closeTab(id) {
   if (app.activeId === id) {
     const next = app.openTabs[i] ?? app.openTabs[i - 1] ?? null;
     app.activeId = next;
-    if (next) {
-      const c = getChat(next);
-      if (!c.loaded || c.stale) c.load();
-    }
   }
   resubscribe();
+  if (app.activeId) showChat(getChat(app.activeId));
   persistTabs();
   // A chat closed before its first message is not a session: the host stores it in memory only (the first message
   // is what materializes it, so sessions.list never returns it again) and a list reload is the only thing that would
@@ -793,7 +794,7 @@ function onEvent(d, env) {
     }
     if (type === 'message.added') messageNotification(sid, d?.message);
     const chat = peekChat(sid);
-    if (chat) chat.handle(type, d ?? {});
+    if (chat) chat.handle(type, d ?? {}, env.seq);
     else if (type === 'message.added' && sid !== app.activeId && app.openTabs.includes(sid)) {
       if (d?.message?.role === 'assistant') app.unread.add(sid);
     }
