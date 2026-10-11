@@ -5,88 +5,15 @@
 //
 //   node tests/NetPI.E2E/ui/smoke.mjs --url http://127.0.0.1:7470 --token e2e-token --session "UI smoke" [--out dir]
 // Prints one JSON line at the end: { ok, checks: [{name, ok, detail}], errors: [...] }.
-import fs from 'node:fs';
-import path from 'node:path';
-import { execSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { run, arg, check, shot, openApp, chatShows, paneShows } from './lib.mjs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const argv = process.argv.slice(2);
-const arg = (n, d) => (argv.indexOf(n) >= 0 ? argv[argv.indexOf(n) + 1] : d);
-const BASE = arg('--url', 'http://127.0.0.1:7470');
-const TOKEN = arg('--token', 'e2e-token');
-const SESSION = arg('--session', 'UI smoke');
+const SESSION = arg('session', 'UI smoke');
 // hold=1500: the mock keeps its first answer's stream open after the first chunk, so "streaming rows shown" looks at a state
 // that is there for 1.5 s instead of racing one that is over in ~100 ms (a loaded machine missed it)
-const TEXT = arg('--text', 'Please edit the notes [s:tools file=notes.txt old=alpha new=ALPHA-UI hold=1500]');
-const OUT = path.resolve(arg('--out', path.join(here, '..', 'screenshots')));
-fs.mkdirSync(OUT, { recursive: true });
+const TEXT = arg('text', 'Please edit the notes [s:tools file=notes.txt old=alpha new=ALPHA-UI hold=1500]');
 
-const checks = [];
-const check = (name, ok, detail = '') => {
-  checks.push({ name, ok: !!ok, detail: String(detail) });
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? ` (${detail})` : ''}`);
-};
-const shot = async (page, name) => {
-  await page.screenshot({ path: path.join(OUT, `${name}.png`) });
-  console.log(`  screenshot ${name}.png`);
-};
-// Wait until the chat shows `marker` (what the next check reads), not for a fixed pause: a pause is too long on an idle
-// machine and too short on a loaded one. A marker that never comes leaves the check below to fail with the text it saw.
-const chatShows = (page, marker, ms = 10_000) =>
-  page.waitForFunction((m) => (document.querySelector('.scroller > .content')?.innerText ?? '').includes(m), marker, { timeout: ms }).catch(() => {});
-// The same for the right panel's open tab: its own text, once it is more than the "Loading…" placeholder (and holds `includes`).
-const paneShows = (page, includes = '', ms = 10_000) =>
-  page.waitForFunction((want) => {
-    const t = (document.querySelector('.panel.right > .body .pane:not([hidden])')?.innerText ?? '').trim();
-    return t.length > 20 && t.includes(want);
-  }, includes, { timeout: ms }).catch(() => {});
-
-async function loadPlaywright() {
-  for (const name of ['playwright', 'playwright-core']) {
-    try { return await import(name); } catch {}
-  }
-  const root = execSync('npm root -g', { encoding: 'utf8' }).trim();
-  for (const name of ['playwright', 'playwright-core']) {
-    try {
-      const mod = await import(pathToFileURL(path.join(root, name, 'index.mjs')).href);
-      return mod.default ?? mod;
-    } catch {}
-  }
-  throw new Error('Playwright not found (npm i -g playwright)');
-}
-
-/** Playwright's own Chromium, else an installed Edge/Chrome when that build is not downloaded (Edge ships with Windows). */
-async function launchBrowser(pw) {
-  try {
-    return await pw.chromium.launch({ args: ["--disable-features=msWindowTabManagerPublic"] });
-  } catch (e) {
-    if (!String(e?.message).includes("Executable doesn't exist")) throw e;
-    for (const channel of process.platform === 'win32' ? ['msedge', 'chrome'] : ['chrome', 'msedge']) {
-      try {
-        const b = await pw.chromium.launch({ channel, args: ["--disable-features=msWindowTabManagerPublic"] });
-        console.log(`  browser: ${channel} (Playwright's Chromium build is not installed)`);
-        return b;
-      } catch {}
-    }
-    throw e;
-  }
-}
-
-const pw = await loadPlaywright();
-const browser = await launchBrowser(pw);
-const errors = [];
-let exitCode = 0;
-try {
-  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, colorScheme: 'dark' });
-  const page = await context.newPage();
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(`[console] ${m.text()}`); });
-  page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
-  page.on('requestfailed', (r) => { if (!r.url().includes('/ws')) errors.push(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`); });
-  page.on('response', (r) => { if (r.status() >= 400) errors.push(`[http ${r.status()}] ${r.url()}`); });
-
-  await page.goto(`${BASE}/?token=${encodeURIComponent(TOKEN)}`);
-  await page.waitForSelector('.panel.left', { timeout: 15_000 });
+await run('smoke', async ({ page, errors }) => {
+  await openApp(page);
   // open the prepared session from the sessions list
   const sessionsTab = page.locator('.panel.left .strip-tab', { hasText: 'Sessions' });
   if ((await sessionsTab.count()) && (await sessionsTab.getAttribute('aria-selected')) !== 'true') await sessionsTab.click();
@@ -298,16 +225,4 @@ try {
   check('backup settings verify the snapshot', true);
   await shot(page, 'ui-15-backups');
   await page.keyboard.press('Escape');
-
-  check('no console/page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
-  await context.close();
-} catch (e) {
-  errors.push(`[exception] ${e?.stack ?? e}`);
-  check('smoke script ran to the end', false, e?.message ?? e);
-} finally {
-  await browser.close();
-}
-const ok = checks.every((c) => c.ok);
-if (!ok) exitCode = 1;
-console.log(JSON.stringify({ ok, checks, errors }));
-process.exit(exitCode);
+}, { viewport: { width: 1600, height: 1000 }, http: true });

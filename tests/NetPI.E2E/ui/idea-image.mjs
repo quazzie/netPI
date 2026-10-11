@@ -8,57 +8,9 @@
 // Prints one JSON line at the end: { ok, checks: [{name, ok, detail}], errors: [...] }.
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { run, arg, check, shot, openApp, OUT } from './lib.mjs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const argv = process.argv.slice(2);
-const arg = (n, d) => (argv.indexOf(n) >= 0 ? argv[argv.indexOf(n) + 1] : d);
-const BASE = arg('--url', 'http://127.0.0.1:7470');
-const TOKEN = arg('--token', 'e2e-token');
-const SESSION = arg('--session', 'Idea image');
-const OUT = path.resolve(arg('--out', path.join(here, '..', 'screenshots')));
-fs.mkdirSync(OUT, { recursive: true });
-
-const checks = [];
-const check = (name, ok, detail = '') => {
-  checks.push({ name, ok: !!ok, detail: String(detail) });
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? ` (${detail})` : ''}`);
-};
-const shot = async (page, name) => {
-  await page.screenshot({ path: path.join(OUT, `${name}.png`) });
-  console.log(`  screenshot ${name}.png`);
-};
-
-async function loadPlaywright() {
-  for (const name of ['playwright', 'playwright-core']) {
-    try { return await import(name); } catch {}
-  }
-  const root = execSync('npm root -g', { encoding: 'utf8' }).trim();
-  for (const name of ['playwright', 'playwright-core']) {
-    try {
-      const mod = await import(pathToFileURL(path.join(root, name, 'index.mjs')).href);
-      return mod.default ?? mod;
-    } catch {}
-  }
-  throw new Error('Playwright not found (npm i -g playwright)');
-}
-
-async function launchBrowser(pw) {
-  try {
-    return await pw.chromium.launch({ args: ['--disable-features=msWindowTabManagerPublic'] });
-  } catch (e) {
-    if (!String(e?.message).includes('Executable doesn\'t exist')) throw e;
-    for (const channel of process.platform === 'win32' ? ['msedge', 'chrome'] : ['chrome', 'msedge']) {
-      try {
-        const b = await pw.chromium.launch({ channel, args: ['--disable-features=msWindowTabManagerPublic'] });
-        console.log(`  browser: ${channel} (Playwright's Chromium build is not installed)`);
-        return b;
-      } catch {}
-    }
-    throw e;
-  }
-}
+const SESSION = arg('session', 'Idea image');
 
 // A 1x1 PNG: small enough that prepareImage passes it through untouched.
 const PNG = Buffer.from(
@@ -66,19 +18,8 @@ const PNG = Buffer.from(
   'base64',
 );
 
-const pw = await loadPlaywright();
-const browser = await launchBrowser(pw);
-const errors = [];
-let exitCode = 0;
-try {
-  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, colorScheme: 'dark' });
-  const page = await context.newPage();
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(`[console] ${m.text()}`); });
-  page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
-  page.on('response', (r) => { if (r.status() >= 400) errors.push(`[http ${r.status()}] ${r.url()}`); });
-
-  await page.goto(`${BASE}/?token=${encodeURIComponent(TOKEN)}`);
-  await page.waitForSelector('.panel.left', { timeout: 15_000 });
+await run('idea-image', async ({ page, errors }) => {
+  await openApp(page);
 
   // the prepared session, then the Ideas tab on the right
   const sessionsTab = page.locator('.panel.left .strip-tab', { hasText: 'Sessions' });
@@ -163,12 +104,4 @@ try {
   });
 
   await shot(page, 'ui-idea-image');
-} catch (e) {
-  exitCode = 1;
-  check('script ran to completion', false, String(e?.stack ?? e));
-} finally {
-  await browser.close();
-}
-const ok = exitCode === 0 && errors.length === 0 && checks.every((c) => c.ok);
-console.log(JSON.stringify({ ok, checks, errors }));
-process.exit(ok ? 0 : 1);
+}, { viewport: { width: 1600, height: 1000 }, http: true });

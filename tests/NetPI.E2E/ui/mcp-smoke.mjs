@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { hostUi } from './host.mjs';
+import { check, report } from './lib.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PANEL = Number(process.env.MCP_PANEL || 300);
@@ -75,7 +76,9 @@ try {
     await page.getByRole('button',{name:'Save',exact:true}).click();
     await page.getByRole('alert').waitFor();
     if(await page.getByLabel('Configuration',{exact:true}).inputValue()!==draft)throw Error('Failed save lost edits');
-    console.log('PASS MCP UI '+width+'px: catalog controls and failed-save draft retained');
+    check('MCP UI '+width+'px: catalog controls and failed-save draft retained', true);
   }
-  if(errors.length)throw Error(errors.join('\n'));
-} finally { await browser?.close(); await new Promise(resolve=>server.close(resolve)); }
+  check('no page errors', errors.length===0, errors.join(' | '));
+} catch (e) { check('mcp-smoke script ran to the end', false, e?.message ?? e); }
+finally { await browser?.close(); await new Promise(resolve=>server.close(resolve)); }
+report(errors);
