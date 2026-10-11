@@ -28,6 +28,8 @@ public sealed class Plan
     /// scenario only; <c>sumgate=&lt;name&gt;</c> gates the summary of a conversation that carries it). See <see cref="Gates"/>.
     /// </summary>
     public string? Gate { get; set; }
+    /// <summary>Wait at this named gate before anything is streamed (no first token yet): <c>aftergate=</c>.</summary>
+    public string? StartGate { get; set; }
     /// <summary>Drop the connection in the middle of the stream.</summary>
     public bool Drop { get; set; }
     /// <summary>Stop sending (but keep the connection open) for this long in the middle of the stream.</summary>
@@ -88,7 +90,14 @@ public sealed partial class ScenarioEngine
     /// <summary>Attempts per conversation fingerprint (drop / error scenarios fail the first attempts).</summary>
     private readonly ConcurrentDictionary<string, int> _attempts = new();
 
-    public void Reset() => _attempts.Clear();
+    /// <summary>The compaction summaries an answer was given after (aftergate=): only the first answer after one waits.</summary>
+    private readonly ConcurrentDictionary<string, byte> _summariesAnswered = new();
+
+    public void Reset()
+    {
+        _attempts.Clear();
+        _summariesAnswered.Clear();
+    }
 
     [GeneratedRegex(@"LONGSTEP (\d+)/(\d+)")]
     private static partial Regex LongStepRx();
@@ -158,6 +167,8 @@ public sealed partial class ScenarioEngine
                 "ideas" => Ideas(tag, step, after),
                 "ask" => Ask(tag, step, after),
                 "guard" => Guard(step, after),
+                "watchrun" => WatchRun(req, tag, step),
+                "multiedit" => MultiEdit(step, after),
                 "planui" => PlanUi(tag, step, after),
                 "goal" => GoalFlow(msgs),
                 "codemode" => CodeMode(step, after),
@@ -173,6 +184,13 @@ public sealed partial class ScenarioEngine
             plan.HoldMs = Math.Clamp(tag.PInt("hold", 0), 0, 60_000);
             plan.Gate = tag.Params.TryGetValue("gate", out var gate) && gate.Length > 0 ? gate : null;
         }
+        // aftergate=<name>: the first answer after a compaction waits there, before its first token: the first request that
+        // carries a summary this engine has not answered before (what the compaction kept can hold answers from before it,
+        // so counting those says nothing)
+        if (tag.Params.TryGetValue("aftergate", out var afterGate) && afterGate.Length > 0
+            && msgs.FirstOrDefault(m => m.Text.Contains("<conversation-summary>", StringComparison.Ordinal)) is { } summaryMsg
+            && _summariesAnswered.TryAdd(summaryMsg.Text, 0))
+            plan.StartGate = afterGate;
         return plan;
     }
 
@@ -468,7 +486,7 @@ public sealed partial class ScenarioEngine
     {
         if (step == 0)
             return new Plan { Text = "Starting a background worker." }
-                .Call("agent_spawn", Obj(("task", $"Background task: report the number 7. [s:sub i=7 delay={tag.PInt("delay", 800)}]"), ("name", "bg-worker"), ("background", true)));
+                .Call("agent_spawn", Obj(("task", $"Background task: report the number 7. [s:sub i=7 delay={tag.PInt("delay", 800)}{(tag.Params.TryGetValue("workergate", out var wg) ? $" gate={wg}" : "")}]"), ("name", tag.P("name", "bg-worker")), ("background", true)));
         return Final("The worker runs in the background; I will report when it finishes. SPAWNBG-STARTED");
     }
 
@@ -547,6 +565,50 @@ public sealed partial class ScenarioEngine
         }
         return Final("Answer received: " + FirstLine(ToolResults(after).LastOrDefault()?.Text) + "\n\nASK-DONE");
     }
+
+    /// <summary>
+    /// A run as a person watches it: a read (its first answer waits at gate= when the tag has one), a find and a grep (more
+    /// than three steps: the finished group folds), an edit, a stream that drops halfway on its first attempt (the retry,
+    /// stream.reset), a shell command whose output comes a line every 250 ms, and the answer.
+    /// </summary>
+    private Plan WatchRun(NRequest req, ScenarioTag tag, int step)
+    {
+        var file = tag.P("file", "notes.txt");
+        switch (step)
+        {
+            case 0:
+                return new Plan { Thinking = "The scheduler throws on a missing pool; let me read the code first.", Text = "Let me look at the code." }
+                    .Call("read", Obj(("path", file)));
+            case 1:
+                return new Plan { Thinking = "Where else is the pool looked up?" }
+                    .Call("find", Obj(("pattern", "*.txt")))
+                    .Call("grep", Obj(("pattern", tag.P("old", "alpha"))));
+            case 2:
+                return new Plan { Thinking = "Make the failure say what is missing.", Text = "Making the error clear." }
+                    .Call("edit", Obj(("path", file), ("oldText", tag.P("old", "alpha")), ("newText", tag.P("new", "ALPHA-CLEAR"))));
+            case 3:
+                if (_attempts.AddOrUpdate(req.Fingerprint(), 1, (_, n) => n + 1) == 1)
+                    return new Plan { Text = "Now I will build the solution to make sure it compiles before I answer, so that the change is checked and nothing else broke.", Drop = true, ChunkDelayMs = 20 };
+                return new Plan { Text = "Building it." }
+                    .Call("bash", Obj(("command", $"for i in $(seq 1 {tag.PInt("lines", 16)}); do echo \"build line $i\"; sleep 0.25; done")));
+            default:
+                return Final("The scheduler now fails with a clear message when a pool is missing. WATCHRUN-DONE");
+        }
+    }
+
+    /// <summary>
+    /// An edit of two files in one call, then a shell command that changes a third, clean one (a command's diff covers the
+    /// files that were clean before it): the session's folder needs web/src/lib/rpc.svelte.js, docs/PROTOCOL.md and
+    /// web/src/lib/config.js, committed.
+    /// </summary>
+    private static Plan MultiEdit(int step, List<NMsg> after) => step switch
+    {
+        0 => new Plan { Text = "Changing the client and the protocol together." }.Call("edit", Obj(("files", new JsonArray(
+            Obj(("path", "web/src/lib/rpc.svelte.js"), ("edits", new JsonArray(Obj(("oldText", "const RECONNECT_MS = 1000;"), ("newText", "const RECONNECT_MS = 1000; // re-subscribes after a reconnect"))))),
+            Obj(("path", "docs/PROTOCOL.md"), ("edits", new JsonArray(Obj(("oldText", "## Reconnect"), ("newText", "## Reconnect (with re-subscription)"))))))))),
+        1 => new Plan { Text = "And a shorter first retry." }.Call("bash", Obj(("command", "sed -i 's/RECONNECT_MS = 1000/RECONNECT_MS = 250/' web/src/lib/config.js"))),
+        _ => Final("Both files changed, and the first retry is quicker. MULTIEDIT-DONE"),
+    };
 
     /// <summary>A command a guardrail rule may ask about: git status, then git push origin main (in the session's folder).</summary>
     private static Plan Guard(int step, List<NMsg> after) => step switch

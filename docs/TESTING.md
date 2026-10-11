@@ -196,7 +196,8 @@ harness notice picks the scenario, and the step is the number of assistant messa
 markdown echo of the message. Every tag also takes `hold=<ms>`: the first answer of the scenario stays open for that long after its first chunk (a fixed time, not
 scaled by `--speed`), so a test can observe the live state instead of racing it. `gate=<name>` holds it there instead until
 `POST /_release?gate=<name>` (at most 60 s; a release that comes first lets the call through), and `sumgate=<name>` does
-the same to the summary call that compacts a conversation carrying the tag: what a browser test uses to look at a running
+the same to the summary call that compacts a conversation carrying the tag, and `aftergate=<name>` holds the first answer after
+a compaction before its first token (the conversation restarts from its summary): what a browser test uses to look at a running
 state for as long as it needs and end it on cue. Two rules apply to every scenario: when the last message is a `nudge` notice the model
 finishes (`NUDGE-RESUMED`), and when it is an `agent-result` notice it acknowledges the report (`AGENT-RESULT-RECEIVED`).
 Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …) that tests look for.
@@ -223,11 +224,13 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:fail]` | HTTP 400 (non-retryable) |
 | `[s:ask n=2]` | `ask_user` with two questions (the second multiple choice), then the answer back |
 | `[s:guard]` | `bash git status --short`, then `bash git push origin main`, then whether it ran |
+| `[s:watchrun file=notes.txt old=alpha new=…]` | a run as a person watches it: `read`, `edit`, a stream that drops halfway on its first attempt (retry, `stream.reset`), a `bash` that prints a line every 250 ms, the answer |
+| `[s:multiedit]` | one `edit` of `web/src/lib/rpc.svelte.js` and `docs/PROTOCOL.md` (`files`), then a `sed` that changes a clean `web/src/lib/config.js` (`RECONNECT_MS = 1000` → `250`); the folder needs all three, committed |
 | `[s:planui enter=0]` | plan mode as a person meets it: a plan (3 steps, 2 files), a revision with a 4th step naming the changes asked, and a sentence for approved, cancelled or moved to a new chat; `enter=1` first offers plan mode with `plan_enter` |
 | `[s:goal]` | in a goal's objective (a goal's notice picks the scenario when its objective carries a tag): a pass that only looks, a pass with a tool call, then `goal_update complete` |
 | `[s:say text="…"]` | answers with just the text (default `OK.`): no thinking, one short stream — the cheap run a test seeds a long chat with |
 | `[s:spawn n=3 delay=1500 stagger=0 model= workerhold=0]` | `agent_spawn background` × n (workers run `[s:sub]` for `delay + (i-1)·stagger` ms, plus a fixed `workerhold` stream hold independent of mock speed) → `agent` `wait` → summary of the reports |
-| `[s:spawnbg delay=]` | one background worker, the parent ends its turn; the report arrives later as an `agent-result` notice |
+| `[s:spawnbg delay= workergate= name=bg-worker]` | one background worker, the parent ends its turn; the report arrives later as an `agent-result` notice |
 | `[s:nest delay=]` | orchestrator → `lead` (`[s:subspawn]`: `agent` `send` to the parent, `agent_spawn` of a `helper`, which waits for it) |
 | `[s:sub i= delay=]` | subagent: thinks for `delay` ms, reports `Report from <name>: i squared is i²` (also the default for subagents) |
 | `[s:ideas title=]` | `ideas` (action `add`) with tags, priority and a section |

@@ -152,6 +152,12 @@ public static class UiTests
             await RunUiScript(env, "chat-decisions.mjs", 240);
         }, 270);
 
+        r.Add("ui.chat-run", "ui: a chat run as a person watches it — the status line and the prompt row, compaction refused while busy, a retry banner and stream.reset, live shell output, steer and queue chips, a subagent's report kept internal, folded steps with diffs and turn numbers; the showcase chat's prompt, notices as sent, a two-file edit and a command's changed files; /compact, Esc, images, a chat that never jumps, and the compaction banner", async () =>
+        {
+            // The script makes its own git project and chats and removes them; what it watches waits at MockLlm gates.
+            await RunUiScript(env, "chat-run.mjs", 300);
+        }, 330);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id

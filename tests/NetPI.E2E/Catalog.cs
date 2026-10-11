@@ -53,6 +53,7 @@ public static class Catalog
         ["ui.settings"] = "needs-node",
         ["ui.sessions-panel"] = "needs-node",
         ["ui.ideas-tab"] = "needs-node ideas",
+        ["ui.chat-run"] = "needs-node",
         ["ui.chat-decisions"] = "needs-node",
         ["ui.chat-history"] = "needs-node",
         ["ui.composer"] = "needs-node",

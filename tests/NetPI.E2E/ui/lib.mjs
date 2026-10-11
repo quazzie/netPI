@@ -52,7 +52,8 @@ export async function shot(page, name) {
   console.log(`  screenshot ${name}.png`);
 }
 
-/** One call to the server's RPC over HTTP, as the UI's fallback makes it: the result, or an Error with the server's message. */
+/** One call to the server's RPC over HTTP, as the UI's fallback makes it: the result, or an Error with the server's message
+ * (and its code and HTTP status). */
 export async function rpc(method, params = {}) {
   const res = await fetch(`${BASE}/api/rpc/${encodeURIComponent(method)}`, {
     method: 'POST',
@@ -62,7 +63,7 @@ export async function rpc(method, params = {}) {
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
-  if (!res.ok) throw new Error(`${method}: HTTP ${res.status} ${body?.error?.message ?? text}`);
+  if (!res.ok) throw Object.assign(new Error(`${method}: HTTP ${res.status} ${body?.error?.message ?? text}`), { code: body?.error?.code ?? null, status: res.status });
   return body;
 }
 

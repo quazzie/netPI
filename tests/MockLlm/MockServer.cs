@@ -306,6 +306,8 @@ public sealed class MockLlmServer : IAsyncDisposable
                 Console.WriteLine($"[{entry.Seq}] {api} {req.Model} scenario={plan.Scenario} step={plan.Step} msgs={req.Messages.Count} in={entry.InputTokens}" +
                                   (req.IsSubagent ? " (subagent)" : "") + (plan.Calls.Count > 0 ? " calls=" + string.Join(",", entry.Calls) : ""));
 
+            // a start gate holds the answer before anything is streamed: the call is made, its first token not there yet
+            if (plan.StartGate is { } startGate) await _gates.WaitAsync(startGate, ctx.RequestAborted).ConfigureAwait(false);
             var stream = new StreamOut(ctx, plan, _o.Speed, _gates);
             // Prompt caching: follow-up requests of a conversation hit the cache for most of the prompt.
             var cached = req.Messages.Any(m => m.Role == "assistant") ? entry.InputTokens * 6 / 10 : 0;
