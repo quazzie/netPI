@@ -221,6 +221,10 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:midfail n=1]` | an error inside the stream: `response.failed` / error chunk / Anthropic `overloaded_error` |
 | `[s:error status=503 n=1]` | the first `n` attempts fail with an HTTP error |
 | `[s:fail]` | HTTP 400 (non-retryable) |
+| `[s:ask n=2]` | `ask_user` with two questions (the second multiple choice), then the answer back |
+| `[s:guard]` | `bash git status --short`, then `bash git push origin main`, then whether it ran |
+| `[s:planui enter=0]` | plan mode as a person meets it: a plan (3 steps, 2 files), a revision with a 4th step naming the changes asked, and a sentence for approved, cancelled or moved to a new chat; `enter=1` first offers plan mode with `plan_enter` |
+| `[s:goal]` | in a goal's objective (a goal's notice picks the scenario when its objective carries a tag): a pass that only looks, a pass with a tool call, then `goal_update complete` |
 | `[s:say text="…"]` | answers with just the text (default `OK.`): no thinking, one short stream — the cheap run a test seeds a long chat with |
 | `[s:spawn n=3 delay=1500 stagger=0 model= workerhold=0]` | `agent_spawn background` × n (workers run `[s:sub]` for `delay + (i-1)·stagger` ms, plus a fixed `workerhold` stream hold independent of mock speed) → `agent` `wait` → summary of the reports |
 | `[s:spawnbg delay=]` | one background worker, the parent ends its turn; the report arrives later as an `agent-result` notice |

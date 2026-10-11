@@ -146,6 +146,12 @@ public static class UiTests
             await RunUiScript(env, "chat-history.mjs", 180);
         }, 210);
 
+        r.Add("ui.chat-decisions", "ui: what a chat asks the user — ask_user cards (options and typed answers), a guardrail rule that asks before a push (allow, allow in this chat), fork from an answer and before a message, a goal set with /goal paused, resumed and achieved, and plan mode (the pill, revise, save as idea, approve, the offer to plan, cancel, approve in a new chat)", async () =>
+        {
+            // The script makes its own git project (pushes go to a bare repository of its own), chats and guardrail rule, and removes them.
+            await RunUiScript(env, "chat-decisions.mjs", 240);
+        }, 270);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id

@@ -110,8 +110,10 @@ public sealed partial class ScenarioEngine
         var msgs = req.Messages;
         var last = msgs.Count > 0 ? msgs[^1] : new NMsg();
 
-        // The latest real user message (not a harness notice) picks the scenario; without a tag it is a plain chat.
-        var anchor = msgs.FindLastIndex(m => m.Role == "user" && !m.IsNotice);
+        // The latest real user message (not a harness notice) picks the scenario; without a tag it is a plain chat. A goal's
+        // notice counts as one when its objective (which every goal notice repeats) carries a tag: a goal set with /goal has
+        // no user message of its own.
+        var anchor = msgs.FindLastIndex(m => m.Role == "user" && (!m.IsNotice || m.NoticeKind == "goal" && ScenarioTag.FindLast(m.Text) is not null));
         var tag = anchor >= 0 ? ScenarioTag.FindLast(msgs[anchor].Text) : null;
         var after = anchor < 0 ? msgs : msgs.Skip(anchor + 1).ToList();
         var step = after.Count(m => m.Role == "assistant");
@@ -154,7 +156,10 @@ public sealed partial class ScenarioEngine
                 "subspawn" => SubSpawn(req, tag, step, after),
                 "sub" => Sub(req, tag),
                 "ideas" => Ideas(tag, step, after),
-                "ask" => Ask(step, after),
+                "ask" => Ask(tag, step, after),
+                "guard" => Guard(step, after),
+                "planui" => PlanUi(tag, step, after),
+                "goal" => GoalFlow(msgs),
                 "codemode" => CodeMode(step, after),
                 "plan" => PlanFlow(tag, step, after),
                 "long" => Long(tag, msgs),
@@ -526,15 +531,75 @@ public sealed partial class ScenarioEngine
         return Final("Idea recorded: " + FirstLine(ToolResults(after).LastOrDefault()?.Text) + "\n\nIDEAS-DONE");
     }
 
-    private static Plan Ask(int step, List<NMsg> after)
+    private static Plan Ask(ScenarioTag tag, int step, List<NMsg> after)
     {
         if (step == 0)
+        {
+            var questions = tag.PInt("n", 1) >= 2
+                ? new JsonArray(
+                    Obj(("question", "How should I fix the reconnect?"),
+                        ("options", new JsonArray(Obj(("label", "Patch the client")), Obj(("label", "Rewrite the client"))))),
+                    Obj(("question", "Which tests should I run afterwards?"),
+                        ("options", new JsonArray(Obj(("label", "unit")), Obj(("label", "e2e")), Obj(("label", "ui")))), ("multiple", true)))
+                : new JsonArray(Obj(("question", "Which way?"), ("options", new JsonArray(Obj(("label", "Fast")), Obj(("label", "Thorough"))))));
             return new Plan { Thinking = "Two ways to do this; the user decides.", Text = "I can do it two ways." }
-                .Call("ask_user", Obj(("questions", new JsonArray(Obj(
-                    ("question", "Which way?"),
-                    ("options", new JsonArray(Obj(("label", "Fast")), Obj(("label", "Thorough")))))))));
+                .Call("ask_user", Obj(("questions", questions)));
+        }
         return Final("Answer received: " + FirstLine(ToolResults(after).LastOrDefault()?.Text) + "\n\nASK-DONE");
     }
+
+    /// <summary>A command a guardrail rule may ask about: git status, then git push origin main (in the session's folder).</summary>
+    private static Plan Guard(int step, List<NMsg> after) => step switch
+    {
+        0 => new Plan { Thinking = "Check what is left to push.", Text = "Checking the tree:" }.Call("bash", Obj(("command", "git status --short"))),
+        1 => new Plan { Thinking = "The fix is committed; push it.", Text = "Committed. Pushing to origin:" }.Call("bash", Obj(("command", "git push origin main"))),
+        _ => Final(ToolResults(after).LastOrDefault() is { IsError: true } r ? "I did not push: " + FirstLine(r.Text) + " GUARD-REFUSED" : "Pushed. GUARD-DONE"),
+    };
+
+    /// <summary>
+    /// Plan mode as a person meets it: a plan of three steps and two files; asked for changes, a second revision with a
+    /// fourth step that names them; approved, cancelled or moved to a new chat, it says so and stops. enter=1 first offers
+    /// plan mode (plan_enter) and plans once the user accepts.
+    /// </summary>
+    private static Plan PlanUi(ScenarioTag tag, int step, List<NMsg> after)
+    {
+        var last = ToolResults(after).LastOrDefault()?.Text ?? "";
+        Plan Submit(string? change) => new Plan { Thinking = "A plan first." }.Call("plan_submit", Obj(
+            ("title", "Re-subscribe to the open chats"),
+            ("summary", "After a reconnect the client re-subscribes the chats it shows, so no event is lost."),
+            ("steps", change is null
+                ? new JsonArray(Obj(("text", "Keep the open chats' ids")), Obj(("text", "Re-subscribe to the open chats on reconnect")), Obj(("text", "Reload what was missed")))
+                : new JsonArray(Obj(("text", "Keep the open chats' ids")), Obj(("text", "Re-subscribe to the open chats on reconnect")), Obj(("text", "Reload what was missed")), Obj(("text", "Also: " + change)))),
+            ("files", new JsonArray(Obj(("path", "web/src/lib/rpc.svelte.js"), ("note", "re-subscribe")), Obj(("path", "web/src/lib/state/app.svelte.js"), ("note", "reload"))))));
+        if (step == 0)
+            return tag.PInt("enter", 0) == 1
+                ? new Plan { Text = "This is a bigger change." }.Call("plan_enter", Obj(("reason", "This touches the reconnect path in three places; a plan first is safer.")))
+                : Submit(null);
+        if (last.StartsWith("Plan mode is on", StringComparison.Ordinal)) return Submit(null);
+        if (last.Contains("declined plan mode", StringComparison.Ordinal)) return Final("Going ahead without a plan. PLANUI-DECLINED");
+        if (last.Contains("asked for changes", StringComparison.Ordinal))
+        {
+            var lines = last.Split('\n');
+            return Submit(lines.Length > 1 ? lines[1].Trim() : "the change asked");
+        }
+        if (last.Contains("moved it to a new chat", StringComparison.Ordinal)) return Final("Moved to the new chat.");
+        if (last.Contains("approved your plan", StringComparison.Ordinal)) return Final("Carrying the plan out. PLANUI-APPROVED");
+        if (last.Contains("cancelled the plan", StringComparison.Ordinal)) return Final("Stopped planning. PLANUI-CANCELLED");
+        return Final("PLANUI-DONE: " + FirstLine(last));
+    }
+
+    /// <summary>
+    /// A goal (its objective carries the tag; every goal notice repeats it): a first pass that only looks, a second that does
+    /// something (a tool call: progress), a third that completes the goal with goal_update. Counted over the whole chat.
+    /// </summary>
+    private static Plan GoalFlow(List<NMsg> msgs) => msgs.Count(m => m.Role == "assistant") switch
+    {
+        0 => Final("Looking at the demo page: the import is broken."),
+        1 => new Plan { Text = "Fixing the import." }.Call("ls", Obj(("path", "."))),
+        2 => Final("The import is fixed."),
+        3 => new Plan { Text = "It renders: done." }.Call("goal_update", Obj(("status", "complete"), ("summary", "The page renders again: the import is fixed."))),
+        _ => Final("The goal is reached. GOAL-DONE"),
+    };
 
     /// <summary>Code mode: one script calls two tools at once; only its output comes back.</summary>
     private static Plan CodeMode(int step, List<NMsg> after)
