@@ -48,6 +48,8 @@ public static class Catalog
         ["ui.work-tab"] = "needs-node",
         ["ui.usage-budget"] = "needs-node",
         ["ui.tool-cards"] = "needs-node",
+        ["ui.connection"] = "needs-node",
+        ["ui.dev-proxy"] = "needs-node",
         ["ui.close-empty-session"] = "needs-node",
         ["ui.schedules-tab"] = "needs-node",
         ["ui.start-project"] = "needs-node",

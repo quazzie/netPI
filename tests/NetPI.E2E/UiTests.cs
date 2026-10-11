@@ -176,6 +176,16 @@ public static class UiTests
         r.Add("ui.tool-cards", "ui: tool calls as a person reads them — thinking opened while it streams, the plan above the composer, web search, fetch and a screenshot, an image in the chat, the tools-changed notice; ssh run, read, edit and copy through a stand-in client; the Claude CLI's own tools done while its call runs; file links that ask first; an answer's HTML and images kept as text and links", () =>
             RunUiScript(env, "tool-cards.mjs", 180, "--ssh", Path.ChangeExtension(typeof(UiTests).Assembly.Location, OperatingSystem.IsWindows() ? ".exe" : null)), 210);
 
+        // The script edits a plugin bundle in this server's own app copy (and puts it back), drops and restores the page's socket
+        // (tapSocket), switches the runtime, context and compaction plugins off and on, and prices an agent; the settings are
+        // put back after.
+        r.Add("ui.connection", "ui: the page's link to the server — a plugin tab that remounts on a new bundle, its error state and Retry; a run that ends while the socket is down (no stale partial answer after the reconnect); reconnecting and resubscribing; the composer and Diagnostics without the runtime, context and compaction plugins, and back; the notifications for the desktop app (finished, the budget ask in an open chat and in one that is not, a click opens the chat)", () =>
+            RunUiScript(env, "connection.mjs", 180), 210);
+
+        // vite from the repo's node_modules, on a free port, in front of this server.
+        r.Add("ui.dev-proxy", "ui: the vite dev server (npm run dev) proxies the socket, the API and the plugin bundles to the server, and ?token= signs the page in", () =>
+            RunUiScript(env, "dev-proxy.mjs", 90), 120);
+
         // A paid agent (a price on a Claude model) and a free one; the budget and the agents are put back after.
         r.Add("ui.usage-budget", "ui: the Usage tab (period total, 30 days, agents and models, the chats that cost most, another period after a resetDay move), a chat's cost with its subagents, the budget on the Work tab as the limits change, the budget pill, a chat the budget stopped going over", () =>
             RunUiScript(env, "usage-budget.mjs", 150), 180);
