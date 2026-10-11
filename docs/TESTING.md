@@ -436,11 +436,20 @@ Coverage (run `--list` for the names):
   Enter, Esc abort, a retried stream; fails on console errors or failed requests. Screenshots:
   `tests/NetPI.E2E/screenshots/ui-*.png`.
 
-The UI test needs `node` and Playwright: `playwright-core` is a devDependency (installed with the other
-dependencies), and both the E2E smoke and the mock walkthrough resolve it (see `web/mock/pw.mjs`). If Playwright's own
+The UI tests need `node` and Playwright: `playwright-core` is a devDependency (installed with the other
+dependencies), and both the E2E scripts and the mock walkthrough resolve it (see `web/mock/pw.mjs`). If Playwright's own
 Chromium build is not downloaded (`npx playwright-core install chromium`) the tests fall back to an installed Edge or
-Chrome and print `browser: msedge`. Use `--no-ui` without Playwright. It can also run on its own against any server:
-`node tests/NetPI.E2E/ui/smoke.mjs --url http://127.0.0.1:7431 --token <token> --session "<title>"`.
+Chrome and print `browser: msedge`. Use `--no-ui` without Playwright.
+
+**Writing one.** A UI test is a script in `tests/NetPI.E2E/ui` built on `ui/lib.mjs`: `run(name, body, options)` gives the
+body a page with its error listeners and prints the result line, and the lib has `rpc()` over HTTP, `send()` (a run,
+waited for), MockLlm's `gates`, `openApp`/`openSession`/`openStripTab`, and `tapSocket` (the page's WebSocket frames, an
+answer held back, the connection dropped and restored). A script seeds what it needs itself (names with `STAMP`, folders
+with `newDir`) and removes it in a `finally`; `keepsSettings` fails it when the settings document is not as it found it.
+`UiTests.RunUiScript` runs it with `--url --token --mock --app --work --out`; give it a `needs-node` tag in `Catalog.cs`.
+Because a script seeds itself it runs against any server, which is the fast loop: start MockLlm and a copy of
+`artifacts/dev/app` once, then
+`node tests/NetPI.E2E/ui/<script>.mjs --url http://127.0.0.1:<port> --token <token> --mock http://127.0.0.1:<mock port>`.
 
 The browser is also what measures the chat's markdown: `node web/scripts/bench-stream.mjs` streams a long answer through
 both render strategies in a headless browser, checks that splitting the answer at `web/src/lib/live.js` renders exactly what
