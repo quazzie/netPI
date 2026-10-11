@@ -7,7 +7,7 @@ The delivered runner and original evidence are [archived](../archive/2026-09-30-
 
 - Split the broad browser walkthrough in `tests/NetPI.E2E/ui/smoke.mjs` into a small browser-to-backend round trip and independently selectable panel/control/backup checks. It still includes those flows and fixed waits.
 - Replace positive-condition `waitForTimeout` pauses in the browser smoke with observable state waits (the mock suite, `web/mock/e2e.mjs`, is frozen and moving to the real server: [its plan](2026-10-11-retire-mock-ui-suite.md)). Keep bounded waits that establish negative guarantees or settle screenshots.
-- Measure slow overlap scenarios before adding per-request MockLlm hold/observe/release gates. The current `HoldMs` control is a fixed delay; preserve cancellation and transport assertions.
+- Measure slow overlap scenarios before adding per-request MockLlm hold/observe/release gates. The current `HoldMs` control is a fixed delay; preserve cancellation and transport assertions. The mock UI suite's move needs them anyway: [H3 there](2026-10-11-retire-mock-ui-suite.md#step-1-the-harness-before-any-port-in-this-order).
 - Before moving detailed E2E cases into faster fixtures, record each assertion, its replacement and the retained boundary check in a coverage ledger. No persistence, reload or transport guarantee may silently disappear.
 
 ## Boundaries and verification
