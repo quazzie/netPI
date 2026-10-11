@@ -880,7 +880,7 @@ names or an inline `<svg …>` string.
   `MainForm.cs` applies the remembered factor after the first navigation, and `desktop.zoom` persists its own changes.
 - **Notifications.** When a chat needs the user, the page posts `{ type: 'notify', sessionId, title, body }`
   (`lib/notify.js`): a top-level chat's run finished or failed (unless it goes on by itself within 1.5 s or its goal
-  is active), its goal was completed or is blocked, the budget asks, an agent asks a question (`Asks: …`), a tool call
+  is active; a chat's failed run ends idle with its `error`, which is what makes it `Failed: …`), its goal was completed or is blocked, the budget asks, an agent asks a question (`Asks: …`), a tool call
   waits for the user's OK (`Wants to run: …`, `Wants to change …`); after one
   of these no "Finished" follows for that chat. The shell shows it
   only while its window is not the active one: a tray icon's balloon, which Windows shows as a toast, and a flashing

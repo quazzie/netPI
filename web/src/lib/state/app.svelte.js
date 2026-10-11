@@ -717,7 +717,11 @@ function runEndedNotification(a) {
     if (!now || BUSY.has(now.status)) return;
     const s = app.sessionsById.get(sid);
     if (s?.meta?.goal?.status === 'active' || Date.now() - (saidJustNow.get(sid) ?? 0) < SAID_JUST_NOW_WINDOW) return;
-    notify(sid, titleOf(s), now.status === 'failed' ? `Failed${now.error ? `: ${firstLine(now.error)}` : ''}` : 'Finished');
+    // a chat's run that fails ends idle, with its error (only a subagent's ends "failed"): a refused call (the budget, an
+    // agent switched off) or a provider error is not "Finished", in a chat that is not open too, whose notice never
+    // reaches this page (it subscribes to its open tabs)
+    const failed = now.status === 'failed' || !!now.error;
+    notify(sid, titleOf(s), failed ? `Failed${now.error ? `: ${firstLine(now.error)}` : ''}` : 'Finished');
   }, 1500);
 }
 
