@@ -75,6 +75,7 @@ public sealed class MockLlmServer : IAsyncDisposable
     private readonly MockOptions _o;
     private readonly WebApplication _app;
     private readonly ScenarioEngine _engine = new();
+    private readonly Gates _gates = new();
     private readonly Lock _gate = new();
     private readonly Dictionary<string, ModelStats> _stats = new(StringComparer.Ordinal);
     private readonly List<LogEntry> _log = [];
@@ -144,7 +145,15 @@ public sealed class MockLlmServer : IAsyncDisposable
                 _bodies.Clear();
             }
             _engine.Reset();
+            _gates.Reset();
             return Results.Json(new { ok = true });
+        });
+        _app.MapGet("/_gates", () => Results.Json(_gates.List().Select(g => new { name = g.Name, waiting = g.Waiting, open = g.Open })));
+        _app.MapPost("/_release", (HttpContext ctx) =>
+        {
+            var name = ctx.Request.Query["gate"].ToString();
+            if (name.Length == 0) return Results.Json(new { error = "gate=<name> is required" }, statusCode: 400);
+            return Results.Json(new { gate = name, released = _gates.Release(name) });
         });
         _app.MapGet("/_log", (HttpContext ctx) =>
         {
@@ -295,7 +304,7 @@ public sealed class MockLlmServer : IAsyncDisposable
                 Console.WriteLine($"[{entry.Seq}] {api} {req.Model} scenario={plan.Scenario} step={plan.Step} msgs={req.Messages.Count} in={entry.InputTokens}" +
                                   (req.IsSubagent ? " (subagent)" : "") + (plan.Calls.Count > 0 ? " calls=" + string.Join(",", entry.Calls) : ""));
 
-            var stream = new StreamOut(ctx, plan, _o.Speed);
+            var stream = new StreamOut(ctx, plan, _o.Speed, _gates);
             // Prompt caching: follow-up requests of a conversation hit the cache for most of the prompt.
             var cached = req.Messages.Any(m => m.Role == "assistant") ? entry.InputTokens * 6 / 10 : 0;
             var usage = new UsageOut(entry.InputTokens, cached, plan);
@@ -348,7 +357,7 @@ public sealed class MockLlmServer : IAsyncDisposable
 
     // ------------------------------------------------------------------ streaming helpers
 
-    private sealed class StreamOut(HttpContext ctx, Plan plan, double speed)
+    private sealed class StreamOut(HttpContext ctx, Plan plan, double speed, Gates gates)
     {
         private readonly int _delay = (int)Math.Round(plan.ChunkDelayMs / Math.Max(0.01, speed));
         private int _chunksLeftBeforeDrop = -1;
@@ -374,10 +383,11 @@ public sealed class MockLlmServer : IAsyncDisposable
         public async Task<bool> TickAsync()
         {
             if (_delay > 0) await Task.Delay(_delay, Ct).ConfigureAwait(false);
-            if (!_held && plan.HoldMs > 0)
+            if (!_held && (plan.HoldMs > 0 || plan.Gate is not null))
             {
                 _held = true; // once, after the first chunk: the client has the stream start and the first delta, and the rest waits
-                await Task.Delay(plan.HoldMs, Ct).ConfigureAwait(false);
+                if (plan.HoldMs > 0) await Task.Delay(plan.HoldMs, Ct).ConfigureAwait(false);
+                if (plan.Gate is { } gate) await gates.WaitAsync(gate, Ct).ConfigureAwait(false);
             }
             if (_chunksLeftBeforeDrop > 0 && --_chunksLeftBeforeDrop == 0)
             {

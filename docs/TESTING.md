@@ -179,7 +179,9 @@ dotnet tests/MockLlm/bin/Release/MockLlm.dll [--port 7479] [--speed 1] [--tiny-c
 | `GET /_stats` | per model: `inflight`, `maxInflight`, `total`, `errors`, `overCapacity` (requests beyond the catalog concurrency) |
 | `GET /_log?since=N` | one entry per request: api, model, scenario, step, status/error, input/cached/output tokens, effort, notices seen, calls made, dropped/cancelled… |
 | `GET /_request/{seq}` | the raw request body |
-| `POST /_reset` | clear stats, log and retry counters |
+| `POST /_reset` | clear stats, log and retry counters; release and forget every gate |
+| `GET /_gates` | each gate named so far: `name`, `waiting` (calls held at it), `open` |
+| `POST /_release?gate=NAME` | open a gate: the calls waiting at it go on, later ones pass (`{ gate, released }`) |
 
 Catalog (AiProxy): the models of `docs/AIPROXY-AGENT-GUIDE.md` — `gemma-4` (unloaded, efforts none/max), `ornith15-9b-mtp-128k`
 (vision), `qwen38-27b-iq3s` (stopped: answers 503 `backend_unavailable`), `qwen3.8-27b` (loaded, concurrency 2, efforts
@@ -191,7 +193,10 @@ none/low/medium/xhigh, 262k context, 16k max output) — plus `tiny-ctx` (loaded
 The answer is scripted by the conversation: the `[s:name key=value …]` tag in the latest user message that is not a
 harness notice picks the scenario, and the step is the number of assistant messages after that message. No tag = a
 markdown echo of the message. Every tag also takes `hold=<ms>`: the first answer of the scenario stays open for that long after its first chunk (a fixed time, not
-scaled by `--speed`), so a test can observe the live state instead of racing it. Two rules apply to every scenario: when the last message is a `nudge` notice the model
+scaled by `--speed`), so a test can observe the live state instead of racing it. `gate=<name>` holds it there instead until
+`POST /_release?gate=<name>` (at most 60 s; a release that comes first lets the call through), and `sumgate=<name>` does
+the same to the summary call that compacts a conversation carrying the tag: what a browser test uses to look at a running
+state for as long as it needs and end it on cue. Two rules apply to every scenario: when the last message is a `nudge` notice the model
 finishes (`NUDGE-RESUMED`), and when it is an `agent-result` notice it acknowledges the report (`AGENT-RESULT-RECEIVED`).
 Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …) that tests look for.
 

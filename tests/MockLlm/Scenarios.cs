@@ -23,6 +23,11 @@ public sealed class Plan
     /// answer of the scenario only). A test that has to look at the live state holds it instead of racing a stream that is over in 100 ms.
     /// </summary>
     public int HoldMs { get; set; }
+    /// <summary>
+    /// Wait at this named gate after the first chunk until a test releases it (<c>gate=&lt;name&gt;</c> in the tag, first answer of the
+    /// scenario only; <c>sumgate=&lt;name&gt;</c> gates the summary of a conversation that carries it). See <see cref="Gates"/>.
+    /// </summary>
+    public string? Gate { get; set; }
     /// <summary>Drop the connection in the middle of the stream.</summary>
     public bool Drop { get; set; }
     /// <summary>Stop sending (but keep the connection open) for this long in the middle of the stream.</summary>
@@ -91,9 +96,17 @@ public sealed partial class ScenarioEngine
     [GeneratedRegex(@"You are ""([^""]+)"" \(agent id")]
     private static partial Regex AgentNameRx();
 
+    [GeneratedRegex(@"\[s:[^\]]*\bsumgate=([a-z0-9_-]+)", RegexOptions.IgnoreCase)]
+    private static partial Regex SumGateRx();
+
     public Plan Decide(NRequest req)
     {
-        if (req.IsSummarizer) return Summary(req);
+        if (req.IsSummarizer)
+        {
+            var summary = Summary(req);
+            summary.Gate = SumGateRx().Matches(string.Join('\n', req.Messages.Select(m => m.Text))) is { Count: > 0 } g ? g[^1].Groups[1].Value : null;
+            return summary;
+        }
         var msgs = req.Messages;
         var last = msgs.Count > 0 ? msgs[^1] : new NMsg();
 
@@ -149,7 +162,11 @@ public sealed partial class ScenarioEngine
         }
         plan.Scenario = name;
         plan.Step = step;
-        if (step == 0) plan.HoldMs = Math.Clamp(tag.PInt("hold", 0), 0, 60_000);
+        if (step == 0)
+        {
+            plan.HoldMs = Math.Clamp(tag.PInt("hold", 0), 0, 60_000);
+            plan.Gate = tag.Params.TryGetValue("gate", out var gate) && gate.Length > 0 ? gate : null;
+        }
         return plan;
     }
 
