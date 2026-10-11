@@ -15,6 +15,7 @@ public static class SchedulerTests
         t.Add("scheduler: priority, FIFO, cancellation, idempotent release", PriorityAndCancel);
         t.Add("agents: more instances wake waiters; instances follow the catalog", CapacityIncrease);
         t.Add("scheduler: agents.changed is debounced, and only sent on changes", Debounce);
+        t.Add("scheduler: a price or a daily cap set on an agent is announced (agents.changed)", PriceIsAnnounced);
         t.Add("scheduler: the wait queue has a cap and a longest wait (agents.queueMax/queueTimeoutSeconds)", QueueCapAndTimeout);
         t.Add("scheduler: by default a waiting run stays queued (no queue timeout)", QueueHasNoTimeoutByDefault);
         t.Add("scheduler: a run waits for any of several agents and the first to free up takes it", LateBinding);
@@ -368,6 +369,30 @@ public static class SchedulerTests
         h.Settings.Set("ui.theme", "dark");
         await Settled("the settings change was handled");
         Check.Equal(after, h.Bus.OfType(AgentSchedulerEvents.Changed).Count);
+    }
+
+    /// <summary>The agent dialog shows the price from agents.changed: a price set there, and nothing else, must go out too.</summary>
+    private static async Task PriceIsAnnounced()
+    {
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local" }""")), plugins: TestHost.Plugins.Agents);
+        var scheduler = (AgentScheduler)h.Scheduler!;
+        async Task Settled(string what)
+        {
+            await h.Bus.DrainAsync();
+            await Wait.Until(() => !scheduler.PublishPending, what);
+            await h.Bus.DrainAsync();
+        }
+        await Settled("the start's agents.changed is out");
+        foreach (var (path, value, what) in new (string, string, string)[] { ("agents.a.cost", """{ "input": 3, "output": 15 }""", "a price"), ("agents.a.budget", """{ "limitUsd": 2 }""", "a daily cap") })
+        {
+            var before = h.Bus.OfType(AgentSchedulerEvents.Changed).Count;
+            h.Settings.Set(path, J(value));
+            await Settled($"the settings change of {what} was handled");
+            Check.True(h.Bus.OfType(AgentSchedulerEvents.Changed).Count > before, $"{what} set on an agent is announced");
+        }
+        var a = ((JsonArray)FakeBus.Data(h.Bus.OfType(AgentSchedulerEvents.Changed).Last())["agents"]!).Single(p => (string?)p!["key"] == "a")!;
+        Check.Equal(3.0, (double)a["priceInput"]!, "the announced price");
+        Check.Equal(2.0, (double)a["dailyLimitUsd"]!, "the announced daily cap");
     }
 
     private static async Task QueueCapAndTimeout()

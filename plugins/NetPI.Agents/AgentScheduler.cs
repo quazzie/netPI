@@ -409,12 +409,17 @@ internal sealed class AgentScheduler : IAgentScheduler
         return changed;
     }
 
-    /// <summary>What the Work tab shows of the agents (capacity, state): agents.changed only when it changes.</summary>
+    /// <summary>
+    /// What the Work tab and the agents' rows show (capacity, state, price, daily cap): agents.changed only when it changes.
+    /// The price and the cap are the agent's settings (<c>cost</c>, <c>budget</c>): without them a price set in the agent's
+    /// dialog was announced only when something else changed too.
+    /// </summary>
     private string Signature()
     {
+        var priced = Agents().ToDictionary(a => a.Id, a => $"{a.Cfg["cost"]?.ToJsonString()}|{a.Cfg["budget"]?.ToJsonString()}", StringComparer.OrdinalIgnoreCase);
         lock (_gate)
             return string.Join('\n', _pools.Values.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(p => $"{p.Key}|{p.Capacity}|{p.Disabled}|{AvailabilityOf(p).Available}|{p.Use}|{p.Model}|{ModelSlots(LocalModelOf(p))}|{p.Source}"));
+                .Select(p => $"{p.Key}|{p.Capacity}|{p.Disabled}|{AvailabilityOf(p).Available}|{p.Use}|{p.Model}|{ModelSlots(LocalModelOf(p))}|{p.Source}|{priced.GetValueOrDefault(p.Key)}"));
     }
 
     internal static string UnavailableMessage(string agent, string reason) => reason switch
