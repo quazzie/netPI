@@ -66,7 +66,12 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
             notice.Meta!["added"] = new JsonArray(added.Select(n => (JsonNode?)n).ToArray());
             notice.Meta["removed"] = new JsonArray(removed.Select(n => (JsonNode?)n).ToArray());
             notice.Meta["cause"] = cause.Cause;
-            if (removed.Count > 0) notice.Meta["revisions"] = new JsonObject(removed.Select(n => new KeyValuePair<string, JsonNode?>(n, JsonValue.Create("unavailable"))));
+            // the revisions the model now knows (a tool loaded mid-chat is not in the prompt's record), so a later schema
+            // change of one of them is announced (DefinitionNotices); a removed one is "unavailable"
+            var revisions = new JsonObject();
+            foreach (var t in tools) if (t.Revision is { } r && added.Contains(t.Name)) revisions[t.Name] = r;
+            foreach (var n in removed) revisions[n] = "unavailable";
+            if (revisions.Count > 0) notice.Meta["revisions"] = revisions;
             if (cause.Plugins.Count > 0) notice.Meta["plugins"] = new JsonArray(cause.Plugins.Select(p => (JsonNode?)p).ToArray());
             ctx.Sessions.AppendMessage(sessionId, notice);
             return true;

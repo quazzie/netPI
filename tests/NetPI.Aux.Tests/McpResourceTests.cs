@@ -37,7 +37,7 @@ public static class McpResourceTests
             await Check.ThrowsAsync<McpException>(() => c.ListResourcesAsync(1, 100000, timeout.Token));
         });
 
-        r.Add("mcp resources: mcp_search finds them, mcp_resource reads text and never puts a blob in context", async () =>
+        r.Add("mcp resources: mcp_resource finds them by a query, reads text and never puts a blob in context", async () =>
         {
             var ctx = new FakePluginContext();
             ctx.Sessions.CreateSession(new SessionInfo { Id = "ses_1" });
@@ -45,23 +45,21 @@ public static class McpResourceTests
             await using var manager = new ServerManager(ctx);
             await manager.StartAsync([], CancellationToken.None);
             await McpTests.Connected(manager, "fixture");
-            var search = new McpSearchTool(ctx, manager);
             var resource = new McpResourceTool(ctx, manager);
-            ctx.Tools.Register(search); ctx.Tools.Register(resource);
+            ctx.Tools.Register(resource);
 
             Check.Equal(0, manager.Catalog().Count);
             Check.Equal(4, manager.Resources(null).Count);
-            var found = await search.ExecuteAsync(Context(ctx), T.Args(new { query = "patterns anti-patterns" }), CancellationToken.None);
+            var found = await resource.ExecuteAsync(Context(ctx), T.Args(new { query = "patterns anti-patterns" }), CancellationToken.None);
             Check.Contains(found.Content, "skill://demo/references/patterns.md");
             Check.Contains(found.Content, "\"kind\":\"resource\"");
             // A skill document is reachable by its own name too.
-            Check.Contains((await search.ExecuteAsync(Context(ctx), T.Args(new { query = "SKILL.md read before acting" }), CancellationToken.None)).Content, "skill://demo/SKILL.md");
-            // Tools and resources are ranked in one pool: a document named after the query beats a tool that merely
-            // mentions the same word, instead of tools winning by virtue of being the larger pool.
-            var ranked = JsonNode.Parse((await search.ExecuteAsync(Context(ctx),
+            Check.Contains((await resource.ExecuteAsync(Context(ctx), T.Args(new { query = "SKILL.md read before acting" }), CancellationToken.None)).Content, "skill://demo/SKILL.md");
+            var ranked = JsonNode.Parse((await resource.ExecuteAsync(Context(ctx),
                 T.Args(new { query = "patterns" }), CancellationToken.None)).Content)!["results"]!.AsArray();
-            Check.Equal("resource", ranked[0]!["kind"]!.GetValue<string>());
             Check.Equal("skill://demo/references/patterns.md", ranked[0]!["uri"]!.GetValue<string>());
+            Check.True((bool)JsonNode.Parse((await resource.ExecuteAsync(Context(ctx), T.Args(new { query = "zzunknownzz" }), CancellationToken.None)).Content)!["noMatch"]!);
+            Check.True((await resource.ExecuteAsync(Context(ctx), T.Args(new { }), CancellationToken.None)).IsError, "neither a query nor a uri");
 
             var read = await resource.ExecuteAsync(Context(ctx), T.Args(new { uri = "skill://demo/SKILL.md" }), CancellationToken.None);
             Check.Contains(read.Content, "Consult skill://demo/SKILL.md");
@@ -80,7 +78,7 @@ public static class McpResourceTests
             Check.Contains(refused.Message, "not advertised");
             var empty = Check.Throws<McpException>(() => resource.ExecuteAsync(Context(ctx),
                 T.Args(new { uri = "x" }), CancellationToken.None));
-            Check.Contains(empty.Message, "mcp_search");
+            Check.Contains(empty.Message, "query");
 
             // Oversized text is kept whole on disk rather than truncated into the context.
             ctx.Settings.Set("mcp.maxResourceChars", 1024);

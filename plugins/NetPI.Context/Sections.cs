@@ -91,7 +91,7 @@ internal sealed class EnvironmentSection : IPromptSection
 /// their own bullets, other plugins register their own sections.
 /// <para>The built-in tools <c>tools.deferred</c> keeps out of the request are named here, one short line each, so the model
 /// knows they exist and calls one by name (that loads it) or finds it with <c>tool_search</c>. An MCP server's deferred
-/// tools are not listed: there can be hundreds, and <c>mcp_search</c>/<c>tool_search</c> find them.</para>
+/// tools are not listed: there can be hundreds, and <c>tool_search</c> finds them.</para>
 /// </summary>
 internal sealed class ToolsSection(ISettings settings) : IPromptSection
 {

@@ -28,7 +28,7 @@ internal sealed class RemoteResource
         MimeType = raw["mimeType"] is JsonValue m && m.TryGetValue<string>(out var mime) && mime.Length <= 256 ? mime : null;
         Description = raw["description"]?.GetValue<string>() ?? raw["title"]?.GetValue<string>() ?? Name;
         if (Description.Length > 400) Description = Description[..400] + "…";
-        SearchText = string.Join(' ', config.Id, Uri, Name, Description, MimeType, string.Join(' ', config.Synonyms));
+        SearchText = string.Join(' ', config.Id, Uri, Name, Description, MimeType);
     }
 
     /// <summary>The last path segment of a URI, for a server that named its resource nothing.</summary>

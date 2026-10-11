@@ -20,7 +20,6 @@ internal sealed record ServerConfig
     public string[]? Resources { get; init; }
     public string[] Pinned { get; init; } = [];
     public string[] ReadOnly { get; init; } = [];
-    public string[] Synonyms { get; init; } = [];
     public int ConnectTimeoutMs { get; init; } = 5000;
     public int CallTimeoutMs { get; init; } = 60000;
 
@@ -35,7 +34,7 @@ internal sealed record ServerConfig
             Env = Map(value, "env"), HeaderEnv = Map(value, "headerEnv"),
             Tools = Strings(value, "tools"), Resources = Strings(value, "resources"),
             Pinned = Strings(value, "pinned") ?? [],
-            ReadOnly = Strings(value, "readOnly") ?? [], Synonyms = Strings(value, "synonyms") ?? [],
+            ReadOnly = Strings(value, "readOnly") ?? [],
             ConnectTimeoutMs = Int(value, "connectTimeoutMs", 5000, 100, 30000),
             CallTimeoutMs = Int(value, "callTimeoutMs", 60000, 100, 300000),
         };
@@ -64,7 +63,7 @@ internal sealed record ServerConfig
         ["env"] = Object(Env), ["headerEnv"] = Object(HeaderEnv),
         ["tools"] = Tools is null ? null : Array(Tools), ["resources"] = Resources is null ? null : Array(Resources),
         ["pinned"] = Array(Pinned), ["readOnly"] = Array(ReadOnly),
-        ["synonyms"] = Array(Synonyms), ["connectTimeoutMs"] = ConnectTimeoutMs, ["callTimeoutMs"] = CallTimeoutMs,
+        ["connectTimeoutMs"] = ConnectTimeoutMs, ["callTimeoutMs"] = CallTimeoutMs,
     };
     public bool Exposes(string name) => Tools is null || Tools.Contains(name, StringComparer.Ordinal);
     /// <summary>An exact URI, or a prefix when the entry ends in <c>*</c>.</summary>

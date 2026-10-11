@@ -11,7 +11,6 @@ internal sealed class RemoteTool : IAgentTool
     private readonly ServerManager _manager;
     public string ServerId { get; }
     public string RemoteName { get; }
-    public string SearchText { get; }
     public JsonObject Raw { get; }
     public ToolDefinition Definition { get; }
     public RemoteTool(ServerManager manager, ServerConfig config, JsonObject raw)
@@ -33,7 +32,6 @@ internal sealed class RemoteTool : IAgentTool
             ReadOnly = config.ReadOnly.Contains(RemoteName, StringComparer.Ordinal) || DeclaredReadOnly(raw),
             Revision = Hash(Canonical(revisionInput)),
         };
-        SearchText = config.Id + " " + RemoteName + " " + title + " " + description + " " + string.Join(' ', config.Synonyms) + " " + schema.ToJsonString();
     }
     /// <summary>The server's own claim that the tool only reads (<c>annotations.readOnlyHint</c>); a tool that says nothing is not read-only.</summary>
     internal static bool DeclaredReadOnly(JsonObject raw) =>
@@ -52,11 +50,10 @@ internal sealed class RemoteTool : IAgentTool
         JsonArray a => "[" + string.Join(",", a.Select(Canonical)) + "]",
         _ => node?.ToJsonString() ?? "null",
     };
-    public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct) =>
-        _manager.CallAsync(this, args, ct);
-    public JsonObject Summary(bool available) => new()
+    public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        ["id"] = Definition.Name, ["server"] = ServerId, ["name"] = RemoteName,
-        ["description"] = Definition.Description, ["available"] = available,
-    };
+        var arguments = JsonNode.Parse(args.ValueKind == JsonValueKind.Undefined ? "{}" : args.GetRawText()) as JsonObject
+            ?? throw new McpException("MCP arguments must be an object.");
+        return _manager.CallAsync(this, _manager.Prepare(this, arguments), ct);
+    }
 }

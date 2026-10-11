@@ -13,15 +13,8 @@ internal static class DefinitionNotices
         if (store.LastSentRevisions(sessionId) is { } sent)   // in memory: PromptStore keeps the last-sent name→revision (idea-l1o09d)
             foreach (var (name, revision) in sent) known[name] = revision;
         foreach (var message in context)
-        {
-            foreach (var result in message.Parts.OfType<ToolResultPart>())
-                if (!result.IsError && result.Details is JsonObject details && details["kind"]?.GetValue<string>() == "mcp-discovery"
-                    && details["schemas"] is JsonArray schemas)
-                    foreach (var schema in schemas.OfType<JsonObject>())
-                        if (schema["id"] is { } id && schema["revision"] is { } revision) known[id.GetValue<string>()] = revision.GetValue<string>();
             if (message.Meta?["revisions"] is JsonObject revisions)
                 foreach (var (name, revision) in revisions) if (revision is not null) known[name] = revision.GetValue<string>();
-        }
         if (known.Count == 0) return false;
         var eligible = ToolSelection.Eligible(ctx.Tools, turn.Run.Agent, ctx.Sessions.GetSession(sessionId), ctx.Settings);
         var current = eligible.ToDictionary(t => t.Definition.Name, t => t.Definition.Revision, StringComparer.Ordinal);

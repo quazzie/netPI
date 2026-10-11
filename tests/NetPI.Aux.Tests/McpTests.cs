@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Builder;
@@ -128,12 +129,12 @@ public static class McpTests
                 Check.Equal("not_found",(await Check.ThrowsAsync<RpcException>(()=>ctx.RpcFake.CallAsync("mcp.read",new {id="ro/nope"}))).Code);
                 Check.Equal("conflict",(await Check.ThrowsAsync<RpcException>(()=>ctx.RpcFake.CallAsync("mcp.read",new {id="ro/weather",revision="old",arguments=new {city="x"}}))).Code);
 
-                // recorded like a model's mcp_call, without a chat: tool.start / tool.end with source "rpc"
+                // recorded like a model's call of the tool, without a chat: tool.start / tool.end with source "rpc"
                 var starts=ctx.Bus.OfType(EventTypes.ToolStart).Select(e=>NetPiJson.ToNode(e.Data)!.AsObject()).ToList();
                 var ends=ctx.Bus.OfType(EventTypes.ToolEnd).Select(e=>NetPiJson.ToNode(e.Data)!.AsObject()).ToList();
                 Check.Equal(3,starts.Count,"the three calls that reached a server"); Check.Equal(3,ends.Count);
-                Check.True(starts.All(s=>(string?)s["source"]=="rpc" && (string?)s["name"]=="mcp_call" && s["sessionId"] is null));
-                Check.Equal((string?)read["id"],(string?)starts[0]["resolvedTool"]);
+                Check.True(starts.All(s=>(string?)s["source"]=="rpc" && s["sessionId"] is null));
+                Check.Equal((string?)read["id"],(string?)starts[0]["name"]); Check.Equal("ro",(string?)starts[0]["serverId"]);
                 Check.Contains((string?)starts[0]["arguments"] ?? "","Oslo");
                 Check.True(ends.All(e=>(bool?)e["isError"]==false && e["durationMs"] is not null));
                 Check.Equal(string.Join(",",starts.Select(s=>(string?)s["callId"])),string.Join(",",ends.Select(e=>(string?)e["callId"])));
@@ -216,52 +217,26 @@ public static class McpTests
             var schema=Tool()["inputSchema"]!.AsObject();
             await Check.ThrowsAsync<Exception>(()=>c.CallAsync("weather",T.Args(new {city="malformed"}),schema,timeout.Token));
         });
-        r.Add("mcp: a query that shares no word with any tool finds the closest by meaning (embeddings), and says so", async () => {
-            foreach (var withEmbeddings in new[] { false, true })
-            {
-                var ctx=new FakePluginContext();
-                ctx.Sessions.CreateSession(new SessionInfo {Id="ses_1"});
-                // "forecast" and "rainy" mean weather to this embedder; the word ranking has never heard of them.
-                if (withEmbeddings) ctx.ServicesFake.Register<IEmbeddingService>(new Synonyms());
-                ctx.Settings.Set("mcp.servers",new JsonObject {["fixture"]=Config().Json()});
-                await using var manager=new ServerManager(ctx); await manager.StartAsync([],CancellationToken.None);
-                await Connected(manager,"fixture");
-                var search=new McpSearchTool(ctx,manager); ctx.Tools.Register(search);
-                var result=JsonNode.Parse((await search.ExecuteAsync(Context(ctx),T.Args(new {query="rainy forecast"}),CancellationToken.None)).Content)!;
-                Check.Equal(!withEmbeddings,(bool)result["noMatch"]!);
-                if (withEmbeddings) { Check.Contains(result["match"]!.GetValue<string>(),"meaning"); Check.Contains(result["results"]!.ToJsonString(),"weather"); }
-                else Check.True(result["match"] is null);
-            }
-        });
-        r.Add("mcp: 250 tools keep visible schema prefix constant and disclosure scoped to retained chat", async () => {
+        r.Add("mcp: 250 remote tools are registered deferred: a chat is sent none of them until it loads one, then only that one", async () => {
             var ctx=new FakePluginContext();
             ctx.Sessions.CreateSession(new SessionInfo {Id="ses_1"});
             ctx.Settings.Set("mcp.servers",new JsonObject {["fixture"]=Config("large").Json()});
             await using var manager=new ServerManager(ctx); await manager.StartAsync([],CancellationToken.None);
             await Connected(manager,"fixture");
-            var search=new McpSearchTool(ctx,manager); var call=new McpCallTool(ctx,manager);
-            ctx.Tools.Register(search);ctx.Tools.Register(call);
             Check.Equal(250,manager.Catalog().Count);
-            var eligible=ToolSelection.Eligible(ctx.Tools,null,ctx.Sessions.GetSession("ses_1"),ctx.Settings);
-            Check.Equal("mcp_call,mcp_search",string.Join(",",ToolSelection.Visible(eligible,ToolExposure.For(ctx.Settings,null,ctx.Sessions.GetSession("ses_1"))).Select(t=>t.Name)));
+            string Visible(AgentInfo? agent=null)
+            {
+                var session=ctx.Sessions.GetSession("ses_1");
+                var eligible=ToolSelection.Eligible(ctx.Tools,agent,session,ctx.Settings);
+                return string.Join(",",ToolSelection.Visible(eligible,ToolExposure.For(ctx.Settings,agent,session)).Select(t=>t.Name));
+            }
+            Check.Equal("",Visible(),"every remote tool is deferred");
             var target=manager.Catalog().Single(t=>t.RemoteName=="weather");
-            var context=Context(ctx);
-            var envelope=T.Args(new {id=target.Definition.Name,revision=target.Definition.Revision,arguments=new {city="Oslo"}});
-            await Check.ThrowsAsync<McpException>(()=>call.ResolveAsync(context,envelope,CancellationToken.None).AsTask());
-            var disclosure=await search.ExecuteAsync(context,T.Args(new {query=target.Definition.Name,detail="schema"}),CancellationToken.None);
-            Check.Contains(disclosure.Content,"city"); Check.NotContains(disclosure.Content,"UNTRUSTED_SERVER");
-            var msg=ctx.Sessions.AppendMessage("ses_1",new ChatMessage {Role=MessageRole.Tool,Parts=[new ToolResultPart {Name="mcp_search",CallId="search",Content=disclosure.Content,Details=NetPiJson.ToNode(disclosure.Details)}]});
-            var resolved=await call.ResolveAsync(context,envelope,CancellationToken.None);
-            Check.Equal(target.Definition.Name,resolved.ToolName);
-            await Check.ThrowsAsync<McpException>(()=>call.ResolveAsync(Context(ctx,"other"),envelope,CancellationToken.None).AsTask());
-            ctx.Sessions.CreateSession(new SessionInfo {Id="fork"});
-            ctx.Sessions.AppendMessage("fork",new ChatMessage {Role=MessageRole.Tool,Parts=[new ToolResultPart {Name="mcp_search",CallId="search",Content=disclosure.Content,Details=NetPiJson.ToNode(disclosure.Details)}]});
-            await call.ResolveAsync(Context(ctx,"fork"),envelope,CancellationToken.None);
-            ctx.Sessions.MarkCompacted("ses_1",msg.Seq);
-            await Check.ThrowsAsync<McpException>(()=>call.ResolveAsync(context,envelope,CancellationToken.None).AsTask());
-            await call.ResolveAsync(Context(ctx,"fork"),envelope,CancellationToken.None);
-            var agent=new AgentInfo {Id="a",SessionId="ses_1",ToolAllowlist=["mcp_call"]};
-            Check.False(ToolSelection.Eligible(ctx.Tools,agent,ctx.Sessions.GetSession("ses_1"),ctx.Settings).Contains(target));
+            Check.NotContains(target.Definition.Description,"UNTRUSTED_SERVER");
+            LoadedTools.Add(ctx.Sessions,"ses_1",[target.Definition.Name]);
+            Check.Equal(target.Definition.Name,Visible());
+            // an agent's tool list grants only what it names
+            Check.Equal("",Visible(new AgentInfo {Id="a",SessionId="ses_1",ToolAllowlist=["read"]}));
             await manager.DisposeAsync();ctx.Unload();Check.Equal(0,ctx.Tools.All.Count);
         });
         r.Add("mcp: a cold start does not wait for a slow server, which connects in the background",async () => {
@@ -284,7 +259,7 @@ public static class McpTests
             Check.Contains(ex.Message,"previous plugin must be kept");
             ctx.Unload();
         });
-        r.Add("mcp: arguments a model wrote as text are re-read against the discovered schema",async ()=>{
+        r.Add("mcp: arguments a model wrote as text are re-read against the tool's schema",async ()=>{
             var ctx=new FakePluginContext();
             ctx.Sessions.CreateSession(new SessionInfo {Id="ses_1"});
             var counter=Path.Combine(ctx.Paths.TempDir,"typed.txt");
@@ -292,36 +267,30 @@ public static class McpTests
             ctx.Settings.Set("mcp.servers",new JsonObject {["fixture"]=config.Json()});
             await using var manager=new ServerManager(ctx);await manager.StartAsync([],CancellationToken.None);
             await Connected(manager,"fixture");
-            var search=new McpSearchTool(ctx,manager);var call=new McpCallTool(ctx,manager);
-            ctx.Tools.Register(search);ctx.Tools.Register(call);
-            var tool=manager.Catalog().Single();var context=Context(ctx);
-            var disclosure=await search.ExecuteAsync(context,T.Args(new {query=tool.Definition.Name,detail="schema"}),CancellationToken.None);
-            ctx.Sessions.AppendMessage("ses_1",new ChatMessage {Role=MessageRole.Tool,Parts=[new ToolResultPart {Name="mcp_search",CallId="search",Content=disclosure.Content,Details=NetPiJson.ToNode(disclosure.Details)}]});
-            async Task<ResolvedToolCall> Resolve(object arguments)=>await call.ResolveAsync(context,
-                T.Args(new {id=tool.Definition.Name,revision=tool.Definition.Revision,arguments}),CancellationToken.None);
+            var tool=manager.Catalog().Single();
+            JsonElement Prepare(object arguments)=>manager.Prepare(tool,JsonNode.Parse(T.Args(arguments).GetRawText())!.AsObject());
 
-            // What a model writes when the remote schema only arrived after the call envelope was built.
-            var resolved=await Resolve(new {list_only="true",timeout="10",views="[{\"title\":\"Probe\"}]",config="{\"patch\":[\"1\",2]}",script="{\"not\":\"parsed\"}"});
-            var sent=NetPiJson.ToNode(resolved.Arguments)!.ToJsonString();
+            // What a model writes when it sends JSON as text inside typed arguments.
+            var prepared=Prepare(new {list_only="true",timeout="10",views="[{\"title\":\"Probe\"}]",config="{\"patch\":[\"1\",2]}",script="{\"not\":\"parsed\"}"});
+            var sent=NetPiJson.ToNode(prepared)!.ToJsonString();
             Check.Contains(sent,"\"list_only\":true");Check.Contains(sent,"\"timeout\":10");
             Check.Contains(sent,"\"views\":[{\"title\":\"Probe\"}]");Check.Contains(sent,"\"patch\":[1,2]");
             // A string-typed argument is never re-read, even when it holds JSON.
-            Check.Equal("""{"not":"parsed"}""",NetPiJson.ToNode(resolved.Arguments)!["script"]!.GetValue<string>());
-            // A list wrapped in an object crosses whole, at every level, with the scalars inside it repaired too.
-            var wrapped=await Resolve(new {views=new {item=new {title="Probe",max_columns="1"}}});
-            Check.Equal("""{"views":[{"title":"Probe","max_columns":1}]}""",NetPiJson.ToNode(wrapped.Arguments)!.ToJsonString());
-            var wrappedCall=await manager.CallAsync(tool,wrapped.Arguments,CancellationToken.None);
+            Check.Equal("""{"not":"parsed"}""",NetPiJson.ToNode(prepared)!["script"]!.GetValue<string>());
+            // A list wrapped in an object crosses whole, at every level, with the scalars inside it repaired too: the
+            // model's own call (the tool run directly) goes through the same repair.
+            var wrappedCall=await tool.ExecuteAsync(Context(ctx),T.Args(new {views=new {item=new {title="Probe",max_columns="1"}}}),CancellationToken.None);
             Check.Contains(wrappedCall.Content,"\"views\":[{\"title\":\"Probe\",\"max_columns\":1}]");
             // The server receives the repaired types, not the text the model wrote.
-            var result=await manager.CallAsync(tool,resolved.Arguments,CancellationToken.None);
+            var result=await manager.CallAsync(tool,prepared,CancellationToken.None);
             Check.Contains(result.Content,"\"list_only\":true");
             var received=File.ReadAllLines(counter);
             Check.Equal("""{"views":[{"title":"Probe","max_columns":1}]}""",JsonNode.Parse(received[0])!.ToJsonString());
             Check.Equal(sent,JsonNode.Parse(received[1])!.ToJsonString());
             // Arguments that already match the schema are never rewritten, not even a number that looks like text.
-            Check.Equal("""{"list_only":true,"timeout":10,"script":"10"}""",NetPiJson.ToNode((await Resolve(new {list_only=true,timeout=10,script="10"})).Arguments)!.ToJsonString());
+            Check.Equal("""{"list_only":true,"timeout":10,"script":"10"}""",NetPiJson.ToNode(Prepare(new {list_only=true,timeout=10,script="10"}))!.ToJsonString());
             // A value no schema can repair keeps failing, and now says what it wanted.
-            var bad=await Check.ThrowsAsync<McpException>(()=>Resolve(new {timeout="soon"}));
+            var bad=Check.Throws<McpException>(()=>Prepare(new {timeout="soon"}));
             Check.Contains(bad.Message,"integer");Check.Contains(bad.Message,"string");
             await manager.DisposeAsync();ctx.Unload();
         });
@@ -359,7 +328,7 @@ public static class McpTests
                   "meta":{"type":"object","properties":{"item":{"type":"string"}}}},
                  "$defs":{"card":{"type":"object","properties":{"title":{"type":"string"}}}}}
                 """)!.AsObject();
-            // The shape a value takes inside mcp_call's own envelope: wrapped once, and wrapped twice.
+            // The shape a value takes when a model wraps it: once, and twice.
             foreach(var wrapped in new[]{"{\"item\":[\"success\"]}","{\"item\":{\"item\":[\"success\"]}}"})
             {
                 var args=JsonNode.Parse("{\"fields\":"+wrapped+"}")!.AsObject();
@@ -407,15 +376,5 @@ public static class McpTests
             await using var rejected=new McpConnection(config with {Url=auth.Url},100000,_=>{});
             await Check.ThrowsAsync<McpHttpException>(()=>rejected.InitializeAsync(CancellationToken.None));
         });
-    }
-
-    /// <summary>An embedder that knows two synonyms: "forecast" and "rainy" are weather (a bag of words otherwise).</summary>
-    private sealed class Synonyms : IEmbeddingService
-    {
-        public string? Model => "synonyms";
-        public bool Available => true;
-        public Task<EmbeddingResult> EmbedAsync(EmbeddingRequest request, CancellationToken ct) =>
-            Task.FromResult(new EmbeddingResult("synonyms", 64, request.Texts
-                .Select(t => EmbeddingsTests.BagOfWords.Vector(t.ToLowerInvariant().Replace("forecast", "weather").Replace("rainy", "weather"))).ToList()));
     }
 }

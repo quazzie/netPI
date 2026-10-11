@@ -43,7 +43,7 @@ Every request carries the active tools (the highest-priority registration per na
   `tools` notice tells it ("The user switched off for this session: bash.");
 - deferred tools the chat has not loaded (see [Deferred tools](#tool_search-deferred-tools)): an MCP server's unpinned
   tools (`ToolDefinition.Deferred`) and the built-in tools `tools.deferred` names, and deferred-tool infrastructure
-  (`tool_search`, `mcp_search`, `mcp_call`) when the chat has no deferred tool it could reach;
+  (`tool_search`) when the chat has no deferred tool it could reach;
 - for a subagent: the tools its owner chose. With an `agent_spawn` `tools` list exactly those, even tools the owner
   does not have (a limited orchestrator can dispatch an agent with the `ssh` tool; unknown names get the list of
   tools); without one the owner's tools (its allowlist, and its session's switched-off tools, copied to the subagent's
@@ -787,7 +787,7 @@ instead ("describe the change in the plan"). The check fails closed. A chat is t
 `plan` / `plan-off` notice, written again when compaction removed it): the system prompt is frozen at a chat's first call.
 
 **Research subagents.** `agent_spawn` is allowed, with its arguments rewritten: `tools` is cut to the read-only set (what the
-child asked for that passes, else all of it; plus `mcp_search`, `mcp_call`, `mcp_resource`), `isolated: false` and no `workspace`
+child asked for that passes, else all of it; `mcp_resource` included, an MCP server's own tools not), `isolated: false` and no `workspace`
 (it shares the plan chat's checkout), and the research instructions are appended. The child's own calls are checked by the same
 hook while the chat that started it (up to six levels) is in plan mode. Any agent may be chosen: `agent_choices` shows each one's
 model and description. `plan.subagentsReadOnly: false` leaves spawns alone.
@@ -1254,9 +1254,9 @@ gets the tools it names declared even when the setting defers them.
 The system prompt's Tools section names the built-in tools the setting defers, one line each ("More tools, not loaded
 yet: …"), so the model knows they exist. **A deferred tool called by name runs** and is loaded with it: from the next call
 it is declared with its schema (`{"help": true}` gives the arguments before). An MCP server's tools are not listed (there
-can be hundreds); `tool_search` and `mcp_search` find them.
+can be hundreds); `tool_search` finds them.
  `tool_search { query, limit? (5, at most 10) }` (plugins/NetPI.Runtime) ranks the deferred
-tools the chat may call and has not loaded (switched-off tools, a subagent's allowlist and the gateways stay out) and
+tools the chat may call and has not loaded (switched-off tools and a subagent's allowlist stay out) and
 **loads** the matches: their names go into the session's `meta.toolsLoaded` (`LoadedTools` in the contracts), and from
 the next model call on they are declared like any other tool, with their own schemas, and called directly. The idea is
 pi 1.0's `tool_search`.
@@ -1309,7 +1309,7 @@ codemode (idea-w9ibt2).
   `ToolContext.Features` of every call the model makes): the tool must be eligible for the chat — deferred tools
   included, loaded or not, so a script reaches a whole MCP catalogue without declaring it — the before-call hooks
   (guardrails, plan mode, the workspace guard) may block or rewrite it, and the after-call hooks see it. Calls that change
-  something run one at a time, read-only ones up to four at once. Gateways (`mcp_call`), `tool_search`/`mcp_search` and
+  something run one at a time, read-only ones up to four at once. `tool_search` and
   `codemode` itself are not callable from a script (a script needs no loader; a call to a name it cannot call gets a hint
   to `searchTools`/`ALL_TOOLS` added to its error), and a nested tool gets no nested-call service of its own. Nested calls
   are not transcript messages: the codemode result records them. They count as tool calls of the run.
@@ -1324,11 +1324,11 @@ details: { kind: "codemode", ok, durationMs, callCount, calls: [{ name, argument
 
 ## Deferred MCP tools
 
-[NetPI.Mcp](PLUGIN-MCP.md) registers concrete external tools but sends only `mcp_search`, `mcp_call` and `mcp_resource` by default. To call one directly, load it with [`tool_search`](#tool_search-deferred-tools); `mcp_search` + `mcp_call` reach it without loading it. `mcp_search {query,server?,detail?:"summary"|"schema",limit?:1..5}` returns bounded summaries or one selected schema and revision. `mcp_call {id,revision,arguments}` resolves the eligible concrete tool before policy hooks. Pinned tools expose ordinary schemas. `mcp_resource {uri,server?}` reads one remote resource; results are tagged `kind:"tool"` or `kind:"resource"` so a search for a document and a search for a capability rank in one pool. Only a URI the server advertised can be read.
+[NetPI.Mcp](PLUGIN-MCP.md) registers each external tool as a tool of its own that is deferred: the model loads it with [`tool_search`](#tool_search-deferred-tools) (or calls it by name) and calls it directly, or reaches it from a `codemode` script without loading it. Pinned tools are declared from the start. `mcp_resource {query}` lists the resources the servers advertise that match (up to five, `{results:[{kind:"resource",uri,server,name,description,mimeType,available}],noMatch}`), and `mcp_resource {uri,server?}` reads one. Only a URI the server advertised can be read.
 
-Discovery result Details: `{kind:"mcp-discovery",schemas:[{id,revision,serverId}]}`; these retained disclosures authorize the exact revision. Remote result Details: `{kind:"mcp",serverId,tool,structuredContent,content:[metadata]}`, with indirect dispatch adding `resolvedTool` and effective `arguments`. Text/structured content is model-facing; supported images use ImagePart. Binary data is excluded from metadata and text, resource links remain links.
+Remote result Details: `{kind:"mcp",serverId,tool,structuredContent,content:[metadata]}`. Text/structured content is model-facing; supported images use ImagePart. Binary data is excluded from metadata and text, resource links remain links.
 
-An argument the model wrote as JSON text inside a string, or a list it wrapped in a one-property `{"item": …}` object, is repaired against the discovered schema when — and only when — the call would otherwise fail validation: the schema for that path asks for a non-string type, the text parses exactly to it, and the repaired arguments validate. Arguments that already match are never rewritten, a string the schema allows is never re-read, an object where the schema also permits an object is never unwrapped, a list of lists keeps its nesting, and what cannot be repaired keeps the original error, which names the expected type and what arrived (e.g. `$.list_only: expected boolean, got string`).
+An argument the model wrote as JSON text inside a string, or a list it wrapped in a one-property `{"item": …}` object, is repaired against the tool's schema when — and only when — the call would otherwise fail validation: the schema for that path asks for a non-string type, the text parses exactly to it, and the repaired arguments validate. Arguments that already match are never rewritten, a string the schema allows is never re-read, an object where the schema also permits an object is never unwrapped, a list of lists keeps its nesting, and what cannot be repaired keeps the original error, which names the expected type and what arrived (e.g. `$.list_only: expected boolean, got string`).
 
 ## `memory_search` (plugins/NetPI.Memory)
 

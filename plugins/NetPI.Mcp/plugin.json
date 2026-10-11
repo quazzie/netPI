@@ -1,1 +1,1 @@
-{ "id": "netpi.mcp", "name": "MCP", "description": "External tools with deferred discovery" }
+{ "id": "netpi.mcp", "name": "MCP", "description": "External MCP servers: their tools (deferred until a chat loads them) and resources" }

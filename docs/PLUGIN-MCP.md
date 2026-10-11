@@ -4,18 +4,23 @@ NetPI.Mcp connects to external servers using stdio or Streamable HTTP. It suppor
 
 ## Minimal model context
 
-Remote tools stay in the registry, picker, UI catalog and local search index. By default the model receives only `mcp_search` and `mcp_call`; increasing the catalog does not increase that schema prefix. Search returns up to three summaries (five maximum). Request `detail: "schema"` with one exact id, then call with that id, its revision and arguments. Search ranks names, descriptions, server synonyms and argument names locally.
+Every remote tool is registered as an ordinary tool (`mcp_<server>_<tool>_<hash>`) that is **deferred**: a chat is not sent
+its schema until it loads it. The model finds one with [`tool_search`](TOOLS.md#tool_search-deferred-tools), which loads
+the matches into the chat (from the next call they are declared with their own schemas and called directly), or calls
+one by name, or reaches it from a [`codemode`](TOOLS.md) script (`searchTools`, `describeTool`, `tools.<name>`) without
+loading it at all. A larger catalog does not grow the request: only loaded tools are sent. `pinned` declares a tool from
+the start. Remote tools obey global disabled tools, agent allowlists, profile selection and session switches like any
+other, and the policy hooks (guardrails, plan mode) see the call itself.
 
-Disclosure lives in retained tool-result history, not a process cache. Forks inheriting that history retain it; independent chats and compacted-away disclosures require rediscovery. Revisions cover schema, descriptive metadata and local execution overrides. Only definitions a chat has seen trigger revision notices. Oversized schemas are written completely to a local file rather than truncated.
-
-Concrete tools obey global disabled tools, agent allowlists, profile selection and session switches. Granting only `mcp_call` grants no remote targets. The runtime resolves the target before policy hooks, rechecks selection before execution and preserves the outer provider call id. Journal events and result details identify the resolved target and server.
+Revisions cover schema, descriptive metadata and local execution overrides. A loaded or pinned tool whose revision
+changes gets a targeted "tools" notice (cause `remote-server`); its new schema is in the next request.
 
 ## Arguments the model wrote as text
 
-A remote schema arrives after the call envelope has been built, so a model often writes JSON as a string inside a typed argument: `"list_only":"true"`, `"timeout":"10"`, `"config":"{\"views\":[…]}"`. When the arguments fail the discovered schema, `mcp_call` repairs them in one pass under the same rule: the schema is the only authority, and a value changes only where the schema for that exact path leaves no other reading of it.
+A model often writes JSON as a string inside a typed argument: `"list_only":"true"`, `"timeout":"10"`, `"config":"{\"views\":[…]}"`. When the arguments fail the tool's schema, the call repairs them in one pass under the same rule: the schema is the only authority, and a value changes only where the schema for that exact path leaves no other reading of it.
 
 - A string where the schema asks for a boolean, integer, number, object or array is re-read, and only when the text parses exactly to it (`"007"` and `"+1"` are not the numbers written).
-- An object with a single `item`/`items` property standing where the schema says `array` is unwrapped: a wrapped list is the list, anything else is a one-element list. The same value is sometimes wrapped more than once — `{"item":{"item":[…]}}` — because it sits inside another tool call's envelope, so wrappers are peeled until the value is reached.
+- An object with a single `item`/`items` property standing where the schema says `array` is unwrapped: a wrapped list is the list, anything else is a one-element list. The same value is sometimes wrapped more than once — `{"item":{"item":[…]}}` — so wrappers are peeled until the value is reached.
 - The repair is skipped entirely — and the model's own error stands — when a property permits a string, when the schema also allows an object at that path, when the wrapper holds more than one property, when the wrapper's key is unknown, and when the repaired arguments are not the ones the whole schema accepts.
 
 So arguments that already validate are never rewritten, a string the schema allows is never re-read, a list of lists keeps its nesting, and anything left over fails with the model's own error. The repair is recorded in the log; the server receives the repaired types.
@@ -35,7 +40,7 @@ editor. The methods are in [PROTOCOL.md](PROTOCOL.md#mcp-plugin).
 
 Remote resources are negotiated, listed and read. A server may advertise resources and no tools at all — a skills library, a document set — and connects on that promise alone; `tools` is no longer a required capability.
 
-`mcp_search` ranks tools and resources in one pool and tags each result `kind:"tool"` or `kind:"resource"`, so a query for a skill document does not have to know which it is. `mcp_resource {uri,server?}` reads one. The rules that keep this honest:
+`mcp_resource {query}` lists the closest resources (up to five, ranked by uri, name, description and MIME type) and `mcp_resource {uri, server?}` reads one. The rules that keep this honest:
 
 - **The URI is the gate.** Only a resource the server itself listed can be read, so a link that merely appears in a tool result is never fetched. "Links are not fetched automatically" still holds.
 - **Binary never reaches model text.** A `blob` is reported by uri, mime type and size; its bytes are neither decoded into the conversation nor stored.
@@ -76,20 +81,19 @@ Use the MCP tab to add, edit, enable, inspect, refresh or reconnect servers. Set
 
 Environment and header values name source environment variables, never literal credentials. Set them before starting NetPI. The stdio environment includes only basic platform variables plus explicit mappings; processes run directly without a shell in a fixed absolute working directory. HTTP redirects are disabled.
 
-`tools` optionally restricts raw remote tool names; an empty array exposes none. `resources` does the same for resource URIs (exact, or a prefix ending in `*`). `pinned` opts named tools into ordinary eager schemas. `readOnly` is a local override allowing concurrent direct calls; remote annotations do not grant this. Both lists contain raw remote names. `synonyms` adds server search terms. Connection and call deadlines default to 5 seconds and 60 seconds.
+`tools` optionally restricts raw remote tool names; an empty array exposes none. `resources` does the same for resource URIs (exact, or a prefix ending in `*`). `pinned` opts named tools into ordinary eager schemas. `readOnly` is a local override allowing concurrent direct calls; remote annotations do not grant this. Both lists contain raw remote names. Connection and call deadlines default to 5 seconds and 60 seconds.
 
 ## Lifecycle and limits
 
 Catalog pagination completes before registration. Duplicate names, cursor loops, unsupported schema assertions and resource bounds fail explicitly. Known entries remain during temporary outages, with unavailable status; execution reports failure rather than silently replaying a possibly completed action. Reconnection uses backoff, notifications refresh catalogs and polling covers servers without notifications.
 
-Tool outputs preserve text, structured data, supported images, links and embedded text. Binary payloads stay out of model text. Links are not fetched automatically. Server instructions are not injected into the system prompt. Sampling, elicitation, roots, OAuth, prompts and legacy HTTP+SSE endpoints are outside this release. Native provider search adapters, code execution and projection are follow-ups.
+Tool outputs preserve text, structured data, supported images, links and embedded text. Binary payloads stay out of model text. Links are not fetched automatically. Server instructions are not injected into the system prompt. Sampling, elicitation, roots, OAuth, prompts and legacy HTTP+SSE endpoints are outside this release. Native provider search adapters and projection are follow-ups.
 
 A replacement plugin prepares previously healthy servers before taking over. A failed candidate retains the old plugin. Disposal settles pending calls, cancels listeners, removes registrations and terminates owned children after bounded grace. Builds do not install into the running app.
 
-## Validation (2026-09-30)
+## Validation
 
-All 23 MCP cases passed: 17 auxiliary transport/discovery/lifecycle cases, three agent runtime/context cases, one real host replacement/unload case and two end-to-end/UI cases. The normal build/test gate rebuilt all plugins and both UI layers. Providers, tools and host regression suites passed; the agent regressions found during implementation were fixed. The unchanged Chrome attachment case in the auxiliary suite still reports `user.HasExited`, so the overall gate is not fully green.
-
-Actual OpenAI Responses requests captured by MockLlm contained the same 16,614 characters of serialized tools and 4,812 characters of instructions with 10, 100 and 1,000 catalog entries. These totals include existing native tools. Each task disclosed one schema, made one successful call and had zero argument errors. First successful-call times in one local run were 914, 441 and 471 ms respectively; these are fixture timings, not external-server performance guarantees. Provider token savings were not measured.
-
-The MCP UI passed browser checks at 230, 380 and 1,000 px, including catalog controls and retaining drafts after a failed save. Host tests verified owned-child cleanup, collectible contexts and retaining a healthy process after failed replacement. No real servers, user credentials or running app installation were changed.
+The end-to-end case `mcp.deferred` (real server, MockLlm) loads one tool out of a catalog of 10, 100 and 1,000 with
+`tool_search` and calls it: the first request is the same size for all three (2026-10-11: 9,125 characters of tools,
+6,881 of instructions). The MCP UI passed browser checks at 230, 380 and 1,000 px (2026-09-30). Until 2026-10-11 the
+model reached remote tools through its own `mcp_search` / `mcp_call` pair; `tool_search` and `codemode` replaced it.

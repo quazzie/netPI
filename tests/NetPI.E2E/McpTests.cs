@@ -3,7 +3,7 @@ public static class McpTests
 {
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("mcp.gateway", "mcp: real server and MockLlm discover one schema and execute through gateway",async () => {
+        r.Add("mcp.deferred", "mcp: real server and MockLlm load one deferred remote tool with tool_search and call it directly",async () => {
             string? constantTools = null, constantInstructions = null;
             foreach (var count in new[] { 10, 100, 1000 })
             {
@@ -19,27 +19,28 @@ public static class McpTests
                 var mark=await env.MockMark();
                 var started = DateTimeOffset.UtcNow;
                 var watch = System.Diagnostics.Stopwatch.StartNew();
-                var result=await env.Run(session.S("id")!,$"[s:mcp id={target.S("id")} revision={target.S("revision")}] Weather for Oslo");
+                var result=await env.Run(session.S("id")!,$"[s:mcp id={target.S("id")}] Weather for Oslo");
                 Check.Contains(result.LastAssistant.GetRawText(),"MCP-DONE");
                 var outputs=result.Parts("tool_result").ToList();
-                Check.Equal(3,outputs.Count);
+                Check.Equal(2,outputs.Count);
                 Check.Contains(outputs.Last().GetRawText(),"Weather: Oslo");
                 var requests=(await env.MockLog()).Where(e=>e.L("seq")>mark).ToList();
-                Check.Equal(4,requests.Count);
+                Check.Equal(3,requests.Count);
+                // the first request is the same whatever the catalog's size: tool_search, none of the remote tools
+                var first=await env.MockRequest(requests[0].L("seq"));
+                var serialized=first.P("tools").GetRawText();
+                constantTools ??= serialized; Check.Equal(constantTools, serialized);
+                constantInstructions ??= first.S("instructions"); Check.Equal(constantInstructions, first.S("instructions"));
+                Check.Contains(serialized,"tool_search"); Check.NotContains(serialized,target.S("id")!);
+                // loaded: declared with its own schema from the next request on, and nothing else of the catalog with it
+                var second=await env.MockRequest(requests[1].L("seq"));
+                Check.Contains(second.P("tools").GetRawText(),target.S("id")!);
                 foreach(var entry in requests)
-                {
-                    var request=await env.MockRequest(entry.L("seq"));
-                    var serialized=request.P("tools").GetRawText();
-                    constantTools ??= serialized; Check.Equal(constantTools, serialized);
-                    constantInstructions ??= request.S("instructions"); Check.Equal(constantInstructions, request.S("instructions"));
-                    Check.Contains(serialized,"mcp_search");Check.Contains(serialized,"mcp_call");
-                    Check.NotContains(serialized,target.S("id")!);
-                    Check.NotContains(request.S("instructions"),"UNTRUSTED_SERVER_INSTRUCTIONS");
-                }
+                    Check.NotContains((await env.MockRequest(entry.L("seq"))).S("instructions"),"UNTRUSTED_SERVER_INSTRUCTIONS");
                 Check.True(outputs.All(o => !o.B("isError")));
-                var success = result.Events.Single(e => e.Type == "tool.end" && e.D.S("name") == "mcp_call");
+                var success = result.Events.Single(e => e.Type == "tool.end" && e.D.S("name") == target.S("id"));
                 Console.WriteLine($"    MCP first successful call catalog={count}: {(success.At-started).TotalMilliseconds:0} ms");
-                Console.WriteLine($"    MCP catalog={count}: serialized tools={constantTools!.Length} chars, instructions={constantInstructions!.Length} chars, schema inspections=1, argument errors=0, mocked task={watch.ElapsedMilliseconds} ms");
+                Console.WriteLine($"    MCP catalog={count}: serialized tools={constantTools!.Length} chars, instructions={constantInstructions!.Length} chars, mocked task={watch.ElapsedMilliseconds} ms");
             }
             finally {await env.Rpc("mcp.remove",new {id="fixture"});}
             }

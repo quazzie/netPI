@@ -151,8 +151,7 @@ public static class PlanTests
         Check.Equal<string?>(null, Block("mcp_ha_x_1", mcp, mcp: new McpToolInfo("ha", "ha_search", false), allow: ["ha/ha_search"]), "or server/name");
         Check.Equal<string?>(null, Block("mcp_ha_x_1", mcp, mcp: new McpToolInfo("ha", "ha_config_get_scene", true)));
         Check.Contains(Block("mcp_ha_x_1", mcp, mcp: new McpToolInfo("ha", "ha_config_set_scene", false), allow: ["ha_config_get_*"]), "not one of them");
-        Check.Equal<string?>(null, Block("mcp_search", D("mcp_search", readOnly: true, category: "mcp")));
-        Check.Contains(Block("mcp_call", D("mcp_call", category: "mcp")), "not resolved");
+        Check.Equal<string?>(null, Block("mcp_resource", D("mcp_resource", readOnly: true, category: "mcp")));
         return Task.CompletedTask;
     }
 
@@ -181,10 +180,10 @@ public static class PlanTests
         var ran = new List<string>();
         var offered = PlanPolicy.ChildTools([
             Recorder("read", ran, readOnly: true), Recorder("write", ran), Recorder("bash", ran, readOnly: true), Recorder("ask_user", ran, readOnly: true),
-            Recorder("plan_submit", ran), Recorder("agent_spawn", ran), Recorder("mcp_search", ran, readOnly: true, category: "mcp"), Recorder("mcp_call", ran, category: "mcp"),
+            Recorder("plan_submit", ran), Recorder("agent_spawn", ran), Recorder("mcp_resource", ran, readOnly: true, category: "mcp"),
             Recorder("mcp_ha_get_state_1", ran, readOnly: true, category: "mcp"), Recorder("grep", ran, readOnly: true),
         ]);
-        Check.Equal("grep,mcp_call,mcp_search,read", string.Join(",", offered), "readers and the MCP gateways; no shell, no remote tool by name, nothing of the plan's");
+        Check.Equal("grep,mcp_resource,read", string.Join(",", offered), "readers and the MCP resources; no shell, no remote tool by name, nothing of the plan's");
         return Task.CompletedTask;
     }
 

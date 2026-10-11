@@ -69,11 +69,9 @@ const FORBIDDEN = [
   { id: 'DecisionCapabilities', why: 'decision capabilities are the decide plugin' },
   { id: 'DecisionConfidence', why: 'decision confidence is the decide plugin' },
   { id: 'IGitHistory', why: 'reading git history is the decide plugin' },
-  // Deferred and indirect tools: routing a tool call through another agent is a plugin feature.
+  // Deferred tools: which tools a chat is sent is a plugin feature.
   { id: 'ToolSelection', why: 'tool selection is a plugin decision' },
   { id: 'IDeferredToolInfrastructure', why: 'deferred tools are a plugin feature' },
-  { id: 'IIndirectAgentTool', why: 'an indirect agent tool is a plugin feature' },
-  { id: 'ResolvedToolCall', why: 'a resolved tool call belongs to the plugin that defers it' },
   // Background work: running something after the turn is a plugin feature.
   { id: 'IBackgroundWork', why: 'background work is a plugin feature' },
   { id: 'BackgroundWorkInfo', why: 'background work is a plugin feature' },

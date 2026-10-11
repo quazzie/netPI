@@ -40,21 +40,5 @@ public static class McpLifecycleTests
             await manager.ReconcileAsync(CancellationToken.None);Check.Equal(0,manager.Catalog().Count);
             ctx.Unload();
         });
-        r.Add("mcp search: deterministic top three ranking and no match avoid catalog fallback",()=>{
-            var ctx=new FakePluginContext();var manager=new ServerManager(ctx);var config=McpTests.Config();
-            RemoteTool Entry(string name,string description,string arg)
-            {
-                var raw=McpTests.Tool(name);raw["description"]=description;raw["inputSchema"]!["properties"]=new JsonObject {[arg]=new JsonObject {["type"]="string"}};raw["inputSchema"]!.AsObject().Remove("required");return new RemoteTool(manager,config,raw);
-            }
-            var weather=Entry("cityForecast","Look up the forecast for a city","city");
-            var files=Entry("findFiles","Search files by filename","filename");
-            var mail=Entry("sendEmail","Send email to an address","recipient");
-            var docs=new[]{weather,files,mail};
-            foreach(var (query,target) in new[]{("weather city forecast",weather),("search filename",files),("email recipient",mail)})
-                Check.True(McpSearchTool.Rank(docs,query,3).Take(3).Contains(target));
-            Check.Equal(0,McpSearchTool.Rank(docs,"zzunknowncapabilityzz",3).Count);
-            Check.Equal(weather,McpSearchTool.Rank(docs,weather.Definition.Name,1).Single());
-            ctx.Unload();
-        });
     }
 }

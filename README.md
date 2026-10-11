@@ -146,7 +146,7 @@ NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.
 NetPI.Contracts: the higher abstractions'       │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics · NetPI.Schedules
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Workspaces   checkouts, bindings, worktrees (the plugin that owns them)
                                                 │   NetPI.Coordinator  one-call dispatch and run results for an outside coordinator
-                                                │   NetPI.Mcp          external MCP servers: mcp_search, mcp_call, mcp_resource
+                                                │   NetPI.Mcp          external MCP servers: their tools (deferred) and mcp_resource
                                                 │   NetPI.Lsp          language servers (C#, Svelte, JS/TS): the lsp tool
                                                 │   NetPI.CodeMode     codemode: a JavaScript script (Jint) that calls the tools
                                                 │   NetPI.Memory · NetPI.Embeddings   memory_search over past chats

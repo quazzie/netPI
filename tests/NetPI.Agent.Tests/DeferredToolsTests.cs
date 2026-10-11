@@ -126,47 +126,36 @@ public static class DeferredToolsTests
             Check.Equal(0, ToolRanking.Rank(tools, "the of and").Count);
             Check.Equal(0, ToolRanking.Rank(tools, "spreadsheet").Count);
         });
-        t.Add("deferred: runtime search schema call with 250 tools keeps two schemas and effective hooks", async () => {
+        t.Add("deferred: one MCP tool among 250 is loaded with tool_search and called directly, through the policy hooks", async () => {
             await using var h=await TestHost.StartAsync();
             var ctx=new TestPluginContext(h,"netpi.mcp");
             var config=new ServerConfig {Id="fixture",Command="dotnet",Args=[typeof(DeferredToolsTests).Assembly.Location,"--mcp-fixture","large"],Cwd=h.Workspace};
             h.Settings.Set("mcp.servers",new JsonObject {["fixture"]=config.Json()});
             await using var manager=new ServerManager(ctx);await manager.StartAsync([],CancellationToken.None);
             await Wait.Until(() => manager.Catalog().Count > 0, "mcp fixture connected");
-            ctx.Tools.Register(new McpSearchTool(ctx,manager));ctx.Tools.Register(new McpCallTool(ctx,manager));
             var target=manager.Catalog().Single(x=>x.RemoteName=="weather");
             var hook=new Hook {Arguments="""{"city":"Berlin"}"""};h.Services.Register<IAgentHook>(hook);
             var session=h.NewSession();int stage=0;
             h.Catalog.Handler=(r,ct)=>stage++ switch {
-                0=>Reply.Tools(Reply.Call("mcp_search",new {query="city weather"})),
-                1=>Reply.Tools(Reply.Call("mcp_search",new {query=target.Definition.Name,detail="schema"})),
-                2=>Reply.Tools(Reply.Call("mcp_call",new {id=target.Definition.Name,revision=target.Definition.Revision,arguments=new {city="Oslo"}})),
+                0=>Reply.Tools(Reply.Call("tool_search",new {query=target.Definition.Name,limit=1})),
+                1=>Reply.Tools(Reply.Call(target.Definition.Name,new {city="Oslo"})),
                 _=>Reply.Text("done")
             };
             await h.SendAsync(session.Id,"Get Oslo weather");await h.IdleAsync(session.Id);
             var requests=h.Catalog.Requests.Where(r=>r.SessionId==session.Id).ToList();
-            Check.Equal(4,requests.Count);
-            var prefix=string.Join(",",requests[0].Tools.Select(d=>d.Name));
-            Check.True(requests.All(r=>string.Join(",",r.Tools.Select(d=>d.Name))==prefix));
-            Check.False(requests[0].Tools.Any(d=>d.Name==target.Definition.Name));
+            Check.Equal(3,requests.Count);
+            Check.False(requests[0].Tools.Any(d=>d.Name==target.Definition.Name), "none of the 250 is sent before it is loaded");
+            Check.True(requests[0].Tools.Any(d=>d.Name=="tool_search"));
+            Check.Equal(1,requests[1].Tools.Count(d=>d.Category=="mcp"), "only the loaded one: " + string.Join(",",requests[1].Tools.Select(d=>d.Name)));
             Check.True(hook.Before.Contains(target.Definition.Name));Check.True(hook.After.Contains(target.Definition.Name));
-            var result=h.Messages(session.Id).SelectMany(m=>m.ToolResults).Single(x=>x.Name=="mcp_call");
-            Check.Contains(result.Content,"Weather: Berlin");
-            var original = h.Messages(session.Id).SelectMany(m => m.ToolCalls).Single(c => c.Name == "mcp_call");
-            Check.Contains(original.Arguments, "Oslo"); Check.NotContains(original.Arguments, "Berlin");
-            Check.Equal(target.Definition.Name,NetPiJson.ToNode(result.Details)!["resolvedTool"]!.GetValue<string>());
-            // The same provider-visible catalog can no longer invoke a concrete target switched off in this chat.
+            var result=h.Messages(session.Id).SelectMany(m=>m.ToolResults).Single(x=>x.Name==target.Definition.Name);
+            Check.Contains(result.Content,"Weather: Berlin", "the hook's arguments are what the server received");
+            // switched off in this chat: a call by name no longer reaches it
             await h.Rpc.CallAsync("agent.setTools",new {sessionId=session.Id,off=new[]{target.Definition.Name}});
-            stage=0;
-            h.Catalog.Handler=(r,ct)=>stage++==0?Reply.Tools(Reply.Call("mcp_call",new {id=target.Definition.Name,revision=target.Definition.Revision,arguments=new {city="Oslo"}})):Reply.Text("done");
+            stage=1;
             await h.SendAsync(session.Id,"again");await h.IdleAsync(session.Id);
             Check.True(h.Messages(session.Id).SelectMany(m=>m.ToolResults).Last().IsError);
-            stage=0;
-            var child = await h.Runtime.SpawnAsync(new SpawnRequest { ParentAgentId=h.Runtime.GetBySession(session.Id)!.Id, Task="call without inherited disclosure", Tools=[target.Definition.Name] });
-            await h.StatusAsync(child.Id,AgentStatus.Completed);
-            Check.True(h.Messages(child.SessionId).SelectMany(m=>m.ToolResults).Single().IsError);
             Check.False(h.Catalog.Requests.Last().Tools.Any(d=>d.Name==target.Definition.Name));
-            Check.True(h.Catalog.Requests.Last().Tools.Any(d=>d.Name=="mcp_call"));
             await manager.DisposeAsync();ctx.Unload();
         });
         t.Add("deferred: hidden changes stay silent and a pinned removal is announced only once", async () => {
@@ -196,19 +185,18 @@ public static class DeferredToolsTests
             Check.Equal(1,h.Messages(session.Id).Count(m=>m.Meta?["removed"] is JsonArray a && a.Any(n=>n?.GetValue<string>()==pinned.Definition.Name)));
             ctx.Unload();
         });
-        t.Add("deferred: effective target policy blocks remote execution and schema changes make one targeted notice", async () => {
+        t.Add("deferred: a policy hook blocks a remote call, and a loaded tool's schema change makes one targeted notice", async () => {
             await using var h=await TestHost.StartAsync();
             var ctx=new TestPluginContext(h,"netpi.mcp");
             var config=new ServerConfig {Id="fixture",Command="dotnet",Args=[typeof(DeferredToolsTests).Assembly.Location,"--mcp-fixture"],Cwd=h.Workspace};
             h.Settings.Set("mcp.servers",new JsonObject {["fixture"]=config.Json()});
             await using var manager=new ServerManager(ctx);await manager.StartAsync([],CancellationToken.None);
             await Wait.Until(() => manager.Catalog().Count > 0, "mcp fixture connected");
-            ctx.Tools.Register(new McpSearchTool(ctx,manager));ctx.Tools.Register(new McpCallTool(ctx,manager));
             var target=manager.Catalog().Single();var session=h.NewSession();int stage=0;
-            h.Catalog.Handler=(r,ct)=>stage++==0?Reply.Tools(Reply.Call("mcp_search",new {query=target.Definition.Name,detail="schema"})):Reply.Text("done");
-            await h.SendAsync(session.Id,"inspect");await h.IdleAsync(session.Id);
+            h.Catalog.Handler=(r,ct)=>stage++==0?Reply.Tools(Reply.Call("tool_search",new {query=target.Definition.Name,limit=1})):Reply.Text("done");
+            await h.SendAsync(session.Id,"load");await h.IdleAsync(session.Id);
             var hook=new Hook{Block=true};h.Services.Register<IAgentHook>(hook);stage=0;
-            h.Catalog.Handler=(r,ct)=>stage++==0?Reply.Tools(Reply.Call("mcp_call",new {id=target.Definition.Name,revision=target.Definition.Revision,arguments=new {city="Oslo"}})):Reply.Text("done");
+            h.Catalog.Handler=(r,ct)=>stage++==0?Reply.Tools(Reply.Call(target.Definition.Name,new {city="Oslo"})):Reply.Text("done");
             await h.SendAsync(session.Id,"call");await h.IdleAsync(session.Id);
             var result=h.Messages(session.Id).SelectMany(m=>m.ToolResults).Last();
             Check.True(result.IsError);Check.Contains(result.Content,"effective target blocked");

@@ -216,7 +216,7 @@ internal sealed partial class ServerManager : IAsyncDisposable
             {
                 state.Catalog[id].Handle.Dispose(); state.Catalog.Remove(id); removed.Add(id);
             }
-            // Resources carry no registration handle: the catalog is what mcp_search and mcp_resource read.
+            // Resources carry no registration handle: the catalog is what mcp_resource searches and reads.
             var exposed = new Dictionary<string, RemoteResource>(StringComparer.Ordinal);
             foreach (var value in rawResources)
             {
@@ -423,6 +423,28 @@ internal sealed partial class ServerManager : IAsyncDisposable
     /// <summary>One server's configuration as the settings hold it, for the editor (<c>mcp.config</c>); null when there is none.</summary>
     public JsonObject? RawConfig(string id) =>
         (_ctx.Settings.GetNode("mcp.servers") as JsonObject)?[id] is JsonObject config ? config.DeepClone().AsObject() : null;
+    /// <summary>
+    /// The arguments as the server will receive them: checked against the tool's schema, and repaired only the way
+    /// <see cref="Coercion.Repair"/> allows. One path for a model's call and the mcp.read / mcp.call RPCs (idea-fhtryf).
+    /// A model that writes JSON as a string inside a typed argument (<c>"list_only":"true"</c>,
+    /// <c>"config":"{\"views\":[…]}"</c>) fails the check; the schema is then the only authority that may re-read such a
+    /// value, and only when the repaired arguments are the ones it accepts. Anything else keeps the original error, so
+    /// nothing is guessed on the model's behalf.
+    /// </summary>
+    internal JsonElement Prepare(RemoteTool tool, JsonObject args)
+    {
+        var schema = tool.Definition.Parameters;
+        try { Schema.Validate(schema, args); return NetPiJson.ToElement(args); }
+        catch (McpException error)
+        {
+            if (Coercion.Repair(schema, args) is not { } repaired) throw;
+            try { Schema.Validate(schema, repaired); }
+            catch (McpException) { throw error; }
+            _ctx.Logger.LogInformation("MCP {Server}/{Tool}: repaired {Count} argument(s) written as text against the schema",
+                tool.ServerId, tool.RemoteName, repaired.Count(p => !JsonNode.DeepEquals(p.Value, args[p.Key])));
+            return NetPiJson.ToElement(repaired);
+        }
+    }
     public async Task<ToolResult> CallAsync(RemoteTool tool, JsonElement args, CancellationToken ct)
     {
         State state; McpConnection connection;

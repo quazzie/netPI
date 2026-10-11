@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.Mcp;
 
-[NetPiPlugin("netpi.mcp", Name = "MCP", Description = "External tools with deferred discovery", Order = 80)]
+[NetPiPlugin("netpi.mcp", Name = "MCP", Description = "External MCP servers: their tools (deferred until a chat loads them) and resources", Order = 80)]
 public sealed class McpPlugin : INetPiPlugin
 {
     private ServerManager? _manager;
@@ -22,15 +22,12 @@ public sealed class McpPlugin : INetPiPlugin
         }
         var manager = new ServerManager(ctx); _manager = manager;
         await manager.StartAsync(healthy, ct).ConfigureAwait(false);
-        ctx.Tools.Register(new McpSearchTool(ctx, manager));
-        ctx.Tools.Register(new McpCallTool(ctx, manager));
         ctx.Tools.Register(new McpResourceTool(ctx, manager));
         ctx.Services.Register(new SettingsSection
         {
             Id = "mcp", Title = "MCP", Group = "Tools", Order = 80,
             Settings =
             [
-                SettingInfo.Int("mcp.discoveryChars", "Discovery result limit", 4000, "Characters per search/schema result; larger schemas are saved as files.", 1024, 20000, "chars"),
                 SettingInfo.Int("mcp.maxMessageChars", "Largest protocol message", 4_000_000, "Reject oversized frames and SSE events.", 4096, 16_000_000, "chars"),
                 SettingInfo.Int("mcp.maxCatalogTools", "Largest tool catalog", 10000, "Maximum tools discovered per server.", 1, 10000, "tools"),
                 SettingInfo.Int("mcp.maxCatalogChars", "Largest tool catalog data", 8_000_000, "Bound discovery memory per server.", 4096, 32_000_000, "chars"),
@@ -86,7 +83,7 @@ public sealed class McpPlugin : INetPiPlugin
             var id = req.Str("serverId");
             return Task.FromResult<object?>(new JsonObject { ["resources"] = new JsonArray(manager.Resources(id)
                 .Select(r => (JsonNode)r.Summary(manager.Available(r.ServerId))).ToArray()) });
-        }, "MCP resources advertised by a server (what mcp_search can surface): { serverId? } → { resources }", true, RpcParam.Opt("serverId", RpcParamType.String, "one server's; all when omitted"));
+        }, "MCP resources advertised by a server (what mcp_resource can find): { serverId? } → { resources }", true, RpcParam.Opt("serverId", RpcParamType.String, "one server's; all when omitted"));
         // mcp.read / mcp.call: what a script or an outside agent used to do itself, with the URL (secret path included)
         // taken from mcp.list and a fresh MCP session per call (idea-fhtryf). The tool is found among the exposed ones,
         // its arguments go through the model's own path (schema check, the one repair), and the call is recorded as a
@@ -118,13 +115,13 @@ public sealed class McpPlugin : INetPiPlugin
             else if (given.ValueKind == JsonValueKind.Object) args = JsonNode.Parse(given.GetRawText())!.AsObject();
             else throw new RpcException("bad_request", "arguments must be an object ({} for none).");
             JsonElement effective;
-            try { effective = McpCallTool.Prepare(ctx, tool, args); }
+            try { effective = manager.Prepare(tool, args); }
             catch (McpException ex) { throw new RpcException("bad_request", ex.Message); }
 
             var callId = "rpc_" + Guid.NewGuid().ToString("N")[..16];
             ctx.Events.Publish(EventTypes.ToolStart, new JsonObject
             {
-                ["callId"] = callId, ["name"] = "mcp_call", ["label"] = tool.Definition.Label, ["resolvedTool"] = tool.Definition.Name,
+                ["callId"] = callId, ["name"] = tool.Definition.Name, ["label"] = tool.Definition.Label,
                 ["serverId"] = tool.ServerId, ["source"] = "rpc",
                 ["arguments"] = new JsonObject { ["id"] = tool.Definition.Name, ["arguments"] = args.DeepClone() }.ToJsonString(),
             }, ui: false);
@@ -139,9 +136,9 @@ public sealed class McpPlugin : INetPiPlugin
             {
                 var end = new JsonObject
                 {
-                    ["callId"] = callId, ["name"] = "mcp_call", ["isError"] = result?.IsError ?? true,
+                    ["callId"] = callId, ["name"] = tool.Definition.Name, ["isError"] = result?.IsError ?? true,
                     ["durationMs"] = (long)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-                    ["resolvedTool"] = tool.Definition.Name, ["serverId"] = tool.ServerId, ["source"] = "rpc",
+                    ["serverId"] = tool.ServerId, ["source"] = "rpc",
                 };
                 if (result is null) end["interrupted"] = token.IsCancellationRequested ? "aborted" : "failed";
                 ctx.Events.Publish(EventTypes.ToolEnd, end, ui: false);

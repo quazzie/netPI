@@ -18,7 +18,7 @@ internal sealed class ScriptHost(INestedToolCalls nested, ScriptStore store, Act
     /// <summary>Added to the error of a call to a tool a script cannot call.</summary>
     public const string UnknownToolHint =
         "In a script, find callable tools with searchTools(query) or ALL_TOOLS; deferred and MCP tools are called by name, " +
-        "without tool_search, mcp_search or mcp_call (which a script cannot call).";
+        "without tool_search (which a script cannot call).";
 
     private readonly List<JsonObject> _calls = [];
     private int _callCount;

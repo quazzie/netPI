@@ -51,8 +51,8 @@ internal sealed class ToolSearchTool(IPluginContext ctx, AgentRuntime runtime) :
         var eligible = context.EligibleTools?.Invoke() ?? runtime.ToolsFor(runtime.GetBySession(context.SessionId), session);
         var exposure = ToolExposure.For(ctx.Settings, runtime.GetBySession(context.SessionId), session);
         var loaded = exposure.Loaded;
-        // what a search can offer: deferred tools this chat may call, not the gateways (mcp_call) that reach them another way
-        var candidates = eligible.Where(t => exposure.IsDeferred(t.Definition) && t is not IIndirectAgentTool).ToList();
+        // what a search can offer: deferred tools this chat may call
+        var candidates = eligible.Where(t => exposure.IsDeferred(t.Definition)).ToList();
         if (candidates.Count == 0)
             return Task.FromResult(ToolResult.Ok("No tools to search: every tool you can use is already declared to you.",
                 Details([], [])));

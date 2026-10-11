@@ -113,9 +113,8 @@ public sealed partial class ScenarioEngine
             plan = name switch
             {
                 "mcp" => step switch {
-                    0 => new Plan().Call("mcp_search", new JsonObject { ["query"] = "city weather" }),
-                    1 => new Plan().Call("mcp_search", new JsonObject { ["query"] = tag.P("id", ""), ["detail"] = "schema" }),
-                    2 => new Plan().Call("mcp_call", new JsonObject { ["id"] = tag.P("id", ""), ["revision"] = tag.P("revision", ""), ["arguments"] = new JsonObject { ["city"] = "Oslo" } }),
+                    0 => new Plan().Call("tool_search", new JsonObject { ["query"] = tag.P("id", ""), ["limit"] = 1 }),
+                    1 => new Plan().Call(tag.P("id", ""), new JsonObject { ["city"] = "Oslo" }),
                     _ => Final("Weather received. MCP-DONE")
                 },
                 "tools" => Tools(tag, step, after),

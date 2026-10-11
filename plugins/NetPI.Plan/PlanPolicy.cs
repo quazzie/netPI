@@ -24,7 +24,8 @@ internal static class PlanPolicy
         "ask_user", "todo_write", "plan_submit", "compact", "agent", "agent_spawn",
     };
 
-    internal static readonly HashSet<string> McpGateways = new(StringComparer.OrdinalIgnoreCase) { "mcp_search", "mcp_call", "mcp_resource" };
+    /// <summary>The MCP plugin's own tool: it finds and reads resources, so a research subagent gets it with the readers.</summary>
+    internal const string McpResource = "mcp_resource";
 
     /// <summary>The reason the call is blocked, or null when it may run. <paramref name="mcp"/> is read for an MCP tool that is not flagged read-only.</summary>
     public static string? Block(string name, ToolDefinition? def, bool readOnlyCall, McpToolInfo? mcp, IReadOnlyList<string> mcpAllow)
@@ -38,10 +39,8 @@ internal static class PlanPolicy
             };
         if (name.Equals("plan_enter", StringComparison.OrdinalIgnoreCase)) return "This chat is already in plan mode.";
         if (Allowed.Contains(name)) return null;
-        if (name.Equals("mcp_call", StringComparison.OrdinalIgnoreCase))
-            return "Plan mode runs only MCP tools that read: the call was not resolved to one. Search again (mcp_search) and call a tool that only reads.";
         if (def is { ReadOnly: true } || readOnlyCall) return null;
-        if (def?.Category == "mcp" && !McpGateways.Contains(name))
+        if (def?.Category == "mcp")
         {
             if (mcp is { ReadOnly: true }) return null;
             if (mcp is not null && Matches(mcp, mcpAllow)) return null;
@@ -68,11 +67,14 @@ internal static class PlanPolicy
         return false;
     }
 
-    /// <summary>The tools a research subagent of a plan gets: the ones that only read, and the way to search MCP (its calls are checked like the chat's).</summary>
+    /// <summary>
+    /// The tools a research subagent of a plan gets: the ones that only read, and the MCP resources. An MCP server's own
+    /// tools stay with the plan chat: named one by one they would fill the subagent's tool list.
+    /// </summary>
     internal static List<string> ChildTools(IEnumerable<IAgentTool> all) => [.. all
         .Select(t => t.Definition)
         .Where(d => !Never.Contains(d.Name) && !Allowed.Contains(d.Name) && !d.Name.StartsWith("plan_", StringComparison.Ordinal)
-                    && ((d.ReadOnly && d.Category != "mcp") || McpGateways.Contains(d.Name)))
+                    && d.ReadOnly && (d.Category != "mcp" || d.Name == McpResource))
         .Select(d => d.Name).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal)];
 
     internal const string ChildInstructions =

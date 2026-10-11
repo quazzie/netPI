@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace NetPI;
@@ -7,21 +6,6 @@ namespace NetPI;
 public interface IDeferredToolInfrastructure
 {
     bool Supports(ToolDefinition target);
-}
-
-/// <summary>An indirect tool is resolved by the runner, never executed by the gateway itself.</summary>
-public interface IIndirectAgentTool : IAgentTool
-{
-    ValueTask<ResolvedToolCall> ResolveAsync(ToolContext context, JsonElement arguments, CancellationToken ct);
-    /// <summary>Recheck disclosure/revision immediately before execution, including after policy hooks.</summary>
-    ValueTask ValidateAsync(ToolContext context, JsonElement originalArguments, CancellationToken ct) => ValueTask.CompletedTask;
-}
-
-public sealed class ResolvedToolCall
-{
-    public required string ToolName { get; init; }
-    public required JsonElement Arguments { get; init; }
-    public string? ServerId { get; init; }
 }
 
 /// <summary>One rule for eligibility across runtime, context preview and deferred search.</summary>
@@ -57,7 +41,7 @@ public static class ToolSelection
             return infrastructure || agent?.ToolAllowlist is not { } allow || ToolLists.Names(allow, d.Name, names);
         }
         var selected = all.Where(t => Allowed(t)).ToList();
-        // An explicit gateway allowlist never grants a remote target. A selected target grants infrastructure only.
+        // A deferred tool that is selected brings the infrastructure that reaches it (tool_search), even past an allowlist.
         foreach (var tool in all)
             if (tool is IDeferredToolInfrastructure infra && Allowed(tool, infrastructure: true)
                 && selected.Any(t => exposure.IsDeferred(t.Definition) && infra.Supports(t.Definition))

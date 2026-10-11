@@ -25,7 +25,7 @@ internal sealed partial class ToolBatch
 
         private List<IAgentTool> Candidates() =>
             [.. batch.ActiveTools(batch.Ctx.Sessions.GetSession(batch.SessionId) ?? batch.Rc.Session)
-                .Where(t => t is not IIndirectAgentTool && t is not IDeferredToolInfrastructure && !ReferenceEquals(t, parent.Tool))];
+                .Where(t => t is not IDeferredToolInfrastructure && !ReferenceEquals(t, parent.Tool))];
 
         public async Task<ToolResult> CallAsync(string name, JsonElement arguments, CancellationToken ct)
         {

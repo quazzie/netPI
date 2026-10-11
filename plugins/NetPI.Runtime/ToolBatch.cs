@@ -6,8 +6,8 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Runtime;
 
 /// <summary>
-/// One tool batch of a turn: the calls the model asked for, prepared (a gateway resolved, a hook may rewrite the
-/// arguments), invoked and finished — and what a steer, an abort or a stop does to the calls that never ran.
+/// One tool batch of a turn: the calls the model asked for, prepared (a hook may rewrite the arguments), invoked and
+/// finished — and what a steer, an abort or a stop does to the calls that never ran.
 /// </summary>
 internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, AgentRunContext rc, Func<bool> hasSteering)
 {
@@ -25,10 +25,6 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
     {
         public required ToolCallPart Call { get; init; }
         public IAgentTool? Tool { get; set; }
-        public ToolCallPart? EffectiveCall { get; set; }
-        public IIndirectAgentTool? Gateway { get; set; }
-        public JsonElement OriginalArguments { get; set; }
-        public string? ServerId { get; set; }
         public JsonElement Args { get; set; }
         public ToolResult? Early { get; set; }
         public Stopwatch Watch { get; } = Stopwatch.StartNew();
@@ -52,7 +48,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
     /// <summary>The call only reads: a read-only tool, or a tool with actions that says so for these arguments.</summary>
     private static bool ReadsOnly(IAgentTool? tool, string? arguments)
     {
-        if (tool is null || tool is IIndirectAgentTool) return false;
+        if (tool is null) return false;
         if (tool is not IReadOnlyCalls calls) return tool.Definition.ReadOnly;
         try
         {
@@ -159,8 +155,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
     private bool StillEligible(PreparedCall p)
     {
         var eligible = ActiveTools(Ctx.Sessions.GetSession(SessionId) ?? rc.Session);
-        return p.Tool is not null && eligible.Any(t => ReferenceEquals(t, p.Tool))
-            && (p.Gateway is null || eligible.Any(t => ReferenceEquals(t, p.Gateway)));
+        return p.Tool is not null && eligible.Any(t => ReferenceEquals(t, p.Tool));
     }
 
     private async Task<(PreparedCall Call, bool ArgsChanged)> PrepareAsync(AgentTurnContext turn, ToolCallPart call, List<IAgentTool> tools, CancellationToken ct)
@@ -182,63 +177,46 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
                 prepared.Args = ParseArgs(call.Arguments);
                 if (ToolHelp.Asked(tool.Definition, prepared.Args))
                     prepared.Early = ToolResult.Ok(ToolHelp.Text(tool.Definition));
-                else if (tool is IIndirectAgentTool gateway)
-                {
-                    prepared.Gateway = gateway;
-                    prepared.OriginalArguments = prepared.Args;
-                    var resolved = await gateway.ResolveAsync(CallContext(call.Id), prepared.Args, ct).ConfigureAwait(false);
-                    prepared.Tool = FindTool(ActiveTools(Ctx.Sessions.GetSession(SessionId) ?? rc.Session), resolved.ToolName);
-                    prepared.ServerId = resolved.ServerId;
-                    if (prepared.Tool is null || prepared.Tool is IIndirectAgentTool)
-                        prepared.Early = ToolResult.Error("The resolved tool is unavailable or recursive invocation was refused.");
-                    else
-                    {
-                        prepared.Args = resolved.Arguments.Clone();
-                        prepared.EffectiveCall = new ToolCallPart { Id = call.Id, Name = resolved.ToolName, Arguments = resolved.Arguments.GetRawText() };
-                    }
-                }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (JsonException ex) { prepared.Early = ToolResult.Error($"Invalid JSON arguments for {call.Name}: {ex.Message}"); }
         catch (Exception ex) { prepared.Early = ToolResult.Error(ex.Message); }
 
-        var effective = prepared.EffectiveCall ?? call;
         rt.Emit(EventTypes.ToolStart, new JsonObject
         {
             ["sessionId"] = SessionId, ["agentId"] = AgentId, ["callId"] = call.Id, ["name"] = call.Name,
             ["label"] = prepared.Tool?.Definition.Label ?? call.Name, ["arguments"] = call.Arguments,
-            ["resolvedTool"] = prepared.EffectiveCall?.Name, ["serverId"] = prepared.ServerId,
         }, SessionId);
-        rt.SetActivity(state, $"tool: {effective.Name}");
+        rt.SetActivity(state, $"tool: {call.Name}");
         if (prepared.Early is not null) return (prepared, false);
         if (!StillEligible(prepared)) { prepared.Early = ToolResult.Error("The tool was disabled or replaced before execution."); return (prepared, false); }
 
         foreach (var hook in rt.Hooks())
         {
-            var decision = await AgentRunner.SafeAsync(Ctx, () => hook.OnBeforeToolCallAsync(turn, effective), "OnBeforeToolCall", ct).ConfigureAwait(false);
+            var decision = await AgentRunner.SafeAsync(Ctx, () => hook.OnBeforeToolCallAsync(turn, call), "OnBeforeToolCall", ct).ConfigureAwait(false);
             if (decision is null) continue;
             if (decision.Block)
             {
-                if (prepared.Gateway is null) call.Arguments = original;
+                call.Arguments = original;
                 prepared.Early = ToolResult.Error("Blocked: " + (decision.Reason ?? "this tool call was blocked by a policy hook."));
                 return (prepared, false);
             }
-            if (decision.Arguments is { } newArgs && newArgs != effective.Arguments)
+            if (decision.Arguments is { } newArgs && newArgs != call.Arguments)
             {
-                effective.Arguments = newArgs;
-                changed = prepared.Gateway is null;
+                call.Arguments = newArgs;
+                changed = true;
             }
         }
-        if (!effective.Name.Equals(prepared.Tool!.Definition.Name, StringComparison.OrdinalIgnoreCase) || !StillEligible(prepared))
+        if (!call.Name.Equals(prepared.Tool!.Definition.Name, StringComparison.OrdinalIgnoreCase) || !StillEligible(prepared))
         { prepared.Early = ToolResult.Error("The tool changed or was disabled during policy checks."); return (prepared, changed); }
         try
         {
-            prepared.Args = ParseArgs(effective.Arguments);
+            prepared.Args = ParseArgs(call.Arguments);
             if (ToolHelp.Asked(prepared.Tool.Definition, prepared.Args))
                 prepared.Early = ToolResult.Ok(ToolHelp.Text(prepared.Tool.Definition));
         }
-        catch (JsonException ex) { prepared.Early = ToolResult.Error($"Invalid JSON arguments for {effective.Name}: {ex.Message}"); }
+        catch (JsonException ex) { prepared.Early = ToolResult.Error($"Invalid JSON arguments for {call.Name}: {ex.Message}"); }
         return (prepared, changed);
     }
 
@@ -259,11 +237,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             try
             {
                 if (!StillEligible(p)) result = ToolResult.Error("The tool was disabled or replaced before execution.");
-                else
-                {
-                    if (p.Gateway is not null) await p.Gateway.ValidateAsync(context, p.OriginalArguments, ct).ConfigureAwait(false);
-                    result = await p.Tool.ExecuteAsync(context, p.Args, ct).ConfigureAwait(false) ?? ToolResult.Error("The tool returned no result.");
-                }
+                else result = await p.Tool.ExecuteAsync(context, p.Args, ct).ConfigureAwait(false) ?? ToolResult.Error("The tool returned no result.");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -281,14 +255,6 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
         {
             try { details = NetPiJson.ToNode(result.Details); }
             catch (Exception ex) { Ctx.Logger.LogDebug(ex, "Tool details of {Tool} are not serializable", p.Call.Name); }
-        }
-        if (p.EffectiveCall is not null)
-        {
-            var resolved = details as JsonObject ?? new JsonObject { ["result"] = details };
-            resolved["resolvedTool"] = p.EffectiveCall.Name;
-            resolved["serverId"] = p.ServerId;
-            resolved["arguments"] = p.EffectiveCall.Arguments;
-            details = resolved;
         }
         return new ToolResultPart
         {
@@ -323,14 +289,12 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             ["name"] = p.Call.Name,
             ["isError"] = result.IsError,
             ["durationMs"] = result.DurationMs,
-            ["resolvedTool"] = p.EffectiveCall?.Name,
-            ["serverId"] = p.ServerId,
         }, SessionId);
         rt.Update(state, i => i.ToolCalls++);
         rc.ToolCallCount++;
         rt.PublishStatus(state, throttled: true);
         foreach (var hook in rt.Hooks())
-            await AgentRunner.SafeAsync(Ctx, () => hook.OnAfterToolCallAsync(turn, p.EffectiveCall ?? p.Call, result), "OnAfterToolCall", ct).ConfigureAwait(false);
+            await AgentRunner.SafeAsync(Ctx, () => hook.OnAfterToolCallAsync(turn, p.Call, result), "OnAfterToolCall", ct).ConfigureAwait(false);
     }
 
     /// <summary>
