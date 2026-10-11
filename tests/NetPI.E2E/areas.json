@@ -43,6 +43,10 @@
     "slots",
     "subagents",
     "scheduling"
+   ],
+   "ids": [
+    "ui.work-tab",
+    "ui.usage-budget"
    ]
   },
   {
@@ -105,6 +109,9 @@
    "path": "plugins/NetPI.Diagnostics/",
    "tags": [
     "inspect"
+   ],
+   "ids": [
+    "ui.diagnostics-tab"
    ]
   },
   {
@@ -127,7 +134,8 @@
    ],
    "ids": [
     "ui.smoke",
-    "ui.idea-conflict"
+    "ui.idea-conflict",
+    "ui.ideas-tab"
    ]
   },
   {
@@ -181,6 +189,9 @@
    "path": "plugins/NetPI.Providers.ClaudeCli/",
    "tags": [
     "provider"
+   ],
+   "ids": [
+    "ui.tool-cards"
    ]
   },
   {
@@ -218,6 +229,10 @@
     "scheduling",
     "sessions",
     "codemode"
+   ],
+   "ids": [
+    "ui.chat-run",
+    "ui.connection"
    ]
   },
   {
@@ -239,6 +254,9 @@
    "path": "plugins/NetPI.Todo/",
    "tags": [
     "smoke"
+   ],
+   "ids": [
+    "ui.tool-cards"
    ]
   },
   {
@@ -266,6 +284,9 @@
    "path": "plugins/NetPI.Tools.Media/",
    "tags": [
     "provider"
+   ],
+   "ids": [
+    "ui.tool-cards"
    ]
   },
   {
@@ -291,12 +312,18 @@
    "path": "plugins/NetPI.Tools.Ssh/",
    "tags": [
     "smoke"
+   ],
+   "ids": [
+    "ui.tool-cards"
    ]
   },
   {
    "path": "plugins/NetPI.Tools.Web/",
    "tags": [
     "smoke"
+   ],
+   "ids": [
+    "ui.tool-cards"
    ]
   },
   {
@@ -311,7 +338,8 @@
     "scheduling"
    ],
    "ids": [
-    "ui.smoke"
+    "ui.smoke",
+    "ui.work-tab"
    ]
   },
   {
@@ -469,12 +497,6 @@
    "path": "docs/SETTINGS.md",
    "ids": [
     "inspect.settings-docs"
-   ]
-  },
-  {
-   "path": "web/mock/",
-   "ids": [
-    "ui.rpc-contract"
    ]
   },
   {

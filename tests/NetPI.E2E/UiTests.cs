@@ -17,7 +17,7 @@ public static class UiTests
             // No server needed: a fixture page with a stub ctx.
             await RunUiScript(env, "mcp-smoke.mjs", 45);
         });
-        r.Add("ui.rpc-contract", "ui: every method the UI mock answers and every method the UI calls by name exists in the server's rpc.list (idea-yvcy8b)", async () =>
+        r.Add("ui.rpc-contract", "ui: every method the UI calls by name exists in the server's rpc.list (idea-yvcy8b)", async () =>
         {
             await RunUiScript(env, "rpc-contract.mjs", 45);
         }, 60);

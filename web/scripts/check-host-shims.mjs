@@ -21,7 +21,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compile, compileModule } from 'svelte/compiler';
-import { loadPlaywright, launchBrowser } from '../mock/pw.mjs';
+import { loadPlaywright, launchBrowser } from './pw.mjs';
 import { writeHostShims, exportNames } from './host-shims.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');

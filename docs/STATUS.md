@@ -26,7 +26,7 @@ Windows validation on 2026-10-03: the six unit suites (`scripts/test.ps1`) from 
 were green (Providers 68 passed, 495 checks; Tools 79; Agent 195; Aux 335; Host 170; Storage 104).
 
 The repository is on GitHub (`quazzie/netPI`) and `.github/workflows/ci.yml` runs on every push, on `windows-latest`:
-the six unit suites, the mock UI suite and the real-server e2e suite (the Linux build and the suites on Linux are not
+the six unit suites and the real-server e2e suite with its browser tests (the mock UI suite was removed on 2026-10-11; the Linux build and the suites on Linux are not
 run there yet). **The runs on `master` of 2026-10-05 were not green.** Both causes were in the environment and are
 fixed in the code (idea-gkx7io), but a green run on the pushed `master` is still to be confirmed:
 

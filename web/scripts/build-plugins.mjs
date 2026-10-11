@@ -10,7 +10,7 @@
 // --app-dir, else artifacts/app: point it at the running app's own folder (server.json's appDir) when building in a worktree.
 //
 //   node web/scripts/build-plugins.mjs                     all plugins/*/ui
-//   node web/scripts/build-plugins.mjs web/mock/sample-plugin   … plus extra plugin dirs
+//   node web/scripts/build-plugins.mjs <dir>…              … plus extra plugin dirs
 //   node web/scripts/build-plugins.mjs --only <dir>…       only the given dirs
 //   node web/scripts/build-plugins.mjs --watch             rebuild on change
 //   node web/scripts/build-plugins.mjs --copy              also install the bundle into <app>/plugins/<P>/, so

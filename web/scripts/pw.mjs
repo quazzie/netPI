@@ -1,4 +1,5 @@
-// Resolve Playwright without making it a dependency: local install first, then the global npm root.
+// Playwright for the UI checks (web/scripts/check-*.mjs, bench-stream.mjs) without making it a dependency: a local
+// install first (playwright-core is a devDependency), then the global npm root.
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -44,19 +45,4 @@ export async function launchBrowser(pw) {
     }
     throw e;
   }
-}
-
-/** Launch chromium and open the app. Collects console errors in `errors`. */
-export async function openApp({ url = 'http://127.0.0.1:7431/?token=dev', width = 1600, height = 1000, theme } = {}) {
-  const pw = await loadPlaywright();
-  const browser = await launchBrowser(pw);
-  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, colorScheme: theme ?? 'dark' });
-  const page = await context.newPage();
-  const errors = [];
-  page.on('console', (m) => {
-    if (m.type() === 'error' || m.type() === 'warning') errors.push(`[${m.type()}] ${m.text()}`);
-  });
-  page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}\n${e.stack ?? '(no stack)'}`));
-  await page.goto(url);
-  return { pw, browser, context, page, errors };
 }

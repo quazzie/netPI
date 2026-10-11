@@ -1,7 +1,8 @@
 # Move the mock UI suite to the real server
 
-Status: in progress. The suite is **frozen**: no new section or check goes into `web/mock`. A new UI test is a script in
-`tests/NetPI.E2E/ui` that runs against the real server and MockLlm, registered in `tests/NetPI.E2E/UiTests.cs`.
+Status: **done** (2026-10-11). `web/mock` is gone. Every UI test is a script in `tests/NetPI.E2E/ui` that runs against the
+real server and MockLlm, registered in `tests/NetPI.E2E/UiTests.cs`, and CI runs them (the e2e job lost `-NoUi`). The CI
+change still wants its first green run on GitHub.
 
 ## Progress
 
@@ -12,8 +13,20 @@ Status: in progress. The suite is **frozen**: no new section or check goes into 
 | 2026-10-11 | K settings, chat tools, profiles | `ui.settings` | 47 |
 | 2026-10-11 | D side panels, sessions list | `ui.sessions-panel` | 21 |
 | 2026-10-11 | F Ideas tab, start screen ideas | `ui.ideas-tab` | 45 |
+| 2026-10-11 | G Diagnostics, Files and MCP tabs | `ui.diagnostics-tab`, `ui.files-tab`, `ui.mcp-tab` | 12 + 17 + 10 |
+| 2026-10-11 | C the composer and the chat tabs | `ui.composer` | 39 |
+| 2026-10-11 | A a chat's history | `ui.chat-history` | 21 |
+| 2026-10-11 | H what a chat asks the user | `ui.chat-decisions` | 39 |
+| 2026-10-11 | B a chat run as a person watches it | `ui.chat-run` | 41 |
+| 2026-10-11 | E the Work tab, the Usage tab, the budget | `ui.work-tab`, `ui.usage-budget` | 31 + 24 |
+| 2026-10-11 | I tool cards: web, ssh, the Claude CLI's own tools | `ui.tool-cards` | 37 |
+| 2026-10-11 | L the connection, notifications, capabilities, the dev server | `ui.connection`, `ui.dev-proxy` | 23 + 3 |
+| 2026-10-11 | `web/mock` removed, CI runs the browser tests | `ui.rpc-contract` keeps its UI half | – |
 
-Left in `e2e.mjs`: 36 sections, 275 checks (units G, C, A, H, B, E, I, L).
+Nothing was dropped: SSH, the one spike, fitted in well under its hour (the E2E runner's own exe is the ssh and scp
+client, `FakeSsh.cs`). What changed shape: a second budget period comes from moving `budget.resetDay` (the ledger keeps
+the old period's rows by design), the "current period first" check became "newest first, the current one chosen", and a
+cancelled waiting run belongs to a chat of its own (see below).
 
 What the real server showed that the mock had hidden, each fixed on the way:
 - `agentsmd.list` and `skills.list` refused `{ projectId }`: the projects dialog's instruction files and skills were
@@ -23,6 +36,18 @@ What the real server showed that the mock had hidden, each fixed on the way:
 - a price set on an agent was not announced (`agents.changed`'s signature left out cost and budget, 6e8fb64)
 - the Anthropic API publishes no prices: the mock showed "$3 / $15" for a model the app shows "price unknown" for
 - the folder picker's first listing overwrites a path typed before it lands
+- a plugin's `wwwroot` event bumped its UI version though no file differed, remounting its tab for nothing (a16967d)
+- a `/` popup that matched nothing stayed shut when the session's skills arrived after it opened (d3bf80b)
+- a chat's failed run (a refused call, a provider error) ends idle with its error, so its desktop notification said
+  "Finished"; in a chat that is not open that was all the user heard (e756c93)
+
+Found and left as they are (decisions for the owner):
+- the Work tab's x on a waiting run is `agent.abort` on the chat, which also stops the chat's background subagents
+- a chat opened while its answer streams shows the answer from the next delta on: the server keeps no snapshot of an
+  answer in flight
+- the agents' headless Edge outlives a NetPI that is killed (Edge's launcher hands the browser to a process of its own,
+  and only a graceful stop closes it over DevTools). `ui.tool-cards` reloads the web tools at its end for that reason
+- a chat's error notice has no request id (idea-qz1a5z; the ids are in Diagnostics → Calls)
 
 Lessons for the next units:
 - Seed in the script over `rpc()` (names with `STAMP`, folders with `newDir`) and remove it in a `finally`: a script

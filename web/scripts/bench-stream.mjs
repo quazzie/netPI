@@ -12,7 +12,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadPlaywright, launchBrowser } from '../mock/pw.mjs';
+import { loadPlaywright, launchBrowser } from './pw.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const argv = process.argv.slice(2);

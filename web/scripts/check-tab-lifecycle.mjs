@@ -17,7 +17,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compile, compileModule } from 'svelte/compiler';
-import { loadPlaywright, launchBrowser } from '../mock/pw.mjs';
+import { loadPlaywright, launchBrowser } from './pw.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const KIT = path.join(root, 'web/src/lib/kit');

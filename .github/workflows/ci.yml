@@ -1,7 +1,7 @@
 name: CI
 
-# Build and run the six unit suites (Providers, Tools, Agent, Aux, Host, Storage), the mock UI suite and the real-server
-# end-to-end suite on every push.
+# Build and run the six unit suites (Providers, Tools, Agent, Aux, Host, Storage) and the real-server end-to-end suite,
+# its browser tests included, on every push.
 #
 # The suites run on windows-latest on purpose:
 #   - the Aux suite drives a real browser (the screenshot test renders a page in a headless Edge/Chrome, and the
@@ -16,7 +16,7 @@ name: CI
 #
 # No publishing, no secrets, no deployment: scripts/test.ps1 builds the six test projects (Release) into
 # artifacts/dev/app and runs each suite, exiting non-zero when any test fails. The e2e job runs the real-server suite
-# (scripts/e2e.ps1) the same way.
+# (scripts/e2e.ps1) the same way, with the UI's node checks and the bundle check before it.
 #
 # When it runs: every push, to any branch. A pull request from a branch of this repository is already covered by that
 # branch's push, so the pull_request trigger only runs for pull requests from forks (whose pushes land elsewhere); each
@@ -66,23 +66,32 @@ jobs:
           path: artifacts/testlogs
           retention-days: 7
 
-  ui:
-    name: web UI end-to-end (mock server)
+  e2e:
+    name: end-to-end (real server, mock model)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      # The mock e2e (npm run e2e) drives the real UI against web/mock/server.mjs: 250+ checks over the composer,
-      # the chat, the plugin tabs and the dev-server proxy. It was not run anywhere, which is how it rotted — it had
-      # been dying at check ~105 of 253 for a while (a selector that predated the status grouping, and a variable
-      # left out of scope) and nobody noticed, because "it passes locally" was someone's memory.
+      - name: Set up .NET 10
+        # global.json: 10.0.100, rollForward latestFeature (see the test job)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0'
+
+      # node runs the browser tests (tests/NetPI.E2E/ui, with playwright-core from npm ci: no browser download, the
+      # runner's Edge is what launchBrowser falls back to), the vite dev-server test, scripts/netpi.mjs and the checks below
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+
+      - name: Git identity
+        run: |
+          git config --global user.name "NetPI CI"
+          git config --global user.email "ci@netpi.invalid"
 
       # pwsh runs a multi-line step as one script and only the last command's exit code fails the step, so each
       # command checks its own
@@ -127,39 +136,12 @@ jobs:
       - name: The stream order
         run: node web/scripts/check-stream-order.mjs
 
-      - name: Run the mock e2e
-        run: npm run e2e
-
-  e2e:
-    name: end-to-end (real server, mock model)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up .NET 10
-        # global.json: 10.0.100, rollForward latestFeature (see the test job)
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0'
-
-      # the inspect test runs scripts/netpi.mjs, which needs node (the browser tests are covered by the ui job and run locally)
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Git identity
-        run: |
-          git config --global user.name "NetPI CI"
-          git config --global user.email "ci@netpi.invalid"
-
-      # scripts/e2e.ps1 builds the solution into artifacts/dev/app (nothing is published or installed), then runs the backend
-      # tests sharded, each shard with its own server and mock model server on free ports. Every failure of the run is listed at
-      # once; its evidence (server log, the mock's requests, client events) is under artifacts/e2elogs and uploaded below.
-      - name: Build and run the end-to-end suite (without the browser tests)
-        run: pwsh -File ./scripts/e2e.ps1 -NoUi
+      # scripts/e2e.ps1 builds the solution into artifacts/dev/app (nothing is published or installed), then runs the tests
+      # sharded, each shard with its own server and mock model server on free ports; the browser tests drive the real UI
+      # against that server. Every failure of the run is listed at once; its evidence (server log, the mock's requests,
+      # client events, screenshots) is under artifacts/e2elogs and uploaded below.
+      - name: Build and run the end-to-end suite
+        run: pwsh -File ./scripts/e2e.ps1
 
       - name: Run the runner's own tests
         run: pwsh -File ./scripts/e2e.ps1 -SelfTest -SkipBuild

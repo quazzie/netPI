@@ -1,6 +1,6 @@
 # Testing NetPI
 
-The Host plugin-independence gate scans every plugin project and current shared/imported build declarations for peer dependencies, then starts/stops each plugin alone. Agent regressions cover reload admission, shutdown timeout, waiter cancellation, prompt races, profiles without Context and reset forks after Context reload. Aux tests cover alternate providers. `web/mock/e2e.mjs --only 'plugin tab: Work|capability removal and recovery' --no-dev` exercises physical capacity and executor/Context UI recovery. The mock-only capability scenario creates its own session and does not run against an external server. The mock UI suite is frozen and being moved to the real server: [the plan](plans/2026-10-11-retire-mock-ui-suite.md); a new UI test goes to `tests/NetPI.E2E/ui`.
+The Host plugin-independence gate scans every plugin project and current shared/imported build declarations for peer dependencies, then starts/stops each plugin alone. Agent regressions cover reload admission, shutdown timeout, waiter cancellation, prompt races, profiles without Context and reset forks after Context reload. Aux tests cover alternate providers. In the browser, `ui.work-tab` exercises an agent's instances on a model's physical slots, and `ui.connection` the composer and Diagnostics without the runtime, context and compaction plugins and their recovery. Every UI test drives the real server: a script in `tests/NetPI.E2E/ui` ("Writing one", below).
 
 Three layers, all without NuGet packages (console runners, no test framework):
 
@@ -447,10 +447,11 @@ Coverage (run `--list` for the names):
 - **UI** (`ui/smoke.mjs`, Playwright): open a prepared session, send `[s:tools]` (streaming block, tool rows, diff, final
   answer), Work/Ideas/Diagnostics/Files tabs against the real server, subagents live in the Work tab, steering with
   Enter, Esc abort, a retried stream; fails on console errors or failed requests. Screenshots:
-  `tests/NetPI.E2E/screenshots/ui-*.png`.
+  `tests/NetPI.E2E/screenshots/ui-*.png`. Beside it one script per area (`ui.composer`, `ui.chat-run`, `ui.work-tab`,
+  `ui.connection`, …: `--list --tag ui`), each against the same server and mock model; `-Tag ui` runs them all.
 
 The UI tests need `node` and Playwright: `playwright-core` is a devDependency (installed with the other
-dependencies), and both the E2E scripts and the mock walkthrough resolve it (see `web/mock/pw.mjs`). If Playwright's own
+dependencies), and both the E2E scripts (`ui/lib.mjs`) and the UI's node checks (`web/scripts/pw.mjs`) resolve it. If Playwright's own
 Chromium build is not downloaded (`npx playwright-core install chromium`) the tests fall back to an installed Edge or
 Chrome and print `browser: msedge`. Use `--no-ui` without Playwright.
 

@@ -13,39 +13,26 @@ Styling is plain CSS with design tokens.
 ```sh
 npm install
 npm run build            # build:web (→ web/dist; into artifacts/app/wwwroot with NETPI_COPY) + build:plugins (plugins/*/ui → wwwroot/ui.js)
-npm run dev              # Vite dev server on :5173, proxies /ws /api /plugins → http://127.0.0.1:7431
-npm run mock             # mock host on :7431 (serves the built UI + the sample plugin), token "dev"
-npm run e2e              # the whole Playwright walkthrough (starts its own mock on :7432; ~2.5 min): the gate before a merge,
-                         # not a loop. Frozen: no new checks go here; a new UI test is a real-server script in
-                         # tests/NetPI.E2E/ui (docs/plans/2026-10-11-retire-mock-ui-suite.md). Screenshots → web/mock/screenshots. (playwright-core devDependency, or a local/global
-                         # `playwright`; see web/mock/pw.mjs). NETPI_BROWSER=<path of a Chromium-based executable> runs every
-                         # browser check (e2e, web/scripts/check-*.mjs) in that browser instead of Playwright's own build
-                         # or the Edge/Chrome fallback — a preinstalled Chromium of another revision, say
-npm run e2e -- --list    # its sections (one per log('…') header)
-npm run e2e -- --only "plugin tab: Work"   # just that section, 8-20 s: a part of a name is enough ("Work" is exact-or-substring),
-                         # several with |; everything else is skipped with its setup. --with <section> adds a silent prerequisite,
-                         # --port N runs next to another run. A name that matches nothing exits 2 before anything starts.
-npm run e2e:sections     # every section alone, 4 at a time (web/mock/sections.mjs): a section that cannot stand alone must
-                         # list what it builds on in NEEDS (web/mock/e2e.mjs) or set that state up itself
+npm run dev              # Vite dev server on :5173, proxies /ws /api /plugins → NETPI_URL, else http://127.0.0.1:7431
 node web/scripts/build-plugins.mjs --watch            # rebuild plugin UIs on change
-node web/scripts/build-plugins.mjs web/mock/sample-plugin   # plus extra plugin dirs
-node web/mock/fake-openai.mjs [port]  # scripted OpenAI-compatible model server for exercising the real host
+node web/scripts/check-tab-lifecycle.mjs              # one of the UI's node checks (web/scripts/check-*.mjs; CI runs them all).
+                         # playwright-core is a devDependency (web/scripts/pw.mjs also finds a global `playwright`);
+                         # NETPI_BROWSER=<path of a Chromium-based executable> runs them in that browser instead of
+                         # Playwright's own build or the Edge/Chrome fallback — a preinstalled Chromium of another revision, say
+.\scripts\e2e.ps1 -Tag ui # the browser tests: Playwright scripts in tests/NetPI.E2E/ui against a real server and MockLlm
+                         # (docs/TESTING.md, "Writing a UI test"); -Only ui.<id> for one
 ```
 
 - **Against the real host:** start NetPI, then `npm run dev` and open `http://localhost:5173/?token=<token>`.
   The host prints the token. The proxy target comes from `NETPI_URL` (default `http://127.0.0.1:7431`), and
   `VITE_NETPI_TOKEN` in `web/.env.local` saves typing the token. The proxy sets `Origin` to the target, so the
   host's origin check passes.
-- **Against the mock:** `npm run build && npm run mock`, then open `http://127.0.0.1:7431/?token=dev`.
-  `npm run dev` also works against the mock, because it listens on the same port. `MOCK_SPEED=3` runs the fake
-  agent three times faster. `--no-auth` and `--port N` are also available.
 - **Plugin UI hot reload:** `build:plugins --copy` (or `NETPI_COPY=1`, which `build.ps1 -Publish` sets) also copies
   each bundle to `artifacts/app/plugins/<P>/wwwroot/ui.js`. The host then bumps the tab `version` and emits
   `ui.changed`, and the tab remounts without a .NET build.
-- **Real host without a model:** start `node web/mock/fake-openai.mjs 7468`, then point the host at it with
-  `settings.set { path: "providers.aiproxy", value: { baseUrl: "http://127.0.0.1:7468", transport: "chat" } }`.
-  Sending `[demo] …` to a session produces real subagents (a model with 2 slots, so one queues), a background and a
-  foreground `bash`, usage and an `agent` `wait`, which is enough to exercise every section of the Work tab.
+- **Real host without a model:** MockLlm (`tests/MockLlm`, built by `scripts/e2e.ps1`) with `--init-home <dir>` points a
+  home at itself; start `netpi-server --home <dir>` on it. A `[s:…]` tag in a message picks what the model does: tool
+  calls, subagents, background commands, gated answers (docs/TESTING.md, "Mock model server").
 - In a normal browser, `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab` and `Ctrl+1…9` are taken by the browser. In WebView2 they
   reach the app. The command palette (`Ctrl+K`) and the `+` button do the same things.
 - **The idea dialog** (`web/src/components/modals/IdeaDialog.svelte`) is the one place an idea is filed or edited: the Ideas tab's `+`
@@ -104,12 +91,6 @@ web/
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
                SettingInfo), SettingsRow, AgentsEditor + AgentDialog, BudgetView, ProfilesEditor + ProfileDialog,
                PluginSwitches
-  mock/
-    server.mjs  store.mjs  agent.mjs  content.mjs    mock host (HTTP + WS + scripted agent)
-    work.mjs  ideas.mjs  diag.mjs                     mock running calls/processes/usage, ideas backlog, plugin manager
-    fake-openai.mjs                                  scripted model server for the real host
-    sample-plugin/ui/{main.js,SampleTab.svelte}      example plugin UI (Svelte tab + vanilla tab)
-    e2e.mjs  pw.mjs  screenshots/                    Playwright walkthrough
 plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/wwwroot/ui.js
   NetPI.Work/ui/                 WorkTab, AgentPool, RecentAgent, ProcessRow, util.js
   NetPI.Ideas/ui/                IdeasTab, IdeaCard, NewIdea, SectionEditor, model.js
@@ -361,7 +342,7 @@ into locals first, because after the parent clears the modal state or the row re
    scroller keeps it pinned. Scrolling up unpins it and shows **Latest**. Each session remembers its scroll
    position. Only the active session's chat is in the DOM, because `App` keys `ChatView` on the session id.
 
-Timings from `npm run e2e` against the mock (headless Chromium):
+Timings measured by the old mock walkthrough (headless Chromium):
 
 | action | time |
 |---|---|
@@ -376,7 +357,7 @@ Timings from `npm run e2e` against the mock (headless Chromium):
   the profile, project and effort pickers drop their labels, at 520px the separator and the chat cost go, at 400px
   the `/` and `@` buttons (typing them opens the same popups), and at 340px the gaps close and the agent's label
   narrows to 52px. Nothing passes the edge and Send stays on screen down to the 286px both open side panels leave
-  (the mock e2e's "composer: narrow widths", idea-ziqr1i).
+  (`ui.composer`'s narrow widths, idea-ziqr1i).
 - **Enter** sends. While the agent runs, Enter **steers** and **Alt+Enter** **queues**. **Shift+Enter** inserts
   a newline. **Esc** stops the run (`agent.abort`); Esc in another field (a title rename, the session search) only
   leaves that field. Settings can switch sending to **Ctrl+Enter**; the hints follow.
@@ -795,7 +776,7 @@ export function mountLog(el, ctx) {      // UiTabInfo { module: 'ui.js', export:
 }
 ```
 
-The sample plugin (`web/mock/sample-plugin/ui/main.js`) has one tab of each kind.
+The built-in tabs (`plugins/*/ui/main.js`) are the Svelte kind; `NetPI.Agents/ui/main.js` is a whole one in three lines.
 
 ### `@netpi/kit`
 

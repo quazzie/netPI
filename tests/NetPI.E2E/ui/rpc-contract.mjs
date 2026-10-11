@@ -1,13 +1,11 @@
-// The RPC contract between the server, the UI mock and the UI (idea-yvcy8b): every method the mock answers and every
-// method the UI calls by a literal name must exist in the real server's rpc.list. The mock and the UI are written by
-// hand against the protocol, so a renamed or removed method used to surface only when the mock e2e died halfway.
+// The RPC contract between the server and the UI (idea-yvcy8b): every method the UI calls by a literal name must exist in
+// the real server's rpc.list. The UI is written by hand against the protocol, so a renamed or removed method would
+// otherwise surface only when the page that calls it is opened.
 //
 //   node tests/NetPI.E2E/ui/rpc-contract.mjs --url http://127.0.0.1:PORT --token TOKEN
 //
 // Output: one "  ✓/✗ name — detail" line per check, then {"ok", "checks", "errors"} as the last line.
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,8 +16,8 @@ const BASE = opt('url');
 const TOKEN = opt('token');
 if (!BASE || !TOKEN) { console.error('usage: rpc-contract.mjs --url <server> --token <token>'); process.exit(2); }
 
-// Methods that are not the server's: the mock's own test knobs, and what the desktop shell answers itself.
-const NOT_THE_SERVERS = [/^mock\./, /^desktop\./];
+// Methods that are not the server's: what the desktop shell answers itself.
+const NOT_THE_SERVERS = [/^desktop\./];
 const own = (m) => NOT_THE_SERVERS.some((r) => r.test(m));
 
 const checks = [];
@@ -33,28 +31,6 @@ async function list(base, headers = {}) {
   const res = await fetch(`${base}/api/rpc/rpc.list`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: '{}' });
   if (!res.ok) throw new Error(`rpc.list at ${base}: HTTP ${res.status} ${await res.text()}`);
   return new Set((await res.json()).map((m) => m.method));
-}
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const s = net.createServer();
-    s.once('error', reject);
-    s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
-  });
-}
-
-async function startMock() {
-  const port = await freePort();
-  const proc = spawn(process.execPath, [path.join(REPO, 'web/mock/server.mjs'), '--port', String(port), '--no-auth'], { stdio: ['ignore', 'pipe', 'pipe'] });
-  let out = '';
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('the mock did not start within 20 s: ' + out)), 20_000);
-    const seen = (chunk) => { out += chunk; if (out.includes('NetPI mock server on')) { clearTimeout(timer); resolve(); } };
-    proc.stdout.on('data', seen);
-    proc.stderr.on('data', (c) => (out += c));
-    proc.once('exit', (code) => { clearTimeout(timer); reject(new Error(`the mock exited (${code}): ${out}`)); });
-  });
-  return { url: `http://127.0.0.1:${port}`, stop: () => proc.kill() };
 }
 
 /** The method names the UI calls by a literal: rpc('x.y'), call('x.y'), optional('x.y'), action('x.y'), hasRpc('x.y'). */
@@ -81,16 +57,9 @@ function uiCalls() {
   return calls;
 }
 
-let mock;
 try {
   const real = await list(BASE, { 'X-NetPI-Token': TOKEN });
   check('the server lists its methods', real.size > 50, `${real.size} methods`);
-
-  mock = await startMock();
-  const mocked = await list(mock.url);
-  const invented = [...mocked].filter((m) => !own(m) && !real.has(m)).sort();
-  check('every method the mock answers exists on the server', invented.length === 0,
-    invented.length ? `the mock answers ${invented.length} the server does not have: ${invented.join(', ')}` : `${mocked.size} mocked`);
 
   const calls = uiCalls();
   const unknown = [...calls].filter(([m]) => !own(m) && !real.has(m)).map(([m, f]) => `${m} (${f})`).sort();
@@ -99,8 +68,6 @@ try {
 } catch (e) {
   errors.push(String(e?.stack ?? e));
   check('the contract check ran', false, String(e?.message ?? e));
-} finally {
-  mock?.stop();
 }
 
 const ok = checks.every((c) => c.ok) && errors.length === 0;

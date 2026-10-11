@@ -1,6 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "mock", "runtimeExecutable": "node", "runtimeArgs": ["web/mock/server.mjs", "--port", "7499", "--token", "dev", "--no-auth"], "port": 7499 }
+    { "name": "dev", "runtimeExecutable": "node", "runtimeArgs": ["node_modules/vite/bin/vite.js", "--config", "web/vite.config.js", "--port", "5173", "--strictPort"], "port": 5173 }
   ]
 }

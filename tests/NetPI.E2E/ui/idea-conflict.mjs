@@ -1,5 +1,5 @@
 // UI test: the Ideas tab opens the host's idea dialog on the idea's current revision (the dialog's own save, conflict
-// included, is driven by web/mock/e2e.mjs against the mock server), a one-line status change claims no revision, and the
+// included, is ui.ideas-tab's), a one-line status change claims no revision, and the
 // play button starts a chat on the idea.
 //
 // `api.update` fell back to the list's current revision, so `expectedRevision` always matched what the server had and

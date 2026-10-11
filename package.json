@@ -8,10 +8,7 @@
     "build": "npm run build:web && npm run build:plugins",
     "build:web": "vite build --config web/vite.config.js && node web/scripts/sync-dist.mjs",
     "build:plugins": "node web/scripts/build-plugins.mjs",
-    "dev": "vite --config web/vite.config.js",
-    "mock": "node web/scripts/build-plugins.mjs --only web/mock/sample-plugin && node web/mock/server.mjs",
-    "e2e": "node web/mock/e2e.mjs",
-    "e2e:sections": "node web/mock/sections.mjs"
+    "dev": "vite --config web/vite.config.js"
   },
   "dependencies": {
     "dompurify": "^3.4.16",
@@ -22,7 +19,6 @@
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "playwright-core": "^1.63.0",
     "svelte": "^5.57.1",
-    "vite": "^8.3.0",
-    "ws": "^8.21.3"
+    "vite": "^8.3.0"
   }
 }

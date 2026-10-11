@@ -1,5 +1,5 @@
 // Vite config for the NetPI web UI.
-//   npm run dev        → dev server (proxies /ws, /api, /plugins to the NetPI host or the mock on :7431)
+//   npm run dev        → dev server (proxies /ws, /api, /plugins to the NetPI host: NETPI_URL, else :7431)
 //   npm run build:web  → web/dist (copy to the app folder only with NETPI_COPY=1)
 import { defineConfig, loadEnv } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
