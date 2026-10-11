@@ -7,8 +7,10 @@
 //   await run('pin', async ({ page }) => { … check('…', ok); await shot(page, 'ui-pin-01'); … });
 //
 // Arguments every script gets from the wrapper: --url (the server), --token, --mock (MockLlm), --app (the server's app
-// folder, a copy the test may change), --out (the screenshot folder); a script reads its own with arg('name').
+// folder, a copy the test may change), --work (a folder for the project directories a script makes), --out (the
+// screenshot folder); a script reads its own with arg('name').
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,6 +28,16 @@ export const TOKEN = arg('token', 'e2e-token');
 export const MOCK = arg('mock', '');
 export const APP = arg('app', '');
 export const OUT = path.resolve(arg('out', path.join(here, '..', 'screenshots')));
+export const WORK = path.resolve(arg('work', path.join(os.tmpdir(), 'netpi-ui')));
+/** Unique per run: a shared server keeps projects, sessions and settings between the tests of a shard and between -Repeat runs. */
+export const STAMP = Math.random().toString(36).slice(2, 8);
+
+/** A new folder under WORK (made with its parents). */
+export function newDir(name) {
+  const dir = path.join(WORK, name);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 export const checks = [];
 /** Records one check and prints it; every failed one is reported at the end, so a run shows all its problems at once. */
@@ -242,10 +254,13 @@ async function launchBrowser(pw) {
  *   http      also count failed requests (except the socket) and HTTP answers ≥ 400 as errors
  *   freshTabs start without the chat tabs earlier tests on this server left open (ui.state netpi.openTabs)
  *   tap       install tapSocket before anything opens; the body gets it as `socket`
+ *   keepsSettings  the settings document must be the same after the body as before it (the check "the settings are as the
+ *             test found them"); when it is not, the one from before is put back, so the next test on the shard starts clean
  * The body gets { page, context, browser, errors, socket }.
  */
-export async function run(name, body, { viewport = { width: 1200, height: 900 }, http = false, freshTabs = false, tap = false } = {}) {
+export async function run(name, body, { viewport = { width: 1200, height: 900 }, http = false, freshTabs = false, tap = false, keepsSettings = false } = {}) {
   fs.mkdirSync(OUT, { recursive: true });
+  const settingsBefore = keepsSettings ? (await rpc('settings.get')).settings : null;
   const pw = await loadPlaywright();
   const browser = await launchBrowser(pw);
   const errors = [];
@@ -271,7 +286,25 @@ export async function run(name, body, { viewport = { width: 1200, height: 900 },
   } finally {
     await browser.close();
   }
+  if (settingsBefore) {
+    const changed = diff(settingsBefore, (await rpc('settings.get')).settings);
+    check('the settings are as the test found them', changed.length === 0, changed.slice(0, 8).join(', '));
+    if (changed.length) await rpc('settings.replace', { settings: settingsBefore });
+  }
   report(errors);
+}
+
+/** The dotted paths where two JSON values differ. An empty object is no value: settings.set with null removes a key and
+ * leaves its parent behind, so a setting made and removed again is no change. */
+function diff(a, b, at = '') {
+  const obj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const none = (v) => v === undefined || (obj(v) && Object.values(v).every(none));
+  if (none(a) && none(b)) return [];
+  if (obj(a) && obj(b)) {
+    const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])];
+    return keys.flatMap((k) => diff(a[k], b[k], at ? `${at}.${k}` : k));
+  }
+  return JSON.stringify(a) === JSON.stringify(b) ? [] : [at || '(the document)'];
 }
 
 /** Prints the result line the C# side reads and exits: 0 when there were checks and every one passed. */

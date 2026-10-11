@@ -92,6 +92,12 @@ public static class UiTests
             await RunUiScript(env, "start-project.mjs", 120, "--project", name);
         }, 150);
 
+        r.Add("ui.projects", "ui: projects — the composer's project picker attaches and changes the project with a notice, new chats start without one, the start screen remembers the last project, the projects dialog (keyboard, its sessions and instruction files, rename, remove confirm, a project made from the picker) and the folder picker", async () =>
+        {
+            // The script makes its own projects and chats (names unique per run) and removes them again.
+            await RunUiScript(env, "projects.mjs", 150);
+        }, 180);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id
@@ -112,7 +118,7 @@ public static class UiTests
     }
 
     /// <summary>
-    /// Runs ui/<paramref name="script"/> with node against this shard's server and mock (<c>--url --token --mock --app --out</c>,
+    /// Runs ui/<paramref name="script"/> with node against this shard's server and mock (<c>--url --token --mock --app --work --out</c>,
     /// then <paramref name="args"/>) and echoes its check lines. It fails on a failed check, a missing result line (the script
     /// died), a non-zero exit or the timeout, naming every failed check, the browser's errors and stderr at once: stopping at
     /// the first made a run of ~25 s reveal one problem at a time.
@@ -122,7 +128,7 @@ public static class UiTests
         var name = Path.GetFileNameWithoutExtension(script);
         var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", script));
-        foreach (var a in new[] { "--url", env.BaseUrl, "--token", Env.Token, "--mock", env.MockUrl, "--app", env.AppDir, "--out", env.ScreenshotDir }.Concat(args))
+        foreach (var a in new[] { "--url", env.BaseUrl, "--token", Env.Token, "--mock", env.MockUrl, "--app", env.AppDir, "--work", env.Projects, "--out", env.ScreenshotDir }.Concat(args))
             psi.ArgumentList.Add(a);
         using var proc = Process.Start(psi)!;
         var stdout = proc.StandardOutput.ReadToEndAsync();

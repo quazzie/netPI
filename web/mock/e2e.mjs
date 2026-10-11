@@ -58,7 +58,6 @@ const NEEDS = {
   "plugin tab: Diagnostics": ["new session + agent run"],
   "settings": ["new session + agent run"],
   "images": ["new session + agent run"],
-  "projects dialog": ["new session + agent run","start screen: the project new sessions start in"],
   "plugin tab: Ideas": ["new session + agent run","panels + plugin tabs"],
   "budget: chat cost, Work tab, a chat stopped by the budget": ["new session + agent run"],
   "profiles: settings, a project default, per chat": ["long session","new session + agent run"],
@@ -1829,117 +1828,6 @@ log('narrow side panels');
 }
 
 }
-if (want('project picker + new session project')) {
-log('project picker + new session project');
-{
-  const projects = await rpcCall('projects.list');
-  const idOf = (name) => projects.find((p) => p.name === name)?.id;
-  await openSession('Scratch');
-  await page.waitForTimeout(400);
-  const pick = async (chip, name) => {
-    await chip.click();
-    await page.waitForSelector('.popover .item', { timeout: 3000 });
-    await page.locator('.popover .item', { hasText: name }).first().click();
-    await page.waitForTimeout(500);
-  };
-  // the project picker lives in the composer bar, after the profile (e8a3636)
-  const projBtn = page.locator('.composer button[aria-label="Project"]');
-  await pick(projBtn, 'website');
-  let s = await rpcCall('sessions.get', { id: 'ses_scratch' });
-  check('project picker (composer) attaches the project', s.projectId === idOf('website'), String(s.projectId));
-  check('project picker (composer) posts the project notice', (await page.locator('.notice', { hasText: 'website' }).count()) > 0);
-  await pick(projBtn, 'aiproxy');
-  s = await rpcCall('sessions.get', { id: 'ses_scratch' });
-  check('project picker (composer) changes the project again', s.projectId === idOf('aiproxy'), String(s.projectId));
-  check('project picker (composer) posts the second notice', (await page.locator('.notice', { hasText: 'aiproxy' }).count()) > 0);
-  check('the composer button shows the attached project', /aiproxy/.test(await projBtn.innerText()));
-  check('no project chip left in the top bar or the chat header', (await page.locator('.topbar .chip, .header .chip').count()) === 0);
-  // the plus button always starts a session without a project, even with a project session active
-  await page.locator('.panel.left .head button[title^="New session"]').click();
-  await page.waitForTimeout(500);
-  const newId = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const ns = await rpcCall('sessions.get', { id: newId });
-  check('new session from the plus button gets no project', ns.projectId === null, String(ns.projectId));
-  // …and, with no session open, still no project — the last project only preselects the pickers
-  // close the other tabs first so no other session becomes active on the way
-  while (await page.locator('.topbar .tab:not(.active)').count()) await page.locator('.topbar .tab:not(.active) .tab-close').first().click();
-  await page.locator('.topbar .tab.active .tab-close').click();
-  await page.waitForTimeout(200);
-  await page.keyboard.press('Control+t');
-  await page.waitForTimeout(500);
-  const id2 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const s2 = id2 ? await rpcCall('sessions.get', { id: id2 }) : null;
-  check('new session with no tab open gets no project', s2?.projectId === null, String(s2?.projectId));
-  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
-  await page.waitForTimeout(300);
-}
-
-}
-if (want('start screen: the project new sessions start in')) {
-log('start screen: the project new sessions start in');
-{
-  const projects = await rpcCall('projects.list');
-  const idOf = (name) => projects.find((p) => p.name === name)?.id;
-  while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
-  await page.waitForSelector('.welcome .target');
-  // a split button: the name half starts a session in the project shown, the chevron half picks another one
-  const chip = page.locator('.welcome .split .target');
-  const more = page.locator('.welcome .split .target-more');
-  const last = await page.evaluate(() => JSON.parse(localStorage.getItem('netpi.lastProject') ?? 'null'));
-  const lastName = projects.find((p) => p.id === last)?.name ?? 'No project';
-  check('start screen shows the project last worked in', (await chip.innerText()).includes(lastName), (await chip.innerText()) + ' vs ' + lastName);
-  const tabsBefore = await page.locator('.topbar .tab').count();
-  await more.click();
-  await page.waitForSelector('.popover .item');
-  await page.waitForTimeout(300);
-  check('the chevron opens the picker without starting a session', (await page.locator('.topbar .tab').count()) === tabsBefore);
-  await shot(page, '12b-start-project-picker');
-  await page.locator('.popover .item', { hasText: 'website' }).first().click();
-  await page.waitForTimeout(500);
-  const id = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const s = id ? await rpcCall('sessions.get', { id }) : null;
-  check('picking a project on the start screen starts a session in it', s?.projectId === idOf('website'), String(s?.projectId));
-
-  // the last project is still remembered after the chevron pick, but the + button and Ctrl+T always start without one
-  await page.locator('.topbar .tab .tab-close').first().click();
-  await page.waitForSelector('.welcome .target');
-  check('the last project is still remembered', await page.evaluate(() => JSON.parse(localStorage.getItem('netpi.lastProject') ?? 'null')) === idOf('website'), await page.evaluate(() => localStorage.getItem('netpi.lastProject')));
-  check('the name half shows the project picked', (await chip.innerText()).includes('website'), await chip.innerText());
-  // the name half starts in the project shown, without the picker
-  await chip.click();
-  await page.waitForTimeout(500);
-  check('the name half opens no picker', (await page.locator('.popover').count()) === 0);
-  const idN = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const sN = idN ? await rpcCall('sessions.get', { id: idN }) : null;
-  check('the name half starts a session in the project shown', sN?.projectId === idOf('website'), String(sN?.projectId));
-  await page.locator('.topbar .tab .tab-close').first().click();
-  await page.waitForSelector('.welcome .target');
-  await page.locator('.welcome .np-btn-primary').click();
-  await page.waitForTimeout(500);
-  const idA = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const sA = idA ? await rpcCall('sessions.get', { id: idA }) : null;
-  check('the start screen plus button starts without a project', sA?.projectId === null, String(sA?.projectId));
-  await page.locator('.topbar .tab .tab-close').first().click();
-  await page.waitForSelector('.welcome .target');
-  await page.keyboard.press('Control+t');
-  await page.waitForTimeout(500);
-  const id2 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const s2 = id2 ? await rpcCall('sessions.get', { id: id2 }) : null;
-  check('a new session with no tab open starts without a project', s2?.projectId === null, String(s2?.projectId));
-  // the next section works from the "website" session: close this one and recreate it from the start screen (with the chevron:
-  // the chat just closed had no project, so the name half now shows none)
-  await page.locator('.topbar .tab .tab-close').first().click();
-  await page.waitForSelector('.welcome .target');
-  await more.click();
-  await page.waitForSelector('.popover .item');
-  await page.locator('.popover .item', { hasText: 'website' }).first().click();
-  await page.waitForTimeout(500);
-  const id3 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const s3 = id3 ? await rpcCall('sessions.get', { id: id3 }) : null;
-  check('the start screen recreates a session in the chosen project', s3?.projectId === idOf('website'), String(s3?.projectId));
-}
-
-}
 if (want('welcome screen: ideas to work on')) {
 log('welcome screen: ideas to work on');
 {
@@ -2016,73 +1904,6 @@ log('welcome screen: ideas to work on');
   await page.waitForSelector('.popover .item');
   await page.locator('.popover .item', { hasText: 'website' }).first().click();
   await page.waitForTimeout(500);
-}
-
-}
-if (want('projects dialog')) {
-log('projects dialog');
-{
-  // from the top bar picker of the session just created in "website"
-  await page.locator('.composer button[aria-label="Project"]').click();
-  await page.waitForSelector('.popover .manage');
-  check('the picker offers to edit the attached project', (await page.locator('.popover .manage', { hasText: 'Edit “website”' }).count()) === 1);
-  await page.locator('.popover .manage', { hasText: 'Manage projects' }).click();
-  await page.waitForSelector('.projects-dialog');
-  check('Manage projects opens the projects dialog', (await page.locator('.projects-dialog .prow').count()) >= 3);
-  // the dialog owns the keyboard: Tab stays in it, and the app behind it neither takes a click nor a shortcut
-  await page.keyboard.press('Tab');
-  check('Tab stays inside the open dialog', await page.evaluate(() => !!document.activeElement?.closest('.dialog')));
-  check('the app behind the dialog is inert', await page.evaluate(() => document.querySelector('.app > .main')?.inert === true));
-  const tabsBehind = await page.locator('.topbar .tab').count();
-  await page.keyboard.press('Control+t');
-  await page.waitForTimeout(200);
-  check('Ctrl+T behind the dialog does not open a new chat', (await page.locator('.topbar .tab').count()) === tabsBehind);
-  await page.waitForTimeout(200);
-  await shot(page, '22a-projects-dialog');
-  await page.locator('.projects-dialog .prow', { hasText: 'website' }).locator('.pmain').click();
-  await page.waitForSelector('.projects-dialog .frow', { timeout: 3000 }).catch(() => {});
-  check('the project view lists its sessions', (await page.locator('.projects-dialog .sess').count()) >= 1);
-  check('the project view lists the instruction files', (await page.locator('.projects-dialog .frow').count()) >= 1);
-  await shot(page, '22b-project-edit');
-  const name = page.locator('.projects-dialog input.np-input').first();
-  await name.fill('website-renamed');
-  await page.locator('.projects-dialog .np-btn-primary', { hasText: 'Save' }).click();
-  await page.waitForTimeout(300);
-  check('Save renames the project', (await rpcCall('projects.list')).some((p) => p.name === 'website-renamed'));
-  check('the composer project button follows the rename', /website-renamed/.test(await page.locator('.composer button[aria-label="Project"]').innerText()));
-  await name.fill('website');
-  await page.locator('.projects-dialog .np-btn-primary', { hasText: 'Save' }).click();
-  await page.waitForTimeout(200);
-  await page.locator('.projects-dialog .backlink').click();
-  check('Back returns to the list', (await page.locator('.projects-dialog .prow').count()) >= 3);
-  // a confirm over the dialog: Esc closes only the confirm
-  await page.locator('.projects-dialog .prow', { hasText: 'website' }).locator('button[title="Remove"]').click();
-  await page.waitForSelector('.dialog >> text=Remove project?');
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
-  check('Esc closes only the top dialog', (await page.locator('.dialog').count()) === 1 && (await page.locator('.projects-dialog').count()) === 1);
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
-  check('Esc then closes the projects dialog', (await page.locator('.projects-dialog').count()) === 0);
-  check('the project was not removed', (await rpcCall('projects.list')).some((p) => p.name === 'website'));
-  // "New project…" in the attach picker: the new project is attached to the session
-  await page.locator('.composer button[aria-label="Project"]').click();
-  await page.waitForSelector('.popover .manage');
-  await page.locator('.popover .manage', { hasText: 'New project' }).click();
-  await page.waitForSelector('.projects-dialog');
-  await page.locator('.projects-dialog .pathrow input').fill(path.join(repo, 'web', 'mock'));
-  await page.locator('.projects-dialog .np-btn-primary', { hasText: 'Create project' }).click();
-  await page.waitForTimeout(500);
-  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const cur = await rpcCall('sessions.get', { id: sid });
-  const created = (await rpcCall('projects.list')).find((p) => p.name === 'mock');
-  check('a project made from the picker is attached to the session', !!created && cur.projectId === created.id, String(cur.projectId));
-  check('the chip shows the new project', /mock/.test(await page.locator('.composer button[aria-label="Project"]').innerText()));
-  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
-  await page.waitForTimeout(300);
-  // keep the later project sections on the seeded state: this one's path holds the repository's name, so a later
-  // picker that looks for "netpi" in the project list would find it first
-  if (created) await rpcCall('projects.delete', { id: created.id });
 }
 
 }
@@ -2877,37 +2698,6 @@ log('goals');
   await page.waitForTimeout(300);
   check('dismissing removes the strip', (await page.locator('.goal').count()) === 0);
 }
-
-}
-// ------------------------------------------------------------------ folder picker (fs.dirs) + add project
-if (want('projects: folder picker')) {
-log('projects: folder picker');
-await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
-if (!(await page.locator('.panel.left.open').count())) await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
-await page.locator('.panel.left .head .np-icon-btn[title="Add project"]').click();
-await page.waitForSelector('.projects-dialog');
-check('Add project opens the project dialog', (await page.locator('.projects-dialog .head .title').innerText()) === 'New project');
-await page.locator('.projects-dialog .pathrow .np-btn').first().click();
-await page.waitForSelector('.picker .bar input', { timeout: 5000 });
-await page.keyboard.press('Escape');
-await page.waitForTimeout(200);
-check('Esc closes the folder picker, not the project dialog', (await page.locator('.picker').count()) === 0 && (await page.locator('.projects-dialog').count()) === 1);
-await page.locator('.projects-dialog .pathrow .np-btn').first().click();
-await page.waitForSelector('.picker .bar input', { timeout: 5000 });
-await page.waitForTimeout(200);
-await page.locator('.picker .bar input').fill(repo);
-await page.locator('.picker .bar input').press('Enter');
-await page.waitForTimeout(300);
-await page.locator('.picker .dir', { hasText: 'web' }).first().click();
-await shot(page, '22-folder-picker');
-await page.locator('.dialog .np-btn-primary', { hasText: 'Select folder' }).click();
-var picked = await page.locator('.projects-dialog .pathrow input').inputValue();
-check('folder picker fills the path', picked.endsWith('/web') || picked.endsWith('\\web'), picked);
-check('the folder name becomes the project name', (await page.locator('.projects-dialog input.np-input:not(.np-mono)').inputValue()) === 'web');
-await page.locator('.projects-dialog .np-btn-primary', { hasText: 'Create project' }).click();
-await page.waitForTimeout(300);
-check('project added', (await page.locator('.panel.left .prow .pname', { hasText: 'web' }).count()) > 0);
-check('the project dialog closed', (await page.locator('.projects-dialog').count()) === 0);
 
 }
 // ------------------------------------------------------------------ plugin hot reload + load error
