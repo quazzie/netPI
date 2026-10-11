@@ -36,7 +36,7 @@ public sealed class AgentsMdPlugin : INetPiPlugin
         {
             if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) notices.OnProjectChanged(id);
         });
-        context.Rpc.Register(new RpcMethod("agentsmd.list", "Instruction files that apply to a session or a project folder: { sessionId } | { projectId } → [{ path, bytes, scope }]", ReadOnly: true, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("projectId")]),
+        context.Rpc.Register(new RpcMethod("agentsmd.list", "Instruction files that apply to a session or a project folder: { sessionId } | { projectId } → [{ path, bytes, scope }]", ReadOnly: true, Params: [RpcParam.Opt("sessionId"), RpcParam.Opt("projectId")]),
             (req, _) =>
         {
             string cwd;

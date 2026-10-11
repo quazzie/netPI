@@ -35,7 +35,7 @@ public sealed class SkillsPlugin : INetPiPlugin
         var loader = new SkillLoader(context, _userHome);
         context.Services.Register<IAgentHook>(new SkillNotices(context, loader));
         context.Tools.Register(new SkillTool(loader, context));
-        context.Rpc.Register(new RpcMethod("skills.list", "Skills that apply to a session or a project folder: { sessionId } | { projectId } → { skills: [{ name, description, path, scope, listed, userOnly, disabled, license?, compatibility? }], problems: [{ path, level, message }] }", ReadOnly: true, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("projectId")]),
+        context.Rpc.Register(new RpcMethod("skills.list", "Skills that apply to a session or a project folder: { sessionId } | { projectId } → { skills: [{ name, description, path, scope, listed, userOnly, disabled, license?, compatibility? }], problems: [{ path, level, message }] }", ReadOnly: true, Params: [RpcParam.Opt("sessionId"), RpcParam.Opt("projectId")]),
             (req, _) =>
         {
             string cwd;
