@@ -13,12 +13,13 @@ public static class DecisionReworkTests
             Check.False(DecisionConfidence.Clear(1.2, 0, 0.8));
             Check.True(DecisionConfidence.Clear(0.95, 0.05, 0.8));
         });
-        r.Add("decision rework: typed capability accepts a live lease without going through a peer RPC", async () =>
+        r.Add("decision rework: the typed capability is the decision service, with no RPC fallback", async () =>
         {
             var ctx = new FakePluginContext();
             var replacement = new Replacement(); ctx.ServicesFake.Register<IDecisionService>(replacement);
-            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.decision", new JsonObject { ["model"] = "custom" }, CancellationToken.None);
-            Check.True(DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.decision"));
+            Check.True(await DecisionCapabilities.InvokeAsync(new FakePluginContext().Services, new JsonObject(), CancellationToken.None) is null, "no service: no answer, and no RPC behind it");
+            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, new JsonObject { ["model"] = "custom" }, CancellationToken.None, conversation: true);
+            Check.True(DecisionCapabilities.Available(ctx.Services));
             Check.Equal("custom", replacement.Request!.Model);
             Check.True(replacement.Request.Conversation);
             Check.Equal(0.95, (double)result!["branches"]![0]!["probabilities"]!["YES"]!);

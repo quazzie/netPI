@@ -76,7 +76,7 @@ internal sealed class SecondOpinion(IPluginContext ctx)
     {
         if (!Enabled()) return null;
         var model = Model();
-        if (!DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.ask")) return new Opinion(model, false, new Dictionary<string, double>(), 0, "the decision capability is unavailable");
+        if (!DecisionCapabilities.Available(ctx.Services)) return new Opinion(model, false, new Dictionary<string, double>(), 0, "the decision capability is unavailable");
         var state = new JsonObject
         {
             ["context"] = "a shell command an AI coding agent is about to run on a Windows developer machine (Git Bash or PowerShell) or on a Linux host over ssh",
@@ -91,7 +91,7 @@ internal sealed class SecondOpinion(IPluginContext ctx)
         cts.CancelAfter(Timeout);
         try
         {
-            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.ask", new JsonObject { ["state"] = state, ["questions"] = Questions(), ["model"] = model }, cts.Token, run?.AdmissionLease(), run?.Model.Ref, lane: true).ConfigureAwait(false);
+            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, new JsonObject { ["state"] = state, ["questions"] = Questions(), ["model"] = model }, cts.Token, held: run?.AdmissionLease(), heldModel: run?.Model.Ref, lane: true).ConfigureAwait(false);
             var answers = result as JsonObject ?? JsonSerializer.SerializeToNode(result) as JsonObject;
             var p = new Dictionary<string, double>(StringComparer.Ordinal);
             foreach (var key in Questions().Select(q => q.Key))

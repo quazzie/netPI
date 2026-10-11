@@ -23,21 +23,25 @@ public interface IDecisionService
     Task<JsonObject> EvaluateAsync(DecisionRequest request, CancellationToken ct);
 }
 
-/// <summary>Optional typed capabilities with RPC compatibility for alternate/older implementations.</summary>
+/// <summary>The decision capability as a caller uses it: the Decide plugin's <see cref="IDecisionService"/>, resolved per use.</summary>
 public static class DecisionCapabilities
 {
-    public static bool Available(IServiceRegistry services, IRpcRegistry rpc, string method) => services.Get<IDecisionService>() is not null || rpc.Exists(method);
-    public static async Task<JsonObject?> InvokeAsync(IServiceRegistry services, IRpcRegistry rpc, string method, JsonObject body,
-        CancellationToken ct, IAgentSlot? held = null, string? heldModel = null, int priority = 0, bool lane = false)
+    public static bool Available(IServiceRegistry services) => services.Get<IDecisionService>() is not null;
+
+    /// <summary>
+    /// Typed questions about one state (<c>decide.ask</c>'s body), or with <paramref name="conversation"/> NInfer's
+    /// <c>/v1/decision</c> over messages (<c>decide.decision</c>'s). Null when no decision service is registered.
+    /// </summary>
+    public static async Task<JsonObject?> InvokeAsync(IServiceRegistry services, JsonObject body, CancellationToken ct,
+        bool conversation = false, IAgentSlot? held = null, string? heldModel = null, int priority = 0, bool lane = false)
     {
-        if (services.Get<IDecisionService>() is { } service)
-            return await service.EvaluateAsync(new DecisionRequest
-            {
-                Model = body["model"]?.GetValue<string>(), Body = (JsonObject)body.DeepClone(), Conversation = method == "decide.decision",
-                ExistingLease = held, HeldModel = heldModel, Priority = priority, ReasoningEffort = body["reasoning_effort"]?.GetValue<string>(),
-                Lane = lane,
-            }, ct).ConfigureAwait(false);
-        return NetPiJson.ToNode(await rpc.InvokeAsync(method, body, ct).ConfigureAwait(false)) as JsonObject;
+        if (services.Get<IDecisionService>() is not { } service) return null;
+        return await service.EvaluateAsync(new DecisionRequest
+        {
+            Model = body["model"]?.GetValue<string>(), Body = (JsonObject)body.DeepClone(), Conversation = conversation,
+            ExistingLease = held, HeldModel = heldModel, Priority = priority, ReasoningEffort = body["reasoning_effort"]?.GetValue<string>(),
+            Lane = lane,
+        }, ct).ConfigureAwait(false);
     }
 }
 

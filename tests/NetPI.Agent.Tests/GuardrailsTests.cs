@@ -659,23 +659,29 @@ public static class GuardrailsTests
         Check.Equal(1, ran.Count, "ran unchecked");
     }
 
-    /// <summary>A fake decide.ask: answers by the command, and records every command it was asked about.</summary>
+    /// <summary>A fake decision service (decide.ask): answers by the command, and records every command it was asked about.</summary>
     private static List<string> FakeDecide(TestHost h, Func<string, (double ReadOnly, double Risk)?> answer)
     {
         var asked = new List<string>();
-        h.Rpc.Register("decide.ask", (r, ct) =>
+        h.Services.Register<IDecisionService>(new FakeDecision(asked, answer));
+        return asked;
+    }
+
+    private sealed class FakeDecision(List<string> asked, Func<string, (double ReadOnly, double Risk)?> answer) : IDecisionService
+    {
+        public Task<JsonObject> EvaluateAsync(DecisionRequest request, CancellationToken ct)
         {
-            var command = r.Prop("state")?.GetProperty("command").GetString() ?? "";
+            Check.False(request.Conversation, "typed questions, not a conversation");
+            var command = request.Body["state"]?["command"]?.GetValue<string>() ?? "";
             lock (asked) asked.Add(command);
-            Check.Equal(4, r.Prop("questions")!.Value.EnumerateObject().Count(), "the four guard questions");
+            Check.Equal(4, (request.Body["questions"] as JsonObject)!.Count, "the four guard questions");
             if (answer(command) is not { } a) throw new RpcException("model_not_loaded", "qwen3.8-27b: HTTP 404 model_not_loaded");
             JsonObject Yes(double p) => new() { ["type"] = "noul", ["noul"] = p };
-            return Task.FromResult<object?>(new JsonObject
+            return Task.FromResult(new JsonObject
             {
                 ["destructive"] = Yes(a.Risk), ["stops_process"] = Yes(a.Risk / 2), ["remote_change"] = Yes(a.Risk), ["read_only"] = Yes(a.ReadOnly),
             });
-        });
-        return asked;
+        }
     }
 
     private static async Task SecondOpinionClears()

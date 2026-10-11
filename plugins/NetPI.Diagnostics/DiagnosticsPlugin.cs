@@ -34,7 +34,7 @@ public sealed class DiagnosticsPlugin : INetPiPlugin
             {
                 new { feature = "execution", available = context.Services.Get<IAgentRuntime>() is not null, reason = "Requires an executor capability" },
                 new { feature = "scheduling", available = context.Services.Get<IAgentScheduler>() is not null, reason = "Requires a scheduler capability" },
-                new { feature = "decisions", available = DecisionCapabilities.Available(context.Services, context.Rpc, "decide.decision"), reason = "Requires a decision capability and a reachable endpoint" },
+                new { feature = "decisions", available = DecisionCapabilities.Available(context.Services), reason = "Requires the Decide plugin and a reachable endpoint" },
                 new { feature = "gitHistory", available = context.Rpc.Exists("files.commits"), reason = "Requires the Files plugin and a repository" },
                 new { feature = "contextPreview", available = context.Rpc.Exists("context.preview"), reason = "Requires a context preview provider" },
             },
