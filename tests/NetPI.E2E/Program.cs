@@ -33,6 +33,7 @@ using NetPI.E2E;
 // Exit codes: 0 all passed, 1 a test failed or timed out, 2 bad command line / empty selection, 3 a server could not be
 // started (the rest of that shard is reported as not run), 4 the runner itself failed.
 if (args.FirstOrDefault() == "--mcp-fixture") return await NetPI.Aux.Tests.McpFixture.RunAsync(args.Skip(1).ToArray());
+if (FakeSsh.Handles(args)) return await FakeSsh.RunAsync(args); // the ui tests' ssh and scp (FakeSsh.cs)
 
 var o = new E2EOptions();
 var list = false;

@@ -209,6 +209,8 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:parallel file= pattern=]` | four read-only calls in one turn (`read`, `grep`, `find`, `ls`) |
 | `[s:bash]` | a `bash` command with multi-line output streamed over ~1 s |
 | `[s:fgwait file=.release]` | a foreground `bash` that runs until `file` appears in the session's folder (the test writes it to end the command) |
+| `[s:web base= plangate=]` | the web tools as a person watches them: `todo_write` (3 items; the first answer, thinking as it streams, waits at `gate=`), `web_search` (waits at `plangate=`), `web_fetch`, `browser` screenshot of a page that logs an error + `show_image`, the plan done, an answer with two file links, a web link, a remote image, raw HTML and a forged copy button. `base=` is the mock's address: it serves `/web/sx/search` (SearXNG JSON, for `web.search.searxngUrl` = `<base>/web/sx/`), `/web/state` and `/web/demo`; the screenshot needs a model that reads images |
+| `[s:ssh]` | the `ssh` tool on host `nuc`: `run` in `demo` (prints `nginx: active`), `read` and `edit` of `demo/nginx.conf` (`listen 80;` → `listen 8080;`), `copy` of `demo/error.log` down to `logs/nuc-error.log`; the E2E runner is the client (`FakeSsh`: `ssh.path`/`ssh.scpPath` at its exe, an `ssh.config` naming `nuc`, `ssh.reuseConnections` off, the host's files in `home` beside the config) |
 | `[s:bgproc lines=900 ms=250]` | a background `bash` that prints `dev server: request <i>` every `ms`, and the run ends at once |
 | `[s:where file=]` | `bash pwd` + `write file`, answers `PWD=<output>` |
 | `[s:slow ms=6000]` | thinking + text streamed slowly over `ms` (steering, queue, abort) |

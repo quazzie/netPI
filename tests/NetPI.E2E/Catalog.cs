@@ -47,6 +47,7 @@ public static class Catalog
         ["ui.remove-agent"] = "needs-node",
         ["ui.work-tab"] = "needs-node",
         ["ui.usage-budget"] = "needs-node",
+        ["ui.tool-cards"] = "needs-node",
         ["ui.close-empty-session"] = "needs-node",
         ["ui.schedules-tab"] = "needs-node",
         ["ui.start-project"] = "needs-node",

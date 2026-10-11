@@ -171,6 +171,11 @@ public static class UiTests
         r.Add("ui.work-tab", "ui: work tab — real runs on an agent's two instances (a foreground command, a background subagent), a run waiting for one and one waiting for any agent; rows that stay put as jobs end; an agent that is not loaded and its switch; a background command's output and kill; the agent's name opens its dialog", () =>
             RunUiScript(env, "work-tab.mjs", 150), 180);
 
+        // The script makes its own project and chats; the ssh client is this runner's own exe (FakeSsh.cs), and the Claude CLI a
+        // script it writes. web.*, ssh.* and providers.claudeCli are put back after.
+        r.Add("ui.tool-cards", "ui: tool calls as a person reads them — thinking opened while it streams, the plan above the composer, web search, fetch and a screenshot, an image in the chat, the tools-changed notice; ssh run, read, edit and copy through a stand-in client; the Claude CLI's own tools done while its call runs; file links that ask first; an answer's HTML and images kept as text and links", () =>
+            RunUiScript(env, "tool-cards.mjs", 180, "--ssh", Path.ChangeExtension(typeof(UiTests).Assembly.Location, OperatingSystem.IsWindows() ? ".exe" : null)), 210);
+
         // A paid agent (a price on a Claude model) and a free one; the budget and the agents are put back after.
         r.Add("ui.usage-budget", "ui: the Usage tab (period total, 30 days, agents and models, the chats that cost most, another period after a resetDay move), a chat's cost with its subagents, the budget on the Work tab as the limits change, the budget pill, a chat the budget stopped going over", () =>
             RunUiScript(env, "usage-budget.mjs", 150), 180);

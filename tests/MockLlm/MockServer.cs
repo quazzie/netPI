@@ -134,6 +134,26 @@ public sealed class MockLlmServer : IAsyncDisposable
         _app.MapPost("/v1/messages", ctx => HandleAsync(ctx, "anthropic"));
         _app.MapPost("/anthropic/v1/messages", ctx => HandleAsync(ctx, "anthropic"));
 
+        // ---- a little web for the web tools ([s:web]): SearXNG's JSON search, a docs page, and a page that logs an error
+        _app.MapGet("/web/sx/search", (HttpContext ctx) => Results.Json(new
+        {
+            query = ctx.Request.Query["q"].ToString(),
+            results = new object[]
+            {
+                new { title = "$state • Svelte docs", url = "https://svelte.dev/docs/svelte/$state", content = "The $state rune declares reactive state." },
+                new { title = "Runes • Svelte blog", url = "https://svelte.dev/blog/runes", content = "Runes are symbols that tell the compiler what is reactive." },
+                new { title = "Svelte 5 migration guide", url = "https://svelte.dev/docs/svelte/v5-migration-guide", content = "A plain let is no longer reactive." },
+            },
+        }));
+        _app.MapGet("/web/state", () => Results.Content("""
+            <!doctype html><html><head><title>$state</title></head><body><main><h1>$state</h1>
+            <p>The $state rune declares reactive state: markup that reads it updates when it changes.</p></main></body></html>
+            """, "text/html"));
+        _app.MapGet("/web/demo", () => Results.Content("""
+            <!doctype html><html><head><title>Demo</title><link rel="icon" href="data:,"></head><body style="margin:0;background:#fff;font:16px sans-serif">
+            <p>Count: <span id="n">?</span></p><script>console.error('ReferenceError: count is undefined');</script></body></html>
+            """, "text/html"));
+
         // ---- test control
         _app.MapGet("/_stats", () => JsonResult(StatsJson()));
         _app.MapPost("/_reset", () =>

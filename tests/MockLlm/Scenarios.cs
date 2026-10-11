@@ -145,6 +145,8 @@ public sealed partial class ScenarioEngine
                 "parallel" => Parallel(tag, step, after),
                 "bash" => Bash(step, after),
                 "fgwait" => FgWait(tag, step),
+                "web" => Web(tag, step),
+                "ssh" => SshWork(step),
                 "bgproc" => BgProc(tag, step),
                 "where" => Where(tag, step, after),
                 "textcall" => TextCall(step, after),
@@ -299,6 +301,70 @@ public sealed partial class ScenarioEngine
         var output = ToolResults(after).LastOrDefault()?.Text ?? "(no output)";
         return Final("Command output:\n\n```text\n" + output.Trim() + "\n```\n\nBASH-DONE");
     }
+
+    /// <summary>A one-pixel PNG as a data: URL: an image show_image can show without a file or a request.</summary>
+    private const string Pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    /// <summary>
+    /// A run with the web tools: a plan (<c>todo_write</c>; the first answer, thinking as it streams, waits at gate=), a search
+    /// (its answer waits at plangate=, the plan on screen meanwhile), a fetched page, a screenshot of a page that logs an
+    /// error and an image shown in the chat, the plan done, and an answer with links to two files, a web link, a remote
+    /// image, raw HTML and a forged copy button. base= is this mock's address: its /web pages, and web.search.searxngUrl
+    /// = base/web/sx/ for the search. The screenshot needs a model that reads images.
+    /// </summary>
+    private static Plan Web(ScenarioTag tag, int step)
+    {
+        var web = tag.P("base", "http://127.0.0.1:7479").TrimEnd('/') + "/web";
+        static JsonArray Todo(params string[] status) => new([.. new[] { "Find what breaks the demo", "Read the $state docs", "Show the fix" }
+            .Select((t, i) => (JsonNode)Obj(("text", t), ("status", status[i])))]);
+        switch (step)
+        {
+            case 0:
+                return new Plan
+                {
+                    Thinking = "The demo page renders a count that never shows. In Svelte 5 a plain let is not reactive any more, so the markup may read a name before it exists. I'll plan the steps, then read the docs and look at the page.",
+                    Text = "Let me plan this.",
+                }.Call("todo_write", Obj(("items", Todo("in_progress", "pending", "pending"))));
+            case 1:
+            {
+                var plan = new Plan { Text = "Searching the docs." }.Call("web_search", Obj(("query", "svelte 5 $state reactive")));
+                plan.Gate = tag.Params.GetValueOrDefault("plangate");
+                return plan;
+            }
+            case 2:
+                return new Plan { Text = "Reading the page." }.Call("web_fetch", Obj(("url", web + "/state")));
+            case 3:
+                return new Plan { Text = "Looking at the demo." }
+                    .Call("browser", Obj(("action", "screenshot"), ("url", web + "/demo")))
+                    .Call("show_image", Obj(("source", Pixel), ("caption", "The demo as it renders now")));
+            case 4:
+                return new Plan { Text = "All three done." }.Call("todo_write", Obj(("items", Todo("done", "done", "done"))));
+            default:
+                return Final(
+                    "The demo breaks because `count` is read before it is declared: with runes a plain `let` is not reactive.\n\n" +
+                    "The fix goes in [App.svelte](web/src/App.svelte), and the counter it reads is in [counter.js](web/src/lib/counter.js). " +
+                    "The [docs](https://svelte.dev/docs/svelte/$state) explain `$state`.\n\n" +
+                    "![pixel](https://example.com/pixel.png)\n\n" +
+                    "<a href=\"https://example.com\" style=\"position:fixed;inset:0\">continue</a>\n\n" +
+                    "<button class=\"code-copy\" data-copy=\"1\">Copy</button>\n\nWEB-DONE");
+        }
+    }
+
+    /// <summary>
+    /// The ssh tool on host <c>nuc</c>: a <c>run</c> in <c>demo</c>, a <c>read</c> and an <c>edit</c> of <c>demo/nginx.conf</c>
+    /// (<c>listen 80;</c> → <c>listen 8080;</c>), a <c>copy</c> of <c>demo/error.log</c> down to <c>logs/nuc-error.log</c>. The
+    /// host's home needs both files; the run prints <c>nginx: active</c>.
+    /// </summary>
+    private static Plan SshWork(int step) => step switch
+    {
+        0 => new Plan { Text = "Checking the site on nuc." }
+            .Call("ssh", Obj(("action", "run"), ("host", "nuc"), ("cwd", "demo"), ("script", "grep -c listen nginx.conf >/dev/null && echo \"nginx: active\""))),
+        1 => new Plan { Text = "Reading its config." }.Call("ssh", Obj(("action", "read"), ("host", "nuc"), ("path", "demo/nginx.conf"))),
+        2 => new Plan { Text = "Moving it to 8080." }.Call("ssh", Obj(("action", "edit"), ("host", "nuc"), ("path", "demo/nginx.conf"),
+            ("edits", new JsonArray(Obj(("oldText", "listen 80;"), ("newText", "listen 8080;")))))),
+        3 => new Plan { Text = "Keeping its error log." }.Call("ssh", Obj(("action", "copy"), ("host", "nuc"), ("direction", "download"), ("from", "demo/error.log"), ("to", "logs/nuc-error.log"))),
+        _ => Final("The demo site on nuc listens on 8080 now. SSH-DONE"),
+    };
 
     /// <summary>A foreground command that runs until a file appears in the session's folder: the test ends it by writing the file.</summary>
     private static Plan FgWait(ScenarioTag tag, int step)
