@@ -114,8 +114,9 @@
     const cm = /^\/([\w:.-]*)$/.exec(before);
     if (cm) {
       const q = cm[1].toLowerCase();
-      // the session's skills too: /skill:name (a refresh that arrives while the popup is open updates it)
-      const skills = skillCommands(session.id, () => popup?.type === 'command' && updatePopup());
+      // the session's skills too: /skill:name. Their list arrives after the first `/`, so it updates the popup — also one
+      // that is not open because nothing matched yet (`/skill` typed before the skills were in)
+      const skills = skillCommands(session.id, () => popup?.type !== 'mention' && updatePopup());
       const items = [...allCommands(), ...skills]
         .filter((c) => c.name.toLowerCase().startsWith(q) || (q.length > 1 && c.name.toLowerCase().includes(q)))
         .slice(0, 12);
