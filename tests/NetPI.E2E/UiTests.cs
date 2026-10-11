@@ -98,6 +98,12 @@ public static class UiTests
             await RunUiScript(env, "projects.mjs", 150);
         }, 180);
 
+        r.Add("ui.settings", "ui: settings — fields with defaults, reset and range, agents (added from the model search, a price set in the dialog, switched off, renamed), the budget, providers, the built-in texts, tools and plugins; tools switched off per chat; a profile with its tools, a project's default and the chat's picker", async () =>
+        {
+            // The script changes settings and changes them back; keepsSettings fails it when the document differs after.
+            await RunUiScript(env, "settings.mjs", 180);
+        }, 210);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id
