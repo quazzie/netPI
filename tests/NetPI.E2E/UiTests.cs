@@ -167,14 +167,13 @@ public static class UiTests
             try { await RunUiScript(env, "remove-agent.mjs", 90, "--agent", agent); }
             finally { await env.Rpc("settings.set", new { path = $"agents.{agent}", value = (object?)null }); }
         }, 120);
-        r.Add("ui.work-tab", "ui: work tab — one list of agents with a row per instance, no Runs, Model capacity, Physical owners or Idea checks sections; the agent name opens Settings → Agents on its dialog", async () =>
-        {
-            // The agent the script clicks on, unique per run (shared servers keep settings between runs).
-            var agent = $"e2e-wt-{Guid.NewGuid().ToString("N")[..6]}";
-            await env.Rpc("settings.set", new { path = $"agents.{agent}", value = new { model = CoreTests.Qwen, use = "the e2e work-tab test's agent" } });
-            try { await RunUiScript(env, "work-tab.mjs", 90, "--agent", agent); }
-            finally { await env.Rpc("settings.set", new { path = $"agents.{agent}", value = (object?)null }); }
-        }, 120);
+        // The script sets up its own agents (qwen, and gemma-4, which the mock lists as not loaded) and puts them back.
+        r.Add("ui.work-tab", "ui: work tab — real runs on an agent's two instances (a foreground command, a background subagent), a run waiting for one and one waiting for any agent; rows that stay put as jobs end; an agent that is not loaded and its switch; a background command's output and kill; the agent's name opens its dialog", () =>
+            RunUiScript(env, "work-tab.mjs", 150), 180);
+
+        // A paid agent (a price on a Claude model) and a free one; the budget and the agents are put back after.
+        r.Add("ui.usage-budget", "ui: the Usage tab (period total, 30 days, agents and models, the chats that cost most, another period after a resetDay move), a chat's cost with its subagents, the budget on the Work tab as the limits change, the budget pill, a chat the budget stopped going over", () =>
+            RunUiScript(env, "usage-budget.mjs", 150), 180);
     }
 
     /// <summary>

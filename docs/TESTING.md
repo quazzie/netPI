@@ -208,6 +208,8 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:tools file= old= new= create=]` | `ls` → `read file` → `edit file old→new` + `write create` → summary |
 | `[s:parallel file= pattern=]` | four read-only calls in one turn (`read`, `grep`, `find`, `ls`) |
 | `[s:bash]` | a `bash` command with multi-line output streamed over ~1 s |
+| `[s:fgwait file=.release]` | a foreground `bash` that runs until `file` appears in the session's folder (the test writes it to end the command) |
+| `[s:bgproc lines=900 ms=250]` | a background `bash` that prints `dev server: request <i>` every `ms`, and the run ends at once |
 | `[s:where file=]` | `bash pwd` + `write file`, answers `PWD=<output>` |
 | `[s:slow ms=6000]` | thinking + text streamed slowly over `ms` (steering, queue, abort) |
 | `[s:slowtools]` | three sequential `bash` calls, the first sleeps 2 s (steering mid-batch, abort during a tool) |
@@ -229,8 +231,8 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:planui enter=0]` | plan mode as a person meets it: a plan (3 steps, 2 files), a revision with a 4th step naming the changes asked, and a sentence for approved, cancelled or moved to a new chat; `enter=1` first offers plan mode with `plan_enter` |
 | `[s:goal]` | in a goal's objective (a goal's notice picks the scenario when its objective carries a tag): a pass that only looks, a pass with a tool call, then `goal_update complete` |
 | `[s:say text="…"]` | answers with just the text (default `OK.`): no thinking, one short stream — the cheap run a test seeds a long chat with |
-| `[s:spawn n=3 delay=1500 stagger=0 model= workerhold=0]` | `agent_spawn background` × n (workers run `[s:sub]` for `delay + (i-1)·stagger` ms, plus a fixed `workerhold` stream hold independent of mock speed) → `agent` `wait` → summary of the reports |
-| `[s:spawnbg delay= workergate= name=bg-worker]` | one background worker, the parent ends its turn; the report arrives later as an `agent-result` notice |
+| `[s:spawn n=3 delay=1500 stagger=0 model= agent= workerhold=0]` | `agent_spawn background` × n (workers run `[s:sub]` for `delay + (i-1)·stagger` ms, plus a fixed `workerhold` stream hold independent of mock speed) → `agent` `wait` → summary of the reports |
+| `[s:spawnbg delay= workergate= name=bg-worker agent=]` | one background worker (on `agent`: with agents set up `agent_spawn` needs one), the parent ends its turn; the report arrives later as an `agent-result` notice |
 | `[s:nest delay=]` | orchestrator → `lead` (`[s:subspawn]`: `agent` `send` to the parent, `agent_spawn` of a `helper`, which waits for it) |
 | `[s:sub i= delay=]` | subagent: thinks for `delay` ms, reports `Report from <name>: i squared is i²` (also the default for subagents) |
 | `[s:ideas title=]` | `ideas` (action `add`) with tags, priority and a section |

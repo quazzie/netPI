@@ -144,6 +144,8 @@ public sealed partial class ScenarioEngine
                 "tools" => Tools(tag, step, after),
                 "parallel" => Parallel(tag, step, after),
                 "bash" => Bash(step, after),
+                "fgwait" => FgWait(tag, step),
+                "bgproc" => BgProc(tag, step),
                 "where" => Where(tag, step, after),
                 "textcall" => TextCall(step, after),
                 "doccall" => DocCall(step, after),
@@ -296,6 +298,25 @@ public sealed partial class ScenarioEngine
                 .Call("bash", Obj(("command", "echo hello from bash; for i in 1 2 3; do echo \"line $i\"; sleep 0.3; done")));
         var output = ToolResults(after).LastOrDefault()?.Text ?? "(no output)";
         return Final("Command output:\n\n```text\n" + output.Trim() + "\n```\n\nBASH-DONE");
+    }
+
+    /// <summary>A foreground command that runs until a file appears in the session's folder: the test ends it by writing the file.</summary>
+    private static Plan FgWait(ScenarioTag tag, int step)
+    {
+        var file = tag.P("file", ".release");
+        if (step == 0)
+            return new Plan { Text = "Indexing the docs." }
+                .Call("bash", Obj(("command", $"echo \"indexing docs/\"; until [ -f {file} ]; do sleep 0.2; done; echo indexed")));
+        return Final("The docs are indexed. FGWAIT-DONE");
+    }
+
+    /// <summary>A background command that prints a line every <c>ms</c> (<c>lines</c> of them), and the run ends at once.</summary>
+    private static Plan BgProc(ScenarioTag tag, int step)
+    {
+        if (step == 0)
+            return new Plan { Text = "Starting the dev server in the background." }
+                .Call("bash", Obj(("command", $"for i in $(seq 1 {tag.PInt("lines", 900)}); do echo \"dev server: request $i\"; sleep {(tag.PInt("ms", 250) / 1000.0).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}; done"), ("background", true)));
+        return Final("The dev server runs in the background. BGPROC-STARTED");
     }
 
     private static Plan Where(ScenarioTag tag, int step, List<NMsg> after)
@@ -460,6 +481,7 @@ public sealed partial class ScenarioEngine
                 {
                     var args = Obj(("task", $"Worker task #{i}: square the number {i} and report the result. [s:sub i={i} delay={delay + (i - 1) * stagger} hold={tag.PInt("workerhold", 0)}]"), ("name", $"worker-{i}"), ("background", true));
                     if (model is not null) args["model"] = model;
+                    if (tag.Params.TryGetValue("agent", out var agent)) args["agent"] = agent;
                     plan.Call("agent_spawn", args);
                 }
                 return plan;
@@ -485,8 +507,11 @@ public sealed partial class ScenarioEngine
     private static Plan SpawnBackground(ScenarioTag tag, int step)
     {
         if (step == 0)
-            return new Plan { Text = "Starting a background worker." }
-                .Call("agent_spawn", Obj(("task", $"Background task: report the number 7. [s:sub i=7 delay={tag.PInt("delay", 800)}{(tag.Params.TryGetValue("workergate", out var wg) ? $" gate={wg}" : "")}]"), ("name", tag.P("name", "bg-worker")), ("background", true)));
+        {
+            var args = Obj(("task", $"Background task: report the number 7. [s:sub i=7 delay={tag.PInt("delay", 800)}{(tag.Params.TryGetValue("workergate", out var wg) ? $" gate={wg}" : "")}]"), ("name", tag.P("name", "bg-worker")), ("background", true));
+            if (tag.Params.TryGetValue("agent", out var agent)) args["agent"] = agent;
+            return new Plan { Text = "Starting a background worker." }.Call("agent_spawn", args);
+        }
         return Final("The worker runs in the background; I will report when it finishes. SPAWNBG-STARTED");
     }
 

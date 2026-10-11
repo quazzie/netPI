@@ -67,7 +67,8 @@ export async function rpc(method, params = {}) {
   return body;
 }
 
-const until = async (what, probe, timeout, every = 100) => {
+/** Polls `probe` until it returns something truthy (and returns it), or throws after `timeout` ms naming `what`. */
+export const until = async (what, probe, timeout, every = 100) => {
   const end = Date.now() + timeout;
   for (;;) {
     const v = await probe();
