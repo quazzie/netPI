@@ -24,9 +24,6 @@ export function createIdeas({ publish }) {
   const doc = { ideas: [], exists: false };
   // Attached image bytes, keyed by their reference path (the host writes them under <home>/idea-images).
   const files = new Map();
-  const suggestions = []; // the cards of closed chats (~/.netpi/ideas-pending.json)
-  const checked = new Map(); // sessionId → the user-turn count it was last checked at
-  const leavePlans = new Map(); // sessionId → the plan its closed tab should leave behind
   const refines = []; // what ideas.refine was asked, for the walkthrough to look at
 
   const changed = () => setTimeout(() => publish('ideas.changed', { file }), 250);
@@ -284,115 +281,6 @@ export function createIdeas({ publish }) {
       const proj = idea.project ? (idea.project.name ?? idea.project.id) : null;
       return `Idea added (${proj ? `project ${proj}` : 'global'}): ${idea.title} (${idea.id})`;
     },
-    // Save on tab close (phase 2). The mock answers NOTHING unless the mock session was told to leave a plan, so the
-    // walkthrough can show a card: sessions.closeLeavesPlan('<substring of the first user turn>').
-    'ideas.closed': (p) => {
-      const s = store.sessions.get(p.sessionId);
-      if (!s) return { checked: false, reason: 'no_session' };
-      if (s.kind === 'subagent') return { checked: false, reason: 'subagent' };
-      const users = (store.messages.get(p.sessionId) ?? []).filter((m) => m.role === 'user');
-      if (users.length < 2) return { checked: false, reason: 'short' };
-      const at = Number(checked.get(p.sessionId) ?? 0);
-      if (at >= users.length) return { checked: false, reason: 'already' };
-      checked.set(p.sessionId, users.length);
-
-      // Which open idea the chat worked on: the one sharing the most title words (the real one is a decision).
-      const open = doc.ideas.filter((i) => !['done', 'rejected'].includes(i.status) && (!i.project || i.project.id === s.projectId));
-      const words = new Set(
-        users
-          .flatMap((m) => m.parts ?? [])
-          .filter((x) => x.type === 'text')
-          .join(' ')
-          .toLowerCase()
-          .split(/\W+/)
-          .filter((w) => w.length > 3),
-      );
-      let best = null;
-      let score = 0;
-      for (const i of open) {
-        const n = i.title.toLowerCase().split(/\W+/).filter((w) => words.has(w)).length;
-        if (n > score) ((best = i), (score = n));
-      }
-      if (best && score >= 2) {
-        (best.sessions ??= []).some((x) => x.sessionId === s.id) ||
-          best.sessions.push({ sessionId: s.id, title: s.title, at: now(), seen: false });
-        changed();
-      }
-
-      const plan = leavePlans.get(p.sessionId);
-      if (!plan) return { checked: true, reason: 'started' };
-      const suggestion = {
-        id: `sg_${rid(8)}`,
-        kind: 'save',
-        sessionId: s.id,
-        sessionTitle: s.title,
-        title: plan,
-        summary: `Left over from the “${s.title}” chat: the plan was written but nothing was built from it.`,
-        at: now(),
-        project: s.projectId ? (store.projects.get(s.projectId) ?? null) : null,
-      };
-      suggestions.push(suggestion);
-      setTimeout(() => publish('ideas.suggested', { suggestion }), 120); // the real check answers in the background
-      return { checked: true, reason: 'started' };
-    },
-    'ideas.suggestions': () => ({ suggestions: suggestions.map((s) => ({ ...s })) }),
-    'ideas.resolve': (p) => {
-      if (!['save', 'done', 'discard'].includes(p.action)) throw err('bad_request', 'action must be "save", "done" or "discard"');
-      const i = suggestions.findIndex((s) => s.id === p.id);
-      if (i < 0) throw err('not_found', 'That card is gone (already answered, or NetPI restarted).');
-      const [card] = suggestions.splice(i, 1);
-      if (p.action === 'discard') return { saved: null, discarded: true };
-      if (p.action === 'done') {
-        // The commit check's card: an idea already in the backlog, only its status in question.
-        const idea = doc.ideas.find((x) => x.id === card.ideaId);
-        if (!idea) throw err('not_found', `No idea ${card.ideaId}.`);
-        idea.status = 'done';
-        idea.updatedAt = now();
-        changed();
-        return { saved: idea, discarded: false, marked: 'done' };
-      }
-      const idea = api['ideas.add']({
-        sessionId: card.sessionId,
-        idea: { title: p.edit?.title ?? card.title, summary: p.edit?.summary ?? card.summary },
-      });
-      (idea.sessions ??= []).push({ sessionId: card.sessionId, title: card.sessionTitle, at: now(), seen: true });
-      changed();
-      return { saved: idea, discarded: false };
-    },
-  };
-
-  /** The mock walkthrough: offer the commit check's card for an idea (the real one needs a repository). */
-  const commitFinishesIdea = (phrase) => {
-    const idea = doc.ideas.find((i) => i.title.toLowerCase().includes(String(phrase).toLowerCase()));
-    if (!idea) return null;
-    const suggestion = {
-      id: `sg_${rid(8)}`,
-      kind: 'done',
-      ideaId: idea.id,
-      title: idea.title,
-      commits: [`${rid(7)} the ${idea.title.toLowerCase()}, measured`],
-      at: now(),
-      project: idea.project ?? null,
-    };
-    suggestions.push(suggestion);
-    publish('ideas.suggested', { suggestion });
-    return suggestion.id;
-  };
-
-  /** The mock walkthrough: make a chat leave the given plan when its tab is closed. */
-  const closeLeavesPlan = (phrase, title = `Plan: ${phrase}`) => {
-    for (const [sid, messages] of store.messages) {
-      const said = messages
-        .filter((m) => m.role === 'user')
-        .flatMap((m) => m.parts ?? [])
-        .map((x) => x.text ?? '')
-        .join(' ');
-      if (said.includes(phrase)) {
-        leavePlans.set(sid, title);
-        return sid;
-      }
-    }
-    return null;
   };
 
   function seed() {
@@ -459,5 +347,5 @@ export function createIdeas({ publish }) {
     doc.exists = true;
   }
 
-  return { api, seed, closeLeavesPlan, commitFinishesIdea };
+  return { api, seed };
 }

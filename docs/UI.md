@@ -16,7 +16,8 @@ npm run build            # build:web (→ web/dist; into artifacts/app/wwwroot w
 npm run dev              # Vite dev server on :5173, proxies /ws /api /plugins → http://127.0.0.1:7431
 npm run mock             # mock host on :7431 (serves the built UI + the sample plugin), token "dev"
 npm run e2e              # the whole Playwright walkthrough (starts its own mock on :7432; ~2.5 min): the gate before a merge,
-                         # not a loop. Screenshots → web/mock/screenshots. (playwright-core devDependency, or a local/global
+                         # not a loop. Frozen: no new checks go here; a new UI test is a real-server script in
+                         # tests/NetPI.E2E/ui (docs/plans/2026-10-11-retire-mock-ui-suite.md). Screenshots → web/mock/screenshots. (playwright-core devDependency, or a local/global
                          # `playwright`; see web/mock/pw.mjs). NETPI_BROWSER=<path of a Chromium-based executable> runs every
                          # browser check (e2e, web/scripts/check-*.mjs) in that browser instead of Playwright's own build
                          # or the Edge/Chrome fallback — a preinstalled Chromium of another revision, say

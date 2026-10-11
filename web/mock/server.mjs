@@ -129,18 +129,6 @@ class RpcError extends Error {
 }
 const notFound = (what) => new RpcError('not_found', `${what} not found`);
 
-// eleven background idea checks in run order (oldest first): the Ideas view keeps the last 10, so mock-check-01 never shows
-const ideasWorkList = () => [
-  ...Array.from({ length: 10 }, (_, k) => ({
-    id: `mock-check-${String(k + 1).padStart(2, '0')}`,
-    purpose: `Mock check ${k + 1}`,
-    model: 'aiproxy/qwen3.8-27b',
-    status: 'finished',
-    reason: null,
-    finishedAt: new Date(Date.now() - (11 - k) * 60_000).toISOString(),
-  })),
-  { id: 'mock-verifier-dropped', purpose: 'Verify idea completion', model: 'aiproxy/qwen3.8-27b', status: 'dropped', reason: 'Model capacity did not open before the deadline', finishedAt: new Date().toISOString() },
-];
 const need = (p, k) => {
   if (p?.[k] == null || p[k] === '') throw new RpcError('bad_request', `Missing parameter: ${k}`);
   return p[k];
@@ -771,8 +759,6 @@ const handlers = {
   'agent.queue': (p) => agent.queue(need(p, 'sessionId')),
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),
   'agent.promote': (p) => agent.promote(need(p, 'sessionId'), need(p, 'id')),
-  // the background idea checks the Diagnostics tab's Ideas view reads via ideas.work (eleven in run order, oldest first — the view keeps the last 10)
-  'ideas.work': () => ideasWorkList(),
   // like the Work plugin: agents.list, runs.list, processes.list and usage.summary
   'work.snapshot': () => ({
     agents: agentPools(),
@@ -906,9 +892,7 @@ const handlers = {
   'mock.filesOpened': () => filesOpened,
   'mock.filesOpenCalls': () => filesOpenCalls,
   // test helper: the chat whose user turns contain this phrase leaves the given plan when its tab is closed
-  'mock.closeLeavesPlan': (p = {}) => ideas.closeLeavesPlan(need(p, 'phrase'), p.title),
   // test helper: offer the commit check's card for the idea whose title contains this phrase
-  'mock.commitFinishesIdea': (p = {}) => ideas.commitFinishesIdea(need(p, 'phrase')),
   // test helpers: slow the process tails and observe who asks for them (the e2e leak check)
   'mock.procTailDelay': (p) => ((procTailDelayMs = p.ms ?? 0), true),
   'mock.procStats': () => work.procStats(),

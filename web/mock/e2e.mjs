@@ -4,6 +4,9 @@
 // (MOCK_SPEED=3) so it can also test reconnects; pass --url to use a running server instead.
 //
 //   npm run build && npm run e2e
+//
+// FROZEN: no new section or check goes here. A new UI test is a script in tests/NetPI.E2E/ui against the real server;
+// these sections move there one by one (docs/plans/2026-10-11-retire-mock-ui-suite.md).
 //   node web/mock/e2e.mjs [--out dir] [--only <section>,<section>] [--url http://127.0.0.1:7431] [--no-dev]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1291,77 +1294,6 @@ log('plugin tab: Ideas');
 }
 
 }
-if (want('ideas: save on tab close (the card above the composer)')) {
-log('ideas: save on tab close (the card above the composer)');
-{
-  // A chat with two user turns, told to leave a plan behind when its tab closes.
-  await page.keyboard.press('Control+t');
-  await page.waitForTimeout(400);
-  await ta.fill('the prefill scheduler should run short prompts first');
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(700);
-  await ta.fill('and measure it before we change anything');
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(700);
-  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const armed = await rpcCall('mock.closeLeavesPlan', { phrase: 'prefill scheduler', title: 'Prefill: short prompts first' });
-  check('save check: the mock was told to leave a plan (armed the closed chat)', armed === sid, `armed=${armed} chat=${sid}`);
-
-  // Closing the tab never waits for the check: the card arrives behind it, above the composer of whatever chat is
-  // open (the chat it came from is closed), so a new tab gives it somewhere to land.
-  await page.locator('.topbar .tab.active .tab-close').click();
-  await page.keyboard.press('Control+t');
-  const card = page.locator('[aria-label="Unsaved plan from a closed chat"]');
-  await card.waitFor({ timeout: 5000 }).catch(() => {});
-  check('save check: a card appears after the tab closes', (await card.count()) === 1, await card.innerText().catch(() => ''));
-  check('save check: the card names the closed chat', /prefill scheduler/.test(await card.innerText().catch(() => '')));
-  await shot(page, '27c-idea-card');
-
-  // Edit it, then save: the idea lands in the backlog with the chat on it.
-  await card.locator('button', { hasText: 'Edit' }).click();
-  await card.locator('input[aria-label="Idea title"]').fill('Prefill: short prompts first (measured)');
-  await card.locator('button', { hasText: 'Save' }).click();
-  await page.waitForTimeout(400);
-  check('save check: the card goes away after Save', (await card.count()) === 0);
-  const list = (await rpcCall('ideas.list'))?.ideas ?? [];
-  const saved = list.find((i) => /Prefill: short prompts first/.test(i.title));
-  check('save check: Save writes the idea with the closed chat on it', !!saved && saved.sessions?.length === 1, saved?.sessions?.[0]?.sessionId ?? 'no idea');
-
-  // The commit check's card: an idea already in the backlog, and only its status in question. It goes to the same
-  // project the tab is showing — the `projectId` above is scoped to that block, so resolve the name again here.
-  const netpi = (await rpcCall('projects.list')).find((p) => p.name === 'netpi')?.id;
-  await rpcCall('ideas.add', { projectId: netpi, idea: { title: 'Retry: shorter notices', summary: 'One line, no ids.' } });
-  await rpcCall('mock.commitFinishesIdea', { phrase: 'Retry: shorter' });
-  const doneCard = page.locator('[aria-label="An idea a commit may have finished"]');
-  await doneCard.waitFor({ timeout: 5000 }).catch(() => {});
-  check('commit check: a card offers an idea a commit may have finished', (await doneCard.count()) === 1, await doneCard.innerText().catch(() => ''));
-  check('commit check: the card names the idea and its commit',
-    /Retry: shorter notices/.test(await doneCard.innerText().catch(() => '')) && /measured/.test(await doneCard.innerText().catch(() => '')));
-  await shot(page, '27d-idea-done-card');
-  await doneCard.locator('button', { hasText: 'Mark done' }).click();
-  await page.waitForTimeout(400);
-  check('commit check: the card goes away after Mark done', (await doneCard.count()) === 0);
-  const afterDone = (await rpcCall('ideas.list'))?.ideas ?? [];
-  const closed = afterDone.find((i) => /Retry: shorter notices/.test(i.title));
-  check('commit check: Mark done closes the idea and keeps it in place', closed?.status === 'done', `${closed?.status} ${closed?.id}`);
-
-  // A second chat closes with nothing to save: no card, and the backlog is untouched. Counted here rather than
-  // reused from the snapshot above: the commit-check block added an idea since then, so that count was stale.
-  const before = ((await rpcCall('ideas.list'))?.ideas ?? []).length;
-  await ta.fill('thanks, that all worked out');
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(600);
-  await ta.fill('and the deploy is done too');
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(600);
-  await page.locator('.topbar .tab.active .tab-close').click();
-  await page.keyboard.press('Control+t');
-  await page.waitForTimeout(900);
-  check('save check: a chat with nothing unsaved leaves no card', (await card.count()) === 0);
-  check('save check: and nothing is added to the backlog', ((await rpcCall('ideas.list'))?.ideas ?? []).length === before);
-}
-
-}
 if (want('plugin tab: Diagnostics')) {
 log('plugin tab: Diagnostics');
 {
@@ -1396,13 +1328,6 @@ log('plugin tab: Diagnostics');
   await view('Logs');
   await page.waitForTimeout(400);
   check('diagnostics: logs', (await page.locator('.diag .log').count()) > 3);
-  // background idea checks live here now (ideas.work): the mock serves eleven, the view keeps the last 10, newest first
-  await view('Ideas');
-  await page.waitForTimeout(400);
-  const workRows = page.locator('.diag [data-background-work]');
-  const workIds = await workRows.evaluateAll((els) => els.map((e) => e.getAttribute('data-background-work')));
-  check('diagnostics: the Ideas view keeps the last 10 of 11, newest first', workIds.length === 10 && workIds[0] === 'mock-verifier-dropped' && !workIds.includes('mock-check-01') && workIds[1] === 'mock-check-10' && workIds[9] === 'mock-check-02', workIds.join(' '));
-  check('diagnostics: a dropped check shows its reason', (await page.locator('.diag [data-background-work="mock-verifier-dropped"]').innerText()).includes('Model capacity did not open before the deadline'));
   await view('Context');
   await page.waitForSelector('.diag .prompt', { timeout: 5000 }).catch(() => {});
   check('diagnostics: context preview', (await page.locator('.diag .prompt').count()) > 0);
