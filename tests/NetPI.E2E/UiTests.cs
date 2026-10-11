@@ -104,6 +104,12 @@ public static class UiTests
             await RunUiScript(env, "settings.mjs", 180);
         }, 210);
 
+        r.Add("ui.sessions-panel", "ui: side panels and the sessions list — resizing and folding, project favorites in the chevron's picker, no tab overflows at 230px, the archived section pages past 200 newer chats (archivedOnly), and the groups' defaults, stored state, reload and search", async () =>
+        {
+            // The script makes its own chats (one forked 261 times) and a project, and removes them again.
+            await RunUiScript(env, "sessions-panel.mjs", 150);
+        }, 180);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id

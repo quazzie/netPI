@@ -58,7 +58,7 @@ const NEEDS = {
   "plugin tab: Diagnostics": ["new session + agent run"],
   "settings": ["new session + agent run"],
   "images": ["new session + agent run"],
-  "plugin tab: Ideas": ["new session + agent run","panels + plugin tabs"],
+  "plugin tab: Ideas": ["new session + agent run"],
   "budget: chat cost, Work tab, a chat stopped by the budget": ["new session + agent run"],
 };
 const ONLY = argVal('--only') ? resolveOnly(argVal('--only')) : null;
@@ -746,108 +746,6 @@ log('tab dots: a run that ends behind another tab');
 }
 
 }
-// ------------------------------------------------------------------ panels + plugin tabs
-if (want('panels + plugin tabs')) {
-log('panels + plugin tabs');
-await page.locator('.panel.right .strip-tab', { hasText: 'Events' }).click();
-await page.waitForTimeout(500);
-await shot(page, '13-plugin-events-tab');
-await page.locator('.panel.right .strip-tab', { hasText: 'Sample' }).click();
-await page.waitForTimeout(300);
-// resize right panel
-var hb = await handle.boundingBox();
-await page.mouse.move(hb.x + 3, hb.y + 300);
-await page.mouse.down();
-await page.mouse.move(hb.x - 80, hb.y + 300, { steps: 5 });
-await page.mouse.up();
-var w = await page.locator('.panel.right .body').evaluate((el) => el.getBoundingClientRect().width);
-check('resize right panel', w > 400, `${Math.round(w)}px`);
-// collapse left panel by clicking the active strip tab
-await page.locator('.panel.left .strip-tab[aria-selected="true"]').click();
-await page.waitForTimeout(150);
-check('collapse left panel', (await page.locator('.panel.left.open').count()) === 0);
-await shot(page, '14-panels');
-await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
-await page.waitForTimeout(200);
-await shot(page, '15-projects');
-// favorites live at the top of the chevron's project picker (7a9d4a1), not as buttons in the top bar
-var firstProject = page.locator('.panel.left .prow').first();
-var projectName = (await firstProject.locator('.pname .np-ellipsis').innerText()).trim();
-var toggleFav = async (row, title) => {
-  await row.hover(); // the row's action buttons appear on hover
-  await row.locator(`button[title^="${title}"]`).click();
-};
-check('no fav buttons in the top bar', (await page.locator('.topbar .fav').count()) === 0);
-await toggleFav(firstProject, 'Add to favorites');
-await page.waitForTimeout(200);
-await page.locator('.topbar .quick-more').click();
-var pickerOpened = await page.waitForSelector('.popover .item', { timeout: 5000 }).then(() => true).catch(() => false);
-var pickerHead = pickerOpened ? ((await page.locator('.popover .section').first().textContent().catch(() => '')) ?? '').trim() : ''; // textContent: the header is uppercased by CSS
-var firstPicked = pickerOpened ? (await page.locator('.popover .item .name').first().innerText().catch(() => '')).trim() : '';
-check('favorites head the chevron\'s project picker', pickerHead === 'Favorites' && firstPicked === projectName, `${pickerHead}: ${firstPicked} (starred ${projectName})`);
-await page.keyboard.press('Escape');
-await page.waitForTimeout(150);
-await toggleFav(page.locator('.panel.left .prow').first(), 'Remove from favorites');
-await page.waitForTimeout(200);
-await page.locator('.topbar .quick-more').click();
-await page.waitForSelector('.popover .item', { timeout: 5000 }).catch(() => {});
-check('no favorites → no Favorites section in the picker', (await page.locator('.popover .section', { hasText: 'Favorites' }).count()) === 0);
-await page.keyboard.press('Escape');
-await page.waitForTimeout(150);
-
-await openStripTab('left', 'Sessions');
-await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
-await page.waitForTimeout(200);
-
-}
-// ------------------------------------------------------------------ the archived section: an archive 200 newer actives would hide
-if (want('sessions: the archived section lists what a newest-first window hides')) {
-log('sessions: the archived section lists what a newest-first window hides');
-{
-  // 201 active sessions (newest, one per hour back) + 59 newer archives, then one very old archive: in the old
-  // "Show archived" query shape (the newest 200 active + archived, filtered locally) the old archive was outside
-  // the window, so the panel said "Nothing archived".
-  const HIDDEN = 'Old archive, hidden by 200 actives';
-  await rpcCall('mock.seedMany', { active: 201, archived: 59, title: HIDDEN });
-  try {
-    // the setup really hides it: the newest-200 window of active + archived holds no archive
-    const window = await rpcCall('sessions.list', { includeArchived: true, limit: 200 });
-    check('setup: 201 newer actives push the old archive out of the newest-200 window',
-      window.length === 200 && window.every((s) => !s.archived),
-      `${window.length} rows, archives in window: ${window.filter((s) => s.archived).length}`);
-
-    const askForArchived = page.locator('.panel.left .foot .link', { hasText: 'Show archived' });
-    await askForArchived.click();
-    await page.locator('.srow.archived').first().waitFor({ timeout: 5000 }).catch(() => {});
-    const asks = (await rpcCall('mock.listCalls')).filter((c) => c.archivedOnly);
-    check('archived section: the archives are listed from an archivedOnly query',
-      (await page.locator('.srow.archived').count()) === 50 && asks.length > 0,
-      `archived rows: ${await page.locator('.srow.archived').count()}; archivedOnly calls: ${JSON.stringify(asks)}`);
-    check('the hidden one is not in the first page (it is the oldest, 60 archives deep)',
-      (await page.locator('.srow.archived', { hasText: HIDDEN }).count()) === 0);
-
-    // 60 archives over 50-row pages: the hidden one is the oldest, so it is on page 2
-    const more = page.locator('.panel.left .list button', { hasText: 'Show more' });
-    check('archived section: 60 archives offer a second page', (await more.count()) === 1, `archived rows now: ${await page.locator('.srow.archived').count()}`);
-    if (await more.count()) {
-      await more.first().click();
-      await page.locator('.srow.archived', { hasText: HIDDEN }).waitFor({ timeout: 5000 }).catch(() => {});
-    }
-    const asks2 = (await rpcCall('mock.listCalls')).filter((c) => c.archivedOnly);
-    check('…and paging brings the hidden archive',
-      (await page.locator('.srow.archived', { hasText: HIDDEN }).count()) > 0,
-      `archived rows: ${await page.locator('.srow.archived').count()}; archivedOnly calls: ${JSON.stringify(asks2)}`);
-    await shot(page, '15b-archived-hidden');
-    // back to the plain list (the panel keeps its place for the later sections)
-    const hide = page.locator('.panel.left .foot .link', { hasText: 'Hide archived' });
-    if (await hide.count()) await hide.click();
-    await page.waitForTimeout(150);
-  } finally {
-    await rpcCall('mock.clearMany');
-  }
-}
-
-}
 if (want('plugin tab: Work')) {
 log('plugin tab: Work');
 {
@@ -993,7 +891,7 @@ log('plugin tab: Work');
   await page.locator('.work .slot.busy', { hasText: 'surveyor' }).first().click();
   await page.waitForTimeout(400);
   check('work: a busy slot opens its session', (await page.locator('.topbar .tab.active[data-tab="ses_bg_explore"]').count()) > 0, await page.locator('.topbar .tab.active').innerText().catch(() => ''));
-  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+  await openSession('Lane scheduler hardening');
 }
 
 }
@@ -1781,51 +1679,6 @@ log('composer: narrow widths');
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.waitForTimeout(200);
 }
-}
-if (want('narrow side panels')) {
-log('narrow side panels');
-{
-  // drag both panels to ~230px (the user's layout is 230–340px) and check every tab for sideways overflow
-  const dragTo = async (side, width) => {
-    const h = await page.locator(`.panel.${side} .resizer`).boundingBox();
-    const body = await page.locator(`.panel.${side} > .body`).boundingBox();
-    const target = side === 'right' ? body.x + body.width - width : body.x + width;
-    await page.mouse.move(h.x + 3, h.y + 200);
-    await page.mouse.down();
-    await page.mouse.move(target, h.y + 200, { steps: 6 });
-    await page.mouse.up();
-  };
-  await dragTo('right', 230);
-  await dragTo('left', 230);
-  const overflow = () =>
-    page.evaluate(() =>
-      [...document.querySelectorAll('.panel > .body')]
-        .filter((b) => !b.hidden)
-        .flatMap((b) => [...b.querySelectorAll('.pane:not([hidden]) .mount, .pane:not([hidden]) .list, .pane:not([hidden]) .tab-root')])
-        .filter((el) => el.scrollWidth > el.clientWidth + 1)
-        .map((el) => `${el.className} ${el.scrollWidth}>${el.clientWidth}`),
-    );
-  const w = Math.round((await page.locator('.panel.right > .body').boundingBox()).width);
-  const bad = [];
-  for (const [side, tab] of [['right', 'Work'], ['right', 'Ideas'], ['right', 'Diagnostics'], ['right', 'MCP'], ['left', 'Sessions'], ['left', 'Projects'], ['left', 'Files']]) {
-    await openStripTab(side, tab);
-    await page.waitForTimeout(tab === 'Diagnostics' ? 600 : 300);
-    const o = await overflow();
-    if (o.length) bad.push(`${tab}: ${o.join(', ')}`);
-    if (tab === 'Diagnostics') {
-      const seg = await page.locator('.diag .np-seg').evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
-      if (!seg) bad.push('Diagnostics: view switcher clipped');
-    }
-  }
-  check(`narrow panels (${w}px): no sideways overflow in any tab`, w <= 240 && bad.length === 0, bad.join(' | '));
-  await openStripTab('right', 'Work');
-  await openStripTab('left', 'Sessions');
-  await page.waitForTimeout(300);
-  await shot(page, '32-narrow-panels');
-  await page.locator('.panel.right .resizer').dblclick();
-  await page.locator('.panel.left .resizer').dblclick();
-}
-
 }
 if (want('welcome screen: ideas to work on')) {
 log('welcome screen: ideas to work on');
@@ -2729,56 +2582,6 @@ log('capability removal and recovery');
     await page.waitForFunction(() => !document.querySelector('.composer button.send')?.disabled);
     check('execution recovery keeps the draft and restores Send', await ta.inputValue() === draft);
   } finally { await rpcCall('mock.capabilities', { missing: [] }); }
-}
-
-// ------------------------------------------------------------------ collapsible session groups: defaults, persistence, search
-if (want('sessions: collapsible groups (defaults, persistence, search)')) {
-log('sessions: collapsible groups (defaults, persistence, search)');
-{
-  // last section on purpose: it reloads the page, so nothing later may depend on the current UI state
-  await openStripTab('left', 'Sessions');
-  const label = (name) => page.locator('.panel.left .list .np-section-label', { hasText: name });
-  const section = (name) => page.locator('.panel.left .list section.np-section', { has: page.locator('.np-section-label', { hasText: name }) });
-  // the collapsed state is a class on the section element itself (a locator only sees its descendants)
-  const collapsed = (name) => page.locator('.panel.left .list section.np-section.np-section-collapsed', { has: page.locator('.np-section-label', { hasText: name }) });
-
-  // a fresh window has no stored state: the defaults show (Today open, the rest closed)
-  check('defaults: Today is open', (await section('Today').locator('.srow').count()) > 0, `rows: ${await section('Today').locator('.srow').count()}`);
-  check('defaults: the older groups are closed',
-    (await collapsed('Earlier').count()) === 1 && (await section('Earlier').locator('.srow').count()) === 0,
-    `Earlier rows: ${await section('Earlier').locator('.srow').count()}`);
-
-  // collapsing an open-by-default group stores the state per key
-  await section('Today').locator('.np-section-toggle').click();
-  check('collapsing hides the rows',
-    (await collapsed('Today').count()) === 1 && (await section('Today').locator('.srow').count()) === 0);
-  const stored = await page.evaluate(() => localStorage.getItem('np.section.sessions.today'));
-  check('the state is stored in np.section.sessions.*', stored === '0', `localStorage: ${stored}`);
-
-  // and it survives a reload
-  await page.reload();
-  await label('Today').waitFor({ timeout: 10_000 });
-  await openStripTab('left', 'Sessions');
-  check('after a reload, the collapsed group is still collapsed', (await collapsed('Today').count()) === 1);
-
-  // a search shows its matches inside closed groups, without touching the stored state
-  const search = sessionSearch();
-  await search.fill('Scratch');
-  await page.locator('.srow', { hasText: 'Scratch' }).waitFor({ timeout: 5_000 });
-  check('a match inside a closed group is shown',
-    (await section('Earlier').locator('.srow', { hasText: 'Scratch' }).count()) === 1
-      && (await section('Earlier').locator('.np-section-toggle').count()) === 0);
-  check('the search wrote no state', (await page.evaluate(() => localStorage.getItem('np.section.sessions.earlier'))) === null);
-  await shot(page, '15c-sessions-search');
-  await search.fill('');
-  await page.waitForTimeout(300);
-  check('clearing the search returns the stored state',
-    (await collapsed('Today').count()) === 1 && (await section('Earlier').locator('.srow').count()) === 0);
-  await shot(page, '15c-sessions-groups');
-  // leave the panel the way the user found it
-  await section('Today').locator('.np-section-toggle').click();
-  check('the group opens again on purpose', (await section('Today').locator('.srow').count()) > 0);
-}
 }
 
 // ------------------------------------------------------------------ summary

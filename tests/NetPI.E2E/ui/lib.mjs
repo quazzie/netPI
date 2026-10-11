@@ -112,10 +112,17 @@ export async function openApp(page) {
   await page.waitForSelector('.panel.left', { timeout: 15_000 });
 }
 
+/** Selects a side panel's tab (left: Sessions, Projects, …; right: Work, Ideas, …) and opens the panel, without closing it
+ * when that tab is already the one showing (a click on the active tab folds the panel). */
+export async function openStripTab(page, side, name) {
+  const t = page.locator(`.panel.${side} .strip-tab`, { hasText: name });
+  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
+  if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
+}
+
 /** Opens a session from the sessions panel by (a part of) its title. */
 export async function openSession(page, title) {
-  const tab = page.locator('.panel.left .strip-tab', { hasText: 'Sessions' });
-  if ((await tab.count()) && (await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
+  await openStripTab(page, 'left', 'Sessions');
   const row = page.locator('.srow', { hasText: title }).first();
   await row.waitFor({ timeout: 15_000 });
   await row.click();
