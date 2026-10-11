@@ -49,8 +49,7 @@ public sealed class WebPlugin : INetPiPlugin
         context.Tools.Register(new WebFetchTool(context, http, cache));
         context.Tools.Register(new WebSearchTool(context, http));
         var browser = new BrowserHost(context);
-        context.Tools.Register(new ScreenshotTool(context, browser));
-        context.Tools.Register(new BrowserTool(context, browser));
+        context.Tools.Register(new BrowserTool(context, browser, new PageShots(context, browser)));
         new BrowserView(context, browser).Register();
         context.Ui.AddTab(new UiTabInfo { Id = "browser", Title = "Browser", Panel = UiPanel.Session, Icon = "globe", Order = 10, Module = "ui.js" });
         context.Rpc.Register(new RpcMethod("browser.extension", "The NetPI Chrome extension: where to load it from (chrome://extensions → Load unpacked) and whether it is connected → { folder, connected, hello }", ReadOnly: true, Params: []),

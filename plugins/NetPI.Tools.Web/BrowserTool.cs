@@ -12,9 +12,10 @@ namespace NetPI.Tools.Web;
 /// user can share a tab of theirs with a chat from the extension. A page is a numbered list of controls read from the
 /// accessibility tree; the numbers stay with a control while the document lives, and a result after an action lists only
 /// what changed. <c>show</c> puts the tab in front of the user (the chat's Browser view: they watch it, or log in there).
-/// See docs/TOOLS.md.
+/// <c>screenshot</c> with a url renders that page fresh, and with <c>app</c> captures the NetPI window
+/// (<see cref="PageShots"/>): neither touches the chat's tab. See docs/TOOLS.md.
 /// </summary>
-internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host) : IAgentTool
+internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host, PageShots shots) : IAgentTool
 {
     public const string View = "netpi.tools.web/browser";
 
@@ -35,7 +36,10 @@ internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host) : IAgent
             "that control into view); find {text}; read {offset?, n?} (the page's text as Markdown, or one control's text); " +
             "wait {text?, gone?, seconds?, timeout?}; back; forward; reload; eval {script} (JavaScript in the page, await works; " +
             "the value comes back); upload {n, path|paths}; dialog {accept, text?} (an alert/confirm/prompt the page opened); " +
-            "screenshot {marks?, full_page?} (numbers drawn on the controls); steps {steps: [{action, …}, …]} (several actions " +
+            "screenshot {marks?, full_page?} (the tab, numbers drawn on the controls); screenshot {url, width?, height?, wait_for?, " +
+            "delay_ms?, full_page?} (a fresh render of a page — no cookies, nothing kept, this chat's tab untouched — with its title " +
+            "and console errors; viewport 1280×800 by default, wait_for a CSS selector up to 10 s, delay_ms after loading, default " +
+            "500); screenshot {app: true} (the NetPI window as the user sees it); steps {steps: [{action, …}, …]} (several actions " +
             "in one call, one result at the end; stops at the first that fails); show {url?, text?} (the user sees the tab live " +
             "in the chat's Browser view and can click and type there — e.g. to log in; then wait for them); tabs (the tabs the " +
             "user shared with you); use {tab} (take one); leave (hand a tab in the user's Chrome back, open where it is); close.\n" +
@@ -62,12 +66,16 @@ internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host) : IAgent
                 ["steps"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "object" } },
                 ["browser"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("own", "chrome") },
                 ["tab"] = new JsonObject { ["type"] = "string" },
+                ["width"] = new JsonObject { ["type"] = "integer" },
+                ["height"] = new JsonObject { ["type"] = "integer" },
+                ["app"] = new JsonObject { ["type"] = "boolean" },
             },
             ["required"] = new JsonArray("action"),
         },
         PromptGuidelines =
         [
             "Use browser for pages that need interaction (forms, searches, multi-step sites, logged-in sites); web_fetch is faster for reading one public page.",
+            "To check UI work visually, take a browser screenshot with the page's url (a fresh render, at width×height when the size matters) or app: true (the NetPI window).",
             "Chain actions you can foresee with steps (type, type, click) instead of one call each; numbers stay valid until the page changes to a new document.",
             "When a site needs the user (a login, a captcha, a choice only they can make), use show and wait for them; in the user's own Chrome, ask before buying, paying, sending or deleting anything they did not ask for.",
             "A long browsing task can go to a subagent: agent_spawn with tools [\"browser\"] on a local agent, and a task that says what to return.",
@@ -83,6 +91,10 @@ internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host) : IAgent
         if (action.Length == 0) return ToolResult.Error("Give an action: open, snapshot, click, type, key, scroll, find, read, wait, steps, show, … (see the tool's help).");
         if (action == "screenshot" && context.Model?.InputModalities is { Count: > 0 } mods && !mods.Contains("image"))
             return ToolResult.Error($"The current model ({context.Model.Id}) can't see images: use snapshot or read.");
+        if (action == "screenshot" && a.Bool("app", "window", "netpi") == true)
+            return await shots.AppWindowAsync(ct).ConfigureAwait(false);
+        if (action == "screenshot" && a.Str("url", "href", "page")?.Trim() is { Length: > 0 } shotUrl)
+            return await shots.PageAsync(shotUrl, args, ct).ConfigureAwait(false);
         try
         {
             switch (action)

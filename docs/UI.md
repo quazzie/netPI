@@ -247,7 +247,7 @@ into locals first, because after the parent clears the modal state or the row re
    and gets a header row per file), `ShellView` (bash/pwsh: command, live output, exit code, and the files the
    command changed in its repository with their diff on request, from `details.changes`), `ReadView` (path, line range, highlighted content), `SearchView` (grep/find/ls), `AgentView`
    (`agent_*`, link to the subagent session), `WebView` (`web_fetch` title and text, `web_search` results as links,
-   `screenshot` image and console errors), `TodoView` (the `todo_write` checklist) and `GenericView` (anything
+   `screenshot` and `browser` screenshot image and console errors), `TodoView` (the `todo_write` checklist) and `GenericView` (anything
    else). `read`/`write`/`edit` rows get an "Open file" button (`lib/openFile.js` → `files.open`). The SSH tools reuse
    these views: `ssh` `run` the shell view (prompt `host$`), `read` the read view, `write`/`edit` the diff view. A call with an `action` is shown as `<tool>_<action>` when the UI has a view for that name (`viewName` in `web/src/lib/tools.js`, one rule and no list of tools: `ssh` + `run` as `ssh_run`, `process` + `output` as `process_output`), so a tool with actions reuses the views of the tools it merged and older chats with the old names look the same.
    - **File links.** `renderMarkdown` marks links whose target is a local path (relative, `C:\…`, `file://`) as

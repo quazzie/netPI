@@ -9,7 +9,7 @@ in `docs/PLUGIN-IDEAS.md`):
 |---|---|---|---|
 | `plugins/NetPI.Tools.Files` | `netpi.tools.files` | `read` `write` `edit` `grep` `find` `ls` `git` | `files.search`, `files.list`, `files.open`, `files.git` |
 | `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process` | `processes.list`, `processes.output`, `processes.kill` |
-| `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` `browser` | – |
+| `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `browser` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
 | `plugins/NetPI.Ask` | `netpi.ask` | `ask_user` | `ask.pending`, `ask.answer` |
 | `plugins/NetPI.Plan` | `netpi.plan` | `plan_submit` `plan_enter` | `plan.*` (see `docs/PROTOCOL.md`), the `/plan` command |
@@ -544,8 +544,8 @@ in node), the install check and git's changed files, and with `NETPI_LSP_LIVE=1`
 ## Web tools (`category: "web"`)
 
 `plugins/NetPI.Tools.Web`. Light limits only (http/https, timeouts, size caps): agents also have `curl`, so the tools aim
-at being convenient, not at fencing the agent in. All but `browser` are read-only. `screenshot` with a url renders in a
-throw-away browser context of the agents' running browser (no browser start per call; one of its own when that browser
+at being convenient, not at fencing the agent in. All but `browser` are read-only. A `browser` screenshot with a url renders in
+a throw-away browser context of the agents' running browser (no browser start per call; one of its own when that browser
 shows windows). Settings: `web.*` and `browser.*` in
 `docs/SETTINGS.md`.
 
@@ -576,23 +576,6 @@ tried. Results are numbered: title, URL, date or age, snippet (markup removed).
 
 ```ts
 details: { query, provider: 'searxng'|'brave', results: { title, url, snippet, age: string|null }[], fallback?: string[] }
-```
-
-### `screenshot` (summary arg `url`)
-
-`{ url?, width? (1280), height? (800), full_page?, wait_for? /* CSS selector, up to 10 s */, delay_ms? (500) }`.
-With a `url`: a fresh browser context (no cookies, nothing kept) in the agents' running headless browser — or, when that
-browser shows windows, a headless Edge/Chrome/Chromium (`web.browserPath`, else found in the usual places) of its own with
-a fresh profile — driven over the DevTools protocol: it loads the page, waits for the load event and `wait_for`, and captures
-the viewport (or the whole height up to 16384 px). Console errors and uncaught exceptions are reported. The browser is
-closed with `Browser.close` over DevTools, then its process is killed: Edge's launcher can hand the browser to another
-process and exit (code 0), which the tool follows through the profile's DevTools port. Without a
-`url`: the NetPI window as the user sees it, through the desktop shell's `desktop.capture` RPC (scaled to 1600 px
-wide; not available in the headless server). Models that cannot see images get an error instead of a screenshot.
-
-```ts
-details: { source: 'browser', url, title, width, height, fullPage, consoleErrors: string[], notes: string[] }
-       | { source: 'window', width, height }
 ```
 
 ### `browser` (summary arg `action`)
@@ -647,7 +630,14 @@ user's mouse, keyboard and focus are never used; the tab emulates focus.
   works, the value comes back); `upload {n, path | paths}` (a file input; paths resolve against the chat's folder);
   `dialog {accept (true), text?}` (an `alert`/`confirm`/`prompt` the page opened: while one is open the page answers
   nothing else, so every other action says so); `screenshot {marks? (true), full_page?}` (with each listed control's
-  number drawn on it); `steps {steps: [{action, …}, …]}` (several of click, hover, type, key, scroll, wait, back,
+  number drawn on it); `screenshot {url, width? (1280), height? (800), full_page?, wait_for? /* CSS selector, up to 10 s */,
+  delay_ms? (500)}` renders a page fresh instead — a new browser context (no cookies, nothing kept) in the agents' running
+  headless browser, or, when that browser shows windows, a headless Edge/Chrome/Chromium (`web.browserPath`) of its own with
+  a fresh profile; it waits for the load event and `wait_for`, captures the viewport (or the whole height up to 16384 px)
+  and reports the title, console errors and uncaught exceptions; the chat's tab is not touched, and no tab is needed.
+  `screenshot {app: true}` is the NetPI window as the user sees it, through the desktop shell's `desktop.capture` RPC
+  (scaled to 1600 px wide; not in the headless server). Models that cannot see images get an error instead (until
+  2026-10-11 these two were a `screenshot` tool of their own); `steps {steps: [{action, …}, …]}` (several of click, hover, type, key, scroll, wait, back,
   forward, reload, eval, upload, dialog, open in one call, one result at the end, stopping at the first that fails).
 - **The user's part.** `show {url?, text?}` puts the chat's tab in front of the user: the chat's **Browser view** (a
   session view in the chat's area, `netpi.tools.web/browser`, opened by the `ui.open` event, with a notification
@@ -679,6 +669,8 @@ details: { action, url, title, controls, shown, result }          // after an ac
        | { action: 'find', url, text, hits }
        | { action: 'read', url, title, chars, offset, end, nextOffset }
        | { action: 'screenshot', url, title, marks, fullPage }     // plus the PNG in images
+       | { action: 'screenshot', source: 'browser', url, title, width, height, fullPage, consoleErrors, notes }   // with a url
+       | { action: 'screenshot', source: 'window', width, height } // app: true
        | { action: 'tabs', tabs: { tab, title, url }[] }
        | { action: 'show', view }
        | { action: 'leave' | 'close' }
@@ -1025,7 +1017,7 @@ loaded above" instead of a second copy. `details: { name, path, dir, scope, hash
 the chat, for example a chart the agent generated. The type comes from the bytes (png, jpg, gif, webp, bmp, svg, ico,
 avif), so a mislabelled file still works and a non-image is refused. At most `media.maxBytes` (10 MB). The image goes
 to the UI only: the model gets "Showed chart.png (image/png, 184 KB) to the user…" and no image tokens (to look at an
-image itself it uses `read` or `screenshot`). The UI renders a successful result as its own chat item with the caption,
+image itself it uses `read` or a `browser` screenshot). The UI renders a successful result as its own chat item with the caption,
 outside the collapsible steps, and opens it full size on click.
 
 ```ts

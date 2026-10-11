@@ -6,50 +6,14 @@ using System.Text.Json.Nodes;
 namespace NetPI.Tools.Web;
 
 /// <summary>
-/// <c>screenshot</c>: a URL rendered headless — in a throw-away browser context of the agents' running browser (no
-/// cookies, nothing kept; no browser start per call), or a browser of its own when the agents' browser shows windows —
-/// or with no URL the NetPI window as the user sees it (the desktop shell's <c>desktop.capture</c> RPC).
+/// The <c>browser</c> tool's screenshots that need no tab of the chat: a URL rendered headless — in a throw-away browser
+/// context of the agents' running browser (no cookies, nothing kept; no browser start per call), or a browser of its own
+/// when the agents' browser shows windows — and the NetPI window as the user sees it (the desktop shell's
+/// <c>desktop.capture</c> RPC).
 /// </summary>
-internal sealed class ScreenshotTool(IPluginContext ctx, BrowserHost host) : IAgentTool
+internal sealed class PageShots(IPluginContext ctx, BrowserHost host)
 {
-    public ToolDefinition Definition { get; } = new()
-    {
-        Name = "screenshot",
-        Label = "Screenshot",
-        Category = "web",
-        ReadOnly = true,
-        SummaryArg = "url",
-        Description = "Screenshot a web page (a url, rendered headless) or, without a url, the NetPI window as the user sees it.",
-        Help =
-            "Returns the image plus the page title and any console errors. width/height: the viewport (default 1280×800). " +
-            "wait_for: a CSS selector to wait for (up to 10 s); delay_ms: an extra wait after loading (default 500); full_page " +
-            "captures the whole scroll height.",
-        Parameters = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["url"] = new JsonObject { ["type"] = "string" },
-                ["width"] = new JsonObject { ["type"] = "integer" },
-                ["height"] = new JsonObject { ["type"] = "integer" },
-                ["full_page"] = new JsonObject { ["type"] = "boolean" },
-                ["wait_for"] = new JsonObject { ["type"] = "string" },
-                ["delay_ms"] = new JsonObject { ["type"] = "integer" },
-            },
-        },
-        PromptGuidelines = ["Use screenshot to check UI work visually."],
-    };
-
-    public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
-    {
-        if (context.Model?.InputModalities is { Count: > 0 } mods && !mods.Contains("image"))
-            return ToolResult.Error($"The current model ({context.Model.Id}) can't see images, so a screenshot would not help it. Use a vision model for visual checks.");
-        var a = new ToolArgs(args);
-        var url = a.Str("url", "href", "page")?.Trim();
-        return string.IsNullOrEmpty(url) ? await AppWindowAsync(ct).ConfigureAwait(false) : await PageAsync(url, a.Raw, ct).ConfigureAwait(false);
-    }
-
-    private async Task<ToolResult> AppWindowAsync(CancellationToken ct)
+    public async Task<ToolResult> AppWindowAsync(CancellationToken ct)
     {
         if (!ctx.Rpc.Exists("desktop.capture"))
             return ToolResult.Error("There is no NetPI window to capture here (that needs the desktop app, NetPI.exe). Pass a url to screenshot a page.");
@@ -67,15 +31,15 @@ internal sealed class ScreenshotTool(IPluginContext ctx, BrowserHost host) : IAg
         {
             Content = $"Screenshot of the NetPI window ({w}×{h}).",
             Images = [new ImagePart { MediaType = e.TryGetProperty("mediaType", out var mt) ? mt.GetString() ?? "image/png" : "image/png", Data = data }],
-            Details = new { source = "window", width = w, height = h },
+            Details = new { action = "screenshot", source = "window", width = w, height = h },
         };
     }
 
-    private async Task<ToolResult> PageAsync(string url, JsonElement args, CancellationToken ct)
+    public async Task<ToolResult> PageAsync(string url, JsonElement args, CancellationToken ct)
     {
         if (!url.Contains("://", StringComparison.Ordinal)) url = (url.StartsWith("localhost", StringComparison.OrdinalIgnoreCase) || url.StartsWith("127.", StringComparison.Ordinal) ? "http://" : "https://") + url;
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https" or "file"))
-            return ToolResult.Error($"Not a URL the screenshot tool can open: {url}");
+            return ToolResult.Error($"Not a URL a screenshot can open: {url}");
         var o = WebOptions.Read(ctx.Settings);
         var exe = ChromiumProcess.Find(o.BrowserPath);
         if (exe is null)
@@ -140,7 +104,7 @@ internal sealed class ScreenshotTool(IPluginContext ctx, BrowserHost host) : IAg
             {
                 Content = sb.ToString(),
                 Images = [new ImagePart { MediaType = "image/png", Data = shot.GetProperty("data").GetString() ?? "" }],
-                Details = new { source = "browser", url = uri.ToString(), title, width, height = shotHeight, fullPage, consoleErrors = errors, notes },
+                Details = new { action = "screenshot", source = "browser", url = uri.ToString(), title, width, height = shotHeight, fullPage, consoleErrors = errors, notes },
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)

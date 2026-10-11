@@ -139,7 +139,7 @@ line in its `Providers.All` and passes the same scenarios as every other, which 
 trustworthy. Nothing about the storage port may be changed without running it (`-Suite Storage`).
 
 The web tool tests serve pages and fake SearXNG / Brave endpoints from a local Kestrel server and never read your pi
-config or `BRAVE_API_KEY`. The `screenshot` test drives a real headless Edge/Chrome/Chromium; without one installed it
+config or `BRAVE_API_KEY`. The browser screenshot test drives a real headless Edge/Chrome/Chromium; without one installed it
 checks everything except the page screenshots and says so.
 
 The ideas suites inject the failures the happy paths cannot show, and they need a **real database** to show them: the

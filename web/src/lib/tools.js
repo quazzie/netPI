@@ -17,6 +17,7 @@ const META = {
   web_fetch: { label: 'Fetch', icon: 'globe', arg: 'url', view: 'web' },
   web_search: { label: 'Web search', icon: 'search', arg: 'query', view: 'web' },
   screenshot: { label: 'Screenshot', icon: 'image', arg: 'url', view: 'web' },
+  browser_screenshot: { label: 'Screenshot', icon: 'image', arg: 'url', view: 'web' },
   todo_write: { label: 'Todo', icon: 'list', arg: null, view: 'todo' },
   show_image: { label: 'Image', icon: 'image', arg: 'source', view: 'generic' },
   ssh_run: { label: 'SSH', icon: 'terminal', arg: 'script', view: 'shell' },
@@ -142,6 +143,8 @@ export function toolSummary(name, args, base) {
   switch (name) {
     case 'screenshot':
       return arg(args, 'url') ? truncate(String(arg(args, 'url')), 160) : 'NetPI window';
+    case 'browser_screenshot':
+      return arg(args, 'url') ? truncate(String(arg(args, 'url')), 160) : arg(args, 'app') ? 'NetPI window' : 'the tab';
     case 'ssh_run':
       return truncate(`${arg(args, 'host') ?? '?'} · ${firstLine(String(arg(args, 'script', 'command') ?? ''))}`, 200);
     case 'ssh_read':
@@ -262,6 +265,7 @@ export function toolBadge(name, result) {
     case 'web_search':
       return d.results ? { text: `${d.results.length} results` } : null;
     case 'screenshot':
+    case 'browser_screenshot':
       if (d.consoleErrors?.length) return { text: `${d.consoleErrors.length} console error${d.consoleErrors.length === 1 ? '' : 's'}`, tone: 'warn' };
       return d.width ? { text: `${d.width}×${d.height}` } : null;
     case 'goal_update':

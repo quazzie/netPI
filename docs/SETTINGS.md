@@ -496,7 +496,7 @@ refuses an `ssh` download into another checkout of the repository.
 | `embed.queryPrefix` | – | put in front of search texts only, never stored documents (bge: `Represent this sentence for searching relevant passages: `) |
 | `embed.timeoutMs` | `1500` | how long an interactive embedding call waits (100–60000); indexing in the background waits up to 30 s per batch. A timeout or failure backs off (5 s, doubling, at most 5 min), and calls fail at once meanwhile |
 | `embed.batchSize` | `64` | texts per request (1–256) |
-| `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` and `browser` (found in the usual install folders or on PATH) |
+| `web.browserPath` | auto | Edge, Chrome or Chromium for `browser` (found in the usual install folders or on PATH) |
 | `browser.target` | `own` | Where a chat's `browser` tab opens: `own`, the agents' browser (headless; the user sees it, and logs in, in the chat's Browser view), or `chrome`, the user's running Chrome — through the NetPI extension when it is connected, else through remote debugging allowed at `chrome://inspect/#remote-debugging`. A call can ask for the other with `browser` |
 | `browser.chromeUserData` | Chrome's default | The folder holding the user's Chrome `DevToolsActivePort` (`%LOCALAPPDATA%\Google\Chrome\User Data`, `~/Library/Application Support/Google/Chrome`, `~/.config/google-chrome`) |
 | `browser.headless` | `true` | `false`: the agents' browser opens a window of its own. The chat's Browser view shows its tab either way. Applies when the browser next starts |

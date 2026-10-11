@@ -32,7 +32,7 @@
       <div class="np-dim np-small">via {d.provider}{#if d.fallback?.length} (after {d.fallback.join('; ')}){/if}</div>
     {/if}
   </div>
-{:else if name === 'screenshot'}
+{:else if name === 'screenshot' || name === 'browser_screenshot'}
   {#each result.images ?? [] as img, i (i)}
     <img class="shot" src="data:{img.mediaType};base64,{img.data}" alt="Screenshot" />
   {/each}

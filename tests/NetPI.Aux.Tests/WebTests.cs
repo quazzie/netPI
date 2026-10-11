@@ -104,11 +104,11 @@ public static class WebTests
 
     public static void Register(TestRunner r)
     {
-        r.Add("web: plugin registers web_fetch, web_search, screenshot (read-only) and browser (category web)", async () =>
+        r.Add("web: plugin registers web_fetch, web_search (read-only) and browser (category web)", async () =>
         {
             var env = new Env();
             await env.StartAsync();
-            Check.Equal("browser,screenshot,web_fetch,web_search", string.Join(",", env.Ctx.ToolsFake.Tools.Select(t => t.Definition.Name).Order()));
+            Check.Equal("browser,web_fetch,web_search", string.Join(",", env.Ctx.ToolsFake.Tools.Select(t => t.Definition.Name).Order()));
             Check.True(env.Ctx.ToolsFake.Tools.All(t => t.Definition.Category == "web"));
             Check.True(env.Ctx.ToolsFake.Tools.All(t => t.Definition.ReadOnly == (t.Definition.Name != "browser")));
             Check.True(env.Ctx.ToolsFake.Tools.All(t => t.Definition.PromptGuidelines is { Count: > 0 }));
@@ -390,20 +390,20 @@ public static class WebTests
             env.Ctx.Unload();
         });
 
-        r.Add("screenshot: a page in headless Edge/Chrome (size, wait_for, console errors, full page); the window; text-only models", async () =>
+        r.Add("browser screenshot: a url rendered fresh in headless Edge/Chrome (size, wait_for, console errors, full page); app: the window; text-only models", async () =>
         {
             var env = new Env();
             await env.StartAsync();
 
-            var textModel = await env.Run("screenshot", new { url = "http://127.0.0.1:1/" }, TextOnly());
+            var textModel = await env.Run("browser", new { action = "screenshot", url = "http://127.0.0.1:1/" }, TextOnly());
             Check.True(textModel.IsError);
             Check.Contains(textModel.Content, "can't see images");
 
-            var noWindow = await env.Run("screenshot", new { }, Vision());
+            var noWindow = await env.Run("browser", new { action = "screenshot", app = true }, Vision());
             Check.True(noWindow.IsError);
             Check.Contains(noWindow.Content, "There is no NetPI window");
             env.Ctx.RpcFake.Register("desktop.capture", (_, _) => Task.FromResult<object?>(new { mediaType = "image/png", data = Png1x1, width = 1, height = 1 }));
-            var window = await env.Run("screenshot", new { }, Vision());
+            var window = await env.Run("browser", new { action = "screenshot", app = true }, Vision());
             Check.False(window.IsError, window.Content);
             Check.Equal("Screenshot of the NetPI window (1×1).", window.Content);
             Check.Equal(Png1x1, window.Images![0].Data);
@@ -422,20 +422,20 @@ public static class WebTests
                     """, "text/html"));
                 app.MapGet("/tall", () => Results.Content("<html><body style='margin:0'><div style='height:2000px;background:linear-gradient(red,blue)'></div></body></html>", "text/html"));
             });
-            var shot = await env.Run("screenshot", new { url = web.Url + "/ui", width = 800, height = 600, wait_for = "#app" }, Vision());
+            var shot = await env.Run("browser", new { action = "screenshot", url = web.Url + "/ui", width = 800, height = 600, wait_for = "#app" }, Vision());
             Check.False(shot.IsError, shot.Content);
             Check.Equal((800, 600), PngSize(shot.Images![0].Data));
             Check.Contains(shot.Content, "Title: Shot test.");
             Check.Contains(shot.Content, "boom from the page");
             Check.NotContains(shot.Content, "did not appear");
 
-            var tall = await env.Run("screenshot", new { url = web.Url + "/tall", width = 640, height = 480, full_page = true, delay_ms = 0 }, Vision());
+            var tall = await env.Run("browser", new { action = "screenshot", url = web.Url + "/tall", width = 640, height = 480, full_page = true, delay_ms = 0 }, Vision());
             Check.False(tall.IsError, tall.Content);
             var (w, h) = PngSize(tall.Images![0].Data);
             Check.Equal(640, w);
             Check.True(h >= 2000, $"height {h}");
 
-            var refused = await env.Run("screenshot", new { url = "http://127.0.0.1:1/" }, Vision());
+            var refused = await env.Run("browser", new { action = "screenshot", url = "http://127.0.0.1:1/" }, Vision());
             Check.True(refused.IsError);
             Check.Contains(refused.Content, "Could not open");
             env.Ctx.Unload();
