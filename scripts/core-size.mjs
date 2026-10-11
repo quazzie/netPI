@@ -65,7 +65,6 @@ const FORBIDDEN = [
   // Decisions: the decide plugin owns the model call that chooses a tool.
   { id: 'IDecisionService', why: 'the decision service is the decide plugin' },
   { id: 'DecisionRequest', why: 'a decision request is the decide plugin' },
-  { id: 'DecisionHints', why: 'decision hints are the decide plugin' },
   { id: 'DecisionCapabilities', why: 'decision capabilities are the decide plugin' },
   { id: 'DecisionConfidence', why: 'decision confidence is the decide plugin' },
   // Deferred tools: which tools a chat is sent is a plugin feature.

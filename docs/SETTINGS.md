@@ -2,8 +2,6 @@
 
 Agent rework additions (2026-10-01): `decide.bulkModel` (empty) selects an explicitly configured model for batches at `decide.bulkThreshold` (8); an explicit per-call model wins.
 
-`loops.contextChecks` (false) enables provider-captured conversation checks. `loops.routingHints` and `loops.skillHints` (false) add advisory checks to that flow. `todo.checkCommits` (false) suggests completed checklist items after successful commits. These opt-in consumers do not automatically change models, tools, spending permission or goal status; cache performance remains endpoint-dependent.
-
 All settings live in `~/.netpi/settings.json` (Windows: `%USERPROFILE%\.netpi\settings.json`; override the folder
 with `NETPI_HOME`). The file is created on first start with the **core keys only** — `server.port`,
 `server.devOrigins`, `plugins.disabled`, `plugins.dirs`, `plugins.quiet`, `tools.disabled` — and nothing about one
@@ -404,10 +402,8 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `nudge.maxPerRun` | `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it. A cut-off that is only thinking gets "stop deliberating, take the smallest next step" instead of "continue where you left off" (which meant more thinking), and one cut off while writing a tool call as text gets "it did not run: make it smaller, write a large file in parts". `maxPerRun` counts *consecutive* nudges: any acceptable response (a tool call, a final answer, an aborted or errored turn) resets it, so the cap bounds one stall episode rather than the whole run |
 | `loops.maxHintsPerRun` | `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results (the whole result text, durations and times aside, and its images: two screenshots or page snapshots that differ anywhere are progress), the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
 | `loops.repeats` | `3` | the call about to run counts (2–10) |
-| `loops.contextEvery` | `4` | the full-conversation checks (`loops.contextChecks`) run on every Nth model call of a run, at most 8 per run, with their own budget (the compact check keeps its 5) |
 | `memory.enabled` | `true` | with an embedding model (`embed.model`) every chat is embedded in the background (a sweep every 5 minutes) and `memory_search` finds earlier chats by meaning; the text goes only to the embedding server |
 | `memory.maxChunksPerChat` | `24` | pieces of ~1,200 characters a chat is embedded as (4–200); the start, the summaries and the end are kept first |
-| `loops.model` | – | a decision model (`qwen3.8-27b`, `kev-9b`) that also reads the goal and the last 10 steps when 6 of the last 8 use one tool and 3 of them failed, and hints at p(stuck) ≥ 0.8 (`decide.ask`, needs the Decide plugin; at most 5 checks per run, 10 s each) |
 | (none: the plugin's own on/off switch) | | execute tool calls a model wrote as text (`<tool_call>…`), but only when the message is nothing but the call: an answer that also explains, documents or quotes the markup stays text, and the nudge asks for a real call |
 | `retry.maxAttempts` | `6` | retries what the provider calls transient — lost connections, stalled streams, rate limits and overload (429/529) and 5xx/server-error responses — up to this many attempts, with a notice in the chat each time; after that the error surfaces unchanged, with its request id |
 | `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter; when the server says how long to wait (`Retry-After`, e.g. with a 429 or 529), at least that long |

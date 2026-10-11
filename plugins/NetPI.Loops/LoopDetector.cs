@@ -50,15 +50,6 @@ internal sealed partial record Step(string Tool, string Args, bool Error, string
         return Space().Replace(s, " ");
     }
 
-    /// <summary>One line for the model check and the hint: <c>bash: npm test → error: 3 failing</c>.</summary>
-    public string Line(int max = 160)
-    {
-        var args = Args.Length > 80 ? Args[..80] + "…" : Args;
-        var head = Result.Length > 70 ? Result[..70] + "…" : Result;
-        var line = $"{Tool} {args} → {(Error ? "error" : "ok")}: {head}";
-        return line.Length > max ? line[..max] + "…" : line;
-    }
-
     [GeneratedRegex(@"\d{4}-\d\d-\d\d[T ]\d\d:\d\d(:\d\d(\.\d+)?)?Z?|\b\d+(\.\d+)?\s*(ms|s|sec|seconds)\b", RegexOptions.IgnoreCase)]
     private static partial Regex Volatile();
 
@@ -72,7 +63,7 @@ internal sealed record Finding(string Kind, string Signature, string Text);
 /// <summary>
 /// Deterministic loop checks over a run's finished steps plus the tool calls the model just asked for (not run yet):
 /// the same call a <c>repeats</c>-th time after identical results, the same failing call retried, and A→B→A→B
-/// oscillation (an edit and its undo). <see cref="Suspicious"/> flags a run worth a decision-model check.
+/// oscillation (an edit and its undo).
 /// </summary>
 internal static class LoopDetector
 {
@@ -113,15 +104,6 @@ internal static class LoopDetector
                     "undo each other, and this is the second round. Stop and decide which state is right, or ask the user.");
         }
         return null;
-    }
-
-    /// <summary>Worth asking the decision model: most of the last steps use one tool, and several of them failed.</summary>
-    public static bool Suspicious(IReadOnlyList<Step> history, int window = 8)
-    {
-        if (history.Count < window) return false;
-        var last = history.Skip(history.Count - window).ToList();
-        var top = last.GroupBy(s => s.Tool).Max(g => g.Count());
-        return top >= window * 3 / 4 && last.Count(s => s.Error) >= 3;
     }
 
     private static string Describe(string tool, string args)

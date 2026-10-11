@@ -53,11 +53,8 @@ public sealed class ModelInfo
 /// <summary>A request to a model. Messages are provider-neutral; providers convert them.</summary>
 public sealed class ModelRequest
 {
-    /// <summary>Opt-in provider-owned snapshot of the actual prompt in decision chat format. Plain JSON only.</summary>
     /// <summary>Stable caller-generated diagnostic correlation; never sent to the provider.</summary>
     public string? CorrelationId { get; init; }
-    public bool CaptureDecisionContext { get; set; }
-    public JsonObject? DecisionContext { get; set; }
     /// <summary>
     /// Bookkeeping shared by the middlewares of one call. A hot swap briefly runs two generations of the same
     /// middleware (the old one is removed only after the new one serves); a mark here is how the second one sees

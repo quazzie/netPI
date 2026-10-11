@@ -563,25 +563,6 @@ await t.Run("responses: request body (instructions, tools, effort, max tokens, i
     t.Check(!req.Headers.ContainsKey("authorization"), "no auth header without apiKey");
 });
 
-await t.Run("decision context: provider snapshot keeps the exact chat prefix, tools and resolved effort", async () =>
-{
-    apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
-    apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", true);
-    try
-    {
-        var request = Req(Cat("qwen3.8-27b"), Conversation("aiproxy"), "low");
-        request.CaptureDecisionContext = true;
-        await Collect(aiproxy, request);
-        var sent = mock.Last("/v1/chat/completions").Json;
-        t.Eq(sent["messages"]!.ToJsonString(), request.DecisionContext!["messages"]!.ToJsonString(), "same full prefix including reasoning, tool calls and results");
-        t.Eq(sent["tools"]!.ToJsonString(), request.DecisionContext["tools"]!.ToJsonString(), "same tool schemas");
-        t.Eq(sent["reasoning_effort"]!.GetValue<string>(), request.DecisionContext["reasoning_effort"]!.GetValue<string>(), "same effort");
-        apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", false);
-        t.Check(request.DecisionContext["messages"]!.ToJsonString().Contains("reasoning_content"), "later settings cannot mutate the captured prefix");
-    }
-    finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", null); }
-});
-
 // Replaying reasoning is the Responses default (stateless use): it used to be a setting each test turned on, which no
 // longer changed anything. includeEncryptedReasoning is the live setting that remains.
 await t.Run("responses: reasoning is replayed by default (id, text, encrypted content), include only when asked, chat does not replay it", async () =>

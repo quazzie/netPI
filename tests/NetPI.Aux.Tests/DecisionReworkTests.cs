@@ -21,7 +21,7 @@ public static class DecisionReworkTests
             Check.True(DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.decision"));
             Check.Equal("custom", replacement.Request!.Model);
             Check.True(replacement.Request.Conversation);
-            Check.True(DecisionHints.Yes(result, "check"));
+            Check.Equal(0.95, (double)result!["branches"]![0]!["probabilities"]!["YES"]!);
         });
     }
     private sealed class Replacement : IDecisionService

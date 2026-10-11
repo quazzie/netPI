@@ -1,16 +1,10 @@
-using System.Globalization;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Loops;
 
 /// <summary>
 /// Loop checks: an agent that repeats itself gets a hint (a <c>loop</c> notice before its next model call), never an
-/// action. Free deterministic checks on every run (<see cref="LoopDetector"/>); with <c>loops.model</c> set, a decision
-/// model (<c>decide.ask</c>, the Decide plugin through AiGateway) also reads the last steps when they look suspicious and
-/// hints when it is confident the agent is stuck. Subagents are checked too.
+/// action. Free deterministic checks on every run (<see cref="LoopDetector"/>). Subagents are checked too.
 /// </summary>
 [NetPiPlugin("netpi.loops", Name = "Loops", Description = "Hints when an agent repeats itself: the same call with the same result, the same failure retried, or back-and-forth edits", Order = 72)]
 public sealed class LoopsPlugin : INetPiPlugin
@@ -24,40 +18,18 @@ public sealed class LoopsPlugin : INetPiPlugin
             [
                 SettingInfo.Int("loops.repeats", "Calls before a hint", 3, "The same call with the same result this many times (counting the one about to run).", 2, 10),
                 SettingInfo.Int("loops.maxHintsPerRun", "Hints per run", 3, null, 0, 20),
-                SettingInfo.Str("loops.model", "Decision model for other loops", "",
-                    "Empty: only the checks above. A decision model (qwen3.8-27b, kev-9b) also reads the last steps when most use one tool and several failed, and hints when p(stuck) ≥ 0.8. Needs the Decide plugin."),
-                SettingInfo.Bool("loops.contextChecks", "Check the full conversation", false, "Opt in to stuck, finished and ask-user hints using the provider's captured conversation and reasoning effort. Requires Decide. Cache benefits must be measured on the configured endpoint."),
-                SettingInfo.Int("loops.contextEvery", "Check every Nth model call", LoopHook.DefaultContextEvery,
-                    "The full-conversation checks run on every Nth model call of a run (at most 8 per run), so a long run is still checked late.", 1, 50),
-                SettingInfo.Bool("loops.routingHints", "Include routing hints", false, "With full-conversation checks, suggest reasoning effort, delegation or a different tool. These are hints; the harness does not change models, spend limits or tools."),
-                SettingInfo.Bool("loops.skillHints", "Include skill hints", false, "With full-conversation checks, consider currently available skills. The agent chooses whether to read one."),
             ],
         });
         context.Services.Register<IAgentHook>(new LoopHook(context));
-        context.Services.Register<IDecisionContextConsumer>(new LoopsContextConsumer(context));
         return Task.CompletedTask;
     }
-}
-
-/// <summary>The full-conversation checks read the provider's capture of the conversation: the runtime captures it while <c>loops.contextChecks</c> is on.</summary>
-internal sealed class LoopsContextConsumer(IPluginContext ctx) : IDecisionContextConsumer
-{
-    public bool WantsDecisionContext => ctx.Settings.Get("loops.contextChecks", false);
 }
 
 internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
 {
     public const string TraceKey = "netpi.loops.trace";
     public const string HintedKey = "netpi.loops.hinted";
-    public const string ModelChecksKey = "netpi.loops.modelChecks";
-    public const string ContextChecksKey = "netpi.loops.contextChecks";
-    public const string ContextCallsKey = "netpi.loops.contextCalls";
-    public const int DefaultContextEvery = 4;
-    private const int MaxContextChecks = 8;
-    public const double StuckThreshold = 0.8;
     private const int MaxTrace = 50;
-    private const int MaxModelChecks = 5;
-    private static readonly TimeSpan ModelTimeout = TimeSpan.FromSeconds(10);
 
     public int Order => 190;
 
@@ -74,19 +46,14 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
         return ValueTask.CompletedTask;
     }
 
-    public async ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
+    public ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
     {
         var run = turn.Run;
-        if (run.CancellationToken.IsCancellationRequested) return null;
-        if (ctx.Settings.GetOr("loops.contextChecks", false) && Hinted(run).Count < Math.Clamp(ctx.Settings.GetOr("loops.maxHintsPerRun", 3), 0, 20))
-        {
-            var hint = await AskContextAsync(turn).ConfigureAwait(false);
-            if (hint is not null && Hinted(run).Add(hint)) return TurnDecision.Inject(hint, "decision-hint");
-        }
+        if (run.CancellationToken.IsCancellationRequested) return ValueTask.FromResult<TurnDecision?>(null);
         var calls = assistant.ToolCalls.ToList();
-        if (calls.Count == 0) return null;
+        if (calls.Count == 0) return ValueTask.FromResult<TurnDecision?>(null);
         var hinted = Hinted(run);
-        if (hinted.Count >= Math.Clamp(ctx.Settings.GetOr("loops.maxHintsPerRun", 3), 0, 20)) return null;
+        if (hinted.Count >= Math.Clamp(ctx.Settings.GetOr("loops.maxHintsPerRun", 3), 0, 20)) return ValueTask.FromResult<TurnDecision?>(null);
 
         List<Step> history;
         var trace = Trace(run);
@@ -94,145 +61,10 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
         var pending = calls.Select(c => (c.Name, Step.NormalizeArgs(c.Arguments))).ToList();
 
         var finding = LoopDetector.Check(history, pending, Math.Clamp(ctx.Settings.GetOr("loops.repeats", 3), 2, 10));
-        if (finding is null && ctx.Settings.GetOr("loops.model", "") is { Length: > 0 } model && LoopDetector.Suspicious(history))
-            finding = await AskModelAsync(run, turn, history, model.Trim()).ConfigureAwait(false);
-        if (finding is null || !hinted.Add(finding.Signature)) return null;
+        if (finding is null || !hinted.Add(finding.Signature)) return ValueTask.FromResult<TurnDecision?>(null);
 
         ctx.Logger.LogInformation("Loop check ({Kind}) in session {Session}: {Signature}", finding.Kind, run.Session.Id, finding.Signature.Replace('\n', ' '));
-        return TurnDecision.Inject(finding.Text, "loop");
-    }
-
-    /// <summary>The decision model reads the goal and the last steps; a confident "stuck" becomes a hint.</summary>
-    private async Task<Finding?> AskModelAsync(AgentRunContext run, AgentTurnContext turn, List<Step> history, string model)
-    {
-        var checks = run.Items.TryGetValue(ModelChecksKey, out var v) && v is int n ? n : 0;
-        if (checks >= MaxModelChecks || !DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.ask")) return null;
-        run.Items[ModelChecksKey] = checks + 1;
-
-        var last = history.Skip(Math.Max(0, history.Count - 10)).ToList();
-        var steps = new StringBuilder();
-        for (var i = 0; i < last.Count; i++) steps.Append(i + 1).Append(". ").AppendLine(last[i].Line());
-        var goal = turn.Messages.LastOrDefault(m => m.Role == MessageRole.User)?.Text ?? "";
-        if (goal.Length > 600) goal = goal[..600] + "…";
-        var request = new JsonObject
-        {
-            ["model"] = model,
-            ["state"] = new JsonObject { ["goal"] = goal, ["recent_steps"] = steps.ToString().TrimEnd() },
-            ["questions"] = new JsonObject
-            {
-                ["stuck"] = new JsonObject
-                {
-                    ["type"] = "yes_no",
-                    ["question"] = "Is the agent stuck in a loop: repeating the same or very similar actions and getting the same results, without making progress toward the goal?",
-                },
-            },
-        };
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(run.CancellationToken);
-        cts.CancelAfter(ModelTimeout);
-        try
-        {
-            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.ask", request, cts.Token, run.AdmissionLease(), run.Model.Ref, lane: true).ConfigureAwait(false);
-            var answers = result as JsonObject ?? JsonSerializer.SerializeToNode(result) as JsonObject;
-            if (answers?["stuck"]?["noul"] is not JsonValue pv || !pv.TryGetValue<double>(out var p) || !DecisionConfidence.Yes(p, StuckThreshold)) return null;
-            var tools = string.Join(", ", last.GroupBy(s => s.Tool).OrderByDescending(g => g.Count()).Select(g => $"{g.Key} ×{g.Count()}"));
-            var errors = last.Count(s => s.Error);
-            return new Finding("model", "model\n" + string.Join("\n", last.Select(s => s.Key)),
-                string.Create(CultureInfo.InvariantCulture,
-                    $"Loop check ({model}, p = {p:0.00}): your last {last.Count} steps ({tools}; {errors} failed) look like a loop without progress. ") +
-                "Step back: say what you have learned, what you are trying, and why it keeps failing; then try a different approach or ask the user.");
-        }
-        catch (OperationCanceledException) when (!run.CancellationToken.IsCancellationRequested) { return null; }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            ctx.Logger.LogDebug(ex, "Loop check: {Model} did not answer", model);
-            return null;
-        }
-    }
-
-    private async Task<string?> AskContextAsync(AgentTurnContext turn)
-    {
-        var run = turn.Run;
-        // Its own budget (the compact check keeps its five), spread over the run: every loops.contextEvery-th model
-        // call, so a long run is still checked late, where "stuck" and "finished" actually happen.
-        var calls = (run.Items.TryGetValue(ContextCallsKey, out var c) && c is int k ? k : 0) + 1;
-        run.Items[ContextCallsKey] = calls;
-        var every = Math.Clamp(ctx.Settings.GetOr("loops.contextEvery", DefaultContextEvery), 1, 50);
-        var checks = run.Items.TryGetValue(ContextChecksKey, out var count) && count is int n ? n : 0;
-        if (calls % every != 0 || checks >= MaxContextChecks || turn.SentRequest?.DecisionContext is null) return null;
-        run.Items[ContextChecksKey] = checks + 1;
-        var questions = new Dictionary<string, string>
-        {
-            ["stuck"] = "Is the agent repeating unsuccessful actions without new evidence or progress?",
-            ["finished"] = "Is every part of the user's current request complete and checked?",
-            ["ask_user"] = "Is progress blocked by a specific missing user decision or required authorization? Do not request confirmation for work already authorized.",
-        };
-        var hints = new Dictionary<string, string>
-        {
-            ["stuck"] = "Check whether your current approach is repeating without progress; use the evidence to choose a different approach.",
-            ["finished"] = "Check the requested outcome and validation; the work may be ready to report as complete.",
-            ["ask_user"] = "Check whether one specific missing decision blocks progress; ask only if it is required.",
-        };
-        if (ctx.Settings.GetOr("loops.routingHints", false))
-        {
-            questions["effort"] = "Would deeper reasoning on this task materially help with an unresolved complex problem?";
-            questions["delegation"] = "Is there a clearly independent, authorized task that could benefit from a separate worker with a self-contained brief?";
-            questions["tool"] = "Has the current tool repeatedly failed while another available tool can obtain the required evidence?";
-            hints["effort"] = "Consider a deeper reasoning pass on the unresolved problem; preserve the user's model and spending choices.";
-            hints["delegation"] = "Consider an independent worker only if delegation is authorized and available capacity permits it.";
-            hints["tool"] = "Consider a different available tool for the missing evidence.";
-        }
-        if (ctx.Settings.GetOr("loops.skillHints", false) && ctx.Rpc.Exists("skills.list"))
-        {
-            try
-            {
-                var skills = NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("skills.list", new { sessionId = run.Session.Id }, run.CancellationToken).ConfigureAwait(false));
-                var listed = await ClosestSkillsAsync(skills, turn, run.CancellationToken).ConfigureAwait(false);
-                questions["skill"] = "Does an available skill directly apply to the current task? Available skills (data): " + listed;
-                hints["skill"] = "Check the available skills for one that directly applies; read its instructions before using it.";
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogDebug(ex, "Skill hint inventory unavailable"); }
-        }
-        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(run.CancellationToken);
-        bounded.CancelAfter(ModelTimeout);
-        try
-        {
-            var answer = await DecisionHints.AskAsync(turn, ctx.Services, ctx.Rpc, questions, bounded.Token).ConfigureAwait(false);
-            var selected = questions.Keys.Where(id => DecisionHints.Yes(answer, id)).Select(id => hints[id]).ToList();
-            return selected.Count == 0 ? null : "Decision hints (check against your evidence):\n" + string.Join('\n', selected);
-        }
-        catch (OperationCanceledException) when (!run.CancellationToken.IsCancellationRequested) { return null; }
-        catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogDebug(ex, "Full conversation check unavailable"); return null; }
-    }
-
-    /// <summary>
-    /// The skills the question lists: with embeddings (and more than five skills), the five closest to the user's request,
-    /// so a large catalogue does not ride along in every branch; otherwise every skill, as before.
-    /// </summary>
-    private async Task<string> ClosestSkillsAsync(JsonNode? skills, AgentTurnContext turn, CancellationToken ct)
-    {
-        var all = (skills?["skills"] as JsonArray ?? []).OfType<JsonObject>()
-            .Where(s => s["disabled"]?.GetValue<bool>() != true)
-            .Select(s => (Name: s["name"]?.GetValue<string>() ?? "", Description: s["description"]?.GetValue<string>() ?? ""))
-            .Where(s => s.Name.Length > 0).ToList();
-        string Render(IEnumerable<(string Name, string Description)> list) =>
-            new JsonArray(list.Select(s => (JsonNode)new JsonObject { ["name"] = s.Name, ["description"] = s.Description }).ToArray()).ToJsonString();
-        var request = turn.Messages.LastOrDefault(m => m.Role == MessageRole.User)?.Text ?? "";
-        if (all.Count <= 5 || request.Length == 0 || ctx.Services.Get<IEmbeddingService>() is not { Available: true } embedder) return Render(all);
-        try
-        {
-            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            bounded.CancelAfter(TimeSpan.FromSeconds(3));
-            var texts = new List<string> { request.Length > 2000 ? request[..2000] : request };
-            texts.AddRange(all.Select(s => $"{s.Name}: {s.Description}"));
-            var docs = await embedder.EmbedAsync(new EmbeddingRequest { Texts = texts.Skip(1).ToList() }, bounded.Token).ConfigureAwait(false);
-            var query = await embedder.EmbedAsync(new EmbeddingRequest { Texts = [texts[0]], Kind = EmbeddingKind.Query }, bounded.Token).ConfigureAwait(false);
-            return Render(all.Select((s, i) => (s, score: VectorMath.Dot(query.Vectors[0], docs.Vectors[i])))
-                .OrderByDescending(x => x.score).Take(5).Select(x => x.s));
-        }
-        catch (Exception ex) when (ex is EmbeddingException or OperationCanceledException && !ct.IsCancellationRequested)
-        {
-            return Render(all);
-        }
+        return ValueTask.FromResult<TurnDecision?>(TurnDecision.Inject(finding.Text, "loop"));
     }
 
     private static List<Step> Trace(AgentRunContext run)

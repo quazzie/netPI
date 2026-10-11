@@ -125,44 +125,5 @@ public static class LoopTests
             await e.Ran("bash", new { command = "ls" }, "a");
             NotNull(await e.Next(("bash", new { command = "ls" })), "the fourth call after the same result");
         });
-
-        r.Add("loops: a decision model reads suspicious steps; a confident 'stuck' hints, an unsure one does not", async () =>
-        {
-            async Task<(TurnDecision? D, List<JsonNode?> Asked)> Run(double pStuck, string model, bool suspicious = true)
-            {
-                var e = Setup();
-                var asked = new List<JsonNode?>();
-                e.Ctx.RpcFake.Register("decide.ask", (req, ct) =>
-                {
-                    asked.Add(NetPiJson.ToNode(req.Params));
-                    return Task.FromResult<object?>(new JsonObject { ["stuck"] = new JsonObject { ["type"] = "noul", ["noul"] = pStuck } });
-                });
-                e.Ctx.SettingsFake.Set("loops.model", model);
-                // eight bash steps, each a little different, most failing: no exact repeat, but suspicious
-                for (var i = 0; i < 8; i++)
-                    await e.Ran("bash", new { command = $"npm test -- --grep case{i}" }, suspicious || i < 2 ? $"FAIL case{i}" : "ok", error: suspicious ? i % 2 == 0 : i < 2);
-                return (await e.Next(("bash", new { command = "npm test -- --grep case9" })), asked);
-            }
-
-            var (d, asked) = await Run(0.93, "qwen3.8-27b");
-            Check.Contains(d!.Text, "Loop check (qwen3.8-27b, p = 0.93)");
-            Check.Contains(d.Text, "bash ×8; 4 failed");
-            Check.Equal(1, asked.Count);
-            Check.Equal("qwen3.8-27b", asked[0]!["model"].Str());
-            Check.Contains(asked[0]!["state"]!["goal"].Str(), "Make the tests pass.");
-            Check.Contains(asked[0]!["state"]!["recent_steps"].Str(), "8. bash {\"command\":\"npm test -- --grep case7\"} → ok: FAIL case7");
-
-            (d, asked) = await Run(0.6, "qwen3.8-27b");
-            Null(d, "unsure: no hint");
-            Check.Equal(1, asked.Count);
-
-            (d, asked) = await Run(0.99, "");
-            Null(d, "no model set: only the deterministic checks");
-            Check.Equal(0, asked.Count);
-
-            (d, asked) = await Run(0.99, "qwen3.8-27b", suspicious: false);
-            Null(d, "steps that look like progress are not sent");
-            Check.Equal(0, asked.Count);
-        });
     }
 }

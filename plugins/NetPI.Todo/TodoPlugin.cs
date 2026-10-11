@@ -17,14 +17,6 @@ public sealed class TodoPlugin : INetPiPlugin
         // Run state of this plugin: a fork starts without it (the session service remembers the keys even when this plugin is not loaded at a fork).
         context.Sessions.DeclareForkReset("todo");
         context.Tools.Register(new TodoWriteTool(context));
-        context.Services.Register(new SettingsSection
-        {
-            Id = "todo", Title = "Todo", Group = "Agents", Order = 33,
-            Settings = [SettingInfo.Bool("todo.checkCommits", "Check todo completion after commits", false,
-                "After a successful commit, use the provider-captured conversation to suggest completed checklist items. Clear answers become a hint to the agent; they never check off unsupported work.")],
-        });
-        context.Services.Register<IAgentHook>(new TodoCommitCheck(context));
-        context.Services.Register<IDecisionContextConsumer>(new TodoContextConsumer(context));
         context.Services.Register<IAgentHook>(new TodoNotices(context));
         context.Events.Subscribe(EventTypes.SessionForked, e =>
         {
@@ -49,12 +41,6 @@ public sealed class TodoPlugin : INetPiPlugin
         }
         catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException) { } // deleted meanwhile
     }
-}
-
-/// <summary>The commit check reads the provider's capture of the conversation: the runtime captures it while <c>todo.checkCommits</c> is on.</summary>
-internal sealed class TodoContextConsumer(IPluginContext ctx) : IDecisionContextConsumer
-{
-    public bool WantsDecisionContext => ctx.Settings.Get("todo.checkCommits", false);
 }
 
 /// <summary>
