@@ -140,6 +140,7 @@ public sealed partial class ScenarioEngine
                 "drop" => Drop(req, tag),
                 "stall" => Stall(req, tag),
                 "midfail" => MidFail(req, tag),
+                "say" => Final(tag.P("text", "OK.")),
                 "thinktags" => Final("<think>The user wants tags. I will reason inside think tags like Qwen does without a reasoning parser.</think>Answer after the think block. THINKTAGS-DONE"),
                 "empty" => step == 0 ? new Plan() : Final("Sorry, here is the answer after all. EMPTY-RECOVERED"),
                 "badargs" => BadArgs(tag, step, after),
@@ -584,6 +585,9 @@ public sealed partial class ScenarioEngine
                 done = Math.Max(done, int.Parse(x.Groups[1].Value, CultureInfo.InvariantCulture));
         var next = done + 1;
         if (next > n) return Final($"LONG-DONE after {n} steps.");
+        // tool=ls: a cheap step (no process per step) that carries its marker in the answer's own text: a long history fast
+        if (tag.P("tool", "bash") == "ls")
+            return new Plan { Text = $"LONGSTEP {next}/{n}: step {next} of {n}." }.Call("ls", Obj(("path", ".")));
         return new Plan { Thinking = $"Step {next} of {n}: produce more output.", Text = $"Step {next} of {n}." }
             .Call("bash", Obj(("command", $"echo \"LONGSTEP {next}/{n}\"; seq -f \"filler line %03g: lorem ipsum dolor sit amet, consectetur adipiscing elit\" 1 {lines}")));
     }

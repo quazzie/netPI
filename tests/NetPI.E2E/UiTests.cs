@@ -140,6 +140,12 @@ public static class UiTests
             await RunUiScript(env, "composer.mjs", 240);
         }, 270);
 
+        r.Add("ui.chat-history", "ui: a chat's history — a long chat pages back with a still anchor, caps at 200, pages forward and back to the latest, the context ring and its compactions, a page answer held while a message is committed does not drop it, and deleting a chat or one subagent", async () =>
+        {
+            // The script makes its own chats (one of about 230 messages: 110 cheap tool steps and two compactions) and removes them.
+            await RunUiScript(env, "chat-history.mjs", 180);
+        }, 210);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id
