@@ -10,6 +10,8 @@
 // folder, a copy the test may change), --work (a folder for the project directories a script makes), --out (the
 // screenshot folder); a script reads its own with arg('name').
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -52,15 +54,39 @@ export async function shot(page, name) {
   console.log(`  screenshot ${name}.png`);
 }
 
+// The server and MockLlm are called through node:http on kept-alive connections, not fetch: on Windows a fetch that reuses
+// its connection could sit about half a second before the server answered (measured 2026-10-11: the agent.get sent while
+// a run ended came back after ~490 ms, the same request through node:http, curl or Python in 1 ms), and every send() and
+// waitIdle() paid it, a long seeded chat a minute.
+const agents = { 'http:': new http.Agent({ keepAlive: true }), 'https:': new https.Agent({ keepAlive: true }) };
+function request(url, { method = 'GET', headers = {}, body = null } = {}) {
+  const u = new URL(url);
+  const data = body == null ? null : Buffer.from(body);
+  return new Promise((resolve, reject) => {
+    const req = (u.protocol === 'https:' ? https : http).request(u, {
+      method,
+      agent: agents[u.protocol],
+      headers: { ...headers, ...(data ? { 'Content-Length': data.length } : {}) },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('error', reject);
+      res.on('end', () => resolve({ status: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300, text: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', reject);
+    req.end(data ?? undefined);
+  });
+}
+
 /** One call to the server's RPC over HTTP, as the UI's fallback makes it: the result, or an Error with the server's message
  * (and its code and HTTP status). */
 export async function rpc(method, params = {}) {
-  const res = await fetch(`${BASE}/api/rpc/${encodeURIComponent(method)}`, {
+  const res = await request(`${BASE}/api/rpc/${encodeURIComponent(method)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-NetPI-Token': TOKEN },
     body: JSON.stringify(params),
   });
-  const text = await res.text();
+  const text = res.text;
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
   if (!res.ok) throw Object.assign(new Error(`${method}: HTTP ${res.status} ${body?.error?.message ?? text}`), { code: body?.error?.code ?? null, status: res.status });
@@ -84,7 +110,7 @@ export const waitIdle = (sessionId, minRuns = 1, timeout = 60_000) =>
   until(`the agent of ${sessionId} to finish run ${minRuns}`, async () => {
     const a = await rpc('agent.get', { sessionId });
     return a && a.runs >= minRuns && IDLE.has(a.status) ? a : null;
-  }, timeout);
+  }, timeout, 25);
 
 /** Sends `text` to a session (agent.send) and waits for that run to end. Returns the agent. */
 export async function send(sessionId, text, timeout = 60_000) {
@@ -96,14 +122,14 @@ export async function send(sessionId, text, timeout = 60_000) {
 /** MockLlm's gates (gate=<name> in a scenario tag holds a model call until it is released; see docs/TESTING.md). */
 export const gates = {
   async release(name) {
-    const res = await fetch(`${MOCK}/_release?gate=${encodeURIComponent(name)}`, { method: 'POST' });
+    const res = await request(`${MOCK}/_release?gate=${encodeURIComponent(name)}`, { method: 'POST' });
     if (!res.ok) throw new Error(`release ${name}: HTTP ${res.status}`);
-    return res.json();
+    return JSON.parse(res.text);
   },
   /** Waits until a call is held at the gate: the run is in flight and stays there. */
   waiting: (name, timeout = 15_000) =>
     until(`a model call at gate ${name}`, async () => {
-      const list = await (await fetch(`${MOCK}/_gates`)).json();
+      const list = JSON.parse((await request(`${MOCK}/_gates`)).text);
       return list.some((g) => g.name === name && g.waiting > 0);
     }, timeout),
 };
