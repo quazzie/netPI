@@ -16,12 +16,11 @@ const Q = `wq-${STAMP}`; // the agent the slots are on
 const G = `wg-${STAMP}`; // an agent whose model is not loaded
 const Q2 = `wq2-${STAMP}`; // a second agent on qwen, for a run that may go to either
 const W = `surveyor-${STAMP}`; // the background subagent's gate
-const GC = `check-${STAMP}`; // the gate of a run that waits for an instance (it is cancelled before it gets one)
+const GC = `check-${STAMP}`; // the gate of the subagent's chat when it asks while both are taken (cancelled before it starts)
 const GB = `review-${STAMP}`; // the gate of the subagent's chat when it asks again and waits for an instance
 const FLAG = '.work-release'; // the foreground command runs until this file is in the project folder
 const INDEX = 'Index docs for semantic search';
 const REFACTOR = 'Refactor provider retry policy';
-const REVIEW = 'Review the backoff math';
 
 await run('work-tab', async ({ page, socket }) => {
   const dir = newDir(`work-${STAMP}`);
@@ -130,25 +129,27 @@ await run('work-tab', async ({ page, socket }) => {
     await page.waitForFunction((id) => !!document.querySelector(`.topbar .tab.active[data-tab="${id}"]`), surveyorSid, { timeout: 5000 }).catch(() => {});
     check('work: a busy row opens its session', !!surveyorSid && (await page.locator(`.topbar .tab.active[data-tab="${surveyorSid}"]`).count()) === 1, String(surveyorSid));
 
-    // ---- a run that waits for an instance: another chat asks while both are taken
-    const review = await chat(REVIEW);
-    await rpc('agent.send', { sessionId: review, text: `Check the backoff math. [s:say gate=${GC}]` });
+    // ---- a run that waits for an instance: the subagent's chat asks again while both are taken
+    await rpc('agent.send', { sessionId: refactor, text: `Check the backoff math. [s:say gate=${GC}]` });
     const waitLine = pool.locator('.waiting');
     await waitLine.waitFor({ timeout: 10_000 }).catch(() => {});
     check('work: the summary counts working, waiting and free', /2 working/.test(await summary()) && /1 waiting/.test(await summary()) && /0 free/.test(await summary()), await summary());
     check('work: the waiting runs are one line under the agent', (await waitLine.count()) === 1 && /1 waiting/.test(await waitLine.innerText()));
     const heightBefore = Math.round((await page.locator('.work').boundingBox()).height);
     await waitLine.click();
-    const waitRow = page.locator('.work .pop .row', { hasText: REVIEW });
+    const waitRow = page.locator('.work .pop .row', { hasText: REFACTOR });
     await waitRow.waitFor({ timeout: 3000 }).catch(() => {});
     check('work: the waiting line opens who waits in a floating list, and the tab does not grow', (await waitRow.count()) === 1 && Math.round((await page.locator('.work').boundingBox()).height) === heightBefore);
     check('work: the gap before the longest wait is there', (await waitLine.locator('.longest').evaluate((e) => parseFloat(getComputedStyle(e).marginLeft))) >= 4);
     await shot(page, 'ui-work-02-waiting');
     await waitRow.locator('button[aria-label^="Cancel this run"]').click();
     await waitLine.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
-    check('work: an x on a waiting run cancels it (agent.abort): it never starts, and no one waits',
-      (await waitLine.count()) === 0 && /no one waiting/.test(await pool.innerText()) && (await pool.locator('.slot.busy').count()) === 2 && (await status(review)) !== 'queued',
-      `${await status(review)} | ${await pool.innerText()}`);
+    await waitingChat.first().waitFor({ timeout: 5000 }).catch(() => {});
+    // agent.abort { subagents: false }: a plain abort cancels the chat's whole tree, its background subagent with the run
+    check('work: an x on a waiting run cancels that run alone: no one waits, the chat\'s background subagent keeps working',
+      (await waitLine.count()) === 0 && /no one waiting/.test(await pool.innerText()) && (await pool.locator('.slot.busy', { hasText: 'surveyor' }).count()) === 1
+        && (await status(refactor)) !== 'queued' && (await rpc('agent.get', { sessionId: surveyorSid }))?.status === 'running' && (await waitingChat.count()) === 1,
+      `${await status(refactor)} | ${(await rpc('agent.get', { sessionId: surveyorSid }))?.status} | ${await pool.innerText()}`);
 
     // ---- a run that may go to either of two agents waits in nobody's queue: one line, always there, so it moves nothing
     const unassigned = page.locator('.work .unassigned');

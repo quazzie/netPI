@@ -592,8 +592,8 @@ versioned `work.v2.*` so the defaults of this layout apply).
   own instance, so they are rows too, marked `sub` with the chat they work for; clicking opens the session, the hover
   button stops it (`agent.abort { sessionId }`). Under the rows one line, always there, says `no one waiting` or `N
   waiting, longest 14m`; clicking it opens who waits in a floating list (`WaitList`, `position: fixed`, so it never
-  pushes the tab down): each row opens its chat and has an **x** that cancels that run (`agent.abort`: a run still
-  waiting for an instance is cancelled before it starts). The last line of the agent is what it has done this period
+  pushes the tab down): each row opens its chat and has an **x** that cancels that run (`agent.abort { subagents: false }`: a run
+  still waiting for an instance is cancelled before it starts, and the subagents the chat's earlier runs started keep working). The last line of the agent is what it has done this period
   (`usage.summary.models`: `412 calls · 1.2M↑ 86k↓`, a cost when it has one; the tooltip adds cache reads). An agent that cannot take work (off, or its model is not loaded)
   has a header and its reason only. Model calls without an agent show only in the summary chip.
 - **Background** (collapsed by default; `<n> running`): the commands that outlive a tool call (dev servers, watchers) and any

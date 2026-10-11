@@ -18,6 +18,7 @@ public static class SubagentTests
         t.Add("subagents: agent_send to parent", SendToParent);
         t.Add("subagents: another model, tools allowlist, max depth", SpawnOptions);
         t.Add("subagents: aborting a parent cancels its children", AbortCascade);
+        t.Add("subagents: a run stopped alone (agent.abort subagents false) leaves the background subagent working, and its report arrives", AbortRunAlone);
         t.Add("subagents: deleting a chat stops its run and its subagents' at once, and gives their slots back", DeleteStopsTree);
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / agent_choices", ToolsMisc);
@@ -990,6 +991,38 @@ public static class SubagentTests
         Check.Equal(1, h.Runtime.GetBySession(parent.Id)!.Runs, "cancelled child does not wake the parent");
         Check.False(h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"));
         Check.Equal(0, h.Scheduler!.Snapshot().Sum(x => x.Busy + x.Queued));
+    }
+
+    /// <summary>
+    /// The Work tab's x on a run that waits for an instance is <c>agent.abort { subagents: false }</c>: that run stops, and the
+    /// background subagent an earlier run started keeps working and still reports to the chat. It used to be a plain abort,
+    /// which cancels the whole tree: cancelling a follow-up that had not started killed the chat's background work too.
+    /// </summary>
+    private static async Task AbortRunAlone()
+    {
+        await using var h = await TestHost.StartAsync();
+        var parent = h.NewSession();
+        var childGate = new TaskCompletionSource();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r)) return Reply.Text("BG RESULT", c => childGate.Task.WaitAsync(c));
+            if (Reply.LastUser(r).Contains("<agent-result")) return Reply.Text("got it");
+            if (Reply.LastUser(r) == "and now this") return Reply.Text("never", c => Task.Delay(Timeout.Infinite, c));
+            return Reply.HasToolResult(r) ? Reply.Text("spawned") : Reply.Tool("agent_spawn", new { task = "background job", name = "bg", background = true });
+        };
+        await h.SendAsync(parent.Id, "start a background job");
+        var childId = (await h.IdleAsync(parent.Id)).Children.Single();
+        await h.StatusAsync(childId, AgentStatus.Running);
+
+        await h.SendAsync(parent.Id, "and now this");
+        await Wait.Until(() => h.Runtime.GetBySession(parent.Id) is { Runs: 2 } a && a.Status.IsBusy(), "the second run");
+        Check.True((bool)(await h.Rpc.CallAsync("agent.abort", new { sessionId = parent.Id, subagents = false }))!, "the run is stopped");
+        await h.IdleAsync(parent.Id);
+        Check.Equal(AgentStatus.Running, h.Runtime.Get(childId)!.Status, "the background subagent keeps working");
+
+        childGate.SetResult();
+        await h.StatusAsync(childId, AgentStatus.Completed);
+        await Wait.Until(() => h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"), "its report reaches the chat");
     }
 
     /// <summary>

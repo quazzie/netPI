@@ -78,9 +78,10 @@ public sealed class RuntimePlugin : INetPiPlugin
         Rpc("agent.abort", async (req, _) =>
         {
             var id = req.Str("sessionId") ?? req.Required("id");
-            return await runtime.AbortAsync(id).ConfigureAwait(false);
-        }, "Abort the current run of a session's agent: { sessionId } → bool", false,
-            RpcParam.Opt("sessionId"), RpcParam.Opt("id", RpcParamType.String, "the session's id, the older name"));
+            return await runtime.AbortAsync(id, req.Bool("subagents") ?? true).ConfigureAwait(false);
+        }, "Abort the current run of a session's agent and its subagents' runs: { sessionId, subagents? } → bool", false,
+            RpcParam.Opt("sessionId"), RpcParam.Opt("id", RpcParamType.String, "the session's id, the older name"),
+            RpcParam.Opt("subagents", RpcParamType.Boolean, "false: stop this run alone; the subagents earlier runs started keep working (default true)"));
 
         Rpc("agent.queue", (req, _) =>
             Task.FromResult<object?>(runtime.GetQueue(req.Required("sessionId"))),

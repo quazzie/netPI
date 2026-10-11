@@ -2,7 +2,8 @@
   /**
    * The waiting line of an agent ("4 waiting, longest 14m") and, opened, who waits. A floating list (position: fixed, so
    * opening it never pushes the tab down): each row opens its chat, shows how long it has waited, and has an x that
-   * cancels that run (agent.abort: a run waiting for an instance is cancelled before it ever starts).
+   * cancels that run (agent.abort with subagents false: a run waiting for an instance is cancelled before it ever starts,
+   * and the subagents the chat's earlier runs started keep working).
    */
   import { tick } from 'svelte';
   import { Elapsed, Icon, IconButton } from '@netpi/kit';
@@ -70,7 +71,7 @@
     const name = label(w);
     cancelling = new Set(cancelling).add(w.agentId);
     try {
-      const ok = await ctx.rpc('agent.abort', { sessionId: w.sessionId });
+      const ok = await ctx.rpc('agent.abort', { sessionId: w.sessionId, subagents: false });
       if (!ok) ctx.app.toast(`${name} was not waiting any more`, 'warn');
     } catch (err) {
       ctx.app.toast(`Cancel failed: ${err?.message ?? err}`, 'error');

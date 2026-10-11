@@ -1217,11 +1217,18 @@ internal sealed class AgentRuntime : IAgentRuntime
         return true;
     }
 
-    public async Task<bool> AbortAsync(string agentOrSessionId)
+    public Task<bool> AbortAsync(string agentOrSessionId) => AbortAsync(agentOrSessionId, subagents: true);
+
+    /// <summary>
+    /// Stops the agent's run and its subagents' runs. <paramref name="subagents"/> false stops that run alone: the subagents
+    /// its earlier runs started keep working, and their reports still reach it (the Work tab cancelling a run that waits for
+    /// an instance; a chat's Stop stops everything).
+    /// </summary>
+    public async Task<bool> AbortAsync(string agentOrSessionId, bool subagents)
     {
         var s = FindState(agentOrSessionId);
         if (s is null) return false;
-        var run = AbortCore(s, "aborted by the user", byParent: false);
+        var run = AbortCore(s, "aborted by the user", byParent: false, withChildren: subagents);
         if (run is null) return false;
         if (run.Task is { } task)
         {
@@ -1230,8 +1237,8 @@ internal sealed class AgentRuntime : IAgentRuntime
         return true;
     }
 
-    /// <summary>Cancel the agent's run and (recursively) the runs of its children.</summary>
-    internal RunState? AbortCore(AgentState s, string reason, bool byParent)
+    /// <summary>Cancel the agent's run and (recursively, unless <paramref name="withChildren"/> is false) the runs of its children.</summary>
+    internal RunState? AbortCore(AgentState s, string reason, bool byParent, bool withChildren = true)
     {
         RunState? run;
         List<string> children;
@@ -1250,8 +1257,9 @@ internal sealed class AgentRuntime : IAgentRuntime
         {
             try { run.Cts.Cancel(); } catch (ObjectDisposedException) { }
         }
-        foreach (var c in children)
-            if (FindState(c) is { } child) AbortCore(child, "cancelled: parent agent was aborted", byParent: true);
+        if (withChildren)
+            foreach (var c in children)
+                if (FindState(c) is { } child) AbortCore(child, "cancelled: parent agent was aborted", byParent: true);
         return run;
     }
 
