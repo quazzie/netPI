@@ -112,11 +112,10 @@ dotnet tests/NetPI.Providers.Tests/bin/Release/NetPI.Providers.Tests.dll # AiPro
 dotnet tests/NetPI.Tools.Tests/bin/Release/NetPI.Tools.Tests.dll         # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open, files.git
 dotnet tests/NetPI.Agent.Tests/bin/Release/NetPI.Agent.Tests.dll         # agent loop, steering/queue/abort, subagents, agents, persistence, context notices, goals, skills
 dotnet tests/NetPI.Aux.Tests/bin/Release/NetPI.Aux.Tests.dll             # retry, nudge, tool repair, compaction, ideas, work, diagnostics, todo, web, media, ssh
-dotnet tests/NetPI.Aux.Tests/bin/Release/NetPI.Aux.Tests.dll ideas      # the ideas flow only: tools and RPC (IdeasTests), the storage and the
-                                                                         # answer transaction (IdeasStorageTests, ReviewStorageTests), the cutover,
-                                                                         # export and import (IdeasMigrationTests), the chat checks (IdeasCheckTests),
-                                                                         # commit tracking (IdeasCommitTests). They run against a real temporary
-                                                                         # SQLite database, not a fake; the load tests load the built plugins from
+dotnet tests/NetPI.Aux.Tests/bin/Release/NetPI.Aux.Tests.dll ideas      # the ideas flow only: tools and RPC (IdeasTests), the storage
+                                                                         # (IdeasStorageTests, ReviewStorageTests), export and import
+                                                                         # (IdeasSnapshotTests), the commit notice (IdeasNoticeTests). They run
+                                                                         # against a real temporary SQLite database, not a fake; the load tests load the built plugins from
                                                                          # artifacts/dev/app (what a plain build makes), or from NETPI_APP_DIR
 dotnet tests/NetPI.Storage.Tests/bin/Release/NetPI.Storage.Tests.dll     # the storage port: one set of scenarios run against every
                                                                       # provider (memory and sqlite; a provider joins with one line in
@@ -145,13 +144,8 @@ checks everything except the page screenshots and says so.
 
 The ideas suites inject the failures the happy paths cannot show, and they need a **real database** to show them: the
 aux harness opens an actual SQLite file in a temporary home (it references `NetPI.Host` for the real `Database`), so a
-rejected patch leaving no trace, two plugin instances keeping each other's write, a rolled-back transaction, a revision
-that survives a restart and one effect for two answers of a card are what is actually verified — an in-memory fake
-proves none of them. On top of that: a malformed legacy file fails the whole cutover and leaves the originals untouched,
-a cutover that already happened is refused, a restart after the commit does not import again, a check claim nobody owns
-any more is retryable, a decision that does not answer, a burst of 45 commits, a rewritten history and a worktree. The
-commit tests drive the check directly through `IdeaCommitCheck.SweepNowAsync` against a fake repository that behaves
-like `git log since..until`, so each case is exact and needs no git.
+rejected patch leaving no trace, two plugin instances keeping each other's write, a rolled-back transaction and a
+revision that survives a restart are what is actually verified — an in-memory fake proves none of them.
 
 The SSH tool tests use a fake launcher (no ssh runs). With `NETPI_SSH_TEST_HOSTS=nuc,server` the `ssh live` test also
 runs against those aliases of your `~/.ssh/config` (Linux hosts whose keys are set up): quoting, write/read/edit

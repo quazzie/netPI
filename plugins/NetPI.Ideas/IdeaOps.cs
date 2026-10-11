@@ -182,10 +182,6 @@ public static class IdeaOps
     /// <summary>The text, clipped to <paramref name="n"/> characters with an ellipsis when it was longer.</summary>
     public static string Clip(string s, int n) => s.Length > n ? s[..n] + "…" : s;
 
-    /// <summary>The start and the end of a long text (half each) around an ellipsis: a conversation is judged by how it
-    /// began and how it ended, not by its first pages only.</summary>
-    public static string ClipEnds(string s, int n) => s.Length <= n ? s : s[..(n / 2)] + "\n…\n" + s[^(n - n / 2)..];
-
     // ------------------------------------------------------------------ normalization
 
     public static string NormalizeStatus(string? s)
@@ -535,34 +531,6 @@ public static class IdeaOps
         a.Add(entry.DeepClone());
     }
 
-    /// <summary>
-    /// Whether this chat is already recorded as having worked on the idea (a <c>sessions</c> entry). This is not the
-    /// same as being in <c>sessionIds</c>, which only says the session created or updated the idea: that is provenance,
-    /// not a link between this conversation and this idea, and the close check does not mistake it for one.
-    /// </summary>
-    public static bool WorkedOnWith(JsonObject idea, string sessionId) =>
-        (idea["sessions"] as JsonArray ?? []).OfType<JsonObject>().Any(s => Str(s["sessionId"]) == sessionId);
-
-    /// <summary>
-    /// A commit that worked on this idea: <c>{ hash, short, subject, at }</c>, newest last. Like
-    /// <see cref="AddSessionEntry"/> it lives beside the idea's text, never inside it, and one entry per commit: a
-    /// re-read of the same hash updates what it says instead of adding a second one.
-    /// </summary>
-    public static void AddCommitEntry(JsonObject idea, JsonObject entry)
-    {
-        var hash = Str(entry["hash"]);
-        if (string.IsNullOrEmpty(hash)) return;
-        if (idea["commits"] is not JsonArray a) { a = []; idea["commits"] = a; }
-        var existing = a.OfType<JsonObject>().FirstOrDefault(c => Str(c["hash"]) == hash);
-        if (existing is not null)
-        {
-            foreach (var k in new[] { "short", "subject", "at", "repo" })
-                if (entry[k] is { } v) existing[k] = v.DeepClone();
-            return;
-        }
-        a.Add(entry.DeepClone());
-    }
-
     // ------------------------------------------------------------------ filtering & rendering
 
     public static bool Matches(JsonObject idea, string? status, string? tag, string? query)
@@ -653,10 +621,10 @@ public static class IdeaOps
     }
 
     /// <summary>Composer text that asks the agent to implement an idea.</summary>
-    public static string ToPrompt(JsonObject idea, string fileName)
+    public static string ToPrompt(JsonObject idea)
     {
         var sb = new StringBuilder();
-        sb.Append("Implement the following idea from the ideas backlog (`").Append(Str(idea["id"])).Append("` in ").Append(fileName).Append(").\n");
+        sb.Append("Implement the following idea from the ideas backlog (`").Append(Str(idea["id"])).Append("`).\n");
         sb.Append("Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with the ideas tool (action update): ")
           .Append("set the status to \"in-progress\" when you start and \"done\" when finished, and add a note section for anything important you learn.\n\n");
         sb.Append("# ").Append(Str(idea["title"])).Append('\n');

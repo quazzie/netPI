@@ -11,7 +11,6 @@ import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
 import { loadAsks, askEvent, pendingIn, approvalIn, pruneSession } from './asks.svelte.js';
 import { loadPlans, planEvent, planWaiting, prunePlans } from './plans.svelte.js';
-import { suggestions } from '../../components/composer/ideaSuggestions.svelte.js';
 import { welcomeIdeas } from './welcomeIdeas.svelte.js';
 import { formatBytes, payloadBytes, sendBudget } from '../images.js';
 
@@ -415,9 +414,6 @@ export function closeTab(id) {
   // is what materializes it, so sessions.list never returns it again) and a list reload is the only thing that would
   // take its row away. Without this the "New session" it was created as stays in the list for the rest of the window.
   forgetEmptySession(id);
-  // Closing is when a plan gets forgotten (plugins/NetPI.Ideas): ask in the background what the chat leaves unsaved.
-  // Fire and forget — the tab is already gone and nothing here may hold up the next one.
-  rpc('ideas.closed', { sessionId: id }).catch(() => {});
 }
 
 /**
@@ -873,12 +869,6 @@ function onEvent(d, env) {
           if (s?.kind !== 'subagent') notifyAbout(d.sessionId, s, firstLine(d.text || 'Wants to show you something'));
         }
       }
-      break;
-    case 'ideas.suggested':
-      suggestions.event(d);
-      break;
-    case 'ideas.resolved':
-      suggestions.resolved(d);
       break;
     case 'ideas.changed':
       // the backlog moved: the welcome screen offers what is in it now, and this window's picks too

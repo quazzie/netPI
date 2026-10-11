@@ -7,7 +7,6 @@
   import LogsView from './LogsView.svelte';
   import ContextView from './ContextView.svelte';
   import CallsView from './CallsView.svelte';
-  import IdeasView from './IdeasView.svelte';
 
   let { ctx } = $props();
 
@@ -86,7 +85,6 @@
     { value: 'calls', label: 'Calls', icon: 'zap', title: 'Model calls' },
     { value: 'events', label: 'Events', icon: 'activity', title: 'Live events' },
     { value: 'logs', label: 'Logs', icon: 'list', title: 'Log' },
-    { value: 'ideas', label: 'Ideas', icon: 'idea', title: 'Background idea checks (the save check, recall, the verifier, the commit sweep)' },
     { value: 'context', label: 'Context', icon: 'layers', title: 'Context of the active session' },
   ]);
   const rtTip = $derived(
@@ -145,8 +143,6 @@
       <EventsView initial={snap?.events ?? []} {ctx} {visible} />
     {:else if view === 'logs'}
       <LogsView initial={snap?.logs ?? null} {ctx} {visible} />
-    {:else if view === 'ideas'}
-      <IdeasView {ctx} {visible} />
     {:else if view === 'context'}
       <ContextView {ctx} {visible} />
     {/if}

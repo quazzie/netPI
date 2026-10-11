@@ -260,13 +260,6 @@ into locals first, because after the parent clears the modal state or the row re
      Web links keep `target="_blank"` (the desktop shell opens them in the default browser).
    - **Plan strip.** `TodoStrip` (in the composer dock) shows the session's `meta.todo` while any item is open:
      `done/total` and the current item, expanding to the checklist.
-   - **Idea cards.** `IdeaCards` (in the composer dock) shows the offers `ideas.suggestions` returns, for the window
-     rather than a chat — the chat a plan came from is closed. Two kinds: a **plan a closed chat left unsaved** (title,
-     summary, **Save** / **Edit** / **Discard**) and an **idea a commit may have finished** ("may be done", the idea's
-     title, the commits linked to it, **Mark done** / **Dismiss**, a green rule). Both are offers: nothing reaches the
-     backlog and nothing is marked done without a click. They arrive by the unscoped `ideas.suggested` event; a new
-     card after a restart is read once from `ideas.suggestions`. The Ideas tab carries the same offers as one
-     "waiting for you" line.
    - **Shown images.** A successful `show_image` result becomes its own `shown` item (`ShownImage`: the image, the
      caption, name · size), never folded into a steps group; a click opens the lightbox.
    - **Goal strip.** `GoalStrip` shows `meta.goal` (`plugins/NetPI.Goal`) unless it was cleared: the state (Goal,
@@ -689,9 +682,6 @@ set, uptime, threads, framework; the full details are in its tooltip). A segment
   events) or fetches it with `diag.event { seq }`.
 - **Logs:** `logs.recent { max: 400 }`, polled every 3s while visible (one poll at a time), newest first, with a level
   filter (All, Info+, Warn, Error, with counts). Exceptions expand; a row keeps its expansion across polls.
-- **Ideas:** the background idea checks the Ideas plugin runs (the save check, recall, the verifier, the commit sweep)
-  — `ideas.work`, updated by `ideas.workChanged` and polled every 30s while visible: purpose and status with a
-  state dot, the reason or model under it. The last 10, newest first; the server keeps the last 40.
 - **Context:** for the active session, `context.preview` (estimated tokens, system prompt size, tool count,
   the system prompt with copy and expand, the tool list), `agentsmd.list` (instruction files with scope
   badges, copy path and reveal) and `skills.list` (the skills with scope, name and description, then their problems).

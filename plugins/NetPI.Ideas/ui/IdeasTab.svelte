@@ -23,10 +23,6 @@
   // svelte-ignore state_referenced_locally
   let projectFilter = $state(activeProjectId ?? 'global');
   let followsActive = true;
-  // Plans a closed chat left unsaved (the cards above the composer answer the same cards).
-  let unsaved = $state.raw([]);
-  let showUnsaved = $state(false);
-  let busy = $state(null);
   let conflict = $state.raw(null); // { id, message } for the idea an update was refused for
   // Meaning search (≈): with embeddings on the server, the search box can rank ideas by meaning (ideas.similar)
   // instead of requiring every word. Off by default; the toggle only shows when the server has embeddings.
@@ -50,33 +46,6 @@
     return () => clearTimeout(meaningTimer);
   });
 
-  async function loadUnsaved() {
-    try {
-      unsaved = (await ctx.rpc('ideas.suggestions', {}))?.suggestions ?? [];
-    } catch {
-      unsaved = []; // no Ideas plugin, or the checks are off
-    }
-  }
-
-  // The two offers: a plan a closed chat left unsaved, and an idea a commit may have finished.
-  const plans = $derived(unsaved.filter((s) => s.kind !== 'done'));
-  const maybes = $derived(unsaved.filter((s) => s.kind === 'done'));
-
-  async function resolve(id, action) {
-    busy = id;
-    try {
-      await ctx.rpc('ideas.resolve', { id, action });
-      unsaved = unsaved.filter((s) => s.id !== id);
-      await load();
-    } catch (e) {
-      // Answered somewhere else: the card is answered already, not an error to keep on screen.
-      if (/not_found|no longer|gone|conflict/i.test(e?.message ?? '')) await loadUnsaved();
-      else error = e?.message ?? String(e);
-    } finally {
-      busy = null;
-    }
-  }
-
   async function load() {
     try {
       [list, projects] = await Promise.all([ctx.rpc('ideas.list', {}), ctx.rpc('projects.list', {}).catch(() => [])]);
@@ -99,7 +68,6 @@
   }
 
   onMount(() => {
-    loadUnsaved();
     const offChange = ctx.app.onChange(() => {
       const pid = ctx.app.activeProject?.id ?? null;
       if (pid !== activeProjectId) {
@@ -107,24 +75,14 @@
         if (followsActive) projectFilter = pid ?? 'global'; // the default follows the active project
       }
     });
-    const offCards = ctx.on('ideas.suggested', () => {
-      if (tab.visible) loadUnsaved();
-    });
-    // A card answered in the composer or in another window is gone: drop it here too.
-    const offResolved = ctx.on('ideas.resolved', (d) => {
-      unsaved = unsaved.filter((s) => s.id !== d?.id);
-    });
     return () => {
       offChange();
-      offCards();
-      offResolved();
     };
   });
 
   // ------------------------------------------------------------------ filtering
   const ideas = $derived(list?.ideas ?? []);
-  // Where the backlog lives, as ideas.list describes it. A hint, not a file to open: the ideas are tables in the
-  // database, and the JSON files of the earlier versions are read once by the cutover.
+  // Where the backlog lives, as ideas.list describes it. A hint, not a file to open: the ideas are documents in NetPI's store.
   const storage = $derived(list?.storage ?? null);
   const effProject = (i) => i.project?.id ?? null;
   const counts = $derived.by(() => {
@@ -397,42 +355,6 @@
     </div>
   {/if}
 
-  {#if unsaved.length}
-    <button class="unsaved" onclick={() => (showUnsaved = !showUnsaved)} title="Waiting for you: plans a closed chat left unsaved, and ideas a commit may have finished">
-      <Icon name="idea" size={12} />
-      <span class="np-ellipsis"
-        >{[plans.length ? `${plans.length} unsaved ${plans.length === 1 ? 'plan' : 'plans'}` : '', maybes.length ? `${maybes.length} maybe done` : '']
-          .filter(Boolean)
-          .join(' · ')}</span
-      >
-      <Icon name={showUnsaved ? 'chevron-down' : 'chevron-right'} size={11} />
-    </button>
-    {#if showUnsaved}
-      <div class="cards">
-        {#each maybes as s (s.id)}
-          <div class="card done">
-            <div class="np-ellipsis ct" title={s.title}>may be done: {s.title}</div>
-            {#if s.commits?.length}<div class="cs np-ellipsis" title={s.commits.join('\n')}>{s.commits.slice(0, 2).join(' · ')}</div>{/if}
-            <div class="cb">
-              <Button size="sm" variant="primary" disabled={busy === s.id} onclick={() => resolve(s.id, 'done')}>Mark done</Button>
-              <Button size="sm" disabled={busy === s.id} onclick={() => resolve(s.id, 'discard')}>Dismiss</Button>
-            </div>
-          </div>
-        {/each}
-        {#each plans as s (s.id)}
-          <div class="card">
-            <div class="np-ellipsis ct" title={s.title}>{s.title}</div>
-            {#if s.summary}<div class="cs">{s.summary}</div>{/if}
-            <div class="cb">
-              <Button size="sm" variant="primary" disabled={busy === s.id} onclick={() => resolve(s.id, 'save')}>Save</Button>
-              <Button size="sm" disabled={busy === s.id} onclick={() => resolve(s.id, 'discard')}>Discard</Button>
-            </div>
-          </div>
-        {/each}
-      </div>
-    {/if}
-  {/if}
-
   <div class="list">
     {#if loading && !list}
       <Empty><span class="np-spinner"></span></Empty>
@@ -565,60 +487,6 @@
     flex-wrap: wrap;
     gap: 4px;
     padding: 2px 10px 2px 12px;
-  }
-  /* the cards a closed chat left unsaved: one line until opened, so the list below still reads as a list */
-  .unsaved {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: calc(100% - 16px);
-    margin: 0 8px 6px;
-    padding: 4px 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: transparent;
-    color: var(--fg-muted);
-    font-size: var(--fs-sm);
-    text-align: left;
-  }
-  .unsaved:hover {
-    background: var(--bg-2);
-    color: var(--fg);
-  }
-  .unsaved .np-ellipsis {
-    flex: 1;
-    min-width: 0;
-  }
-  .cards {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin: 0 8px 8px;
-  }
-  .card {
-    padding: 7px 9px;
-    border: 1px solid var(--border);
-    border-left: 2px solid var(--accent);
-    border-radius: var(--radius);
-    background: var(--bg-1);
-    font-size: var(--fs-sm);
-  }
-  .ct {
-    color: var(--fg);
-    font-weight: 600;
-  }
-  .card.done {
-    border-left-color: var(--ok);
-  }
-  .cs {
-    margin-top: 2px;
-    color: var(--fg-muted);
-    line-height: 1.45;
-  }
-  .cb {
-    display: flex;
-    gap: 6px;
-    margin-top: 7px;
   }
   .list {
     flex: 1;

@@ -12,7 +12,7 @@ public sealed record IdeaScore(JsonObject Idea, double Score);
 /// The backlog's embeddings (idea-61wg9p): one document per idea in the <c>vectors</c> collection — the model, a hash of
 /// the embedded text, and the vectors of its chunks (the card, then the sections in pieces) — kept in step with the
 /// backlog in the background and searched in process. It only shortlists: whatever reads a score still decides with the
-/// rules it had (the pick-or-none decision, the user, the agent). With no <see cref="IEmbeddingService"/>, embeddings
+/// rules it had (the user, the agent). With no <see cref="IEmbeddingService"/>, embeddings
 /// switched off or the server failing, every method answers "nothing" fast and the callers behave as before.
 /// </summary>
 public sealed class IdeaVectors : IDisposable
@@ -157,24 +157,6 @@ public sealed class IdeaVectors : IDisposable
         }
         if (missing) Changed();
         return scored.Count == 0 ? null : scored.OrderByDescending(s => s.Score).Take(limit).ToList();
-    }
-
-    /// <summary>
-    /// The candidates in the order a pick-one decision should see them when there are more than one decision can offer
-    /// (<see cref="IdeaMatch.MaxOptions"/>): the word ranking and the meaning ranking fused (reciprocal rank, k = 60), so an
-    /// idea described in other words is no longer stuck behind fifty that share a word with the text. Null when nothing
-    /// needs ranking or there are no embeddings: the caller keeps <see cref="IdeaMatch.Ranked"/>.
-    /// </summary>
-    public async Task<List<JsonObject>?> RankAsync(string text, IReadOnlyList<JsonObject> candidates, CancellationToken ct)
-    {
-        if (candidates.Count <= IdeaMatch.MaxOptions) return null;
-        var near = await NearestAsync(text, candidates, candidates.Count, ct).ConfigureAwait(false);
-        if (near is null) return null;
-        var words = IdeaMatch.Ranked(candidates, text);
-        var score = new Dictionary<JsonObject, double>(ReferenceEqualityComparer.Instance);
-        for (var i = 0; i < words.Count; i++) score[words[i]] = 1.0 / (60 + i + 1);
-        for (var i = 0; i < near.Count; i++) score[near[i].Idea] = score.GetValueOrDefault(near[i].Idea) + 1.0 / (60 + i + 1);
-        return words.OrderByDescending(i => score.GetValueOrDefault(i)).ToList();
     }
 
     /// <summary>The ideas the new one resembles (card to card, at or above <c>ideas.similarThreshold</c>), best first.</summary>

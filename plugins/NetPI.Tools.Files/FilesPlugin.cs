@@ -82,10 +82,8 @@ public sealed class FilesPlugin : INetPiPlugin
             });
         });
 
-        var history = new GitHistory(context);
-        context.Services.Register<IGitHistory>(history);
         context.Rpc.Register(new RpcMethod("files.commits", "Repository history: { sessionId?, cwd?, gitDir?, commonDir?, since?, until?, limit? } → { repo, gitDir, commonDir, reachable, commits } | null (gitDir/commonDir, when given, are reused instead of re-resolved: only the git log runs)", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("sessionId"), RpcParam.Opt("cwd"), RpcParam.Opt("commonDir"), RpcParam.Opt("gitDir"), RpcParam.Opt("hash"), RpcParam.Opt("since"), RpcParam.Opt("until")]),
-            async (req, token) => await history.ReadAsync(NetPiJson.ToNode(req.Params) as System.Text.Json.Nodes.JsonObject ?? new(), token).ConfigureAwait(false));
+            async (req, token) => await CommitsAsync(context, req, token).ConfigureAwait(false));
 
         // Left-panel file tree of the active session's workspace.
         context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });
@@ -93,18 +91,13 @@ public sealed class FilesPlugin : INetPiPlugin
         return Task.CompletedTask;
     }
 
-    private sealed class GitHistory(IPluginContext context) : IGitHistory
+    /// <summary><c>files.commits</c>: the repository's history, or with <c>hash</c> one commit's patch.</summary>
+    private static async Task<object?> CommitsAsync(IPluginContext context, RpcRequest req, CancellationToken token)
     {
-        public async Task<System.Text.Json.Nodes.JsonObject?> ReadAsync(System.Text.Json.Nodes.JsonObject request, CancellationToken token)
-        {
-            var req = new RpcRequest { Method = "files.commits", Params = NetPiJson.ToElement(request) };
-            if (req.Str("hash") is { Length: > 0 } hash) return await GitStatus.PatchAsync(ResolveRoot(context, req), hash, token).ConfigureAwait(false);
-            var since = req.Str("since");
-            var until = req.Str("until");
-            var limit = Math.Clamp(req.Int("limit") ?? 20, 1, 200);
-            return NetPiJson.ToNode(await GitStatus.CommitsAsync(ResolveRoot(context, req), since, until, limit,
-                req.Str("gitDir"), req.Str("commonDir"), token).ConfigureAwait(false)) as System.Text.Json.Nodes.JsonObject;
-        }
+        if (req.Str("hash") is { Length: > 0 } hash) return await GitStatus.PatchAsync(ResolveRoot(context, req), hash, token).ConfigureAwait(false);
+        var limit = Math.Clamp(req.Int("limit") ?? 20, 1, 200);
+        return await GitStatus.CommitsAsync(ResolveRoot(context, req), req.Str("since"), req.Str("until"), limit,
+            req.Str("gitDir"), req.Str("commonDir"), token).ConfigureAwait(false);
     }
 
     /// <summary>

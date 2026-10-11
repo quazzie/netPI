@@ -4,29 +4,11 @@ using System.Text.Json.Nodes;
 namespace NetPI.Ideas;
 
 /// <summary>
-/// Where the ideas live: the plugin's own collections in the store (the <c>netpi.ideas</c> scope). The
-/// <c>ideas.fileName</c> setting survives as the name of the file the JSON versions used — reported by ideas.list and
-/// ideas.changed for older UIs — and no longer as a live file. A session's calls default to the ideas of
-/// its project (the ideas with a matching <c>project</c>), and the agent's <c>project</c> argument reaches any project
-/// or the unbound ("global") ones.
+/// Which project an ideas call is about. A session's calls default to the ideas of its project (the ideas with a matching
+/// <c>project</c>), and the agent's <c>project</c> argument reaches any project or the unbound ("global") ones.
 /// </summary>
-public sealed class IdeasLocator(Func<ISessionStore?> sessions, NetPiPaths paths, Func<ISettings?> settings)
+public sealed class IdeasLocator(Func<ISessionStore?> sessions)
 {
-    /// <summary>The name the JSON backlog had (setting <c>ideas.fileName</c>, default "ideas.json").</summary>
-    public string FileName()
-    {
-        string? name = null;
-        try { name = settings()?.Get<string?>("ideas.fileName", null); } catch { }
-        name = string.IsNullOrWhiteSpace(name) ? "ideas.json" : Path.GetFileName(name.Trim());
-        return name.Length == 0 ? "ideas.json" : name;
-    }
-
-    /// <summary>Where that legacy file is, or would be. The backlog is not written there any more.</summary>
-    public string LegacyFile() => Path.GetFullPath(Path.Combine(paths.Home, FileName()));
-
-    /// <summary>The home the backlog's collections live in.</summary>
-    public string Home => paths.Home;
-
     /// <summary>The project a session's calls default to (a new idea's stamp, a list's slice); null when the session has no project. Unknown sessions are an error.</summary>
     public ProjectInfo? ProjectOfSession(string? sessionId)
     {

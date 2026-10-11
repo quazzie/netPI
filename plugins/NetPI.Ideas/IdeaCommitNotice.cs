@@ -5,19 +5,17 @@ using System.Text.RegularExpressions;
 namespace NetPI.Ideas;
 
 /// <summary>
-/// The commit check above (<see cref="IdeaCommitCheck"/>) watches every repository and offers a card, because a commit made
-/// in a terminal belongs to no conversation. A commit made <em>by the agent</em> is the opposite case: the run that just
-/// wrote it knows what it was for, and it is still running. So after a <c>git commit</c> or <c>git merge</c> that
-/// succeeded inside the session's project, this hook injects one notice (kind <c>git-commit</c>) before the next model
-/// call: update the idea this commit finished or advanced.
+/// A commit made <em>by the agent</em> is the moment an idea gets finished and nobody notices: the run that just wrote it
+/// knows what it was for, and it is still running. So after a <c>git commit</c> or <c>git merge</c> that succeeded inside
+/// the session's project, this hook injects one notice (kind <c>git-commit</c>) before the next model call: update the
+/// idea this commit finished or advanced.
 /// <para>
 /// It is an instruction, not an action: the agent decides with the <c>ideas</c> tool and the user sees what it did, the
 /// same way a nudge is advice rather than a decision. Three bounds keep it cheap: nothing happens when the project has
 /// no open idea (so a project without a backlog never pays for it), commits in a burst cost one notice (the next one
 /// waits <c>ideas.commitNoticeDebounceSec</c>), and at most <c>ideas.commitNoticesPerRun</c> notices are injected
 /// into one run. A backlog too large to hint at says only that a commit landed and offers the tool, without naming an
-/// arbitrary slice of it or obliging the agent to answer. The card flow stays: it is what catches a commit nobody
-/// made in a chat, and a commit the agent closed is no longer open, so it is not offered twice.
+/// arbitrary slice of it or obliging the agent to answer.
 /// </para>
 /// <para>
 /// With embeddings (<paramref name="nearest"/>, idea-61wg9p) a backlog too large to list is no longer silent: the notice
@@ -44,6 +42,9 @@ public sealed partial class IdeaCommitNoticeHook(
     /// arbitrary few of them is noise the agent has to argue its way out of.</summary>
     public const int MaxNamedIdeas = 3;
     public const int MaxTitleLength = 90;
+    /// <summary>Cosine (bge-base) an open idea needs to the commit message to be named (<c>ideas.noticeFloor</c>): the right
+    /// idea scored 0.67 or more for 90 % of the labelled commits, an unrelated commit's best idea 0.58 at the median.</summary>
+    public const double DefaultNoticeFloor = 0.6;
 
     /// <summary>After the nudge (200), so a stalled run's nudge is the decision that lands and this one waits for the call after it.</summary>
     public int Order => 260;
@@ -56,7 +57,7 @@ public sealed partial class IdeaCommitNoticeHook(
         if (run.CancellationToken.IsCancellationRequested) return ValueTask.CompletedTask;
         if (!settings().GetOr("ideas.tellAgentOnCommit", true)) return ValueTask.CompletedTask;
         // a commit the provider made with its own shell (the Claude CLI): that model cannot call the ideas tool the notice
-        // asks for, so it is left to the background commit check, which asks the user (idea-hghbmg)
+        // asks for (idea-hghbmg)
         if (call.ProviderExecuted) return ValueTask.CompletedTask;
         // Nothing to update without the tool, and nothing to say without a project: ideas are stamped with one.
         if (!turn.Tools.Concat(turn.DeferredTools).Any(t => t.Name == "ideas")) return ValueTask.CompletedTask;

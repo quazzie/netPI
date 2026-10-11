@@ -136,7 +136,7 @@ public static class IdeasTests
             Check.Contains(sent.Input.Text, "Do not change any files");
             Check.True(env.Ctx.SessionsFake.GetMessages(sessionId).Any(m => m.Meta?["ideaId"]?.GetValue<string>() == id), "the idea is in the chat as a notice");
             Check.Contains(env.Repo.Find(id)!.Doc["sessionIds"]?.ToJsonString() ?? "", sessionId, "and the chat is recorded on the idea");
-            Check.True(IdeaOps.WorkedOnWith(env.Repo.Find(id)!.Doc, sessionId), "and listed on its card under Chats");
+            Check.True((env.Repo.Find(id)!.Doc["sessions"] as JsonArray)?.Any(s => s?["sessionId"].Str() == sessionId) == true, "and listed on its card under Chats");
 
             // another agent by name
             await env.Rpc("ideas.refine", new JsonObject { ["id"] = id, ["agent"] = "qwen" });
@@ -163,31 +163,6 @@ public static class IdeasTests
             Check.Equal(before, env.Ctx.SessionsFake.ListSessions(new SessionQuery { Limit = 100 }).Count, "the chat it created is gone again");
         });
 
-        r.Add("ideas: verified updates apply without a card and preserve concurrent edits", async () =>
-        {
-            var env = new Env(); await env.StartAsync();
-            var idea = await env.Rpc("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Finish the whole plan" } });
-            var id = idea["id"]!.GetValue<string>();
-            var current = env.Repo.Find(id)!;
-            JsonObject Request() => new() { ["id"] = id, ["expectedRevision"] = env.Repo.Find(id)!.Revision,
-                ["patch"] = new JsonObject { ["status"] = "done" }, ["evidence"] = "Implementation and successful tests for every requirement" };
-            env.Ctx.ModelsFake.VerifierResponder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":false,\"confidence\":0.95,\"reason\":\"Missing requirement\"}" }] };
-            Check.False((await env.Rpc("ideas.verifyUpdate", Request()))["applied"]!.GetValue<bool>());
-            Check.Equal(current.Revision, env.Repo.Find(id)!.Revision);
-            env.Ctx.ModelsFake.VerifierResponder = _ =>
-            {
-                env.Repo.Update(id, new JsonObject { ["summary"] = "Concurrent user edit" }, fromUi: true, expectedRevision: env.Repo.Find(id)!.Revision);
-                return new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"Everything checked\"}" }] };
-            };
-            await Check.ThrowsAsync<IdeasConflictException>(() => env.Rpc("ideas.verifyUpdate", Request()));
-            Check.Equal("Concurrent user edit", env.Repo.Find(id)!.Doc["summary"].Str());
-            Check.Equal("open", env.Repo.Find(id)!.Doc["status"].Str());
-            env.Ctx.ModelsFake.VerifierResponder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"Everything checked\"}" }] };
-            Check.True((await env.Rpc("ideas.verifyUpdate", Request()))["applied"]!.GetValue<bool>());
-            Check.Equal("done", env.Repo.Find(id)!.Doc["status"].Str());
-            env.Ctx.Unload();
-        });
-
         r.Add("ideas: plugin registers one tool, RPC, tab and /idea command", async () =>
         {
             var env = new Env();
@@ -212,13 +187,13 @@ public static class IdeasTests
             var env = new Env();
             await env.StartAsync();
             var flags = env.Ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
-            foreach (var m in new[] { "ideas.work", "ideas.capabilities", "ideas.unread", "ideas.list", "ideas.picks", "ideas.get", "ideas.suggestions", "ideas.toPrompt", "ideas.image" })
+            foreach (var m in new[] { "ideas.capabilities", "ideas.list", "ideas.picks", "ideas.get", "ideas.toPrompt", "ideas.image" })
             {
                 Check.True(flags.TryGetValue(m, out var readOnly), $"{m} is registered");
                 Check.True(readOnly, $"{m} only reads, so it is marked read-only");
             }
             // The other side of the claim: what writes stays unmarked, so nothing reaches it by accident.
-            foreach (var m in new[] { "ideas.add", "ideas.update", "ideas.delete", "ideas.reorder", "ideas.resolve", "ideas.addImage", "ideas.removeImage", "ideas.import", "ideas.quickAdd" })
+            foreach (var m in new[] { "ideas.add", "ideas.update", "ideas.delete", "ideas.reorder", "ideas.addImage", "ideas.removeImage", "ideas.import", "ideas.quickAdd" })
                 Check.False(flags.GetValueOrDefault(m), $"{m} changes something, so it stays writable");
             env.Ctx.Unload();
         });
@@ -427,120 +402,6 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: a commit is recorded on the idea it works on, and only a clear 'finished' offers the card", async () =>
-        {
-            var env = new Env();
-            // A real repository, so the watcher watches a real reflog.
-            if (!await TestGit.RunAsync(env.ProjectDir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
-            await TestGit.RunAsync(env.ProjectDir, "config", "user.email", "test@example.com");
-            await TestGit.RunAsync(env.ProjectDir, "config", "user.name", "Test");
-            var calls = 0;
-            env.Ctx.RpcFake.Register("files.commits", (req, _) =>
-            {
-                if (req.Str("hash") is { } hash) return Task.FromResult<object?>(new JsonObject { ["hash"] = hash, ["patch"] = "diff --git a/fix b/fix\n+scripted completed implementation", ["truncated"] = false });
-                Interlocked.Increment(ref calls);
-                var cwd = req.Str("cwd") ?? env.ProjectDir;
-                var since = req.Str("since");
-                var log = TestGit.Out(cwd, "log", $"--max-count={req.Int("limit") ?? 20}",
-                    $"--format=%H%h%an%aI%s", since is { Length: > 0 } ? $"{since}..HEAD" : "HEAD") ?? "";
-                var commits = new JsonArray();
-                foreach (var line in log.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-                {
-                    var f = line.Split('');
-                    if (f.Length < 5) continue;
-                    commits.Add(new JsonObject { ["hash"] = f[0], ["short"] = f[1], ["author"] = f[2], ["at"] = f[3], ["subject"] = f[4] });
-                }
-                // The real method answers with a record, not a JsonObject: an RPC hands its handler's own object back
-                // in-process and its JSON over HTTP, so the reader has to cope with both (this is how it was missed).
-                var gitDir = Path.Combine(cwd, ".git");
-                return Task.FromResult<object?>(new CommitsResult(cwd, gitDir, gitDir, commits.OfType<JsonObject>()
-                    .Select(c => new GitCommit(c["hash"]!.GetValue<string>(), c["short"]!.GetValue<string>(), c["subject"]!.GetValue<string>(), c["author"]!.GetValue<string>(), c["at"]!.GetValue<string>())).ToList(), Reachable: true));
-            });
-            // The link picks the first idea, the done question is a plain two-way one.
-            var finished = false;
-            var asked = new List<JsonObject>();
-            var doneAnswered = 0;
-            env.Ctx.RpcFake.Register("decide.decision", (req, _) =>
-            {
-                asked.Add(JsonObject.Create(req.Params.Clone())!);
-                var labels = req.Params.GetProperty("branches")[0].GetProperty("labels").EnumerateArray().Select(e => e.GetString() ?? "").ToList();
-                var probs = new JsonObject();
-                if (labels is ["DONE", "MORE"]) { probs["DONE"] = finished ? 0.92 : 0.4; probs["MORE"] = finished ? 0.08 : 0.6; }
-                else { probs[labels[0]] = 0.86; foreach (var l in labels.Skip(1)) probs[l] = 0.14 / (labels.Count - 1); }
-                // counted once the answer is fixed: what `finished` said when the question was asked is what the question got
-                if (labels is ["DONE", "MORE"]) Interlocked.Increment(ref doneAnswered);
-                return Task.FromResult<object?>(new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = probs }) });
-            });
-
-            await env.StartAsync();
-            var nudge = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge counter reset" } }))["id"].Str()!;
-            var other = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Calm ideas tab" } }))["id"].Str()!;
-            await Until(() => Volatile.Read(ref calls) > 0, "the repository is watched");
-
-            // a commit that only advances the idea: recorded, no offer
-            await File.WriteAllTextAsync(Path.Combine(env.ProjectDir, "nudge.txt"), "one");
-            await TestGit.RunAsync(env.ProjectDir, "add", "-A");
-            await TestGit.RunAsync(env.ProjectDir, "commit", "-q", "-m", "nudge: first step of the reset");
-            await Until(() => (IdeaAt(env, nudge)["commits"] as JsonArray)?.Count > 0,
-                "the commit lands on the idea: " + string.Join(" | ", env.Ctx.Log.Lines.Reverse().Take(8).Select(l => l.ToString())), 6000);
-            var linked = ((JsonArray)IdeaAt(env, nudge)["commits"]!)[0]!;
-            Check.Equal("nudge: first step of the reset", linked["subject"]!.Str());
-            Check.Equal(40, linked["hash"]!.Str()!.Length);
-            Check.Equal(0, (IdeaAt(env, other)["commits"] as JsonArray)?.Count ?? 0, "not the other idea");
-            // The commit is recorded BEFORE the done question for it is asked, and that question is answered from `finished`. Flip
-            // `finished` while it is still on its way and the first commit is offered as the finishing one (a card of one commit,
-            // not two): wait for the answer first. This also makes the "no offer" check below mean something.
-            await Until(() => Volatile.Read(ref doneAnswered) >= 1, "the done question for the first commit is answered", 6000);
-            Check.Equal(0, (await Suggestions(env)).Count, "a commit that only advances an idea is not an offer");
-
-            // the commit that finishes it: the card, once
-            finished = true;
-            await File.WriteAllTextAsync(Path.Combine(env.ProjectDir, "nudge.txt"), "two");
-            await TestGit.RunAsync(env.ProjectDir, "add", "-A");
-            await TestGit.RunAsync(env.ProjectDir, "commit", "-q", "-m", "nudge: reset the counter after a good answer");
-            var cards = await WaitForSuggestions(env, 1, 8000);
-            var card = cards[0]!;
-            Check.Equal("done", card["kind"]!.Str());
-            Check.Equal(nudge, card["ideaId"]!.Str());
-            Check.Equal("Nudge counter reset", card["title"]!.Str());
-            Check.Equal(2, ((JsonArray)card["commits"]!).Count, "the card names the commits linked to the idea");
-            Check.Equal("open", IdeaAt(env, nudge)["status"]!.Str(), "nothing is marked done without a click");
-            Check.Contains(asked[^1]!["messages"]![0]!["content"]!.Str()!, "Nudge counter reset", "the done question carries the idea's text");
-            Check.Contains(asked[^1]!["messages"]![0]!["content"]!.Str()!, "reset the counter after a good answer", "and its commits");
-
-            // Mark done: the idea is done, the commits stay, the card is gone
-            var marked = await env.Rpc("ideas.resolve", new JsonObject { ["id"] = card["id"]!.Str(), ["action"] = "done" });
-            Check.Equal("done", marked["saved"]!["status"]!.Str());
-            Check.Equal(2, ((JsonArray)IdeaAt(env, nudge)["commits"]!).Count, "the commits stay on the idea");
-            Check.Equal(0, (await Suggestions(env)).Count, "and the card is answered");
-
-            // a commit whose message names the idea: linked with no model at all
-            asked.Clear();
-            var calm = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Ideas tab titles only" } }))["id"].Str()!;
-            await File.WriteAllTextAsync(Path.Combine(env.ProjectDir, "tab.txt"), "x");
-            await TestGit.RunAsync(env.ProjectDir, "add", "-A");
-            await TestGit.RunAsync(env.ProjectDir, "commit", "-q", "-m", $"the calm tab ({calm})");
-            await Until(() => (IdeaAt(env, calm)["commits"] as JsonArray)?.Count > 0, "the named idea is linked", 6000);
-            // No pick-one over the open ideas was asked: the message named it. (The done question still is - it is a
-            // different decision, and it is the one that decides whether to offer anything.)
-            var links = asked.Where(a => ((JsonArray)a["branches"]![0]!["labels"]!).Count > 2).ToList();
-            Check.Equal(0, links.Count, "a commit naming the idea needs no link decision");
-        });
-
-        /// <summary>One idea, read synchronously: the pollers below call it from a lambda.</summary>
-        JsonObject IdeaAt(Env env, string id) =>
-            (JsonObject)NetPiJson.ToNode(env.Ctx.RpcFake.Call("ideas.get", new JsonObject { ["id"] = id }).GetAwaiter().GetResult())!;
-
-        async Task Until(Func<bool> done, string what, int ms = 4000)
-        {
-            for (var waited = 0; waited < ms; waited += 25)
-            {
-                if (done()) return;
-                await Task.Delay(25);
-            }
-            throw new AssertException($"timed out waiting for: {what}");
-        }
-
         r.Add("ideas: the ideas tool round trip (stamps the session's project; deleting is the user's)", async () =>
         {
             var env = new Env();
@@ -711,9 +572,6 @@ public static class IdeasTests
             var env = new Env();
             await env.StartAsync();
             var empty = await env.Rpc("ideas.list", new JsonObject());
-            Check.Equal(Path.GetFullPath(env.File), empty["file"].Str());
-            Check.Equal("ideas.json", empty["fileName"].Str());
-            Check.Equal(false, (bool)empty["exists"]!);
             Check.Equal(0, ((JsonArray)empty["ideas"]!).Count);
 
             var a = await env.Rpc("ideas.add", new JsonObject
@@ -772,12 +630,11 @@ public static class IdeasTests
 
             await env.Ctx.RpcFake.Call("ideas.reorder", new JsonObject { ["ids"] = new JsonArray(bid) });
             var listed = await env.Rpc("ideas.list", new JsonObject());
-            Check.Equal(true, (bool)listed["exists"]!);
             var order = ((JsonArray)listed["ideas"]!).Select(i => i!["title"].Str()).ToList();
             Check.Equal("Second|First (renamed)|Third|Fourth idea", string.Join("|", order));
 
             var prompt = (string?)await env.Ctx.RpcFake.Call("ideas.toPrompt", new JsonObject { ["id"] = aid });
-            Check.Contains(prompt, "Implement the following idea from the ideas backlog (`" + aid + "` in");
+            Check.Contains(prompt, "Implement the following idea from the ideas backlog (`" + aid + "`).");
             Check.Contains(prompt, "Keep the idea up to date with the ideas tool (action update)");
             Check.Contains(prompt, "# First (renamed)\nPriority: low · Project: Other · Tags: ui");
             Check.Contains(prompt, "## To do\n- [x] a");
@@ -792,7 +649,7 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: one backlog in the store for all (project and projectless); ideas.fileName is only a hint", async () =>
+        r.Add("ideas: one backlog in the store for all (project and projectless)", async () =>
         {
             var env = new Env();
             await env.StartAsync();
@@ -807,15 +664,10 @@ public static class IdeasTests
             Check.True(ideas.Single(i => i["title"].Str() == "Global one")["project"] is null, "the projectless session's idea is unbound");
             Check.Equal(env.Project.Id, ideas.Single(i => i["title"].Str() == "Project one")["project"]!["id"].Str());
 
-            // The setting still names the file the cutover reads and the default export name, and nothing follows it.
-            env.Ctx.SettingsFake.Set("ideas.fileName", "backlog.json");
-            Ok(await env.Run("ideas", new { action = "add", title = "Named" }));
-            Check.False(System.IO.File.Exists(Path.Combine(env.Ctx.Paths.Home, "backlog.json")), "a named file is not written either");
-            Check.Equal(3, (await env.Ideas()).Count);
+            Check.Equal(2, (await env.Ideas()).Count);
             var storage = (await env.Rpc("ideas.list", new JsonObject()))["storage"]!;
             Check.Equal("sqlite", storage["backend"].Str());
             Check.Equal("netpi.ideas", storage["scope"].Str());
-            Check.Equal("backlog.json", (await env.Rpc("ideas.list", new JsonObject()))["fileName"].Str(), "the legacy name is still reported");
             env.Ctx.Unload();
         });
 
@@ -931,165 +783,6 @@ public static class IdeasTests
             Check.True(idea["sessionIds"]!.AsArray().Any(x => x.Str() == env.GlobalSession.Id), "session recorded");
 
             await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.attach", new JsonObject { ["sessionId"] = env.Session.Id, ["id"] = "idea-nope00" }));
-        });
-
-        // ------------------------------------------------------------------ save on tab close (phase 2)
-
-        // A chat with n user turns and an agent answer, so the check has a digest to read.
-        async Task<Env> TalkEnv(int users = 2)
-        {
-            var env = new Env();
-            await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, ContextWindow = 262144, MaxOutputTokens = 16384 });
-            for (var i = 0; i < users; i++)
-            {
-                env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText($"please look at the nudge counter, part {i}"));
-                env.Ctx.SessionsFake.AppendMessage(env.Session.Id, new ChatMessage
-                {
-                    Role = MessageRole.Assistant, StopReason = "tool_calls",
-                    Parts = [new TextPart { Text = "On it." }, new ToolCallPart { Id = $"call_{i}", Name = "read" }],
-                });
-            }
-            return env;
-        }
-
-        async Task<JsonArray> Suggestions(Env env) => (JsonArray)(await env.Rpc("ideas.suggestions", new JsonObject()))["suggestions"]!.AsArray().DeepClone();
-
-        // The check runs in the background after the tab is gone; wait for its card.
-        async Task<JsonArray> WaitForSuggestions(Env env, int count, int ms = 4000)
-        {
-            for (var waited = 0; waited < ms; waited += 25)
-            {
-                var s = await Suggestions(env);
-                if (s.Count == count) return s;
-                await Task.Delay(25);
-            }
-            throw new AssertException($"expected {count} suggestion(s), got {(await Suggestions(env)).Count}");
-        }
-
-        // A card that must not come cannot be waited for: wait for the check's own end instead, its mark in the store
-        // leaving "running" (done, or failed with the reason).
-        async Task<JsonObject> WaitForMark(Env env, string sessionId, int ms = 4000)
-        {
-            for (var waited = 0; waited < ms; waited += 25)
-            {
-                var mark = env.Repo.Checks().FirstOrDefault(m => m["sessionId"].Str() == sessionId);
-                if (mark?["state"].Str() is "done" or "failed") return mark;
-                await Task.Delay(25);
-            }
-            throw new AssertException("the check never finished");
-        }
-
-        r.Add("ideas: a plan the closed chat never built becomes a card, and saving it writes the idea with the session", async () =>
-        {
-            var env = await TalkEnv();
-            env.Ctx.ModelsFake.Responder = _ => new ChatMessage
-            {
-                Role = MessageRole.Assistant, StopReason = "stop",
-                Parts = [new TextPart { Text = "SAVE\nNudge: reset the counter\nThe nudge counter only grows within a run, so the cap applies to the whole run." }],
-            };
-            var published = new List<JsonObject>();
-            using var _events = env.Ctx.Events.Subscribe("ideas.suggested", e => published.Add((JsonObject)e.Data!));
-
-            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
-            var cards = await WaitForSuggestions(env, 1);
-            Check.Equal(1, published.Count);
-            Check.Contains(cards[0]!["title"].Str()!, "reset the counter");
-            Check.Equal(env.Session.Id, cards[0]!["sessionId"].Str());
-            Check.Equal(env.Project.Id, cards[0]!["project"]!["id"].Str());
-
-            var id = cards[0]!["id"].Str()!;
-            var saved = await env.Rpc("ideas.resolve", new JsonObject { ["id"] = id, ["action"] = "save" });
-            Check.Equal("Nudge: reset the counter", saved["saved"]!["title"].Str());
-            Check.Equal(env.Project.Id, saved["saved"]!["project"]!["id"].Str());
-            Check.Equal(env.Session.Id, saved["saved"]!["sessions"]![0]!["sessionId"].Str());
-            Check.Equal(0, (await Suggestions(env)).Count);
-
-            // Answering the same card again (a retry after a timeout, or a second window) reports the answer that was
-            // already given instead of saving a second idea: one card, one effect, and the caller can tell which.
-            var again = await env.Rpc("ideas.resolve", new JsonObject { ["id"] = id, ["action"] = "save" });
-            Check.Equal(true, again["alreadyResolved"]!.GetValue<bool>(), "the second answer is the recorded one");
-            Check.Equal("Nudge: reset the counter", again["saved"]!["title"].Str());
-            Check.Equal(1, ((JsonArray)(await env.Rpc("ideas.list", new JsonObject()))["ideas"]!).Count, "and still one idea");
-        });
-
-        // That a discarded card is final (the same plan is not offered again) is "ideas storage: a discarded card does
-        // not come back as a new one" in IdeasStorageTests.
-        r.Add("ideas: NOTHING leaves no card, and the user's edit is what gets saved", async () =>
-        {
-            var env = await TalkEnv();
-            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "NOTHING" }] };
-            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
-            Check.Equal("done", (await WaitForMark(env, env.Session.Id))["state"].Str(), "the check ran to its end");
-            Check.Equal(1, env.Ctx.ModelsFake.Requests.Count, "and asked the model");
-            Check.Equal(0, (await Suggestions(env)).Count, "NOTHING leaves no card");
-
-            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "SAVE\nA plan\nSomething" }] };
-            env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("and one more thing about the deploy steps"));
-            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
-            var id = (await WaitForSuggestions(env, 1))[0]!["id"].Str()!;
-
-            var saved = await env.Rpc("ideas.resolve", new JsonObject
-            {
-                ["id"] = id, ["action"] = "save", ["edit"] = new JsonObject { ["title"] = "Deploy checklist", ["summary"] = "What is left" },
-            });
-            Check.Equal("Deploy checklist", saved["saved"]!["title"].Str());
-            Check.Equal("What is left", saved["saved"]!["summary"].Str());
-        });
-
-        r.Add("ideas: a discarded card is gone, and the chats not worth checking never get one", async () =>
-        {
-            var env = await TalkEnv();
-            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "SAVE\nSomething\nLeft" }] };
-            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
-            var id = (await WaitForSuggestions(env, 1))[0]!["id"].Str()!;
-            var res = await env.Rpc("ideas.resolve", new JsonObject { ["id"] = id, ["action"] = "discard" });
-            Check.Equal(true, res["discarded"]!.GetValue<bool>());
-            Check.Equal(0, (await Suggestions(env)).Count);
-            Check.Equal(0, (await env.Rpc("ideas.list", new JsonObject()))["ideas"]!.AsArray().Count);
-
-            // One user turn, a subagent, an unknown session, a turn that was aborted, and the setting off.
-            Check.Equal("short", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.GlobalSession.Id }))["reason"].Str());
-            var sub = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "sub", Kind = "subagent" });
-            env.Ctx.SessionsFake.AppendMessage(sub.Id, ChatMessage.UserText("do the thing"));
-            env.Ctx.SessionsFake.AppendMessage(sub.Id, ChatMessage.UserText("and this"));
-            Check.Equal("subagent", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = sub.Id }))["reason"].Str());
-            Check.Equal("no_session", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = "ses_nope00" }))["reason"].Str());
-            var aborted = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "cut" });
-            env.Ctx.SessionsFake.AppendMessage(aborted.Id, ChatMessage.UserText("go"));
-            env.Ctx.SessionsFake.AppendMessage(aborted.Id, new ChatMessage { Role = MessageRole.Assistant, StopReason = "aborted", Parts = [new TextPart { Text = "…" }] });
-            env.Ctx.SessionsFake.AppendMessage(aborted.Id, ChatMessage.UserText("go on"));
-            Check.Equal("unfinished", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = aborted.Id }))["reason"].Str());
-            env.Ctx.SettingsFake.Set("ideas.saveCheck", JsonValue.Create(false));
-            Check.Equal("off", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
-        });
-
-        r.Add("ideas: one check per message count, and a reopened chat with new turns is checked again", async () =>
-        {
-            var env = await TalkEnv();
-            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "NOTHING" }] };
-            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
-            Check.Equal("done", (await WaitForMark(env, env.Session.Id))["state"].Str(), "the first check ran to its end");
-            Check.Equal(1, env.Ctx.ModelsFake.Requests.Count, "with one model call");
-            Check.Equal("already", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str(), "a finished check is not run again");
-
-            env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("one more question about the counter"));
-            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
-            await Until(() => env.Ctx.ModelsFake.Requests.Count == 2, "both checks ran"); // one model call per check, not per close
-            Check.Equal(2, env.Ctx.ModelsFake.Requests.Count);
-        });
-
-        r.Add("ideas: the save check parses SAVE and NOTHING, and nothing else", () =>
-        {
-            Check.Equal(null, IdeaSaveCheck.Parse("NOTHING"));
-            Check.Equal(null, IdeaSaveCheck.Parse(""));
-            Check.Equal(null, IdeaSaveCheck.Parse("save\n\nSomething")); // no title: not a card
-            Check.Equal(null, IdeaSaveCheck.Parse("Sure! Here is what I found in the conversation:\n1. ..."));
-            var parsed = IdeaSaveCheck.Parse("SAVE\n# Reset the nudge counter\nThe counter **only grows**.\n\nMore detail.");
-            Check.Equal("Reset the nudge counter", parsed!.Value.Title);
-            Check.Equal("The counter **only grows**. More detail.", parsed.Value.Summary); // the summary keeps its markdown
-            Check.Equal("Title", IdeaSaveCheck.Parse("SAVE\n  **Title**  \nBody")!.Value.Title);
-            Check.Equal("Body", IdeaSaveCheck.Parse("SAVE\n**Title**\nBody")!.Value.Summary);
         });
     }
 }

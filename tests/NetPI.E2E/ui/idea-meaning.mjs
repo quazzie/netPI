@@ -36,8 +36,7 @@ const ctx = {
   rpc: async (method, params) => {
     if (method === 'ideas.list') return {exists:true, storage:{database:'netpi.db', scope:'netpi.ideas', schemaVersion:2}, ideas:JSON.parse(JSON.stringify(ideas))};
     if (method === 'projects.list') return [];
-    if (method === 'ideas.suggestions') return {suggestions:[]};
-    if (method === 'ideas.capabilities') return {decisions:true, history:true, models:true, embeddings:${embeddings}};
+    if (method === 'ideas.capabilities') return {embeddings:${embeddings}};
     if (method === 'ideas.similar') {
       window.__similar.push(params);
       return /clock/.test(params.text)

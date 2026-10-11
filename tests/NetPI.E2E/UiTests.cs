@@ -177,7 +177,7 @@ public static class UiTests
             var failedChecks = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
             Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
                 + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
-            Check.Equal(0, proc.ExitCode, "idea-image exit code; stderr: " + err);
+            Check.Equal(0, proc.ExitCode, "idea-image exit code; browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) + "; stderr: " + err);
             Env.Log($"screenshots: {outDir}");
         }, 120);
         r.Add("ui.pinned-sessions", "ui: pin a session — a Pinned group above the recency groups, and unpinning removes it (idea-k8nghc)", async () =>

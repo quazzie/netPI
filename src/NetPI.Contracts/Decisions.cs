@@ -23,11 +23,6 @@ public interface IDecisionService
     Task<JsonObject> EvaluateAsync(DecisionRequest request, CancellationToken ct);
 }
 
-public interface IGitHistory
-{
-    Task<JsonObject?> ReadAsync(JsonObject request, CancellationToken ct);
-}
-
 /// <summary>Optional typed capabilities with RPC compatibility for alternate/older implementations.</summary>
 public static class DecisionCapabilities
 {

@@ -58,7 +58,6 @@ const ctx = {
   rpc: async (method, params) => {
     if (method === 'ideas.list') return {exists:true, storage:{database:'netpi.db', scope:'netpi.ideas', schemaVersion:2}, ideas:copy(ideas)};
     if (method === 'projects.list') return [];
-    if (method === 'ideas.suggestions') return {suggestions:[]};
     if (method === 'ideas.update') {
       window.__updates.push(copy(params));
       const idea = window.__idea(params.id);

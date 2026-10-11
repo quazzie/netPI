@@ -13,7 +13,6 @@
   import RunStatus from './RunStatus.svelte';
   import GoalStrip from './GoalStrip.svelte';
   import PlanPill from './PlanPill.svelte';
-  import IdeaCards from './IdeaCards.svelte';
   import { app, isBusy, modelFor, sendMessage, abortAgent, hasRpc } from '../../lib/state/app.svelte.js';
   import { pendingIn, answerAsk } from '../../lib/state/asks.svelte.js';
   import { DRAFT_IMAGES_MAX } from '../../lib/state/drafts.svelte.js';
@@ -355,7 +354,6 @@
     <GoalStrip {session} />
     {#if !executionAvailable}<div class="banner" data-level="warn" role="status">Execution unavailable — enable Runtime to send. Your draft is kept.</div>{/if}
     <TodoStrip {session} />
-    <IdeaCards />
 
     <div
       class="composer"

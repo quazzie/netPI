@@ -68,7 +68,6 @@ const FORBIDDEN = [
   { id: 'DecisionHints', why: 'decision hints are the decide plugin' },
   { id: 'DecisionCapabilities', why: 'decision capabilities are the decide plugin' },
   { id: 'DecisionConfidence', why: 'decision confidence is the decide plugin' },
-  { id: 'IGitHistory', why: 'reading git history is the decide plugin' },
   // Deferred tools: which tools a chat is sent is a plugin feature.
   { id: 'ToolSelection', why: 'tool selection is a plugin decision' },
   { id: 'IDeferredToolInfrastructure', why: 'deferred tools are a plugin feature' },

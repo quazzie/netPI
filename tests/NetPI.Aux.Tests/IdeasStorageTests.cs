@@ -56,52 +56,6 @@ public static class IdeasStorageTests
         public async Task<List<string>> Titles() => ((JsonArray)(await Rpc("ideas.list", new JsonObject()))["ideas"]!)
             .Select(i => i!["title"].Str()).ToList();
 
-        public async Task<List<string>> CardIds() => ((JsonArray)(await Call("ideas.suggestions", new JsonObject()))["suggestions"]!)
-            .Select(i => i!["id"].Str()).ToList();
-
-        /// <summary>A card waiting for the user, as a closed chat or a commit check leaves it.</summary>
-        public string AddCard(string id = "sg_card00001", string title = "Unsaved plan", string kind = "save", string? ideaId = null)
-        {
-            var card = new JsonObject
-            {
-                ["id"] = id,
-                ["kind"] = kind,
-                ["sessionId"] = Session.Id,
-                ["sessionTitle"] = "s",
-                ["title"] = title,
-                ["summary"] = "what the chat left behind",
-                ["at"] = "2026-09-29T10:00:00Z",
-                ["project"] = new JsonObject { ["id"] = Project.Id, ["name"] = Project.Name },
-            };
-            if (ideaId is not null) card["ideaId"] = ideaId;
-            Repo.AddCard(card);
-            return id;
-        }
-
-        /// <summary>A "save" card as the check leaves it: one plan one conversation.</summary>
-        public JsonObject Plan(string id, string title) => new()
-        {
-            ["id"] = id,
-            ["kind"] = "save",
-            ["sessionId"] = Session.Id,
-            ["sessionTitle"] = "s",
-            ["title"] = title,
-            ["summary"] = "what the chat left behind",
-            ["at"] = "2026-09-29T10:00:00Z",
-        };
-
-        /// <summary>A "done" card: this idea may be finished.</summary>
-        public JsonObject Done(string id, string ideaId) => new()
-        {
-            ["id"] = id,
-            ["kind"] = "done",
-            ["ideaId"] = ideaId,
-            ["ideaRevision"] = 1,
-            ["title"] = "Finished",
-            ["commits"] = new JsonArray(),
-            ["at"] = "2026-09-29T10:00:00Z",
-        };
-
         /// <summary>An idea of the backlog, as the storage tests add them (through the repository: this suite needs no RPC).</summary>
         public string AddIdea(string title = "An idea") => Repo.Add(IdeaOps.CreateIdea(
             new JsonObject { ["title"] = title }, Repo.TakenIds(), "user", Session.Id)).Doc["id"]!.Str()!;
@@ -109,18 +63,6 @@ public static class IdeasStorageTests
 
     public static void Register(TestRunner r)
     {
-        r.Add("cards: a bad edit on ideas.resolve is refused the way a bad patch on ideas.update is (bad_request), and nothing is saved", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var card = env.AddCard(title: "");   // a card without a title: the edit has to supply one
-            var (code, message) = await env.Try("ideas.resolve", new JsonObject { ["id"] = card, ["action"] = "save", ["edit"] = new JsonObject { ["title"] = "   " } });
-            Check.Equal("bad_request", code);
-            Check.Contains(message, "needs a title");
-            Check.Equal(0, (await env.Titles()).Count, "nothing was saved");
-            Check.Equal(1, (await env.CardIds()).Count, "and the card is still waiting");
-        });
-
         // ---------------------------------------------------------------- the review's three gaps, as they are now
 
         r.Add("review: a rejected patch leaves no trace, and no later write commits it", async () =>
@@ -240,12 +182,12 @@ public static class IdeasStorageTests
             var rolled = Check.Throws<InvalidOperationException>(() => env.Ctx.Data.Transaction<object?>(() =>
             {
                 repo.Add(IdeaOps.CreateIdea(new JsonObject { ["title"] = "Rolled back" }, repo.TakenIds(), "user", null));
-                repo.SetMeta("half", "written");
+                repo.Update(kept.Doc["id"]!.Str()!, new JsonObject { ["title"] = "Changed inside" }, fromUi: true);
                 throw new InvalidOperationException("the middle of the work failed");
             }));
             Check.Equal("the middle of the work failed", rolled.Message);
             Check.Equal(1, repo.Count(), "the idea written inside the transaction is gone");
-            Check.True(repo.Meta("half") is null, "and so is everything else it wrote");
+            Check.Equal("Kept", repo.Idea(kept.Doc["id"]!.Str())!["title"].Str(), "and so is everything else it wrote");
             Check.True(repo.Idea(kept.Doc["id"]!.Str()) is not null, "what was committed before is untouched");
             env.Ctx.Unload();
         });
@@ -289,7 +231,7 @@ public static class IdeasStorageTests
             idea["sections"]!.AsArray().Add(new JsonObject { ["id"] = "sec-aa", ["kind"] = "note", ["content"] = "x", ["author"] = "bob" });
             repo.Add(idea);
             repo.AddSession(idea["id"]!.Str(), env.Session.Id);
-            repo.MarkDone(idea["id"]!.Str());
+            repo.Update(idea["id"]!.Str()!, new JsonObject { ["status"] = "done" }, fromUi: true);
             var after = repo.Idea(idea["id"]!.Str())!;
             Check.Equal("{\"days\":3}", after["estimate"]!.ToJsonString());
             Check.Equal("bob", after["sections"]![0]!["author"].Str());
@@ -298,225 +240,21 @@ public static class IdeasStorageTests
             env.Ctx.Unload();
         });
 
-        // ---------------------------------------------------------------- cards
-
-        r.Add("ideas storage: answering a card writes the idea and takes the card in one step", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var card = env.AddCard();
-            var saved = await env.Call("ideas.resolve", new JsonObject { ["id"] = card, ["action"] = "save", ["edit"] = new JsonObject { ["title"] = "Edited by the user" } });
-            Check.Equal("Edited by the user", saved["saved"]!["title"].Str());
-            Check.Equal(env.Project.Id, saved["saved"]!["project"]!["id"].Str(), "stamped with the card's project");
-            Check.Equal(env.Session.Id, saved["saved"]!["sessions"]![0]!["sessionId"].Str());
-            Check.Equal(0, (await env.CardIds()).Count, "the card is answered");
-            Check.Equal(1, (await env.Titles()).Count);
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas storage: two windows answering the same card have one effect", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var card = env.AddCard();
-            var results = await Task.WhenAll(
-                env.Try("ideas.resolve", new JsonObject { ["id"] = card, ["action"] = "save" }),
-                env.Try("ideas.resolve", new JsonObject { ["id"] = card, ["action"] = "save" }));
-            var ok = results.Count(x => x.Code is null);
-            Check.True(ok >= 1, "at least one window got an answer: " + string.Join(", ", results.Select(x => x.Code ?? "ok")));
-            Check.Equal(1, (await env.Titles()).Count, "one idea, not two");
-            Check.Equal(0, (await env.CardIds()).Count);
-            // The second window is told the outcome of the answer, not that it failed: retrying is safe and is what a
-            // client that timed out does.
-            var again = await env.Call("ideas.resolve", new JsonObject { ["id"] = card, ["action"] = "save" });
-            Check.Equal(true, (bool)again["alreadyResolved"]!, "a repeated answer reports the recorded one");
-            Check.Equal(1, (await env.Titles()).Count, "and still saves nothing new");
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas storage: a card answered with the wrong action is refused, and stays", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            env.AddCard("sg_wrong001", "Unsaved plan", "save");
-            var (code, message) = await env.Try("ideas.resolve", new JsonObject { ["id"] = "sg_wrong001", ["action"] = "done" });
-            Check.Equal("bad_request", code, "a save card is not marked done: " + message);
-            Check.Equal(1, (await env.CardIds()).Count, "the card is still there");
-            Check.Equal(0, (await env.Titles()).Count);
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas storage: a card that is gone is told so, not treated as an empty answer", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var (code, message) = await env.Try("ideas.resolve", new JsonObject { ["id"] = "sg_nope", ["action"] = "discard" });
-            Check.Equal("not_found", code);
-            Check.Contains(message, "gone");
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas storage: a 'done' card marks the idea, keeps its commits, and is offered once per idea", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var idea = (await env.Call("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Nudge" } }))!;
-            var id = idea["id"].Str();
-            env.Repo.AddCommitEntries([id], new JsonObject { ["hash"] = new string('a', 40), ["short"] = "aaaaaaa", ["subject"] = "nudge: first", ["at"] = "2026-09-29T10:00:00Z" });
-            env.AddCard("sg_done0001", "Nudge", "done", id);
-            env.AddCard("sg_done0002", "Nudge again", "done", id);
-            Check.Equal(1, (await env.CardIds()).Count, "one offer per idea");
-
-            var marked = await env.Call("ideas.resolve", new JsonObject { ["id"] = "sg_done0001", ["action"] = "done" });
-            Check.Equal("done", marked["saved"]!["status"].Str());
-            Check.Equal(1, ((JsonArray)marked["saved"]!["commits"]!).Count, "the commits stay on the idea");
-            Check.Equal(0, (await env.CardIds()).Count);
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas storage: the same chat and the same plan make one card, however often the check runs", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var repo = env.Repo;
-            var card = new JsonObject { ["id"] = "sg_a1", ["kind"] = "save", ["sessionId"] = env.Session.Id, ["title"] = "One plan", ["at"] = IdeaOps.Now() };
-            Check.True(repo.AddCard(card), "the first one is added");
-            Check.False(repo.AddCard((JsonObject)card.DeepClone()), "a second run of the same check is not stacked");
-            var other = (JsonObject)card.DeepClone();
-            other["id"] = "sg_a2";
-            other["title"] = "Another plan";
-            Check.True(repo.AddCard(other), "a different plan is its own card");
-            Check.Equal(2, repo.CardCount());
-            env.Ctx.Unload();
-        });
-
-        // ---------------------------------------------------------------- checks and cursors
-
-        r.Add("ideas storage: a check is claimed once per conversation revision, and an expired claim is retryable", async () =>
-        {
-            var env = new Env();
-            var repo = env.Repo;
-            var (started, reason, token) = repo.ClaimCheck("ses_1", 5, "10:99", 3, TimeSpan.FromMinutes(5));
-            Check.True(started, "the first close takes it: " + reason);
-            Check.True(token is { Length: > 0 }, "and owns it with a token");
-
-            var (again, reason2, _) = repo.ClaimCheck("ses_1", 5, "10:99", 3, TimeSpan.FromMinutes(5));
-            Check.False(again, "a second close of the same revision does not start a second check: " + reason2);
-            var (moved, _, movedToken) = repo.ClaimCheck("ses_1", 6, "12:100", 3, TimeSpan.FromMinutes(5));
-            Check.True(moved, "a chat that changed since is a different check to run");
-
-            // A worker whose claim was taken over cannot report over the newer outcome.
-            Check.False(repo.FinishCheck("ses_1", "some-other-token", null), "a stale worker is ignored");
-            Check.False(repo.FinishCheck("ses_1", token, null), "and so cannot the one it took over from");
-            Check.True(repo.FinishCheck("ses_1", movedToken, null), "the current owner reports");
-            Check.False(repo.ClaimCheck("ses_1", 6, "12:100", 3, TimeSpan.FromMinutes(5)).Started, "a finished check stays finished");
-
-            // A claim left behind by a stopped run: the start recovers it, and the check runs again.
-            var checks = env.Ctx.Data.Collection("checks", new CollectionSpec().Text("state").Text("at").Integer("claimUntil"));
-            var mark = checks.Get("ses_1")!;
-            mark["state"] = "running"; mark["claim"] = "gone"; mark["claimUntil"] = 1;
-            checks.Put("ses_1", mark);
-            Check.Equal(1, repo.RecoverExpiredClaims());
-            Check.True(repo.ClaimCheck("ses_1", 6, "12:100", 3, TimeSpan.FromMinutes(5)).Started, "and is not blocked for good");
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas storage: a claim whose time ran out is claimable again, with or without a restart", () =>
-        {
-            var env = new Env();
-            var repo = env.Repo;
-            Check.True(repo.ClaimCheck("ses_3", 5, "10:99", 3, TimeSpan.FromMinutes(5)).Started, "the first close takes it");
-            var checks = env.Ctx.Data.Collection("checks", new CollectionSpec().Text("state").Text("at").Integer("claimUntil"));
-            var mark = checks.Get("ses_3")!;
-            mark["claimUntil"] = DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds();   // nobody is running it any more
-            checks.Put("ses_3", mark);
-
-            // A reload or a shutdown is not the only way a claim runs out: the recovery at the next start is one, and
-            // a chat closed again in between must not wait for it (idea-g6siz0).
-            var (again, reason, token) = repo.ClaimCheck("ses_3", 5, "10:99", 3, TimeSpan.FromMinutes(5));
-            Check.True(again, "the conversation is checked again: " + reason);
-            Check.True(token is { Length: > 0 } && token != mark["claim"]!.Str(), "under a new claim");
-            Check.Equal(0, repo.RecoverExpiredClaims(), "and nothing is left for the recovery at the next start to do");
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas storage: a discarded card does not come back as a new one", async () =>
-        {
-            var env = new Env();
-            var repo = env.Repo;
-            var card = env.AddCard();
-            repo.ResolveCard(card, "discard", null);
-            Check.Equal(0, repo.CardCount(), "the card is answered");
-
-            // The check runs again on the next close of that conversation and drafts the same plan. The answer was a
-            // decision about it: discarding it means it is not wanted, so it must not be offered again (idea-g6siz0).
-            Check.False(repo.AddCard(env.Plan("sg_card00002", "Unsaved plan")), "the same plan, in the same conversation, stays discarded");
-            Check.False(repo.AddCard(env.Plan("sg_card00003", "  unsaved PLAN ")), "however it is written");
-            Check.True(repo.AddCard(env.Plan("sg_card00004", "Another plan the chat left behind")), "another plan is still offered");
-            Check.Equal(1, repo.CardCount(), "and the plan that was not answered still waits");
-
-            // A "done" card is keyed on its idea, so a dismissal is final for that idea too.
-            var idea = env.AddIdea();
-            Check.True(repo.AddCard(env.Done("sg_card00005", idea)), "the idea can be offered as finished");
-            repo.ResolveCard("sg_card00005", "discard", null);
-            Check.False(repo.AddCard(env.Done("sg_card00006", idea)), "and it is not offered again");
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas storage: a failed check is retried a few times and then left alone", () =>
-        {
-            var env = new Env();
-            var repo = env.Repo;
-            for (var i = 0; i < 3; i++)
-            {
-                var (started, _, token) = repo.ClaimCheck("ses_2", 4, "5:7", 3, TimeSpan.FromMinutes(5));
-                Check.True(started, $"try {i + 1} runs");
-                repo.FinishCheck("ses_2", token, "the model was down");
-            }
-            var (tries, reason, _) = repo.ClaimCheck("ses_2", 4, "5:7", 3, TimeSpan.FromMinutes(5));
-            Check.False(tries, "after three tries the conversation is not asked again: " + reason);
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas storage: a repository cursor is remembered once, and only advances", () =>
-        {
-            var env = new Env();
-            var repo = env.Repo;
-            repo.RememberIfAbsent("C:/repo", "aaa", "prj_1", "Demo");
-            Check.Equal("aaa", repo.LastSeen("C:/repo"));
-            repo.RememberIfAbsent("C:/repo", "bbb", "prj_1", "Demo");
-            Check.Equal("aaa", repo.LastSeen("C:/repo"), "a stored cursor is never overwritten by anchoring");
-            repo.Remember("C:/repo", "ccc", "prj_1", "Demo");
-            Check.Equal("ccc", repo.LastSeen("C:/repo"));
-            Check.Equal(0, repo.ForgetStaleRepos(60), "and it is not forgotten yet");
-            repo.Remember("C:/gone", "ddd");
-            repo.SetMeta("x", "y");
-            Check.Equal("y", repo.Meta("x"));
-            repo.SetMeta("x", null);
-            Check.True(repo.Meta("x") is null, "metadata can be cleared");
-            env.Ctx.Unload();
-        });
-
         // ---------------------------------------------------------------- the storage descriptor and the events
 
-        r.Add("ideas storage: a plugin reload - a new instance over the same tables - keeps the backlog and the cards", async () =>
+        r.Add("ideas storage: a plugin reload - a new instance over the same tables - keeps the backlog", async () =>
         {
             var env = new Env();
             await env.StartAsync();
             var idea = await env.Call("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Survives a reload" } });
-            var card = env.AddCard("sg_reload01", "Waiting through a reload");
             // A reload is a swap: the new instance starts while the old one is still registered. The store is the only
             // thing the two share, and neither of them holds a second copy of the backlog.
             var (other, second) = env.Second();
             try
             {
                 Check.Equal(1, second.All().Count, "the new instance reads what the old one wrote");
-                Check.Equal(1, second.CardCount(), "and the cards waiting for an answer");
                 second.Update(idea["id"].Str(), new JsonObject { ["status"] = "done" }, fromUi: true);
                 Check.Equal("done", env.Repo.Idea(idea["id"].Str())!["status"]!.Str(), "the old instance sees the new one's write");
-                var saved = await env.Call("ideas.resolve", new JsonObject { ["id"] = card, ["action"] = "save" });
-                Check.Equal("Waiting through a reload", saved["saved"]!["title"].Str(), "and the card the new instance sees can be answered by the old one");
-                Check.Equal(0, second.CardCount(), "the card is gone for both");
             }
             finally { other.Unload(); env.Ctx.Unload(); }
         });
@@ -532,7 +270,6 @@ public static class IdeasStorageTests
             Check.Equal("netpi.ideas", storage["scope"].Str());
             Check.Equal(IdeasRepository.SchemaVersion, storage["schemaVersion"]!.GetValue<int>());
             Check.Equal(false, (bool)storage["editableFile"]!, "and says it is not an editable file");
-            Check.Equal(false, (bool)list["exists"]!, "an empty backlog is not 'a file that is not there'");
             env.Ctx.Unload();
         });
 
