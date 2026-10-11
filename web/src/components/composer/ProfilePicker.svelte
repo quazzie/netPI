@@ -9,7 +9,7 @@
   import { bus } from '../../lib/bus.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import { tokens } from '../../lib/format.js';
-  import { hasRpc } from '../../lib/state/app.svelte.js';
+  import { hasRpc, upsertSessionLocal } from '../../lib/state/app.svelte.js';
 
   let { session, open = $bindable(false) } = $props();
   let btn = $state();
@@ -36,7 +36,8 @@
     open = false;
     if ((id ?? null) === current) return;
     try {
-      await rpc('profiles.apply', { sessionId: session.id, profile: id });
+      // the chat as it is now: one with no messages yet is not announced (no session.updated), so the button follows this
+      upsertSessionLocal(await rpc('profiles.apply', { sessionId: session.id, profile: id }));
     } catch (e) {
       toast(e.message, 'error');
     }

@@ -9,6 +9,7 @@
   import { rpc } from '../../lib/rpc.svelte.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import { tokens } from '../../lib/format.js';
+  import { upsertSessionLocal } from '../../lib/state/app.svelte.js';
 
   let { session, open = $bindable(false) } = $props();
   let btn = $state();
@@ -43,6 +44,8 @@
   async function set(change) {
     try {
       info = await rpc('agent.setTools', { sessionId: session.id, ...change });
+      // A chat with no messages yet is not announced (no session.updated): the button counts from a fresh copy of it
+      if (!info?.started) upsertSessionLocal(await rpc('sessions.get', { id: session.id }));
     } catch (e) {
       toast(e.message, 'error');
     }
