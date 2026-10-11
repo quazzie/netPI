@@ -1035,7 +1035,7 @@ must be loaded: on the nuc it is a router model you switch to in AiHub; an unloa
 request id and that hint. The NInfer chat model (`qwen3.8-27b`) works too: AiGateway answers System One for NInfer
 models through NInfer's `POST /v1/decision` (the answer letters' probabilities read after one prefill, no text
 generated; at most 26 options per choice question). It needs no extra memory and was the more accurate model in the
-2026-09-26 tests (`DECISION-MODELS.md`), but it shares NInfer's two slots with the agents.
+2026-09-26 tests (decisions-lab's `docs/DECISION-MODELS.md`), but it shares NInfer's two slots with the agents.
 
 `{ questions, text?, items?: string[], file?, min_confidence? /* 0.8 */, model? }`. `questions` is `id → question`:
 `{ type: "yes_no", question }`, `{ type: "choice", question, options: { label: description } | label[] }` (2–255) or

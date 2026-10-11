@@ -12,6 +12,6 @@ The delivered runner and original evidence are [archived](../archive/2026-09-30-
 
 ## Boundaries and verification
 
-Selection, shards, failure evidence, incremental builds and repeat/fresh controls are already delivered. Budget-refresh and workspace-protection notes in the old report are historical, not work assigned here. CI activation or scheduling is excluded by the owner's decision to retain manual local checks.
+Selection, shards, failure evidence, incremental builds and repeat/fresh controls are already delivered. Budget-refresh and workspace-protection notes in the old report are historical, not work assigned here. CI (`.github/workflows/ci.yml`) runs the suites on every push; nothing here changes when it runs.
 
 Use existing timings to choose one slow case. Compare its focused before/after results, preserve its assertions, and exercise changed runner behavior with `-SelfTest`. Follow [TESTING.md](../TESTING.md) for scope: merging alone does not require a full gate. Do not run suites just to maintain this document.

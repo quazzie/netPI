@@ -21,7 +21,7 @@ internal sealed record Opinion(string Model, bool Harmless, IReadOnlyDictionary<
 /// <c>/v1/systemone</c>). A command it finds harmless runs without asking: p(destructive), p(stops_process) and
 /// p(remote_change) each &lt; t (<c>guardrails.secondOpinionThreshold</c>, default 0.2: on 852 real commands the Qwen
 /// decision called none of Qwen's own risky ones harmless at 0.2, and none of the risky ones among 50 hand-labelled hard
-/// cases; docs/DECISION-MODELS.md, 0.4). p(read_only) is asked and shown, not required: the model underrates builds and
+/// cases; decisions-lab's docs/DECISION-MODELS.md, 0.4). p(read_only) is asked and shown, not required: the model underrates builds and
 /// test runs as read-only.
 /// Everything else asks as before, with the model's answer on the card. Blocking rules and write/edit are never relaxed;
 /// no answer (no Decide plugin, the model not loaded, a timeout) means the user is asked.

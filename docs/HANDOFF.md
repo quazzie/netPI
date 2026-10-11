@@ -18,6 +18,14 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 ## Current state (2026-09-28)
 
+### Slimming pass (2026-10-11)
+
+What the owner's app never or barely used went: MCP's own `mcp_search`/`mcp_call` (now `tool_search` and `codemode`), the
+Coordinator's task queue, the Ideas plugin's automatic decision checks and its cards (the commit notice stays), the
+opt-in Loops/Todo decision hints, the `screenshot` tool (now `browser screenshot {url}` / `{app: true}`), and leftover
+compatibility code. The mock UI suite is frozen and moving to the real server. Record, commits and what data is left
+behind: [archive/2026-10-11-slim.md](archive/2026-10-11-slim.md).
+
 ### Schedules tab and tool (2026-10-06)
 
 The Schedules plugin (idea-1y1174) gained its missing surfaces: the **Schedules tab** (right panel, `plugins/NetPI.Schedules/ui/`, bundle `wwwroot/ui.js`) and the **`schedules` tool** (`SchedulesTool.cs`: list/get/history/add/update/run — no delete, up to the user; a scheduled chat cannot grow the set, cap 50). Zero new RPCs, events or settings. Covered by `SchedulesToolTests` (Aux), `ui.schedules-tab` (E2E) and the updated `RpcReadOnlyTests`.

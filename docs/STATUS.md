@@ -1,4 +1,4 @@
-# Status (2026-10-03)
+# Status (2026-10-11)
 
 ## Current review fixes
 
@@ -77,14 +77,15 @@ are for shared contracts or cross-cutting behavior.
 
 ## Useful next capabilities
 
-PDF/Office reading remains a backlog item (language-server diagnostics arrived as the `lsp` tool, docs/TOOLS.md); scheduled runs are `netpi.schedules` (RPC only for now, no tab). MCP, partial rollback
+PDF/Office reading remains a backlog item (language-server diagnostics arrived as the `lsp` tool, docs/TOOLS.md); scheduled runs are `netpi.schedules` (a tab and a tool). MCP, partial rollback
 and worktree automation were deliberately deferred or dropped in the earlier harness plan; they are not accidental
 omissions. See [the archived harness decisions](archive/2026-09-26-harness-gaps.md).
 
 ## MCP plugin (2026-09-30)
 
-`plugins/NetPI.Mcp` (in the solution) ships all four delivery stages: stdio/deferred dispatch, the disclosure
-lifecycle and targeted notices, Streamable HTTP, and the server-management UI. The MCP transport, runtime,
+`plugins/NetPI.Mcp` (in the solution) ships stdio and Streamable HTTP servers whose tools are deferred (a chat loads one
+with `tool_search`, or a `codemode` script calls it), targeted notices when a loaded tool's schema changes, resources
+(`mcp_resource`) and the server-management UI; its own `mcp_search`/`mcp_call` pair was removed on 2026-10-11. The MCP transport, runtime,
 lifecycle and mocked end-to-end cases pass in the suites; the Chrome attachment test now treats a browser that
 exits with code 0 (the launcher hands it to another process) as healthy. Native provider adapters, OAuth,
 prompts/resources and legacy HTTP+SSE remain follow-ups; see [PLUGIN-MCP.md](PLUGIN-MCP.md).

@@ -1,6 +1,6 @@
 // netpi-windows-agent: UI Automation for the windows tool (plugins/NetPI.Tools.Windows), one JSON request per stdin
 // line, one JSON answer per stdout line ({ id, ... } or { id, error }). Grown from decisions-lab's uia-agent, which the
-// live computer-use measurements ran on (docs/DECISION-MODELS.md, "Live computer use").
+// live computer-use measurements ran on (decisions-lab's docs/DECISION-MODELS.md, "Live computer use").
 //
 //   { cmd: "windows" }                                   visible top-level windows
 //   { cmd: "launch", exe, args?, title? }                start a program, wait for its new window

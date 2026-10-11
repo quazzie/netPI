@@ -68,9 +68,9 @@ See [the plan that made it so](docs/archive/2026-10-02-replaceable-parts.md).
   notice and load a skill with the `skill` tool when a task matches; `/skill:name` loads one for your message.
 - **Ideas backlog:** agents and you park research, plans and requirements in one backlog, kept in NetPI's own store
   beside your chats (each idea carries its project; the `ideas` tool + the Ideas tab); "send to chat" when it's time to
-  implement, and the agent closes it when done. The cards a closed chat leaves and the per-repository commit cursors
-  travel in that same store, so a backup carries the whole backlog without the Ideas plugin. Moving a backlog to
-  another machine is a deliberate `ideas.export` / `ideas.import` of a portable snapshot.
+  implement, and the agent closes it when done (after it commits, a notice reminds it). The backlog travels in that same
+  store, so a backup carries it without the Ideas plugin. Moving a backlog to another machine is a deliberate
+  `ideas.export` / `ideas.import` of a portable snapshot.
 - **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Usage, Ideas,
   MCP, Diagnostics), collapsible thinking/tool blocks, diffs, live shell output, pruned chat history with "load earlier",
   slash commands and `@` file mentions. Window size and position are remembered.

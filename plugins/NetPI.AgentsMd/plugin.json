@@ -1,5 +1,5 @@
 {
   "id": "netpi.agentsmd",
   "name": "AGENTS.md",
-  "description": "Adds global and project AGENTS.md / CLAUDE.md instruction files to the system prompt."
+  "description": "Global and project AGENTS.md / CLAUDE.md instruction files, announced to the agent as notices when they apply or change."
 }

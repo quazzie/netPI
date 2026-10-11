@@ -1,5 +1,5 @@
 {
   "id": "netpi.tools.web",
   "name": "Web tools",
-  "description": "web_fetch (pages as Markdown), web_search (SearXNG or Brave) and screenshot (headless Edge/Chrome, or the NetPI window)."
+  "description": "web_fetch (pages as Markdown), web_search (SearXNG or Brave) and browser (a tab per chat in headless Edge/Chrome or the user's Chrome; screenshots of a page or the NetPI window)."
 }
