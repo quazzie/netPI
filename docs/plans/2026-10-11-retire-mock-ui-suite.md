@@ -1,8 +1,39 @@
 # Move the mock UI suite to the real server
 
-Status: planned 2026-10-11, not started. The suite is **frozen**: no new section or check goes into `web/mock`. A new UI
-test is a script in `tests/NetPI.E2E/ui` that runs against the real server and MockLlm, registered in
-`tests/NetPI.E2E/UiTests.cs`.
+Status: in progress. The suite is **frozen**: no new section or check goes into `web/mock`. A new UI test is a script in
+`tests/NetPI.E2E/ui` that runs against the real server and MockLlm, registered in `tests/NetPI.E2E/UiTests.cs`.
+
+## Progress
+
+| done | what | test | checks |
+|---|---|---|---:|
+| 2026-10-11 | harness H1–H3: `ui/lib.mjs` (run, rpc, send, gates, tapSocket, keepsSettings), `RunUiScript`, MockLlm gates | – | – |
+| 2026-10-11 | J projects | `ui.projects` | 35 |
+| 2026-10-11 | K settings, chat tools, profiles | `ui.settings` | 47 |
+| 2026-10-11 | D side panels, sessions list | `ui.sessions-panel` | 21 |
+| 2026-10-11 | F Ideas tab, start screen ideas | `ui.ideas-tab` | 45 |
+
+Left in `e2e.mjs`: 36 sections, 275 checks (units G, C, A, H, B, E, I, L).
+
+What the real server showed that the mock had hidden, each fixed on the way:
+- `agentsmd.list` and `skills.list` refused `{ projectId }`: the projects dialog's instruction files and skills were
+  "Unavailable" (6864f1f)
+- a tool switched off or a profile chosen in a chat with no messages did not show on the composer's buttons: such a chat
+  is not announced (88c337c)
+- a price set on an agent was not announced (`agents.changed`'s signature left out cost and budget, 6e8fb64)
+- the Anthropic API publishes no prices: the mock showed "$3 / $15" for a model the app shows "price unknown" for
+- the folder picker's first listing overwrites a path typed before it lands
+
+Lessons for the next units:
+- Seed in the script over `rpc()` (names with `STAMP`, folders with `newDir`) and remove it in a `finally`: a script
+  that seeds itself runs against any server, which makes a scratch server (MockLlm plus a copy of `artifacts/dev/app`)
+  the fast loop, seconds per try instead of a build.
+- The server leaves null fields out of its JSON (`projectId ?? null`).
+- A section deleted from `e2e.mjs` can leave a later one on state it no longer has: run the whole remaining suite, and
+  fix the later section to set up what it needs.
+- Wait on the element the check reads (a locator with `hasText` and the attribute), not on a page-wide condition that may
+  already hold.
+- A check on a narrow composer reads hidden text as empty: the mock ran at 1600×1000.
 
 ## Why
 
@@ -35,7 +66,7 @@ runs the real-server suite with `-NoUi`, so the move has to bring the browser te
    - the new or extended script
    - its wrapper in `UiTests.cs` and its tag in `Catalog.cs` (`needs-node`, plus `ideas` when it needs the Ideas plugin)
    - the sections deleted from `e2e.mjs`
-   - the fake-backend code only those sections used (`agent.mjs` scripts, `server.mjs` controls, `store.mjs` seeds)
+   - (the fake backend's code goes with the last unit, all of it: trimming it per unit risks the sections still there)
    - the commit message: checks ported, checks dropped and why, and the run time.
 2. **Check parity.** Keep the mock's check names where they still read true, so `git log -S` finds both sides. A check
    that the real server makes meaningless (a mock counter, a fake delay) is restated as what the user sees, or dropped

@@ -3,9 +3,9 @@
   "flakes": [
     {
       "id": "ui.idea-image",
-      "runs": 17,
+      "runs": 18,
       "failures": 3,
-      "rate": 0.1765,
+      "rate": 0.1667,
       "firstSeen": "20261002-164209-c9ca",
       "lastFailure": "20261002-164357-4982",
       "cause": "3 ui check(s) failed: \u2014 responsive",
@@ -13,9 +13,9 @@
     },
     {
       "id": "ui.mcp-panel",
-      "runs": 8,
+      "runs": 9,
       "failures": 1,
-      "rate": 0.125,
+      "rate": 0.1111,
       "firstSeen": "20261006-011453-9432",
       "lastFailure": "20261006-011453-9432",
       "cause": "node:internal/modules/run_main:107\r \u2014 responsive",
@@ -33,9 +33,9 @@
     },
     {
       "id": "sessions.delete-orchestrator",
-      "runs": 25,
+      "runs": 26,
       "failures": 1,
-      "rate": 0.04,
+      "rate": 0.0385,
       "firstSeen": "20261005-160936-f110",
       "lastFailure": "20261005-160936-f110",
       "cause": "no agent of the deleted tree still busy: main:running (busy.Any(a =\u003E a.S(\u0022id\u0022) == parentId || kids.Any(k =\u003E k.S(\u0022id\u0022) == a.S(\u0022id\u0022)))) \u2014 responsive",
@@ -43,9 +43,9 @@
     },
     {
       "id": "ui.start-project",
-      "runs": 108,
+      "runs": 109,
       "failures": 2,
-      "rate": 0.0185,
+      "rate": 0.0183,
       "firstSeen": "20261003-233752-1c67",
       "lastFailure": "20261003-233827-7563",
       "cause": "1 ui check(s) failed: \u2014 responsive",
