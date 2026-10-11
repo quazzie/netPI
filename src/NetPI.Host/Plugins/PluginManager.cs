@@ -14,7 +14,7 @@ namespace NetPI.Host.Plugins;
 /// <item>Each load shadow-copies the folder (except <c>wwwroot</c>) to <c>&lt;home&gt;/shadow/&lt;name&gt;/&lt;pid&gt;_&lt;n&gt;/</c> and loads it into a
 /// collectible <see cref="PluginLoadContext"/>, so a build can overwrite the originals while the plugin runs.</item>
 /// <item>Plugins start in (Order, Name) sequence with a 30 s timeout. Failures leave the plugin <c>failed</c> with its registrations removed.</item>
-/// <item>A watcher per plugin directory reloads a plugin ~800 ms after its dll/pdb/json files change; <c>wwwroot</c> changes only bump its UI version.</item>
+/// <item>A watcher per plugin directory reloads a plugin ~800 ms after its dll/pdb/json files change; <c>wwwroot</c> changes only bump its UI version, and only when its files really differ.</item>
 /// </list>
 /// Operations that change plugin state are serialized; do not call <see cref="ReloadAsync"/> from a plugin's StartAsync/StopAsync.
 /// </summary>
@@ -384,6 +384,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         var scope = new PluginScope(e.Id, _log);
         var stopping = new CancellationTokenSource();
         e.UiVersion = NewVersion();
+        e.UiStamp = UiStampOf(e);
         var context = new PluginContext(_k, e.Id, e.Folder, scope, stopping.Token, () => e.UiVersion);
         INetPiPlugin? instance = null;
         try
@@ -870,6 +871,15 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     private void BumpUiVersion(PluginEntry e)
     {
         if (_disposed) return;
+        // The watcher also reports what changes no file: the first serve of a freshly copied bundle raised a change, and a
+        // new version remounts every open copy of the plugin's tab, which loses its state (a folder opened, a server picked).
+        var stamp = UiStampOf(e);
+        if (stamp == e.UiStamp)
+        {
+            _log.LogDebug("Plugin {Id}: a UI file event, but no file changed (version kept)", e.Id);
+            return;
+        }
+        e.UiStamp = stamp;
         e.UiVersion = NewVersion();
         _k.Ui.SetVersion(e.Id, e.UiVersion);
         _k.Ui.NotifyChanged();
@@ -983,6 +993,23 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         return asm.GetName().Version?.ToString(3);
     }
 
+    /// <summary>What the plugin's <c>wwwroot</c> holds: every file's relative path, size and write time, or "" without one.</summary>
+    private static string UiStampOf(PluginEntry e)
+    {
+        var dir = Path.Combine(e.Folder, "wwwroot");
+        try
+        {
+            if (!Directory.Exists(dir)) return "";
+            var lines = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
+                .Select(f => new FileInfo(f))
+                .Select(f => $"{Path.GetRelativePath(dir, f.FullName)}|{f.Length}|{f.LastWriteTimeUtc.Ticks}")
+                .Order(StringComparer.Ordinal);
+            return string.Join('\n', lines);
+        }
+        catch (IOException) { return Guid.NewGuid().ToString("N"); }       // mid-write: count it as a change
+        catch (UnauthorizedAccessException) { return Guid.NewGuid().ToString("N"); }
+    }
+
     private static string NewVersion() =>
         DateTime.UtcNow.Ticks.ToString("x") + Interlocked.Increment(ref s_versionCounter).ToString("x");
 
@@ -1088,6 +1115,8 @@ internal sealed class PluginEntry
     public int LoadCount { get; set; }
     public long LoadMs { get; set; }
     public string UiVersion { get; set; } = "0";
+    /// <summary>The <c>wwwroot</c> files <see cref="UiVersion"/> was set for (see UiStampOf).</summary>
+    public string UiStamp { get; set; } = "";
 
     // Current load (all cleared on unload so nothing roots the collectible context).
     public PluginLoadContext? Alc { get; set; }

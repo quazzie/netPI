@@ -210,6 +210,31 @@ public static class PluginTests
             Check.Contains(await HttpGetAsync(server, "/plugins/test.sample/ui.js", auth: false), "changed");
         });
 
+        r.Add("plugins: a wwwroot event that changes no file keeps the UI version (no remount of open tabs)", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            await using var server = await StartAsync(pluginsRoot);
+            var before = TabVersion(server);
+            var uiChanged = 0;
+            using var sub = server.Events.Subscribe(EventTypes.UiChanged, _ => Interlocked.Increment(ref uiChanged));
+            await Task.Delay(600); // the start's own (debounced) ui.changed is out
+            Interlocked.Exchange(ref uiChanged, 0);
+            // The same bytes written again and the old write time put back: the watcher sees writes, the folder is as it was.
+            // (The first serve of a freshly copied bundle raised such an event, and the new version remounted the open tab.)
+            var ui = Path.Combine(pluginDir, "wwwroot", "ui.js");
+            var bytes = File.ReadAllBytes(ui);
+            var written = File.GetLastWriteTimeUtc(ui);
+            File.WriteAllBytes(ui, bytes);
+            File.SetLastWriteTimeUtc(ui, written);
+            await Task.Delay(1500); // past the watcher's 300 ms debounce, with room
+            Check.Equal(before, TabVersion(server), "the tab version is kept");
+            Check.Equal(0, Volatile.Read(ref uiChanged), "no ui.changed");
+            // a real change still bumps it
+            File.WriteAllText(ui, "export function mount(el) { el.textContent = 'changed'; }");
+            await Wait.Until(() => TabVersion(server) != before, "tab version bumped by a real change");
+        });
+
         r.Add("plugins: failing StartAsync → failed state, registrations removed; new folders are picked up", async () =>
         {
             await SampleBuild.EnsureAsync();
