@@ -610,11 +610,3 @@ The `lsp` tool's servers (docs/TOOLS.md).
 |---|---|---|
 | `lsp.maxServers` | `3` | language servers running at once (one per language and workspace root); starting one more stops the least recently used. Each holds a project in memory |
 | `lsp.idleMinutes` | `15` | a server nobody asked for this long is stopped; the next request starts it again |
-
-## Task queue
-
-The coordinator's queue of work packages (`tasks.*`, docs/PROTOCOL.md).
-
-| key | default | |
-|---|---|---|
-| `tasks.autoDispatch` | `true` | the coordinator's task queue (`tasks.add`) dispatches a queued task once its conditions hold and its agent has a free instance; off, it keeps them all queued (idea-lsj5u2) |

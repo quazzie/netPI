@@ -8,17 +8,14 @@ namespace NetPI.Coordinator;
 
 /// <summary>
 /// What an outside coordinator (another agent harness driving NetPI workers through the RPC/CLI) needs beyond the
-/// single calls: one-call dispatch (<c>sessions.dispatch</c>), a run's result (<c>runs.result</c>) and a project's task
-/// queue (<c>tasks.*</c>: work packages with conditions, dispatched when ready, idea-lsj5u2). Built on the other plugins'
-/// RPC methods; the queue is its one state, and nothing a worker may do changes. It removes the coordinator's glue: a
-/// six-call dispatch validated late (a wrong agent key failed after the session was made and bound), transcripts parsed
-/// by hand for the final report, and preconditions kept in a markdown table. See idea-equiw4 and docs/PROTOCOL.md.
+/// single calls: one-call dispatch (<c>sessions.dispatch</c>) and a run's result (<c>runs.result</c>). Built on the other
+/// plugins' RPC methods, with no state of its own. It removes the coordinator's glue: a six-call dispatch validated late (a
+/// wrong agent key failed after the session was made and bound) and transcripts parsed by hand for the final report. See
+/// idea-equiw4 and docs/PROTOCOL.md.
 /// </summary>
 [NetPiPlugin("netpi.coordinator", Name = "Coordinator", Description = "One-call dispatch and run results for external coordinators", Order = 90)]
 public sealed class CoordinatorPlugin : INetPiPlugin
 {
-    private TaskQueue? _queue;
-
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         var c = new Coordinator(context);
@@ -42,54 +39,10 @@ public sealed class CoordinatorPlugin : INetPiPlugin
             "error, queued, report (the run's last assistant text), lastTool, todo: { done, total, current, items }, commits (made on its workspace since the run started), " +
             "tests (the latest test tally in the run's tool output: { line, tool, at, failed }), workspace }",
             ReadOnly: true, Params: [RpcParam.Opt("sessionId"), RpcParam.Opt("runId")]), (req, token) => c.ResultAsync(req, token));
-
-        // the task queue (idea-lsj5u2): work packages with conditions, dispatched when they are ready and a worker is free
-        context.Services.Register(new SettingsSection
-        {
-            Id = "tasks", Title = "Task queue", Group = "Agents", Order = 40,
-            Settings =
-            [
-                SettingInfo.Bool(TaskQueue.AutoDispatchSetting, "Dispatch queued tasks", true,
-                    "A queued task (tasks.add) starts as a chat of its own once its conditions hold and its agent has a free instance. Off: the queue keeps them, nothing starts."),
-            ],
-        });
-        var queue = new TaskQueue(context);
-        _queue = queue;
-        RpcParam[] taskWork =
-        [
-            RpcParam.Opt("title"), RpcParam.Opt("text", RpcParamType.String, "the brief, as sessions.dispatch sends it"),
-            RpcParam.Opt("textFile", RpcParamType.String, "an absolute path, up to 1 MB, read now"),
-            RpcParam.Opt("agent", RpcParamType.String, "an agent key, a part of exactly one, or any (default: any free one)"),
-            RpcParam.Opt("profile"), RpcParam.Opt("workspace", RpcParamType.Any, "as sessions.dispatch: a name, an id, or { name | id, create?, base? }"),
-            RpcParam.Opt("after", RpcParamType.Array, "the tasks it waits for: \"task-…\" (done) or { task, when: done | merged }"),
-            RpcParam.Opt("hold", RpcParamType.Boolean, "kept in the queue, never dispatched, while true"),
-        ];
-        context.Rpc.Register(new RpcMethod("tasks.add",
-            "Queue a task for a project's workers: { project, title, text | textFile, agent?, profile?, workspace?, after?, hold? } → Task. It is dispatched " +
-            "(sessions.dispatch) once every after condition holds and its agent has a free instance: done is a run that ended well, merged its workspace " +
-            "branch an ancestor of the project checkout's HEAD. Merging stays with you",
-            Params: [RpcParam.Req("project", RpcParamType.String, "the project's name or id"), .. taskWork]),
-            (req, token) => queue.AddAsync(req, c, token));
-        context.Rpc.Register(new RpcMethod("tasks.list",
-            "The task queue: { project?, status? (queued|running|done|failed|cancelled) } → Task[] in queue order: { id, projectId, title, text, agent, profile, " +
-            "workspace, after, hold, status, sessionId?, branch?, error?, lastError?, createdAt, dispatchedAt?, finishedAt? }, a queued one with ready and waitingFor",
-            ReadOnly: true, Params: [RpcParam.Opt("project", RpcParamType.String, "a project's name or id"), RpcParam.Opt("status")]),
-            (req, token) => queue.ListAsync(req, token));
-        context.Rpc.Register(new RpcMethod("tasks.update",
-            "Change a task: { id, title?, text? | textFile?, agent?, profile?, workspace?, after?, hold?, status?: cancelled (a queued or running one; its chat " +
-            "is left alone) | queued (run a failed, cancelled or done one again, as a new chat) } → Task",
-            Params: [RpcParam.Req("id"), .. taskWork, RpcParam.Opt("status", RpcParamType.String, "cancelled or queued")]),
-            (req, token) => queue.UpdateAsync(req, c, token));
-        context.Rpc.Register(new RpcMethod("tasks.remove", "Remove a task from the queue: { id } → true (the tasks that wait for it say so)",
-            Params: [RpcParam.Req("id")]), (req, token) => queue.RemoveAsync(req, token));
         return Task.CompletedTask;
     }
 
-    public async Task StopAsync(CancellationToken ct)
-    {
-        if (_queue is { } queue) await queue.DisposeAsync().ConfigureAwait(false);
-        _queue = null;
-    }
+    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
 }
 
 internal sealed partial class Coordinator(IPluginContext ctx)
@@ -200,9 +153,6 @@ internal sealed partial class Coordinator(IPluginContext ctx)
     /// agent is that agent ("bunny" → space-bunny-alpha). One that is switched off or cannot take work is refused now, not
     /// when its run starts.
     /// </summary>
-    /// <summary>An agent argument as a dispatch reads it (an exact key, a part of exactly one, or any), for the task queue.</summary>
-    internal Task<string> ResolveAgentForTaskAsync(string arg, CancellationToken ct) => ResolveAgentAsync(arg, ct);
-
     private async Task<string> ResolveAgentAsync(string arg, CancellationToken ct)
     {
         if (arg.Equals("any", StringComparison.OrdinalIgnoreCase)) return "any";
