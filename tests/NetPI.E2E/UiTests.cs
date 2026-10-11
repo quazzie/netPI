@@ -134,6 +134,12 @@ public static class UiTests
             await RunUiScript(env, "mcp-tab.mjs", 120, "--fixture", typeof(McpTests).Assembly.Location);
         }, 150);
 
+        r.Add("ui.composer", "ui: the composer and the chat tabs — the agent picker (new agent, any available), commands and skills, mentions, pickers that stay open while a reply streams, middle-click, tab dots (running, unread, idle, error) and the failed call's request id in Diagnostics, narrow widths, drag to reorder, drafts that survive the chat cache", async () =>
+        {
+            // The script makes its own agents, project (with skills) and chats and removes them; replies it watches wait at MockLlm gates.
+            await RunUiScript(env, "composer.mjs", 240);
+        }, 270);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id

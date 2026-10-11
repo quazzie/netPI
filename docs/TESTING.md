@@ -180,6 +180,7 @@ dotnet tests/MockLlm/bin/Release/MockLlm.dll [--port 7479] [--speed 1] [--tiny-c
 | `GET /_log?since=N` | one entry per request: api, model, scenario, step, status/error, input/cached/output tokens, effort, notices seen, calls made, dropped/cancelled… |
 | `GET /_request/{seq}` | the raw request body |
 | `POST /_reset` | clear stats, log and retry counters; release and forget every gate |
+| (every answer) | an `x-request-id: req_mock_<seq>` header, as the real backends send; `<seq>` is the request's `/_log` seq |
 | `GET /_gates` | each gate named so far: `name`, `waiting` (calls held at it), `open` |
 | `POST /_release?gate=NAME` | open a gate: the calls waiting at it go on, later ones pass (`{ gate, released }`) |
 

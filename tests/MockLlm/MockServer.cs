@@ -208,6 +208,8 @@ public sealed class MockLlmServer : IAsyncDisposable
     {
         var started = DateTimeOffset.UtcNow;
         var entry = new LogEntry { Seq = Interlocked.Increment(ref _seq), Time = started, Api = api };
+        // like the real backends: every answer, an error's too, names the request (x-request-id), which NetPI puts in a failure's notice
+        ctx.Response.Headers["x-request-id"] = $"req_mock_{entry.Seq}";
         string raw;
         using (var reader = new StreamReader(ctx.Request.Body, Encoding.UTF8))
             raw = await reader.ReadToEndAsync(ctx.RequestAborted).ConfigureAwait(false);
