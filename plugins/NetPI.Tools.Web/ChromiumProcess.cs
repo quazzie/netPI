@@ -78,6 +78,9 @@ internal sealed class ChromiumProcess : IAsyncDisposable
         foreach (var a in flags.Concat(CommonArgs).Append($"--user-data-dir={profile}").Append($"--window-size={width},{height}"))
             psi.ArgumentList.Add(a);
         var process = Process.Start(psi) ?? throw new BrowserUnavailableException("The browser did not start.");
+        // at once, before the launcher starts the browser proper: a child joins its parent's job, so the whole tree dies with
+        // NetPI however it ends (a graceful stop closes it over DevTools, a killed NetPI could not)
+        ChildJob.Assign(process);
         process.ErrorDataReceived += (_, _) => { };
         process.OutputDataReceived += (_, _) => { };
         process.BeginErrorReadLine();
@@ -89,6 +92,9 @@ internal sealed class ChromiumProcess : IAsyncDisposable
     public int Port { get; private set; }
 
     public bool HasExited => _process.HasExited;
+
+    /// <summary>In the job that dies with NetPI (for the tests).</summary>
+    internal bool InJob => ChildJob.Contains(_process);
 
     /// <summary>
     /// Wait for the browser to write its port (and the path of its browser endpoint) to <c>DevToolsActivePort</c> in the

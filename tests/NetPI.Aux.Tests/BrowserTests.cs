@@ -287,6 +287,19 @@ public static class BrowserTests
             finally { env.Ctx.Unload(); }
         });
 
+        // A killed NetPI (a crash, the E2E harness's stop on Windows) cannot close the browser over DevTools, and Edge's launcher
+        // hands the browser to a process of its own: the job is what ends it then.
+        r.Add("browser: the agents' browser is in the job that dies with NetPI, so a killed NetPI leaves no browser behind", async () =>
+        {
+            if (!OperatingSystem.IsWindows()) Check.Skip("the kill-on-close job is Windows'");
+            var exe = ChromiumProcess.Find(null);
+            if (exe is null) Check.Skip("no Edge/Chrome/Chromium: browser");
+            await using var browser = ChromiumProcess.Start(exe!, T.TempDir("job-browser"), 800, 600, ["--headless=new"], temp: true);
+            Check.True(browser.InJob, "the launched browser is in the job");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            await browser.WaitForEndpointAsync(cts.Token);
+        });
+
         r.Add("browser: the user's Chrome over its DevTools port: a background tab, no refusals, leave hands the tab back, never closed", async () =>
         {
             var env = new Env();

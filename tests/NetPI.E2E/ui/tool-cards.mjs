@@ -234,9 +234,5 @@ await run('tool-cards', async ({ page, socket }) => {
     await rpc('settings.set', { path: 'web', value: before.web ?? null }).catch(() => {});
     await rpc('settings.set', { path: 'ssh', value: before.ssh ?? null }).catch(() => {});
     await rpc('settings.set', { path: 'providers.claudeCli', value: before.providers?.claudeCli ?? null }).catch(() => {});
-    // the screenshot started the agents' headless browser: a reload of the web tools closes it (over DevTools, as a stop
-    // does). The harness kills a server on Windows, and Edge's launcher hands the browser to a process of its own, so
-    // one left open would outlive the run.
-    await rpc('plugins.reload', { id: 'netpi.tools.web' }).catch(() => {});
   }
 }, { tap: true, keepsSettings: true });
