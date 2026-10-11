@@ -110,6 +110,12 @@ public static class UiTests
             await RunUiScript(env, "sessions-panel.mjs", 150);
         }, 180);
 
+        r.Add("ui.ideas-tab", "ui: the Ideas tab and the idea dialog — cards, status, filing with a pasted image, sections, send to chat, reorder, delete, Ctrl+I and /idea, the tab's project, a save after another writer, refining with an agent, tags, ideas.changed — and the start screen's ideas", async () =>
+        {
+            // The script makes its own project, chats and ideas and removes them; it switches the Ideas plugin off and on.
+            await RunUiScript(env, "ideas-tab.mjs", 180);
+        }, 210);
+
         r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id

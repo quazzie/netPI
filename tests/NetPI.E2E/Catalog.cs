@@ -52,6 +52,7 @@ public static class Catalog
         ["ui.projects"] = "needs-node",
         ["ui.settings"] = "needs-node",
         ["ui.sessions-panel"] = "needs-node",
+        ["ui.ideas-tab"] = "needs-node ideas",
     };
 
     public static IReadOnlyCollection<string> ExtraIds => Extra.Keys;

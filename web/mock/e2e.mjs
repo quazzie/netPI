@@ -58,7 +58,6 @@ const NEEDS = {
   "plugin tab: Diagnostics": ["new session + agent run"],
   "settings": ["new session + agent run"],
   "images": ["new session + agent run"],
-  "plugin tab: Ideas": ["new session + agent run"],
   "budget: chat cost, Work tab, a chat stopped by the budget": ["new session + agent run"],
 };
 const ONLY = argVal('--only') ? resolveOnly(argVal('--only')) : null;
@@ -927,269 +926,6 @@ log('plugin tab: Usage');
 }
 
 }
-if (want('plugin tab: Ideas')) {
-log('plugin tab: Ideas');
-{
-  await openStripTab('right', 'Ideas');
-  await page.waitForSelector('.plugin-root .ideas .card', { timeout: 10_000 });
-  const cards = () => page.locator('.ideas .card');
-  const n0 = await cards().count();
-  check('ideas: project backlog listed', n0 >= 4, `${n0} active ideas`);
-  // Meaning search (≈): the toggle shows because ideas.capabilities says the server has embeddings; with it on, the list
-  // is what ideas.similar ranked (word overlap in the mock) instead of the cards that match every word.
-  {
-    const meaning = page.locator('.ideas .fchip.meaning');
-    await meaning.waitFor({ timeout: 3000 }).catch(() => {});
-    check('ideas: the meaning-search toggle shows when the server has embeddings (ideas.capabilities)', (await meaning.count()) === 1);
-    const search = page.locator('.ideas .np-search input');
-    await search.fill('cache the model list zzzz');
-    await page.waitForTimeout(400);
-    const byWords = await cards().count();
-    await meaning.click();
-    await page.waitForFunction(() => document.querySelectorAll('.ideas .card').length > 0, null, { timeout: 4000 }).catch(() => {});
-    const top = (await cards().count()) ? (await cards().first().innerText()).split('\n')[0] : '';
-    check('ideas: by meaning, a word nobody has does not empty the list, and the closest idea comes first (ideas.similar)',
-      byWords === 0 && /Cache the model list/.test(top), `${byWords} by words, ${await cards().count()} by meaning, first: ${top || '∅'}`);
-    await meaning.click();
-    await search.fill('');
-    await page.waitForTimeout(300);
-  }
-  // a short list still fills the panel: the footer sits at its bottom, not under the last card
-  const footGap = await page.evaluate(() => {
-    const foot = document.querySelector('.plugin-root .ideas .foot');
-    const mount = foot?.closest('.mount');
-    return foot && mount ? Math.round(mount.getBoundingClientRect().bottom - foot.getBoundingClientRect().bottom) : null;
-  });
-  check('ideas: the tab fills the panel (footer at the bottom)', footGap !== null && Math.abs(footGap) <= 4, `gap ${footGap}px`);
-  // A card is the idea's title and a short summary; a click opens the whole idea in the host's idea dialog (67c5a97): its
-  // sections, images and the chats and commits recorded on it are there, not in a card that expands. The card's ⋯ menu
-  // ("Status and actions") holds the status and every action.
-  const dlg = page.locator('.idea-dialog');
-  const openCard = async (card) => {
-    await card.locator('.main').click();
-    await dlg.waitFor({ timeout: 3000 }).catch(() => {});
-    await page.waitForTimeout(300); // past the dialog's fade-in
-  };
-  const closeDialog = async () => {
-    await page.keyboard.press('Escape');
-    await dlg.waitFor({ state: 'detached', timeout: 3000 }).catch(() => {});
-  };
-  const moreMenu = async (card, item) => {
-    await card.locator('button[title="Status and actions"]').click();
-    await page.locator('.np-menu .np-menu-item', { hasText: item }).first().click();
-  };
-  // The list is grouped by status (in-progress, planned, open — idea-43oruq), so every step below names its card
-  // instead of taking cards().first(): a status change moves a card into another group.
-  const cardTitled = (t) => page.locator('.ideas .card', { hasText: t }).first();
-  const firstTitle = (await cards().first().locator('.title').innerText()).trim();
-  check('ideas: a card is its title and a short summary, nothing to expand', (await cards().first().locator('.blurb').count()) === 1 && (await cards().first().locator('.sec').count()) === 0);
-  await openCard(cards().first());
-  check('ideas: a click opens the idea dialog with its sections', (await dlg.count()) === 1 && (await dlg.locator('.i-title').inputValue()) === firstTitle && (await dlg.locator('.sec').count()) > 0, firstTitle);
-  await shot(page, '27-ideas-tab');
-  await closeDialog();
-  check('ideas: Escape closes it again', (await dlg.count()) === 0);
-  const statusTitle = (await cards().nth(1).locator('.title').innerText()).trim();
-  await moreMenu(cards().nth(1), 'Status: in-progress');
-  await page.waitForTimeout(500);
-  check('ideas: status change (the card menu)', (await cardTitled(statusTitle).getAttribute('data-status')) === 'in-progress', statusTitle);
-  // Filing is the host's idea dialog (the Ideas tab's "+", Ctrl+I and /idea all open it), on the project the tab shows.
-  const activeProjectId = (await rpcCall('projects.list')).find((p) => p.name === 'netpi')?.id;
-  await page.locator('.ideas .scope button[title^="New idea"]').click();
-  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
-  check('ideas: the New idea button opens the idea dialog', (await dlg.count()) === 1);
-  check('ideas: a new idea goes to the project the tab shows', (await dlg.locator('.i-project').inputValue()) === (activeProjectId ?? 'global'), await dlg.locator('.i-project').inputValue());
-  await dlg.locator('.i-title').fill('Keyboard shortcuts cheat sheet');
-  await dlg.locator('.i-tags').fill('ui, docs');
-  // An image attached while filing: pasted, shrunk to fit, stored by the host, and kept on the idea (idea-hai71q).
-  const ref = await rpcCall('ideas.addImage', { data: 'aGVsbG8=', mediaType: 'image/png', name: 'tiny.png' });
-  check('ideas: the host stores an image and returns a reference', /idea-images\/img-/.test(ref?.path ?? ''), JSON.stringify(ref));
-  await page.evaluate(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1200;
-    canvas.height = 900;
-    const ctx = canvas.getContext('2d');
-    const img = ctx.createImageData(canvas.width, canvas.height);
-    for (let i = 0; i < img.data.length; i += 4) {
-      img.data[i] = Math.random() * 256;
-      img.data[i + 1] = Math.random() * 256;
-      img.data[i + 2] = Math.random() * 256;
-      img.data[i + 3] = 255;
-    }
-    ctx.putImageData(img, 0, 0);
-    return canvas.toBlob((blob) => {
-      const dt = new DataTransfer();
-      dt.items.add(new File([blob], 'shot.png', { type: 'image/png' }));
-      document.querySelector('.idea-dialog .i-summary').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-    }, 'image/png');
-  });
-  const thumb = await page.waitForSelector('.idea-dialog .thumbs img', { timeout: 15_000 }).catch(() => null);
-  // An attach that refuses says so in the form (a note) or as a toast; both are the diagnosis when this fails.
-  const note = await page.locator('.idea-dialog .note').allInnerTexts().catch(() => []);
-  const attachToast = await page.locator('.np-toasts .np-toast, .toasts .toast').allInnerTexts().catch(() => []);
-  check('ideas: a pasted image is attached while filing', !!thumb, [...note, ...attachToast].join('; '));
-  await dlg.locator('.i-submit').click();
-  await dlg.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
-  check('ideas: the dialog closes once the idea is added', (await dlg.count()) === 0);
-  await page.waitForTimeout(600);
-  const newCard = cardTitled('Keyboard shortcuts cheat sheet');
-  // The first card of the open group, whichever groups happen to sit above it.
-  const firstOpen = await cards().evaluateAll((els) => {
-    const open = els.find((e) => e.dataset.status === 'open');
-    return open?.querySelector('.title')?.textContent?.trim() ?? null;
-  });
-  check('ideas: new idea added on top of the open ones', (await newCard.count()) === 1 && firstOpen === 'Keyboard shortcuts cheat sheet', `first open: ${firstOpen}`);
-  // The image is the idea's: the dialog fetches it back from the host as it opens, and removing it there (and saving)
-  // takes it off the idea.
-  await openCard(newCard);
-  await dlg.locator('.thumbs img').first().waitFor({ timeout: 4000 }).catch(() => {});
-  check('ideas: the idea dialog shows the attached image', (await dlg.locator('.thumbs img').count()) === 1);
-  const shotSrc = (await dlg.locator('.thumbs img').first().getAttribute('src').catch(() => '')) ?? '';
-  check('ideas: the image is fetched back from the host, not kept in the list', shotSrc.startsWith('data:image/'), shotSrc.slice(0, 24));
-  const ideaId = (await dlg.locator('.idnote').innerText()).trim();
-  const prompt = await rpcCall('ideas.toPrompt', { id: ideaId });
-  check('ideas: the full text hands the image to whoever works on it', /idea-images\/img-/.test(prompt), prompt?.split('\n').find((l) => l.startsWith('- ')) ?? 'no image line');
-  await dlg.locator('.thumbs button[aria-label="Remove image"]').click();
-  await dlg.locator('.i-submit').click();
-  await dlg.waitFor({ state: 'detached', timeout: 3000 }).catch(() => {});
-  await page.waitForTimeout(400);
-  check('ideas: removing the image in the dialog takes it off the idea', ((await rpcCall('ideas.get', { id: ideaId })).images ?? []).length === 0);
-  // Sections are what agents write (the ideas tool, ideas.update): the dialog shows them, read-only. It shows the card's copy of
-  // the idea, which the tab refetches on ideas.changed (debounced), so the step waits for that reload.
-  const listsBefore = pageRpc.length;
-  await rpcCall('ideas.update', { id: ideaId, patch: { addSections: [{ kind: 'todo', content: '- [ ] list shortcuts\n- [ ] render a table' }] } });
-  const reloaded = await pageRpcDone('ideas.list', listsBefore);
-  await openCard(cardTitled('Keyboard shortcuts cheat sheet'));
-  check('ideas: a section an agent added shows in the dialog', (await dlg.locator('.sec').count()) === 1 && /list shortcuts/.test(await dlg.locator('.sec').innerText()),
-    reloaded ? `${await dlg.locator('.sec').count()} sections` : 'the tab never reloaded the list after ideas.changed');
-  await closeDialog();
-  // send to chat → a pointer in the composer, not the idea's text (the agent reads the idea itself)
-  await moreMenu(cardTitled('Keyboard shortcuts cheat sheet'), 'Send to chat');
-  await page.waitForTimeout(300);
-  const staged = await ta.inputValue();
-  check('ideas: send to chat stages a pointer, not the idea', staged.includes(ideaId) && !staged.includes('# Keyboard shortcuts cheat sheet'), staged);
-  // …and the full text is one menu item away
-  await moreMenu(newCard, 'Insert the full text');
-  await page.waitForTimeout(300);
-  check('ideas: insert the full text (ideas.toPrompt)', (await ta.inputValue()).includes('# Keyboard shortcuts cheat sheet'));
-  await ta.fill('');
-  // Move down moves within the group, so the card that was below it in the open group is now above it.
-  const openBefore = await cards().evaluateAll((els) => els.filter((e) => e.dataset.status === 'open').map((e) => e.querySelector('.title')?.textContent?.trim()));
-  await moreMenu(newCard, 'Move down');
-  await page.waitForTimeout(500);
-  const openAfter = await cards().evaluateAll((els) => els.filter((e) => e.dataset.status === 'open').map((e) => e.querySelector('.title')?.textContent?.trim()));
-  check('ideas: move down (ideas.reorder)', openAfter.indexOf('Keyboard shortcuts cheat sheet') === openBefore.indexOf('Keyboard shortcuts cheat sheet') + 1,
-    `${openBefore.join(' / ')} → ${openAfter.join(' / ')}`);
-  await moreMenu(cardTitled('Keyboard shortcuts cheat sheet'), 'Delete idea');
-  await page.locator('.dialog button', { hasText: /^Delete$/ }).click();
-  await page.waitForTimeout(500);
-  check('ideas: delete with confirm', (await page.locator('.ideas .card', { hasText: 'Keyboard shortcuts cheat sheet' }).count()) === 0);
-  // ---- the idea dialog: Ctrl+I from anywhere, /idea, Escape, editing (with its conflict) and the agent task
-  await ta.click();
-  await page.keyboard.press('Control+i');
-  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
-  check('ideas: Ctrl+I opens the idea dialog from the composer', (await dlg.count()) === 1);
-  check('ideas: the title has the focus', await page.evaluate(() => document.activeElement?.classList.contains('i-title')));
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
-  check('ideas: Escape closes the dialog', (await dlg.count()) === 0);
-  await ta.fill('/idea');
-  await ta.press('Enter'); // accepts the popup entry
-  await page.waitForTimeout(100);
-  if ((await ta.inputValue()).startsWith('/idea')) await ta.press('Enter');
-  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
-  check('ideas: /idea with no text opens the dialog', (await dlg.count()) === 1);
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
-  await ta.fill('');
-  // What the tab shows is where a new idea goes (idea-jizg2e): pick "Global" on the tab, and the dialog files under no project;
-  // pick the project again and it is the project's.
-  const pickScope = async (label) => {
-    await page.locator('.ideas .scope button[title="Project filter"]').click();
-    await page.locator('.np-menu .np-menu-item', { hasText: label }).first().click();
-    await page.waitForTimeout(200);
-  };
-  await pickScope('Global (unbound)');
-  await page.locator('.ideas .scope button[title^="New idea"]').click();
-  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
-  check('ideas: with the tab on Global a new idea is filed under no project', (await dlg.locator('.i-project').inputValue()) === 'global', await dlg.locator('.i-project').inputValue());
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
-  await pickScope('This project');
-  await page.locator('.ideas .scope button[title^="New idea"]').click();
-  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
-  check('ideas: with the tab on the active project a new idea goes to it', (await dlg.locator('.i-project').inputValue()) === (activeProjectId ?? 'global'), await dlg.locator('.i-project').inputValue());
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
-
-  const edited = await rpcCall('ideas.add', { projectId: activeProjectId ?? 'global', idea: { title: 'Dialog edit target', summary: 'before', tags: ['t1'] } });
-  const edCard = cardTitled('Dialog edit target');
-  await edCard.waitFor({ timeout: 4000 }).catch(() => {});
-  await openCard(edCard);
-  check(
-    'ideas: the card opens the same dialog, filled in',
-    (await dlg.locator('.i-title').inputValue()) === 'Dialog edit target' && (await dlg.locator('.i-summary').inputValue()) === 'before' && (await dlg.locator('.i-tags').inputValue()) === 't1',
-  );
-  await page.waitForTimeout(400); // past the dialog's fade-in
-  await shot(page, '27c-idea-dialog');
-  // someone else writes the idea while the dialog is open: the save is a conflict, never an overwrite
-  await rpcCall('ideas.update', { id: edited.id, patch: { summary: 'changed elsewhere' } });
-  await dlg.locator('.i-title').fill('Dialog edit target (edited)');
-  await dlg.locator('.i-submit').click();
-  await dlg.locator('[role="alert"]').waitFor({ timeout: 3000 }).catch(() => {});
-  check(
-    'ideas: a save after another writer is a conflict, and the typed text stays',
-    /changed somewhere else/.test(await dlg.locator('[role="alert"]').innerText().catch(() => '')) && (await dlg.locator('.i-title').inputValue()) === 'Dialog edit target (edited)',
-  );
-  await dlg.locator('[role="alert"] button').click();
-  await page.waitForTimeout(300);
-  check('ideas: "Load the current version" shows what the other writer saved', (await dlg.locator('.i-summary').inputValue()) === 'changed elsewhere');
-  await dlg.locator('.i-title').fill('Dialog edit target (edited)');
-  await dlg.locator('.i-status').selectOption('planned');
-  await dlg.locator('.i-submit').click();
-  await dlg.waitFor({ state: 'detached', timeout: 3000 }).catch(() => {});
-  await page.waitForTimeout(600);
-  const saved = await rpcCall('ideas.get', { id: edited.id });
-  check(
-    "ideas: the edit is saved (title, status) and the other writer's summary survived",
-    saved.title === 'Dialog edit target (edited)' && saved.status === 'planned' && saved.summary === 'changed elsewhere',
-    JSON.stringify({ title: saved.title, status: saved.status, summary: saved.summary }),
-  );
-
-  // the agent task: from the card's menu, with a focus, on any available agent
-  const refCard = cardTitled('Dialog edit target (edited)');
-  await refCard.waitFor({ timeout: 4000 }).catch(() => {});
-  await moreMenu(refCard, 'Refine with an agent');
-  await dlg.waitFor({ timeout: 3000 }).catch(() => {});
-  check('ideas: "Refine with an agent" opens the dialog with the task on', (await dlg.locator('.refine').count()) === 1 && /Save and refine/.test(await dlg.locator('.i-submit').innerText()));
-  await page.waitForTimeout(400); // past the dialog's fade-in
-  await shot(page, '27d-idea-refine');
-  await dlg.locator('.i-hint').fill('check the Files plugin first');
-  await dlg.locator('.i-submit').click();
-  await dlg.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
-  const asked = (await rpcCall('mock.ideaRefines')).at(-1);
-  check('ideas: refining starts a chat on the idea, on any agent, with the focus', asked?.id === edited.id && asked.agent === 'any' && asked.hint === 'check the Files plugin first', JSON.stringify(asked));
-  await page.waitForTimeout(600);
-  await openCard(refCard);
-  check('ideas: the refine chat is recorded on the idea (its dialog lists it)', (await dlg.locator('.elink', { hasText: 'Refine idea: Dialog edit target' }).count()) === 1,
-    (await dlg.locator('.elink').allInnerTexts()).join(' | '));
-  await closeDialog();
-
-  // tag filter (menu; the selected tag shows as a removable chip) + an external change (ideas.changed) refetches
-  await page.locator('.ideas .filters button[title="Filter by tag"]').click();
-  await page.locator('.np-menu .np-menu-item', { hasText: '#aiproxy' }).click();
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
-  const nTag = await cards().count();
-  check('ideas: tag filter', nTag > 0 && nTag < n0, `${nTag} of ${n0}`);
-  await page.locator('.ideas .tags .np-chip', { hasText: '#aiproxy' }).click();
-  check('ideas: removing the tag chip clears the filter', (await cards().count()) >= n0);
-  const projectId = (await rpcCall('projects.list')).find((p) => p.name === 'netpi')?.id;
-  if (projectId) await rpcCall('ideas.add', { projectId, idea: { title: 'Added over RPC', tags: ['rpc'] } });
-  await page.waitForSelector('.ideas .card:has-text("Added over RPC")', { timeout: 3000 }).catch(() => {});
-  check('ideas: refetch on ideas.changed', (await page.locator('.ideas .card', { hasText: 'Added over RPC' }).count()) > 0);
-}
-
-}
 if (want('plugin tab: Diagnostics')) {
 log('plugin tab: Diagnostics');
 {
@@ -1679,85 +1415,6 @@ log('composer: narrow widths');
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.waitForTimeout(200);
 }
-}
-if (want('welcome screen: ideas to work on')) {
-log('welcome screen: ideas to work on');
-{
-  // idea-ky14bu: the start screen suggests what is in the backlog, and a click starts that work.
-  const projects = await rpcCall('projects.list');
-  const idOf = (name) => projects.find((p) => p.name === name)?.id;
-  while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
-  await page.waitForSelector('.welcome .target');
-
-  // The target decides which ideas are relevant: point the start screen at the project the seeded backlog belongs to
-  // (the pickers start a session in what you pick, so the target is set the way a fresh window reads it).
-  await page.evaluate((id) => localStorage.setItem('netpi.lastProject', JSON.stringify(id)), idOf('netpi'));
-  await page.reload();
-  await page.waitForSelector('.welcome .target');
-  const rows = page.locator('.welcome .prow');
-  await rows.first().waitFor({ timeout: 4000 }).catch(() => {});
-  const wanted = (await rpcCall('ideas.picks', { projectId: idOf('netpi'), limit: 3 })).picks ?? [];
-  const shown = await rows.allInnerTexts();
-  const wantedTitles = wanted.map((w) => w.title);
-  check('welcome screen: the target is the project the backlog belongs to',
-    (await page.locator('.welcome .target').innerText()).includes('netpi'), await page.locator('.welcome .target').innerText());
-  check('welcome screen: the ideas of the project it targets, at most three, in their order',
-    shown.length > 0 && shown.length === wantedTitles.length && shown.length <= 3 && shown.every((t, i) => t.includes(wantedTitles[i])),
-    `${shown.length} of ${wantedTitles.length}: ${shown.map((t) => t.split('\n')[0]).join(' / ')}`);
-  check('welcome screen: nothing that is being worked on (in-progress, done, parked) is offered',
-    !shown.some((t) => /Cache the model list|Stream compaction summaries|Semantic search/.test(t)), shown.join(' / '));
-  const box = await rows.first().boundingBox();
-  const recentBox = await page.locator('.welcome .recent').boundingBox().catch(() => null);
-  check('welcome screen: the ideas sit above the recent sessions',
-    !!box && (!recentBox || box.y < recentBox.y), recentBox ? `${Math.round(box.y)} vs ${Math.round(recentBox.y)}` : 'no recent sessions');
-  await shot(page, '12c-welcome-ideas');
-
-  // A click starts the work: a chat in the idea's project with the idea in it.
-  const first = wanted[0];
-  await rows.first().click();
-  await page.waitForSelector('.topbar .tab.active');
-  await page.waitForTimeout(400);
-  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const started = sid ? await rpcCall('sessions.get', { id: sid }) : null;
-  const msgs = sid ? (await rpcCall('sessions.messages', { id: sid })).messages ?? [] : [];
-  const notice = msgs.find((m) => m.meta?.kind === 'idea');
-  check('welcome screen: a click starts a chat on the idea with the idea attached',
-    started?.projectId === idOf('netpi') && notice?.meta?.ideaId === first.id && (await page.locator('.composer').count()) === 1,
-    `${sid} ${started?.projectId} notice ${notice?.meta?.ideaId ?? 'none'}`);
-  check('welcome screen: and titles the chat after the idea', started?.title === first.title, started?.title);
-  await shot(page, '12d-welcome-idea-started');
-
-  // The backlog moves in another window: ideas.changed moves the offer with it.
-  await page.locator('.topbar .tab.active .tab-close').click();
-  await page.waitForSelector('.welcome .target');
-  await rpcCall('ideas.update', { id: first.id, patch: { status: 'done' } });
-  await page.waitForFunction((gone) => ![...document.querySelectorAll('.welcome .prow')].some((r) => r.textContent.includes(gone)), first.title, { timeout: 4000 }).catch(() => {});
-  check('welcome screen: an idea finished elsewhere disappears from the offer',
-    (await page.locator('.welcome .prow', { hasText: first.title }).count()) === 0);
-  await rpcCall('ideas.update', { id: first.id, patch: { status: first.status } });
-
-  // No Ideas plugin (or an older one, without ideas.picks): the start screen is exactly as it was.
-  await rpcCall('mock.capabilities', { missing: ['ideas.picks'] });
-  try {
-    await page.reload();
-    await page.waitForSelector('.welcome .target');
-    await page.waitForTimeout(700);
-    check('welcome screen: without ideas.picks nothing is offered and nothing breaks',
-      (await page.locator('.welcome .prow').count()) === 0 && (await page.locator('.welcome .recent, .keys').count()) > 0);
-    await shot(page, '12e-welcome-no-ideas');
-  } finally {
-    await rpcCall('mock.capabilities', { missing: [] });
-  }
-
-  // the next section works from the "website" session: close everything and recreate it from the start screen
-  while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
-  await page.waitForSelector('.welcome .target');
-  await page.locator('.welcome .target-more').click();
-  await page.waitForSelector('.popover .item');
-  await page.locator('.popover .item', { hasText: 'website' }).first().click();
-  await page.waitForTimeout(500);
-}
-
 }
 // ------------------------------------------------------------------ what chats cost, the budget
 if (want('budget: chat cost, Work tab, a chat stopped by the budget')) {
@@ -2540,16 +2197,20 @@ log('deleting a chat leaves nothing of it behind');
     `tab ${sid} left: ${await page.locator(`.topbar .tab[data-tab="${sid}"]`).count()}`);
   // a subagent row of a seeded chat: the parent keeps the other one
   const parent = page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first();
-  await parent.locator('.kids').click();
   const sub = page.locator('.srow', { hasText: 'tester: reproduce disconnect' }).first();
+  // the toggle folds the subagents again when an earlier section left them open
+  if (!(await sub.isVisible())) await parent.locator('.kids').click();
+  // the parent's title is in its forks' rows too ("… (fork)", from the fork section): count them before, not expect one
+  const parents = await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).count();
   await sub.focus();
   await page.keyboard.press('Delete');
   await page.locator('.dialog button', { hasText: /^Delete$/ }).click();
   await sub.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {});
   check('a deleted subagent: its parent and the other subagent stay',
     (await sub.count()) === 0
-      && (await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).count()) === 1
-      && (await page.locator('.srow', { hasText: 'explorer: map websocket handlers' }).count()) === 1);
+      && (await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).count()) === parents
+      && (await page.locator('.srow', { hasText: 'explorer: map websocket handlers' }).count()) === 1,
+    `sub ${await sub.count()}, parent ${await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).count()}, explorer ${await page.locator('.srow', { hasText: 'explorer: map websocket handlers' }).count()}`);
   await shot(page, '30b-deleted-chat');
 }
 }
