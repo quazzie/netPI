@@ -357,7 +357,7 @@ instructions.
 | `webhooks.allowFrom` | `["127.0.0.1/32","::1/128"]` | Addresses or CIDR ranges that may call the receiver; anything else is answered 403 before the token is looked at |
 | `webhooks.maxBodyKb` | `256` | Largest payload (1–1024 KB); bigger is answered 413 |
 
-A webhook's own limits (`maxPerHour`, `maxConcurrent`, `dedupe`) are per webhook, in the Webhooks tab. Twenty wrong tokens from one address in ten
+A webhook's own settings (incident key and window, the safety fuse `maxChatsPerHour`) are per webhook, in the Webhooks tab. Twenty wrong tokens from one address in ten
 minutes lock that address out (429) for the rest of the window.
 
 ## Context and AGENTS.md

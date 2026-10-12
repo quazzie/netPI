@@ -3,7 +3,7 @@
   // "try a payload" panel (preview or send), and the delivery history.
   import { StatusDot, IconButton, ConfirmButton, Button, timeAgo } from '@netpi/kit';
   import DeliveryHistory from './DeliveryHistory.svelte';
-  import { rowState, limitsLine } from './model.js';
+  import { rowState, limitsLine, incidentLine } from './model.js';
 
   let { h, ctx, projects, receiver, onedit, onchanged, ontoken } = $props();
 
@@ -12,6 +12,21 @@
   let flash = $state('');
   let tryText = $state('{\n  "host": "nuc",\n  "service": "Kernel errors",\n  "state": "CRIT",\n  "output": "1 in last 30 min"\n}');
   let preview = $state.raw(null);
+  let incidents = $state.raw([]);
+
+  async function loadIncidents() {
+    try {
+      incidents = (await ctx.rpc('webhooks.incidents', { id: h.id })) ?? [];
+    } catch {
+      incidents = [];
+    }
+  }
+  $effect(() => {
+    if (open) {
+      void h.lastAt; // reload when a delivery arrives
+      loadIncidents();
+    }
+  });
 
   const state = $derived(rowState(h));
   const projectName = $derived((projects ?? []).find((p) => p?.id === h.projectId)?.name ?? (h.projectId || 'no project'));
@@ -74,9 +89,11 @@
     const r = await call('webhooks.test', { id: h.id, payload: payload(), run: true });
     if (!r) return;
     preview = null;
-    if (r.status === 'started') {
-      say(`Started a chat for “${h.name}”`);
+    if (r.status === 'started' || r.status === 'appended') {
+      say(r.status === 'started' ? `Started a chat for “${h.name}”` : `Added to the open chat of “${h.name}”`);
       if (r.sessionId) ctx.app.openSession?.(r.sessionId);
+    } else if (r.status === 'held') {
+      say(r.reason ?? 'Collecting; the chat starts when the window ends');
     } else {
       say(r.reason ? `${r.status}: ${r.reason}` : r.status, 'warn');
     }
@@ -130,9 +147,19 @@
         <div class="np-small np-muted">Only when</div>
         <div class="np-mono np-small prompt">{JSON.stringify(h.match)}</div>
       {/if}
-      {#if h.dedupe?.key}
-        <div class="np-small np-muted">Dedupe</div>
-        <div class="np-mono np-small">{h.dedupe.key} · {h.dedupe.minutes ?? 60} min</div>
+      {#if h.group?.key}
+        <div class="np-small np-muted">Incidents (one chat per {h.group.key})</div>
+        {#if incidents.length === 0}
+          <div class="np-small np-muted">none open</div>
+        {/if}
+        {#each incidents as i (i.key)}
+          <div class="np-small inc" title={incidentLine(i)}>
+            <span class="np-ellipsis np-grow">{incidentLine(i)}</span>
+            {#if i.sessionId}
+              <button class="inc-open np-small" title="Open the chat that handles this incident" onclick={() => ctx.app.openSession?.(i.sessionId)}>chat</button>
+            {/if}
+          </div>
+        {/each}
       {/if}
 
       <div class="np-small np-muted">Try a payload</div>
@@ -146,7 +173,13 @@
           {#if preview.skip}
             <div class="skip">Would be skipped: {preview.skip}</div>
           {:else}
-            <div class="ok">Would start a chat{preview.agent ? ` on ${preview.agent}` : ''}.</div>
+            <div class="ok">
+              {#if preview.action === 'append'}Would be appended to the chat already handling “{preview.key}”.
+              {:else if preview.action === 'join'}Would join the alerts being collected for “{preview.key}”.
+              {:else if preview.action === 'collect'}Would open the incident “{preview.key}” and collect for a while before the chat starts{preview.agent ? ` on ${preview.agent}` : ''}.
+              {:else}Would start a chat{preview.agent ? ` on ${preview.agent}` : ''} at once.{/if}
+            </div>
+            {#if preview.note}<div class="np-muted">{preview.note}</div>{/if}
           {/if}
           <div class="np-muted">Title: {preview.title}</div>
           <div class="prompt">{preview.prompt}</div>
@@ -196,6 +229,20 @@
     word-break: break-word;
     max-height: 14em;
     overflow-y: auto;
+  }
+  .inc {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+  }
+  .inc-open {
+    flex: none;
+    background: none;
+    border: none;
+    color: var(--np-accent, #6aa3f0);
+    cursor: pointer;
+    padding: 0;
+    font: inherit;
   }
   .try-actions {
     display: flex;

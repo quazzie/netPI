@@ -47,7 +47,7 @@ public static class RpcReadOnlyTests
             await new NetPI.Webhooks.WebhooksPlugin().StartAsync(ctx, CancellationToken.None);
             var flags = ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
 
-            foreach (var m in new[] { "webhooks.status", "webhooks.list", "webhooks.get", "webhooks.history" })
+            foreach (var m in new[] { "webhooks.status", "webhooks.list", "webhooks.get", "webhooks.history", "webhooks.incidents" })
                 Check.True(flags[m], $"{m} only reads, so it is marked read-only");
             foreach (var m in new[] { "webhooks.add", "webhooks.update", "webhooks.delete", "webhooks.rotateToken", "webhooks.test" })
                 Check.False(flags[m], $"{m} changes webhooks or can start a chat, so the read-only tools may not call it");

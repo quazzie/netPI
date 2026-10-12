@@ -24,14 +24,16 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
         Description = "Inbound webhooks that start chats (Checkmk alerts, CI, scripts): list, get, history, test a payload, pause. The user manages them in the Webhooks tab.",
         PromptGuidelines =
         [
-            "A chat that starts with a webhook alert was started by the webhook named in its first message; its history (webhooks action history) shows what else arrived. Use action test to see what a payload would do before suggesting a change; tell the user to edit or enable webhooks in the Webhooks tab.",
+            "A chat that starts with a webhook alert was started by the webhook named in its first message; later alerts of the same incident arrive in it as further system messages, and the webhook's history (webhooks action history) shows what else arrived. Use action test to see what a payload would do before suggesting a change; tell the user to edit or enable webhooks in the Webhooks tab.",
         ],
         Help = """
             Actions:
             - list: every webhook, one line each (state, agent, project, last delivery).
             - get: one webhook by id, with its prompt template, match conditions and limits.
-            - history: deliveries, newest first (id optional, limit default 20): started, skipped (and why) or failed.
-            - test: id and payload (any JSON) — shows the filled-in prompt and whether the payload would be filtered, deduplicated or capped. Starts nothing.
+            - history: deliveries, newest first (id optional, limit default 20): held (collecting for an incident), started (a chat began),
+              appended (added to the incident's open chat), duplicate, skipped (and why) or failed.
+            - test: id and payload (any JSON) — what it would do (start a chat, open or join an incident, be appended to a running chat, or be
+              filtered), with the prompt filled in. Starts and stores nothing.
             - pause: id — pauses a webhook (enabled false). Resuming, creating, deleting and re-keying are the user's, in the Webhooks tab.
             """,
         Parameters = new JsonObject
@@ -72,8 +74,8 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
             {
                 var h = await RpcAsync<JsonObject>("webhooks.get", new JsonObject { ["id"] = RequireId(a) }, ct).ConfigureAwait(false);
                 var text = string.Join("\n", [Line(h), "prompt: " + h["prompt"]?.GetValue<string>(), "title: " + (h["title"]?.GetValue<string>() ?? "(the name)"),
-                    "match: " + (h["match"]?.ToJsonString() ?? "[]"), "dedupe: " + (h["dedupe"]?.ToJsonString() ?? "{}") +
-                    $" · max {h["maxPerHour"]} per hour · {h["maxConcurrent"]} at once"]);
+                    "match: " + (h["match"]?.ToJsonString() ?? "[]"), "group: " + (h["group"]?.ToJsonString() ?? "none (every alert is its own chat)") +
+                    $" · fuse {h["maxChatsPerHour"]} chats per hour"]);
                 return ToolResult.Ok(text, new { kind = "webhook", webhook = h });
             }
             case "history":
@@ -92,8 +94,18 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
                     payload = p.ValueKind == JsonValueKind.String ? ParseOrWrap(p.GetString() ?? "") : JsonNode.Parse(p.GetRawText());
                 var plan = await RpcAsync<JsonObject>("webhooks.test", new JsonObject { ["id"] = id, ["payload"] = payload, ["run"] = false }, ct).ConfigureAwait(false);
                 var skip = plan["skip"]?.GetValue<string>();
-                var text = (skip is null ? "This payload would start a chat" + (plan["agent"]?.GetValue<string>() is { Length: > 0 } ag ? $" on agent {ag}" : "") + "." : "This payload would be skipped: " + skip + ".")
-                    + "\ntitle: " + plan["title"]?.GetValue<string>() + "\nprompt:\n" + plan["prompt"]?.GetValue<string>();
+                var agent = plan["agent"]?.GetValue<string>() is { Length: > 0 } ag ? $" on agent {ag}" : "";
+                var planned = plan["action"]?.GetValue<string>();
+                var verdict = planned switch
+                {
+                    "skip" => "This payload would be skipped: " + skip + ".",
+                    "append" => "This payload would be appended to the chat already handling the incident.",
+                    "join" => "This payload would join the alerts being collected for its incident.",
+                    "collect" => "This payload would open an incident and wait for more alerts of the same key before starting a chat" + agent + ".",
+                    _ => "This payload would start a chat" + agent + " at once.",
+                };
+                var text = verdict + (plan["note"]?.GetValue<string>() is { Length: > 0 } note ? " (" + note + ")" : "")
+                    + "\ntitle: " + plan["title"]?.GetValue<string>() + "\n" + (planned == "append" ? "message" : "prompt") + ":\n" + plan["prompt"]?.GetValue<string>();
                 return ToolResult.Ok(text, new { kind = "webhook-test", plan });
             }
             case "pause":

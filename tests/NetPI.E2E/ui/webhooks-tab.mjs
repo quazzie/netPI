@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { hostUi } from './host.mjs';
-import { rowState, agentToForm, formToAgent, textToMatch } from '../../../plugins/NetPI.Webhooks/ui/model.js';
+import { rowState, agentToForm, formToAgent, textToMatch, incidentLine, limitsLine } from '../../../plugins/NetPI.Webhooks/ui/model.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const bundle = fs.readFileSync(path.join(root, 'plugins/NetPI.Webhooks/wwwroot/ui.js'));
@@ -20,11 +20,11 @@ const now = Date.now();
 const iso = (ms) => new Date(ms).toISOString();
 const hook = (o) => ({
   enabled: true, projectId: 'prj_1', agent: 'any', prompt: 'Alert: {{service}} on {{host}}', tokenHint: 'ab12', path: `/hook/${o.id}`,
-  maxPerHour: 6, maxConcurrent: 2, createdAt: iso(now - 86_400_000), updatedAt: iso(now - 3_600_000), ...o,
+  maxChatsPerHour: 60, createdAt: iso(now - 86_400_000), updatedAt: iso(now - 3_600_000), ...o,
 });
 const fixtures = () => [
-  hook({ id: 'whk_ok', name: 'Checkmk', lastAt: iso(now - 600_000), lastStatus: 'started', lastSessionId: 'ses_a', dedupe: { key: '{{host}}', minutes: 30 } }),
-  hook({ id: 'whk_skip', name: 'Skipping', lastAt: iso(now - 60_000), lastStatus: 'skipped', lastReason: 'duplicate of nuc/Kernel errors' }),
+  hook({ id: 'whk_ok', name: 'Checkmk', lastAt: iso(now - 600_000), lastStatus: 'started', lastSessionId: 'ses_a', group: { key: '{{host}}', debounceSeconds: 90, reopenMinutes: 240 } }),
+  hook({ id: 'whk_skip', name: 'Skipping', lastAt: iso(now - 60_000), lastStatus: 'duplicate', lastReason: 'the chat for nuc was just told this' }),
   hook({ id: 'whk_fail', name: 'Failing', lastAt: iso(now - 60_000), lastStatus: 'failed', lastReason: 'the model is not loaded' }),
   hook({ id: 'whk_off', name: 'Paused', enabled: false }),
   hook({ id: 'whk_prop', name: 'Proposed', enabled: false, proposedBy: 'session:ses_1' }),
@@ -47,10 +47,14 @@ const ctx = {
     if (method === 'webhooks.status') return receiver;
     if (method === 'projects.list') return [{ id: 'prj_1', name: 'homelab' }];
     if (method === 'agents.list') return [{ key: 'local', available: true, free: true }, { key: 'paid', available: true, free: false }];
-    if (method === 'webhooks.history') return [{ webhookId: params.id, at: new Date().toISOString(), status: 'skipped', reason: 'filtered: state is OK', summary: 'nuc / x is OK' }];
+    if (method === 'webhooks.incidents') return [
+      { webhookId: params.id, key: 'nuc', state: 'open', alertCount: 3, sessionId: 'ses_inc' },
+      { webhookId: params.id, key: 'server', state: 'collecting', alertCount: 1, startsAt: new Date(Date.now() + 40000).toISOString() },
+    ];
+    if (method === 'webhooks.history') return [{ webhookId: params.id, at: new Date().toISOString(), status: 'appended', reason: null, summary: 'nuc / x is OK' }];
     window.__calls.push([method, params]);
     if (method === 'webhooks.add') return { id: 'whk_new', name: params.name, path: '/hook/whk_new', tokenHint: 'wxyz', token: 'whk_SECRET_TOKEN_wxyz', ...params };
-    if (method === 'webhooks.test' && !params.run) return { skip: null, agent: 'any', title: 'nuc / Kernel errors is CRIT', prompt: 'Alert: Kernel errors on nuc' };
+    if (method === 'webhooks.test' && !params.run) return { action: 'collect', skip: null, key: 'nuc', agent: 'any', title: 'nuc / Kernel errors is CRIT', prompt: 'Alert: Kernel errors on nuc', note: null };
     if (method === 'webhooks.test') return { status: 'started', sessionId: 'ses_test' };
     if (method === 'webhooks.update') return { ...hooks().find((x) => x.id === params.id), ...params };
     return true;
@@ -114,7 +118,8 @@ try {
   check('a started row has an ok dot', (await row('Checkmk').getAttribute('data-tone')) === 'ok');
   check('a failed row has an error dot', (await row('Failing').getAttribute('data-tone')) === 'err');
   check('a proposed row says an agent proposed it', (await row('Proposed').innerText()).includes('proposed by an agent'));
-  check('the meta line shows the token tail and limits', (await row('Checkmk').innerText()).includes('token …ab12'));
+  check('the meta line shows the token tail and the grouping', (await row('Checkmk').innerText()).includes('token …ab12') && (await row('Checkmk').innerText()).includes('one chat per {{host}}'));
+  check('a duplicate row is idle, not an error', (await row('Skipping').getAttribute('data-tone')) === 'idle');
 
   // --- the detail: URL, template, preview
   await row('Checkmk').locator('.row').click();
@@ -122,14 +127,17 @@ try {
   check('the detail shows where to POST', (await row('Checkmk').locator('.url').innerText()) === 'http://192.168.1.170:7432/hook/whk_ok');
   await row('Checkmk').locator('button', { hasText: 'Preview' }).click();
   await tab.waitForSelector('.webhooks .preview', { timeout: 5_000 });
-  check('Preview shows the verdict and the filled prompt', (await row('Checkmk').locator('.preview').innerText()).includes('Would start a chat on any'));
+  check('Preview shows what would happen and the filled prompt', (await row('Checkmk').locator('.preview').innerText()).includes('Would open the incident “nuc”'));
+  check('the detail lists the incidents with their state', (await row('Checkmk').innerText()).includes('nuc · open · 3 alerts') && (await row('Checkmk').innerText()).includes('server · collecting, chat starts in'));
+  await row('Checkmk').locator('.inc-open').first().click();
+  check('an incident row opens its chat', (await tab.evaluate(() => window.__opened)) === 'ses_inc');
   const previewCall = await tab.evaluate(() => window.__calls.filter(([m]) => m === 'webhooks.test').at(-1)[1]);
   check('Preview sends run:false with the parsed payload', previewCall.run === false && previewCall.payload.service === 'Kernel errors', JSON.stringify(previewCall));
   await row('Checkmk').locator('button', { hasText: 'Send' }).click();
   await tab.waitForFunction(() => window.__opened === 'ses_test', null, { timeout: 5_000 });
   check('Send delivers for real and opens the chat', true);
-  await tab.waitForFunction(() => document.body.innerText.includes('filtered: state is OK'), null, { timeout: 5_000 }).catch(() => {});
-  check('the delivery history lists a skipped delivery with its reason', (await row('Checkmk').innerText()).includes('filtered: state is OK'));
+  await tab.waitForFunction(() => document.body.innerText.includes('nuc / x is OK'), null, { timeout: 5_000 }).catch(() => {});
+  check('the delivery history lists a delivery with its status', (await row('Checkmk').innerText()).toLowerCase().includes('appended'));
 
   // --- pause, and the two-step delete
   await row('Skipping').hover();
@@ -158,11 +166,12 @@ try {
   await tab.locator('.form input[placeholder="e.g. Checkmk alerts"]').fill('Checkmk alerts');
   await tab.locator('.form select').nth(1).selectOption('free');
   await tab.locator('.form textarea').nth(1).fill('[{"path":"state","in":["CRIT","DOWN"]}]');
-  await tab.locator('.form input[placeholder="{{host}}/{{service}}"]').fill('{{host}}/{{service}}');
+  await tab.locator('.form input[placeholder="{{host}}"]').fill('{{host}}');
+  await tab.waitForSelector('.form input[type=number][max="3600"]', { timeout: 5_000 });
   await tab.locator('.form .f-actions button', { hasText: 'Save' }).click();
   await tab.waitForSelector('.webhooks .token', { timeout: 5_000 });
   const add = await tab.evaluate(() => window.__calls.filter(([m]) => m === 'webhooks.add').at(-1)[1]);
-  check('add sends name, agent free, match and dedupe', add.name === 'Checkmk alerts' && add.agent === 'free' && add.match[0].path === 'state' && add.dedupe.key === '{{host}}/{{service}}', JSON.stringify(add));
+  check('add sends name, agent free, match and the incident group', add.name === 'Checkmk alerts' && add.agent === 'free' && add.match[0].path === 'state' && add.group.key === '{{host}}' && add.group.debounceSeconds === 90 && add.maxChatsPerHour === 60, JSON.stringify(add));
   const tokenBox = await tab.locator('.webhooks .token').innerText();
   check('the token box shows the token once, with a curl line', tokenBox.includes('whk_SECRET_TOKEN_wxyz') && tokenBox.includes('curl -X POST'), tokenBox.slice(0, 80));
   await tab.locator('.webhooks .token button', { hasText: 'I have saved it' }).click();
@@ -207,6 +216,8 @@ try {
 check('rowState: a disabled proposal', rowState({ enabled: false, proposedBy: 'session:x' }).key === 'proposed');
 check('rowState: a failed delivery is an error', rowState({ enabled: true, lastStatus: 'failed' }).tone === 'err');
 check('agent list round-trips', formToAgent({ agentChoice: '__list', agentList: ' a , b ' }) === 'a,b' && agentToForm('a,b').agentChoice === '__list');
+check('incidentLine: open and collecting', incidentLine({ key: 'nuc', state: 'open', alertCount: 1 }) === 'nuc · open · 1 alert' && incidentLine({ key: 'x', state: 'collecting', alertCount: 2, startsAt: new Date(Date.now() + 30000).toISOString() }, Date.now()).includes('chat starts in'));
+check('limitsLine: grouped and ungrouped', limitsLine({ group: { key: '{{host}}', debounceSeconds: 60 }, maxChatsPerHour: 60 }).includes('60 s window') && limitsLine({}).includes('every alert its own chat'));
 check('match text: an array parses, junk does not', textToMatch('[{"path":"x","equals":1}]').length === 1 && textToMatch('x') === null && textToMatch('').length === 0);
 
 const failed = checks.filter((c) => !c.ok);

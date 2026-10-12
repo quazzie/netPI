@@ -38,7 +38,7 @@ compatibility code. Record, commits and what data is left behind: [archive/2026-
 New plugin `NetPI.Webhooks` (tab, `webhooks` tool, `webhooks.*` RPCs): a system outside NetPI (first user: Checkmk on the server, alerts to an agent) POSTs
 to `/hook/{id}` with the webhook's bearer token and a chat starts on a project, with a prompt filled in from the payload, on a key / `any` / `free` / a
 preference list. The receiver is its **own small Kestrel listener** (`webhooks.enabled`, `.bind`, `.port`, `.allowFrom`), off by default: the host's API
-stays loopback-only. Per webhook: match conditions, a dedupe key + window, hourly and concurrent caps. Agents cannot create or enable webhooks (they get
+stays loopback-only. Per webhook an incident key (e.g. the host): the first alert opens a debounce window (90 s), the rest of the window joins the same chat, later alerts and recoveries are appended to the chat that handles the incident (reopened for a few hours after it finished), exact repeats are duplicates; a batch that cannot start (agent unavailable) waits and is retried for 30 min, never dropped; a safety fuse paces new chats; no concurrency cap and no budget check here (runs queue for the agent's instances, the Agents plugin owns the budget). Agents cannot create or enable webhooks (they get
 list/get/history/test/pause). Two things learnt: a plugin must not subscribe to the bus with an async handler it leaves alive (`ctx.Events.SubscribeAsync`
 rooted the plugin's load context while other servers ran — use a sync `Subscribe` that schedules the work), and `FakeSettings.Set` publishes nothing without a bus.
 Setup recipe for Checkmk: `C:\AI\Sysadmin\docs\checkmk.md`.

@@ -10,6 +10,12 @@ export function rowState(h) {
   switch (h.lastStatus) {
     case 'started':
       return { key: 'started', tone: 'ok', label: 'last delivery started a chat' };
+    case 'appended':
+      return { key: 'appended', tone: 'ok', label: 'last delivery was added to the chat that handles the incident' };
+    case 'held':
+      return { key: 'held', tone: 'ok', label: h.lastReason ? `last delivery: ${h.lastReason}` : 'last delivery is being collected for a chat' };
+    case 'duplicate':
+      return { key: 'duplicate', tone: 'idle', label: 'last delivery repeated an alert the chat already had' };
     case 'skipped':
       return { key: 'skipped', tone: 'idle', label: h.lastReason ? `last delivery skipped: ${h.lastReason}` : 'last delivery skipped' };
     case 'failed':
@@ -47,13 +53,23 @@ export function textToMatch(text) {
   }
 }
 
-/** A one-line description of the limits, for the row's meta line. */
+/** A one-line description of how alerts are grouped, for the row's meta line. */
 export function limitsLine(h) {
   const bits = [];
-  if (h.dedupe?.key) bits.push(`dedupe ${h.dedupe.minutes ?? 60} min`);
-  bits.push(`${h.maxPerHour ?? 6}/h`);
-  bits.push(`${h.maxConcurrent ?? 2} at once`);
+  if (h.group?.key) bits.push(`one chat per ${h.group.key} (${h.group.debounceSeconds ?? 90} s window)`);
+  else bits.push('every alert its own chat');
+  if (h.maxChatsPerHour) bits.push(`fuse ${h.maxChatsPerHour}/h`);
   return bits.join(' · ');
+}
+
+/** An incident as a line: "nuc · open · 3 alerts" or "nuc · collecting, chat starts in 40 s". */
+export function incidentLine(i, nowMs = Date.now()) {
+  const alerts = `${i.alertCount ?? 1} alert${(i.alertCount ?? 1) === 1 ? '' : 's'}`;
+  if (i.state === 'collecting') {
+    const left = Math.max(0, Math.round((Date.parse(i.startsAt) - nowMs) / 1000));
+    return i.waiting ? `${i.key} · waiting to start: ${i.waiting}` : `${i.key} · collecting, chat starts in ${left} s · ${alerts}`;
+  }
+  return `${i.key} · open · ${alerts}`;
 }
 
 /** How to call the receiver, for the copy box: the curl line a sender's admin can adapt. */

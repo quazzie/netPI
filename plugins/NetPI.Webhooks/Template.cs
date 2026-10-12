@@ -20,11 +20,12 @@ internal static partial class Template
     [GeneratedRegex(@"\{\{\s*([A-Za-z0-9_.\-\[\]]+)\s*\}\}")]
     private static partial Regex Placeholder();
 
-    public static string Expand(string template, JsonNode? payload, DateTimeOffset now) =>
+    /// <param name="whole">What <c>{{payload}}</c> renders when it is not <paramref name="payload"/> itself (a batch's frame reads the first alert's fields but must not print the helper fields added to it).</param>
+    public static string Expand(string template, JsonNode? payload, DateTimeOffset now, JsonNode? whole = null) =>
         Placeholder().Replace(template, m =>
         {
             var path = m.Groups[1].Value;
-            if (path == "payload") return Clip(Pretty(payload), MaxPayloadChars);
+            if (path == "payload") return Clip(Pretty(whole ?? payload), MaxPayloadChars);
             if (path == "now") return now.ToString("yyyy-MM-dd HH:mm:ss zzz");
             return Clip(Show(Resolve(payload, path)), MaxValueChars);
         });

@@ -9,8 +9,9 @@ namespace NetPI.Webhooks;
 /// Inbound webhooks (idea-wmpsrw, from the Checkmk rollout): another system POSTs to <c>/hook/{id}</c> on the plugin's own
 /// receiver (<see cref="WebhookListener"/>) with the webhook's bearer token, and the payload starts a fresh chat on a project —
 /// on a named agent, <c>any</c> agent with a free instance, the first <c>free</c>-priced agent, or the first of a list — with a
-/// prompt filled in from the payload. Filters, a dedupe key and hourly/concurrent caps keep an alert storm from becoming a
-/// pile of chats. The receiver is off until <c>webhooks.enabled</c>, listens on <c>webhooks.bind</c>:<c>webhooks.port</c> and
+/// prompt filled in from the payload. Alerts are grouped into incidents by a key (the host): the first opens a debounce window, the
+/// rest of the window joins the same chat, and later ones are appended to the chat that handles the incident — nothing is dropped,
+/// and a storm becomes one conversation per incident instead of a pile of chats. The receiver is off until <c>webhooks.enabled</c>, listens on <c>webhooks.bind</c>:<c>webhooks.port</c> and
 /// answers only <c>webhooks.allowFrom</c>. Starting a run is <see cref="WebhookRunner"/>; the webhooks are in <see cref="WebhookStore"/>.
 /// </summary>
 [NetPiPlugin("netpi.webhooks", Name = "Webhooks", Description = "Inbound webhooks: an authenticated POST from another system starts a fresh chat on a project, on a chosen agent, any free agent or the first free-priced one", Order = 97)]
@@ -25,17 +26,22 @@ public sealed class WebhooksPlugin : INetPiPlugin
     private AddressList _allow = new([]);
     private readonly SemaphoreSlim _reconcile = new(1, 1);
     private FailureThrottle? _throttle;
+    private readonly bool _loop;
+    private readonly SemaphoreSlim _wake = new(0);
+    private CancellationTokenSource? _stop;
+    private Task? _worker;
 
     internal WebhookStore? Store { get; private set; }
     internal WebhookRunner? Runner { get; private set; }
 
-    public WebhooksPlugin() : this(TimeProvider.System, listen: true) { }
+    public WebhooksPlugin() : this(TimeProvider.System, listen: true, loop: true) { }
 
-    /// <summary>A test's clock, and no network listener unless the test asks for one by enabling the setting.</summary>
-    internal WebhooksPlugin(TimeProvider time, bool listen)
+    /// <summary>A test's clock, no background loop (the test calls <see cref="WebhookRunner.TickAsync"/>) and no network listener unless the test enables the setting.</summary>
+    internal WebhooksPlugin(TimeProvider time, bool listen, bool loop = false)
     {
         _time = time;
         _listen = listen;
+        _loop = loop;
     }
 
     public async Task StartAsync(IPluginContext ctx, CancellationToken ct)
@@ -68,10 +74,35 @@ public sealed class WebhooksPlugin : INetPiPlugin
         // left its last task, and with it the plugin's load context, rooted until the subscription ended)
         ctx.Events.Subscribe("settings.changed", e => { _ = Task.Run(() => ReconcileAsync(ctx.Stopping), ctx.Stopping); });
         await ReconcileAsync(ct).ConfigureAwait(false);
+        if (_loop)
+        {
+            _stop = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
+            _worker = LoopAsync(ctx, store, runner, _stop.Token);
+        }
+    }
+
+    /// <summary>Starts the chats of incidents whose collecting window has ended; sleeps until the soonest one (at most 30 s), or until a new alert is held.</summary>
+    private async Task LoopAsync(IPluginContext ctx, WebhookStore store, WebhookRunner runner, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(3), _time, ct).ConfigureAwait(false);   // let startup settle first
+            while (!ct.IsCancellationRequested)
+            {
+                try { await runner.TickAsync(ct).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogError(ex, "Webhooks: a tick failed"); }
+                var wait = TimeSpan.FromSeconds(30);
+                if (store.NextDue() is { } next) wait = TimeSpan.FromTicks(Math.Clamp((next - _time.GetUtcNow()).Ticks, TimeSpan.TicksPerSecond, wait.Ticks));
+                await _wake.WaitAsync(wait, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
     }
 
     public async Task StopAsync(CancellationToken ct)
     {
+        _stop?.Cancel();
+        if (_worker is { } w) { try { await w.ConfigureAwait(false); } catch (OperationCanceledException) { } }
         await _reconcile.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try { await CloseListenerAsync().ConfigureAwait(false); }
         finally { _reconcile.Release(); }
@@ -162,11 +193,12 @@ public sealed class WebhooksPlugin : INetPiPlugin
         if (text is null) return (413, Err("too_large", $"the payload is larger than {maxBytes / 1024} KB (webhooks.maxBodyKb)"));
         var payload = Body.Payload(text, contentType);
         var result = await Runner!.HandleAsync(hook, payload, from, ct).ConfigureAwait(false);
+        if (result.Status == WebhookStore.Held) _wake.Release();
         var body = new JsonObject { ["status"] = result.Status, ["reason"] = result.Reason, ["sessionId"] = result.SessionId };
         return result.Status switch
         {
-            WebhookStore.Started => (202, body),
-            WebhookStore.Skipped => (200, body),
+            WebhookStore.Started or WebhookStore.Held or WebhookStore.Appended => (202, body),   // accepted: a chat has it, or will at the end of the window
+            WebhookStore.Skipped or WebhookStore.Duplicate => (200, body),
             _ => (500, body),
         };
     }
@@ -203,7 +235,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
 
     private void Register(IPluginContext ctx, WebhookStore store, WebhookRunner runner)
     {
-        const string Doc = "Webhook: { id, name, enabled, path (\"/hook/<id>\"), tokenHint, projectId?, agent?, prompt, title?, match?, dedupe? { key, minutes }, maxPerHour, maxConcurrent, proposedBy?, lastAt?, lastStatus?, lastReason?, lastSessionId? }";
+        const string Doc = "Webhook: { id, name, enabled, path (\"/hook/<id>\"), tokenHint, projectId?, agent?, prompt, alert?, followUp?, title?, match?, group? { key, debounceSeconds, reopenMinutes }, maxChatsPerHour, proposedBy?, lastAt?, lastStatus?, lastReason?, lastSessionId? }";
 
         ctx.Rpc.Register(new RpcMethod("webhooks.status", "The receiver: { enabled, listening, address?, port?, url?, error? }", ReadOnly: true, []),
             (_, _) => Task.FromResult<object?>(Status()));
@@ -215,16 +247,20 @@ public sealed class WebhooksPlugin : INetPiPlugin
         ctx.Rpc.Register(new RpcMethod("webhooks.get", "One webhook: { id } → Webhook", ReadOnly: true, [RpcParam.Req("id")]),
             (req, _) => Task.FromResult<object?>(Shown(Require(store, req.Required("id")))));
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.history", "Deliveries, newest first: { id?, limit? (50) } → { webhookId, at, status (started|skipped|failed), reason?, sessionId?, key?, summary?, from? }[]", ReadOnly: true,
+        ctx.Rpc.Register(new RpcMethod("webhooks.history", "Deliveries, newest first: { id?, limit? (50) } → { webhookId, at, status (held|started|appended|duplicate|skipped|failed), reason?, sessionId?, key?, summary?, from? }[]. held: collecting inside the debounce window; started: a chat began; appended: added to the incident's open chat; duplicate: that chat was just told the same", ReadOnly: true,
             [RpcParam.Opt("id", RpcParamType.String, "one webhook's; all when omitted"), RpcParam.Opt("limit", RpcParamType.Integer)]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.History(req.Str("id"), Math.Clamp(req.Int("limit") ?? 50, 1, 500)).Select(d => (JsonNode)d)])));
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.add", "Add a webhook: { name, prompt, projectId?, agent? (a key, \"any\" = whichever agent has a free instance first, \"free\" = the first free-priced one, or \"a,b\" = the first of these that is available), title?, match? ([{ path, equals|in|notIn|matches|exists }], all must hold), dedupe? ({ key, minutes } — a payload whose key started a chat inside the window is skipped), maxPerHour? (6), maxConcurrent? (2), enabled? (true), proposedBy? } → Webhook plus token (shown once). prompt and title are templates: {{path.to.field}}, {{payload}}, {{now}}. proposedBy stores it paused, as a proposal the user enables",
+        ctx.Rpc.Register(new RpcMethod("webhooks.incidents", "Incidents, most recent first: { id? } → { webhookId, key, state (collecting|open), sessionId?, alertCount, openedAt?, lastAt, startsAt?, waiting? (why a collected batch could not start yet) }[]. collecting: alerts are being gathered for the chat; open: the chat that handles the key", ReadOnly: true,
+            [RpcParam.Opt("id", RpcParamType.String, "one webhook's; all when omitted")]),
+            (req, _) => Task.FromResult<object?>(new JsonArray([.. store.Incidents(req.Str("id")).Select(i => (JsonNode)ShownIncident(i))])));
+
+        ctx.Rpc.Register(new RpcMethod("webhooks.add", "Add a webhook: { name, prompt, projectId?, agent? (a key, \"any\" = whichever agent has a free instance first, \"free\" = the first free-priced one, or \"a,b\" = the first of these that is available), alert?, followUp?, title?, match? ([{ path, equals|in|notIn|matches|exists }], all must hold to open an incident; an alert that fails it still joins an incident that is open), group? ({ key, debounceSeconds (90), reopenMinutes (240) } — the incident key, e.g. \"{{host}}\": alerts with the same key inside the window become one chat, later ones are appended to it; without group every alert is its own chat at once), maxChatsPerHour? (60, 0 = no limit: a fuse, not a quota), enabled? (true), proposedBy? } → Webhook plus token (shown once). Templates (prompt, alert, followUp, title, group.key): {{a.b.0.c}}, {{payload}}, {{now}}; prompt also {{alerts}} (every alert of the batch, each rendered with alert), {{count}}, {{key}}; followUp also {{alert}}, {{key}}, {{count}}. proposedBy stores it paused, as a proposal the user enables",
             Params:
             [
-                RpcParam.Req("name"), RpcParam.Req("prompt"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("title"),
-                RpcParam.Opt("match", RpcParamType.Array), RpcParam.Opt("dedupe", RpcParamType.Object), RpcParam.Opt("maxPerHour", RpcParamType.Integer),
-                RpcParam.Opt("maxConcurrent", RpcParamType.Integer), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
+                RpcParam.Req("name"), RpcParam.Req("prompt"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("alert"), RpcParam.Opt("followUp"), RpcParam.Opt("title"),
+                RpcParam.Opt("match", RpcParamType.Array), RpcParam.Opt("group", RpcParamType.Object), RpcParam.Opt("maxChatsPerHour", RpcParamType.Integer),
+                RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
             async (req, ct) =>
             {
@@ -241,11 +277,12 @@ public sealed class WebhooksPlugin : INetPiPlugin
                     ["projectId"] = await ProjectAsync(ctx, req.Str("projectId")).ConfigureAwait(false),
                     ["agent"] = await AgentAsync(ctx, req.Str("agent"), ct).ConfigureAwait(false),
                     ["prompt"] = Prompt(req.Required("prompt")),
-                    ["title"] = req.Str("title")?.Trim() is { Length: > 0 } t ? t : null,
+                    ["alert"] = Optional(req.Str("alert")),
+                    ["followUp"] = Optional(req.Str("followUp")),
+                    ["title"] = Optional(req.Str("title")),
                     ["match"] = Template.ValidateConditions(NetPiJson.ToNode(req.Prop("match"))),
-                    ["dedupe"] = Dedupe(NetPiJson.ToNode(req.Prop("dedupe"))),
-                    ["maxPerHour"] = Cap(req.Int("maxPerHour"), WebhookRunner.DefaultMaxPerHour, 1000, "maxPerHour"),
-                    ["maxConcurrent"] = Cap(req.Int("maxConcurrent"), WebhookRunner.DefaultMaxConcurrent, 100, "maxConcurrent"),
+                    ["group"] = Group(NetPiJson.ToNode(req.Prop("group"))),
+                    ["maxChatsPerHour"] = Fuse(req.Int("maxChatsPerHour") ?? WebhookRunner.DefaultMaxChatsPerHour),
                     ["createdAt"] = WebhookStore.Iso(now),
                     ["updatedAt"] = WebhookStore.Iso(now),
                 };
@@ -257,12 +294,12 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 return shown;
             });
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.update", "Change a webhook: { id, name?, prompt?, title?, projectId? (\"\" clears), agent? (\"\" clears), match?, dedupe?, maxPerHour?, maxConcurrent?, enabled?, proposedBy? } → Webhook. proposedBy (the webhooks tool sets it): a change of what runs pauses the webhook as a proposal for the user, and it cannot enable one",
+        ctx.Rpc.Register(new RpcMethod("webhooks.update", "Change a webhook: { id, name?, prompt?, alert?, followUp?, title?, projectId? (\"\" clears), agent? (\"\" clears), match?, group? ({} clears grouping), maxChatsPerHour?, enabled?, proposedBy? } → Webhook (\"\" clears alert, followUp and title too). proposedBy (the webhooks tool sets it): a change of what runs pauses the webhook as a proposal for the user, and it cannot enable one",
             Params:
             [
-                RpcParam.Req("id"), RpcParam.Opt("name"), RpcParam.Opt("prompt"), RpcParam.Opt("title"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"),
-                RpcParam.Opt("match", RpcParamType.Array), RpcParam.Opt("dedupe", RpcParamType.Object), RpcParam.Opt("maxPerHour", RpcParamType.Integer),
-                RpcParam.Opt("maxConcurrent", RpcParamType.Integer), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
+                RpcParam.Req("id"), RpcParam.Opt("name"), RpcParam.Opt("prompt"), RpcParam.Opt("alert"), RpcParam.Opt("followUp"), RpcParam.Opt("title"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"),
+                RpcParam.Opt("match", RpcParamType.Array), RpcParam.Opt("group", RpcParamType.Object), RpcParam.Opt("maxChatsPerHour", RpcParamType.Integer),
+                RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
             async (req, ct) =>
             {
@@ -271,20 +308,21 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 var project = req.Str("projectId") is { } p ? (p.Length == 0 ? null : await ProjectAsync(ctx, p).ConfigureAwait(false)) : null;
                 var agent = req.Str("agent") is { } a ? (a.Length == 0 ? null : await AgentAsync(ctx, a, ct).ConfigureAwait(false)) : null;
                 var match = req.Prop("match") is not null ? Template.ValidateConditions(NetPiJson.ToNode(req.Prop("match"))) : null;
-                var dedupe = req.Prop("dedupe") is not null ? Dedupe(NetPiJson.ToNode(req.Prop("dedupe"))) : null;
+                var group = req.Prop("group") is not null ? Group(NetPiJson.ToNode(req.Prop("group"))) : null;
                 var updated = store.Change(id, doc =>
                 {
                     var now = _time.GetUtcNow();
                     var changesWhatRuns = false;
                     if (req.Str("name") is { } name) doc["name"] = Name(name);
                     if (req.Str("prompt") is { } prompt) { doc["prompt"] = Prompt(prompt); changesWhatRuns = true; }
-                    if (req.Str("title") is { } title) doc["title"] = title.Trim().Length == 0 ? null : title.Trim();
+                    if (req.Str("alert") is { } alert) { doc["alert"] = Optional(alert); changesWhatRuns = true; }
+                    if (req.Str("followUp") is { } followUp) { doc["followUp"] = Optional(followUp); changesWhatRuns = true; }
+                    if (req.Str("title") is { } title) doc["title"] = Optional(title);
                     if (req.Str("projectId") is not null) { doc["projectId"] = project; changesWhatRuns = true; }
                     if (req.Str("agent") is not null) { doc["agent"] = agent; changesWhatRuns = true; }
                     if (match is not null) { doc["match"] = match; changesWhatRuns = true; }
-                    if (dedupe is not null) doc["dedupe"] = dedupe;
-                    if (req.Int("maxPerHour") is { } mph) doc["maxPerHour"] = Cap(mph, 0, 1000, "maxPerHour");
-                    if (req.Int("maxConcurrent") is { } mc) doc["maxConcurrent"] = Cap(mc, 0, 100, "maxConcurrent");
+                    if (req.Prop("group") is not null) { doc["group"] = group; changesWhatRuns = true; }
+                    if (req.Int("maxChatsPerHour") is { } fuse) doc["maxChatsPerHour"] = Fuse(fuse);
                     var enabled = req.Bool("enabled") ?? WebhookStore.Enabled(doc);
                     if (Proposer(req) is { } proposer)
                     {
@@ -309,7 +347,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 return Task.FromResult<object?>(new JsonObject { ["id"] = id, ["token"] = token });
             });
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.delete", "Delete a webhook and its history: { id } → true. The chats its deliveries started stay", Params: [RpcParam.Req("id")]),
+        ctx.Rpc.Register(new RpcMethod("webhooks.delete", "Delete a webhook with its history and incidents: { id } → true. The chats its deliveries started stay", Params: [RpcParam.Req("id")]),
             (req, _) =>
             {
                 var id = req.Required("id");
@@ -318,7 +356,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 return Task.FromResult<object?>(true);
             });
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.test", "Try a payload on a webhook: { id, payload (any JSON), run? (false) } → { skip?, agent?, title, prompt }. Without run it only shows what would happen (the filled-in prompt, the filter, dedupe and limit verdicts, the agent it would pick) and starts nothing; with run: true it delivers the payload as if it had arrived (the same checks, a real chat)",
+        ctx.Rpc.Register(new RpcMethod("webhooks.test", "Try a payload on a webhook: { id, payload (any JSON), run? (false) } → without run: { action (start|collect|join|append|skip), skip?, key?, agent?, title, prompt, note? } — what would happen, the prompt (or the follow-up for an open incident) filled in, nothing started or stored; with run: true: the delivery's { status, reason?, sessionId? } as if the payload had arrived (it opens or joins a real incident)",
             Params: [RpcParam.Req("id"), RpcParam.Opt("payload", RpcParamType.Any), RpcParam.Opt("run", RpcParamType.Boolean)]),
             async (req, ct) =>
             {
@@ -327,10 +365,11 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 if (req.Bool("run") == true)
                 {
                     var result = await runner.HandleAsync(hook, payload, "test", ct).ConfigureAwait(false);
+                    if (result.Status == WebhookStore.Held) _wake.Release();
                     return new JsonObject { ["status"] = result.Status, ["reason"] = result.Reason, ["sessionId"] = result.SessionId };
                 }
-                var plan = await runner.PlanAsync(hook, payload, check: true, ct).ConfigureAwait(false);
-                return new JsonObject { ["skip"] = plan.Skip, ["agent"] = plan.AgentKey, ["free"] = plan.Free, ["title"] = plan.Title, ["key"] = plan.Key, ["prompt"] = plan.Prompt };
+                var plan = await runner.PlanAsync(hook, payload, ct).ConfigureAwait(false);
+                return new JsonObject { ["action"] = plan.Action, ["skip"] = plan.Skip, ["key"] = plan.Key, ["agent"] = plan.AgentKey, ["title"] = plan.Title, ["prompt"] = plan.Prompt, ["note"] = plan.Note };
             });
     }
 
@@ -347,25 +386,47 @@ public sealed class WebhooksPlugin : INetPiPlugin
     private static string Prompt(string prompt) =>
         prompt.Trim() is { Length: > 0 } p ? p : throw new RpcException("bad_request", "the prompt cannot be empty");
 
-    private static int Cap(int? value, int fallback, int max, string what)
-    {
-        var v = value ?? fallback;
-        if (v < 1 || v > max) throw new RpcException("bad_request", $"{what} must be between 1 and {max}");
-        return v;
-    }
+    private static string? Optional(string? text) => text?.Trim() is { Length: > 0 } t ? t : null;
 
-    private static JsonObject? Dedupe(JsonNode? node)
+    private static int Fuse(int value) =>
+        value is >= 0 and <= 100_000 ? value : throw new RpcException("bad_request", "maxChatsPerHour must be between 0 (no limit) and 100000");
+
+    /// <summary><c>{ key, debounceSeconds?, reopenMinutes? }</c> or null (<c>{}</c> / null turns grouping off).</summary>
+    private static JsonObject? Group(JsonNode? node)
     {
         if (node is null) return null;
-        if (node is not JsonObject o) throw new RpcException("bad_request", "dedupe must be { key, minutes }");
-        var clean = new JsonObject();
-        if (o["key"]?.GetValue<string>()?.Trim() is { Length: > 0 } key) clean["key"] = key;
-        if (o["minutes"] is JsonValue m && m.TryGetValue<int>(out var minutes))
+        if (node is not JsonObject o) throw new RpcException("bad_request", "group must be { key, debounceSeconds, reopenMinutes }");
+        if (o.Count == 0) return null;
+        var key = o["key"]?.GetValue<string>()?.Trim();
+        if (string.IsNullOrEmpty(key)) throw new RpcException("bad_request", "group needs a key, e.g. \"{{host}}\"");
+        var clean = new JsonObject { ["key"] = key };
+        clean["debounceSeconds"] = Range(o["debounceSeconds"], "group.debounceSeconds", 0, 3600, WebhookRunner.DefaultDebounceSeconds);
+        clean["reopenMinutes"] = Range(o["reopenMinutes"], "group.reopenMinutes", 0, 60 * 24 * 14, WebhookRunner.DefaultReopenMinutes);
+        return clean;
+    }
+
+    private static int Range(JsonNode? node, string what, int min, int max, int fallback)
+    {
+        if (node is null) return fallback;
+        if (node is not JsonValue v || !v.TryGetValue<int>(out var i) || i < min || i > max) throw new RpcException("bad_request", $"{what} must be a number from {min} to {max}");
+        return i;
+    }
+
+    /// <summary>An incident as <c>webhooks.incidents</c> answers it: without the collected payloads (they may be large), with when the chat starts.</summary>
+    private static JsonObject ShownIncident(JsonObject i)
+    {
+        var shown = new JsonObject
         {
-            if (minutes < 0 || minutes > 24 * 60 * 14) throw new RpcException("bad_request", "dedupe.minutes must be 0–20160 (0 turns dedupe off)");
-            clean["minutes"] = minutes;
+            ["webhookId"] = i["webhookId"]?.DeepClone(), ["key"] = i["key"]?.DeepClone(), ["state"] = i["state"]?.DeepClone(),
+            ["sessionId"] = i["sessionId"]?.DeepClone(), ["alertCount"] = i["alertCount"]?.DeepClone(), ["openedAt"] = i["openedAt"]?.DeepClone(),
+            ["lastAt"] = i["lastAtMs"] is JsonValue v && v.TryGetValue<long>(out var ms) ? WebhookStore.Iso(DateTimeOffset.FromUnixTimeMilliseconds(ms)) : null,
+        };
+        if (i["state"]?.GetValue<string>() == WebhookStore.Collecting && i["startAtMs"] is JsonValue s && s.TryGetValue<long>(out var start))
+        {
+            shown["startsAt"] = WebhookStore.Iso(DateTimeOffset.FromUnixTimeMilliseconds(start));
+            shown["waiting"] = i["lastReason"]?.DeepClone();
         }
-        return clean.Count == 0 ? null : clean;
+        return shown;
     }
 
     /// <summary>A webhook as the RPCs answer it: without its token hash, with the path to POST to.</summary>
