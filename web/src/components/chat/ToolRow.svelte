@@ -12,7 +12,7 @@
   import { parseArgs, toolMeta, toolSummary, toolBadge, pathArg, viewName } from '../../lib/tools.js';
   import { openFile } from '../../lib/openFile.js';
   import { asks, approvalFor, answerApproval, opinionText } from '../../lib/state/asks.svelte.js';
-  import { toast } from '../../lib/state/ui.svelte.js';
+  import { toast, prefs } from '../../lib/state/ui.svelte.js';
   import { duration } from '../../lib/format.js';
   import { app } from '../../lib/state/app.svelte.js';
 
@@ -102,7 +102,10 @@
     }
     return b;
   });
-  const open = $derived(chat.expanded.get(step.key) ?? false);
+  // the user's own toggle wins; else the "Tool calls" preference: closed · errors (only a failed call starts open) · open
+  const open = $derived(
+    chat.expanded.get(step.key) ?? (status !== 'preparing' && (prefs.expandTools === 'open' || (prefs.expandTools === 'errors' && status === 'error'))),
+  );
 
   let now = $state(Date.now());
   $effect(() => {

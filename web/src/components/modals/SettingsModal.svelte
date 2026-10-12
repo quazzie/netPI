@@ -244,10 +244,11 @@
           </div>
           <div class="row">
             <div class="lbl">
-              <div>Steps</div>
+              <div>Step groups</div>
               <div class="np-dim np-small">
-                Thinking and tool calls. <b>Fold when done</b>: groups of more than 3 steps fold into “N steps · time” when the
-                run ends. <b>Folded</b>: they fold into one line from the start, which keeps the chat still while the agent works.
+                The thinking and tool calls between two texts. <b>Expanded</b>: always shown, never folded. <b>Fold when done</b>:
+                a group of more than 3 steps folds into “N steps · time” when the run ends. <b>Folded</b>: folds into one line from
+                the start, which keeps the chat still while the agent works.
               </div>
             </div>
             <div class="np-seg">
@@ -256,10 +257,25 @@
               {/each}
             </div>
           </div>
-          <label class="row check">
-            <div class="lbl"><div>Expand thinking</div><div class="np-dim np-small">Show reasoning blocks expanded by default, also while they stream</div></div>
-            <input type="checkbox" checked={prefs.expandThinking} onchange={(e) => setPref('expandThinking', e.currentTarget.checked)} />
-          </label>
+          <div class="row">
+            <div class="lbl"><div>Thinking</div><div class="np-dim np-small">Whether reasoning blocks start expanded, also while they stream</div></div>
+            <div class="np-seg">
+              {#each [[false, 'Collapsed'], [true, 'Expanded']] as [v, l] (l)}
+                <button aria-pressed={prefs.expandThinking === v} onclick={() => setPref('expandThinking', v)}>{l}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="row">
+            <div class="lbl">
+              <div>Tool calls</div>
+              <div class="np-dim np-small">Whether each tool call shows its input and output at once. <b>Errors</b>: only a failed call starts open.</div>
+            </div>
+            <div class="np-seg">
+              {#each [['closed', 'Collapsed'], ['errors', 'Errors'], ['open', 'Expanded']] as [v, l] (v)}
+                <button aria-pressed={prefs.expandTools === v} onclick={() => setPref('expandTools', v)}>{l}</button>
+              {/each}
+            </div>
+          </div>
           <label class="row check">
             <div class="lbl">
               <div>Model turn details</div>

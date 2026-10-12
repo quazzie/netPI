@@ -269,6 +269,9 @@ into locals first, because after the parent clears the modal state or the row re
      also while the agent works (adding a second step cannot shrink an open row into a folded head line), and the
      group the agent is adding to shows its latest step on that line; `open` never folds. Steering input does not
      end a run. The user's choice to expand or collapse is kept per group in `chat.expanded`.
+     Three independent preferences (Settings → Chat): **Step groups** (`prefs.steps`, above), **Thinking**
+     (`prefs.expandThinking`: reasoning rows start expanded) and **Tool calls** (`prefs.expandTools`: `closed` (default),
+     `errors` (a failed call starts open) or `open`; a row's own toggle in `chat.expanded` always wins).
    - **Fork.** A user message's hover actions have **Fork** (`sessions.fork` up to the message before it): a new chat
      with the conversation before it opens in a tab, with the message's text in its box to change and send again. An
      answer's footer has **Fork** too (up to the answer). Not in a subagent's chat. A fork's header has a crumb back to

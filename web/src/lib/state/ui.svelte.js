@@ -15,7 +15,8 @@ const defaultPrefs = {
   steps: 'done',
   chatWidth: 'normal', // normal (900px) | wide (1200px) | full
   enterSends: true, // false → Ctrl+Enter sends, Enter = newline
-  expandThinking: false,
+  expandThinking: false, // thinking rows start expanded
+  expandTools: 'closed', // tool call rows start: 'closed' · 'errors' (a failed call is open) · 'open'
   turnDetails: true, // under each model turn's steps: time to first token, cache reuse, output speed, tokens
   spellcheck: true, // spell checking in the composer
   favorites: [], // project ids listed in the tab bar's + menu, for a quick new session
@@ -29,6 +30,7 @@ function withDefaults(v) {
   const p = { ...defaultPrefs, ...saved };
   if (saved.steps == null && saved.collapseSteps === false) p.steps = 'open'; // saved before the steps choice existed
   if (!['open', 'done', 'folded'].includes(p.steps)) p.steps = defaultPrefs.steps;
+  if (!['closed', 'errors', 'open'].includes(p.expandTools)) p.expandTools = defaultPrefs.expandTools;
   if (!Array.isArray(p.favorites)) p.favorites = [];
   if (!(p.chatWidth in CHAT_WIDTH)) p.chatWidth = defaultPrefs.chatWidth;
   delete p.collapseSteps;
