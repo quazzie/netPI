@@ -41,7 +41,7 @@ preference list. The receiver is its **own small Kestrel listener** (`webhooks.e
 stays loopback-only. Per webhook an incident key (e.g. the host): the first alert opens a debounce window (90 s), the rest of the window joins the same chat, later alerts and recoveries are appended to the chat that handles the incident (reopened for a few hours after it finished), exact repeats are duplicates; a batch that cannot start (agent unavailable) waits and is retried for 30 min, never dropped; a safety fuse paces new chats; no concurrency cap and no budget check here (runs queue for the agent's instances, the Agents plugin owns the budget). Agents cannot create or enable webhooks (they get
 list/get/history/test/pause). Two things learnt: a plugin must not subscribe to the bus with an async handler it leaves alive (`ctx.Events.SubscribeAsync`
 rooted the plugin's load context while other servers ran — use a sync `Subscribe` that schedules the work), and `FakeSettings.Set` publishes nothing without a bus.
-Setup recipe for Checkmk: `C:\AI\Sysadmin\docs\checkmk.md`.
+Hot reload order: the host starts the NEW generation of a plugin before it stops the old one, so a plugin that owns a socket must not wait for it inside StartAsync (the webhook receiver binds in the background, retrying for 90 s, and its stop cancels that wait). Setup recipe for Checkmk: `C:\AI\Sysadmin\docs\checkmk.md`.
 
 ### Schedules tab and tool (2026-10-06)
 

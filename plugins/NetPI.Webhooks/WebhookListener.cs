@@ -27,7 +27,7 @@ internal sealed class WebhookListener : IAsyncDisposable
 
     private WebhookListener(WebApplication app, string address, int port) { _app = app; Address = address; Port = port; }
 
-    /// <summary>Start listening; an address that is still held by the previous generation of the plugin (a hot reload) is retried for a few seconds.</summary>
+    /// <summary>Start listening; an address that is still held by the previous generation of the plugin (a hot reload: the host stops the old generation after starting the new one) is retried every second for 90 s.</summary>
     public static async Task<WebhookListener> StartAsync(IPAddress address, int port, Func<HttpContext, Task> handler, ILogger log, CancellationToken ct)
     {
         for (var attempt = 0; ; attempt++)
@@ -51,7 +51,7 @@ internal sealed class WebhookListener : IAsyncDisposable
                 var actual = bound is not null && Uri.TryCreate(bound, UriKind.Absolute, out var uri) ? uri.Port : port;
                 return new WebhookListener(app, address.ToString(), actual);
             }
-            catch (Exception ex) when (attempt < 10 && (ex is IOException || ex is SocketException || ex.InnerException is SocketException) && !ct.IsCancellationRequested)
+            catch (Exception ex) when (attempt < 90 && (ex is IOException || ex is SocketException || ex.InnerException is SocketException) && !ct.IsCancellationRequested)
             {
                 log.LogInformation("Webhooks: {Address}:{Port} is busy ({Error}); retrying", address, port, ex.Message);
                 await app.DisposeAsync().ConfigureAwait(false);

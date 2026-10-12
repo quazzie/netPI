@@ -547,6 +547,44 @@ public static class WebhooksTests
             Check.Equal(false, (await env.Get(id))["enabled"]!.GetValue<bool>());
         });
 
+        r.Add("webhooks: a reloaded plugin starts at once and takes over the port its previous generation still holds; a stop ends a bind that is still waiting", async () =>
+        {
+            var port = FreePort();
+            var env = await new Env(listen: true).StartAsync();
+            env.Ctx.SettingsFake.SetQuiet("webhooks.port", port);
+            env.Ctx.SettingsFake.SetQuiet("webhooks.enabled", true);
+            env.Ctx.Events.Publish("settings.changed", new JsonObject { ["path"] = "webhooks.enabled" });
+            await WaitFor(() => env.Plugin.Status()["listening"]!.GetValue<bool>());
+
+            // the host starts the new generation BEFORE it stops the old one, which still holds the port
+            WebhooksPlugin Generation(out FakePluginContext ctx2)
+            {
+                ctx2 = new FakePluginContext(env.Ctx.Paths.Home, "netpi.webhooks");
+                ctx2.ServicesFake.Register<IAgentRuntime>(env.Runtime);
+                ctx2.SettingsFake.SetQuiet("webhooks.port", port);
+                ctx2.SettingsFake.SetQuiet("webhooks.enabled", true);
+                return new WebhooksPlugin(env.Time, listen: true, loop: false);
+            }
+            var second = Generation(out var ctx2);
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            await second.StartAsync(ctx2, CancellationToken.None);
+            Check.True(started.Elapsed < TimeSpan.FromSeconds(3), "StartAsync does not wait for the port: " + started.Elapsed);
+            Check.False(second.Status()["listening"]!.GetValue<bool>(), "the port is still held by the previous generation");
+
+            await env.Plugin.StopAsync(CancellationToken.None);   // the host stops the old generation
+            await WaitFor(() => second.Status()["listening"]!.GetValue<bool>());
+            using var http = new HttpClient();
+            Check.Equal(HttpStatusCode.OK, (await http.GetAsync($"http://127.0.0.1:{port}/health")).StatusCode, "the new generation answers");
+
+            // a third generation waits for the port the second holds; stopping it must not hang on that wait
+            var third = Generation(out var ctx3);
+            await third.StartAsync(ctx3, CancellationToken.None);
+            var stopping = System.Diagnostics.Stopwatch.StartNew();
+            await third.StopAsync(CancellationToken.None);
+            Check.True(stopping.Elapsed < TimeSpan.FromSeconds(5), "a stop ends the waiting bind: " + stopping.Elapsed);
+            await second.StopAsync(CancellationToken.None);
+        });
+
         r.Add("webhooks: the real listener — off until enabled, answers over a socket, follows setting changes", async () =>
         {
             var port = FreePort();

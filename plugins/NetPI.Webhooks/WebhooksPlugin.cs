@@ -26,6 +26,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
     private AddressList _allow = new([]);
     private readonly SemaphoreSlim _reconcile = new(1, 1);
     private FailureThrottle? _throttle;
+    private CancellationTokenSource? _life;
     private readonly bool _loop;
     private readonly SemaphoreSlim _wake = new(0);
     private CancellationTokenSource? _stop;
@@ -72,8 +73,13 @@ public sealed class WebhooksPlugin : INetPiPlugin
         });
         // a sync handler that only schedules the work: the bus keeps no task of ours in its worker between events (a plugin's async handler
         // left its last task, and with it the plugin's load context, rooted until the subscription ended)
-        ctx.Events.Subscribe("settings.changed", e => { _ = Task.Run(() => ReconcileAsync(ctx.Stopping), ctx.Stopping); });
-        await ReconcileAsync(ct).ConfigureAwait(false);
+        var life = _life = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
+        ctx.Events.Subscribe("settings.changed", e => { _ = Task.Run(() => ReconcileAsync(life.Token), life.Token); });
+        // The receiver binds in the background. On a hot reload the host starts this generation BEFORE it stops the previous one, which
+        // still holds the port: waiting for the bind here would wait for a stop that only comes after StartAsync returns (the port stayed
+        // down until someone toggled the setting). The allow list is read first, so a request never meets an empty one.
+        ApplyAllowList();
+        _ = Task.Run(() => ReconcileAsync(life.Token), life.Token);
         if (_loop)
         {
             _stop = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
@@ -101,6 +107,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
 
     public async Task StopAsync(CancellationToken ct)
     {
+        _life?.Cancel();   // ends a bind that is still waiting for the previous generation's port, which would otherwise hold _reconcile
         _stop?.Cancel();
         if (_worker is { } w) { try { await w.ConfigureAwait(false); } catch (OperationCanceledException) { } }
         await _reconcile.WaitAsync(CancellationToken.None).ConfigureAwait(false);
@@ -120,9 +127,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
             var enabled = _listen && ctx.Settings.Get("webhooks.enabled", false);
             var bind = ctx.Settings.Get("webhooks.bind", "127.0.0.1")?.Trim() ?? "127.0.0.1";
             var port = Math.Clamp(ctx.Settings.Get("webhooks.port", 7432), 1, 65535);
-            var allow = ctx.Settings.GetNode("webhooks.allowFrom") is JsonArray a ? a.Select(n => n?.GetValue<string>() ?? "").ToList() : ["127.0.0.1/32", "::1/128"];
-            _allow = new AddressList(allow);
-            if (_allow.Rejected.Count > 0) ctx.Logger.LogWarning("Webhooks: ignoring unreadable allow-list entries {Entries}", string.Join(", ", _allow.Rejected));
+            var allow = ApplyAllowList();
             var key = enabled ? $"{bind}:{port}" : null;
             if (key == _listenerKey && (key is null || _listener is not null)) return;
             await CloseListenerAsync().ConfigureAwait(false);
@@ -144,8 +149,18 @@ public sealed class WebhooksPlugin : INetPiPlugin
         finally
         {
             _reconcile.Release();
-            ctx.Events.Publish(WebhookRunner.ChangedEvent, new { });
+            try { ctx.Events.Publish(WebhookRunner.ChangedEvent, new { }); } catch (ObjectDisposedException) { /* the plugin is being unloaded */ }
         }
+    }
+
+    /// <summary>Read <c>webhooks.allowFrom</c> into the list requests are checked against; the entries as written (for the log).</summary>
+    private List<string> ApplyAllowList()
+    {
+        var ctx = _ctx!;
+        var allow = ctx.Settings.GetNode("webhooks.allowFrom") is JsonArray a ? a.Select(n => n?.GetValue<string>() ?? "").ToList() : ["127.0.0.1/32", "::1/128"];
+        _allow = new AddressList(allow);
+        if (_allow.Rejected.Count > 0) ctx.Logger.LogWarning("Webhooks: ignoring unreadable allow-list entries {Entries}", string.Join(", ", _allow.Rejected));
+        return allow;
     }
 
     private async Task CloseListenerAsync()
