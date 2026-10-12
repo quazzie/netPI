@@ -512,7 +512,7 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
             Label = "Agents",
             Category = "agents",
             SummaryArg = "action",
-            Description = "Your subagents: wait {ids?} for their reports, send {to, message} (to=\"parent\" for your parent), list, result {id} or cancel {id}.",
+            Description = "Your already-started subagents (not the agents available to start: that is agent_choices, then agent_spawn): wait {ids?} for their reports, send {to, message} (to=\"parent\" for your parent), list, result {id} or cancel {id}.",
             Help = string.Join("\n", actions.Select(t => $"- {t.Name}: {t.Summary}")),
             Parameters = new JsonObject
             {
@@ -550,7 +550,7 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
         var action = ActionOf(args);
         return action is not null && _actions.TryGetValue(action, out var tool)
             ? tool.ExecuteAsync(context, args, ct)
-            : Task.FromResult(ToolResult.Error($"{(action is null ? "Give an action" : $"Unknown action \"{action}\"")}: wait, send, list, result or cancel."));
+            : Task.FromResult(ToolResult.Error($"{(action is null ? "Give an action" : $"Unknown action \"{action}\"")}: wait, send, list, result or cancel. This tool only manages subagents you already started; to start one use agent_spawn (agent_choices lists the agents to pick from)."));
     }
 }
 
@@ -593,7 +593,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
                 var finished = runtime.List(true).Count(a => a.ParentAgentId == context.AgentId);
                 return ToolResult.Ok(finished > 0
                     ? "None of your subagents is running, and you have seen all their reports; use agent with action result to read one again."
-                    : "You have no subagents. Use agent_spawn to start one.");
+                    : "You have no subagents. This tool only manages subagents you already started; to see which agents you can start, call agent_choices, then start one with agent_spawn.");
             }
         }
         if (ids.Count == 0) return ToolResult.Error($"Unknown or out-of-reach agent(s): {string.Join(", ", problems)}. Use agent with action list to see your subagents.");
@@ -668,7 +668,7 @@ internal sealed class AgentListTool(IPluginContext plugin) : AgentToolBase(plugi
         var all = new ToolArgs(args).Bool("all") == true;
         var agents = runtime.List(true).Where(a => all || a.ParentAgentId == context.AgentId).Take(50).ToList();
         if (agents.Count == 0)
-            return Task.FromResult(ToolResult.Ok(all ? "No agents." : "You have no subagents. Use agent_spawn to start one.", new JsonObject { ["agents"] = new JsonArray() }));
+            return Task.FromResult(ToolResult.Ok(all ? "No agents." : "You have no subagents. This tool only manages subagents you already started; to see which agents you can start, call agent_choices, then start one with agent_spawn.", new JsonObject { ["agents"] = new JsonArray() }));
         var sb = new StringBuilder();
         var arr = new JsonArray();
         foreach (var a in agents)
