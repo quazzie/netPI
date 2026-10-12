@@ -20,6 +20,7 @@ const META = {
   browser_screenshot: { label: 'Screenshot', icon: 'image', arg: 'url', view: 'web' },
   todo_write: { label: 'Todo', icon: 'list', arg: null, view: 'todo' },
   show_image: { label: 'Image', icon: 'image', arg: 'source', view: 'generic' },
+  artifact: { label: 'Artifact', icon: 'file-text', arg: 'path', view: 'generic' },
   ssh_run: { label: 'SSH', icon: 'terminal', arg: 'script', view: 'shell' },
   ssh_read: { label: 'SSH read', icon: 'file-text', arg: 'path', view: 'read' },
   ssh_write: { label: 'SSH write', icon: 'file-plus', arg: 'path', view: 'write' },

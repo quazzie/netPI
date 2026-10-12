@@ -245,6 +245,10 @@ into locals first, because after the parent clears the modal state or the row re
      revealed. A path outside the session's workspace comes back as `action: 'confirm'` and is a second question.
      The "Open file" button of `read`/`write`/`edit` rows is the same call without the question: the user pressed it.
      Web links keep `target="_blank"` (the desktop shell opens them in the default browser).
+   - **Artifacts.** `chatItems.js` collects the files a turn wrote or edited (`write`/`edit` results without an error) and
+     the `artifact` tool's files into one `artifacts` item at the end of the turn (before the next user message; hidden
+     while that turn still runs). `ArtifactChips` shows one chip per file (deduplicated by path); a click calls
+     `openFile` (`files.open`, `user: true`, no question: the user pressed it).
    - **Plan strip.** `TodoStrip` (in the composer dock) shows the session's `meta.todo` while any item is open:
      `done/total` and the current item, expanding to the checklist.
    - **Shown images.** A successful `show_image` result becomes its own `shown` item (`ShownImage`: the image, the

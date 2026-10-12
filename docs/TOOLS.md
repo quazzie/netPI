@@ -14,7 +14,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Ask` | `netpi.ask` | `ask_user` | `ask.pending`, `ask.answer` |
 | `plugins/NetPI.Plan` | `netpi.plan` | `plan_submit` `plan_enter` | `plan.*` (see `docs/PROTOCOL.md`), the `/plan` command |
 | `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
-| `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
+| `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image`, `artifact` | – |
 | `plugins/NetPI.Lsp` | `netpi.lsp` | `lsp` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
 | `plugins/NetPI.Memory` | `netpi.memory` | `memory_search` | `memory.search`, `memory.reindex` |
@@ -1019,6 +1019,15 @@ avif), so a mislabelled file still works and a non-image is refused. At most `me
 to the UI only: the model gets "Showed chart.png (image/png, 184 KB) to the user…" and no image tokens (to look at an
 image itself it uses `read` or a `browser` screenshot). The UI renders a successful result as its own chat item with the caption,
 outside the collapsible steps, and opens it full size on click.
+
+### `artifact` (read-only, summary arg `path`)
+
+`plugins/NetPI.Tools.Media`. `{ path, caption? }` hands the user a file to open (relative paths resolve against the
+working directory; a missing file or a folder is an error). The result's `details` carry `{ path /* absolute */, name,
+bytes, caption }`. The UI lists, once a turn ends (before the next user message), every file the turn wrote or edited
+(`write`/`edit` results without an error) and every `artifact` call as chips (`ArtifactChips`, item kind `artifacts` built in
+`web/src/lib/chatItems.js`), each opening with the OS through `files.open`. Files made another way (a script's output, a
+render) need this tool; `write` and `edit` are listed automatically.
 
 ```ts
 details: { source: 'file'|'url'|'data', path?, url?, name, mediaType, bytes, caption?, data /* base64 */ }

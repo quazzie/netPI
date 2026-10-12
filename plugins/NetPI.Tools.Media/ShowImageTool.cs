@@ -9,7 +9,7 @@ namespace NetPI.Tools.Media;
 /// <c>show_image</c>: show the user an image in the chat (a file, an http(s) URL or a <c>data:</c> URL) with an optional
 /// caption. The image goes to the UI in the result's details only; it is not sent back to the model.
 /// </summary>
-[NetPiPlugin("netpi.tools.media", Name = "Media tools", Description = "show_image: the agent shows the user an image in the chat", Order = 26)]
+[NetPiPlugin("netpi.tools.media", Name = "Media tools", Description = "show_image and artifact: the agent shows the user an image, or hands over a file to open, in the chat", Order = 26)]
 public sealed class MediaPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
@@ -29,6 +29,7 @@ public sealed class MediaPlugin : INetPiPlugin
         }) { Timeout = TimeSpan.FromSeconds(30) });
         http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (compatible; NetPI/0.1)");
         context.Tools.Register(new ShowImageTool(context, http));
+        context.Tools.Register(new ArtifactTool());
         return Task.CompletedTask;
     }
 }
@@ -192,5 +193,55 @@ internal sealed class ShowImageTool(IPluginContext ctx, HttpClient http) : IAgen
         var type = parts[0].Length > 0 ? parts[0] : null;
         var base64 = parts.Skip(1).Any(p => p.Equals("base64", StringComparison.OrdinalIgnoreCase));
         return (base64 ? Convert.FromBase64String(payload) : Encoding.UTF8.GetBytes(Uri.UnescapeDataString(payload)), type);
+    }
+}
+
+/// <summary>
+/// <c>artifact</c>: hand the user a file to open. The chat lists it with the files <c>write</c> and <c>edit</c> changed in
+/// the turn, as a chip at the end of the turn; a click opens it with the operating system. Use it for what you produced
+/// some other way (a script's output, a build, a render).
+/// </summary>
+internal sealed class ArtifactTool : IAgentTool
+{
+    public ToolDefinition Definition { get; } = new()
+    {
+        Name = "artifact",
+        Label = "Artifact",
+        Category = "media",
+        ReadOnly = true,
+        SummaryArg = "path",
+        Description = "Hand the user a file to open: it appears as a clickable chip at the end of the turn.",
+        Help = "path: the file (relative paths resolve against the working directory). caption: a short note shown with the chip. Files you write or edit with write/edit are listed automatically; use this for files made another way (a script's output, a build, a render).",
+        Parameters = new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["path"] = new JsonObject { ["type"] = "string" },
+                ["caption"] = new JsonObject { ["type"] = "string" },
+            },
+            ["required"] = new JsonArray("path"),
+        },
+        PromptGuidelines = ["Use artifact for a file you produced that the user will want to open (not for files you wrote or edited: those are listed automatically)."],
+    };
+
+    public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
+    {
+        var a = new ToolArgs(args);
+        var source = a.Str("path", "file", "filename", "source")?.Trim().Trim('"');
+        if (string.IsNullOrEmpty(source)) return Task.FromResult(ToolResult.Error("artifact needs a path."));
+        var caption = a.Str("caption", "title", "description")?.Trim();
+        if (caption is { Length: > 300 }) caption = caption[..300] + "…";
+        var path = context.ResolvePath(source);
+        if (Directory.Exists(path)) return Task.FromResult(ToolResult.Error($"{path} is a folder; give a file."));
+        if (!File.Exists(path)) return Task.FromResult(ToolResult.Error($"No such file: {path}"));
+        var size = new FileInfo(path).Length;
+        return Task.FromResult(ToolResult.Ok($"Listed {Path.GetFileName(path)} for the user to open{(string.IsNullOrEmpty(caption) ? "" : $" (\"{caption}\")")}.", new
+        {
+            path,
+            name = Path.GetFileName(path),
+            bytes = size,
+            caption,
+        }));
     }
 }

@@ -8,6 +8,7 @@
   import PromptRow from './PromptRow.svelte';
   import StatusRow from './StatusRow.svelte';
   import ShownImage from './ShownImage.svelte';
+  import ArtifactChips from './ArtifactChips.svelte';
   import AskCard from './AskCard.svelte';
   import PlanCard from './PlanCard.svelte';
   import PlanOfferCard from './PlanOfferCard.svelte';
@@ -202,6 +203,8 @@
           <PromptRow prompt={item.prompt} {chat} />
         {:else if item.kind === 'status'}
           <StatusRow msg={item.msg} />
+        {:else if item.kind === 'artifacts'}
+          {#if !(running && i > lastUserIdx)}<ArtifactChips {item} sessionId={session.id} />{/if}
         {:else if item.kind === 'shown'}
           <ShownImage {item} onimage={openImage} />
         {:else if item.kind === 'ask'}

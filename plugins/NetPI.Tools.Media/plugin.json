@@ -1,5 +1,5 @@
 {
   "id": "netpi.tools.media",
   "name": "Media tools",
-  "description": "show_image: the agent shows the user an image (a file, a URL or a data: URL) in the chat."
+  "description": "show_image and artifact: the agent shows the user an image, or hands over a file to open, in the chat."
 }

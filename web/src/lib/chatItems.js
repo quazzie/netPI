@@ -6,6 +6,7 @@
 //     step        { kind:'thinking', key, part, msg } | { kind:'tool', key, call, result, resultMsg, msg }
 //   images        { kind:'images', key, msg, images }                 assistant image parts
 //   shown         { kind:'shown', key, call, result, msg }            an image the agent showed (show_image): not in a steps group
+//   artifacts     { kind:'artifacts', key, files:[{ path, name, caption?, how }] }  the files the turn wrote, edited or handed over (artifact): chips at the end of the turn
 //   ask           { kind:'ask', key, call, result, msg }              questions for the user (ask_user): a card of its own, not a step
 //   plan          { kind:'plan', key, call, result, msg }             the plan the agent submitted (plan_submit): a card of its own
 //   planenter     { kind:'planenter', key, call, result, msg }        the agent's offer of plan mode (plan_enter): a card of its own
@@ -17,6 +18,7 @@
 // Items keep their identity across rebuilds while their inputs are unchanged (messages are immutable
 // objects: `message.updated` replaces the object), so keyed {#each} blocks only touch what changed.
 import { toMs } from './format.js';
+import { parseArgs, pathArg } from './tools.js';
 
 function same(a, b) {
   if (a === b) return true;
@@ -81,6 +83,36 @@ export function createItemBuilder() {
     let startMs = 0;
     let endMs = 0;
 
+    // files the current turn wrote, edited or handed over with the artifact tool, listed once the turn ends (a user message or the end)
+    let files = new Map();
+    let turnKey = '';
+    const noteFile = (call, result, m) => {
+      if (!result || result.isError) return;
+      let path;
+      let caption;
+      let how;
+      if (call.name === 'artifact') {
+        path = result.details?.path ?? pathArg(parseArgs(call));
+        caption = result.details?.caption;
+        how = 'artifact';
+      } else if (call.name === 'write' || call.name === 'edit') {
+        path = pathArg(parseArgs(call));
+        how = call.name === 'write' ? 'written' : 'edited';
+      } else return;
+      if (typeof path !== 'string' || !path) return;
+      const key = path.replaceAll('\\', '/').toLowerCase();
+      const old = files.get(key);
+      if (!turnKey) turnKey = `${m.id}`;
+      // an artifact call's caption wins; a file both written and edited keeps its first how unless handed over
+      files.set(key, { path, name: path.split(/[\\/]/).pop(), caption: caption ?? old?.caption, how: old?.how ?? how });
+    };
+    const flushFiles = () => {
+      if (!files.size) return;
+      const list = [...files.values()];
+      items.push(stable({ kind: 'artifacts', key: `f${turnKey}`, files: list }, list.flatMap((f) => [f.path, f.caption, f.how])));
+      files = new Map();
+      turnKey = '';
+    };
     const flush = () => {
       if (!steps) return;
       items.push(stable({ kind: 'steps', key: groupKey, steps, startMs, endMs }, steps));
@@ -110,6 +142,7 @@ export function createItemBuilder() {
       switch (m.role) {
         case 'user':
           flush();
+          flushFiles();
           items.push(stable({ kind: 'user', key: `u${m.id}`, msg: m }, [m]));
           break;
         case 'assistant': {
@@ -138,6 +171,7 @@ export function createItemBuilder() {
                 flush();
                 items.push(stable({ kind: 'shown', key: `v${p.id}`, call: p, result: r.part, msg: m }, [p, r.part]));
               } else if (r) {
+                noteFile(p, r.part, m);
                 addStep(
                   { kind: 'tool', key: `c${p.id}`, call: p, result: r.part, resultMsg: r.msg, msg: m },
                   [p, r.part],
@@ -174,6 +208,7 @@ export function createItemBuilder() {
         case 'notice':
         case 'summary':
           flush();
+          if (kindMeta === 'steer' || kindMeta === 'queued') flushFiles();
           if (kindMeta === 'steer' || kindMeta === 'queued') items.push(stable({ kind: 'user', key: `u${m.id}`, msg: m }, [m]));
           else items.push(stable({ kind: 'notice', key: `n${m.id}`, msg: m }, [m]));
           break;
@@ -182,6 +217,7 @@ export function createItemBuilder() {
       }
     }
     flush();
+    flushFiles();
     // sent after the last loaded message (the window starts at the session's first message, or a later version)
     for (const p of pending) if (!messages.length || p.afterSeq >= messages[messages.length - 1].seq) items.push(promptItem(p));
     prev = next;
