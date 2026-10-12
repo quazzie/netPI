@@ -347,6 +347,19 @@ instructions.
 | `schedules.minIntervalMinutes` | `5` | The smallest `minutes` an `every` cadence may have (1–1440) |
 | `schedules.maxRunsPerDay` | `48` | Runs one schedule may start in any 24 hours (1–1440); past it, a run is skipped |
 
+## Webhooks
+
+| key | default | meaning |
+|---|---|---|
+| `webhooks.enabled` | `false` | Run the webhook receiver (`netpi.webhooks`). It is a separate small listener — NetPI's own API stays on loopback with its per-run token — that serves only `POST /hook/{id}` and `GET /health`. Off: nothing listens |
+| `webhooks.bind` | `127.0.0.1` | The address the receiver listens on: `127.0.0.1` (this PC only), this PC's LAN address, or `0.0.0.0`. Anything but loopback needs a firewall rule for the port |
+| `webhooks.port` | `7432` | The receiver's port (1–65535); a busy port is retried for 10 s (a hot reload), then reported by `webhooks.status` |
+| `webhooks.allowFrom` | `["127.0.0.1/32","::1/128"]` | Addresses or CIDR ranges that may call the receiver; anything else is answered 403 before the token is looked at |
+| `webhooks.maxBodyKb` | `256` | Largest payload (1–1024 KB); bigger is answered 413 |
+
+A webhook's own limits (`maxPerHour`, `maxConcurrent`, `dedupe`) are per webhook, in the Webhooks tab. Twenty wrong tokens from one address in ten
+minutes lock that address out (429) for the rest of the window.
+
 ## Context and AGENTS.md
 
 | key | default | |

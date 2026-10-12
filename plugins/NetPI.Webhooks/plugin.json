@@ -1,0 +1,1 @@
+{"id":"netpi.webhooks","name":"Webhooks","description":"Inbound webhooks: an authenticated POST from another system (Checkmk, a CI, a script) starts a fresh chat on a project with a prompt built from its payload, on a chosen agent, any free agent or the first free-priced one, with filters, dedupe and rate limits."}

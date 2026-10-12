@@ -52,6 +52,7 @@ public static class Catalog
         ["ui.dev-proxy"] = "needs-node",
         ["ui.close-empty-session"] = "needs-node",
         ["ui.schedules-tab"] = "needs-node",
+        ["ui.webhooks-tab"] = "needs-node",
         ["ui.start-project"] = "needs-node",
         ["ui.projects"] = "needs-node",
         ["ui.settings"] = "needs-node",

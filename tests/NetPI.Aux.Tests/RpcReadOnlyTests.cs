@@ -41,6 +41,18 @@ public static class RpcReadOnlyTests
                 Check.False(flags[m], $"{m} changes the schedules, so the read-only tools may not call it");
         });
 
+        r.Add("rpc: the webhooks views are read-only; add, update, delete, rotateToken and test are not", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("rpc-readonly"));
+            await new NetPI.Webhooks.WebhooksPlugin().StartAsync(ctx, CancellationToken.None);
+            var flags = ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
+
+            foreach (var m in new[] { "webhooks.status", "webhooks.list", "webhooks.get", "webhooks.history" })
+                Check.True(flags[m], $"{m} only reads, so it is marked read-only");
+            foreach (var m in new[] { "webhooks.add", "webhooks.update", "webhooks.delete", "webhooks.rotateToken", "webhooks.test" })
+                Check.False(flags[m], $"{m} changes webhooks or can start a chat, so the read-only tools may not call it");
+        });
+
         r.Add("rpc: the process views are read-only; killing a process and opening a path are not", async () =>
         {
             var ctx = new FakePluginContext(T.TempDir("rpc-readonly"));

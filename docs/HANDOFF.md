@@ -33,6 +33,16 @@ Coordinator's task queue, the Ideas plugin's automatic decision checks and its c
 opt-in Loops/Todo decision hints, the `screenshot` tool (now `browser screenshot {url}` / `{app: true}`), and leftover
 compatibility code. Record, commits and what data is left behind: [archive/2026-10-11-slim.md](archive/2026-10-11-slim.md).
 
+### Webhooks (2026-10-13)
+
+New plugin `NetPI.Webhooks` (tab, `webhooks` tool, `webhooks.*` RPCs): a system outside NetPI (first user: Checkmk on the server, alerts to an agent) POSTs
+to `/hook/{id}` with the webhook's bearer token and a chat starts on a project, with a prompt filled in from the payload, on a key / `any` / `free` / a
+preference list. The receiver is its **own small Kestrel listener** (`webhooks.enabled`, `.bind`, `.port`, `.allowFrom`), off by default: the host's API
+stays loopback-only. Per webhook: match conditions, a dedupe key + window, hourly and concurrent caps. Agents cannot create or enable webhooks (they get
+list/get/history/test/pause). Two things learnt: a plugin must not subscribe to the bus with an async handler it leaves alive (`ctx.Events.SubscribeAsync`
+rooted the plugin's load context while other servers ran — use a sync `Subscribe` that schedules the work), and `FakeSettings.Set` publishes nothing without a bus.
+Setup recipe for Checkmk: `C:\AI\Sysadmin\docs\checkmk.md`.
+
 ### Schedules tab and tool (2026-10-06)
 
 The Schedules plugin (idea-1y1174) gained its missing surfaces: the **Schedules tab** (right panel, `plugins/NetPI.Schedules/ui/`, bundle `wwwroot/ui.js`) and the **`schedules` tool** (`SchedulesTool.cs`: list/get/history/add/update/run — no delete, up to the user; a scheduled chat cannot grow the set, cap 50). Zero new RPCs, events or settings. Covered by `SchedulesToolTests` (Aux), `ui.schedules-tab` (E2E) and the updated `RpcReadOnlyTests`.

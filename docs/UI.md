@@ -585,6 +585,12 @@ list, run now, pause/resume, edit (an inline form that replaces the list), histo
 feature); refreshes on `schedules.changed` (unscoped) and a 30 s poll — `schedules.ran` is only a hint, because it is
 session-scoped to the chat a run started.
 
+**Webhooks** (`netpi.webhooks`, left, order 26 — after Schedules). The receiver's state (off / listening on a URL / why it could not start), then each
+webhook: pause/resume, edit (an inline form), a two-step new token and delete, and a detail with the URL to POST to, the prompt, a “try a payload” box
+(Preview shows the filled-in prompt and every verdict and starts nothing; Send delivers it for real) and the delivery history. A new or re-keyed token is
+shown once, with a ready `curl` line. Reads `webhooks.*` plus `projects.list` and `agents.list` (absent ones degrade their own feature); refreshes on
+`webhooks.changed`, `settings.changed` and a 30 s poll.
+
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,
 Finished), each with a count. The open or closed state of each section is remembered (`storageKey`,
 versioned `work.v2.*` so the defaults of this layout apply).

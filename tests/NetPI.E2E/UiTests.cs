@@ -43,6 +43,11 @@ public static class UiTests
             // No server needed: the script mounts the committed plugin bundle with a stub ctx that answers schedules.*.
             await RunUiScript(env, "schedules-tab.mjs", 90);
         }, 120);
+        r.Add("ui.webhooks-tab", "ui: the Webhooks tab - the receiver banner, row states, the add form's payload, the one-time token box with its curl line, Preview/Send of a payload, pause, the confirm delete and re-key, the webhooks.changed reload and the 230px narrow panel", async () =>
+        {
+            // No server needed: the script mounts the committed plugin bundle with a stub ctx that answers webhooks.*.
+            await RunUiScript(env, "webhooks-tab.mjs", 90);
+        }, 120);
         r.Add("ui.smoke", "ui: send [s:tools] in the browser, streamed text + tool rows, plugin tabs, no console errors (screenshots)", async () =>
         {
             var p = await env.NewProject("ui-demo", CoreTests.Seed);

@@ -245,6 +245,15 @@
    ]
   },
   {
+   "path": "plugins/NetPI.Webhooks/",
+   "tags": [
+    "smoke"
+   ],
+   "ids": [
+    "ui.webhooks-tab"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Skills/",
    "tags": [
     "skills"
