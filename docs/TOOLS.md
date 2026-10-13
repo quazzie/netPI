@@ -869,12 +869,12 @@ resolved, the worktree of every worker that writes created, by the same rule a s
 them ("subagents[1] (name): …") and releases the worktrees the batch had created. Then they all start together.
 `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
 
-It waits by default: the call returns when all of them have finished, with every report, and while it waits the caller's
+It waits by default: the call returns when the first of them has finished, with its report (`all: true`: when every one has), and while it waits the caller's
 instance is free for its subagents (`agent_choices` marks it: "one is you: free for your subagents while you wait"). A
 turn's tool calls run one after the other, so separate `agent_spawn` calls each wait before the next starts; to run
 several at the same time, start them in one call. `timeoutSeconds` bounds the wait (the ones still running then report
 later on their own). `background: true` is the explicit choice to keep working meanwhile: the call returns at once and
-each report arrives later as an `agent-result` notice (it wakes an idle caller — a subagent that has already finished
+the result lists each subagent as `running` or `queued` (its agent has no free instance yet), and each report arrives later as an `agent-result` notice (it wakes an idle caller — a subagent that has already finished
 included: it runs again on the report and reports again to its own parent — or steers a running one), unless the
 caller collects it with `agent` `wait` first. An older `wait: false` means background too.
 
@@ -886,7 +886,7 @@ tool through subagents, and `agent_choices` belongs to another plugin.
 
 ### `agent_wait`
 
-`{ ids?, first?, timeoutSeconds? }`: waits for the given subagents (ids or names) and returns their reports; `first: true` returns as soon as one has finished and the others keep running (`agent_spawn` takes `first` too, to return at the first report of a batch). The caller's
+`{ ids?, all?, timeoutSeconds? }`: waits for the given subagents (ids or names) and returns as soon as one has finished, the others keep running (wait again for them; a freed instance can start the next piece meanwhile); `all: true` returns only when every one has (`agent_spawn` takes `all` too). The caller's
 instance is free for them meanwhile and it resumes with priority. Without ids: all of the caller's running subagents, plus
 finished ones whose `agent-result` notice is still queued unseen (the report comes back here and the queued notice is
 dropped, so it arrives once). A new user message interrupts the wait. `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.

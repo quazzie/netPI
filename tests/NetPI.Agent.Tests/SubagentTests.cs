@@ -35,7 +35,7 @@ public static class SubagentTests
         t.Add("subagents: a wait by someone who is not the parent leaves the parent its notice", ForeignWaitKeepsNotice);
         t.Add("subagents: many children ending together neither deadlock with the registry prune nor lose a report", ManyChildrenEndTogether);
         t.Add("subagents: a spawn is planned from the request and the parent alone", PlanAlone);
-        t.Add("subagents: agent_spawn first returns at the first report while the other keeps running; agent wait first does the same", WaitAny);
+        t.Add("subagents: agent_spawn and agent wait return at the first report by default while the others keep running", WaitAny);
         t.Add("subagents: cancel/send/wait/result are scoped to the caller's own tree (two sessions)", ForeignTreeScope);
     }
 
@@ -105,11 +105,11 @@ public static class SubagentTests
                 return Reply.LastUser(r).Contains("quick") ? Reply.Text("QUICK REPORT") : Reply.Text("SLOW REPORT", c => slowGate.Task.WaitAsync(c));
             var results = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
             if (results.Count == 0)
-                return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "quick part", name = "quick" }, new { task = "slow part", name = "slow" } }, first = true });
+                return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "quick part", name = "quick" }, new { task = "slow part", name = "slow" } } });
             if (results.Count == 1)
             {
                 slowGate.TrySetResult();
-                return Reply.Tool("agent", new { action = "wait", first = true });
+                return Reply.Tool("agent", new { action = "wait" });
             }
             return Reply.Text("done");
         };
@@ -153,7 +153,7 @@ public static class SubagentTests
                     // The child ends right as the parent's wait starts: the wait's read of the finished child lands
                     // on the completion boundary, racing the child's own notification path.
                     childGate.TrySetResult();
-                    return Reply.Tool("agent", new { action = "wait" });
+                    return Reply.Tool("agent", new { action = "wait", all = true });
                 }
                 return Reply.Text("parent done " + i);
             };
@@ -267,7 +267,7 @@ public static class SubagentTests
             var notice = r.Messages.Any(m => m.Text.Contains("<agent-result"));
             if (tools.Count == 0) return Reply.Tool("agent_spawn", new { task = "job", name = "worker", background = true });
             if (!notice) return Reply.Text("spawned");
-            return tools.Contains("agent") ? Reply.Text("parent saw it") : Reply.Tool("agent", new { action = "wait" });
+            return tools.Contains("agent") ? Reply.Text("parent saw it") : Reply.Tool("agent", new { action = "wait", all = true });
         };
         var parent = h.NewSession();
         await h.SendAsync(parent.Id, "go");
@@ -429,6 +429,7 @@ public static class SubagentTests
                         new { task = "part two", name = "two", agent = "a" },
                         new { task = "part three", name = "three", agent = "b" },
                     },
+                    all = true,
                 });
             return Reply.Text("all done");
         };
@@ -682,7 +683,7 @@ public static class SubagentTests
         await h.SendAsync(parent.Id, "start a background job");
         var p = await h.IdleAsync(parent.Id);
         Check.Equal(1, p.Runs);
-        Check.Contains(h.Messages(parent.Id).Single(m => m.Role == MessageRole.Tool).ToolResults.Single().Content, "Spawned subagent \"bg\"");
+        Check.Contains(h.Messages(parent.Id).Single(m => m.Role == MessageRole.Tool).ToolResults.Single().Content, "bg (id ");
 
         childGate.SetResult();
         var childId = p.Children.Single();
@@ -766,7 +767,7 @@ public static class SubagentTests
                     Reply.Call("agent_spawn", new { task = "job B", name = "b", background = true }),
                     Reply.Call("agent_spawn", new { task = "job C", name = "c", background = true }));
             var last = r.Messages[^1].ToolResults.Last();
-            return last.Name == "agent" ? Reply.Text("summary") : Reply.Tool("agent", new { action = "wait" });
+            return last.Name == "agent" ? Reply.Text("summary") : Reply.Tool("agent", new { action = "wait", all = true });
         };
         await h.SendAsync(parent.Id, "fan out");
         var p = await h.IdleAsync(parent.Id, 15_000);
@@ -1173,7 +1174,7 @@ public static class SubagentTests
             "the action enum names the actions: " + string.Join(", ", actions.OrderBy(x => x)));
         foreach (var a in def.Parameters["required"]!.AsArray().Select(n => n!.GetValue<string>()!))
             Check.True(props.ContainsKey(a), $"required {a} is not a property");
-        Covers("wait", "id", "ids", "timeoutSeconds", "first");
+        Covers("wait", "id", "ids", "timeoutSeconds", "all");
         Covers("send", "to", "message", "mode");
         Covers("list", "all");
         Covers("result", "id");
