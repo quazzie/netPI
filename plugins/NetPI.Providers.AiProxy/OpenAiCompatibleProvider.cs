@@ -39,11 +39,6 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         _models = new ModelListCache(id, _log, events);
     }
 
-    /// <summary>Provider whose settings object lives at a dotted settings path (e.g. "providers.aiproxy").</summary>
-    public static OpenAiCompatibleProvider FromSettingsPath(IPluginContext ctx, HttpClient http, string id, string displayName,
-        string settingsPath, ProviderDefaults? defaults = null) =>
-        new(id, displayName, http, () => ctx.Settings.GetNode(settingsPath) as JsonObject, defaults, ctx.Logger, ctx.Events, ctx.Paths.LogsDir);
-
     public string Id { get; }
     public string DisplayName { get; }
     public bool IsLocal => Options().IsLocal;

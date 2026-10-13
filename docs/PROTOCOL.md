@@ -105,7 +105,9 @@ interface UiTabInfo { id; title; panel: 'left'|'right'|'session'; icon?; module;
 interface SlashCommandInfo { name; description; rpc?; clientAction?; argsHint?; pluginId }
 interface PluginInfo { id; name; description?; version?; directory; state; error?; loadedAt?; loadCount; loadMs; order; enabled }
 // settings.schema: what the settings dialog renders as controls (the host's section first, then each plugin's)
-interface SettingsSection { id; title; group: 'General'|'Models'|'Agents'|'Context'|'Tools'; order; help?; settings: SettingInfo[] }
+interface SettingsSection { id; title; group: 'General'|'Models'|'Agents'|'Context'|'Tools'; order; help?; providerType?; settings: SettingInfo[] }
+// providerType: a kind of model provider (not listed as a section): "Add provider" offers it and `settings` (keys relative to one
+// providers.instances.<id> entry) is its form; see docs/SETTINGS.md Providers
 interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'string'|'text'|'secret'|'choice'|'list'|'model'|'folder'|'file';
   label; help?; default?; placeholder?; min?; max?; unit?; options?: string[]; applies?: 'restart'|'new sessions'|string }
 ```

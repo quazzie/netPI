@@ -23,7 +23,7 @@ public sealed class EmbeddingsPlugin : INetPiPlugin
             Id = "embed", Title = "Embeddings", Group = "Tools", Order = 46,
             Settings =
             [
-                SettingInfo.Str("embed.baseUrl", "Server URL", "", "An OpenAI-compatible /v1/embeddings server. Empty: the AiProxy/AiGateway server (providers.aiproxy.baseUrl)."),
+                SettingInfo.Str("embed.baseUrl", "Server URL", "", "An OpenAI-compatible /v1/embeddings server. Empty: the AiProxy/AiGateway server (the first AiProxy provider)."),
                 SettingInfo.Str("embed.model", "Embedding model", "", "Empty switches embeddings off. bge-base-en-v1.5 on the nuc was measured (decisions-lab nuc-plan.md)."),
                 SettingInfo.Str("embed.queryPrefix", "Query prefix", "", "Put in front of search texts only (bge: \"Represent this sentence for searching relevant passages: \"); stored documents get none."),
                 SettingInfo.Int("embed.timeoutMs", "Timeout (ms)", EmbeddingClient.DefaultTimeoutMs, "How long an interactive call waits. Indexing in the background waits up to 30 s per batch.", 100, 60000),
@@ -86,7 +86,7 @@ internal sealed class EmbeddingClient(ISettings settings, HttpClient http, Func<
     public string Root()
     {
         var url = settings.Get("embed.baseUrl", "");
-        if (string.IsNullOrWhiteSpace(url)) url = settings.Get("providers.aiproxy.baseUrl", "http://127.0.0.1:8090");
+        if (string.IsNullOrWhiteSpace(url)) url = ProviderInstances.FirstString(settings, "aiproxy", "baseUrl");
         url = (url ?? "http://127.0.0.1:8090").Trim().TrimEnd('/');
         return url.EndsWith("/v1", StringComparison.OrdinalIgnoreCase) ? url[..^3] : url;
     }

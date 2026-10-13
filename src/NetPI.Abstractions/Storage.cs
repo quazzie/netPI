@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 namespace NetPI;
 
 /// <summary>
-/// User settings (~/.netpi/settings.json). Paths are dotted: "providers.aiproxy.baseUrl".
+/// User settings (~/.netpi/settings.json). Paths are dotted: "providers.instances.aiproxy.baseUrl".
 /// Changes are persisted immediately and published as <c>settings.changed</c>.
 /// </summary>
 public interface ISettings

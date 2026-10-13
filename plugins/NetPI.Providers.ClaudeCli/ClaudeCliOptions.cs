@@ -13,7 +13,7 @@ internal sealed class ClaudeCliOptions
     public static readonly string[] Efforts = ["low", "medium", "high", "xhigh", "max"];
     public static readonly string[] PermissionModes = ["bypassPermissions", "acceptEdits", "plan", "default"];
 
-    public bool Enabled { get; init; }
+    public bool Enabled { get; init; } = true;
     public string Executable { get; init; } = "claude";
     /// <summary>The CLI's own config folder (<c>CLAUDE_CONFIG_DIR</c>), where its login lives: another one is another account. Empty = the default.</summary>
     public string ConfigDir { get; init; } = "";
@@ -46,7 +46,7 @@ internal sealed class ClaudeCliOptions
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.TrimStart('~').TrimStart('/', '\\'))
             : path;
 
-    public static ClaudeCliOptions Parse(JsonObject? o, bool enabledByDefault = false)
+    public static ClaudeCliOptions Parse(JsonObject? o)
     {
         var models = new List<string>();
         if (o.Arr("models") is { } arr)
@@ -55,7 +55,7 @@ internal sealed class ClaudeCliOptions
         var mode = o.Str("permissionMode")?.Trim();
         return new ClaudeCliOptions
         {
-            Enabled = o.Bool("enabled", enabledByDefault),
+            Enabled = o.Bool("enabled", true),
             Executable = string.IsNullOrWhiteSpace(o.Str("executable")) ? "claude" : o.Str("executable")!.Trim(),
             ConfigDir = ExpandHome((o.Str("configDir") ?? "").Trim()),
             Models = models.Count > 0 ? models : [.. DefaultModels],

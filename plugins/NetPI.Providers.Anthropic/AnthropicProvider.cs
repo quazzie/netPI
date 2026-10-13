@@ -35,7 +35,7 @@ public sealed class AnthropicProvider : IModelProvider
     }
 
     public string Id { get; }
-    public string DisplayName => "Anthropic";
+    public string DisplayName { get; init; } = "Anthropic";
     public bool IsLocal => false;
 
     internal AnthropicOptions Options()

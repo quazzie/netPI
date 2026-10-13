@@ -44,7 +44,7 @@ public static class InspectTests
 
             // secrets stay inside
             var settings = await env.Rpc("diag.settings");
-            Check.Equal("<secret, 18 chars>", settings.P("settings").P("providers").P("anthropic").S("apiKey"));
+            Check.Equal("<secret, 18 chars>", settings.P("settings").P("providers").P("instances").P("anthropic").S("apiKey"));
 
             var overview = await env.Rpc("diag.overview");
             Check.True(overview.P("process").L("pid") > 0);

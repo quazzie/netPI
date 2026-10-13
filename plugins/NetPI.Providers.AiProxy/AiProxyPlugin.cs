@@ -7,74 +7,83 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Providers.AiProxy;
 
 /// <summary>
-/// Registers the <c>aiproxy</c> provider (settings <c>providers.aiproxy</c>) plus one provider per entry of
-/// <c>providers.openaiCompatible</c> (<c>[{ id, name, baseUrl, apiKey?, transport?, local?, headers?, ... }]</c>).
-/// Extra endpoints are reconciled live when settings change.
+/// Offers two provider types, both OpenAI-compatible: <c>aiproxy</c> (AiProxy / nInfer: Responses API, local models) and
+/// <c>openai-compatible</c> (any other endpoint: Chat Completions, local only for loopback URLs), and runs one provider per
+/// entry of <c>providers.instances</c> of those types. Entries are reconciled live when settings change.
 /// </summary>
 [NetPiPlugin("netpi.providers.aiproxy", Name = "AiProxy provider",
-    Description = "OpenAI-compatible models via AiProxy (Responses or Chat Completions) and extra OpenAI-compatible endpoints.",
+    Description = "OpenAI-compatible models via AiProxy (Responses or Chat Completions) and other OpenAI-compatible endpoints.",
     Order = 10)]
 public sealed class AiProxyPlugin : INetPiPlugin
 {
-    public const string ProviderId = "aiproxy";
-    public const string SettingsPath = "providers.aiproxy";
-    public const string ExtraSettingsPath = "providers.openaiCompatible";
+    public const string AiProxyType = "aiproxy";
+    public const string OpenAiType = "openai-compatible";
 
-    private sealed record Extra(OpenAiCompatibleProvider Provider, IDisposable Registration, string Key);
-
-    private readonly Lock _gate = new();
-    private readonly Dictionary<string, Extra> _extras = new(StringComparer.OrdinalIgnoreCase);
     private IPluginContext? _ctx;
     private HttpClient? _http;
-    private OpenAiCompatibleProvider? _aiproxy;
+    private ProviderSet<OpenAiCompatibleProvider>? _aiproxy;
+    private ProviderSet<OpenAiCompatibleProvider>? _openai;
     private IDisposable? _settingsSub;
     private CancellationTokenSource? _pollCts;
     private Task? _poll;
 
-    /// <summary>All providers currently registered by this plugin (aiproxy first).</summary>
-    public IReadOnlyList<OpenAiCompatibleProvider> Providers
-    {
-        get
-        {
-            lock (_gate)
-            {
-                var list = new List<OpenAiCompatibleProvider>();
-                if (_aiproxy is not null) list.Add(_aiproxy);
-                list.AddRange(_extras.Values.Select(e => e.Provider));
-                return list;
-            }
-        }
-    }
+    /// <summary>All providers currently registered by this plugin (AiProxy ones first).</summary>
+    public IReadOnlyList<OpenAiCompatibleProvider> Providers => [.. _aiproxy?.All ?? [], .. _openai?.All ?? []];
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         context.Services.Register(new SettingsSection
         {
-            Id = "aiproxy", Title = "AiProxy / nInfer", Group = "Models", Order = 30,
+            Id = "provider-aiproxy", Title = "AiProxy / nInfer", Group = "Models", Order = 30, ProviderType = AiProxyType,
+            Help = "A local AiProxy or nInfer server: the Responses API by default, and its models are local (free, loaded on demand).",
             Settings =
             [
-                SettingInfo.Str("providers.aiproxy.baseUrl", "Server URL", "http://127.0.0.1:8090", "A trailing /v1 is fine."),
-                SettingInfo.Choice("providers.aiproxy.transport", "Transport", "responses", ["responses", "chat"], "Responses API (/v1/responses) or Chat Completions."),
-                SettingInfo.Secret("providers.aiproxy.apiKey", "API key", "Sent as Bearer; env:NAME reads an environment variable.", "none"),
-                SettingInfo.Bool("providers.aiproxy.replayReasoning", "Send previous reasoning back", true, "Default: on for Responses, off for Chat."),
-                SettingInfo.Bool("providers.aiproxy.parseThinkTags", "Split <think> tags into thinking", true),
-                SettingInfo.Bool("providers.aiproxy.dumpFailedRequests", "Save failed requests", true, "Their bodies go to ~/.netpi/logs/failed-requests, for reproducing backend bugs."),
-                SettingInfo.Bool("providers.aiproxy.includeEncryptedReasoning", "Request encrypted reasoning", false, "OpenAI-hosted reasoning models only; nInfer rejects it."),
-                SettingInfo.Int("providers.aiproxy.defaultMaxOutputTokens", "Output limit when the catalog has none", 16384, null, 256, null, "tokens"),
-                SettingInfo.Int("providers.aiproxy.modelsCacheSeconds", "Model list cache", 10, null, 0, 3600, "s"),
-                SettingInfo.Bool("providers.aiproxy.local", "Local models", true, "Their agents share the slots the catalog reports (concurrency); local models are free."),
-                SettingInfo.Bool("providers.aiproxy.enabled", "Enabled", true),
-                SettingInfo.Records(ExtraSettingsPath, "More OpenAI-compatible endpoints", [
-                        new("id", "Id", "lmstudio"), new("name", "Name", "LM Studio"), new("baseUrl", "Server URL", "http://127.0.0.1:1234"), new("apiKey", "API key", "env:NAME")],
-                    "Each entry is another provider (LM Studio, a remote llama.cpp...). Chat Completions by default; other keys of the block can be set in settings.json per entry."),
+                SettingInfo.Str("baseUrl", "Server URL", "http://127.0.0.1:8090", "A trailing /v1 is fine."),
+                SettingInfo.Choice("transport", "Transport", "responses", ["responses", "chat"], "Responses API (/v1/responses) or Chat Completions."),
+                SettingInfo.Secret("apiKey", "API key", "Sent as Bearer; env:NAME reads an environment variable.", "none"),
+                SettingInfo.Bool("replayReasoning", "Send previous reasoning back", true, "Default: on for Responses, off for Chat."),
+                SettingInfo.Bool("parseThinkTags", "Split <think> tags into thinking", true),
+                SettingInfo.Bool("dumpFailedRequests", "Save failed requests", true, "Their bodies go to ~/.netpi/logs/failed-requests, for reproducing backend bugs."),
+                SettingInfo.Bool("includeEncryptedReasoning", "Request encrypted reasoning", false, "OpenAI-hosted reasoning models only; nInfer rejects it."),
+                SettingInfo.Int("defaultMaxOutputTokens", "Output limit when the catalog has none", 16384, null, 256, null, "tokens"),
+                SettingInfo.Int("modelsCacheSeconds", "Model list cache", 10, null, 0, 3600, "s"),
+                SettingInfo.Bool("local", "Local models", true, "Their agents share the slots the catalog reports (concurrency); local models are free."),
+                SettingInfo.Bool("enabled", "Enabled", true),
+            ],
+        });
+        context.Services.Register(new SettingsSection
+        {
+            Id = "provider-openai-compatible", Title = "OpenAI-compatible", Group = "Models", Order = 31, ProviderType = OpenAiType,
+            Help = "Any server with an OpenAI-style API: LM Studio, a remote llama.cpp, vLLM, OpenAI itself. Chat Completions by default.",
+            Settings =
+            [
+                SettingInfo.Str("baseUrl", "Server URL", null, "A trailing /v1 is fine.", "http://127.0.0.1:1234"),
+                SettingInfo.Secret("apiKey", "API key", "Sent as Bearer; env:NAME reads an environment variable.", "none"),
+                SettingInfo.Choice("transport", "Transport", "chat", ["chat", "responses"], "Chat Completions (/v1/chat/completions) or the Responses API."),
+                new SettingInfo { Key = "local", Type = "bool", Label = "Local models", Help = "Unset: local only for a loopback URL. Local models are free and their agents share the slots the catalog reports." },
+                SettingInfo.Bool("replayReasoning", "Send previous reasoning back", false),
+                SettingInfo.Bool("parseThinkTags", "Split <think> tags into thinking", true),
+                SettingInfo.Int("defaultMaxOutputTokens", "Output limit when the catalog has none", 16384, null, 256, null, "tokens"),
+                SettingInfo.Int("modelsCacheSeconds", "Model list cache", 10, null, 0, 3600, "s"),
+                SettingInfo.Bool("enabled", "Enabled", true),
             ],
         });
         _ctx = context;
         _http = HttpFactory.Create();
-        _aiproxy = OpenAiCompatibleProvider.FromSettingsPath(context, _http, ProviderId, "AiProxy", SettingsPath,
-            new ProviderDefaults { BaseUrl = "http://127.0.0.1:8090", IsLocal = true, Transport = OpenAiTransport.Responses });
-        context.Services.Register<IModelProvider>(_aiproxy);
-        ReconcileExtras();
+        var http = _http;
+        _aiproxy = new ProviderSet<OpenAiCompatibleProvider>(context, AiProxyType, (id, config, read) =>
+            new OpenAiCompatibleProvider(id, ProviderSet<OpenAiCompatibleProvider>.NameOf(id, config, "AiProxy"), http, read,
+                new ProviderDefaults { BaseUrl = "http://127.0.0.1:8090", IsLocal = true, Transport = OpenAiTransport.Responses },
+                context.Logger, context.Events, context.Paths.LogsDir));
+        _openai = new ProviderSet<OpenAiCompatibleProvider>(context, OpenAiType, (id, config, read) =>
+            new OpenAiCompatibleProvider(id, ProviderSet<OpenAiCompatibleProvider>.NameOf(id, config, "OpenAI-compatible"), http, read,
+                new ProviderDefaults { BaseUrl = "", IsLocal = IsLoopback(config.Str("baseUrl")), Transport = OpenAiTransport.Chat },
+                context.Logger, context.Events, context.Paths.LogsDir),
+            // the loopback default depends on the URL: a changed one is a new provider
+            (id, config) => $"{ProviderSet<OpenAiCompatibleProvider>.NameOf(id, config, "OpenAI-compatible")}|{IsLoopback(config.Str("baseUrl"))}",
+            (id, config) => string.IsNullOrWhiteSpace(config.Str("baseUrl")) ? "it has no baseUrl" : null);
+        _aiproxy.Reconcile();
+        _openai.Reconcile();
         _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, _ => OnSettingsChanged());
         _pollCts = CancellationTokenSource.CreateLinkedTokenSource(context.Stopping);
         _poll = PollLocalModelsAsync(_pollCts.Token);
@@ -94,11 +103,9 @@ public sealed class AiProxyPlugin : INetPiPlugin
         _poll = null;
         _settingsSub?.Dispose();
         _settingsSub = null;
-        lock (_gate)
-        {
-            foreach (var e in _extras.Values) SafeDispose(e.Registration);
-            _extras.Clear();
-        }
+        _aiproxy?.Dispose();
+        _openai?.Dispose();
+        _aiproxy = _openai = null;
         _http?.Dispose();
         _http = null;
     }
@@ -123,7 +130,8 @@ public sealed class AiProxyPlugin : INetPiPlugin
         if (ctx is null || _http is null) return;
         try
         {
-            if (ReconcileExtras()) ctx.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = ProviderId });
+            var changed = (_aiproxy?.Reconcile() ?? false) | (_openai?.Reconcile() ?? false);
+            if (changed) ctx.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = AiProxyType });
             // Endpoint settings changed (baseUrl, key, enabled...): refresh in the background; publishes models.changed if needed.
             foreach (var p in Providers)
                 if (p.SettingsChangedSinceLastList)
@@ -138,74 +146,6 @@ public sealed class AiProxyPlugin : INetPiPlugin
         catch { /* logged by the provider; cancellation on unload */ }
     }
 
-    /// <summary>Register/unregister extra endpoints to match settings. Returns true when the set changed.</summary>
-    internal bool ReconcileExtras()
-    {
-        var ctx = _ctx;
-        var http = _http;
-        if (ctx is null || http is null) return false;
-
-        var wanted = new Dictionary<string, (string Name, string Key)>(StringComparer.OrdinalIgnoreCase);
-        if (ctx.Settings.GetNode(ExtraSettingsPath) is JsonArray arr)
-        {
-            foreach (var node in arr)
-            {
-                if (node is not JsonObject o) continue;
-                var id = o.Str("id")?.Trim();
-                if (string.IsNullOrEmpty(id) || id.Contains('/') || string.Equals(id, ProviderId, StringComparison.OrdinalIgnoreCase))
-                {
-                    ctx.Logger.LogWarning("{Path}: ignoring entry with invalid id '{Id}'", ExtraSettingsPath, id);
-                    continue;
-                }
-                if (string.IsNullOrWhiteSpace(o.Str("baseUrl")))
-                {
-                    ctx.Logger.LogWarning("{Path}: entry '{Id}' has no baseUrl", ExtraSettingsPath, id);
-                    continue;
-                }
-                if (wanted.ContainsKey(id)) continue; // first entry wins
-                var name = o.Str("name") is { Length: > 0 } n ? n : id;
-                wanted[id] = (name, $"{name}|{IsLoopback(o.Str("baseUrl"))}");
-            }
-        }
-
-        var changed = false;
-        lock (_gate)
-        {
-            foreach (var (id, extra) in _extras.ToList())
-            {
-                if (wanted.TryGetValue(id, out var w) && w.Key == extra.Key) continue;
-                SafeDispose(extra.Registration);
-                _extras.Remove(id);
-                changed = true;
-            }
-            foreach (var (id, w) in wanted)
-            {
-                if (_extras.ContainsKey(id)) continue;
-                var entryId = id;
-                var provider = new OpenAiCompatibleProvider(entryId, w.Name, http, () => FindEntry(ctx, entryId),
-                    new ProviderDefaults { BaseUrl = "", IsLocal = w.Key.EndsWith("|True", StringComparison.Ordinal), Transport = OpenAiTransport.Chat },
-                    ctx.Logger, ctx.Events, ctx.Paths.LogsDir);
-                var reg = ctx.Services.Register<IModelProvider>(provider);
-                _extras[id] = new Extra(provider, reg, w.Key);
-                changed = true;
-            }
-        }
-        return changed;
-    }
-
-    private static JsonObject? FindEntry(IPluginContext ctx, string id)
-    {
-        if (ctx.Settings.GetNode(ExtraSettingsPath) is not JsonArray arr) return null;
-        foreach (var node in arr)
-            if (node is JsonObject o && string.Equals(o.Str("id")?.Trim(), id, StringComparison.OrdinalIgnoreCase)) return o;
-        return null;
-    }
-
     private static bool IsLoopback(string? url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var u) && (u.IsLoopback || u.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase));
-
-    private static void SafeDispose(IDisposable d)
-    {
-        try { d.Dispose(); } catch { /* registry already disposed */ }
-    }
 }

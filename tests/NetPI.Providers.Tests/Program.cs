@@ -418,11 +418,13 @@ var apCtx = new FakePluginContext(new JsonObject
 {
     ["providers"] = new JsonObject
     {
-        ["aiproxy"] = new JsonObject { ["baseUrl"] = mock.BaseUrl, ["modelsCacheSeconds"] = 10 },
-        ["openaiCompatible"] = new JsonArray(
-            new JsonObject { ["id"] = "vllm", ["name"] = "vLLM box", ["baseUrl"] = mock.BaseUrl + "/v1", ["apiKey"] = "sk-test", ["headers"] = new JsonObject { ["X-Extra"] = "1" } },
-            new JsonObject { ["id"] = "bad/id", ["baseUrl"] = "http://example.invalid" },
-            new JsonObject { ["id"] = "nourl" }),
+        ["instances"] = new JsonObject
+        {
+            ["aiproxy"] = new JsonObject { ["type"] = "aiproxy", ["baseUrl"] = mock.BaseUrl, ["modelsCacheSeconds"] = 10 },
+            ["vllm"] = new JsonObject { ["type"] = "openai-compatible", ["name"] = "vLLM box", ["baseUrl"] = mock.BaseUrl + "/v1", ["apiKey"] = "sk-test", ["headers"] = new JsonObject { ["X-Extra"] = "1" } },
+            ["bad/id"] = new JsonObject { ["type"] = "openai-compatible", ["baseUrl"] = "http://example.invalid" },
+            ["nourl"] = new JsonObject { ["type"] = "openai-compatible" },
+        },
     },
 }, "netpi.providers.aiproxy");
 var apPlugin = new AP.AiProxyPlugin();
@@ -531,9 +533,9 @@ await t.Run("responses: streams reasoning, text, function call and usage", async
 
 await t.Run("responses: request body (instructions, tools, effort, max tokens, input items)", async () =>
 {
-    apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", false);
+    apCtx.SettingsImpl.Set("providers.instances.aiproxy.replayReasoning", false);
     try { await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy"), effort: "high")); }
-    finally { apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", null); }
+    finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.replayReasoning", null); }
     var req = mock.Last("/v1/responses");
     var b = req.Json;
     t.Eq("qwen3.8-27b", b["model"]!.GetValue<string>(), "model");
@@ -574,7 +576,7 @@ await t.Run("responses: reasoning is replayed by default (id, text, encrypted co
         string.Join(",", input.Select(Kind)), "reasoning → message → function calls");
     t.Check(mock.Last("/v1/responses").Json["include"] is null, "no include by default");
 
-    apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", true);   // read live, on the next request
+    apCtx.SettingsImpl.Set("providers.instances.aiproxy.includeEncryptedReasoning", true);   // read live, on the next request
     try
     {
         await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
@@ -587,16 +589,16 @@ await t.Run("responses: reasoning is replayed by default (id, text, encrypted co
         t.Eq("reasoning.encrypted_content", b["include"]?[0]?.GetValue<string>(), "include, once asked for");
         t.Check(b["reasoning"] is null, "no effort -> reasoning omitted");
     }
-    finally { apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", null); }
+    finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.includeEncryptedReasoning", null); }
 
-    apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
+    apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", "chat");
     try
     {
         await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
         var msgs = mock.Last("/v1/chat/completions").Json["messages"]!.AsArray();
         t.Check(msgs.All(m => m?["reasoning_content"] is null), "chat: no reasoning_content by default");
     }
-    finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+    finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", null); }
 });
 
 // The stored parts of an assistant turn are in arrival order, but the API fixes the order of its items:
@@ -672,7 +674,7 @@ await t.Run("responses: reasoning is replayed only to the model that produced it
 await t.Run("errors: server ids are added to the message and the failed request is saved", async () =>
 {
     var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
-    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.aiproxy") as JsonObject,
+    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.instances.aiproxy") as JsonObject,
         null, null, null, dir);
     mock.NextResponsesFailure = ("resp_fail1", "req_abc123", "capture owner has no planning ID");
     ModelException? caught = null;
@@ -695,7 +697,7 @@ await t.Run("errors: the failed-request dump keeps the response body, not only t
     // The error message quotes 2,000 characters of the body; a 400 that lists what it rejected says the rest
     // there, so the file a bug report points at has to hold the body itself (idea-022jh1).
     var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
-    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.aiproxy") as JsonObject,
+    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.instances.aiproxy") as JsonObject,
         null, null, null, dir);
     var ex = await Fails(p, Req(M("aiproxy", "rejected-tools")));
     t.Check(ex is { StatusCode: 400 } && ex.Message.Contains("3 tools rejected") && !ex.Message.Contains("tr-abc-9999"),
@@ -717,18 +719,18 @@ await t.Run("errors: the failed-request dump keeps the response body, not only t
 await t.Run("errors: a 200 whose body is not JSON is described, saved with the request, and retried", async () =>
 {
     var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
-    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.aiproxy") as JsonObject,
+    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.instances.aiproxy") as JsonObject,
         null, null, null, dir);
     var resp = await Fails(p, Req(M("aiproxy", "bad-json")));
     t.Check(resp is { Transient: true, ErrorType: "bad_json" } && resp.Message.StartsWith("AiProxy: bad_json"), "responses transport: " + resp?.Message);
     t.Check(resp!.Message.Contains("502 Bad Gateway") && resp.Message.Contains("saved"), "the body is quoted and the request saved");
-    apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
+    apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", "chat");
     try
     {
         var chat = await Fails(p, Req(M("aiproxy", "bad-json")));
         t.Check(chat is { Transient: true, ErrorType: "bad_json" } && chat.Message.StartsWith("AiProxy: bad_json"), "chat transport: " + chat?.Message);
     }
-    finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+    finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", null); }
     t.Eq(2, Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Length, "both failures saved");
     Directory.Delete(dir, true);
 });
@@ -981,9 +983,9 @@ await t.Run("tool-result images are named as omitted for a text-only model (both
 {
     foreach (var transport in new[] { "responses", "chat" })
     {
-        apCtx.SettingsImpl.Set("providers.aiproxy.transport", transport);
+        apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", transport);
         try { await Collect(aiproxy, Req(Cat("gemma-4"), ToolImagesConvo())); }
-        finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+        finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", null); }
         var all = mock.Last(transport == "chat" ? "/v1/chat/completions" : "/v1/responses").Json.ToJsonString();
         t.Check(all.Contains("2 images returned by tool call call:img") && all.Contains("1 image returned by tool call call:none"),
             $"aiproxy {transport}: both tool calls named as omitted");
@@ -993,7 +995,7 @@ await t.Run("tool-result images are named as omitted for a text-only model (both
 
 await t.Run("chat: images dropped for a text-only catalog model (aiproxy gemma-4 via transport override)", async () =>
 {
-    apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
+    apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", "chat");
     try
     {
         await Collect(aiproxy, Req(Cat("gemma-4"), Conversation("aiproxy")));
@@ -1003,7 +1005,7 @@ await t.Run("chat: images dropped for a text-only catalog model (aiproxy gemma-4
         t.Check(msgs.All(m => m!["content"] is not JsonArray a || a.All(c => c!["type"]!.GetValue<string>() != "image_url")), "no image_url anywhere");
         t.Check(b["max_tokens"]!.GetValue<int>() == 16384, "max_tokens default when catalog null");
     }
-    finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+    finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", null); }
 });
 
 // Both aiproxy transports and OpenRouter sent the catalog's output maximum whatever the prompt left of the window,
@@ -1016,9 +1018,9 @@ await t.Run("max_tokens is clamped to the window beside the request (aiproxy cha
     var long0 = new List<ChatMessage> { ChatMessage.UserText(new string('w', 8000)) };
     foreach (var (transport, path, field) in new[] { ("chat", "/v1/chat/completions", "max_tokens"), ("responses", "/v1/responses", "max_output_tokens") })
     {
-        apCtx.SettingsImpl.Set("providers.aiproxy.transport", transport);
+        apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", transport);
         try { await Collect(aiproxy, Req(model, long0)); }
-        finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+        finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", null); }
         var sent = mock.Last(path).Json[field]!.GetValue<int>();
         t.Check(sent < 64_000 && ModelMessages.EstimateInputTokens(Req(model, long0)) + sent <= 16_384,
             $"aiproxy {transport}: {sent} output tokens beside the prompt fit the 16384 window");
@@ -1034,9 +1036,9 @@ await t.Run("an oversize image becomes a note (aiproxy both transports)", async 
     vision.InputModalities = ["text", "image"];
     foreach (var (transport, path) in new[] { ("chat", "/v1/chat/completions"), ("responses", "/v1/responses") })
     {
-        apCtx.SettingsImpl.Set("providers.aiproxy.transport", transport);
+        apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", transport);
         try { await Collect(aiproxy, Req(vision, messages)); }
-        finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+        finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.transport", null); }
         var json = mock.Last(path).Json.ToJsonString();
         t.Check(json.Contains("[image omitted: 5 MB exceeds the provider limit]") && !json.Contains("data:image"),
             $"aiproxy {transport}: noted, no image sent");
@@ -1045,7 +1047,7 @@ await t.Run("an oversize image becomes a note (aiproxy both transports)", async 
 
 await t.Run("per-model transport override with a dotted model id", async () =>
 {
-    apCtx.SettingsImpl.Set("providers.aiproxy.models", new JsonObject { ["qwen3.8-27b"] = new JsonObject { ["transport"] = "chat" } });
+    apCtx.SettingsImpl.Set("providers.instances.aiproxy.models", new JsonObject { ["qwen3.8-27b"] = new JsonObject { ["transport"] = "chat" } });
     try
     {
         var before = mock.Requests.Count(r => r.Path == "/v1/chat/completions");
@@ -1055,7 +1057,7 @@ await t.Run("per-model transport override with a dotted model id", async () =>
         await Collect(aiproxy, Req(Cat("gemma-4")));
         t.Eq(gemma + 1, mock.Requests.Count(r => r.Path == "/v1/responses"), "other models still use responses");
     }
-    finally { apCtx.SettingsImpl.Set("providers.aiproxy.models", null); }
+    finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.models", null); }
 });
 
 await t.Run("chat: the completion id is kept, so a failure on a server without x-request-id has an id", async () =>
@@ -1094,23 +1096,23 @@ await t.Run("chat: finish length, EOF, cut-off, error chunk, 400 overflow, non-s
 
 await t.Run("disabled provider: empty list + non-transient error", async () =>
 {
-    apCtx.SettingsImpl.Set("providers.aiproxy.enabled", false);
+    apCtx.SettingsImpl.Set("providers.instances.aiproxy.enabled", false);
     try
     {
         t.Eq(0, (await aiproxy.ListModelsAsync(false, CancellationToken.None)).Count, "empty list");
         var e = await Fails(aiproxy, Req(Cat("gemma-4")));
         t.Check(e is { Transient: false, ErrorType: "provider_disabled" }, "disabled error");
     }
-    finally { apCtx.SettingsImpl.Set("providers.aiproxy.enabled", true); }
+    finally { apCtx.SettingsImpl.Set("providers.instances.aiproxy.enabled", true); }
     t.Eq(4, (await aiproxy.ListModelsAsync(false, CancellationToken.None)).Count, "re-enabled");
 });
 
 await t.Run("aiproxy plugin: extras reconciled on settings.changed; StopAsync cleans up", async () =>
 {
     var changed = apCtx.Bus.Count(EventTypes.ModelsChanged);
-    apCtx.SettingsImpl.Set("providers.openaiCompatible", new JsonArray(
-        new JsonObject { ["id"] = "remote", ["name"] = "Remote", ["baseUrl"] = mock.BaseUrl, ["transport"] = "responses", ["local"] = false }));
-    apCtx.Events.Publish(EventTypes.SettingsChanged, new JsonObject { ["path"] = "providers.openaiCompatible" });
+    apCtx.SettingsImpl.Set("providers.instances.vllm", null);
+    apCtx.SettingsImpl.Set("providers.instances.remote", new JsonObject { ["type"] = "openai-compatible", ["name"] = "Remote", ["baseUrl"] = mock.BaseUrl, ["transport"] = "responses", ["local"] = false });
+    apCtx.Events.Publish(EventTypes.SettingsChanged, new JsonObject { ["path"] = "providers.instances" });
     var ids = apCtx.ServicesImpl.GetAll<IModelProvider>().Select(p => p.Id).OrderBy(x => x).ToList();
     t.Eq("aiproxy,remote", string.Join(",", ids), "vllm removed, remote added");
     t.Check(apCtx.Bus.Count(EventTypes.ModelsChanged) > changed, "models.changed published");
@@ -1121,7 +1123,7 @@ await t.Run("aiproxy plugin: extras reconciled on settings.changed; StopAsync cl
 
     // Endpoint identity change (api key) triggers a background refresh.
     var calls = mock.ModelsCalls;
-    apCtx.SettingsImpl.Set("providers.aiproxy.apiKey", "k2");
+    apCtx.SettingsImpl.Set("providers.instances.aiproxy.apiKey", "k2");
     t.Check(aiproxy.SettingsChangedSinceLastList, "fingerprint changed");
     apCtx.Events.Publish(EventTypes.SettingsChanged, null);
     for (var i = 0; i < 100 && aiproxy.SettingsChangedSinceLastList; i++) await Task.Delay(20);
@@ -1131,7 +1133,7 @@ await t.Run("aiproxy plugin: extras reconciled on settings.changed; StopAsync cl
     var subs = apCtx.Bus.SubscriberCount;
     await apPlugin.StopAsync(CancellationToken.None);
     t.Eq(subs - 1, apCtx.Bus.SubscriberCount, "settings subscription disposed");
-    t.Eq("aiproxy", string.Join(",", apCtx.ServicesImpl.GetAll<IModelProvider>().Select(p => p.Id)), "extras unregistered on stop");
+    t.Eq("", string.Join(",", apCtx.ServicesImpl.GetAll<IModelProvider>().Select(p => p.Id)), "providers unregistered on stop");
     var after = await aiproxy.ListModelsAsync(true, CancellationToken.None);
     t.Check(after.Count == 4 && after.All(m => m.Status == "offline"), "disposed client -> offline list, no throw");
 });
@@ -1140,7 +1142,7 @@ await t.Run("aiproxy plugin: extras reconciled on settings.changed; StopAsync cl
 
 var anCtx = new FakePluginContext(new JsonObject
 {
-    ["providers"] = new JsonObject { ["anthropic"] = new JsonObject { ["apiKey"] = "test-key", ["baseUrl"] = mock.BaseUrl } },
+    ["providers"] = new JsonObject { ["instances"] = new JsonObject { ["anthropic"] = new JsonObject { ["type"] = "anthropic", ["apiKey"] = "test-key", ["baseUrl"] = mock.BaseUrl } } },
 }, "netpi.providers.anthropic");
 var anPlugin = new AN.AnthropicPlugin();
 await anPlugin.StartAsync(anCtx, CancellationToken.None);
@@ -1149,9 +1151,9 @@ var sonnet = AN.ClaudeCapabilities.ToModelInfo("anthropic", "claude-sonnet-4-5",
 
 await t.Run("anthropic: no API key -> empty list and helpful non-transient error", async () =>
 {
-    var ctx = new FakePluginContext(new JsonObject { ["providers"] = new JsonObject { ["anthropic"] = new JsonObject { ["baseUrl"] = mock.BaseUrl } } });
+    var ctx = new FakePluginContext(new JsonObject { ["providers"] = new JsonObject { ["instances"] = new JsonObject { ["anthropic"] = new JsonObject { ["type"] = "anthropic", ["baseUrl"] = mock.BaseUrl } } } });
     using var http = new HttpClient();
-    var p = new AN.AnthropicProvider(http, () => ctx.Settings.GetNode("providers.anthropic") as JsonObject);
+    var p = new AN.AnthropicProvider(http, () => ctx.Settings.GetNode("providers.instances.anthropic") as JsonObject);
     t.Eq(0, (await p.ListModelsAsync(true, CancellationToken.None)).Count, "empty list");
     var e = await Fails(p, Req(sonnet));
     t.Check(e is { Transient: false } && e.Message.Contains("ANTHROPIC_API_KEY"), "helpful error");
@@ -1179,14 +1181,14 @@ await t.Run("anthropic: models list merged with capability table; fallback list 
     t.Eq("2023-06-01", req.Headers.GetValueOrDefault("anthropic-version"), "version header");
     t.Check(anCtx.Bus.Count(EventTypes.ModelsChanged) == 1, "models.changed on first load");
 
-    anCtx.SettingsImpl.Set("providers.anthropic.apiKey", "bad-key");
+    anCtx.SettingsImpl.Set("providers.instances.anthropic.apiKey", "bad-key");
     try
     {
         var fb = await anthropic.ListModelsAsync(false, CancellationToken.None);
         t.Check(fb.Count == AN.ClaudeCapabilities.FallbackModels.Length && fb.Any(m => m.Id == "claude-sonnet-5-5"), "static fallback list names the current ids");
         t.Eq("Claude Opus 5.5", fb[0].DisplayName, "prettified display name");
     }
-    finally { anCtx.SettingsImpl.Set("providers.anthropic.apiKey", "test-key"); }
+    finally { anCtx.SettingsImpl.Set("providers.instances.anthropic.apiKey", "test-key"); }
 });
 
 await t.Run("anthropic: streams thinking+signature, text, tool_use with input_json_delta, usage", async () =>
@@ -1291,19 +1293,19 @@ await t.Run("anthropic: thinking modes (foreign assistant turn, adaptive, off, m
     await Collect(anthropic, Req(sonnet));
     t.Eq(8192, mock.Last("/v1/messages").Json["thinking"]?["budget_tokens"]?.GetValue<int>(), "no effort -> model default (medium)");
 
-    anCtx.SettingsImpl.Set("providers.anthropic.thinking", "adaptive");
+    anCtx.SettingsImpl.Set("providers.instances.anthropic.thinking", "adaptive");
     await Collect(anthropic, Req(sonnet, effort: "high"));
     b = mock.Last("/v1/messages").Json;
     t.Check(b["thinking"]?["type"]?.GetValue<string>() == "adaptive" && b["output_config"]?["effort"]?.GetValue<string>() == "high", "adaptive");
 
-    anCtx.SettingsImpl.Set("providers.anthropic.thinking", "off");
-    anCtx.SettingsImpl.Set("providers.anthropic.promptCaching", false);
+    anCtx.SettingsImpl.Set("providers.instances.anthropic.thinking", "off");
+    anCtx.SettingsImpl.Set("providers.instances.anthropic.promptCaching", false);
     await Collect(anthropic, Req(sonnet, effort: "high"));
     b = mock.Last("/v1/messages").Json;
     t.Check(b["thinking"] is null, "off");
     t.Check(!b.ToJsonString().Contains("cache_control"), "promptCaching=false");
-    anCtx.SettingsImpl.Set("providers.anthropic.thinking", null);
-    anCtx.SettingsImpl.Set("providers.anthropic.promptCaching", null);
+    anCtx.SettingsImpl.Set("providers.instances.anthropic.thinking", null);
+    anCtx.SettingsImpl.Set("providers.instances.anthropic.promptCaching", null);
 });
 
 // Which thinking configuration a Claude takes is a property of its generation (the API reference, 2026): budget_tokens
@@ -1353,7 +1355,7 @@ await t.Run("anthropic: thinking.display goes out with adaptive thinking only; a
     t.Check(b["thinking"]?["budget_tokens"] is null, "no budget_tokens");
     t.Eq("xhigh", b["output_config"]?["effort"]?.GetValue<string>(), "xhigh through output_config");
 
-    anCtx.SettingsImpl.Set("providers.anthropic.thinkingDisplay", "omitted");
+    anCtx.SettingsImpl.Set("providers.instances.anthropic.thinkingDisplay", "omitted");
     try
     {
         await Collect(anthropic, Req(opus, effort: "high"));
@@ -1362,7 +1364,7 @@ await t.Run("anthropic: thinking.display goes out with adaptive thinking only; a
         b = mock.Last("/v1/messages").Json;
         t.Check(b["thinking"]?["type"]?.GetValue<string>() == "enabled" && b["thinking"]?["display"] is null, "a budget request carries no display");
     }
-    finally { anCtx.SettingsImpl.Set("providers.anthropic.thinkingDisplay", null); }
+    finally { anCtx.SettingsImpl.Set("providers.instances.anthropic.thinkingDisplay", null); }
 
     static AnKit.SseEvent Ev(string evt, object o) => new(evt, System.Text.Json.JsonSerializer.Serialize(o));
     var asm = new AnKit.MessageAssembler();
@@ -1536,7 +1538,7 @@ await t.Run("anthropic: errors and stop reasons (529, in-stream error, prompt to
 await t.Run("anthropic: failures carry the server's request id and save the request", async () =>
 {
     var dir = Path.Combine(Path.GetTempPath(), "netpi-an-" + Guid.NewGuid().ToString("N"));
-    var p = new AN.AnthropicProvider(new HttpClient(), () => anCtx.SettingsImpl.GetNode("providers.anthropic") as JsonObject,
+    var p = new AN.AnthropicProvider(new HttpClient(), () => anCtx.SettingsImpl.GetNode("providers.instances.anthropic") as JsonObject,
         null, null, logsDir: dir);
 
     var e = await Fails(p, Req(M("anthropic", "rejected-tools")));
@@ -1582,20 +1584,47 @@ await t.Run("anthropic plugin: registration and stop", async () =>
     t.Check(e is { Transient: true }, "calls after stop fail as transient (disposed client)");
 });
 
+await t.Run("providers: none exist until added; each entry of a type is its own provider, live; other types are left alone", async () =>
+{
+    var ctx = new FakePluginContext(new JsonObject());
+    var plugin = new AN.AnthropicPlugin();
+    await plugin.StartAsync(ctx, CancellationToken.None);
+    t.Eq(0, ctx.ServicesImpl.GetAll<IModelProvider>().Count, "an empty settings file offers no provider");
+    ctx.SettingsImpl.Set("providers.instances.personal", new JsonObject { ["type"] = "anthropic", ["apiKey"] = "k1", ["baseUrl"] = mock.BaseUrl });
+    ctx.SettingsImpl.Set("providers.instances.work", new JsonObject { ["type"] = "anthropic", ["name"] = "Anthropic (work)", ["apiKey"] = "k2", ["baseUrl"] = mock.BaseUrl });
+    ctx.SettingsImpl.Set("providers.instances.router", new JsonObject { ["type"] = "openrouter" });
+    ctx.SettingsImpl.Set("providers.instances.bad.id", new JsonObject { ["type"] = "anthropic" });
+    ctx.Events.Publish(EventTypes.SettingsChanged, null);
+    var all = ctx.ServicesImpl.GetAll<IModelProvider>();
+    t.Eq("personal,work", string.Join(",", all.Select(p => p.Id).OrderBy(x => x)), "two anthropic providers, the openrouter entry is not this plugin's");
+    t.Eq("Anthropic (work)", all.Single(p => p.Id == "work").DisplayName, "a name is the display name");
+    t.Eq("Anthropic", all.Single(p => p.Id == "personal").DisplayName, "without one, the kind's title");
+    t.Check(ctx.Bus.Count(EventTypes.ModelsChanged) > 0, "the catalog is told");
+    ctx.SettingsImpl.Set("providers.instances.work", null);
+    ctx.Events.Publish(EventTypes.SettingsChanged, null);
+    t.Eq("personal", string.Join(",", ctx.ServicesImpl.GetAll<IModelProvider>().Select(p => p.Id)), "a removed entry is gone at once");
+    await plugin.StopAsync(CancellationToken.None);
+    t.Eq(0, ctx.ServicesImpl.GetAll<IModelProvider>().Count, "and stopping removes the rest");
+    t.Check(!ProviderInstances.ValidId("a/b") && !ProviderInstances.ValidId("a.b") && ProviderInstances.ValidId("claude-cli_2"), "ids are letters, digits, - and _");
+});
+
 // ================================================================== OpenRouter
 
 var orCtx = new FakePluginContext(new JsonObject
 {
     ["providers"] = new JsonObject
     {
-        ["openrouter"] = new JsonObject
+        ["instances"] = new JsonObject
         {
-            ["baseUrl"] = mock.BaseUrl + "/openrouter/api", ["apiKey"] = "or-key", ["headers"] = new JsonObject { ["X-OpenRouter-Title"] = "NetPI" },
+            ["openrouter"] = new JsonObject
+            {
+                ["type"] = "openrouter", ["baseUrl"] = mock.BaseUrl + "/openrouter/api", ["apiKey"] = "or-key", ["headers"] = new JsonObject { ["X-OpenRouter-Title"] = "NetPI" },
+            },
         },
     },
 }, "netpi.providers.openrouter");
 var orDumps = Path.Combine(Path.GetTempPath(), "netpi-or-" + Guid.NewGuid().ToString("N"));
-var openrouter = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.openrouter") as JsonObject, null, orCtx.Bus, orDumps);
+var openrouter = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.instances.openrouter") as JsonObject, null, orCtx.Bus, orDumps);
 async Task<ModelInfo> OrModel(string id) => (await openrouter.ListModelsAsync(false, CancellationToken.None)).Single(m => m.Id == id);
 
 await t.Run("openrouter: catalog = tool-capable models; context, output, modalities, reasoning efforts; include and overrides", async () =>
@@ -1607,11 +1636,11 @@ await t.Run("openrouter: catalog = tool-capable models; context, output, modalit
     // reserves; listed uncapped, every call reserved the whole catalog maximum (idea-qbi2fv)
     t.Check(bunny is { Provider: "openrouter", DisplayName: "Space Bunny", ContextWindow: 1000000, MaxOutputTokens: 32768, IsLocal: false }, "bunny basics");
     t.Eq(32768, models.Single(m => m.Id == "anthropic/claude-x").MaxOutputTokens, "the catalog's 64,000 is capped too");
-    orCtx.SettingsImpl.Set("providers.openrouter.maxOutputTokens", 100000);
+    orCtx.SettingsImpl.Set("providers.instances.openrouter.maxOutputTokens", 100000);
     var raised = await openrouter.ListModelsAsync(true, CancellationToken.None);
     t.Eq(64000, raised.Single(m => m.Id == "anthropic/claude-x").MaxOutputTokens, "a catalog maximum under the cap stays");
     t.Eq(100000, raised.Single(m => m.Id == "stealth/bunny").MaxOutputTokens, "a raised cap is the limit of a model with more");
-    orCtx.SettingsImpl.Set("providers.openrouter.maxOutputTokens", null);
+    orCtx.SettingsImpl.Set("providers.instances.openrouter.maxOutputTokens", null);
     t.Eq(null, models.Single(m => m.Id == "vendor/plain:free").MaxOutputTokens, "an unknown maximum stays unknown");
     t.Check(bunny.SupportsImages, "image input");
     t.Eq("low,medium,high,xhigh,max", string.Join(",", bunny.Reasoning!.Efforts), "efforts low→high, no none (mandatory)");
@@ -1622,8 +1651,8 @@ await t.Run("openrouter: catalog = tool-capable models; context, output, modalit
     t.Eq("none,minimal,low,medium,high,xhigh,max", string.Join(",", models.Single(m => m.Id == "vendor/any-effort").Reasoning!.Efforts), "every effort (supported_efforts: null)");
     t.Eq("Bearer or-key", mock.Last("/openrouter/api/v1/models").Headers.GetValueOrDefault("authorization"), "key sent");
 
-    orCtx.SettingsImpl.Set("providers.openrouter.include", new JsonArray("stealth/*", "vendor/no-tools", "*:free"));
-    orCtx.SettingsImpl.Set("providers.openrouter.models", new JsonObject { ["vendor/plain:free"] = new JsonObject { ["hidden"] = true }, ["stealth/bunny"] = new JsonObject { ["displayName"] = "Bunny" } });
+    orCtx.SettingsImpl.Set("providers.instances.openrouter.include", new JsonArray("stealth/*", "vendor/no-tools", "*:free"));
+    orCtx.SettingsImpl.Set("providers.instances.openrouter.models", new JsonObject { ["vendor/plain:free"] = new JsonObject { ["hidden"] = true }, ["stealth/bunny"] = new JsonObject { ["displayName"] = "Bunny" } });
     try
     {
         t.Check(openrouter.SettingsChangedSinceLastList, "settings change noticed");
@@ -1633,8 +1662,8 @@ await t.Run("openrouter: catalog = tool-capable models; context, output, modalit
     }
     finally
     {
-        orCtx.SettingsImpl.Set("providers.openrouter.include", null);
-        orCtx.SettingsImpl.Set("providers.openrouter.models", null);
+        orCtx.SettingsImpl.Set("providers.instances.openrouter.include", null);
+        orCtx.SettingsImpl.Set("providers.instances.openrouter.models", null);
         await openrouter.ListModelsAsync(true, CancellationToken.None);
     }
 });
@@ -1670,7 +1699,7 @@ await t.Run("openrouter: request (reasoning object, max_tokens cap, session_id, 
     t.Check(R(await OrModel("vendor/plain:free"), "high") is null, "no reasoning model: nothing");
     t.Check(R(bunny, "default") is null, "default");
 
-    orCtx.SettingsImpl.Set("providers.openrouter.provider", new JsonObject { ["sort"] = "throughput" });
+    orCtx.SettingsImpl.Set("providers.instances.openrouter.provider", new JsonObject { ["sort"] = "throughput" });
     try
     {
         await Collect(openrouter, Req(claude, effort: "medium"));
@@ -1680,7 +1709,7 @@ await t.Run("openrouter: request (reasoning object, max_tokens cap, session_id, 
         t.Eq("""{"effort":"medium"}""", c["reasoning"]?.ToJsonString(), "session effort");
         t.Eq(32768, c["max_tokens"]?.GetValue<int>(), "cap below the catalog's 64000");
     }
-    finally { orCtx.SettingsImpl.Set("providers.openrouter.provider", null); }
+    finally { orCtx.SettingsImpl.Set("providers.instances.openrouter.provider", null); }
 });
 
 await t.Run("openrouter: stream → thinking + merged reasoning_details, text, tool call, usage split, meta", async () =>
@@ -1751,13 +1780,13 @@ await t.Run("openrouter: reasoning_details go back unmodified, only to the model
     var other = mock.Last("/openrouter/api/v1/chat/completions").Json["messages"]!.AsArray();
     t.Check(other.All(m => m!["reasoning_details"] is null && m["reasoning"] is null), "a different OpenRouter model gets no reasoning");
 
-    orCtx.SettingsImpl.Set("providers.openrouter.replayReasoning", false);
+    orCtx.SettingsImpl.Set("providers.instances.openrouter.replayReasoning", false);
     try
     {
         await Collect(openrouter, Req(bunny, history));
         t.Check(mock.Last("/openrouter/api/v1/chat/completions").Json["messages"]!.AsArray().All(m => m!["reasoning_details"] is null), "replayReasoning: false");
     }
-    finally { orCtx.SettingsImpl.Set("providers.openrouter.replayReasoning", null); }
+    finally { orCtx.SettingsImpl.Set("providers.instances.openrouter.replayReasoning", null); }
 });
 
 await t.Run("openrouter: errors keep the server's text and add generation id, upstream provider, Retry-After; request saved", async () =>
@@ -1781,7 +1810,7 @@ await t.Run("openrouter: errors keep the server's text and add generation id, up
 await t.Run("openrouter: a 200 whose body is not JSON is described, saved and retried, not a raw JsonException", async () =>
 {
     var dir = Path.Combine(Path.GetTempPath(), "netpi-or-" + Guid.NewGuid().ToString("N"));
-    var p = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.openrouter") as JsonObject, null, orCtx.Bus, dir);
+    var p = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.instances.openrouter") as JsonObject, null, orCtx.Bus, dir);
     var e = await Fails(p, Req(M("openrouter", "vendor/bad-json")));
     t.Check(e is { Transient: true, ErrorType: "bad_json" } && e.Message.StartsWith("OpenRouter: bad_json"), "described: " + e?.Message);
     t.Check(e!.Message.Contains("502 Bad Gateway") && e.Message.Contains("saved"), "the body is quoted and the request saved");
@@ -1791,7 +1820,7 @@ await t.Run("openrouter: a 200 whose body is not JSON is described, saved and re
 await t.Run("openrouter: the failed-request dump keeps the whole response body, not the 2,000-char excerpt", async () =>
 {
     var dir = Path.Combine(Path.GetTempPath(), "netpi-or-" + Guid.NewGuid().ToString("N"));
-    var p = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.openrouter") as JsonObject, null, orCtx.Bus, dir);
+    var p = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.instances.openrouter") as JsonObject, null, orCtx.Bus, dir);
     var e = await Fails(p, Req(M("openrouter", "vendor/rejected-tools")));
     t.Check(e is { StatusCode: 400 } && e.Message.Contains("3 tools rejected") && !e.Message.Contains("tr-or-7777"), "the message quotes the excerpt only");
     var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
@@ -1855,7 +1884,7 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
     var app = Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom ? custom : Path.Combine(root, "artifacts/dev/app");
 
     var apDll = Path.Combine(app, "plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.dll");
-    var apSettings = new JsonObject { ["providers"] = new JsonObject { ["aiproxy"] = new JsonObject { ["baseUrl"] = mock.BaseUrl } } };
+    var apSettings = new JsonObject { ["providers"] = new JsonObject { ["instances"] = new JsonObject { ["aiproxy"] = new JsonObject { ["type"] = "aiproxy", ["baseUrl"] = mock.BaseUrl } } } };
     t.Check(!File.Exists(Path.Combine(Path.GetDirectoryName(apDll)!, "NetPI.Abstractions.dll")), "Abstractions not copied next to the plugin");
     t.Check(!File.Exists(Path.Combine(Path.GetDirectoryName(apDll)!, "NetPI.Contracts.dll")), "Contracts not copied next to the plugin");
     t.Check(File.Exists(Path.Combine(Path.GetDirectoryName(apDll)!, "plugin.json")), "plugin.json copied");
@@ -1864,13 +1893,13 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
     t.Check(await PluginLoadTest.WaitCollectedAsync(r1.Alc), "aiproxy ALC collected after unload");
 
     var anDll = Path.Combine(app, "plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.dll");
-    var anSettings = new JsonObject { ["providers"] = new JsonObject { ["anthropic"] = new JsonObject { ["baseUrl"] = mock.BaseUrl, ["apiKey"] = "k" } } };
+    var anSettings = new JsonObject { ["providers"] = new JsonObject { ["instances"] = new JsonObject { ["anthropic"] = new JsonObject { ["type"] = "anthropic", ["baseUrl"] = mock.BaseUrl, ["apiKey"] = "k" } } } };
     var r2 = await PluginLoadTest.LoadRunUnloadAsync(anDll, anSettings, _ => Req(AN.ClaudeCapabilities.ToModelInfo("anthropic", "claude-sonnet-4-5", null)));
     t.Check(r2 is { PluginId: "netpi.providers.anthropic", Providers: 1, Models: 2, StreamedText: "Sure, reading." }, $"anthropic ran in ALC ({r2})");
     t.Check(await PluginLoadTest.WaitCollectedAsync(r2.Alc), "anthropic ALC collected after unload");
 
     var orDll = Path.Combine(app, "plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.dll");
-    var orPluginSettings = new JsonObject { ["providers"] = new JsonObject { ["openrouter"] = new JsonObject { ["baseUrl"] = mock.BaseUrl + "/openrouter/api", ["apiKey"] = "k" } } };
+    var orPluginSettings = new JsonObject { ["providers"] = new JsonObject { ["instances"] = new JsonObject { ["openrouter"] = new JsonObject { ["type"] = "openrouter", ["baseUrl"] = mock.BaseUrl + "/openrouter/api", ["apiKey"] = "k" } } } };
     var r3 = await PluginLoadTest.LoadRunUnloadAsync(orDll, orPluginSettings, p => Req(M(p.Id, "vendor/plain:free")));
     t.Check(r3 is { PluginId: "netpi.providers.openrouter", Providers: 1, Models: 5, StreamedText: "Reading it.", AbstractionsShared: true }, $"openrouter ran in ALC ({r3})");
     t.Check(await PluginLoadTest.WaitCollectedAsync(r3.Alc), "openrouter ALC collected after unload");

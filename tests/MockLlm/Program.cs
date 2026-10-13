@@ -30,15 +30,15 @@ if (initHome is not null) InitHome(initHome, $"http://127.0.0.1:{o.Port}", o.Ant
 
 await using var server = await MockLlmServer.StartAsync(o);
 Console.WriteLine($"MockLlm listening on {server.BaseUrl}");
-Console.WriteLine($"  AiProxy:   providers.aiproxy.baseUrl   = {server.BaseUrl}");
-Console.WriteLine($"  Anthropic: providers.anthropic.baseUrl = {server.BaseUrl}/anthropic  (any apiKey)");
+Console.WriteLine($"  AiProxy:   providers.instances.aiproxy.baseUrl   = {server.BaseUrl}");
+Console.WriteLine($"  Anthropic: providers.instances.anthropic.baseUrl = {server.BaseUrl}/anthropic  (any apiKey)");
 Console.WriteLine("  Control:   GET /_stats, GET /_log?since=N, GET /_request/{seq}, POST /_reset");
 using var stop = CancellationTokenSource.CreateLinkedTokenSource(server.Stopping); // SIGTERM (host lifetime)
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
 try { await Task.Delay(Timeout.Infinite, stop.Token); } catch (OperationCanceledException) { }
 return 0;
 
-// Point a NetPI home at this mock: providers.aiproxy / providers.anthropic (other settings are kept).
+// Point a NetPI home at this mock: providers.instances.aiproxy / .anthropic (other settings are kept).
 static void InitHome(string home, string baseUrl, string key)
 {
     home = Path.GetFullPath(home.StartsWith('~') ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), home[1..].TrimStart('/', '\\')) : home);
@@ -46,9 +46,12 @@ static void InitHome(string home, string baseUrl, string key)
     var file = Path.Combine(home, "settings.json");
     var root = File.Exists(file) ? System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file), documentOptions: new() { CommentHandling = System.Text.Json.JsonCommentHandling.Skip, AllowTrailingCommas = true }) as System.Text.Json.Nodes.JsonObject ?? [] : [];
     if (root["providers"] is not System.Text.Json.Nodes.JsonObject providers) root["providers"] = providers = [];
-    if (providers["aiproxy"] is not System.Text.Json.Nodes.JsonObject aiproxy) providers["aiproxy"] = aiproxy = [];
+    if (providers["instances"] is not System.Text.Json.Nodes.JsonObject instances) providers["instances"] = instances = [];
+    if (instances["aiproxy"] is not System.Text.Json.Nodes.JsonObject aiproxy) instances["aiproxy"] = aiproxy = [];
+    aiproxy["type"] = "aiproxy";
     aiproxy["baseUrl"] = baseUrl;
-    if (providers["anthropic"] is not System.Text.Json.Nodes.JsonObject anthropic) providers["anthropic"] = anthropic = [];
+    if (instances["anthropic"] is not System.Text.Json.Nodes.JsonObject anthropic) instances["anthropic"] = anthropic = [];
+    anthropic["type"] = "anthropic";
     anthropic["baseUrl"] = baseUrl + "/anthropic";
     anthropic["apiKey"] = key;
     File.WriteAllText(file, root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));

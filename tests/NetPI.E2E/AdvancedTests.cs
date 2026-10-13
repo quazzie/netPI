@@ -274,7 +274,7 @@ public static class AdvancedTests
 
         r.Add("provider.switch", "provider switch mid-session: qwen (responses) → claude (anthropic) → gemma (chat) keeps a valid transcript", async () =>
         {
-            await env.Rpc("settings.set", new { path = "providers.aiproxy.models.gemma-4", value = new { transport = "chat" } });
+            await env.Rpc("settings.set", new { path = "providers.instances.aiproxy.models.gemma-4", value = new { transport = "chat" } });
             try
             {
                 var p = await env.NewProject("switch-models", CoreTests.Seed);
@@ -303,7 +303,7 @@ public static class AdvancedTests
             }
             finally
             {
-                await env.Rpc("settings.set", new { path = "providers.aiproxy.models.gemma-4", value = (object?)null });
+                await env.Rpc("settings.set", new { path = "providers.instances.aiproxy.models.gemma-4", value = (object?)null });
             }
         }, 90);
 

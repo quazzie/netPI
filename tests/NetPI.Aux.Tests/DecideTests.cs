@@ -14,7 +14,7 @@ public static class DecideTests
 
         public async Task StartAsync(string url)
         {
-            Ctx.SettingsFake.Set("providers.aiproxy.baseUrl", JsonValue.Create(url + "/v1"));
+            Ctx.SettingsFake.Set("providers.instances.aiproxy", new JsonObject { ["type"] = "aiproxy", ["baseUrl"] = url + "/v1" });
             await new DecidePlugin().StartAsync(Ctx, CancellationToken.None);
         }
 

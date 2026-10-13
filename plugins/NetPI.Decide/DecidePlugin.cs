@@ -22,7 +22,7 @@ public sealed class DecidePlugin : INetPiPlugin
             Id = "decide", Title = "Decisions", Group = "Tools", Order = 45,
             Settings =
             [
-                SettingInfo.Str("decide.baseUrl", "Server URL", "", "Empty: the AiProxy/AiGateway server (providers.aiproxy.baseUrl)."),
+                SettingInfo.Str("decide.baseUrl", "Server URL", "", "Empty: the AiProxy/AiGateway server (the first AiProxy provider)."),
                 SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070)."),
                 SettingInfo.Int("decide.maxItems", "Most items per call", 500, null, 1, 5000),
                 SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16),
@@ -138,7 +138,7 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
     public string Root()
     {
         var url = ctx.Settings.Get("decide.baseUrl", "");
-        if (string.IsNullOrWhiteSpace(url)) url = ctx.Settings.Get("providers.aiproxy.baseUrl", "http://127.0.0.1:8090");
+        if (string.IsNullOrWhiteSpace(url)) url = ProviderInstances.FirstString(ctx.Settings, "aiproxy", "baseUrl");
         url = (url ?? "http://127.0.0.1:8090").Trim().TrimEnd('/');
         return url.EndsWith("/v1", StringComparison.OrdinalIgnoreCase) ? url[..^3] : url;
     }

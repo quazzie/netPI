@@ -66,16 +66,17 @@ public sealed class ClaudeCliProvider : IModelProvider
     /// <summary>NetPI's home, which netpi.mjs finds the server through (its server.json).</summary>
     internal string? Home { get; init; }
 
-    public string Id { get; init; } = "claude-cli";
+    /// <summary>The ids of every Claude CLI provider: an answer one of them gave is this CLI's own (it holds that history).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> KnownIds = new(StringComparer.Ordinal) { ["claude-cli"] = 0 };
+    private string _id = "claude-cli";
+    public string Id { get => _id; init { _id = value; KnownIds[value] = 0; } }
     public string DisplayName { get; init; } = "Claude CLI";
-    /// <summary>An extra provider (<c>providers.claudeCliExtra</c>) is on unless its entry says otherwise.</summary>
-    internal bool EnabledByDefault { get; init; }
     public bool IsLocal => false;
 
     internal ClaudeCliOptions Options()
     {
-        try { return ClaudeCliOptions.Parse(_config(), EnabledByDefault); }
-        catch (Exception ex) { _log.LogWarning(ex, "claude-cli: could not read settings"); return ClaudeCliOptions.Parse(null, EnabledByDefault); }
+        try { return ClaudeCliOptions.Parse(_config()); }
+        catch (Exception ex) { _log.LogWarning(ex, "claude-cli: could not read settings"); return ClaudeCliOptions.Parse(null); }
     }
 
     private string? _listed;
@@ -125,7 +126,7 @@ public sealed class ClaudeCliProvider : IModelProvider
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
     {
         var o = Options();
-        if (!o.Enabled) throw new ModelException("Claude CLI: provider is disabled in settings (providers.claudeCli.enabled).", false, null, "provider_disabled");
+        if (!o.Enabled) throw new ModelException("Claude CLI: provider is disabled in settings (its `enabled` setting).", false, null, "provider_disabled");
         var agentTurn = request.Purpose == "agent";
         var attempt = Plan(request, agentTurn);
         while (true)
@@ -189,7 +190,7 @@ public sealed class ClaudeCliProvider : IModelProvider
         // every call is a full Claude Code process: the ones beyond the limit wait (memory, and the subscription's rate limits)
         var (lease, waited) = await _gate.EnterAsync(() => Options().MaxConcurrent, ct).ConfigureAwait(false);
         using var gateLease = lease;
-        if (waited) yield return new StreamNotice($"Claude CLI had to wait for a free slot ({o.MaxConcurrent} run at once: providers.claudeCli.maxConcurrent).", "info");
+        if (waited) yield return new StreamNotice($"Claude CLI had to wait for a free slot ({o.MaxConcurrent} run at once: the provider's maxConcurrent).", "info");
 
         // The system prompt goes through a file: NetPI's can outgrow the 32k command line of Windows.
         Directory.CreateDirectory(_workDir);
@@ -412,7 +413,7 @@ public sealed class ClaudeCliProvider : IModelProvider
                 case MessageRole.User or MessageRole.Notice:
                     if (!string.IsNullOrWhiteSpace(m.Text)) blocks.Add(("", m.Text));
                     break;
-                case MessageRole.Assistant when m.Provider?.StartsWith("claude-cli", StringComparison.Ordinal) != true:
+                case MessageRole.Assistant when (m.Provider is null || !KnownIds.ContainsKey(m.Provider)):
                     if (!string.IsNullOrWhiteSpace(m.Text)) blocks.Add(("[An earlier answer, from another model]", m.Text));
                     break;
                 case MessageRole.Tool:

@@ -9,6 +9,7 @@
   import BudgetView from './BudgetView.svelte';
   import BackupView from './BackupView.svelte';
   import PluginSwitches from './PluginSwitches.svelte';
+  import ProvidersPanel from './ProvidersPanel.svelte';
   import { prefs, savePrefs, toast } from '../../lib/state/ui.svelte.js';
   import { app } from '../../lib/state/app.svelte.js';
   import { rpc, conn } from '../../lib/rpc.svelte.js';
@@ -212,10 +213,11 @@
         {:else if page.id === 'plugins'}
           <section class="sec"><PluginSwitches {doc} /></section>
         {:else if ROW_PAGES.has(page.id)}
-          {#if page.sections.length}
+          {#if page.id === 'Models'}<ProvidersPanel {schema} {doc} />{/if}
+          {#if page.sections.some((s) => !s.providerType)}
             <section class="sec rows">
-              <div class="sec-title">{page.id === 'Models' ? 'Providers and model calls' : 'Tools'}</div>
-              {#each page.sections as s (s.id)}
+              <div class="sec-title">{page.id === 'Models' ? 'Model calls' : 'Tools'}</div>
+              {#each page.sections.filter((s) => !s.providerType) as s (s.id)}
                 {@const r = rowOf(s)}
                 <SettingsRow title={s.title} subtitle={r.subtitle} badges={r.badges} onclick={() => (openSectionId = s.id)} data-section={s.id} />
               {/each}

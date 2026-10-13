@@ -11,43 +11,50 @@ namespace NetPI.Providers.Anthropic;
     Order = 10)]
 public sealed class AnthropicPlugin : INetPiPlugin
 {
-    public const string SettingsPath = "providers.anthropic";
+    public const string Type = "anthropic";
 
     private HttpClient? _http;
     private IDisposable? _settingsSub;
+    private ProviderSet<AnthropicProvider>? _set;
 
-    public AnthropicProvider? Provider { get; private set; }
+    /// <summary>The first Anthropic provider the owner added, if any.</summary>
+    public AnthropicProvider? Provider => _set?.All.FirstOrDefault();
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         context.Services.Register(new SettingsSection
         {
-            Id = "anthropic", Title = "Anthropic", Group = "Models", Order = 50,
+            Id = "provider-anthropic", Title = "Anthropic", Group = "Models", Order = 50, ProviderType = Type,
+            Help = "Claude through the Messages API with an API key: thinking, prompt caching.",
             Settings =
             [
-                SettingInfo.Secret("providers.anthropic.apiKey", "API key", "env:NAME reads another environment variable.", "env ANTHROPIC_API_KEY"),
-                SettingInfo.Choice("providers.anthropic.thinking", "Thinking", "auto", ["auto", "budget", "adaptive", "off"],
+                SettingInfo.Secret("apiKey", "API key", "env:NAME reads another environment variable.", "env ANTHROPIC_API_KEY"),
+                SettingInfo.Choice("thinking", "Thinking", "auto", ["auto", "budget", "adaptive", "off"],
                     "auto: by model (budget_tokens up to Claude 4.5, adaptive from 4.6); budget: budget_tokens from the effort; adaptive: the model decides."),
-                SettingInfo.Choice("providers.anthropic.thinkingDisplay", "Thinking text", "summarized", ["summarized", "omitted"],
+                SettingInfo.Choice("thinkingDisplay", "Thinking text", "summarized", ["summarized", "omitted"],
                     "With adaptive thinking: summarized shows the model's thinking, omitted leaves it out (the API's own default from Claude 4.7 on)."),
-                SettingInfo.Bool("providers.anthropic.adaptiveEffort", "Send the effort with adaptive thinking", true),
-                SettingInfo.Bool("providers.anthropic.promptCaching", "Prompt caching", true),
-                SettingInfo.Int("providers.anthropic.defaultMaxOutputTokens", "Output limit", 32000, null, 256, null, "tokens"),
-                SettingInfo.Bool("providers.anthropic.dumpFailedRequests", "Save failed requests", true,
+                SettingInfo.Bool("adaptiveEffort", "Send the effort with adaptive thinking", true),
+                SettingInfo.Bool("promptCaching", "Prompt caching", true),
+                SettingInfo.Int("defaultMaxOutputTokens", "Output limit", 32000, null, 256, null, "tokens"),
+                SettingInfo.Bool("dumpFailedRequests", "Save failed requests", true,
                     "Write the request and response body of a failed call to logs/failed-requests, for reproducing backend bugs."),
-                SettingInfo.List("providers.anthropic.betas", "anthropic-beta headers", []),
-                SettingInfo.Str("providers.anthropic.baseUrl", "Server URL", "https://api.anthropic.com"),
-                SettingInfo.Int("providers.anthropic.modelsCacheSeconds", "Model list cache", 600, null, 0, 86400, "s"),
+                SettingInfo.List("betas", "anthropic-beta headers", []),
+                SettingInfo.Str("baseUrl", "Server URL", "https://api.anthropic.com"),
+                SettingInfo.Int("modelsCacheSeconds", "Model list cache", 600, null, 0, 86400, "s"),
             ],
         });
         _http = HttpFactory.Create();
-        Provider = new AnthropicProvider(_http, () => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,
-            context.Events, logsDir: context.Paths.LogsDir);
-        context.Services.Register<IModelProvider>(Provider);
+        var http = _http;
+        _set = new ProviderSet<AnthropicProvider>(context, Type, (id, config, read) =>
+            new AnthropicProvider(http, read, context.Logger, context.Events, id, context.Paths.LogsDir) { DisplayName = ProviderSet<AnthropicProvider>.NameOf(id, config, "Anthropic") });
+        _set.Reconcile();
         _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, evt =>
         {
+            if (_set is not { } set) return;
+            if (set.Reconcile()) context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = Type });
             // Key/baseUrl/enabled changed: refresh in the background (publishes models.changed when the list changes).
-            if (Provider is { SettingsChangedSinceLastList: true } p) _ = RefreshQuietlyAsync(p, context.Stopping);
+            foreach (var p in set.All)
+                if (p.SettingsChangedSinceLastList) _ = RefreshQuietlyAsync(p, context.Stopping);
         });
         return Task.CompletedTask;
     }
@@ -62,6 +69,8 @@ public sealed class AnthropicPlugin : INetPiPlugin
     {
         _settingsSub?.Dispose();
         _settingsSub = null;
+        _set?.Dispose();
+        _set = null;
         _http?.Dispose();
         _http = null;
         return Task.CompletedTask;

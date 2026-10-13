@@ -1064,7 +1064,7 @@ details: { source: 'file'|'url'|'data', path?, url?, name, mediaType, bytes, cap
 
 `plugins/NetPI.Decide`. Typed questions answered by a decision model (Kev: a Qwen3.5 backbone with a pointer head that
 returns a probability per option and never writes text), through TypeSafe's `POST /v1/systemone` on the AiProxy /
-AiGateway server (`decide.baseUrl`, default `providers.aiproxy.baseUrl`). The model (`decide.model`, default `kev-9b`)
+AiGateway server (`decide.baseUrl`, default the first `aiproxy` provider's `baseUrl`). The model (`decide.model`, default `kev-9b`)
 must be loaded: on the nuc it is a router model you switch to in AiHub; an unloaded model fails with the gateway's code,
 request id and that hint. The NInfer chat model (`qwen3.8-27b`) works too: AiGateway answers System One for NInfer
 models through NInfer's `POST /v1/decision` (the answer letters' probabilities read after one prefill, no text

@@ -41,7 +41,7 @@ public sealed class OpenRouterProvider : IModelProvider
     }
 
     public string Id { get; }
-    public string DisplayName => "OpenRouter";
+    public string DisplayName { get; init; } = "OpenRouter";
     public bool IsLocal => false;
 
     internal OpenRouterOptions Options()

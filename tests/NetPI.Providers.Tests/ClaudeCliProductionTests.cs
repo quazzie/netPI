@@ -272,6 +272,18 @@ internal static class ClaudeCliProductionTests
             return Task.CompletedTask;
         });
 
+        await t.Run("claude-cli: configDir (with ~ expanded) is the CLI's config folder, one per account", async () =>
+        {
+            CL.CliCall? seen = null;
+            var p = new CL.ClaudeCliProvider(() => Cfg(o => o["configDir"] = "~/.claude-work"), null,
+                (call, ct) => { seen = call; return Lines([Init, Result], ct); });
+            await Collect(p, new ModelRequest { Model = new ModelInfo { Provider = "claude-cli", Id = "claude-sonnet-5-5" }, SystemPrompt = "x", Messages = [ChatMessage.UserText("hi")], SessionId = "ses_c", Purpose = "agent" });
+            t.Eq(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude-work"), seen?.ConfigDir, "the folder the child gets as CLAUDE_CONFIG_DIR");
+            var plain = new CL.ClaudeCliProvider(() => Cfg(), null, (call, ct) => { seen = call; return Lines([Init, Result], ct); });
+            await Collect(plain, new ModelRequest { Model = new ModelInfo { Provider = "claude-cli", Id = "claude-sonnet-5-5" }, SystemPrompt = "x", Messages = [ChatMessage.UserText("hi")], SessionId = "ses_d", Purpose = "agent" });
+            t.Check(string.IsNullOrEmpty(seen?.ConfigDir), "none set: the CLI keeps its default login");
+        });
+
         await t.Run("claude-cli: the child does not inherit NetPI's secrets or an API key, and runs inside the kill-on-close job", async () =>
         {
             // the variables a secret setting reads, and shell.hideEnv

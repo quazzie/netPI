@@ -289,7 +289,7 @@ public static class CoreTests
 
         r.Add("provider.chat-transport", "transport: chat completions via per-model setting, reasoning effort passed through", async () =>
         {
-            await env.Rpc("settings.set", new { path = "providers.aiproxy.models.gemma-4", value = new { transport = "chat" } });
+            await env.Rpc("settings.set", new { path = "providers.instances.aiproxy.models.gemma-4", value = new { transport = "chat" } });
             var p = await env.NewProject("chat", Seed);
             var s = await env.NewSession(model: "aiproxy/gemma-4", projectId: p.S("id"), reasoning: "max");
             var mark = await env.MockMark();
@@ -310,7 +310,7 @@ public static class CoreTests
             var log2 = await env.MockLog(mark2);
             Check.Equal("responses", log2.Single().S("api"));
             Check.Equal("xhigh", log2.Single().S("effort"));
-            await env.Rpc("settings.set", new { path = "providers.aiproxy.models.gemma-4", value = (object?)null });
+            await env.Rpc("settings.set", new { path = "providers.instances.aiproxy.models.gemma-4", value = (object?)null });
         });
 
         r.Add("provider.anthropic-thinking", "anthropic: thinking with signatures replayed across tool_use turns", async () =>

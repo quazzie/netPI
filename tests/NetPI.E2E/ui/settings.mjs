@@ -127,18 +127,37 @@ await run('settings', async ({ page }) => {
     check('the budget shows this month against the limit', (await page.locator('.dialog .budget').innerText()).includes('of $50'), await page.locator('.dialog .budget').innerText());
     await shot(page, 'ui-settings-02-agents');
 
-    // Models: one row per provider, its options in a dialog
+    // Models: the providers the owner has added (one row each, its options in a dialog), added and removed there
     await page.locator('.nav button', { hasText: 'Models' }).click();
     await page.waitForTimeout(200);
     check('a page shows only its own settings (not the About details)', (await page.locator('.dialog .about').count()) === 0);
-    check('providers are rows', (await page.locator('.setting-row[data-section="aiproxy"]').count()) === 1 && (await page.locator('.setting-row[data-section="openrouter"]').count()) === 1);
-    await page.locator('.setting-row[data-section="openrouter"]').click();
+    check('providers are rows', (await page.locator('.setting-row[data-provider="aiproxy"]').count()) === 1 && (await page.locator('.setting-row[data-provider="anthropic"]').count()) === 1);
+    check('the kinds of provider are not rows of their own', (await page.locator('.setting-row[data-section^="provider-"]').count()) === 0);
+    await page.locator('.setting-row[data-provider="anthropic"]').click();
     const sectionDialog = page.locator('.dialog.section-dialog');
     await sectionDialog.waitFor({ timeout: 5_000 }).catch(() => {});
-    check('a provider row opens its options', (await sectionDialog.locator('.field', { hasText: 'API key' }).count()) === 1);
+    check('a provider row opens its options', (await sectionDialog.locator('.field', { hasText: 'API key' }).count()) === 1 && (await sectionDialog.locator('.field', { hasText: 'Name' }).count()) >= 1);
     await page.keyboard.press('Escape');
     await page.waitForTimeout(200);
     check('Esc closes only the provider dialog', (await sectionDialog.count()) === 0 && (await page.locator('.dialog').count()) === 1);
+    const instancesBefore = JSON.stringify((await settings()).providers?.instances ?? {});
+    await page.getByRole('button', { name: 'Add provider' }).click();
+    await sectionDialog.waitFor({ timeout: 5_000 }).catch(() => {});
+    const kinds = await sectionDialog.locator('.setting-row[data-provider-type]').evaluateAll((els) => els.map((e) => e.dataset.providerType));
+    check('Add provider offers every kind', ['aiproxy', 'openai-compatible', 'openrouter', 'anthropic', 'claude-cli'].every((k) => kinds.includes(k)), kinds.join(','));
+    await sectionDialog.locator('.setting-row[data-provider-type="openrouter"]').click();
+    await page.waitForTimeout(500);
+    const added = (await settings()).providers?.instances?.openrouter;
+    check('choosing a kind adds a provider of it and opens its options', added?.type === 'openrouter' && (await sectionDialog.locator('.field', { hasText: 'Models to offer' }).count()) === 1, JSON.stringify(added));
+    await sectionDialog.locator('.field', { hasText: 'Name' }).first().locator('input').fill('Router');
+    await sectionDialog.locator('.field', { hasText: 'Name' }).first().locator('input').press('Enter');
+    await page.waitForTimeout(400);
+    check('its name is saved with it', (await settings()).providers?.instances?.openrouter?.name === 'Router');
+    const removeBtn = sectionDialog.locator('button.np-confirm');
+    await removeBtn.click(); // armed
+    await removeBtn.click();
+    await page.waitForTimeout(500);
+    check('Remove deletes the provider', JSON.stringify((await settings()).providers?.instances ?? {}) === instancesBefore && (await sectionDialog.count()) === 0, JSON.stringify((await settings()).providers?.instances));
 
     // Context: the real built-in texts, not "built in"
     await page.locator('.nav button', { hasText: 'Context' }).click();

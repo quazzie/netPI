@@ -155,7 +155,7 @@ public static class HookTests
         {
             // The catalog claims 50k, the backend only holds 12k (e.g. a model loaded with a smaller n_ctx than its static
             // capability entry): auto-compaction never triggers, the backend rejects the prompt, overflow recovery must cope.
-            await env.Rpc("settings.set", new { path = "providers.aiproxy.models.tiny-ctx", value = new { contextWindow = 50_000 } });
+            await env.Rpc("settings.set", new { path = "providers.instances.aiproxy.models.tiny-ctx", value = new { contextWindow = 50_000 } });
             try
             {
                 await env.Rpc("models.list", new { refresh = true });
@@ -182,7 +182,7 @@ public static class HookTests
             }
             finally
             {
-                await env.Rpc("settings.set", new { path = "providers.aiproxy.models.tiny-ctx", value = (object?)null });
+                await env.Rpc("settings.set", new { path = "providers.instances.aiproxy.models.tiny-ctx", value = (object?)null });
                 await env.Rpc("models.list", new { refresh = true });
             }
         }, 180);

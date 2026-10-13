@@ -14,9 +14,9 @@ public static class RealismTests
 
     private static async Task WithChatGemma(Env env, Func<Task> body)
     {
-        await env.Rpc("settings.set", new { path = "providers.aiproxy.models.gemma-4", value = new { transport = "chat" } });
+        await env.Rpc("settings.set", new { path = "providers.instances.aiproxy.models.gemma-4", value = new { transport = "chat" } });
         try { await body(); }
-        finally { await env.Rpc("settings.set", new { path = "providers.aiproxy.models.gemma-4", value = (object?)null }); }
+        finally { await env.Rpc("settings.set", new { path = "providers.instances.aiproxy.models.gemma-4", value = (object?)null }); }
     }
 
     public static void Register(TestRunner r, Env env)

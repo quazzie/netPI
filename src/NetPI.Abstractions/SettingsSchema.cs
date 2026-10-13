@@ -11,7 +11,7 @@ public sealed class SettingInfo
 {
     /// <summary>Dotted path in settings.json, e.g. <c>shell.timeoutSeconds</c>.</summary>
     public required string Key { get; init; }
-    /// <summary>bool | int | number | string | text (several lines) | secret | choice | list (of strings) | model | folder | file | records (an array of objects the owner adds and removes, one text field per <see cref="Fields"/> entry)</summary>
+    /// <summary>bool | int | number | string | text (several lines) | secret | choice | list (of strings) | model | folder | file</summary>
     public required string Type { get; init; }
     public string? Label { get; init; }
     public string? Help { get; init; }
@@ -26,8 +26,6 @@ public sealed class SettingInfo
     public IReadOnlyList<string>? Options { get; init; }
     /// <summary>When a change applies, if not at once: "restart" or "new sessions".</summary>
     public string? Applies { get; init; }
-    /// <summary>For <c>records</c>: the text fields of one entry (a List field is an array of strings, typed comma-separated) (the first is its id).</summary>
-    public IReadOnlyList<RecordField>? Fields { get; init; }
 
     public static SettingInfo Bool(string key, string label, bool @default, string? help = null) =>
         new() { Key = key, Type = "bool", Label = label, Default = JsonValue.Create(@default), Help = help };
@@ -57,10 +55,6 @@ public sealed class SettingInfo
             Default = @default is null ? null : new JsonArray([.. @default.Select(s => (JsonNode?)JsonValue.Create(s))]),
         };
 
-    /// <summary>An array of objects, each with the given text fields (the first is the entry's id), added and removed in the dialog.</summary>
-    public static SettingInfo Records(string key, string label, IReadOnlyList<RecordField> fields, string? help = null) =>
-        new() { Key = key, Type = "records", Label = label, Help = help, Fields = fields };
-
     public static SettingInfo ModelRef(string key, string label, string? help = null, string? placeholder = null) =>
         new() { Key = key, Type = "model", Label = label, Help = help, Placeholder = placeholder };
 
@@ -71,9 +65,6 @@ public sealed class SettingInfo
         new() { Key = key, Type = "file", Label = label, Help = help, Placeholder = placeholder };
 }
 
-/// <summary>One text field of an entry of a <c>records</c> setting.</summary>
-public sealed record RecordField(string Key, string Label, string? Placeholder = null, bool List = false);
-
 /// <summary>A titled group of settings in the settings dialog (<c>settings.schema</c>).</summary>
 public sealed class SettingsSection
 {
@@ -83,5 +74,11 @@ public sealed class SettingsSection
     public string Group { get; init; } = "Tools";
     public int Order { get; init; }
     public string? Help { get; init; }
+    /// <summary>
+    /// Set on a section that describes a kind of model provider (<c>claude-cli</c>, <c>anthropic</c>…): the dialog does not list it
+    /// as a section but offers it in "Add provider", with <see cref="Settings"/> (keys relative to one instance, e.g.
+    /// <c>apiKey</c>) as the form. See <see cref="ProviderInstances"/>.
+    /// </summary>
+    public string? ProviderType { get; init; }
     public required IReadOnlyList<SettingInfo> Settings { get; init; }
 }

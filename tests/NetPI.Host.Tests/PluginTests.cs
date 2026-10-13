@@ -515,8 +515,12 @@ public static class PluginTests
                 Check.True(tools.Contains(t), $"tool {t} registered");
             Check.True(server.Kernel.Tools.Registrations.Where(t => t.Tool.Definition.Name == "read").All(t => t.PluginId == "netpi.tools.files"));
             var providers = server.Models.Providers.Select(p => p.Id).ToHashSet();
-            Check.True(providers.Contains("aiproxy") && providers.Contains("anthropic"), string.Join(",", providers));
+            Check.Equal(0, providers.Count, "no provider exists until the owner adds one: " + string.Join(",", providers));
+            var kinds = server.Kernel.Services.GetAll<SettingsSection>().Select(s => s.ProviderType).Where(k => k is not null).ToHashSet();
+            Check.True(kinds.IsSupersetOf(["aiproxy", "openai-compatible", "anthropic", "openrouter", "claude-cli"]), "the provider kinds they offer: " + string.Join(",", kinds));
             Check.True(server.Rpc.Exists("files.search") && server.Rpc.Exists("processes.list"));
+            server.Settings.Set("providers.instances.aiproxy", System.Text.Json.Nodes.JsonNode.Parse("""{ "type": "aiproxy", "baseUrl": "http://127.0.0.1:1" }"""));   // the owner adds one
+            await Wait.Until(() => server.Models.Providers.Count(p => p.Id == "aiproxy") == 1, "the added provider is registered", 10_000);
             _ = await server.Models.ListAsync(); // offline providers must not throw
 
             // Reloading real plugins must not leak their load contexts through host-side references.

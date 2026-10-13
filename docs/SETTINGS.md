@@ -8,7 +8,7 @@ with `NETPI_HOME`). The file is created on first start with the **core keys only
 machine: no default model, no agents, no provider. Every other setting belongs to a plugin and appears with the
 default that plugin declares (`settings.schema`), so a fresh install is what each owner says it is. The file accepts
 `//` comments and trailing commas, and is watched: edits apply live. Keys are shown as dotted paths —
-`providers.aiproxy.baseUrl` means `{ "providers": { "aiproxy": { "baseUrl": … } } }`.
+`providers.instances.aiproxy.baseUrl` means `{ "providers": { "instances": { "aiproxy": { "baseUrl": … } } } }`.
 
 If the file does not parse (a hand edit that dropped a comma), the app keeps serving the last valid document, no
 `settings.set` or `settings.replace` is saved over the broken file (it would be replaced by defaults plus one change,
@@ -56,7 +56,15 @@ no SQL outside `src/NetPI.Host/Storage/Sqlite`, and nothing a plugin stores leav
 
 ## Providers
 
-### `providers.aiproxy` (OpenAI-compatible, default transport: Responses API)
+`providers.instances` is an object keyed by **provider id** (the part before the slash in a model reference, `claude-cli/…`):
+`{ "work": { "type": "claude-cli", "name": "Claude (work)", "configDir": "~/.claude-work" }, … }`. It starts empty: no provider
+exists until one is added (Settings → Models → **Add provider**: choose a kind, configure it; add as many as you like, also of the same
+kind). An entry holds its `type`, an optional `name` (shown in lists; default the kind's title), `enabled` (default `true`) and the keys of
+its kind below. Entries apply live: an added one lists its models at once, a removed one is gone, an edited key applies on the next call.
+An id is letters, digits, `-` and `_`. Kinds: `aiproxy`, `openai-compatible`, `openrouter`, `anthropic`, `claude-cli`.
+`scripts/migrate-providers.mjs` moves the older layout (one block per provider under `providers.`) into this one.
+
+### Kind `aiproxy` (AiProxy / nInfer: the Responses API, local models)
 
 | key | default | |
 |---|---|---|
@@ -74,14 +82,12 @@ no SQL outside `src/NetPI.Host/Storage/Sqlite`, and nothing a plugin stores leav
 | `enabled`, `local` | `true` | a local model's `concurrency` is how many runs its agents share |
 | `models.<id>` | – | per model: `transport`, `replayReasoning`, `parseThinkTags`, `maxOutputTokens`, `contextWindow`, `concurrency`, `displayName`, `hidden` |
 
-### `providers.openaiCompatible` (extra endpoints)
+### Kind `openai-compatible` (any OpenAI-style server)
 
-An array of `{ "id", "name", "baseUrl", "apiKey"?, "transport"?, "local"?, "headers"? }` plus any of the keys above.
-Defaults differ: transport `chat`, `local` only for loopback URLs. Example: LM Studio, a remote llama.cpp, OpenRouter.
+LM Studio, a remote llama.cpp, vLLM, OpenAI itself. The keys of `aiproxy` below apply; the defaults differ: `transport` `chat`, `local`
+only for a loopback URL, and `baseUrl` is required (an entry without one is ignored, with a log line).
 
-In the settings dialog the array is a list of cards (a `records` setting) with Add and Remove.
-
-### `providers.openrouter` (OpenRouter)
+### Kind `openrouter` (OpenRouter)
 
 Hundreds of hosted models through one API key. Without a key the provider offers no models. Calls use Chat
 Completions with OpenRouter's unified `reasoning` object; each answer's `reasoning_details` are replayed unmodified to the
@@ -108,7 +114,7 @@ Effort levels come from the catalog: the picker lists the model's `supported_eff
 turned off; models without effort levels only get on/off. Free models are limited to 20 requests per minute and 50 or
 1000 per day depending on credits bought; every agent turn is one request. Set up an agent per model you use; its `instances` (default 1) caps the requests at once.
 
-### `providers.anthropic` (Claude)
+### Kind `anthropic` (Claude, API key)
 
 | key | default | |
 |---|---|---|
@@ -125,7 +131,7 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `fallbackModels` | built-in list | used when `/v1/models` can't be listed |
 | `modelsCacheSeconds` | `600` | |
 
-### `providers.claudeCli` (Claude through the Claude Code CLI)
+### Kind `claude-cli` (Claude through the Claude Code CLI)
 
 Runs the installed `claude -p` as a subprocess, signed in with the owner's subscription (`claude auth login` once, in a
 terminal; the CLI bundled with the Claude desktop app has its own login and does not share it). Give an agent a
@@ -142,8 +148,8 @@ apply, and a run that works through many files uses a lot of them.
 
 | key | default | |
 |---|---|---|
-| `enabled` | `false` | models are listed only while enabled |
-| `configDir` | – | the CLI's own config folder (`CLAUDE_CONFIG_DIR`), where its login lives; empty = `~/.claude` |
+| `enabled` | `true` | models are listed only while enabled |
+| `configDir` | – | the CLI's own config folder (`CLAUDE_CONFIG_DIR`, `~` allowed), where its login lives; empty = `~/.claude`. Another folder is another account: add one provider per account and sign each in with `CLAUDE_CONFIG_DIR=<folder> claude auth login` |
 | `executable` | `claude` | name on PATH or a full path. A bare `claude` that is not on PATH is looked for in `~/.local/bin`, where the installer puts it |
 | `models` | `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` | ids passed to `--model` |
 | `timeoutSeconds` | `3600` | the longest one call may run before it is killed (10–14400). A backstop: a CLI that makes progress is not stuck, and a dead one ends by itself |
@@ -501,13 +507,13 @@ refuses an `ssh` download into another checkout of the repository.
 | `web.search.braveUrl` | `https://api.search.brave.com/res/v1/web/search` | |
 | `web.search.count` | `8` | results per search (max 20) |
 | `media.maxBytes` | `10000000` | largest image `show_image` shows |
-| `decide.baseUrl` | – | server for `decide` (`POST /v1/systemone`); empty = `providers.aiproxy.baseUrl` |
+| `decide.baseUrl` | – | server for `decide` (`POST /v1/systemone`); empty = the `baseUrl` of the first `aiproxy` provider (else `http://127.0.0.1:8090`) |
 | `decide.model` | `qwen3.8-27b` | decision model `decide` asks: `qwen3.8-27b` on NInfer (through AiGateway's System One bridge; the best without training, no extra memory, shares the 5090 with the agents), or `kev-9b`/`kev-4b` on the nuc (load it from AiHub first; it takes the whole 4070). See decisions-lab's docs/DECISION-MODELS.md |
 | `decide.maxItems` | `500` | most items per `decide` call (1–5000) |
 | `decide.parallel` | `4` | `decide` requests at once (1–16) |
 | `decide.groupSimilarity` | `0.985` | with embeddings, `decide` items at or above this cosine share one decision (a log line that differs only in a timestamp); identical items always do; 0 = only identical ones. Kept high on purpose: lines that differ in an error code must stay apart |
 | `decide.lane` | `true` | a single short check on a local model (the guard's second opinion, the idea checks, loop and todo hints) does not take an agent slot: NInfer answers decisions on its own lane ahead of agent work (decisions first). Off: every decision waits for a slot like a chat. The `decide` tool's batches always take slots |
-| `embed.baseUrl` | – | an OpenAI-compatible `POST /v1/embeddings` server for the Embeddings plugin; empty = `providers.aiproxy.baseUrl`. The owner's: `http://192.168.1.3:8012` (the nuc's `embed-tasks`) |
+| `embed.baseUrl` | – | an OpenAI-compatible `POST /v1/embeddings` server for the Embeddings plugin; empty = the `baseUrl` of the first `aiproxy` provider (else `http://127.0.0.1:8090`). The owner's: `http://192.168.1.3:8012` (the nuc's `embed-tasks`) |
 | `embed.model` | – | the embedding model; **empty switches embeddings off** (every consumer then behaves as without them). `bge-base-en-v1.5` was measured (decisions-lab `nuc-plan.md`) |
 | `embed.queryPrefix` | – | put in front of search texts only, never stored documents (bge: `Represent this sentence for searching relevant passages: `) |
 | `embed.timeoutMs` | `1500` | how long an interactive embedding call waits (100–60000); indexing in the background waits up to 30 s per batch. A timeout or failure backs off (5 s, doubling, at most 5 min), and calls fail at once meanwhile |
@@ -610,7 +616,3 @@ The `lsp` tool's servers (docs/TOOLS.md).
 |---|---|---|
 | `lsp.maxServers` | `3` | language servers running at once (one per language and workspace root); starting one more stops the least recently used. Each holds a project in memory |
 | `lsp.idleMinutes` | `15` | a server nobody asked for this long is stopped; the next request starts it again |
-
-#### `providers.claudeCliExtra` (more Claude CLI providers)
-
-An array of `{ "id", "name"?, "configDir"?, "executable"?, "models"?, … }` with the keys of `providers.claudeCli`; each entry is another provider `claude-cli-<id>` (a second account, say: sign in with `CLAUDE_CONFIG_DIR=<folder> claude auth login`). An entry is on unless it says `"enabled": false`; it has no usage pill. Add and remove entries in the dialog; the model list follows at once.

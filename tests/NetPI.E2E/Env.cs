@@ -193,8 +193,11 @@ public sealed class Env : IAsyncDisposable
         {
             ["providers"] = new JsonObject
             {
-                ["aiproxy"] = new JsonObject { ["baseUrl"] = MockUrl, ["modelsCacheSeconds"] = 2 },
-                ["anthropic"] = new JsonObject { ["baseUrl"] = MockUrl + "/anthropic", ["apiKey"] = "mock-anthropic-key", ["modelsCacheSeconds"] = 5 },
+                ["instances"] = new JsonObject
+                {
+                    ["aiproxy"] = new JsonObject { ["type"] = "aiproxy", ["baseUrl"] = MockUrl, ["modelsCacheSeconds"] = 2 },
+                    ["anthropic"] = new JsonObject { ["type"] = "anthropic", ["baseUrl"] = MockUrl + "/anthropic", ["apiKey"] = "mock-anthropic-key", ["modelsCacheSeconds"] = 5 },
+                },
             },
             ["retry"] = new JsonObject { ["baseDelayMs"] = 200, ["maxDelayMs"] = 1000 },
             ["logging"] = new JsonObject { ["level"] = "debug" },

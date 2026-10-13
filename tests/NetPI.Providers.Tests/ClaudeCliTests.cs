@@ -304,7 +304,7 @@ internal static class ClaudeCliTests
             var p = new CL.ClaudeCliProvider(() => Cfg(enabled: false), null, (_, ct) => Lines([], ct));
             t.Eq(0, (await p.ListModelsAsync(true, CancellationToken.None)).Count, "disabled: no models");
             var e = await Fails(p, Req());
-            t.Check(e is { Transient: false } && e.Message.Contains("providers.claudeCli.enabled"), "disabled error");
+            t.Check(e is { Transient: false } && e.Message.Contains("`enabled`"), "disabled error");
             p = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines([], ct));
             var models = await p.ListModelsAsync(true, CancellationToken.None);
             t.Eq(3, models.Count, "default models");

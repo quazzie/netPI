@@ -11,9 +11,9 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 | User data | `%USERPROFILE%\.netpi\`: `settings.json`, `netpi.db` (SQLite), `logs\netpi-YYYYMMDD.log`, `logs\failed-requests\`, `window.json`, `webview\`, `workspace\` |
 | Old NetPI v1 | its data was moved to `%USERPROFILE%\.netpi\legacy-netpi-v1\`. Reference only; don't run it against the new data folder |
 | Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\archived\apps\AiSwitcher-legacy`) → nInfer `:8080` (source `C:\AI\Projects\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
-| Claude | Anthropic Messages API with an API key (`providers.anthropic.apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far (no API key available) |
-| Claude CLI | `providers.claudeCli` runs `claude -p` on the owner's subscription: the agent is Claude Code, in the session's workspace, with the CLI's own tools (NetPI's are not used; `tools`, `permissionMode` in docs/SETTINGS.md). A chat keeps one CLI session (`--resume`, only the new messages are sent). Needs the standalone CLI (`irm https://claude.ai/install.ps1 \| iex`, then `claude auth login`). Verified live 2026-10-06 (Sonnet, Max login, read and write); `NETPI_CLAUDE_CLI_LIVE=1` runs the live test |
-| OpenRouter | `providers.openrouter.apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
+| Claude | Anthropic Messages API with an API key (an `anthropic` provider's `apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far (no API key available) |
+| Claude CLI | a `claude-cli` provider runs `claude -p` on the owner's subscription: the agent is Claude Code, in the session's workspace, with the CLI's own tools (NetPI's are not used; `tools`, `permissionMode` in docs/SETTINGS.md). A chat keeps one CLI session (`--resume`, only the new messages are sent). Needs the standalone CLI (`irm https://claude.ai/install.ps1 \| iex`, then `claude auth login`). Verified live 2026-10-06 (Sonnet, Max login, read and write); `NETPI_CLAUDE_CLI_LIVE=1` runs the live test |
+| OpenRouter | an `openrouter` provider's `apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
 | Plans | `docs/plans/`: active plans (open questions at the end); `docs/archive/`: one dated record per completed plan (what was done, results, commits) |
 
 ## Current state (2026-09-28)
@@ -123,7 +123,7 @@ Source: `C:\AI\Projects\ninfer-windows\.local\stateless-agents-20260924\report.m
 
 - **Crash fixed.** `capture owner has no planning ID` is fixed. `response.failed` now carries `error.code: "server_error"`.
 - **Stateless requests keep their KV-cache context.** nInfer now tracks each stateless `store:false` conversation by its prompt prefix and protects its latest cached state. In a real test, two concurrent agents ran 17 tool turns each up to ~253k tokens with side requests: no cold re-prefills and no fallbacks.
-- **Keep reasoning replay on** (`providers.aiproxy.replayReasoning`, the Responses default). nInfer runs with `--preserve-thinking`; together there is no re-prefill of the whole run after a mid-run user message or notice.
+- **Keep reasoning replay on** (an `aiproxy` provider's `replayReasoning`, the Responses default). nInfer runs with `--preserve-thinking`; together there is no re-prefill of the whole run after a mid-run user message or notice.
 - **Two settings must stay unset for nInfer:** `reasoningSummary` and `includeEncryptedReasoning`. nInfer rejects `reasoning.summary` and non-empty `include` with HTTP 400.
 - **Cache reporting is accurate.** `usage.input_tokens_details.cached_tokens` equals the reused prefix, so NetPI's usage and cached figures can be trusted.
 

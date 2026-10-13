@@ -98,11 +98,10 @@ cd netPI
 From cmd: `build -Run` (`build.cmd` runs `build.ps1` with the same options; `build /?` lists them).
 
 On first start `%USERPROFILE%\.netpi\settings.json` is created with the core keys only (port, plugin folders, quiet,
-disabled tools); everything else appears with the default its own plugin declares — AiProxy at
-`http://127.0.0.1:8090` (Responses transport); the default model is the first available one (set `defaultModel`). For Claude set
-`providers.anthropic.apiKey` (or the `ANTHROPIC_API_KEY` environment variable), for OpenRouter
-`providers.openrouter.apiKey` (or `OPENROUTER_API_KEY`).
-To use Claude on a subscription instead (an agent that is Claude Code, with its own tools, working in the session's workspace), sign in with `claude auth login` and enable `providers.claudeCli.enabled`.
+disabled tools); everything else appears with the default its own plugin declares. There are no model providers at first: open Settings → Models → **Add provider**
+and choose one: AiProxy / nInfer (a local server, e.g. `http://127.0.0.1:8090`), any OpenAI-compatible server, OpenRouter, Anthropic (an API key, or
+`ANTHROPIC_API_KEY`), or Claude CLI (an agent that is Claude Code on your subscription, with its own tools, working in the session's workspace: sign in
+with `claude auth login` first). Add as many as you like; the default model is the first available one (set `defaultModel`).
 All keys: [docs/SETTINGS.md](docs/SETTINGS.md).
 
 Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized URL). Linux/macOS: `./build.sh`, then

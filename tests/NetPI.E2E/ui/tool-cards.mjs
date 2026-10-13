@@ -194,7 +194,9 @@ await run('tool-cards', async ({ page, socket }) => {
       ? '@echo off\r\nif "%~1"=="auth" exit /b 0\r\nif exist "%~dp0first" goto main\r\necho.>"%~dp0first"\r\ntype "%~dp0hello.jsonl"\r\nexit /b 0\r\n:main\r\ntype "%~dp0before.jsonl"\r\n:wait\r\nif exist "%~dp0release" goto done\r\nping -n 2 127.0.0.1 >nul\r\ngoto wait\r\n:done\r\ntype "%~dp0after.jsonl"\r\n'
       : '#!/bin/sh\n[ "$1" = auth ] && exit 0\nd=$(dirname "$0")\nif [ ! -e "$d/first" ]; then : > "$d/first"; cat "$d/hello.jsonl"; exit 0; fi\ncat "$d/before.jsonl"\nwhile [ ! -e "$d/release" ]; do sleep 0.5; done\ncat "$d/after.jsonl"\n');
     if (process.platform !== 'win32') fs.chmodSync(exe, 0o755);
-    await rpc('settings.set', { path: 'providers.claudeCli', value: { ...(before.providers?.claudeCli ?? {}), enabled: true, executable: exe } });
+    await rpc('settings.set', { path: 'providers.instances.claude-cli', value: { ...(before.providers?.instances?.['claude-cli'] ?? {}), type: 'claude-cli', enabled: true, executable: exe } });
+    // a provider that was just added lists its models once the catalog has taken it up
+    for (let i = 0; i < 100 && !((await rpc('models.list', { refresh: true })).models ?? []).some((m) => m.provider === 'claude-cli'); i++) await new Promise((r) => setTimeout(r, 100));
     const cliTitle = `Look at the tree ${STAMP}`;
     const local = await rpc('sessions.create', { title: cliTitle, projectId: project.id, model: 'claude-cli/claude-sonnet-5-5' });
     sessions.push(local.id);
@@ -233,6 +235,6 @@ await run('tool-cards', async ({ page, socket }) => {
     await rpc('projects.delete', { id: project.id }).catch(() => {});
     await rpc('settings.set', { path: 'web', value: before.web ?? null }).catch(() => {});
     await rpc('settings.set', { path: 'ssh', value: before.ssh ?? null }).catch(() => {});
-    await rpc('settings.set', { path: 'providers.claudeCli', value: before.providers?.claudeCli ?? null }).catch(() => {});
+    await rpc('settings.set', { path: 'providers.instances.claude-cli', value: before.providers?.instances?.['claude-cli'] ?? null }).catch(() => {});
   }
 }, { tap: true, keepsSettings: true });
