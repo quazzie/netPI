@@ -37,6 +37,8 @@ public static class SubagentTests
         t.Add("subagents: a spawn is planned from the request and the parent alone", PlanAlone);
         t.Add("subagents: agent_spawn and agent wait return at the first report by default while the others keep running", WaitAny);
         t.Add("subagents: cancel/send/wait/result are scoped to the caller's own tree (two sessions)", ForeignTreeScope);
+        t.Add("subagents: a subagent whose turn ends with subagents running is parked, and reports once when they are done", ParkedUntilChildrenDone);
+        t.Add("subagents: cancelling a parked subagent ends it as cancelled and stops its children", CancelParked);
     }
 
     /// <summary>
@@ -124,6 +126,88 @@ public static class SubagentTests
         var wait = tools.Single(x => x.Name == "agent");
         Check.Contains(wait.Content, "SLOW REPORT");
         Check.Equal(1, h.Messages(parent.Id).Count(m => m.Text.Contains("SLOW REPORT") || m.ToolResults.Any(x => x.Content.Contains("SLOW REPORT"))), "once");
+    }
+
+    /// <summary>
+    /// A lead that starts a helper and ends its turn is not finished: its parent's wait keeps waiting, the lead shows as
+    /// yielded, the helper's report wakes it, and the parent gets one report, the lead's last.
+    /// </summary>
+    private static async Task ParkedUntilChildrenDone()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 3;
+        var helperGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var leadCalls = 0;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r))
+            {
+                if (Reply.LastUser(r).Contains("helper job")) return Reply.Text("HELPER DONE", c => helperGate.Task.WaitAsync(c));
+                return Interlocked.Increment(ref leadCalls) switch
+                {
+                    1 => Reply.Tool("agent_spawn", new { task = "helper job", name = "helper", background = true }),
+                    2 => Reply.Text("LEAD STARTED"),
+                    _ => Reply.Text("LEAD FINAL"),
+                };
+            }
+            var results = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
+            if (results.Count == 0) return Reply.Tool("agent_spawn", new { task = "lead the work", name = "lead", background = true });
+            if (results.Count == 1) return Reply.Tool("agent", new { action = "wait", all = true });
+            return Reply.Text("done");
+        };
+        var parent = h.NewSession();
+        await h.SendAsync(parent.Id, "go");
+        AgentInfo? lead = null;
+        for (var i = 0; i < 300 && lead?.Status != AgentStatus.Yielded; i++)
+        {
+            await Task.Delay(20);
+            lead = h.Runtime.List(true).FirstOrDefault(a => a.Name == "lead");
+        }
+        Check.Equal(AgentStatus.Yielded, lead?.Status, "the lead is parked while its helper works");
+        Check.Contains(lead!.Activity ?? "", "waiting for 1 agent");
+        Check.False(h.Messages(parent.Id).Any(m => m.ToolResults.Any(x => x.Name == "agent")), "the parent's wait is still open");
+        helperGate.TrySetResult();
+        await h.IdleAsync(parent.Id, 15_000);
+        var wait = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Single(x => x.Name == "agent");
+        Check.Contains(wait.Content, "LEAD FINAL");
+        Check.False(wait.Content.Contains("LEAD STARTED"), "no half-finished report");
+        Check.Equal(AgentStatus.Completed, h.Runtime.List(true).Single(a => a.Name == "lead").Status);
+        Check.False(h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"), "one report, from the wait");
+    }
+
+    private static async Task CancelParked()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 3;
+        var helperGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var leadCalls = 0;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r))
+            {
+                if (Reply.LastUser(r).Contains("helper job")) return Reply.Text("HELPER DONE", c => helperGate.Task.WaitAsync(c));
+                return Interlocked.Increment(ref leadCalls) switch
+                {
+                    1 => Reply.Tool("agent_spawn", new { task = "helper job", name = "helper", background = true }),
+                    _ => Reply.Text("LEAD STARTED"),
+                };
+            }
+            return r.Messages.Any(m => m.Role == MessageRole.Tool) ? Reply.Text("done") : Reply.Tool("agent_spawn", new { task = "lead the work", name = "lead", background = true });
+        };
+        var parent = h.NewSession();
+        await h.SendAsync(parent.Id, "go");
+        AgentInfo? lead = null;
+        for (var i = 0; i < 300 && lead?.Status != AgentStatus.Yielded; i++)
+        {
+            await Task.Delay(20);
+            lead = h.Runtime.List(true).FirstOrDefault(a => a.Name == "lead");
+        }
+        Check.Equal(AgentStatus.Yielded, lead?.Status);
+        Check.True(await h.Runtime.AbortAsync(lead!.Id), "a parked agent can be cancelled");
+        Check.Equal(AgentStatus.Cancelled, h.Runtime.List(true).Single(a => a.Name == "lead").Status);
+        for (var i = 0; i < 300 && h.Runtime.List(true).Single(a => a.Name == "helper").Status.IsBusy(); i++) await Task.Delay(20);
+        Check.Equal(AgentStatus.Cancelled, h.Runtime.List(true).Single(a => a.Name == "helper").Status);
+        helperGate.TrySetResult();
     }
 
     /// <summary>

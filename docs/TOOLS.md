@@ -876,7 +876,7 @@ several at the same time, start them in one call. `timeoutSeconds` bounds the wa
 later on their own). `background: true` is the explicit choice to keep working meanwhile: the call returns at once and
 the result lists each subagent as `running` or `queued` (its agent has no free instance yet), and each report arrives later as an `agent-result` notice (it wakes an idle caller — a subagent that has already finished
 included: it runs again on the report and reports again to its own parent — or steers a running one), unless the
-caller collects it with `agent` `wait` first. An older `wait: false` means background too.
+caller collects it with `agent` `wait` first. A subagent whose turn ends while subagents of its own still run is not finished: it is *parked* (status `yielded`, activity "waiting for N agents", no run and no instance), sends no report to its parent, and a wait on it keeps waiting. Its children's reports or a message wake it; it completes, and reports once, when a run ends with none left. Cancelling a parked agent ends it as `cancelled` and cancels its children. An older `wait: false` means background too.
 
 `agent` is one tool with an action per job below (`{ action, … }`; a call with a `message` and no action is `send`);
 `list` and `result` only read (`IReadOnlyCalls`). Until 2026-09-27 each job was a tool of its own (`agent_wait`,

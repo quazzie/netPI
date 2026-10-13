@@ -39,7 +39,13 @@ internal sealed class AgentState(AgentInfo info)
     public long LastStatusTick;
     public bool StatusTimerArmed;
 
-    public bool IsActive => Run is not null;
+    /// <summary>
+    /// A subagent whose turn ended while subagents of its own still run: it is not finished (no report to its parent yet) and
+    /// holds no run or instance. Their reports, or a message, wake it; it completes when a run ends with none left.
+    /// </summary>
+    public bool Parked { get; set; }
+
+    public bool IsActive => Run is not null || Parked;
 
     public static TaskCompletionSource CompletedTcs()
     {

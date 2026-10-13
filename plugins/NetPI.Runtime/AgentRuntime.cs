@@ -330,7 +330,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
     }
 
-    private static bool IsPrunable(AgentState s) => s.Run is null && s.Steering.Count == 0 && s.FollowUps.Count == 0 && s.ResultWaiters == 0;
+    private static bool IsPrunable(AgentState s) => s.Run is null && !s.Parked && s.Steering.Count == 0 && s.FollowUps.Count == 0 && s.ResultWaiters == 0;
 
     internal void Save(AgentState s)
     {
@@ -606,7 +606,9 @@ internal sealed class AgentRuntime : IAgentRuntime
     {
         var run = new RunState();
         s.Run = run;
-        s.RunDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // a parked agent's RunDone stays the one its waiters hold: it completes when the agent is finished, not at each run's end
+        if (s.RunDone.Task.IsCompleted) s.RunDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        s.Parked = false;
         s.ResultConsumed = false;
         s.CancelledByParent = false;
         s.PendingNotificationId = null;
@@ -655,8 +657,16 @@ internal sealed class AgentRuntime : IAgentRuntime
             }
         }
 
+        // Subagents of its own that still work: counted outside the gate (a child's gate is taken before its parent's, never
+        // the reverse). A child that ends after this count either steers into this still-running run, which then continues
+        // below, or finds the run gone and starts one.
+        string[] kids;
+        lock (s.Gate) kids = [.. s.Info.Children];
+        var activeChildren = kids.Count(c => FindState(c) is { } child && child.IsActive);
+
         AgentInfo final;
         bool notify;
+        bool park = false;
         UserInput? notice = null;
         RunState? next = null;
         List<QueuedRecord> queue = [];
@@ -667,8 +677,17 @@ internal sealed class AgentRuntime : IAgentRuntime
             info.FinishedAt = DateTimeOffset.UtcNow;
             info.Activity = null;
             if (run.LastAssistantText is not null) info.Result = run.LastAssistantText;
+            var continues = !run.Aborted && !run.Stopping && !_stopping && (s.Steering.Count > 0 || s.FollowUps.Count > 0)
+                            && (outcome == "completed" || run.Delivered);
+            park = info.IsSubagent && outcome == "completed" && !continues && !run.Stopping && !_stopping && activeChildren > 0;
             switch (outcome)
             {
+                case "completed" when park:
+                    info.Status = AgentStatus.Yielded;
+                    info.Activity = $"waiting for {activeChildren} agent{(activeChildren == 1 ? "" : "s")}";
+                    info.FinishedAt = null;
+                    info.Error = null;
+                    break;
                 case "completed":
                     info.Status = info.IsSubagent ? AgentStatus.Completed : AgentStatus.Idle;
                     info.Error = null;
@@ -683,10 +702,11 @@ internal sealed class AgentRuntime : IAgentRuntime
                     break;
             }
             s.ResultConsumed = s.ParentWaiters > 0;
-            notify = info.IsSubagent && s.NotifyParent && !s.ResultConsumed && !run.Stopping && !_stopping
+            notify = !park && info.IsSubagent && s.NotifyParent && !s.ResultConsumed && !run.Stopping && !_stopping
                      && !s.CancelledByParent && info.ParentAgentId is not null;
             final = info.Clone();
             s.Run = null;
+            s.Parked = park;
             done = s.RunDone;
             // The agent-result notice the parent gets (and the id a wait needs to drop it from the parent's
             // queue) is decided here, with the run's clearing: a WaitAsync that sees Run gone reads under this
@@ -699,13 +719,11 @@ internal sealed class AgentRuntime : IAgentRuntime
             // can fail (the model is gone, the budget is spent, the agent is unavailable) come before the queue is drained, so
             // another run would fail the same way, append the same error, and start again for as long as the cause lasts. The
             // queue stays as it is (the chips and "send" are there for it) until the user acts or a run gets further.
-            if (!run.Aborted && !run.Stopping && !_stopping && (s.Steering.Count > 0 || s.FollowUps.Count > 0)
-                && (outcome == "completed" || run.Delivered))
-                next = BeginRunLocked(s);
+            if (continues) next = BeginRunLocked(s);
             queue = s.QueueRecords();
         }
 
-        done.TrySetResult();
+        if (!park) done.TrySetResult();
         _store.Save(final, s.Instructions, s.NotifyParent, queue);
         try
         {
@@ -1054,7 +1072,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         {
             lock (t.Gate)
             {
-                if (t.Run is null) continue;
+                if (t.Run is null && !t.Parked) continue;
                 var parent = IsParentOf(t);
                 t.ResultWaiters++;
                 if (parent) t.ParentWaiters++;
@@ -1085,7 +1103,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             AgentInfo snap;
             lock (t.Gate)
             {
-                if (t.Run is null && IsParentOf(t))
+                if (t.Run is null && !t.Parked && IsParentOf(t))
                 {
                     // The result is returned here, so the agent-result notice queued at the caller must not reach it as
                     // well. Recording it as consumed and dropping the notice are one step under the agent's gate — the
@@ -1257,10 +1275,47 @@ internal sealed class AgentRuntime : IAgentRuntime
         {
             try { run.Cts.Cancel(); } catch (ObjectDisposedException) { }
         }
+        if (run is null && CancelParked(s, reason, byParent))
+            run = new RunState { Aborted = true, Task = Task.CompletedTask };   // there was no run to stop, but the agent was
         if (withChildren)
             foreach (var c in children)
                 if (FindState(c) is { } child) AbortCore(child, "cancelled: parent agent was aborted", byParent: true);
         return run;
+    }
+
+    /// <summary>A parked agent has no run to cancel: it ends here as Cancelled, and its parent is told like any cancelled subagent.</summary>
+    private bool CancelParked(AgentState s, string reason, bool byParent)
+    {
+        AgentInfo final;
+        UserInput? notice = null;
+        TaskCompletionSource done;
+        List<QueuedRecord> queue;
+        lock (s.Gate)
+        {
+            if (!s.Parked || s.Run is not null) return false;
+            var info = s.Info;
+            s.Parked = false;
+            info.Status = AgentStatus.Cancelled;
+            info.Error = reason;
+            info.Activity = null;
+            info.FinishedAt = DateTimeOffset.UtcNow;
+            if (byParent) s.CancelledByParent = true;
+            s.ResultConsumed = s.ParentWaiters > 0;
+            final = info.Clone();
+            done = s.RunDone;
+            if (info.IsSubagent && s.NotifyParent && !s.ResultConsumed && !byParent && !_stopping && info.ParentAgentId is not null)
+            {
+                notice = ParentNotice(final);
+                s.PendingNotificationId = notice.Id;
+            }
+            queue = s.QueueRecords();
+        }
+        done.TrySetResult();
+        _store.Save(final, s.Instructions, s.NotifyParent, queue);
+        try { Ctx.Events.Publish(new BusEvent { Type = EventTypes.AgentStatus, Data = new JsonObject { ["agent"] = NetPiJson.ToNode(final) } }); }
+        catch { }
+        if (notice is not null) NotifyParent(s, final, notice);
+        return true;
     }
 
     // ---------------------------------------------------------------- queue

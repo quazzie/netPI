@@ -559,7 +559,7 @@ public sealed partial class ScenarioEngine
                                                              && !r.Text.Contains("Spawned", StringComparison.OrdinalIgnoreCase)).ToList();
                 if (failed.Count > 0) return Final("Spawning failed: " + FirstLine(failed[0].Text) + " SPAWN-FAILED");
                 return new Plan { Thinking = "Workers are running; I'll wait for their reports.", Text = "Waiting for the workers." }
-                    .Call("agent", new JsonObject { ["action"] = "wait" });
+                    .Call("agent", new JsonObject { ["action"] = "wait", ["all"] = true });
             }
             default:
             {
@@ -591,7 +591,7 @@ public sealed partial class ScenarioEngine
                 return new Plan { Text = "Delegating to a lead." }
                     .Call("agent_spawn", Obj(("task", $"Lead the work: get a helper to square 5, then report. [s:subspawn delay={tag.PInt("delay", 800)}]"), ("name", "lead"), ("background", true)));
             case 1:
-                return new Plan { Text = "Waiting for the lead." }.Call("agent", new JsonObject { ["action"] = "wait" });
+                return new Plan { Text = "Waiting for the lead." }.Call("agent", new JsonObject { ["action"] = "wait", ["all"] = true });
             default:
             {
                 var wait = ToolResults(after).LastOrDefault()?.Text ?? "";
