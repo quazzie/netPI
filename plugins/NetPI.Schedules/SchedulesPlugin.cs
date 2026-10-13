@@ -8,6 +8,13 @@ namespace NetPI.Schedules;
 /// The schedules live in the plugin's collections (<see cref="ScheduleStore"/>), so a restart resumes from the persisted next
 /// run; a run that fell due while the host was down runs once if it is less than <c>schedules.missedGraceHours</c> late and is
 /// recorded as missed otherwise — never a backlog of catch-up runs. Starting one is <see cref="ScheduleRunner"/>.
+/// <para>
+/// A schedule an agent sets up runs unattended with every tool, so it is a proposal: stored paused with <c>proposedBy</c>,
+/// and the tool call that made it waits for the user's OK on a card in the chat (<see cref="PendingProposals"/>):
+/// <c>schedule.proposed</c> / <c>schedule.decided</c> events (unscoped), <c>schedules.decide</c> (allow enables it, the user's
+/// own enable; discard deletes it) and <c>schedules.proposals</c> (what waits, for a reconnect). A subagent's add does not
+/// wait — nobody watches its chat — and a stopped plugin withdraws the waits, leaving the proposal in the Schedules tab.
+/// </para>
 /// </summary>
 [NetPiPlugin("netpi.schedules", Name = "Schedules", Description = "Scheduled runs: a prompt started as a fresh chat on a project at a time, an interval or daily, with availability, budget and missed-run checks", Order = 96)]
 public sealed class SchedulesPlugin : INetPiPlugin
@@ -20,6 +27,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
 
     internal ScheduleStore? Store { get; private set; }
     internal ScheduleRunner? Runner { get; private set; }
+    internal PendingProposals? Proposals { get; private set; }
 
     public SchedulesPlugin() : this(TimeProvider.System, loop: true) { }
 
@@ -46,8 +54,9 @@ public sealed class SchedulesPlugin : INetPiPlugin
         });
         var store = Store = new ScheduleStore(ctx.Data);
         var runner = Runner = new ScheduleRunner(ctx, store, _time);
-        Register(ctx, store, runner);
-        ctx.Tools.Register(new SchedulesTool(ctx));
+        var proposals = Proposals = new PendingProposals(ctx);
+        Register(ctx, store, runner, proposals);
+        ctx.Tools.Register(new SchedulesTool(ctx, proposals));
         ctx.Ui.AddTab(new UiTabInfo
         {
             Id = "schedules", Title = "Schedules", Panel = UiPanel.Left, Order = 25, Module = "ui.js",
@@ -66,6 +75,8 @@ public sealed class SchedulesPlugin : INetPiPlugin
     {
         _stop?.Cancel();
         if (_worker is { } w) { try { await w.ConfigureAwait(false); } catch (OperationCanceledException) { } }
+        // a waiting tool call must not outlive the plugin: its run goes on, the proposal stays in the Schedules tab
+        Proposals?.WithdrawAll();
     }
 
     private async Task LoopAsync(IPluginContext ctx, ScheduleStore store, ScheduleRunner runner, CancellationToken ct)
@@ -98,7 +109,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
         ctx.Events.Publish(ScheduleRunner.ChangedEvent, new { id });
     }
 
-    private void Register(IPluginContext ctx, ScheduleStore store, ScheduleRunner runner)
+    private void Register(IPluginContext ctx, ScheduleStore store, ScheduleRunner runner, PendingProposals proposals)
     {
         const string Doc = "Schedule: { id, name, prompt, projectId?, agent?, cadence: { kind: once|every|daily, at? | minutes? | time?, tz? }, enabled, nextRunAt?, lastRunAt?, lastStatus? (ran|skipped|failed|missed), lastReason?, lastSessionId?, finishedAt? }";
 
@@ -224,6 +235,13 @@ public sealed class SchedulesPlugin : INetPiPlugin
                 Changed(ctx, req.Required("id"));
                 return new JsonObject { ["status"] = result.Status, ["reason"] = result.Reason, ["sessionId"] = result.SessionId };
             });
+
+        ctx.Rpc.Register(new RpcMethod("schedules.decide", "Decide a schedule proposal an agent proposed, on the card in its chat: { id, decision: allow | discard } → allow: the enabled schedule, discard: { id }. Allow is the user's own enable of the proposal (it runs from now on); discard deletes it. The card's buttons call this.",
+            ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Req("decision", RpcParamType.String, "allow | discard")]),
+            async (req, ct) => await proposals.DecideAsync(req.Required("id"), req.Required("decision"), ct).ConfigureAwait(false));
+
+        ctx.Rpc.Register(new RpcMethod("schedules.proposals", "Schedule proposals that wait for the user's decision (a schedules add, the card in its chat): { sessionId? } → { id, sessionId, callId, agentId, schedule, askedAt }[]", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
+            (req, _) => Task.FromResult<object?>(proposals.List(req.Str("sessionId"))));
     }
 
     private static int MinMinutes(IPluginContext ctx) => Math.Clamp(ctx.Settings.Get("schedules.minIntervalMinutes", 5), 1, 1440);

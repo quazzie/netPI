@@ -18,12 +18,14 @@ public static class SchedulesTests
         public void Advance(TimeSpan by) => Now += by;
     }
 
-    /// <summary>A runtime that records what it was sent; <see cref="Fail"/> makes the next send throw.</summary>
+    /// <summary>A runtime that records what it was sent; <see cref="Fail"/> makes the next send throw. <see cref="Steer"/>
+    /// makes <c>WaitYieldedAsync</c> come back "the user wrote a new message instead" (steered) without the wait ending.</summary>
     internal sealed class RecordingRuntime : IAgentRuntime
     {
         public List<(string SessionId, UserInput Input)> Sent { get; } = [];
         public List<AgentInfo> Agents { get; } = [];
         public bool Fail { get; set; }
+        public bool Steer { get; set; }
         public IReadOnlyList<AgentInfo> List(bool includeFinished = true) => Agents;
         public AgentInfo? Get(string agentId) => Agents.FirstOrDefault(a => a.Id == agentId);
         public AgentInfo? GetBySession(string sessionId) => Agents.LastOrDefault(a => a.SessionId == sessionId);
@@ -41,6 +43,23 @@ public static class SchedulesTests
         public Task<bool> MessageAsync(string fromAgentId, string toAgentId, string text, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => Task.FromResult(false);
         public IReadOnlyList<QueuedInput> GetQueue(string sessionId) => [];
         public bool RemoveQueued(string sessionId, string inputId) => false;
+
+        /// <summary>The default <c>WaitYieldedAsync</c> (the interface's), plus the steer: a test that sets <see cref="Steer"/>
+        /// gets "the user wrote a new message instead" back, like a real steer does.</summary>
+        Task<bool> IAgentRuntime.WaitYieldedAsync(string? callerAgentId, Task until, string activity, TimeSpan? timeout, CancellationToken ct)
+        {
+            if (Steer) return Task.FromResult(false);
+            return WaitUntil(until, timeout, ct);
+            static async Task<bool> WaitUntil(Task until, TimeSpan? timeout, CancellationToken ct)
+            {
+                try
+                {
+                    await until.WaitAsync(timeout ?? Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
+                    return true;
+                }
+                catch (TimeoutException) { return false; }
+            }
+        }
     }
 
     internal sealed class Env

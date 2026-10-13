@@ -174,6 +174,7 @@ public sealed partial class ScenarioEngine
                 "watchrun" => WatchRun(req, tag, step),
                 "multiedit" => MultiEdit(step, after),
                 "planui" => PlanUi(tag, step, after),
+                "schedule" => ScheduleUi(tag, step, after),
                 "goal" => GoalFlow(msgs),
                 "codemode" => CodeMode(step, after),
                 "plan" => PlanFlow(tag, step, after),
@@ -739,6 +740,25 @@ public sealed partial class ScenarioEngine
         if (last.Contains("approved your plan", StringComparison.Ordinal)) return Final("Carrying the plan out. PLANUI-APPROVED");
         if (last.Contains("cancelled the plan", StringComparison.Ordinal)) return Final("Stopped planning. PLANUI-CANCELLED");
         return Final("PLANUI-DONE: " + FirstLine(last));
+    }
+
+    /// <summary>
+    /// A schedule the agent proposes (plugins/NetPI.Schedules): the first message adds one (the card in the chat asks the
+    /// user to allow or discard it), the second adds another after the first was allowed. The tool results carry the
+    /// decision, so the markers below read it.
+    /// </summary>
+    private static Plan ScheduleUi(ScenarioTag tag, int step, List<NMsg> after)
+    {
+        var last = ToolResults(after).LastOrDefault()?.Text ?? "";
+        Plan Add(string prompt) => new Plan { Text = "A schedule, then." }.Call("schedules", Obj(
+            ("action", "add"),
+            ("prompt", prompt),
+            ("name", "Mock digest"),
+            ("cadence", new JsonObject { ["kind"] = "every", ["minutes"] = 60 })));
+        if (step == 0) return Add("Summarise the open chats");
+        if (last.Contains("allowed the schedule", StringComparison.Ordinal)) return Add("Summarise the open chats, again");
+        if (last.Contains("discarded the schedule", StringComparison.Ordinal)) return Final("SCHEDULE-DISCARDED: the second one is gone.");
+        return Final("SCHEDULE-DONE: " + FirstLine(last));
     }
 
     /// <summary>

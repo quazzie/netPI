@@ -10,13 +10,20 @@ namespace NetPI.Schedules;
 /// plugin's own <c>schedules.*</c> RPCs, so there is one validation path; the tool adds the model-facing guards the
 /// RPCs deliberately leave to the user's tab — a chat started by a schedule cannot grow the schedule set, and the set
 /// is capped at <see cref="MaxSchedules"/>. Deleting a schedule is up to the user, in the Schedules tab.
+/// <para>
+/// An add is a proposal: stored paused with <c>proposedBy</c>, and the call then waits for the user's OK on a card in
+/// the chat (<see cref="PendingProposals"/>: <c>schedule.proposed</c> / <c>schedule.decided</c>, <c>schedules.decide</c>),
+/// with the run's instance given back meanwhile, like <c>ask_user</c>. Allow enables the schedule, discard deletes it.
+/// A subagent's add does not wait — nobody watches a subagent's chat — and stays a proposal in the Schedules tab.
+/// </para>
 /// </summary>
-public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCalls
+internal sealed class SchedulesTool(IPluginContext ctx, PendingProposals proposals) : IAgentTool, IReadOnlyCalls
 {
     /// <summary>A runaway add loop is capped; the user deletes in the tab, the model does not.</summary>
     public const int MaxSchedules = 50;
 
     private readonly IPluginContext _ctx = ctx;
+    private readonly PendingProposals _proposals = proposals;
 
     public ToolDefinition Definition { get; } = new()
     {
@@ -25,10 +32,10 @@ public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCal
         Category = "schedules",
         SummaryArg = "action",
         ReadOnly = false,
-        Description = "Prompts that start on their own as a fresh chat: list, get, history, add, update (also pause), run now. The user sees them in the Schedules tab, and enables what you add or change.",
+        Description = "Prompts that start on their own as a fresh chat: list, get, history, add, update (also pause), run now. Adds come back as a proposal the user allows or discards in a card in the chat, and enables what you add or change in the Schedules tab.",
         PromptGuidelines =
         [
-            "Use the schedules tool to set up recurring or one-time prompts the user asks for (\"every morning\", \"tonight at 22:00\"); list first to avoid duplicates, and tell the user to enable what you add in the Schedules tab.",
+            "Use the schedules tool to set up recurring or one-time prompts the user asks for (\"every morning\", \"tonight at 22:00\"); list first to avoid duplicates. An add waits for the user's OK on a card in the chat: it runs from the moment they allow it, and is gone if they discard it.",
         ],
         Help = """
             Actions:
@@ -36,7 +43,9 @@ public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCal
             - get: one schedule by id, with its full prompt.
             - history: a schedule's runs, newest first (limit, default 20): what ran, and why a run was skipped.
             - add: propose a new schedule. Needs prompt and cadence; the name defaults to the prompt's start, the project to this
-              chat's. It is paused until the user enables it in the Schedules tab: a schedule runs on its own with every tool.
+              chat's. It is a proposal: a card in the chat asks the user to allow it (it runs from then on, with every tool) or
+              discard it (it is deleted). A subagent's add has no card — nobody watches its chat — and stays a paused proposal
+              in the Schedules tab.
             - update: change a schedule (prompt, name, cadence, project, agent) or pause it with enabled false. A change of what
               runs (prompt, cadence, project, agent) pauses it until the user enables it again; resuming is the user's.
               Changing the cadence counts the next run from now.
@@ -191,12 +200,56 @@ public sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCal
         var s = await RpcAsync<JsonObject>("schedules.add", p, ct).ConfigureAwait(false);
         var now = DateTimeOffset.Now;
         var project = await ProjectNameAsync(s["projectId"]?.GetValue<string>(), ct).ConfigureAwait(false);
-        return ToolResult.Ok(
-            $"Proposed schedule {s["id"]?.GetValue<string>()} “{s["name"]?.GetValue<string>()}” ({s["when"]?.GetValue<string>()}): it does not run " +
-            "until the user enables it in the Schedules tab, so tell them it is there. A schedule runs on its own with every tool, which is why " +
-            $"one an agent sets up waits for the user's OK. Now is {Stamp(now)}. Each run starts a fresh chat on project {project}.",
-            new { kind = "schedule", schedule = s, created = true, proposed = true });
+        var name = s["name"]?.GetValue<string>() ?? "?";
+        var when = s["when"]?.GetValue<string>() ?? "?";
+        var sid = s["id"]?.GetValue<string>() ?? "?";
+
+        // A subagent's chat nobody watches: no card, the proposal stays in the Schedules tab and the model tells its parent
+        var runtime = context.Services.Get<IAgentRuntime>();
+        if (runtime is null || runtime.Get(context.AgentId)?.IsSubagent == true)
+            return ToolResult.Ok(
+                $"Proposed schedule {sid} “{name}” ({when}): it does not run until the user enables it in the Schedules tab, so tell them it is there. A schedule runs on its own with every tool, which is why " +
+                $"one an agent sets up waits for the user's OK. Now is {Stamp(now)}. Each run starts a fresh chat on project {project}.",
+                Details(s, project, "proposal"));
+
+        var e = _proposals.Add(context, s);
+        var status = "cancelled";
+        try
+        {
+            var decided = await runtime.WaitYieldedAsync(context.AgentId, e.Decision.Task, "waiting for your decision on the schedule", null, ct).ConfigureAwait(false);
+            if (!decided)
+            {
+                status = "steered";
+                return ToolResult.Ok(
+                    $"No decision: the user wrote a new message instead; it follows. The schedule “{name}” ({sid}, {when}) stays a proposal in the Schedules tab (paused) until they enable it there.",
+                    Details(s, project, status));
+            }
+            var d = await e.Decision.Task.ConfigureAwait(false);
+            status = d.Kind switch { "allow" => "allowed", "discard" => "discarded", _ => "withdrawn" };
+            var shown = d.Schedule ?? s;   // an allow rides the updated schedule (enabled, the proposal mark gone)
+            var text = status switch
+            {
+                "allowed" => $"The user allowed the schedule “{name}” ({sid}, {when}): it is enabled and runs from now on, each run a fresh chat on project {project}. Now is {Stamp(now)}.",
+                "discarded" => $"The user discarded the schedule “{name}” ({sid}): it is deleted. Do not add it again unless asked.",
+                _ => $"No decision: the schedules plugin stopped, so the card went away. The schedule “{name}” ({sid}, {when}) stays a proposal in the Schedules tab (paused) until the user enables it there.",
+            };
+            return ToolResult.Ok(text, Details(shown, project, status));
+        }
+        finally
+        {
+            // a decision already closed the entry (DecideAsync does it); this covers a steer, a stop and a cancelled run
+            _proposals.Close(e, status);
+        }
     }
+
+    private static object Details(JsonObject schedule, string? project, string status) => new JsonObject
+    {
+        ["kind"] = "schedule",
+        ["schedule"] = schedule.DeepClone(),
+        ["project"] = project,
+        ["status"] = status,
+        ["created"] = true,
+    };
 
     private async Task<ToolResult> UpdateAsync(ToolContext context, ToolArgs a, bool? forcedEnabled, CancellationToken ct)
     {

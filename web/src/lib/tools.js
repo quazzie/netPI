@@ -123,6 +123,27 @@ export function pathArg(args) {
   return arg(args, 'path', 'filePath', 'file', 'filename', 'dir', 'directory');
 }
 
+/**
+ * A <c>schedules</c> call that proposes a new schedule (an add, named or inferred the way the tool does it):
+ * the chat renders it as a card of its own, where the user allows or discards the proposal (plugins/NetPI.Schedules).
+ */
+export function scheduleProposal(args) {
+  if (!args || typeof args !== 'object') return false;
+  const a = String(arg(args, 'action') ?? '').trim().toLowerCase();
+  if (['add', 'create', 'new'].includes(a)) return true;
+  if (a) return false; // a named action that is not an add
+  return arg(args, 'id') == null && arg(args, 'prompt') != null && arg(args, 'cadence') != null;
+}
+
+/** The cadence argument in words, for a card whose result has no schedule object yet (the result's `when` wins). */
+export function cadenceWords(c) {
+  if (!c || typeof c !== 'object') return '';
+  if (c.kind === 'once') return c.at ? `once at ${c.at}` : 'once';
+  if (c.kind === 'every') return c.minutes ? `every ${c.minutes} min` : 'recurring';
+  if (c.kind === 'daily') return `daily at ${c.time ?? ''}${c.tz ? ` (${c.tz})` : ''}`;
+  return '';
+}
+
 /** One-line summary for the collapsed tool row. */
 /** todo_write arguments → [{ text, status }] (lenient like the tool: strings, other field names, status synonyms). */
 export function todoItems(args) {

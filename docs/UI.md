@@ -299,6 +299,14 @@ into locals first, because after the parent clears the modal state or the row re
      gives the chat's tab the `asking` dot. Decided, it is one line, `Plan · title → outcome`, that opens to the plan. Approve in a
      new chat puts the new chat in the old one's tab (`replaceTab`) and archives the old one. A `plan_enter` call is a small card
      (`planenter`, `PlanOfferCard`): Enter plan mode / Not now.
+   - **Schedules.** A `schedules` add is an item of its own (`schedule`, `ScheduleCard`): a schedule an agent proposed
+     waits for the user's decision (`lib/state/schedules.svelte.js`: `schedules.proposals` on connect, `schedule.proposed` /
+     `schedule.decided`). While it waits the card is open with the proposal (name, cadence in words, the prompt, project,
+     agent) and **Allow** / **Discard** (`schedules.decide`): allow is the user's own enable of the proposal — it runs from
+     then on — and discard deletes it. The run yields while it waits ("waiting for your decision on the schedule"), a steer
+     (the user writes a message) or the plugin stopping ends the wait with the schedule left a paused proposal in the
+     Schedules tab, and a subagent's add has no card at all. Decided, the card is one line,
+     `Schedule · name · when → allowed | discarded | not decided…`. A notification says the chat has a new schedule waiting.
    - **Guardrails.** A tool call that waits for the user's OK (a guardrails `ask:` rule; `asks.approvals` from
      `guard.pending`, `guard.asked`, `guard.closed`) shows "needs your OK" on its row, with a bar under it: why (the
      rule; for a path, the path) and **No** / **Allow in this chat** / **Allow** (`guard.answer`, scope `session` or

@@ -135,6 +135,33 @@ await run('chat-decisions', async ({ page }) => {
     await page.locator('.goal').waitFor({ state: 'detached', timeout: 5_000 }).catch(() => {});
     check('dismissing removes the strip', (await page.locator('.goal').count()) === 0);
 
+    // ---- schedules: an agent's add waits for the user's OK on the card (allow / discard)
+    await say('[s:schedule]');
+    const schedCard = page.locator('.item[data-kind="schedule"] .card').last();
+    await schedCard.waitFor({ timeout: 15_000 }).catch(() => {});
+    check('schedules: an agent add is a card of its own, with the proposal and the decision', (await schedCard.count()) === 1 && (await schedCard.innerText()).includes('Mock digest') && (await schedCard.innerText()).includes('every 60 min'),
+      await schedCard.innerText().catch(() => 'no card'));
+    check('schedules: the chat tab shows that a decision waits', (await page.locator('.tab.active .np-dot[data-status="asking"]').count()) === 1);
+    await schedCard.locator('.foot button', { hasText: /^Allow$/ }).click();
+    await idle();
+    await page.waitForFunction(() => [...document.querySelectorAll('.item[data-kind="schedule"] .line')].at(-1)?.textContent.includes('allowed'), null, { timeout: 10_000 }).catch(() => {});
+    check('schedules: allowed, the card is one line', (await page.locator('.item[data-kind="schedule"] .line').last().innerText().catch(() => '')).includes('allowed'),
+      await page.locator('.item[data-kind="schedule"] .line').last().innerText().catch(() => 'no line'));
+    let list = (await rpc('schedules.list', {}).catch(() => [])) ?? [];
+    check('schedules: the allowed one is enabled', list.some((s) => s.name === 'Mock digest' && s.enabled), JSON.stringify(list));
+    // the model's next turn proposes a second schedule (the scenario adds one after the allow): discard it
+    const schedCard2 = page.locator('.item[data-kind="schedule"] .card').last();
+    await schedCard2.waitFor({ timeout: 15_000 }).catch(() => {});
+    check('schedules: the second add is a card of its own', (await schedCard2.count()) === 1 && (await schedCard2.innerText()).includes('Summarise the open chats, again'),
+      await schedCard2.innerText().catch(() => 'no card'));
+    await schedCard2.locator('.foot button', { hasText: 'Discard' }).click();
+    await idle();
+    check('schedules: discarded, the card is one line', (await page.locator('.item[data-kind="schedule"] .line').last().innerText().catch(() => '')).includes('discarded'),
+      await page.locator('.item[data-kind="schedule"] .line').last().innerText().catch(() => 'no line'));
+    list = (await rpc('schedules.list', {}).catch(() => [])) ?? [];
+    check('schedules: the discarded one is gone, the allowed one stays', list.filter((s) => s.name === 'Mock digest').length === 1 && list.some((s) => s.name === 'Mock digest' && s.prompt === 'Summarise the open chats' && s.enabled), JSON.stringify(list));
+    await shot(page, 'ui-decisions-07-schedule');
+
     // ---- plan mode: the pill, the plan card and its decisions (last: approving in a new chat archives this chat). The
     // chat is opened by its tab: its forks' rows carry its title too.
     await page.locator(`.topbar .tab[data-tab="${chat.id}"]`).click();

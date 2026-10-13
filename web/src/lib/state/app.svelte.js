@@ -11,6 +11,7 @@ import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
 import { loadAsks, askEvent, pendingIn, approvalIn, pruneSession } from './asks.svelte.js';
 import { loadPlans, planEvent, planWaiting, prunePlans } from './plans.svelte.js';
+import { loadScheduleProposals, scheduleEvent, pruneScheduleProposals, proposalIn } from './schedules.svelte.js';
 import { welcomeIdeas } from './welcomeIdeas.svelte.js';
 import { formatBytes, payloadBytes, sendBudget } from '../images.js';
 
@@ -123,7 +124,7 @@ export function waitingOn(sessionId) {
 
 /** Status for tab dots: asking (a question, or a tool call, waits for the user) | running | queued | yielded | waiting (on its subagents) | error | unread | idle */
 export function sessionStatus(sessionId) {
-  if (pendingIn(sessionId) || approvalIn(sessionId) || planWaiting(sessionId)) return 'asking';
+  if (pendingIn(sessionId) || approvalIn(sessionId) || planWaiting(sessionId) || proposalIn(sessionId)) return 'asking';
   const a = app.agents.get(sessionId);
   if (a) {
     if (a.status === 'running') return 'running';
@@ -306,6 +307,7 @@ async function loadAll({ reconnect }) {
       loadTools(),
       loadAsks(),
       loadPlans(),
+      loadScheduleProposals(),
       loadCapabilities(),
     ]);
     app.info = info;
@@ -534,6 +536,7 @@ function removeSessionLocal(id) {
   saidJustNow.delete(id);
   pruneSession(id);
   prunePlans(id);
+  pruneScheduleProposals(id);
   app.agents.delete(id); // its last run state (agent.status), a subagent's included
   app.context.delete(id); // its context ring (session.context)
   if (app.workspaces.has(id)) {
@@ -747,6 +750,12 @@ function planNotification(d) {
   notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Plan ready: ${firstLine(d.title ?? '')}`);
 }
 
+// A schedule the agent proposed waits for the user's OK on the card (plugins/NetPI.Schedules).
+function scheduleNotification(d) {
+  if (!d?.id) return;
+  notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `New schedule: ${firstLine(d.schedule?.name ?? '')}`);
+}
+
 // A tool call waits for the user's OK (a guardrails ask rule).
 function approvalNotification(d) {
   const what = d?.kind === 'path' ? `Wants to change ${d.subject}` : `Wants to run: ${firstLine(d?.subject ?? '')}`;
@@ -863,6 +872,11 @@ function onEvent(d, env) {
       planEvent(type, d);
       if (type === 'plan.changed') planNotification(d);
       else if (type === 'plan.enter.asked') notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Suggests plan mode${d.reason ? `: ${firstLine(d.reason)}` : ''}`);
+      break;
+    case 'schedule.proposed':
+    case 'schedule.decided':
+      scheduleEvent(type, d);
+      if (type === 'schedule.proposed') scheduleNotification(d);
       break;
     case 'ui.open':
       // a plugin shows the user one of its session views in a chat (e.g. the agent's browser): there now, and a

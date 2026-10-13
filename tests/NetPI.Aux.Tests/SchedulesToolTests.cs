@@ -8,11 +8,13 @@ namespace NetPI.Aux.Tests;
 /// The <c>schedules</c> tool: the model-facing surface (idea-1y1174's tool half). It calls the plugin's own RPCs, so
 /// these tests check the model text (Content, no JSON), the Details shape, the action inference, and the tool-side
 /// guards that the RPCs deliberately leave to the user's tab: a schedule's own chat cannot grow the schedule set,
-/// and the set is capped.
+/// and the set is capped. An add is a proposal that waits for the user's decision on the card in the chat
+/// (<c>schedule.proposed</c> / <c>schedules.decide</c>): allow enables it, discard deletes it, a steer and a plugin
+/// stop leave it a proposal in the tab, and a subagent's add does not wait at all.
 /// </summary>
 public static class SchedulesToolTests
 {
-    private static SchedulesTool Tool(SchedulesTests.Env env) => new(env.Ctx);
+    private static SchedulesTool Tool(SchedulesTests.Env env) => new(env.Ctx, env.Plugin?.Proposals ?? new PendingProposals(env.Ctx));
 
     private static ToolContext Tc(SchedulesTests.Env env, SessionInfo? session = null, ProjectInfo? project = null) => new()
     {
@@ -23,6 +25,33 @@ public static class SchedulesToolTests
 
     private static async Task<ToolResult> Call(SchedulesTests.Env env, object args, SessionInfo? session = null, ProjectInfo? project = null) =>
         await Tool(env).ExecuteAsync(Tc(env, session, project), T.Args(args), CancellationToken.None);
+
+    /// <summary>The proposal a just-started add is waiting on (the newest open one; a steer closed its own already).</summary>
+    private static async Task<string> ProposedId(SchedulesTests.Env env)
+    {
+        for (var i = 0; i < 500; i++)
+        {
+            var open = await Proposals(env);
+            if (open.Count > 0) return open[open.Count - 1]!["id"]!.GetValue<string>()!;
+            await Task.Delay(10);
+        }
+        throw new Exception("no open schedule proposal");
+    }
+
+    /// <summary>An add that waits for the user's decision, with that decision made over the RPC (allow / discard).</summary>
+    private static async Task<ToolResult> AddDecided(SchedulesTests.Env env, object args, string decision, SessionInfo? session = null, ProjectInfo? project = null)
+    {
+        var t = Task.Run(() => Call(env, args, session, project));
+        var id = await ProposedId(env);
+        await env.Ctx.RpcFake.CallAsync("schedules.decide", new { id, decision });
+        return await t;
+    }
+
+    /// <summary>The proposals that wait now (<c>schedules.proposals</c>), by session.</summary>
+    private static async Task<JsonArray> Proposals(SchedulesTests.Env env, string sessionId = "ses_tool") =>
+        (JsonArray)((await env.Ctx.RpcFake.CallAsync("schedules.proposals", new { sessionId }))!);
+
+    private static JsonNode Details(ToolResult r) => (JsonNode)JsonSerializer.SerializeToNode(r.Details)!;
 
     public static void Register(TestRunner r)
     {
@@ -57,14 +86,17 @@ public static class SchedulesToolTests
         r.Add("schedules tool: add defaults the project to the calling session's, \"\" clears it, and the result echoes now", async () =>
         {
             var env = await new SchedulesTests.Env().StartAsync();
+            env.Runtime.Steer = true;   // the decision is not the point here: steer the waits away
             var withProject = await Call(env, new { action = "add", prompt = "Morning check", cadence = new { kind = "every", minutes = 60 } }, project: env.Project);
             Check.False(withProject.IsError, withProject.Content);
-            Check.Equal(env.Project?.Id, S(((JsonNode)JsonSerializer.SerializeToNode(withProject.Details)!)["schedule"]!["projectId"]), "the session's project is the default");
+            Check.Equal(env.Project?.Id, S(Details(withProject)["schedule"]!["projectId"]), "the session's project is the default");
 
             var none = await Call(env, new { action = "add", prompt = "No project", cadence = new { kind = "every", minutes = 60 }, projectId = "" }, project: env.Project);
             Check.False(none.IsError, none.Content);
-            Check.True(((JsonNode)JsonSerializer.SerializeToNode(none.Details)!)["schedule"]!["projectId"] is null, "\"\" means no project");
-            Check.Contains(withProject.Content, "Now is", "the echo lets the model compute a future once time");
+            Check.True(Details(none)["schedule"]!["projectId"] is null, "\"\" means no project");
+            env.Runtime.Steer = false;
+            var allowed = await AddDecided(env, new { action = "add", prompt = "Echo", cadence = new { kind = "every", minutes = 60 } }, "allow");
+            Check.Contains(allowed.Content, "Now is", "the echo lets the model compute a future once time");
         });
 
         r.Add("schedules tool: a bad add is the server's refusal, passed through", async () =>
@@ -123,20 +155,99 @@ public static class SchedulesToolTests
             Check.True((await env.Get(id))["enabled"]!.GetValue<bool>(), "a new name does not change what runs");
         });
 
-        r.Add("schedules tool: an add is a proposal: paused until the user enables it, and listed as proposed", async () =>
+        r.Add("schedules tool: an add is a proposal that waits: allow enables it, discard deletes it", async () =>
         {
             var env = await new SchedulesTests.Env().StartAsync();
-            var added = await Call(env, new { action = "add", prompt = "Daily digest", cadence = new { kind = "every", minutes = 60 }, enabled = true });
-            Check.False(added.IsError, added.Content);
-            Check.Contains(added.Content, "until the user enables it");
-            var s = ((JsonNode)JsonSerializer.SerializeToNode(added.Details)!)["schedule"]!;
-            Check.False(s["enabled"]!.GetValue<bool>(), "paused, even when the model asked for enabled");
-            Check.Equal("session:ses_tool", S(s["proposedBy"]));
+            var allowed = await AddDecided(env, new { action = "add", prompt = "Daily digest", cadence = new { kind = "every", minutes = 60 }, enabled = true }, "allow");
+            Check.False(allowed.IsError, allowed.Content);
+            Check.Contains(allowed.Content, "allowed");
+            var s = Details(allowed)["schedule"]!;
+            Check.True(s["enabled"]!.GetValue<bool>(), "allowed: it runs from now on");
+            Check.Equal(null, s["proposedBy"], "the user's OK: the proposal mark is gone with the enable");
+            Check.Equal("allowed", S(Details(allowed)["status"]));
+            env.Time.Advance(TimeSpan.FromHours(3));
+            Check.Equal(1, await env.Tick(), "an allowed schedule runs");
+
+            var discarded = await AddDecided(env, new { action = "add", prompt = "Gone", cadence = new { kind = "every", minutes = 60 } }, "discard");
+            Check.False(discarded.IsError, discarded.Content);
+            Check.Contains(discarded.Content, "discarded");
+            Check.Contains(discarded.Content, "deleted");
+            await Check.ThrowsAsync<RpcException>(() => env.Get(S(Details(discarded)["schedule"]!["id"])!), "discarded: it is gone");
+
+            // a proposal nobody decides yet stays paused and listed as proposed, the old way
+            var t = Task.Run(() => Call(env, new { action = "add", prompt = "Undecided", cadence = new { kind = "every", minutes = 60 } }));
+            var pid = await ProposedId(env);
+            var list = await Proposals(env);
+            Check.Equal(1, list.Count, "the proposal waits for the decision");
+            var id = S(list[0]!["schedule"]!["id"])!;
+            Check.False((await env.Get(id))["enabled"]!.GetValue<bool>(), "a proposal does not run on its own");
+            Check.Equal("session:ses_tool", S((await env.Get(id))["proposedBy"]));
             Check.Contains((await Call(env, new { action = "list" })).Content, "proposed");
             env.Time.Advance(TimeSpan.FromHours(3));
-            Check.Equal(0, await env.Tick(), "a proposal does not run");
+            Check.Equal(0, await env.Tick(), "an undecided proposal does not run");
             await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.CallAsync("schedules.update",
-                new { id = S(s["id"]), enabled = true, proposedBy = "session:ses_tool" }), "a proposer cannot enable one through the RPC either");
+                new { id, enabled = true, proposedBy = "session:ses_tool" }), "a proposer cannot enable one through the RPC either");
+            await env.Ctx.RpcFake.CallAsync("schedules.decide", new { id = pid, decision = "discard" });
+            Check.False((await t).IsError, "the discard unblocks the waiting call");
+            await Check.ThrowsAsync<RpcException>(() => env.Get(id), "and the schedule is gone");
+        });
+
+        r.Add("schedules tool: a steer ends the wait; the proposal stays in the tab", async () =>
+        {
+            var env = await new SchedulesTests.Env().StartAsync();
+            env.Runtime.Steer = true;
+            var steered = await Call(env, new { action = "add", prompt = "Stays", cadence = new { kind = "every", minutes = 60 } });
+            env.Runtime.Steer = false;
+            Check.False(steered.IsError, steered.Content);
+            Check.Contains(steered.Content, "wrote a new message");
+            Check.Contains(steered.Content, "stays a proposal");
+            var id = S(Details(steered)["schedule"]!["id"])!;
+            Check.False((await env.Get(id))["enabled"]!.GetValue<bool>(), "the proposal stays paused");
+            Check.Equal("session:ses_tool", S((await env.Get(id))["proposedBy"]));
+            var none = await Proposals(env);
+            Check.Equal(0, none.Count, "the card is closed: nothing waits any more");
+        });
+
+        r.Add("schedules tool: a subagent's add has no card: it stays a proposal in the tab", async () =>
+        {
+            var env = await new SchedulesTests.Env().StartAsync();
+            env.Runtime.Agents.Add(new AgentInfo { Id = "agt_7", IsSubagent = true });
+            var added = await Call(env, new { action = "add", prompt = "Sub", cadence = new { kind = "every", minutes = 60 } });
+            Check.False(added.IsError, added.Content);
+            Check.Contains(added.Content, "until the user enables it", "the old text: tell the parent, no card");
+            Check.Contains(added.Content, "Now is");
+            Check.False(Details(added)["schedule"]!["enabled"]!.GetValue<bool>(), "paused, as a proposal");
+            var none = await Proposals(env);
+            Check.Equal(0, none.Count, "no card: nothing waits");
+        });
+
+        r.Add("schedules tool: the plugin stopping withdraws the wait; the proposal stays in the tab", async () =>
+        {
+            var env = await new SchedulesTests.Env().StartAsync();
+            var t = Task.Run(() => Call(env, new { action = "add", prompt = "Late", cadence = new { kind = "every", minutes = 60 } }));
+            var pid = await ProposedId(env);
+            await env.Plugin.StopAsync(CancellationToken.None);
+            var r = await t;
+            Check.False(r.IsError, r.Content);
+            Check.Contains(r.Content, "plugin stopped");
+            Check.Contains(r.Content, "stays a proposal");
+            var id = S(Details(r)["schedule"]!["id"])!;
+            Check.False((await env.Get(id))["enabled"]!.GetValue<bool>(), "the schedule is still there, paused");
+            Check.Equal(0, (await Proposals(env)).Count, "the wait is gone");
+        });
+
+        r.Add("schedules RPC: decide refuses the unknown and the already decided, and lists nothing then", async () =>
+        {
+            var env = await new SchedulesTests.Env().StartAsync();
+            await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.CallAsync("schedules.decide", new { id = "schq_nope", decision = "allow" }), "no such proposal");
+
+            var t = Task.Run(() => Call(env, new { action = "add", prompt = "Once", cadence = new { kind = "every", minutes = 60 } }));
+            var pid = await ProposedId(env);
+            await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.CallAsync("schedules.decide", new { id = pid, decision = "nope" }), "the decision is allow or discard");
+            await env.Ctx.RpcFake.CallAsync("schedules.decide", new { id = pid, decision = "allow" });
+            Check.False((await t).IsError, "the allow unblocks the waiting call");
+            await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.CallAsync("schedules.decide", new { id = pid, decision = "allow" }), "decided: it is gone");
+            Check.Equal(0, (await Proposals(env)).Count);
         });
 
         r.Add("schedules tool: run starts a chat, and an unavailable agent is a skipped error the model reads as a refusal", async () =>
@@ -209,9 +320,11 @@ public static class SchedulesToolTests
         r.Add("schedules tool: the set is capped, so a runaway add loop stops at the cap", async () =>
         {
             var env = await new SchedulesTests.Env().StartAsync();
+            env.Runtime.Steer = true;   // the cap is the point: steer the decisions away
             for (var i = 0; i < SchedulesTool.MaxSchedules; i++)
                 Check.False((await Call(env, new { action = "add", prompt = $"loop {i}", cadence = new { kind = "every", minutes = 60 } })).IsError, $"add {i + 1}");
             var over = await Call(env, new { action = "add", prompt = "one too many", cadence = new { kind = "every", minutes = 60 } });
+            env.Runtime.Steer = false;
             Check.True(over.IsError);
             Check.Contains(over.Content, "50");
         });

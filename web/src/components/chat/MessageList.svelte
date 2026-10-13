@@ -10,6 +10,7 @@
   import ShownImage from './ShownImage.svelte';
   import ArtifactChips from './ArtifactChips.svelte';
   import AskCard from './AskCard.svelte';
+  import ScheduleCard from './ScheduleCard.svelte';
   import PlanCard from './PlanCard.svelte';
   import PlanOfferCard from './PlanOfferCard.svelte';
   import { createItemBuilder, withStream } from '../../lib/chatItems.js';
@@ -209,6 +210,8 @@
           <ShownImage {item} onimage={openImage} />
         {:else if item.kind === 'ask'}
           <AskCard {item} sessionId={session.id} />
+        {:else if item.kind === 'schedule'}
+          <ScheduleCard {item} sessionId={session.id} />
         {:else if item.kind === 'plan'}
           <PlanCard {item} sessionId={session.id} />
         {:else if item.kind === 'planenter'}
