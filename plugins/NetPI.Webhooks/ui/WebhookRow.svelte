@@ -147,11 +147,13 @@
         <div class="np-small np-muted">Only when</div>
         <div class="np-mono np-small prompt">{JSON.stringify(h.match)}</div>
       {/if}
-      {#if h.hooks?.length}
-        <div class="np-small np-muted">Hooks</div>
-        {#each h.hooks as hk, n (n)}
-          <div class="np-mono np-small prompt" title={hookLine(hk)}>{n + 1}. {hookLine(hk)}</div>
-        {/each}
+      {#if h.pre}
+        <div class="np-small np-muted">Before</div>
+        <div class="np-mono np-small prompt" title={hookLine(h.pre)}>{hookLine(h.pre)}</div>
+      {/if}
+      {#if h.post}
+        <div class="np-small np-muted">After</div>
+        <div class="np-mono np-small prompt" title={hookLine(h.post)}>{hookLine(h.post)}</div>
       {/if}
       {#if h.group?.key}
         <div class="np-small np-muted">Incidents (one chat per {h.group.key})</div>

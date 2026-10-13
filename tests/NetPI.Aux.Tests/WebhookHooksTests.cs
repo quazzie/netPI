@@ -1,7 +1,3 @@
-using System.Collections.Concurrent;
-using System.Net;
-using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using NetPI.Webhooks;
@@ -9,10 +5,10 @@ using NetPI.Webhooks;
 namespace NetPI.Aux.Tests;
 
 /// <summary>
-/// Webhook hooks: actions NetPI runs itself at fixed points (received, started, finished, asking, stalled, failed), gated by conditions over the
-/// alert, the agent's verdict and its answer, fired once per incident when asked, and failing open: an agent that says nothing, dies or stalls does
-/// not suppress the notification. A command hook launches a real process (this test host in its <c>--hook-echo</c> mode, which records its arguments and
-/// standard input); a fake HTTP server shows what the http action sends.
+/// Webhook hooks: a <c>pre</c> command runs for every payload and a <c>post</c> command when the chat finishes, asks, stalls or could not start; each gets its context
+/// as JSON on standard input, never templates in its program or arguments, and a failing hook never stops the webhook. The post hook sees the agent's verdict
+/// (<c>unknown</c> when it said nothing, so a script that gates on it fails open). A hook launches a real process: this test host in its <c>--hook-echo</c> mode,
+/// which records its arguments and standard input.
 /// </summary>
 public static class WebhookHooksTests
 {
@@ -36,71 +32,17 @@ public static class WebhookHooksTests
         public int Count => Calls().Count;
     }
 
-    /// <summary>A server that answers every request with a status and records method, path, headers and body.</summary>
-    internal sealed class FakeHttp : IDisposable
-    {
-        private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
-        public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
-        public int Status { get; set; } = 200;
-        public ConcurrentQueue<(string Method, string Path, Dictionary<string, string> Headers, string Body)> Requests { get; } = new();
-
-        public FakeHttp()
-        {
-            _listener.Start();
-            _ = Task.Run(async () =>
-            {
-                while (true)
-                {
-                    TcpClient client;
-                    try { client = await _listener.AcceptTcpClientAsync(); } catch { return; }
-                    _ = Task.Run(async () =>
-                    {
-                        using var c = client;
-                        var stream = c.GetStream();
-                        var buffer = new MemoryStream();
-                        var one = new byte[1];
-                        while (true)
-                        {
-                            if (await stream.ReadAsync(one) == 0) return;
-                            buffer.WriteByte(one[0]);
-                            if (Encoding.ASCII.GetString(buffer.ToArray()).EndsWith("\r\n\r\n")) break;
-                        }
-                        var head = Encoding.ASCII.GetString(buffer.ToArray()).Split("\r\n");
-                        var first = head[0].Split(' ');
-                        var headers = head.Skip(1).Where(l => l.Contains(':')).ToDictionary(l => l[..l.IndexOf(':')].Trim().ToLowerInvariant(), l => l[(l.IndexOf(':') + 1)..].Trim());
-                        var len = headers.TryGetValue("content-length", out var cl) ? int.Parse(cl) : 0;
-                        var body = new byte[len];
-                        if (len > 0) await stream.ReadExactlyAsync(body);
-                        Requests.Enqueue((first[0], first[1], headers, Encoding.UTF8.GetString(body)));
-                        await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 {Status} X\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"));
-                    });
-                }
-            });
-        }
-
-        public void Dispose() => _listener.Stop();
-    }
-
     private static string? S(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
     private static object Alert(string service = "Kernel errors", string host = "nuc", string state = "CRIT", string output = "1 in last 30 min") =>
         new { host, service, state, output };
 
-    /// <summary>A command action: this test host in echo mode. <paramref name="json"/> is what the program reads on standard input.</summary>
-    private static JsonObject Run(Sink sink, object json, int exit = 0, params string[] extraArgs)
+    /// <summary>A hook: this test host in echo mode, which records what it was given. <paramref name="exit"/> is the exit code it ends with.</summary>
+    private static JsonObject Hook(Sink sink, int exit = 0, params string[] extraArgs)
     {
         var args = new JsonArray(typeof(WebhookHooksTests).Assembly.Location, "--hook-echo", sink.File, exit.ToString());
         foreach (var a in extraArgs) args.Add(a);
-        return new JsonObject { ["type"] = "command", ["command"] = Environment.ProcessPath!, ["args"] = args, ["json"] = NetPiJson.ToNode(json) };
-    }
-
-    private static object Hook(Sink sink, string name, string on, object? when, object json, string? once = null, int? afterMinutes = null, int exit = 0)
-    {
-        var h = new JsonObject { ["name"] = name, ["on"] = on, ["do"] = Run(sink, json, exit) };
-        if (when is not null) h["when"] = NetPiJson.ToNode(when);
-        if (once is not null) h["once"] = once;
-        if (afterMinutes is not null) h["afterMinutes"] = afterMinutes;
-        return h;
+        return new JsonObject { ["command"] = Environment.ProcessPath!, ["args"] = args };
     }
 
     private static async Task<(WebhooksTests.Env Env, Sink Sink)> Setup() => (await new WebhooksTests.Env().StartAsync(), new Sink());
@@ -116,45 +58,37 @@ public static class WebhookHooksTests
         return JsonNode.Parse(S(sink.Calls()[count - 1]["stdin"])!)!.AsObject();
     }
 
+    private static List<string?> HookLines(JsonArray history) => [.. history.Where(h => S(h!["status"]) == "hook").Select(h => S(h!["reason"]))];
+
     public static void Register(TestRunner r)
     {
-        r.Add("hooks: a received hook runs for every payload before filters and grouping; json templates cannot be broken by the alert's text", async () =>
+        r.Add("hooks: the pre hook runs for every payload before filters and grouping, with the payload on standard input as JSON", async () =>
         {
             var (env, sink) = await Setup();
-            var hooks = new[]
-            {
-                Hook(sink, "clear", "received", new[] { new { path = "state", @in = new[] { "OK", "UP" } } }, new { clear = true, id = "checkmk_{{host}}_{{service}}" }),
-                Hook(sink, "page", "received", new[] { new { path = "state", @in = new[] { "DOWN" } } }, new { title = "{{host}} is DOWN", message = "{{output}}", id = "checkmk_{{host}}" }),
-            };
-            var added = await env.AddGrouped(extra: new { hooks });
+            var added = await env.AddGrouped(extra: new { pre = Hook(sink), match = new[] { new { path = "state", @in = new[] { "CRIT", "DOWN" } } } });
             var id = S(added["id"])!; var token = S(added["token"])!;
 
-            await env.Post(id, token, Alert());   // CRIT: no hook wants it
-            await env.Post(id, token, Alert("Host", state: "DOWN", output: "say \"hi\"\nline two \\ backslash"));
-            var page = await Ran(sink, 1);
-            Check.Equal("nuc is DOWN", S(page["title"]));
-            Check.Equal("say \"hi\"\nline two \\ backslash", S(page["message"]), "quotes, newlines and backslashes survive: the stdin is built as JSON, not pasted into it");
+            var evil = "say \"hi\"\nline two \\ backslash";
+            await env.Post(id, token, Alert("Host", state: "DOWN", output: evil));
+            var first = await Ran(sink, 1);
+            Check.Equal("received", S(first["event"]));
+            Check.Equal(id, S(first["webhook"]!["id"]));
+            Check.Equal("nuc", S(first["alert"]!["host"]));
+            Check.Equal(evil, S(first["alert"]!["output"]), "quotes, newlines and backslashes survive: the stdin is JSON");
 
-            // a recovery fails the match and has no open incident (skipped), and still clears the notification
+            // a recovery fails the match and has no open incident (skipped) - the pre hook still saw it
             var recovery = await env.Post(id, token, Alert("Container radio", host: "server", state: "OK"));
             Check.Equal("skipped", S(recovery.Body["status"]));
-            var clear = await Ran(sink, 2);
-            Check.Equal(true, clear["clear"]!.GetValue<bool>());
-            Check.Equal("checkmk_server_Container radio", S(clear["id"]));
-            Check.Equal(2, sink.Count, "exactly the two hooks that matched");
-            Check.Equal(2, (await env.History(id)).Select(h => S(h!["status"])).Count(s => s == "hook"), "each action is in the history");
+            var second = await Ran(sink, 2);
+            Check.Equal("OK", S(second["alert"]!["state"]));
+            Check.Equal(2, HookLines(await env.History(id)).Count, "each run is in the history");
             Check.Equal("skipped", S(((JsonObject)(await env.Get(id)))["lastStatus"]), "a hook is not the webhook's last delivery");
         });
 
-        r.Add("hooks: the finished hook gates on the agent's verdict and fails open - silence, an error or an unknown verdict still notifies, and once means once", async () =>
+        r.Add("hooks: the post hook gets the agent's verdict and answer when the chat finishes - silence or an error is unknown, never a guess", async () =>
         {
             var (env, sink) = await Setup();
-            var hooks = new[]
-            {
-                Hook(sink, "notify", "finished", new[] { new { path = "verdict", notIn = new[] { "noise", "resolved" } } },
-                    new { title = "Checkmk: {{title}}", message = "{{verdict}}: {{summary}}", id = "checkmk_{{key}}" }, once: "notify"),
-            };
-            var added = await env.AddGrouped(extra: new { hooks, title = "{{host}}: {{service}} is {{state}}" });
+            var added = await env.AddGrouped(extra: new { post = Hook(sink), title = "{{host}}: {{service}} is {{state}}" });
             var id = S(added["id"])!; var token = S(added["token"])!;
             await env.Post(id, token, Alert("Kernel errors"));
             env.Time.Advance(TimeSpan.FromSeconds(91));
@@ -163,40 +97,36 @@ public static class WebhookHooksTests
 
             env.Time.Advance(TimeSpan.FromSeconds(30));
             await env.Tick();
-            Check.Equal(0, sink.Count, "the chat is still running: not finished");
+            Check.Equal(0, sink.Count, "the chat is still running: nothing to report");
 
             env.FinishChats();
             AssistantSays(env, sid, "Benign: a stale service.\nVERDICT: noise");
             env.Time.Advance(TimeSpan.FromSeconds(10));
             await env.Tick();
-            await Task.Delay(200);
-            Check.Equal(0, sink.Count, "the agent said noise: nothing is sent");
+            var done = await Ran(sink, 1);
+            Check.Equal("finished", S(done["event"]));
+            Check.Equal("noise", S(done["verdict"]));
+            Check.Equal("ok", S(done["status"]));
+            Check.Equal("Benign: a stale service.", S(done["summary"]), "the summary has no VERDICT line");
+            Check.Equal("nuc: Kernel errors is CRIT", S(done["title"]));
+            Check.Equal("nuc", S(done["key"]));
+            Check.Equal(1, done["count"]!.GetValue<int>());
+            Check.Equal("nuc", S(done["alert"]!["host"]), "the first alert is there too");
             Check.Equal("noise", S((await env.Incidents(id)).Single()!["verdict"]));
 
-            // a new failure wakes the same chat; this time the agent says nothing useful
+            // a new failure wakes the same chat; this time the agent writes no verdict line
             env.Time.Advance(TimeSpan.FromMinutes(2));
             Check.Equal("appended", S((await env.Post(id, token, Alert("Container radio", output: "Exited (1)"))).Body["status"]));
             env.FinishChats();
-            AssistantSays(env, sid, "The radio container crashed (OOM). I restarted it with docker restart radio and it is healthy.");
+            AssistantSays(env, sid, "The radio container crashed (OOM). I restarted it and it is healthy.");
             env.Time.Advance(TimeSpan.FromSeconds(10));
             await env.Tick();
-            var notice = await Ran(sink, 1);
-            Check.Equal("unknown: The radio container crashed (OOM). I restarted it with docker restart radio and it is healthy.", S(notice["message"]), "no VERDICT line: unknown, so it is sent");
-            Check.Contains(S(notice["title"]), "Checkmk: nuc: Kernel errors is CRIT");
-            Check.Equal("checkmk_nuc", S(notice["id"]));
+            var silent = await Ran(sink, 2);
+            Check.Equal("unknown", S(silent["verdict"]));
+            Check.Equal(2, silent["count"]!.GetValue<int>());
 
-            // once: a third finish does not notify again
-            env.Time.Advance(TimeSpan.FromMinutes(2));
-            await env.Post(id, token, Alert("Disk"));
-            env.FinishChats();
-            AssistantSays(env, sid, "Real problem.\nVERDICT: real");
-            env.Time.Advance(TimeSpan.FromSeconds(10));
-            await env.Tick();
-            await Task.Delay(200);
-            Check.Equal(1, sink.Count, "the once key already fired for this incident");
-
-            // an errored run is "error", not silence
-            var added2 = await env.AddGrouped(extra: new { name = "second", hooks = new[] { Hook(sink, "err", "finished", new[] { new { path = "status", equals = "error" } }, new { message = "agent failed: {{reason}}" }) } });
+            // an errored run says so
+            var added2 = await env.AddGrouped(extra: new { name = "second", post = Hook(sink) });
             await env.Post(S(added2["id"])!, S(added2["token"])!, Alert("Disk", host: "server"));
             env.Time.Advance(TimeSpan.FromSeconds(91));
             await env.Tick();
@@ -205,19 +135,16 @@ public static class WebhookHooksTests
             failedAgent.Error = "the model is not loaded";
             env.Time.Advance(TimeSpan.FromSeconds(10));
             await env.Tick();
-            var err = await Ran(sink, 2);
-            Check.Equal("agent failed: the model is not loaded", S(err["message"]));
+            var err = await Ran(sink, 3);
+            Check.Equal("error", S(err["status"]));
+            Check.Equal("the model is not loaded", S(err["reason"]));
+            Check.Equal("unknown", S(err["verdict"]));
         });
 
-        r.Add("hooks: stalled fires once after its minutes, asking carries the question, failed carries the reason", async () =>
+        r.Add("hooks: post is told once when a chat stalls (after stalledMinutes, 0 = never) and once per question it asks; a batch that cannot start is failed", async () =>
         {
             var (env, sink) = await Setup();
-            var hooks = new object[]
-            {
-                Hook(sink, "slow", "stalled", null, new { message = "no answer after {{elapsedMinutes}} min: {{title}}" }, afterMinutes: 5),
-                Hook(sink, "ask", "asking", null, new { message = "needs you: {{question}}" }),
-            };
-            var added = await env.AddGrouped(extra: new { hooks, title = "{{host}}: {{service}} is {{state}}" });
+            var added = await env.AddGrouped(extra: new { post = Hook(sink), stalledMinutes = 5, title = "{{host}}: {{service}} is {{state}}" });
             var id = S(added["id"])!; var token = S(added["token"])!;
             await env.Post(id, token, Alert("Kernel errors"));
             env.Time.Advance(TimeSpan.FromSeconds(91));
@@ -230,7 +157,8 @@ public static class WebhookHooksTests
             env.Time.Advance(TimeSpan.FromMinutes(2));
             await env.Tick();
             var slow = await Ran(sink, 1);
-            Check.Contains(S(slow["message"]), "no answer after 6 min: nuc: Kernel errors is CRIT");
+            Check.Equal("stalled", S(slow["event"]));
+            Check.True(slow["elapsedMinutes"]!.GetValue<double>() >= 5, "it says how long");
             env.Time.Advance(TimeSpan.FromMinutes(2));
             await env.Tick();
             await Task.Delay(200);
@@ -242,138 +170,109 @@ public static class WebhookHooksTests
             env.Time.Advance(TimeSpan.FromSeconds(10));
             await env.Tick();
             var ask = await Ran(sink, 2);
-            Check.Equal("needs you: Restart the radio container?", S(ask["message"]));
+            Check.Equal("asking", S(ask["event"]));
+            Check.Equal("Restart the radio container?", S(ask["question"]));
             await env.Tick();
             await Task.Delay(200);
             Check.Equal(2, sink.Count, "asking fires once per wait too");
 
-            // batches that cannot start become a failed hook, with the reason
+            // stalledMinutes 0 = never told
+            var (env0, sink0) = await Setup();
+            var never = await env0.AddGrouped(extra: new { post = Hook(sink0), stalledMinutes = 0 });
+            await env0.Post(S(never["id"])!, S(never["token"])!, Alert("Kernel errors"));
+            env0.Time.Advance(TimeSpan.FromSeconds(91));
+            await env0.Tick();
+            env0.Time.Advance(TimeSpan.FromHours(2));
+            await env0.Tick();
+            await Task.Delay(200);
+            Check.Equal(0, sink0.Count, "0 = never");
+
+            // batches that cannot start become a failed event, with the reason
             var (env2, sink2) = await Setup();
             env2.Agents(("local", false, true));
-            var failedHook = await env2.AddGrouped(extra: new { agent = "local", title = "{{host}}: {{service}} is {{state}}", hooks = new[] { Hook(sink2, "lost", "failed", null, new { title = "unreviewed: {{title}}", message = "{{reason}}" }) } });
-            await env2.Post(S(failedHook["id"])!, S(failedHook["token"])!, Alert("Kernel errors"));
+            var lostHook = await env2.AddGrouped(extra: new { agent = "local", title = "{{host}}: {{service}} is {{state}}", post = Hook(sink2) });
+            await env2.Post(S(lostHook["id"])!, S(lostHook["token"])!, Alert("Kernel errors"));
             for (var i = 0; i < 70; i++) { env2.Time.Advance(TimeSpan.FromSeconds(30)); await env2.Tick(); }
             var lost = await Ran(sink2, 1);
-            Check.Equal("unreviewed: nuc: Kernel errors is CRIT", S(lost["title"]));
-            Check.Contains(S(lost["message"]), "unavailable");
+            Check.Equal("failed", S(lost["event"]));
+            Check.Equal("nuc: Kernel errors is CRIT", S(lost["title"]));
+            Check.Contains(S(lost["reason"]), "unavailable");
         });
 
-        r.Add("hooks: an ungrouped webhook is watched too, a failing action is recorded and does not stop the chat, and the http action sends what it is told", async () =>
+        r.Add("hooks: an ungrouped webhook is watched too, and a failing, missing or hanging hook is recorded without stopping anything", async () =>
         {
             var (env, sink) = await Setup();
-            using var http = new FakeHttp();
-            var ping = new JsonObject
-            {
-                ["on"] = "finished", ["name"] = "ping",
-                ["do"] = new JsonObject
-                {
-                    ["type"] = "http", ["url"] = $"http://127.0.0.1:{http.Port}/notify/{{{{host}}}}", ["method"] = "POST",
-                    ["headers"] = new JsonObject { ["X-Source"] = "netpi-{{host}}" },
-                    ["json"] = new JsonObject { ["verdict"] = "{{verdict}}", ["text"] = "{{summary}}" },
-                },
-            };
-            var added = await env.Add(extra: new { hooks = new object[] { ping } });   // no group key: every alert its own chat
+            var added = await env.Add(extra: new { post = Hook(sink) });   // no group key: every alert its own chat
             var id = S(added["id"])!; var token = S(added["token"])!;
             var started = await env.Post(id, token, Alert());
             Check.Equal("started", S(started.Body["status"]));
-            var sid = S(started.Body["sessionId"])!;
             env.FinishChats();
-            AssistantSays(env, sid, "All good.\nVERDICT: resolved");
+            AssistantSays(env, S(started.Body["sessionId"])!, "All good.\nVERDICT: resolved");
             env.Time.Advance(TimeSpan.FromSeconds(10));
             await env.Tick();
-            for (var i = 0; i < 100 && http.Requests.IsEmpty; i++) await Task.Delay(20);
-            var req = http.Requests.Single();
-            Check.Equal("POST", req.Method);
-            Check.Equal("/notify/nuc", req.Path);
-            Check.Equal("netpi-nuc", req.Headers["x-source"]);
-            Check.Contains(req.Headers["content-type"], "application/json");
-            var body = JsonNode.Parse(req.Body)!;
-            Check.Equal("resolved", S(body["verdict"]));
-            Check.Equal("All good.", S(body["text"]), "the summary has no VERDICT line");
+            var done = await Ran(sink, 1);
+            Check.Equal("resolved", S(done["verdict"]));
 
-            // a program that fails, a program that does not exist, and a server that errors: recorded, not thrown
-            http.Status = 500;
-            var missing = new JsonObject { ["on"] = "received", ["name"] = "nope", ["do"] = new JsonObject { ["type"] = "command", ["command"] = "netpi-no-such-program-xyz", ["text"] = "x" } };
-            var added2 = await env.Add(extra: new { name = "bad", hooks = new object[] { Hook(sink, "refuses", "received", null, new { x = "1" }, exit: 3), missing, ping } });
-            var again = await env.Post(S(added2["id"])!, S(added2["token"])!, Alert("Disk"));
-            Check.Equal("started", S(again.Body["status"]), "failing hooks do not stop the delivery");
-            var reasons = (await env.History(S(added2["id"])!)).Where(h => S(h!["status"]) == "hook").Select(h => S(h!["reason"])).ToList();
-            Check.True(reasons.Any(x => x!.Contains("refuses: FAILED") && x.Contains("exited 3: refused: simulated failure")), "the exit code and the program's own words are in the history: " + string.Join(" | ", reasons));
-            Check.True(reasons.Any(x => x!.Contains("nope: FAILED") && x.Contains("could not be started")), "a missing program says so: " + string.Join(" | ", reasons));
-            env.FinishChats();
-            AssistantSays(env, S(again.Body["sessionId"])!, "done");
-            env.Time.Advance(TimeSpan.FromSeconds(10));
-            await env.Tick();
-            reasons = (await env.History(S(added2["id"])!)).Where(h => S(h!["status"]) == "hook").Select(h => S(h!["reason"])).ToList();
-            Check.True(reasons.Any(x => x!.Contains("ping: FAILED") && x.Contains("HTTP 500")), "the http error is in the history: " + string.Join(" | ", reasons));
+            // a program that fails, one that does not exist, and one that hangs
+            var failing = await env.Add(extra: new { name = "refuses", pre = Hook(sink, exit: 3) });
+            var again = await env.Post(S(failing["id"])!, S(failing["token"])!, Alert("Disk"));
+            Check.Equal("started", S(again.Body["status"]), "a failing hook does not stop the delivery");
+            Check.True(HookLines(await env.History(S(failing["id"])!)).Any(x => x!.Contains("pre hook") && x.Contains("FAILED") && x.Contains("exited 3: refused: simulated failure")), "the exit code and the program's own words are in the history");
+
+            var missing = await env.Add(extra: new { name = "nope", pre = new { command = "netpi-no-such-program-xyz" } });
+            await env.Post(S(missing["id"])!, S(missing["token"])!, Alert("Disk"));
+            Check.True(HookLines(await env.History(S(missing["id"])!)).Any(x => x!.Contains("FAILED") && x.Contains("could not be started")), "a missing program says so");
+
+            var hang = await env.Add(extra: new { name = "hang", pre = new { command = Environment.ProcessPath!, args = new[] { typeof(WebhookHooksTests).Assembly.Location, "--hook-sleep" }, timeoutSeconds = 1 } });
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            await env.Post(S(hang["id"])!, S(hang["token"])!, Alert("Hang"));
+            Check.True(watch.Elapsed < TimeSpan.FromSeconds(10), "a hanging program is stopped at its timeout: " + watch.Elapsed);
+            Check.True(HookLines(await env.History(S(hang["id"])!)).Any(x => x!.Contains("did not finish within 1 s")), "and says so");
         });
 
-        r.Add("hooks: a command gets its arguments and environment templated, never a shell, and is stopped when it hangs", async () =>
+        r.Add("hooks: arguments are literal (no templates, no shell), and testHook runs a hook on a sample context", async () =>
         {
             var (env, sink) = await Setup();
             var evil = "x\"; echo pwned; \"";
-            var added = await env.Add(extra: new
-            {
-                hooks = new object[]
-                {
-                    new JsonObject
-                    {
-                        ["on"] = "received", ["name"] = "args",
-                        ["do"] = Run(sink, new { text = "{{output}}" }, 0, "{{host}}", "--note={{output}}"),
-                    },
-                    new JsonObject
-                    {
-                        ["on"] = "received", ["name"] = "hang", ["when"] = JsonNode.Parse("""[{"path":"service","equals":"Hang"}]"""),
-                        ["do"] = new JsonObject
-                        {
-                            ["type"] = "command", ["command"] = Environment.ProcessPath!, ["timeoutSeconds"] = 1,
-                            ["args"] = new JsonArray(typeof(WebhookHooksTests).Assembly.Location, "--hook-sleep"),
-                        },
-                    },
-                },
-            });
+            var added = await env.Add(extra: new { pre = Hook(sink, 0, "{{host}}", "--note=" + evil) });
             var id = S(added["id"])!; var token = S(added["token"])!;
             await env.Post(id, token, Alert("Kernel errors", output: evil));
-            var call = sink.Calls().Single();
-            var args = call["args"]!.AsArray().Select(S).ToList();
-            Check.Equal("nuc", args[0]);
-            Check.Equal("--note=" + evil, args[1], "the alert's text arrives as ONE argument, untouched: nothing interprets it");
-            Check.Equal(evil, S(JsonNode.Parse(S(call["stdin"])!)!["text"]), "and as JSON on stdin");
+            var args = sink.Calls().Single()["args"]!.AsArray().Select(S).ToList();
+            Check.Equal("{{host}}", args[0], "nothing in the alert can reach an argument");
+            Check.Equal("--note=" + evil, args[1], "and an argument is one argument, untouched");
 
-            var started = System.Diagnostics.Stopwatch.StartNew();
-            await env.Post(id, token, Alert("Hang"));
-            Check.True(started.Elapsed < TimeSpan.FromSeconds(10), "a hanging program is stopped at its timeout: " + started.Elapsed);
-            var reasons = (await env.History(id)).Where(h => S(h!["status"]) == "hook").Select(h => S(h!["reason"])).ToList();
-            Check.True(reasons.Any(x => x!.Contains("hang: FAILED") && x.Contains("did not finish within 1 s")), string.Join(" | ", reasons));
-        });
-
-        r.Add("hooks: testHook runs one action with a sample context; bad hook definitions are refused when saved", async () =>
-        {
-            var (env, sink) = await Setup();
-            var added = await env.Add(extra: new { hooks = new[] { Hook(sink, "page", "finished", null, new { title = "{{host}}: {{summary}}" }) } });
-            var id = S(added["id"])!;
-            var ok = (await env.Ctx.RpcFake.CallAsync("webhooks.testHook", new { id, index = 1, context = new { host = "nuc", summary = "it works" } }))!;
+            var withPost = await env.Add(extra: new { name = "tested", post = Hook(sink) });
+            var ok = (await env.Ctx.RpcFake.CallAsync("webhooks.testHook", new { id = S(withPost["id"]), hook = "post" }))!;
             Check.Equal(true, ok["ok"]!.GetValue<bool>());
             Check.Contains(S(ok["detail"]), "exited 0");
-            var sent = await Ran(sink, 1);
-            Check.Equal("nuc: it works", S(sent["title"]));
-            await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("webhooks.testHook", new { id, index = 5 }));
+            var sample = await Ran(sink, 2);
+            Check.Equal("finished", S(sample["event"]));
+            Check.Equal("real", S(sample["verdict"]), "the sample has the shape of a real finished run");
+            var custom = (await env.Ctx.RpcFake.CallAsync("webhooks.testHook", new { id = S(withPost["id"]), hook = "post", context = new { @event = "asking", question = "ok?" } }))!;
+            Check.Equal(true, custom["ok"]!.GetValue<bool>());
+            Check.Equal("ok?", S((await Ran(sink, 3))["question"]));
+            await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("webhooks.testHook", new { id = S(withPost["id"]), hook = "pre" }));
+            await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("webhooks.testHook", new { id = S(withPost["id"]), hook = "middle" }));
+        });
 
-            async Task<string> Refused(object hook) => (await Check.ThrowsAsync<RpcException>(() => env.Add(extra: new { name = "x", hooks = new[] { hook } }))).Message;
-            Check.Contains(await Refused(new { on = "sometimes", @do = new { type = "command", command = "x" } }), "on must be one of");
-            Check.Contains(await Refused(new { on = "received", @do = new { type = "command" } }), "needs a command");
-            Check.Contains(await Refused(new { on = "received", @do = new { type = "command", command = "{{host}}" } }), "cannot be a template");
-            Check.Contains(await Refused(new { on = "received", @do = new { type = "command", command = "x", args = new object[] { 1 } } }), "array of at most 50 strings");
-            Check.Contains(await Refused(new { on = "received", @do = new { type = "command", command = "x", timeoutSeconds = 999 } }), "1–300");
-            Check.Contains(await Refused(new { on = "received", @do = new { type = "mqtt", topic = "t", text = "x" } }), "command or http");
-            Check.Contains(await Refused(new { on = "received", @do = new { type = "http", url = "ftp://x/y" } }), "http(s) url");
-            Check.Contains(await Refused(new { on = "received", afterMinutes = 5, @do = new { type = "command", command = "x" } }), "afterMinutes only belongs to a stalled hook");
-            Check.Contains(await Refused(new { on = "stalled", afterMinutes = 0, @do = new { type = "command", command = "x" } }), "1–1440");
-            Check.Contains(await Refused(new { on = "received", colour = "red", @do = new { type = "command", command = "x" } }), "unknown field");
-            Check.Contains(await Refused(new { on = "received", when = new[] { new { path = "x", matches = "(" } }, @do = new { type = "command", command = "x" } }), "condition on x");
+        r.Add("hooks: bad hook definitions are refused when saved, {} clears a hook, and an agent's change to a hook pauses the webhook as a proposal", async () =>
+        {
+            var (env, sink) = await Setup();
+            async Task<string> Refused(object extra) => (await Check.ThrowsAsync<RpcException>(() => env.Add(extra: extra))).Message;
+            Check.Contains(await Refused(new { name = "x", pre = new { args = new[] { "a" } } }), "needs a command");
+            Check.Contains(await Refused(new { name = "x", post = new { command = "x", args = new object[] { 1 } } }), "array of at most 50 strings");
+            Check.Contains(await Refused(new { name = "x", post = new { command = "x", timeoutSeconds = 999 } }), "1–300");
+            Check.Contains(await Refused(new { name = "x", pre = new { command = "x", colour = "red" } }), "unknown field");
+            Check.Contains(await Refused(new { name = "x", stalledMinutes = 5000 }), "0–1440");
 
-            // an agent cannot give a webhook a hook: its change to hooks pauses the webhook as a proposal
-            var proposed = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id, hooks = new[] { Hook(sink, "evil", "received", null, new { x = 1 }) }, proposedBy = "session:ses_1" }))!;
+            var added = await env.Add(extra: new { pre = Hook(sink), post = Hook(sink), stalledMinutes = 7 });
+            var id = S(added["id"])!;
+            Check.Equal(7, ((JsonObject)(await env.Get(id)))["stalledMinutes"]!.GetValue<int>());
+            var cleared = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id, pre = new { } }))!;
+            Check.True(cleared["pre"] is null, "{} clears the pre hook");
+            Check.True(cleared["post"] is JsonObject, "and leaves the post hook");
+
+            var proposed = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id, post = new { command = "evil" }, proposedBy = "session:ses_1" }))!;
             Check.Equal(false, proposed["enabled"]!.GetValue<bool>());
         });
     }

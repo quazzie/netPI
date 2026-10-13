@@ -74,7 +74,7 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
             {
                 var h = await RpcAsync<JsonObject>("webhooks.get", new JsonObject { ["id"] = RequireId(a) }, ct).ConfigureAwait(false);
                 var text = string.Join("\n", [Line(h), "prompt: " + h["prompt"]?.GetValue<string>(), "title: " + (h["title"]?.GetValue<string>() ?? "(the name)"),
-                    "match: " + (h["match"]?.ToJsonString() ?? "[]"), "profile: " + (h["profile"]?.GetValue<string>() ?? "automatic") + " · hooks: " + (h["hooks"] is JsonArray hk && hk.Count > 0 ? string.Join(", ", hk.OfType<JsonObject>().Select(x => x["on"]?.GetValue<string>() + "→" + x["do"]?["type"]?.GetValue<string>())) : "none") + " · group: " + (h["group"]?.ToJsonString() ?? "none (every alert is its own chat)") +
+                    "match: " + (h["match"]?.ToJsonString() ?? "[]"), "profile: " + (h["profile"]?.GetValue<string>() ?? "automatic") + " · hooks: " + (new[] { "pre", "post" }.Where(s => h[s] is JsonObject).ToList() is { Count: > 0 } hk ? string.Join(", ", hk) : "none") + " · group: " + (h["group"]?.ToJsonString() ?? "none (every alert is its own chat)") +
                     $" · fuse {h["maxChatsPerHour"]} chats per hour"]);
                 return ToolResult.Ok(text, new { kind = "webhook", webhook = h });
             }

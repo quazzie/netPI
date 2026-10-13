@@ -2,19 +2,11 @@
   // The add/edit form: an inline panel that replaces the list. Prompt and title are templates over the payload
   // ({{path.to.field}}); "only when" is the match conditions as JSON; the agent is a key, any, free or a list.
   import { Button } from '@netpi/kit';
-  import { agentToForm, formToAgent, matchToText, textToMatch, hooksToText, textToHooks } from './model.js';
+  import { agentToForm, formToAgent, matchToText, textToMatch, hookToForm, formToHook } from './model.js';
 
   let { ctx, hook = null, projects = [], agents = null, profiles = null, ondone, oncancel } = $props();
 
   const editing = $derived(!!hook);
-  const HOOK_EXAMPLE = `[
-  { "on": "finished", "once": "notify",
-    "when": [{ "path": "verdict", "notIn": ["noise", "resolved"] }],
-    "do": { "type": "command", "command": "ssh",
-            "args": ["-o", "BatchMode=yes", "server", "sudo -n /usr/local/sbin/ha-alert-json"],
-            "json": { "title": "{{title}}", "message": "{{summary}}", "id": "alert_{{key}}" } } }
-]`;
-
   // The initial value, computed once when the form mounts: a function passed to $state would be stored as the value itself.
   function initForm() {
     if (hook) {
@@ -28,7 +20,11 @@
         profile: hook.profile ?? '',
         ...agentToForm(hook.agent),
         match: matchToText(hook.match),
-        hooks: hooksToText(hook.hooks),
+        preCommand: hookToForm(hook.pre).command,
+        preArgs: hookToForm(hook.pre).args,
+        postCommand: hookToForm(hook.post).command,
+        postArgs: hookToForm(hook.post).args,
+        stalledMinutes: hook.stalledMinutes ?? 10,
         groupKey: hook.group?.key ?? '',
         debounceSeconds: hook.group?.debounceSeconds ?? 90,
         reopenMinutes: hook.group?.reopenMinutes ?? 240,
@@ -51,7 +47,11 @@
       agentChoice: 'any',
       agentList: '',
       match: '',
-      hooks: '',
+      preCommand: '',
+      preArgs: '',
+      postCommand: '',
+      postArgs: '',
+      stalledMinutes: 10,
       groupKey: '',
       debounceSeconds: 90,
       reopenMinutes: 240,
@@ -87,11 +87,6 @@
       error = 'The match conditions must be a JSON array, e.g. [{"path":"state","in":["CRIT","DOWN"]}].';
       return;
     }
-    const hooks = textToHooks(f.hooks);
-    if (hooks === null) {
-      error = 'The hooks must be a JSON array of { on, when?, once?, do }.';
-      return;
-    }
     const group = f.groupKey.trim()
       ? { key: f.groupKey.trim(), debounceSeconds: Number(f.debounceSeconds), reopenMinutes: Number(f.reopenMinutes) }
       : {};
@@ -105,7 +100,9 @@
       profile: f.profile,
       agent: formToAgent(f),
       match,
-      hooks,
+      pre: formToHook(f.preCommand, f.preArgs),
+      post: formToHook(f.postCommand, f.postArgs),
+      stalledMinutes: Number(f.stalledMinutes),
       group,
       maxChatsPerHour: Number(f.maxChatsPerHour),
       enabled: f.enabled,
@@ -119,7 +116,7 @@
         // empty optional fields are left out of an add; an update sends them so they can be cleared
         for (const k of ['alert', 'followUp', 'title', 'projectId', 'profile', 'agent']) if (!params[k]) delete params[k];
         if (!params.match.length) delete params.match;
-        if (!params.hooks.length) delete params.hooks;
+        for (const k of ['pre', 'post']) if (!params[k].command) delete params[k];
         if (!params.group.key) delete params.group;
         const created = await ctx.rpc('webhooks.add', params);
         ondone?.(created);
@@ -149,7 +146,7 @@
   <label class="fld">
     <span class="f-label">Prompt template</span>
     <textarea class="np-input" rows="9" bind:value={f.prompt}></textarea>
-    <span class="np-small np-dim">{'{{field}}'} and {'{{a.b.0.c}}'} fill in from the first alert; {'{{alerts}}'} is every alert of the batch, {'{{count}}'} how many, {'{{key}}'} the incident, {'{{payload}}'} the first alert as JSON. Anything the sender controls can end up in the prompt, so say it is data.</span>
+    <span class="np-small np-dim">Fields of the payload: {'{{a.b.0.c}}'}; {'{{alerts}}'} every item of the batch, {'{{count}}'}, {'{{key}}'}, {'{{payload}}'}. The sender controls them: say they are data.</span>
   </label>
 
   <label class="fld">
@@ -200,13 +197,13 @@
   <label class="fld">
     <span class="f-label">Only when (optional, JSON)</span>
     <textarea class="np-input np-mono" rows="4" placeholder={'[{"path":"state","in":["CRIT","DOWN"]}]'} bind:value={f.match}></textarea>
-    <span class="np-small np-dim">All must hold. Each: path plus equals, in, notIn, matches (regex) or exists. A payload that fails is skipped, no chat.</span>
+    <span class="np-small np-dim">Each: path plus equals, in, notIn, matches or exists. A payload that fails is skipped.</span>
   </label>
 
   <label class="fld">
     <span class="f-label">Incident key (optional): one chat per key</span>
     <input class="np-input" placeholder={'{{host}}'} bind:value={f.groupKey} />
-    <span class="np-small np-dim">With a key, the first alert opens an incident and waits for the window; every alert with the same key inside it joins the same chat, and later ones (recoveries too) are appended to that chat. Without one, every alert is its own chat.</span>
+    <span class="np-small np-dim">Payloads with the same key share one chat. Without a key, each payload is its own chat.</span>
   </label>
   {#if f.groupKey.trim()}
     <div class="fld f-pair">
@@ -220,29 +217,39 @@
       </label>
     </div>
     <label class="fld">
-      <span class="f-label">Each alert in a batch (optional template)</span>
+      <span class="f-label">Each item in a batch (optional template)</span>
       <textarea class="np-input np-mono" rows="2" placeholder={'{{service}} is {{state}}: {{output}}'} bind:value={f.alert}></textarea>
     </label>
     <label class="fld">
-      <span class="f-label">Message for a later alert of the same incident (optional)</span>
-      <textarea class="np-input" rows="4" placeholder="Default: More from the same incident, with the alert between markers" bind:value={f.followUp}></textarea>
+      <span class="f-label">Message for a later item of the same incident (optional)</span>
+      <textarea class="np-input" rows="4" placeholder="Default: More from the same incident" bind:value={f.followUp}></textarea>
+    </label>
+  {/if}
+
+  <div class="fld">
+    <span class="f-label">Before (optional command)</span>
+    <input class="np-input np-mono" placeholder="program, e.g. python" bind:value={f.preCommand} />
+    <textarea class="np-input np-mono" rows="2" placeholder="arguments, one per line" bind:value={f.preArgs}></textarea>
+    <span class="np-small np-dim">Runs for every payload that arrives; the payload is on standard input as JSON.</span>
+  </div>
+
+  <div class="fld">
+    <span class="f-label">After (optional command)</span>
+    <input class="np-input np-mono" placeholder="program, e.g. python" bind:value={f.postCommand} />
+    <textarea class="np-input np-mono" rows="2" placeholder="arguments, one per line" bind:value={f.postArgs}></textarea>
+    <span class="np-small np-dim">Runs when the chat finishes, asks you, stalls or could not start; the result is on standard input as JSON.</span>
+  </div>
+  {#if f.postCommand.trim()}
+    <label class="fld">
+      <span class="f-label">Tell the After command a chat is stalled after (min, 0 = never)</span>
+      <input class="np-input" type="number" min="0" max="1440" step="1" bind:value={f.stalledMinutes} />
     </label>
   {/if}
 
   <label class="fld">
-    <span class="f-label">Hooks (optional, JSON): actions NetPI runs itself</span>
-    <textarea class="np-input np-mono" rows="8" data-field="hooks" placeholder={HOOK_EXAMPLE} bind:value={f.hooks}></textarea>
-    <span class="np-small np-dim">
-      <b>on</b>: received (every payload, before filters) · started · finished (the chat's run ended; adds verdict, result, summary, status) · asking (waits for you) · stalled (afterMinutes) · failed.
-      <b>when</b> uses the match syntax over the alert's fields plus those. <b>do</b>: command {'{'}command, args, env, json|text (= stdin){'}'} (run without a shell; the program is never a template — pass alert text on stdin, not in args, when a shell sits behind it, e.g. ssh) or http {'{'}url, method, headers, json|text{'}'}; other strings are templates.
-      The verdict is the last <span class="np-mono">VERDICT: word</span> line of the chat's final answer (<span class="np-mono">unknown</span> when there is none, so a gate that suppresses only noise fails open).
-    </span>
-  </label>
-
-  <label class="fld">
     <span class="f-label">Safety fuse: most new chats per hour (0 = none)</span>
     <input class="np-input" type="number" min="0" step="1" bind:value={f.maxChatsPerHour} />
-    <span class="np-small np-dim">Not a quota: past it, batches wait for room instead of being dropped. Agents queue for their own instances, and the budget is the Agents plugin's.</span>
+    <span class="np-small np-dim">Past it, batches wait instead of being dropped.</span>
   </label>
 
   {#if error}

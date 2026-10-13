@@ -183,10 +183,10 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
 
     // ---------------------------------------------------------------- watching the chats (finished / asking / stalled)
 
-    /// <summary>The context a hook sees for an incident: its first alert's fields plus key, count, sessionId and title.</summary>
+    /// <summary>What a post hook gets on standard input for an incident: its first alert under <c>alert</c>, plus key, count, sessionId and title.</summary>
     private static JsonObject IncidentContext(JsonObject inc)
     {
-        var context = inc["first"] is JsonObject first ? (JsonObject)first.DeepClone() : new JsonObject();
+        var context = new JsonObject { ["alert"] = inc["first"]?.DeepClone() };
         context["key"] = inc["key"]?.DeepClone();
         context["count"] = inc["alertCount"]?.DeepClone() ?? 1;
         context["sessionId"] = inc["sessionId"]?.DeepClone();
@@ -195,10 +195,10 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         return context;
     }
 
-    /// <summary>The context of a payload outside an incident (the received and failed hooks): its fields plus the title.</summary>
+    /// <summary>What a hook gets for a payload outside an incident (the pre hook, and post on a failure): the payload under <c>alert</c> plus the title.</summary>
     private static JsonObject HookContext(JsonObject hook, JsonNode payload, string title)
     {
-        var context = payload is JsonObject o ? (JsonObject)o.DeepClone() : new JsonObject { ["body"] = Template.Show(payload) };
+        var context = new JsonObject { ["alert"] = payload.DeepClone() };
         context["title"] = title;
         return context;
     }
@@ -374,8 +374,6 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         store.PutIncident(incidentDoc);
         var started = Finish(id, now, WebhookStore.Started, null, session.Id, batch.Key,
             batch.Alerts.Count > 1 ? $"{batch.Alerts.Count} alerts: {summary}" : summary, first.From);
-        await _hooks.FireAsync(hook, "started", IncidentContext(incidentDoc), fired, session.Id, incidentKey, ct).ConfigureAwait(false);
-        store.PutIncident(incidentDoc);
         return started;
     }
 

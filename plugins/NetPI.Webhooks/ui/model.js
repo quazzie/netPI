@@ -62,32 +62,21 @@ export function limitsLine(h) {
   return bits.join(' · ');
 }
 
-/** The hooks as editable text, and back (null when the text is not a JSON array). */
-export function hooksToText(hooks) {
-  return Array.isArray(hooks) && hooks.length ? JSON.stringify(hooks, null, 2) : '';
+/** A hook (pre or post) as form fields, and back: the command and its arguments, one per line. An empty command is {} (clears the hook). */
+export function hookToForm(h) {
+  return { command: h?.command ?? '', args: (h?.args ?? []).join('\n') };
 }
 
-export function textToHooks(text) {
-  const t = (text ?? '').trim();
-  if (!t) return [];
-  try {
-    const v = JSON.parse(t);
-    return Array.isArray(v) ? v : null;
-  } catch {
-    return null;
-  }
+export function formToHook(command, args) {
+  const c = (command ?? '').trim();
+  if (!c) return {};
+  const a = (args ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
+  return a.length ? { command: c, args: a } : { command: c };
 }
 
-/** One hook as a line: "finished → run ssh server … · when verdict not in noise,resolved · once notify". */
+/** One hook as a line for the row: the program and its arguments. */
 export function hookLine(h) {
-  const action = h.do?.type === 'command' ? `run ${h.do.command}${h.do.args?.length ? ' ' + h.do.args.join(' ') : ''}` : h.do?.type === 'http' ? `${h.do.method ?? 'POST'} ${h.do.url}` : '?';
-  const when = (h.when ?? []).map((c) => {
-    const op = c.in ? `in ${c.in.join(',')}` : c.notIn ? `not in ${c.notIn.join(',')}` : c.equals !== undefined ? `= ${c.equals}` : c.matches ? `~ ${c.matches}` : 'exists';
-    return `${c.path} ${op}`;
-  });
-  return [`${h.on} → ${action}`, when.length ? `when ${when.join(' and ')}` : null, h.on === 'stalled' ? `after ${h.afterMinutes ?? 10} min` : null, h.once ? `once ${h.once}` : null]
-    .filter(Boolean)
-    .join(' · ');
+  return `${h.command}${h.args?.length ? ' ' + h.args.join(' ') : ''}`;
 }
 
 /** An incident as a line: "nuc · open · 3 alerts" or "nuc · collecting, chat starts in 40 s". */
