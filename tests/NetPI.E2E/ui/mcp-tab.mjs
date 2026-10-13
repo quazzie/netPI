@@ -28,9 +28,15 @@ await run('mcp-tab', async ({ page }) => {
     check('mcp: the configured servers are listed with their state and tool count (mcp.list)', /connected · 3 tools/.test(await text(ui)), await text(ui));
     check('mcp: a failed server shows its error', /failed · 0 tools/.test(await text(gone)) && (await gone.locator('.err').count()) > 0, await text(gone));
     check('mcp: a tool the plugin rejected is named with the reason', /broken: Tool inputSchema must be a JSON object/.test(await text(ui)), await text(ui));
+    check('mcp: every server starts collapsed, so no tool is listed', (await page.locator('.mcp details.tool').count()) === 0);
     await ui.locator('button.pick').click();
     await page.locator('.mcp details.tool').first().waitFor({ timeout: 5_000 }).catch(() => {});
     check('mcp: clicking a server lists its tools (mcp.tools)', (await page.locator('.mcp details.tool').count()) === 3, `${await page.locator('.mcp details.tool').count()} tools`);
+    await ui.locator('button.pick').click();   // a second click closes it again
+    await page.waitForFunction(() => document.querySelectorAll('.mcp details.tool').length === 0, null, { timeout: 5_000 });
+    check('mcp: a second click on the open server collapses it', true);
+    await ui.locator('button.pick').click();
+    await page.locator('.mcp details.tool').first().waitFor({ timeout: 5_000 });
     const tool = (name) => page.locator('.mcp details.tool', { has: page.locator('summary', { hasText: new RegExp(`^\\s*${name}\\b`) }) });
     // a row is opened or closed, and the next step waits until it is (a click on a row that is still moving is lost)
     const toggle = async (name, open) => {
@@ -68,6 +74,14 @@ await run('mcp-tab', async ({ page }) => {
     }
     check('mcp: switching a tool off saves the server configuration (mcp.save) and the row follows',
       Array.isArray(cfg?.tools) && !cfg.tools.includes('act') && cfg.tools.includes('lookup') && !(await expose.isChecked()), JSON.stringify(cfg?.tools));
+    // the editor is a dialog over the tab: Add server opens it, Esc and Cancel close it, and the list stays behind
+    await page.locator('.mcp button', { hasText: 'Add server' }).click();
+    await page.waitForSelector('[role=dialog]', { timeout: 5_000 });
+    check('mcp: Add server opens a dialog with the id and the configuration', /Add MCP server/.test(await text(page.locator('[role=dialog]'))) && (await page.locator('[role=dialog] textarea').count()) === 1);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.querySelectorAll('[role=dialog]').length === 0, null, { timeout: 5_000 });
+    await ui.locator('button.pick').waitFor({ timeout: 5_000 });
+    check('mcp: Esc closes the dialog and the servers are still listed', true);
     await shot(page, 'ui-mcp-01-tab');
   } finally {
     await rpc('mcp.remove', { id: UI }).catch(() => {});

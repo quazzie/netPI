@@ -13,9 +13,9 @@
     },
     {
       "id": "ui.mcp-panel",
-      "runs": 9,
+      "runs": 10,
       "failures": 1,
-      "rate": 0.1111,
+      "rate": 0.1,
       "firstSeen": "20261006-011453-9432",
       "lastFailure": "20261006-011453-9432",
       "cause": "node:internal/modules/run_main:107\r \u2014 responsive",

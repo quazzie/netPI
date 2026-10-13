@@ -1,8 +1,8 @@
 <script>
-  import { Menu, IconButton, SearchInput, useRefresh } from '@netpi/kit';
+  import { Menu, IconButton, Icon, Modal, SearchInput, useRefresh } from '@netpi/kit';
   let { ctx } = $props();
   let servers = $state([]), tools = $state([]), selected = $state(''), error = $state(''), busy = $state(false);
-  let editing = $state(false), id = $state(''), draft = $state(''), query = $state('');
+  let editing = $state(false), isNew = $state(false), id = $state(''), draft = $state(''), query = $state('');
   const filtered = $derived(tools.filter(t => (t.name + ' ' + t.description).toLowerCase().includes(query.toLowerCase())));
   async function load() {
     // which server this load is about: two clicks in a row race, and the slower answer must not list the first
@@ -19,7 +19,11 @@
   const tab = useRefresh(ctx, { load, events: ['mcp.toolsChanged', 'mcp.serverChanged'] });
   /** Called by main.js (onShow): the list is stale after the tab was hidden. */
   export function setVisible(v) { if (v) tab.refresh(); }
-  async function choose(server) { selected = server.id; query = ''; await tab.refresh(); }
+  /** A server is a disclosure: its tools show while it is the chosen one, a second click closes it, and none is open at the start. */
+  async function choose(server) {
+    if (selected === server.id) { selected = ''; query = ''; return; }
+    selected = server.id; query = ''; await tab.refresh();
+  }
   async function action(method, args) {
     busy = true; error = '';
     try { await ctx.rpc(method, args); await tab.refresh(); }
@@ -46,6 +50,7 @@
       catch (e) { error = e.message ?? String(e); return; }
     }
     id = server?.id ?? '';
+    isNew = !server;
     draft = JSON.stringify(config ?? { enabled: true, transport: 'stdio', command: '', args: [], cwd: '', env: {}, pinned: [], readOnly: [] }, null, 2);
     editing = true;
   }
@@ -64,7 +69,7 @@
     busy = true; error = '';
     try {
       await ctx.rpc('mcp.save', { id, config: JSON.parse(draft) });
-      selected = id; editing = false; await tab.refresh();
+      editing = false; await tab.refresh();
     } catch (e) { error = e.message ?? String(e); }
     finally { busy = false; }
   }
@@ -91,21 +96,27 @@
     <span class="np-section-actions"><button class="np-btn np-btn-sm" onclick={() => edit(null)} disabled={busy}>Add server</button></span>
   </div>
   <p class="np-dim np-small hint">External tools are discovered on demand. Only search and call schemas enter a chat by default.</p>
-  {#if error}<p class="err np-small" role="alert">{error}</p>{/if}
+  {#if error && !editing}<p class="err np-small" role="alert">{error}</p>{/if}
   {#if editing}
-    <form class="np-stack" onsubmit={(e) => { e.preventDefault(); save(); }}>
-      <label class="field">Server id<input class="np-input" bind:value={id} required pattern={'[A-Za-z0-9_-]{1,48}'} /></label>
+    <Modal title={isNew ? 'Add MCP server' : `Edit ${id}`} width={620} onclose={() => !busy && (editing = false)}>
+    <form id="mcp-edit" class="np-stack" onsubmit={(e) => { e.preventDefault(); save(); }}>
+      <label class="field">Server id<input class="np-input" bind:value={id} required readonly={!isNew} pattern={'[A-Za-z0-9_-]{1,48}'} /></label>
       <label class="field">Configuration<textarea class="np-input np-mono" bind:value={draft} rows="16" spellcheck="false"></textarea></label>
       <p class="np-dim np-small hint">stdio: command, args and absolute cwd. HTTP: transport "http" and url. env and headerEnv map names to environment-variable names; credentials stay outside settings. tools restricts remote tool names; pinned and readOnly contain remote tool names.</p>
-      <div class="np-hstack-sm"><button class="np-btn np-btn-sm np-btn-primary" type="submit" disabled={busy}>Save</button><button class="np-btn np-btn-sm" type="button" onclick={() => editing = false} disabled={busy}>Cancel</button></div>
     </form>
+    {#snippet footer()}
+      {#if error}<span class="err np-small foot-err" role="alert">{error}</span>{/if}
+      <button class="np-btn np-btn-sm" type="button" onclick={() => editing = false} disabled={busy}>Cancel</button>
+      <button class="np-btn np-btn-sm np-btn-primary" type="submit" form="mcp-edit" disabled={busy}>Save</button>
+    {/snippet}
+    </Modal>
   {/if}
   {#if !servers.length && !editing}<p class="np-empty">No servers configured.</p>{/if}
   {#each servers as server (server.id)}
     <section class="server" class:chosen={selected === server.id}>
       <div class="head">
         <button class="pick" onclick={() => choose(server)}>
-          <span class="np-strong np-ellipsis">{server.id}</span>
+          <span class="np-strong np-ellipsis"><Icon name={selected === server.id ? 'chevron-down' : 'chevron-right'} size={12} /> {server.id}</span>
           <span class="np-meta">{server.status ?? 'invalid'} · {server.toolCount ?? 0} tools</span>
         </button>
         <Menu items={actions(server)} minWidth={172}>
@@ -150,6 +161,7 @@
   .pick { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 0 0 4px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .pick .np-strong { display: block; }
   .chosen .pick .np-strong { color: var(--accent); }
+  .foot-err { flex: 1; min-width: 0; margin: 0; text-align: left; }
   .server :global(.np-search) { margin: 4px 0 2px; }
   .tool { padding: 6px 0; border-top: 1px solid var(--border); min-width: 0; }
   .tool summary { cursor: pointer; overflow-wrap: anywhere; }
