@@ -862,7 +862,8 @@ named agent's model, otherwise the catalog default. Turns, delegation and manual
 (a bare model id is normalized first); an explicit child effort wins. An unavailable selected model is reported,
 including during manual compaction, rather than silently replaced by the global default.
 
-Several at once: `{ subagents: [{ task, name?, agent?, model?, tools?, instructions? }, …], background?, timeoutSeconds? }`.
+Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions? }, …], background?, timeoutSeconds? }`.
+`taskFile` reads a long task from a file (path relative to the working directory; appended to `task` if both are given), so a batch stays short enough for a model to write in one call. Arguments that end inside an open object or array are reported as cut off, with that advice.
 Every entry is checked first, and every workspace the batch needs is provisioned before the first child starts (a named one
 resolved, the worktree of every worker that writes created, by the same rule a single spawn follows); a bad one starts none of
 them ("subagents[1] (name): …") and releases the worktrees the batch had created. Then they all start together.

@@ -203,6 +203,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         ["model"] = Prop("string", ""),
         ["tools"] = StringArray(""),
         ["instructions"] = Prop("string", ""),
+        ["taskFile"] = Prop("string", "A file holding the task (appended to task, if any): for a long brief, write it to a file first so the call stays short"),
         ["workspace"] = Prop("string", "An existing workspace id or name; \"new\" (or isolated: true) gives the subagent its own worktree and branch"),
         ["isolated"] = Prop("boolean", "Give the subagent its own worktree and branch, so its writes cannot reach yours"),
     };
@@ -218,12 +219,14 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         Help =
             "Each subagent runs on one of the agents the user set up (a model with instances) and gets its own session, and ends " +
             "with a final report. One subagent: pass task (and agent, name, …). Several at once: pass them in subagents, each " +
-            "{ task, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }; they all start together, and all are checked before any " +
+            "{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }; they all start together, and all are checked before any " +
             "starts. Waits until all of them finish and returns every report; your own instance is free for them meanwhile. " +
             "background: true returns at once instead: each report arrives later on its own (or collect them with agent, action " +
             "wait). timeoutSeconds: when waiting, the longest wait (the ones still running then report later on their own).\n" +
             "task: complete and self-contained (the subagent does not see your conversation): goal, relevant paths and context, " +
-            "constraints, and what to put in the final report. name: short, e.g. \"tests\" or \"api-research\". agent: an id " +
+            "constraints, and what to put in the final report. A long task goes in a file: write it, pass taskFile (a path, relative to your " +
+            "working directory) instead of task, so a batch of several stays short enough to write in one call. In a batch, agent goes inside each " +
+            "entry of subagents, not beside it. name: short, e.g. \"tests\" or \"api-research\". agent: an id " +
             "from agent_choices (required when the user has set up agents); on a busy agent the subagent waits for a free " +
             "instance. model: only when no agents are set up, a model ref \"provider/model\" (default: your model). tools: the " +
             "subagent's tools by name, which may include tools you do not have yourself (e.g. give a remote-work agent the ssh " +
@@ -243,7 +246,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             ["subagents"] = new JsonObject
             {
                 ["type"] = "array",
-                ["items"] = Schema(ItemProperties(), "task"),
+                ["items"] = Schema(ItemProperties()),
             },
             ["background"] = Prop("boolean", ""),
             ["timeoutSeconds"] = Prop("integer", ""),
@@ -325,7 +328,14 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     {
         var itemArgs = new ToolArgs(item);
         var task = itemArgs.Str("task", "prompt", "description", "message");
-        if (string.IsNullOrWhiteSpace(task)) return (null, "Missing 'task': describe the subagent's task completely.");
+        if (itemArgs.Str("taskFile") is { Length: > 0 } taskFile)
+        {
+            string fileText;
+            try { fileText = File.ReadAllText(context.ResolvePath(taskFile)); }
+            catch (Exception ex) { return (null, $"taskFile {taskFile} can't be read: {ex.Message}"); }
+            task = string.IsNullOrWhiteSpace(task) ? fileText : task + "\n\n" + fileText;
+        }
+        if (string.IsNullOrWhiteSpace(task)) return (null, "Missing 'task' (or 'taskFile'): describe the subagent's task completely.");
         var (workspace, isolated) = WorkspaceArgs(itemArgs);
 
         // the agents the user set up are the menu: one of them is required (an active one); without any, a model ref or your model

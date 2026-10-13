@@ -34,7 +34,7 @@ internal sealed partial class ToolBatch
             var id = parent.Call.Id + "~" + Interlocked.Increment(ref _count);
             JsonElement args;
             try { args = ToolArgs.Unwrap(arguments.Clone()); }
-            catch (JsonException ex) { return ToolResult.Error($"Invalid JSON arguments for {name}: {ex.Message}"); }
+            catch (JsonException ex) { return ToolResult.Error(InvalidJson(name, ex)); }
             if (args.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) args = JsonDocument.Parse("{}").RootElement.Clone();
             var call = new ToolCallPart { Id = id, Name = tool.Definition.Name, Arguments = args.GetRawText() };
             var readOnly = ReadsOnly(tool, call.Arguments);
@@ -74,7 +74,7 @@ internal sealed partial class ToolBatch
                 result = await tool.ExecuteAsync(batch.CallContext(call.Id), args, ct).ConfigureAwait(false) ?? ToolResult.Error("The tool returned no result.");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (JsonException ex) { result = ToolResult.Error($"Invalid JSON arguments for {call.Name}: {ex.Message}"); }
+            catch (JsonException ex) { result = ToolResult.Error(InvalidJson(call.Name, ex)); }
             catch (Exception ex)
             {
                 batch.Ctx.Logger.LogDebug(ex, "Nested tool {Tool} threw", call.Name);

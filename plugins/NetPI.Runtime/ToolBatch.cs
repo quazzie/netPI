@@ -11,6 +11,21 @@ namespace NetPI.Runtime;
 /// </summary>
 internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, AgentRunContext rc, Func<bool> hasSteering)
 {
+    /// <summary>
+    /// The message for arguments that are not JSON. A call that ends inside an object or array was almost always cut off
+    /// (the model ran out of output): say so, so the model shortens the call instead of resending it as it was.
+    /// </summary>
+    internal static string InvalidJson(string tool, JsonException ex)
+    {
+        var text = $"Invalid JSON arguments for {tool}: {ex.Message}";
+        var cutOff = ex.Message.Contains("depth to be zero", StringComparison.Ordinal) || ex.Message.Contains("end of data", StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("end of the string", StringComparison.OrdinalIgnoreCase);
+        return cutOff
+            ? text + "\nThe call looks cut off before its end (an open object or array): it was probably too long to write in one go. "
+              + "Send less per call: fewer items, or long texts in a file (agent_spawn: taskFile) instead of inline."
+            : text;
+    }
+
     private IPluginContext Ctx => rt.Ctx;
     private string SessionId => state.Info.SessionId;
     private string AgentId => state.Info.Id;
@@ -189,7 +204,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (JsonException ex) { prepared.Early = ToolResult.Error($"Invalid JSON arguments for {call.Name}: {ex.Message}"); }
+        catch (JsonException ex) { prepared.Early = ToolResult.Error(InvalidJson(call.Name, ex)); }
         catch (Exception ex) { prepared.Early = ToolResult.Error(ex.Message); }
 
         rt.Emit(EventTypes.ToolStart, new JsonObject
@@ -225,7 +240,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             if (ToolHelp.Asked(prepared.Tool.Definition, prepared.Args))
                 prepared.Early = ToolResult.Ok(ToolHelp.Text(prepared.Tool.Definition));
         }
-        catch (JsonException ex) { prepared.Early = ToolResult.Error($"Invalid JSON arguments for {call.Name}: {ex.Message}"); }
+        catch (JsonException ex) { prepared.Early = ToolResult.Error(InvalidJson(call.Name, ex)); }
         return (prepared, changed);
     }
 
