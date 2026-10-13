@@ -432,6 +432,12 @@ internal static class CoreRpc
     // ------------------------------------------------------------ misc
     private static void RegisterMisc(Adder a)
     {
+        a.Add("ws.clients", "Connected WebSocket clients: their session subscriptions and their queued/in-flight load (diagnostics) → { id, connectedAt, sessions ('*' | '(none)' | ids), pending, pendingBytes, inFlight }[]", _ =>
+        {
+            var clients = a.K.Services.Get<IWsClients>();
+            return clients?.Clients() ?? [];
+        }, readOnly: true);
+
         a.Add("fs.dirs", "Folder picker: { path? } → { path, parent, dirs: {name,path}[], roots }", req => ListDirectories(req.Str("path")), readOnly: true);
 
         a.Add("tools.list", "Tool registrations → { name, label, description, category, readOnly, pluginId, active, disabled, priority }[]", _ =>

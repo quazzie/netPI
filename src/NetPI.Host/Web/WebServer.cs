@@ -63,7 +63,9 @@ internal sealed class WebServer : IAsyncDisposable
     {
         var desired = kernel.Options.Port ?? kernel.Settings.Get<int?>("server.port") ?? 7431;
         if (desired is < 0 or > 65535) desired = 7431;
-        var server = new WebServer(kernel, new WsHub(kernel));
+        var hub = new WsHub(kernel);
+        kernel.Services.Register<IWsClients>(hub);
+        var server = new WebServer(kernel, hub);
         try
         {
             try
