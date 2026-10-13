@@ -10,7 +10,8 @@
   const HOOK_EXAMPLE = `[
   { "on": "finished", "once": "notify",
     "when": [{ "path": "verdict", "notIn": ["noise", "resolved"] }],
-    "do": { "type": "mqtt", "topic": "homeassistant/alert",
+    "do": { "type": "command", "command": "ssh",
+            "args": ["-o", "BatchMode=yes", "server", "sudo -n /usr/local/sbin/ha-alert-json"],
             "json": { "title": "{{title}}", "message": "{{summary}}", "id": "alert_{{key}}" } } }
 ]`;
 
@@ -233,7 +234,7 @@
     <textarea class="np-input np-mono" rows="8" data-field="hooks" placeholder={HOOK_EXAMPLE} bind:value={f.hooks}></textarea>
     <span class="np-small np-dim">
       <b>on</b>: received (every payload, before filters) · started · finished (the chat's run ended; adds verdict, result, summary, status) · asking (waits for you) · stalled (afterMinutes) · failed.
-      <b>when</b> uses the match syntax over the alert's fields plus those. <b>do</b>: mqtt {'{'}topic, json|text{'}'} (broker in Settings → Webhooks) or http {'{'}url, method, headers, json|text{'}'}; strings are templates.
+      <b>when</b> uses the match syntax over the alert's fields plus those. <b>do</b>: command {'{'}command, args, env, json|text (= stdin){'}'} (run without a shell; the program is never a template — pass alert text on stdin, not in args, when a shell sits behind it, e.g. ssh) or http {'{'}url, method, headers, json|text{'}'}; other strings are templates.
       The verdict is the last <span class="np-mono">VERDICT: word</span> line of the chat's final answer (<span class="np-mono">unknown</span> when there is none, so a gate that suppresses only noise fails open).
     </span>
   </label>

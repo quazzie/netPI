@@ -1,5 +1,5 @@
-using System.Net.Http.Headers;
-using System.Net.Sockets;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -22,8 +22,10 @@ namespace NetPI.Webhooks;
 /// <c>key</c>, <c>count</c>, <c>sessionId</c>, <c>title</c>, <c>status</c> (ok|error|no-answer), <c>verdict</c>, <c>result</c> and <c>summary</c>.
 /// The verdict is the last <c>VERDICT: word</c> line of the final answer (<c>unknown</c> when there is none), so a gate fails open: a hook
 /// that says "when the verdict is not noise" also fires when the agent said nothing, died, or stalled. <c>once</c> names a key that fires at most once
-/// per incident (so a "notify" reached from two places notifies once). <c>do</c> is an <c>mqtt</c> publish or an <c>http</c> request, templated
-/// like a prompt; a <c>json</c> object is serialised after its strings are expanded, so no value can break the JSON.
+/// per incident (so a "notify" reached from two places notifies once). <c>do</c> is a <c>command</c> (a program run with no shell: its arguments, environment
+/// and standard input are templates) or an <c>http</c> request; a <c>json</c> object is serialised after its strings are expanded, so no value can break the JSON.
+/// The program of a command is never a template, and alert text should reach a program through standard input rather than arguments wherever a shell sits behind
+/// it (ssh joins its arguments into one remote command line). Only the user can write hooks: an agent's change to them pauses the webhook as a proposal.
 /// </summary>
 internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimeProvider time)
 {
@@ -65,16 +67,32 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
 
     private static JsonObject ValidateAction(JsonNode? node, string what)
     {
-        if (node is not JsonObject a) throw new RpcException("bad_request", $"{what}: do must be an object with a type of mqtt or http");
+        if (node is not JsonObject a) throw new RpcException("bad_request", $"{what}: do must be an object with a type of command or http");
         var type = a["type"]?.GetValue<string>()?.Trim().ToLowerInvariant();
         var clean = new JsonObject { ["type"] = type };
         switch (type)
         {
-            case "mqtt":
-                clean["topic"] = a["topic"]?.GetValue<string>()?.Trim() is { Length: > 0 } t ? t : throw new RpcException("bad_request", $"{what}: an mqtt action needs a topic");
-                Body(a, clean, what);
-                if (a["retain"] is JsonValue r && r.TryGetValue<bool>(out var retain)) clean["retain"] = retain;
+            case "command":
+            {
+                var command = a["command"]?.GetValue<string>()?.Trim();
+                if (string.IsNullOrEmpty(command)) throw new RpcException("bad_request", $"{what}: a command action needs a command (the program to run)");
+                if (command.Contains("{{")) throw new RpcException("bad_request", $"{what}: the program itself cannot be a template (alert text must never choose what runs)");
+                clean["command"] = command;
+                if (a["args"] is not null)
+                {
+                    if (a["args"] is not JsonArray args || args.Count > 50 || args.Any(x => x is not JsonValue v || !v.TryGetValue<string>(out _)))
+                        throw new RpcException("bad_request", $"{what}: args must be an array of at most 50 strings");
+                    clean["args"] = args.DeepClone();
+                }
+                if (a["env"] is JsonObject env) clean["env"] = env.DeepClone();
+                if (a["timeoutSeconds"] is not null)
+                {
+                    if (a["timeoutSeconds"] is not JsonValue tv || !tv.TryGetValue<int>(out var seconds) || seconds < 1 || seconds > 300) throw new RpcException("bad_request", $"{what}: timeoutSeconds must be 1–300");
+                    clean["timeoutSeconds"] = seconds;
+                }
+                Body(a, clean, what, optional: true);   // json | text = what is written to the program's standard input
                 break;
+            }
             case "http":
                 var url = a["url"]?.GetValue<string>()?.Trim();
                 if (string.IsNullOrEmpty(url) || !(url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
@@ -86,7 +104,7 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
                 Body(a, clean, what, optional: true);
                 break;
             default:
-                throw new RpcException("bad_request", $"{what}: do.type must be mqtt or http");
+                throw new RpcException("bad_request", $"{what}: do.type must be command or http");
         }
         return clean;
     }
@@ -171,17 +189,46 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
         var now = time.GetUtcNow();
         switch (action["type"]?.GetValue<string>())
         {
-            case "mqtt":
+            case "command":
             {
-                var host = ctx.Settings.Get("webhooks.mqtt.host", "")?.Trim();
-                if (string.IsNullOrEmpty(host)) throw new InvalidOperationException("webhooks.mqtt.host is not set");
-                var topic = Template.Expand(action["topic"]!.GetValue<string>(), context, now);
-                var body = Payload(action, context, now);
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(TimeSpan.FromSeconds(15));
-                await Mqtt.PublishAsync(host, Math.Clamp(ctx.Settings.Get("webhooks.mqtt.port", 1883), 1, 65535), ctx.Settings.Get("webhooks.mqtt.user", ""),
-                    ctx.Settings.Get("webhooks.mqtt.password", ""), topic, Encoding.UTF8.GetBytes(body ?? ""), action["retain"] is JsonValue r && r.TryGetValue<bool>(out var retain) && retain, timeout.Token).ConfigureAwait(false);
-                return $"mqtt {topic} published";
+                var program = action["command"]!.GetValue<string>();
+                var info = new ProcessStartInfo(program)
+                {
+                    UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                    StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
+                };
+                if (action["args"] is JsonArray args) foreach (var arg in args) info.ArgumentList.Add(Template.Expand(Template.Show(arg), context, now));
+                if (action["env"] is JsonObject env) foreach (var (k, v) in env) info.Environment[k] = Template.Expand(Template.Show(v), context, now);
+                var stdin = Payload(action, context, now);
+                var seconds = action["timeoutSeconds"] is JsonValue tv && tv.TryGetValue<int>(out var t) ? t : 30;
+                Process process;
+                try { process = Process.Start(info) ?? throw new InvalidOperationException($"{program} did not start"); }
+                catch (Win32Exception ex) { throw new InvalidOperationException($"{program} could not be started: {ex.Message}"); }
+                using (process)
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(seconds));
+                    var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                    var errors = process.StandardError.ReadToEndAsync(timeout.Token);
+                    try
+                    {
+                        if (stdin is not null) await process.StandardInput.WriteAsync(stdin.AsMemory(), timeout.Token).ConfigureAwait(false);
+                        process.StandardInput.Close();
+                        await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
+                        throw new InvalidOperationException($"{Path.GetFileName(program)} did not finish within {seconds} s and was stopped");
+                    }
+                    catch (IOException) { /* the program closed its input early: its exit code says what happened */ }
+                    var o = (await output.ConfigureAwait(false)).Trim();
+                    var e = (await errors.ConfigureAwait(false)).Trim();
+                    var name = Path.GetFileName(program);
+                    if (process.ExitCode != 0)
+                        throw new InvalidOperationException($"{name} exited {process.ExitCode}" + (FirstLine(e.Length > 0 ? e : o) is { Length: > 0 } why ? ": " + why : ""));
+                    return $"{name} exited 0" + (FirstLine(o) is { Length: > 0 } said ? ": " + said : "");
+                }
             }
             case "http":
             {
@@ -202,7 +249,10 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
         }
     }
 
-    /// <summary>The action's body: its <c>json</c> object with every string expanded and serialised, else its <c>text</c> expanded, else null.</summary>
+    private static string FirstLine(string text) =>
+        Template.Clip(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? "", 160);
+
+    /// <summary>The action's body (for a command: its standard input): its <c>json</c> object with every string expanded and serialised, else its <c>text</c> expanded, else null.</summary>
     private static string? Payload(JsonObject action, JsonObject context, DateTimeOffset now)
     {
         if (action["json"] is JsonNode json) return ExpandJson(json, context, now)?.ToJsonString();
@@ -217,58 +267,4 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
         JsonValue v when v.TryGetValue<string>(out var s) => JsonValue.Create(Template.Expand(s, context, now)),
         _ => node.DeepClone(),
     };
-}
-
-/// <summary>A minimal MQTT 3.1.1 publisher (QoS 0): connect, publish, disconnect. Enough for a Home Assistant alert topic; no subscriptions, no TLS.</summary>
-internal static class Mqtt
-{
-    public static async Task PublishAsync(string host, int port, string? user, string? password, string topic, byte[] payload, bool retain, CancellationToken ct)
-    {
-        using var client = new TcpClient();
-        await client.ConnectAsync(host, port, ct).ConfigureAwait(false);
-        var stream = client.GetStream();
-
-        var flags = (byte)(0x02 | (string.IsNullOrEmpty(user) ? 0 : 0x80) | (string.IsNullOrEmpty(user) || string.IsNullOrEmpty(password) ? 0 : 0x40));
-        var connect = new List<byte>();
-        connect.AddRange(Str("MQTT"));
-        connect.Add(4);                    // protocol level 3.1.1
-        connect.Add(flags);
-        connect.Add(0); connect.Add(30);   // keep alive
-        connect.AddRange(Str("netpi-webhooks-" + Guid.NewGuid().ToString("N")[..8]));
-        if (!string.IsNullOrEmpty(user)) connect.AddRange(Str(user));
-        if ((flags & 0x40) != 0) connect.AddRange(Str(password!));
-        await stream.WriteAsync(Packet(0x10, connect), ct).ConfigureAwait(false);
-
-        var ack = new byte[4];
-        var read = 0;
-        while (read < 4)
-        {
-            var n = await stream.ReadAsync(ack.AsMemory(read), ct).ConfigureAwait(false);
-            if (n == 0) throw new IOException("the broker closed the connection");
-            read += n;
-        }
-        if (ack[0] != 0x20 || ack[3] != 0) throw new IOException(ack[3] switch { 4 or 5 => "the broker refused the credentials", var c => $"the broker refused the connection (code {c})" });
-
-        var publish = new List<byte>();
-        publish.AddRange(Str(topic));
-        publish.AddRange(payload);
-        await stream.WriteAsync(Packet((byte)(0x30 | (retain ? 1 : 0)), publish), ct).ConfigureAwait(false);
-        await stream.WriteAsync(new byte[] { 0xE0, 0x00 }, ct).ConfigureAwait(false);
-        await stream.FlushAsync(ct).ConfigureAwait(false);
-    }
-
-    private static byte[] Str(string s)
-    {
-        var b = Encoding.UTF8.GetBytes(s);
-        return [(byte)(b.Length >> 8), (byte)(b.Length & 0xFF), .. b];
-    }
-
-    private static byte[] Packet(byte header, List<byte> body)
-    {
-        var packet = new List<byte> { header };
-        var n = body.Count;
-        do { var d = (byte)(n % 128); n /= 128; packet.Add((byte)(n > 0 ? d | 0x80 : d)); } while (n > 0);
-        packet.AddRange(body);
-        return [.. packet];
-    }
 }

@@ -78,9 +78,9 @@ export function textToHooks(text) {
   }
 }
 
-/** One hook as a line: "finished → mqtt homeassistant/alert · when verdict not in noise,resolved · once notify". */
+/** One hook as a line: "finished → run ssh server … · when verdict not in noise,resolved · once notify". */
 export function hookLine(h) {
-  const action = h.do?.type === 'mqtt' ? `mqtt ${h.do.topic}` : h.do?.type === 'http' ? `${h.do.method ?? 'POST'} ${h.do.url}` : '?';
+  const action = h.do?.type === 'command' ? `run ${h.do.command}${h.do.args?.length ? ' ' + h.do.args.join(' ') : ''}` : h.do?.type === 'http' ? `${h.do.method ?? 'POST'} ${h.do.url}` : '?';
   const when = (h.when ?? []).map((c) => {
     const op = c.in ? `in ${c.in.join(',')}` : c.notIn ? `not in ${c.notIn.join(',')}` : c.equals !== undefined ? `= ${c.equals}` : c.matches ? `~ ${c.matches}` : 'exists';
     return `${c.path} ${op}`;

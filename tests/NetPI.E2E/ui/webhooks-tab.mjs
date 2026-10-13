@@ -24,7 +24,7 @@ const hook = (o) => ({
 });
 const fixtures = () => [
   hook({ id: 'whk_ok', name: 'Checkmk', lastAt: iso(now - 600_000), lastStatus: 'started', lastSessionId: 'ses_a', group: { key: '{{host}}', debounceSeconds: 90, reopenMinutes: 240 },
-    hooks: [{ on: 'finished', once: 'notify', when: [{ path: 'verdict', notIn: ['noise', 'resolved'] }], do: { type: 'mqtt', topic: 'homeassistant/alert', json: { title: '{{title}}' } } }] }),
+    hooks: [{ on: 'finished', once: 'notify', when: [{ path: 'verdict', notIn: ['noise', 'resolved'] }], do: { type: 'command', command: 'ssh', args: ['server', 'ha-alert-json'], json: { title: '{{title}}' } } }] }),
   hook({ id: 'whk_skip', name: 'Skipping', lastAt: iso(now - 60_000), lastStatus: 'duplicate', lastReason: 'the chat for nuc was just told this' }),
   hook({ id: 'whk_fail', name: 'Failing', lastAt: iso(now - 60_000), lastStatus: 'failed', lastReason: 'the model is not loaded' }),
   hook({ id: 'whk_off', name: 'Paused', enabled: false }),
@@ -132,7 +132,7 @@ try {
   check('Preview shows what would happen and the filled prompt', (await row('Checkmk').locator('.preview').innerText()).includes('Would open the incident “nuc”'));
   check('the detail lists the incidents with their state', (await row('Checkmk').innerText()).includes('nuc · open · 3 alerts') && (await row('Checkmk').innerText()).includes('server · collecting, chat starts in'));
   await row('Checkmk').locator('.inc-open').first().click();
-  check('the detail lists the hooks in words', (await row('Checkmk').innerText()).includes('finished → mqtt homeassistant/alert · when verdict not in noise,resolved · once notify'));
+  check('the detail lists the hooks in words', (await row('Checkmk').innerText()).includes('finished → run ssh server ha-alert-json · when verdict not in noise,resolved · once notify'));
   check('an incident shows the agent\'s verdict', (await row('Checkmk').innerText()).includes('verdict noise'));
   check('an incident row opens its chat', (await tab.evaluate(() => window.__opened)) === 'ses_inc');
   const previewCall = await tab.evaluate(() => window.__calls.filter(([m]) => m === 'webhooks.test').at(-1)[1]);
@@ -173,11 +173,11 @@ try {
   await tab.locator('.form textarea').nth(1).fill('[{"path":"state","in":["CRIT","DOWN"]}]');
   await tab.locator('.form input[placeholder="{{host}}"]').fill('{{host}}');
   await tab.waitForSelector('.form input[type=number][max="3600"]', { timeout: 5_000 });
-  await tab.locator('.form textarea[data-field="hooks"]').fill('[{"on":"received","do":{"type":"mqtt","topic":"homeassistant/alert","text":"x"}}]');
+  await tab.locator('.form textarea[data-field="hooks"]').fill('[{"on":"received","do":{"type":"command","command":"ssh","args":["server","x"],"text":"x"}}]');
   await tab.locator('.form .f-actions button', { hasText: 'Save' }).click();
   await tab.waitForSelector('.webhooks .token', { timeout: 5_000 });
   const add = await tab.evaluate(() => window.__calls.filter(([m]) => m === 'webhooks.add').at(-1)[1]);
-  check('add sends the hooks', Array.isArray(add.hooks) && add.hooks[0].on === 'received' && add.hooks[0].do.topic === 'homeassistant/alert', JSON.stringify(add.hooks));
+  check('add sends the hooks', Array.isArray(add.hooks) && add.hooks[0].on === 'received' && add.hooks[0].do.command === 'ssh', JSON.stringify(add.hooks));
   check('add sends name, agent free, match and the incident group', add.name === 'Checkmk alerts' && add.agent === 'free' && add.profile === 'sysadmin' && add.match[0].path === 'state' && add.group.key === '{{host}}' && add.group.debounceSeconds === 90 && add.maxChatsPerHour === 60, JSON.stringify(add));
   const tokenBox = await tab.locator('.webhooks .token').innerText();
   check('the token box shows the token once, with a curl line', tokenBox.includes('whk_SECRET_TOKEN_wxyz') && tokenBox.includes('curl -X POST'), tokenBox.slice(0, 80));
@@ -230,7 +230,7 @@ check('rowState: a failed delivery is an error', rowState({ enabled: true, lastS
 check('agent list round-trips', formToAgent({ agentChoice: '__list', agentList: ' a , b ' }) === 'a,b' && agentToForm('a,b').agentChoice === '__list');
 check('incidentLine: open and collecting', incidentLine({ key: 'nuc', state: 'open', alertCount: 1 }) === 'nuc · open · 1 alert' && incidentLine({ key: 'x', state: 'collecting', alertCount: 2, startsAt: new Date(Date.now() + 30000).toISOString() }, Date.now()).includes('chat starts in'));
 check('limitsLine: grouped and ungrouped', limitsLine({ group: { key: '{{host}}', debounceSeconds: 60 }, maxChatsPerHour: 60 }).includes('60 s window') && limitsLine({}).includes('every alert its own chat'));
-check('hookLine and textToHooks', hookLine({ on: 'stalled', afterMinutes: 5, do: { type: 'http', url: 'http://x/y' } }) === 'stalled → POST http://x/y · after 5 min' && textToHooks('[{"on":"received"}]').length === 1 && textToHooks('{') === null && textToHooks('').length === 0);
+check('hookLine and textToHooks', hookLine({ on: 'stalled', afterMinutes: 5, do: { type: 'http', url: 'http://x/y' } }) === 'stalled → POST http://x/y · after 5 min' && hookLine({ on: 'finished', do: { type: 'command', command: 'ssh', args: ['a', 'b'] } }) === 'finished → run ssh a b' && textToHooks('[{"on":"received"}]').length === 1 && textToHooks('{') === null && textToHooks('').length === 0);
 check('match text: an array parses, junk does not', textToMatch('[{"path":"x","equals":1}]').length === 1 && textToMatch('x') === null && textToMatch('').length === 0);
 
 const failed = checks.filter((c) => !c.ok);
