@@ -4,7 +4,7 @@
   import { Button } from '@netpi/kit';
   import { agentToForm, formToAgent, matchToText, textToMatch } from './model.js';
 
-  let { ctx, hook = null, projects = [], agents = null, ondone, oncancel } = $props();
+  let { ctx, hook = null, projects = [], agents = null, profiles = null, ondone, oncancel } = $props();
 
   const editing = $derived(!!hook);
 
@@ -18,6 +18,7 @@
         followUp: hook.followUp ?? '',
         title: hook.title ?? '',
         projectId: hook.projectId ?? '',
+        profile: hook.profile ?? '',
         ...agentToForm(hook.agent),
         match: matchToText(hook.match),
         groupKey: hook.group?.key ?? '',
@@ -38,6 +39,7 @@
       followUp: '',
       title: '',
       projectId: ctx.app.activeProject?.id ?? '',
+      profile: '',
       agentChoice: 'any',
       agentList: '',
       match: '',
@@ -86,6 +88,7 @@
       followUp: f.followUp.trim(),
       title: f.title.trim(),
       projectId: f.projectId,
+      profile: f.profile,
       agent: formToAgent(f),
       match,
       group,
@@ -99,7 +102,7 @@
         ondone?.(null);
       } else {
         // empty optional fields are left out of an add; an update sends them so they can be cleared
-        for (const k of ['alert', 'followUp', 'title', 'projectId', 'agent']) if (!params[k]) delete params[k];
+        for (const k of ['alert', 'followUp', 'title', 'projectId', 'profile', 'agent']) if (!params[k]) delete params[k];
         if (!params.match.length) delete params.match;
         if (!params.group.key) delete params.group;
         const created = await ctx.rpc('webhooks.add', params);
@@ -146,6 +149,20 @@
         <option value={p.id}>{p.name}</option>
       {/each}
     </select>
+  </label>
+
+  <label class="fld">
+    <span class="f-label">Profile (the chat's tools and instructions)</span>
+    {#if profiles === null}
+      <input class="np-input" placeholder="profile id (profiles.list unavailable)" bind:value={f.profile} />
+    {:else}
+      <select class="np-input" bind:value={f.profile}>
+        <option value="">Automatic (the coding profile: no ssh tool)</option>
+        {#each profiles as p (p.id)}
+          <option value={p.id}>{p.name || p.id}</option>
+        {/each}
+      </select>
+    {/if}
   </label>
 
   <label class="fld">

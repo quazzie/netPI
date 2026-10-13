@@ -31,7 +31,7 @@
   const state = $derived(rowState(h));
   const projectName = $derived((projects ?? []).find((p) => p?.id === h.projectId)?.name ?? (h.projectId || 'no project'));
   const meta = $derived(
-    [state.key === 'proposed' ? 'proposed by an agent' : null, h.agent || 'default agent', projectName, limitsLine(h), `token …${h.tokenHint}`]
+    [state.key === 'proposed' ? 'proposed by an agent' : null, h.agent || 'default agent', h.profile ? `profile ${h.profile}` : 'automatic profile', projectName, limitsLine(h), `token …${h.tokenHint}`]
       .filter(Boolean)
       .join(' · '),
   );

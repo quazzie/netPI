@@ -392,6 +392,36 @@ public static class WebhooksTests
             Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count);
         });
 
+        r.Add("webhooks: a webhook's own profile is applied to its chats (the automatic one has no ssh); unknown ones are refused; a deleted one fails clearly", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var profiles = new JsonArray(new JsonObject { ["id"] = "coder" }, new JsonObject { ["id"] = "sysadmin" });
+            var applied = new List<string>();
+            env.Ctx.Rpc.Register("profiles.list", (_, _) => Task.FromResult<object?>(new JsonObject { ["defaultProfile"] = "coder", ["profiles"] = profiles.DeepClone() }));
+            env.Ctx.Rpc.Register("profiles.apply", (req, _) => { applied.Add("apply:" + req.Str("profile")); return Task.FromResult<object?>(null); });
+            env.Ctx.Rpc.Register("profiles.applyAuto", (_, _) => { applied.Add("auto"); return Task.FromResult<object?>(null); });
+
+            var plain = await env.Add(extra: new { name = "plain" });
+            var named = await env.Add(extra: new { name = "named", profile = "SysAdmin" });
+            Check.Equal("sysadmin", S(named["profile"]), "stored with the id's own spelling");
+            await env.Post(S(plain["id"])!, S(plain["token"])!, Alert());
+            await env.Post(S(named["id"])!, S(named["token"])!, Alert());
+            Check.Equal("auto,apply:sysadmin", string.Join(",", applied), "no profile: the automatic one; a named one: exactly that");
+
+            var ex = await Check.ThrowsAsync<RpcException>(() => env.Add(extra: new { profile = "nonexistent" }));
+            Check.Contains(ex.Message, "Profile nonexistent not found");
+            var cleared = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id = S(named["id"]), profile = "" }))!;
+            Check.True(cleared["profile"] is null, "an empty profile goes back to the automatic one");
+
+            await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id = S(named["id"]), profile = "sysadmin" });
+            profiles.Clear();
+            profiles.Add(new JsonObject { ["id"] = "coder" });   // the user deleted the profile
+            var gone = await env.Post(S(named["id"])!, S(named["token"])!, Alert("later"));
+            Check.Equal("failed", S(gone.Body["status"]));
+            Check.Contains(S(gone.Body["reason"]), "profile sysadmin no longer exists");
+            Check.Equal(2, env.Ctx.SessionsFake.Sessions.Count, "and no chat was started with the wrong tools");
+        });
+
         r.Add("webhooks: the receiver answers only allowed addresses, throttles wrong tokens, and refuses oversize and wrong methods", async () =>
         {
             var env = await new Env().StartAsync();

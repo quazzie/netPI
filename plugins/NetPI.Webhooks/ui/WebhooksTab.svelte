@@ -14,6 +14,7 @@
   let receiver = $state.raw(null);
   let projects = $state.raw([]);
   let agents = $state.raw(null);
+  let profiles = $state.raw(null);
   let error = $state('');
   let editing = $state(null); // null, or { hook: null } for a new one
   let reveal = $state.raw(null); // { hook, token } right after an add or a re-key
@@ -21,16 +22,18 @@
 
   async function load() {
     try {
-      const [list, st, pl, al] = await Promise.all([
+      const [list, st, pl, al, pf] = await Promise.all([
         ctx.rpc('webhooks.list', {}),
         ctx.rpc('webhooks.status', {}).catch(() => null),
         ctx.rpc('projects.list', {}).catch(() => []),
         ctx.rpc('agents.list', {}).catch(() => null),
+        ctx.rpc('profiles.list', {}).catch(() => null),
       ]);
       hooks = list ?? [];
       receiver = st;
       projects = pl ?? [];
       agents = al;
+      profiles = pf?.profiles ?? null;
       error = '';
     } catch (e) {
       error = String(e?.message ?? e);
@@ -113,6 +116,7 @@
       hook={editing.hook}
       {projects}
       {agents}
+      {profiles}
       ondone={(created) => {
         editing = null;
         if (created?.token) showToken(created, created.token);

@@ -47,6 +47,7 @@ const ctx = {
     if (method === 'webhooks.status') return receiver;
     if (method === 'projects.list') return [{ id: 'prj_1', name: 'homelab' }];
     if (method === 'agents.list') return [{ key: 'local', available: true, free: true }, { key: 'paid', available: true, free: false }];
+    if (method === 'profiles.list') return { defaultProfile: 'coder', profiles: [{ id: 'coder', name: 'Coder' }, { id: 'sysadmin', name: 'Sysadmin' }] };
     if (method === 'webhooks.incidents') return [
       { webhookId: params.id, key: 'nuc', state: 'open', alertCount: 3, sessionId: 'ses_inc' },
       { webhookId: params.id, key: 'server', state: 'collecting', alertCount: 1, startsAt: new Date(Date.now() + 40000).toISOString() },
@@ -164,14 +165,15 @@ try {
   await tab.locator('.webhooks button', { hasText: 'New' }).first().click();
   await tab.waitForSelector('.form .f-actions button', { timeout: 5_000 });
   await tab.locator('.form input[placeholder="e.g. Checkmk alerts"]').fill('Checkmk alerts');
-  await tab.locator('.form select').nth(1).selectOption('free');
+  await tab.locator('.form select').nth(1).selectOption('sysadmin');
+  await tab.locator('.form select').nth(2).selectOption('free');
   await tab.locator('.form textarea').nth(1).fill('[{"path":"state","in":["CRIT","DOWN"]}]');
   await tab.locator('.form input[placeholder="{{host}}"]').fill('{{host}}');
   await tab.waitForSelector('.form input[type=number][max="3600"]', { timeout: 5_000 });
   await tab.locator('.form .f-actions button', { hasText: 'Save' }).click();
   await tab.waitForSelector('.webhooks .token', { timeout: 5_000 });
   const add = await tab.evaluate(() => window.__calls.filter(([m]) => m === 'webhooks.add').at(-1)[1]);
-  check('add sends name, agent free, match and the incident group', add.name === 'Checkmk alerts' && add.agent === 'free' && add.match[0].path === 'state' && add.group.key === '{{host}}' && add.group.debounceSeconds === 90 && add.maxChatsPerHour === 60, JSON.stringify(add));
+  check('add sends name, agent free, match and the incident group', add.name === 'Checkmk alerts' && add.agent === 'free' && add.profile === 'sysadmin' && add.match[0].path === 'state' && add.group.key === '{{host}}' && add.group.debounceSeconds === 90 && add.maxChatsPerHour === 60, JSON.stringify(add));
   const tokenBox = await tab.locator('.webhooks .token').innerText();
   check('the token box shows the token once, with a curl line', tokenBox.includes('whk_SECRET_TOKEN_wxyz') && tokenBox.includes('curl -X POST'), tokenBox.slice(0, 80));
   await tab.locator('.webhooks .token button', { hasText: 'I have saved it' }).click();

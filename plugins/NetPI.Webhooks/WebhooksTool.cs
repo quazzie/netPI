@@ -74,7 +74,7 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
             {
                 var h = await RpcAsync<JsonObject>("webhooks.get", new JsonObject { ["id"] = RequireId(a) }, ct).ConfigureAwait(false);
                 var text = string.Join("\n", [Line(h), "prompt: " + h["prompt"]?.GetValue<string>(), "title: " + (h["title"]?.GetValue<string>() ?? "(the name)"),
-                    "match: " + (h["match"]?.ToJsonString() ?? "[]"), "group: " + (h["group"]?.ToJsonString() ?? "none (every alert is its own chat)") +
+                    "match: " + (h["match"]?.ToJsonString() ?? "[]"), "profile: " + (h["profile"]?.GetValue<string>() ?? "automatic") + " · group: " + (h["group"]?.ToJsonString() ?? "none (every alert is its own chat)") +
                     $" · fuse {h["maxChatsPerHour"]} chats per hour"]);
                 return ToolResult.Ok(text, new { kind = "webhook", webhook = h });
             }

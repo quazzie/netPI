@@ -588,7 +588,7 @@ session-scoped to the chat a run started.
 **Webhooks** (`netpi.webhooks`, left, order 26 — after Schedules). The receiver's state (off / listening on a URL / why it could not start), then each
 webhook: pause/resume, edit (an inline form), a two-step new token and delete, and a detail with the URL to POST to, the prompt, a “try a payload” box
 (Preview shows the filled-in prompt and every verdict and starts nothing; Send delivers it for real) the open incidents of the webhook (one chat per group key: open, or collecting with the seconds left, or waiting to start and why; each with a link to its chat) and the delivery history (held / started / appended / duplicate / skipped / failed). A new or re-keyed token is
-shown once, with a ready `curl` line. Reads `webhooks.*` plus `projects.list` and `agents.list` (absent ones degrade their own feature); refreshes on
+shown once, with a ready `curl` line. Reads `webhooks.*` plus `projects.list`, `profiles.list` and `agents.list` (absent ones degrade their own feature); refreshes on
 `webhooks.changed`, `settings.changed` and a 30 s poll.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,

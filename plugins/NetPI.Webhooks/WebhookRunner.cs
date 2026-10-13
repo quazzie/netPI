@@ -17,7 +17,8 @@ namespace NetPI.Webhooks;
 /// <item>a <b>duplicate</b> of what that chat was just told.</item>
 /// </list>
 /// When the window ends, the batch starts one chat (<c>CreateSession</c> with meta <c>webhook</c>, <c>agents.use</c>,
-/// <c>profiles.applyAuto</c>, <c>IAgentRuntime.SendAsync</c> as the system), exactly as a scheduled run does. If the chat cannot start
+/// <c>profiles.apply</c> with the webhook's own profile — or <c>profiles.applyAuto</c> when it names none —, <c>IAgentRuntime.SendAsync</c>
+/// as the system), as a scheduled run does. A webhook should name its profile: the automatic one is the coding profile, which has no ssh tool. If the chat cannot start
 /// now (no agent available, the model not loaded, the safety fuse), the batch waits and is retried every 30 seconds for 30 minutes
 /// instead of being dropped. There is no concurrency cap: NetPI queues runs for the agent's instances itself, and the budget is the
 /// Agents plugin's to enforce.
@@ -216,6 +217,8 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         }
         if (hook["projectId"]?.GetValue<string>() is { Length: > 0 } projectId && ctx.Sessions.GetProject(projectId) is null)
             fatal = $"the project {projectId} no longer exists";
+        if (fatal is null && hook["profile"]?.GetValue<string>() is { Length: > 0 } profile && !await ProfileExistsAsync(profile, ct).ConfigureAwait(false))
+            fatal = $"the profile {profile} no longer exists (profiles.list)";
 
         if (fatal is not null) return Fail(hook, batch, now, fatal);
         if (wait is not null) return Defer(hook, batch, now, wait, stored, pacing: fuseWait);
@@ -240,7 +243,9 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         {
             if (!string.IsNullOrEmpty(agentKey) && ctx.Rpc.Exists("agents.use"))
                 await ctx.Rpc.InvokeAsync("agents.use", new JsonObject { ["sessionId"] = session.Id, ["agent"] = agentKey }, ct).ConfigureAwait(false);
-            if (ctx.Rpc.Exists("profiles.applyAuto"))
+            if (hook["profile"]?.GetValue<string>() is { Length: > 0 } chosen && ctx.Rpc.Exists("profiles.apply"))
+                await ctx.Rpc.InvokeAsync("profiles.apply", new JsonObject { ["sessionId"] = session.Id, ["profile"] = chosen }, ct).ConfigureAwait(false);
+            else if (ctx.Rpc.Exists("profiles.applyAuto"))
                 await ctx.Rpc.InvokeAsync("profiles.applyAuto", new JsonObject { ["sessionId"] = session.Id }, ct).ConfigureAwait(false);
             await runtime.SendAsync(session.Id, new UserInput
             {
@@ -413,6 +418,13 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
             if (slot is not null && Usable(slot)) return (Str(slot["key"]), null);
         }
         return (null, wanted.Length == 1 ? $"the agent {wanted[0]} is unavailable or does not exist" : $"none of the agents {string.Join(", ", wanted)} is available");
+    }
+
+    /// <summary>Whether a profile id exists (<c>profiles.list</c>); true when the Profiles plugin is not running (nothing to check against).</summary>
+    internal async Task<bool> ProfileExistsAsync(string profile, CancellationToken ct)
+    {
+        if (await ReadAsync("profiles.list", ct).ConfigureAwait(false) is not JsonObject list || list["profiles"] is not JsonArray profiles) return true;
+        return profiles.OfType<JsonObject>().Any(p => string.Equals(Str(p["id"]), profile, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<JsonNode?> ReadAsync(string method, CancellationToken ct)
