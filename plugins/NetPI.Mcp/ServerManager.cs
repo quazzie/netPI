@@ -259,7 +259,7 @@ internal sealed partial class ServerManager : IAsyncDisposable
     }
     /// <summary>What went wrong, in words: a timeout is a cancelled task underneath, and "A task was canceled." tells nobody which server or why.</summary>
     private static string Why(State state, Exception ex) =>
-        ex is OperationCanceledException ? $"the server did not answer within {state.Config.ConnectTimeoutMs} ms" : ex.Message;
+        ex is OperationCanceledException ? $"the server did not answer in time (connect {state.Config.ConnectTimeoutMs} ms, listing {state.Config.CallTimeoutMs} ms)" : ex.Message;
 
     private void SetStatus(State state, string status, string? error)
     {
@@ -298,7 +298,7 @@ internal sealed partial class ServerManager : IAsyncDisposable
                     else
                     {
                         using var refresh = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                        refresh.CancelAfter(state.Config.ConnectTimeoutMs);
+                        refresh.CancelAfter(state.Config.CallTimeoutMs);   // listing a catalog is a call, not a connect: a busy server (77 tools, resources) can need more than the 5 s a connect gets
                         var raw = await state.Connection.ListAsync(Limit("mcp.maxCatalogTools", 10000, 1, 10000),
                             Limit("mcp.maxCatalogChars", 8_000_000, 4096, 32_000_000), refresh.Token).ConfigureAwait(false);
                         var resources = await state.Connection.ListResourcesAsync(Limit("mcp.maxResourceEntries", 2000, 1, 20000),
