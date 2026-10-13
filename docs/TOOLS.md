@@ -886,7 +886,7 @@ tool through subagents, and `agent_choices` belongs to another plugin.
 
 ### `agent_wait`
 
-`{ ids?, timeoutSeconds? }`: waits for the given subagents (ids or names) and returns their reports; the caller's
+`{ ids?, any?, timeoutSeconds? }`: waits for the given subagents (ids or names) and returns their reports (`any: true`: as soon as the first has finished, the others keep running; `agent_spawn` takes `any` too, to return at the first report of a batch); the caller's
 instance is free for them meanwhile and it resumes with priority. Without ids: all of the caller's running subagents, plus
 finished ones whose `agent-result` notice is still queued unseen (the report comes back here and the queued notice is
 dropped, so it arrives once). A new user message interrupts the wait. `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.

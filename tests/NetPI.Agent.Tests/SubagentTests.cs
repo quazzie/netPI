@@ -35,6 +35,7 @@ public static class SubagentTests
         t.Add("subagents: a wait by someone who is not the parent leaves the parent its notice", ForeignWaitKeepsNotice);
         t.Add("subagents: many children ending together neither deadlock with the registry prune nor lose a report", ManyChildrenEndTogether);
         t.Add("subagents: a spawn is planned from the request and the parent alone", PlanAlone);
+        t.Add("subagents: agent_spawn any returns at the first report while the other keeps running; agent wait any does the same", WaitAny);
         t.Add("subagents: cancel/send/wait/result are scoped to the caller's own tree (two sessions)", ForeignTreeScope);
     }
 
@@ -87,6 +88,42 @@ public static class SubagentTests
         Check.Contains(wait.Content, "QUICK REPORT");
         Check.Contains(wait.Content, "SLOW REPORT");
         Check.Equal(1, h.Messages(parent.Id).Count(m => m.Text.Contains("QUICK REPORT") || m.ToolResults.Any(x => x.Content.Contains("QUICK REPORT"))), "once");
+    }
+
+    /// <summary>
+    /// any: true returns when the first subagent is done. The slow one keeps running and is then collected with
+    /// agent wait (also any, here with one id), so no report is lost or doubled.
+    /// </summary>
+    private static async Task WaitAny()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 3;
+        var slowGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r))
+                return Reply.LastUser(r).Contains("quick") ? Reply.Text("QUICK REPORT") : Reply.Text("SLOW REPORT", c => slowGate.Task.WaitAsync(c));
+            var results = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
+            if (results.Count == 0)
+                return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "quick part", name = "quick" }, new { task = "slow part", name = "slow" } }, any = true });
+            if (results.Count == 1)
+            {
+                slowGate.TrySetResult();
+                return Reply.Tool("agent", new { action = "wait", any = true });
+            }
+            return Reply.Text("done");
+        };
+        var parent = h.NewSession();
+        await h.SendAsync(parent.Id, "go");
+        await h.IdleAsync(parent.Id, 15_000);
+        var tools = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).ToList();
+        var spawn = tools.Single(x => x.Name == "agent_spawn");
+        Check.Contains(spawn.Content, "1 of 2 subagents finished");
+        Check.Contains(spawn.Content, "QUICK REPORT");
+        Check.True(!spawn.Content.Contains("SLOW REPORT"), "the slow report is not in the first result");
+        var wait = tools.Single(x => x.Name == "agent");
+        Check.Contains(wait.Content, "SLOW REPORT");
+        Check.Equal(1, h.Messages(parent.Id).Count(m => m.Text.Contains("SLOW REPORT") || m.ToolResults.Any(x => x.Content.Contains("SLOW REPORT"))), "once");
     }
 
     /// <summary>
@@ -1136,7 +1173,7 @@ public static class SubagentTests
             "the action enum names the actions: " + string.Join(", ", actions.OrderBy(x => x)));
         foreach (var a in def.Parameters["required"]!.AsArray().Select(n => n!.GetValue<string>()!))
             Check.True(props.ContainsKey(a), $"required {a} is not a property");
-        Covers("wait", "id", "ids", "timeoutSeconds");
+        Covers("wait", "id", "ids", "timeoutSeconds", "any");
         Covers("send", "to", "message", "mode");
         Covers("list", "all");
         Covers("result", "id");

@@ -108,10 +108,12 @@ public interface IAgentRuntime
 
     /// <summary>
     /// Wait for agents to finish their current run. When <paramref name="yieldSlot"/> is true and the caller
-    /// holds a slot, the slot is released while waiting and re-acquired (with priority) afterwards.
+    /// holds a slot, the slot is released while waiting and re-acquired (with priority) afterwards. With
+    /// <paramref name="any"/> the wait ends as soon as the first of the agents finishes (the others keep running),
+    /// instead of when all have.
     /// </summary>
     Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,
-        TimeSpan? timeout = null, CancellationToken ct = default);
+        TimeSpan? timeout = null, CancellationToken ct = default, bool any = false);
 
     /// <summary>
     /// Wait for <paramref name="until"/> the way <see cref="WaitAsync"/> waits for agents: the caller's slot is released

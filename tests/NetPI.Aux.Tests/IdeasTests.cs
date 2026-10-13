@@ -27,7 +27,7 @@ public static class IdeasTests
             return Task.FromResult(new AgentInfo { Id = "agt_t", SessionId = sessionId, Status = AgentStatus.Running });
         }
         public Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true, TimeSpan? timeout = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true, TimeSpan? timeout = null, CancellationToken ct = default, bool any = false) => throw new NotSupportedException();
         public Task<bool> AbortAsync(string agentOrSessionId) => Task.FromResult(false);
         public Task<bool> MessageAsync(string fromAgentId, string toAgentId, string text, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => Task.FromResult(false);
         public IReadOnlyList<QueuedInput> GetQueue(string sessionId) => [];

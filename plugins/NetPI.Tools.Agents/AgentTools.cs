@@ -222,7 +222,8 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             "{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }; they all start together, and all are checked before any " +
             "starts. Waits until all of them finish and returns every report; your own instance is free for them meanwhile. " +
             "background: true returns at once instead: each report arrives later on its own (or collect them with agent, action " +
-            "wait). timeoutSeconds: when waiting, the longest wait (the ones still running then report later on their own).\n" +
+            "wait). any: true returns as soon as the first of the batch has finished (a slot is free again) instead of when all have; the others keep running and " +
+            "report later on their own, or wait for them with agent, action wait. timeoutSeconds: when waiting, the longest wait (the ones still running then report later on their own).\n" +
             "task: complete and self-contained (the subagent does not see your conversation): goal, relevant paths and context, " +
             "constraints, and what to put in the final report. A long task goes in a file: write it, pass taskFile (a path, relative to your " +
             "working directory) instead of task, so a batch of several stays short enough to write in one call. In a batch, agent goes inside each " +
@@ -249,6 +250,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
                 ["items"] = Schema(ItemProperties()),
             },
             ["background"] = Prop("boolean", ""),
+            ["any"] = Prop("boolean", "Return as soon as the first subagent has finished; the others keep running and report later on their own"),
             ["timeoutSeconds"] = Prop("integer", ""),
         }),
     };
@@ -285,7 +287,8 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         if (!background)
         {
             var timeout = root.Double("timeoutSeconds", "timeout") is { } t && t > 0 ? TimeSpan.FromSeconds(t) : (TimeSpan?)null;
-            var results = await runtime.WaitAsync(context.AgentId, [.. started.Select(a => a.Id)], yieldSlot: true, timeout, ct).ConfigureAwait(false);
+            var any = root.Bool("any", "first", "anyOf") ?? false;
+            var results = await runtime.WaitAsync(context.AgentId, [.. started.Select(a => a.Id)], yieldSlot: true, timeout, ct, any).ConfigureAwait(false);
             if (batch is null)
             {
                 var r = results.FirstOrDefault() ?? runtime.Get(started[0].Id) ?? started[0];
@@ -294,7 +297,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             var running = results.Count(a => IsBusy(a.Status));
             var report = new StringBuilder(running == 0
                 ? $"{results.Count} subagents finished."
-                : $"{results.Count - running} of {results.Count} subagents finished; {running} still running (the wait timed out or a new message arrived).");
+                : $"{results.Count - running} of {results.Count} subagents finished; {running} still running ({(any ? "you asked for the first to finish, or the wait timed out or a new message arrived" : "the wait timed out or a new message arrived")}).");
             foreach (var a in results) report.Append("\n\n").Append(Report(a));
             return ToolResult.Ok(report.ToString(), new JsonObject { ["agents"] = new JsonArray([.. results.Select(a => (JsonNode)Details(a))]) });
         }
@@ -522,7 +525,7 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
             Label = "Agents",
             Category = "agents",
             SummaryArg = "action",
-            Description = "Your already-started subagents (not the agents available to start: that is agent_choices, then agent_spawn): wait {ids?} for their reports, send {to, message} (to=\"parent\" for your parent), list, result {id} or cancel {id}.",
+            Description = "Your already-started subagents (not the agents available to start: that is agent_choices, then agent_spawn): wait {ids?, any?, timeoutSeconds?} for their reports (any: return when the first one is done), send {to, message} (to=\"parent\" for your parent), list, result {id} or cancel {id}.",
             Help = string.Join("\n", actions.Select(t => $"- {t.Name}: {t.Summary}")),
             Parameters = new JsonObject
             {
@@ -536,6 +539,7 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
                     ["message"] = new JsonObject { ["type"] = "string" },
                     ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("steer", "queue") },
                     ["all"] = new JsonObject { ["type"] = "boolean" },
+                    ["any"] = new JsonObject { ["type"] = "boolean" },
                     ["timeoutSeconds"] = new JsonObject { ["type"] = "integer" },
                 },
                 ["required"] = new JsonArray("action"),
@@ -570,7 +574,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
 {
     internal override string Name => "wait";
     internal override string Summary =>
-        "Wait for subagents to finish and return their final reports. While waiting your instance is released (yielded) so other runs, typically the ones you wait for, can use it; afterwards you resume with priority. Without ids it waits for all of your running subagents and also returns the reports that arrived while you were busy and you have not seen yet. A new user message interrupts the wait.";
+        "Wait for subagents to finish and return their final reports. While waiting your instance is released (yielded) so other runs, typically the ones you wait for, can use it; afterwards you resume with priority. Without ids it waits for all of your running subagents and also returns the reports that arrived while you were busy and you have not seen yet. With any=true it returns as soon as the first of them has finished (its report is returned, the others keep running and can be waited for again); otherwise it waits for all. A new user message interrupts the wait.";
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -609,13 +613,14 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
         if (ids.Count == 0) return ToolResult.Error($"Unknown or out-of-reach agent(s): {string.Join(", ", problems)}. Use agent with action list to see your subagents.");
 
         var seconds = root.Double("timeoutSeconds", "timeout") is { } t && t > 0 ? t : 3600;
-        var results = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct).ConfigureAwait(false);
+        var any = root.Bool("any", "first", "anyOf") ?? false;
+        var results = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct, any).ConfigureAwait(false);
 
         var sb = new StringBuilder();
         var running = results.Count(a => IsBusy(a.Status));
         sb.Append(running == 0
             ? $"{results.Count} agent{(results.Count == 1 ? "" : "s")} finished."
-            : $"{results.Count - running} of {results.Count} agents finished; {running} still running (the wait timed out or a new message arrived).");
+            : $"{results.Count - running} of {results.Count} agents finished; {running} still running ({(any ? "you asked for the first to finish, or the wait timed out or a new message arrived" : "the wait timed out or a new message arrived")}).");
         foreach (var a in results) sb.Append("\n\n").Append(Report(a));
         if (problems.Count > 0) sb.Append("\n\nUnknown or out-of-reach agent(s): ").Append(string.Join(", ", problems));
         var arr = new JsonArray();

@@ -1034,7 +1034,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     }
 
     public async Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,
-        TimeSpan? timeout = null, CancellationToken ct = default)
+        TimeSpan? timeout = null, CancellationToken ct = default, bool any = false)
     {
         var caller = FindState(callerAgentId);
         // never wait on yourself or an ancestor (that would deadlock)
@@ -1065,7 +1065,7 @@ internal sealed class AgentRuntime : IAgentRuntime
 
         try
         {
-            if (tasks.Count > 0) await WaitCoreAsync(caller, tasks, yieldSlot, timeout, ct).ConfigureAwait(false);
+            if (tasks.Count > 0) await WaitCoreAsync(caller, tasks, yieldSlot, timeout, ct, any: any).ConfigureAwait(false);
         }
         finally
         {
@@ -1116,7 +1116,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// passes or the user steers the caller. <paramref name="activity"/> replaces the "waiting for N agents" countdown.
     /// </summary>
     private async Task WaitCoreAsync(AgentState? caller, List<Task> tasks, bool yieldSlot, TimeSpan? timeout, CancellationToken ct,
-        string? activity = null)
+        string? activity = null, bool any = false)
     {
         RunState? run = null;
         CancellationToken steer = default;
@@ -1162,7 +1162,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         if (timeout is { } to && to > TimeSpan.Zero && to < TimeSpan.FromDays(1)) linked.CancelAfter(to);
         try
         {
-            await Task.WhenAll(tasks).WaitAsync(linked.Token).ConfigureAwait(false);
+            await (any ? Task.WhenAny(tasks) : Task.WhenAll(tasks)).WaitAsync(linked.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
