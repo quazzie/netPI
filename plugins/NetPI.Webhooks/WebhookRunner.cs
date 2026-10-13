@@ -18,7 +18,7 @@ namespace NetPI.Webhooks;
 /// </list>
 /// When the window ends, the batch starts one chat (<c>CreateSession</c> with meta <c>webhook</c>, <c>agents.use</c>,
 /// <c>profiles.apply</c> with the webhook's own profile — or <c>profiles.applyAuto</c> when it names none —, <c>IAgentRuntime.SendAsync</c>
-/// as the system), as a scheduled run does. A webhook should name its profile: the automatic one is the coding profile, which has no ssh tool. If the chat cannot start
+/// as the system), as a scheduled run does. A webhook should name its profile when its chats need particular tools: the automatic profile is whatever a new chat gets. If the chat cannot start
 /// now (no agent available, the model not loaded, the safety fuse), the batch waits and is retried every 30 seconds for 30 minutes
 /// instead of being dropped. There is no concurrency cap: NetPI queues runs for the agent's instances itself, and the budget is the
 /// Agents plugin's to enforce.

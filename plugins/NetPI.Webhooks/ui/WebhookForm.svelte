@@ -142,7 +142,7 @@
       <input class="np-input" placeholder="profile id (profiles.list unavailable)" bind:value={f.profile} />
     {:else}
       <select class="np-input" bind:value={f.profile}>
-        <option value="">Automatic (the coding profile: no ssh tool)</option>
+        <option value="">Automatic (what a new chat gets)</option>
         {#each profiles as p (p.id)}
           <option value={p.id}>{p.name || p.id}</option>
         {/each}
