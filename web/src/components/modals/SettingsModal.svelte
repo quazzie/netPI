@@ -247,7 +247,7 @@
               <div>Step groups</div>
               <div class="np-dim np-small">
                 The thinking and tool calls between two texts. <b>Expanded</b>: always shown, never folded. <b>Fold when done</b>:
-                a group of more than 3 steps folds into “N steps · time” when the run ends. <b>Folded</b>: folds into one line from
+                a group folds into “N steps · time” when the run ends. <b>Folded</b>: folds into one line from
                 the start, which keeps the chat still while the agent works.
               </div>
             </div>

@@ -264,8 +264,8 @@ into locals first, because after the parent clears the modal state or the row re
    - **Pinned to the bottom.** The list follows new content while it is pinned; only the user scrolling up unpins it.
      A view that shrinks (the plan strip or queue chips appearing) or content that grows never does: the resize
      observer re-pins.
-   - **Steps** groups fold by the Steps preference (`prefs.steps`): `done` (default) folds a group of more than 3
-     steps into `▸ N steps · time · tool counts` once its run has finished; `folded` folds from the first step on,
+   - **Steps** groups fold by the Steps preference (`prefs.steps`): `done` (default) folds a group into
+     `▸ N steps · time · tool counts` once its run has finished; `folded` folds from the first step on,
      also while the agent works (adding a second step cannot shrink an open row into a folded head line), and the
      group the agent is adding to shows its latest step on that line; `open` never folds. Steering input does not
      end a run. The user's choice to expand or collapse is kept per group in `chat.expanded`.

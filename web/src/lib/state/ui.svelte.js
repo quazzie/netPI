@@ -11,7 +11,7 @@ const defaultLayout = {
 };
 const defaultPrefs = {
   theme: 'dark', // dark | light | system
-  // thinking/tool step groups: 'open' never fold · 'done' fold groups of more than 3 steps when the run ends ·
+  // thinking/tool step groups: 'open' never fold · 'done' fold every group when the run ends ·
   // 'folded' fold from the second step on, also while the agent works
   steps: 'done',
   chatWidth: 'normal', // normal (900px) | wide (1200px) | full
