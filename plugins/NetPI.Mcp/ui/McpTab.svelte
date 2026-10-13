@@ -1,8 +1,9 @@
 <script>
-  import { Menu, IconButton, Icon, Modal, SearchInput, useRefresh } from '@netpi/kit';
+  import { Menu, IconButton, Icon, SearchInput, useRefresh } from '@netpi/kit';
+  import ServerForm from './ServerForm.svelte';
   let { ctx } = $props();
   let servers = $state([]), tools = $state([]), selected = $state(''), error = $state(''), busy = $state(false);
-  let editing = $state(false), isNew = $state(false), id = $state(''), draft = $state(''), query = $state('');
+  let editing = $state(false), isNew = $state(false), id = $state(''), draft = $state.raw({}), query = $state('');
   const filtered = $derived(tools.filter(t => (t.name + ' ' + t.description).toLowerCase().includes(query.toLowerCase())));
   async function load() {
     // which server this load is about: two clicks in a row race, and the slower answer must not list the first
@@ -51,7 +52,7 @@
     }
     id = server?.id ?? '';
     isNew = !server;
-    draft = JSON.stringify(config ?? { enabled: true, transport: 'stdio', command: '', args: [], cwd: '', env: {}, pinned: [], readOnly: [] }, null, 2);
+    draft = config ?? { enabled: true, transport: 'stdio' };
     editing = true;
   }
   // The per-server actions, in the one menu every other card uses. The kit's Menu is fixed-position and clamped to the
@@ -65,10 +66,10 @@
     { divider: true },
     { label: 'Remove', danger: true, onclick: () => action('mcp.remove', { id: server.id }), disabled: busy },
   ];
-  async function save() {
+  async function save(newId, config) {
     busy = true; error = '';
     try {
-      await ctx.rpc('mcp.save', { id, config: JSON.parse(draft) });
+      await ctx.rpc('mcp.save', { id: newId, config });
       editing = false; await tab.refresh();
     } catch (e) { error = e.message ?? String(e); }
     finally { busy = false; }
@@ -98,18 +99,7 @@
   <p class="np-dim np-small hint">External tools are discovered on demand. Only search and call schemas enter a chat by default.</p>
   {#if error && !editing}<p class="err np-small" role="alert">{error}</p>{/if}
   {#if editing}
-    <Modal title={isNew ? 'Add MCP server' : `Edit ${id}`} width={620} onclose={() => !busy && (editing = false)}>
-    <form id="mcp-edit" class="np-stack" onsubmit={(e) => { e.preventDefault(); save(); }}>
-      <label class="field">Server id<input class="np-input" bind:value={id} required readonly={!isNew} pattern={'[A-Za-z0-9_-]{1,48}'} /></label>
-      <label class="field">Configuration<textarea class="np-input np-mono" bind:value={draft} rows="16" spellcheck="false"></textarea></label>
-      <p class="np-dim np-small hint">stdio: command, args and absolute cwd. HTTP: transport "http" and url. env and headerEnv map names to environment-variable names; credentials stay outside settings. tools restricts remote tool names; pinned and readOnly contain remote tool names.</p>
-    </form>
-    {#snippet footer()}
-      {#if error}<span class="err np-small foot-err" role="alert">{error}</span>{/if}
-      <button class="np-btn np-btn-sm" type="button" onclick={() => editing = false} disabled={busy}>Cancel</button>
-      <button class="np-btn np-btn-sm np-btn-primary" type="submit" form="mcp-edit" disabled={busy}>Save</button>
-    {/snippet}
-    </Modal>
+    <ServerForm {isNew} initialId={id} base={draft} {busy} {error} onsave={save} oncancel={() => { editing = false; error = ''; }} />
   {/if}
   {#if !servers.length && !editing}<p class="np-empty">No servers configured.</p>{/if}
   {#each servers as server (server.id)}
@@ -161,7 +151,6 @@
   .pick { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 0 0 4px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .pick .np-strong { display: block; }
   .chosen .pick .np-strong { color: var(--accent); }
-  .foot-err { flex: 1; min-width: 0; margin: 0; text-align: left; }
   .server :global(.np-search) { margin: 4px 0 2px; }
   .tool { padding: 6px 0; border-top: 1px solid var(--border); min-width: 0; }
   .tool summary { cursor: pointer; overflow-wrap: anywhere; }

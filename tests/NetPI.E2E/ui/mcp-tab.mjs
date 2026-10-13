@@ -5,11 +5,24 @@
 //
 //   node tests/NetPI.E2E/ui/mcp-tab.mjs --url http://127.0.0.1:7470 --token e2e-token --fixture <NetPI.E2E.dll> --work <dir>
 import { run, arg, check, shot, openApp, openStripTab, rpc, WORK, STAMP } from './lib.mjs';
+import { configToForm, formToConfig, textToPairs, lines } from '../../../plugins/NetPI.Mcp/ui/config.js';
 
 const FIXTURE = arg('fixture', '');
 if (!FIXTURE) throw new Error('--fixture <NetPI.E2E.dll> is required');
 const UI = `ui${STAMP}`;
 const GONE = `gone${STAMP}`;
+
+// the editor's model: a configuration to fields and back, with what the form does not know carried through
+{
+  const cfg = { enabled: true, transport: 'stdio', command: 'npx', args: ['-y', 'x'], cwd: 'C:\\w', env: { A: 'B' }, readOnly: ['status'], futureKey: { keep: 1 } };
+  const back = formToConfig(configToForm(cfg), cfg);
+  check('mcp editor: a configuration survives the form unchanged, unknown keys included', back.errors.length === 0 && JSON.stringify(back.config) === JSON.stringify({ futureKey: { keep: 1 }, enabled: true, transport: 'stdio', command: 'npx', args: ['-y', 'x'], cwd: 'C:\\w', env: { A: 'B' }, readOnly: ['status'] }), JSON.stringify(back));
+  check('mcp editor: an http server shows as web and needs a url; a command server needs a command',
+    configToForm({ url: 'http://x/y' }).transport === 'http' && formToConfig({ ...configToForm({}), transport: 'http' }, {}).errors.length === 1 && formToConfig(configToForm({}), {}).errors.length === 1);
+  check('mcp editor: bad entries are named, numbers are checked, blank lists are left out',
+    textToPairs('A=B\nnonsense\nC=').bad.length === 2 && formToConfig({ ...configToForm({ command: 'x' }), connectTimeoutMs: '12' }, {}).errors.length === 1
+      && !('tools' in formToConfig(configToForm({ command: 'x' }), {}).config) && lines(' a \n\n b ').join() === 'a,b');
+}
 
 await run('mcp-tab', async ({ page }) => {
   await rpc('mcp.save', { id: UI, config: { command: 'dotnet', args: [FIXTURE, '--mcp-fixture', 'ui'], cwd: WORK, readOnly: ['status'] } });
@@ -74,14 +87,44 @@ await run('mcp-tab', async ({ page }) => {
     }
     check('mcp: switching a tool off saves the server configuration (mcp.save) and the row follows',
       Array.isArray(cfg?.tools) && !cfg.tools.includes('act') && cfg.tools.includes('lookup') && !(await expose.isChecked()), JSON.stringify(cfg?.tools));
-    // the editor is a dialog over the tab: Add server opens it, Esc and Cancel close it, and the list stays behind
+    // the editor is a dialog over the tab, with fields: Add server opens it, a command server is saved from them
+    const dialog = page.locator('[role=dialog]');
     await page.locator('.mcp button', { hasText: 'Add server' }).click();
-    await page.waitForSelector('[role=dialog]', { timeout: 5_000 });
-    check('mcp: Add server opens a dialog with the id and the configuration', /Add MCP server/.test(await text(page.locator('[role=dialog]'))) && (await page.locator('[role=dialog] textarea').count()) === 1);
+    await dialog.waitFor({ timeout: 5_000 });
+    check('mcp: Add server opens a dialog with fields, not a JSON box', /Add MCP server/.test(await text(dialog)) && (await dialog.locator('input').count()) >= 4 && (await dialog.locator('textarea.json').count()) === 0, await text(dialog));
+    await shot(page, 'ui-mcp-02-dialog');
+    await dialog.locator('button', { hasText: 'Web (HTTP)' }).click();
+    await dialog.locator('summary, button', { hasText: 'Limits and tool lists' }).click();
+    check('mcp: the Web choice shows the url and headers instead of the command', (await dialog.locator('input[placeholder^="http"]').count()) === 1 && (await dialog.locator('input[placeholder^="npx"]').count()) === 0);
+    await shot(page, 'ui-mcp-03-http');
+    await dialog.locator('button', { hasText: 'Command (stdio)' }).click();
+    await dialog.locator('button', { hasText: /^Save$/ }).click();
+    await page.waitForFunction(() => /name must be/.test(document.querySelector('[role=dialog]')?.textContent ?? ''), null, { timeout: 5_000 });
+    check('mcp: saving without a name says what is missing, and the dialog stays', (await dialog.count()) === 1);
+    const NEW = `form${STAMP}`;
+    await dialog.locator('input[placeholder="e.g. homeassistant"]').fill(NEW);
+    await dialog.locator('button', { hasText: /^Save$/ }).click();
+    await page.waitForFunction(() => /command is required/.test(document.querySelector('[role=dialog]')?.textContent ?? ''), null, { timeout: 5_000 });
+    check('mcp: a command server without a command is refused in the dialog', true);
+    await dialog.locator('input[placeholder^="npx"]').fill('dotnet');
+    await dialog.locator('textarea[placeholder="one argument per line"]').fill(`${FIXTURE}\n--mcp-fixture\nui`);
+    await dialog.locator('input[placeholder^="absolute path"]').fill(WORK);
+    await dialog.locator('button', { hasText: /^Save$/ }).click();
+    await dialog.waitFor({ state: 'detached', timeout: 10_000 });
+    const saved = await rpc('mcp.config', { id: NEW });
+    check('mcp: the fields are saved as the server configuration', saved?.config?.command === 'dotnet' && saved.config.args?.join('|') === `${FIXTURE}|--mcp-fixture|ui` && saved.config.cwd === WORK && saved.config.enabled === true, JSON.stringify(saved?.config));
+    await rpc('mcp.remove', { id: NEW }).catch(() => {});
+    // editing an existing server: the dialog is filled in, the id is fixed, JSON is one click away, Esc leaves
+    await ui.locator('.head button[title^="Actions"]').click();
+    await page.locator('[role=menuitem]', { hasText: 'Edit configuration' }).click();
+    await dialog.waitFor({ timeout: 5_000 });
+    check('mcp: editing shows the server filled in, with its name locked',
+      (await dialog.locator('input[readonly]').inputValue()) === UI && (await dialog.locator('input[placeholder^="npx"]').inputValue()) === 'dotnet', await text(dialog));
+    await dialog.locator('button', { hasText: 'Edit as JSON' }).click();
+    check('mcp: Edit as JSON shows the whole configuration', /"command": "dotnet"/.test(await dialog.locator('textarea.json').inputValue()));
     await page.keyboard.press('Escape');
-    await page.waitForFunction(() => document.querySelectorAll('[role=dialog]').length === 0, null, { timeout: 5_000 });
-    await ui.locator('button.pick').waitFor({ timeout: 5_000 });
-    check('mcp: Esc closes the dialog and the servers are still listed', true);
+    await dialog.waitFor({ state: 'detached', timeout: 5_000 });
+    check('mcp: Esc closes the dialog and the servers are still listed', (await ui.count()) === 1);
     await shot(page, 'ui-mcp-01-tab');
   } finally {
     await rpc('mcp.remove', { id: UI }).catch(() => {});
