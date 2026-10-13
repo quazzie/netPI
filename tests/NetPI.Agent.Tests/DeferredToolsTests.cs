@@ -37,50 +37,7 @@ public static class DeferredToolsTests
 
     public static void Register(TestRunner t)
     {
-        t.Add("deferred: tool_search loads a deferred tool for the next call, a call by name runs and loads one, with tools notices naming the cause", async () => {
-            await using var h = await TestHost.StartAsync();
-            h.Settings.Set(ToolExposure.LoadingSetting, "declare");   // this test is about declared loads
-            var ctx = new TestPluginContext(h, "netpi.test");
-            var weather = new Deferred("weather_lookup", "Current weather and forecast for a city.");
-            var stocks = new Deferred("stock_quote", "Share prices of a listed company.");
-            ctx.Tools.Register(weather); ctx.Tools.Register(stocks);
-            var session = h.NewSession(); var stage = 0;
-            h.Catalog.Handler = (r, ct) => stage++ switch
-            {
-                0 => Reply.Tools(Reply.Call("tool_search", new { query = "weather forecast" })),
-                1 => Reply.Tools(Reply.Call("weather_lookup", new { city = "Oslo" })),
-                2 => Reply.Tools(Reply.Call("stock_quote", new { city = "ACME" })),
-                _ => Reply.Text("done"),
-            };
-            await h.SendAsync(session.Id, "weather in Oslo?"); await h.IdleAsync(session.Id);
-            var requests = h.Catalog.Requests.Where(r => r.SessionId == session.Id).ToList();
-            Check.Equal(4, requests.Count);
-            Check.True(requests[0].Tools.Any(d => d.Name == "tool_search"), "a chat with deferred tools is sent tool_search");
-            Check.False(requests[0].Tools.Any(d => d.Name == "weather_lookup"));
-            Check.True(requests[1].Tools.Any(d => d.Name == "weather_lookup"), "loaded from the next call");
-            Check.False(requests[1].Tools.Any(d => d.Name == "stock_quote"), "only the match is loaded");
-            Check.False(requests[2].Tools.Any(d => d.Name == "stock_quote"));
-            Check.True(requests[3].Tools.Any(d => d.Name == "stock_quote"), "a call by name loads the tool");
-            Check.Equal(string.Join(",", requests[0].Tools.Select(d => d.Name)), string.Join(",", requests[3].Tools.Take(requests[0].Tools.Count).Select(d => d.Name)), "loading appends: the earlier tools keep their places");
-            Check.Equal("weather_lookup,stock_quote", string.Join(",", requests[3].Tools.Skip(requests[0].Tools.Count).Select(d => d.Name)), "loaded tools follow in load order");
-            var results = h.Messages(session.Id).SelectMany(m => m.ToolResults).ToList();
-            Check.Contains(results[0].Content, "weather_lookup"); Check.NotContains(results[0].Content, "stock_quote");
-            Check.False(results[1].IsError); Check.Equal(1, weather.Calls.Count);
-            Check.False(results[2].IsError, "a deferred tool called by name runs"); Check.Equal(1, stocks.Calls.Count);
-            Check.Equal("[\"weather_lookup\",\"stock_quote\"]", h.Sessions.GetSession(session.Id)!.Meta?[LoadedTools.MetaKey]?.ToJsonString());
-            var notices = h.Messages(session.Id).Where(m => m.MetaString("kind") == "tools").ToList();
-            Check.Equal(2, notices.Count);
-            Check.True(notices.All(n => n.MetaString("cause") == "loaded"));
-            Check.Contains(notices[0].Text, "New: weather_lookup (loaded for this chat)");
-
-            // loaded is not a way around the chat's own switches
-            await h.Rpc.CallAsync("agent.setTools", new { sessionId = session.Id, off = new[] { "weather_lookup" } });
-            h.Catalog.Handler = (r, ct) => Reply.Text("done");
-            await h.SendAsync(session.Id, "again"); await h.IdleAsync(session.Id);
-            Check.False(h.Catalog.Requests.Last().Tools.Any(d => d.Name == "weather_lookup"));
-            ctx.Unload();
-        });
-        t.Add("deferred: inline loading never changes the request's tools; tool_search shows schemas, call_tool runs through the hooks", async () => {
+        t.Add("deferred: finding a tool never changes the request's tools; tool_search shows schemas, call_tool runs through the hooks", async () => {
             await using var h = await TestHost.StartAsync();
             var ctx = new TestPluginContext(h, "netpi.test");
             var weather = new Deferred("weather_lookup", "Current weather and forecast for a city.");
@@ -111,27 +68,18 @@ public static class DeferredToolsTests
             Check.True(results[2].IsError); Check.Contains(results[2].Content, "Unknown tool 'nope'");
             Check.True(results[3].IsError); Check.Contains(results[3].Content, "call it directly");
             Check.Equal(0, h.Messages(session.Id).Count(m => m.MetaString("kind") == "tools"), "no tools notice: the tools did not change");
-            Check.Equal("inline", h.Sessions.GetSession(session.Id)!.Meta?[ToolExposure.LoadingMetaKey]?.GetValue<string>());
+            Check.Equal(null, h.Sessions.GetSession(session.Id)!.Meta?["toolsLoaded"], "a search changes nothing about the chat");
             // a policy block applies to the inner tool
             hook.Block = true; stage = 1; weather.Calls.Clear();
             await h.SendAsync(session.Id, "again"); await h.IdleAsync(session.Id);
             Check.Equal(0, weather.Calls.Count); Check.Contains(h.Messages(session.Id).SelectMany(m => m.ToolResults).Last(r => r.Name == "call_tool").Content, "effective target blocked");
             ctx.Unload();
         });
-        t.Add("deferred: a chat that already declared loads keeps declaring them, and weak matches are not loaded", async () => {
-            await using var h = await TestHost.StartAsync();
-            var ctx = new TestPluginContext(h, "netpi.test");
-            ctx.Tools.Register(new Deferred("weather_lookup", "Current weather and forecast for a city."));
-            ctx.Tools.Register(new Deferred("city_notes", "Notes about a city."));
-            var session = h.NewSession();
-            h.Sessions.UpdateSession(session.Id, x => { x.Meta ??= new JsonObject(); x.Meta[LoadedTools.MetaKey] = new JsonArray("weather_lookup"); });
-            h.Catalog.Handler = (r, ct) => Reply.Text("done");
-            await h.SendAsync(session.Id, "hi"); await h.IdleAsync(session.Id);
-            Check.True(h.Catalog.Requests.Last().Tools.Any(d => d.Name == "weather_lookup"), "legacy chat: declare mode");
+        t.Add("deferred: tool_search returns only real matches", async () => {
             var tools = new[] { new Deferred("a_forecast", "Weather forecast for a city.").Definition, new Deferred("b_weather", "Weather forecast forecast forecast.").Definition, new Deferred("c_city", "Notes about the weather in a city.").Definition };
             Check.True(ToolRanking.Rank(tools, "weather forecast").Any(d => d.Name == "c_city"), "without the cut, the one-word overlap matches");
             Check.False(ToolRanking.Rank(tools, "weather forecast", ToolSearchRelative).Any(d => d.Name == "c_city"), "a one-word overlap is not a match");
-            ctx.Unload();
+            await Task.CompletedTask;
         });
         t.Add("deferred: the default tools.deferred keeps built-in tools out until used, the prompt names them, a subagent's list declares them", async () => {
             await using var h = await TestHost.StartAsync();
@@ -183,9 +131,8 @@ public static class DeferredToolsTests
             Check.Equal(0, ToolRanking.Rank(tools, "the of and").Count);
             Check.Equal(0, ToolRanking.Rank(tools, "spreadsheet").Count);
         });
-        t.Add("deferred: one MCP tool among 250 is loaded with tool_search and called directly, through the policy hooks", async () => {
+        t.Add("deferred: one MCP tool among 250 is found with tool_search and run with call_tool, through the policy hooks", async () => {
             await using var h=await TestHost.StartAsync();
-            h.Settings.Set(ToolExposure.LoadingSetting, "declare");   // this test is about declared loads
             var ctx=new TestPluginContext(h,"netpi.mcp");
             var config=new ServerConfig {Id="fixture",Command="dotnet",Args=[typeof(DeferredToolsTests).Assembly.Location,"--mcp-fixture","large"],Cwd=h.Workspace};
             h.Settings.Set("mcp.servers",new JsonObject {["fixture"]=config.Json()});
@@ -196,19 +143,19 @@ public static class DeferredToolsTests
             var session=h.NewSession();int stage=0;
             h.Catalog.Handler=(r,ct)=>stage++ switch {
                 0=>Reply.Tools(Reply.Call("tool_search",new {query=target.Definition.Name,limit=1})),
-                1=>Reply.Tools(Reply.Call(target.Definition.Name,new {city="Oslo"})),
+                1=>Reply.Tools(Reply.Call("call_tool",new {name=target.Definition.Name,arguments=new {city="Oslo"}})),
                 _=>Reply.Text("done")
             };
             await h.SendAsync(session.Id,"Get Oslo weather");await h.IdleAsync(session.Id);
             var requests=h.Catalog.Requests.Where(r=>r.SessionId==session.Id).ToList();
             Check.Equal(3,requests.Count);
-            Check.False(requests[0].Tools.Any(d=>d.Name==target.Definition.Name), "none of the 250 is sent before it is loaded");
-            Check.True(requests[0].Tools.Any(d=>d.Name=="tool_search"));
-            Check.Equal(1,requests[1].Tools.Count(d=>d.Category=="mcp"), "only the loaded one: " + string.Join(",",requests[1].Tools.Select(d=>d.Name)));
+            Check.True(requests[0].Tools.Any(d=>d.Name=="tool_search") && requests[0].Tools.Any(d=>d.Name=="call_tool"));
+            foreach (var r in requests) Check.Equal(0,r.Tools.Count(d=>d.Category=="mcp"), "none of the 250 is ever sent: " + string.Join(",",r.Tools.Select(d=>d.Name)));
+            Check.Contains(h.Messages(session.Id).SelectMany(m=>m.ToolResults).First().Content, target.Definition.Name);
             Check.True(hook.Before.Contains(target.Definition.Name));Check.True(hook.After.Contains(target.Definition.Name));
-            var result=h.Messages(session.Id).SelectMany(m=>m.ToolResults).Single(x=>x.Name==target.Definition.Name);
+            var result=h.Messages(session.Id).SelectMany(m=>m.ToolResults).Single(x=>x.Name=="call_tool");
             Check.Contains(result.Content,"Weather: Berlin", "the hook's arguments are what the server received");
-            // switched off in this chat: a call by name no longer reaches it
+            // switched off in this chat: call_tool no longer reaches it
             await h.Rpc.CallAsync("agent.setTools",new {sessionId=session.Id,off=new[]{target.Definition.Name}});
             stage=1;
             await h.SendAsync(session.Id,"again");await h.IdleAsync(session.Id);
@@ -243,9 +190,8 @@ public static class DeferredToolsTests
             Check.Equal(1,h.Messages(session.Id).Count(m=>m.Meta?["removed"] is JsonArray a && a.Any(n=>n?.GetValue<string>()==pinned.Definition.Name)));
             ctx.Unload();
         });
-        t.Add("deferred: a policy hook blocks a remote call, and a loaded tool's schema change makes one targeted notice", async () => {
+        t.Add("deferred: a policy hook blocks a remote call made with call_tool, and a deferred tool's schema change makes no notice", async () => {
             await using var h=await TestHost.StartAsync();
-            h.Settings.Set(ToolExposure.LoadingSetting, "declare");   // this test is about declared loads
             var ctx=new TestPluginContext(h,"netpi.mcp");
             var config=new ServerConfig {Id="fixture",Command="dotnet",Args=[typeof(DeferredToolsTests).Assembly.Location,"--mcp-fixture"],Cwd=h.Workspace};
             h.Settings.Set("mcp.servers",new JsonObject {["fixture"]=config.Json()});
@@ -255,7 +201,7 @@ public static class DeferredToolsTests
             h.Catalog.Handler=(r,ct)=>stage++==0?Reply.Tools(Reply.Call("tool_search",new {query=target.Definition.Name,limit=1})):Reply.Text("done");
             await h.SendAsync(session.Id,"load");await h.IdleAsync(session.Id);
             var hook=new Hook{Block=true};h.Services.Register<IAgentHook>(hook);stage=0;
-            h.Catalog.Handler=(r,ct)=>stage++==0?Reply.Tools(Reply.Call(target.Definition.Name,new {city="Oslo"})):Reply.Text("done");
+            h.Catalog.Handler=(r,ct)=>stage++==0?Reply.Tools(Reply.Call("call_tool",new {name=target.Definition.Name,arguments=new {city="Oslo"}})):Reply.Text("done");
             await h.SendAsync(session.Id,"call");await h.IdleAsync(session.Id);
             var result=h.Messages(session.Id).SelectMany(m=>m.ToolResults).Last();
             Check.True(result.IsError);Check.Contains(result.Content,"effective target blocked");
@@ -265,7 +211,7 @@ public static class DeferredToolsTests
             await h.SendAsync(session.Id,"changed");await h.IdleAsync(session.Id);
             await h.SendAsync(session.Id,"unchanged");await h.IdleAsync(session.Id);
             var notices=h.Messages(session.Id).Where(m=>m.Meta?["updated"] is JsonArray a && a.Count>0).ToList();
-            Check.Equal(1,notices.Count);Check.Equal("remote-server",notices[0].MetaString("cause"));
+            Check.Equal(0,notices.Count,"the tool is not in the request: nothing to tell the model");
             await manager.DisposeAsync();ctx.Unload();
         });
     }

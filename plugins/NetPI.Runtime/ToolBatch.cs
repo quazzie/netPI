@@ -183,10 +183,6 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             if (tool is null) prepared.Early = ToolResult.Error($"Unknown tool '{call.Name}'. Available tools: {string.Join(", ", ToolSelection.Visible(tools, exposure).Select(t => t.Name))}.");
             else
             {
-                // a deferred tool called by name (the prompt lists the deferred built-in tools): it runs, and is loaded, so
-                // the next model call declares it with its schema
-                if (!exposure.IsDeclared(tool.Definition) && tool is not IDeferredToolInfrastructure)
-                    LoadedTools.Add(Ctx.Sessions, SessionId, [tool.Definition.Name], exposure.Mode);
                 prepared.Args = ParseArgs(call.Arguments);
                 if (ToolHelp.Asked(tool.Definition, prepared.Args))
                     prepared.Early = ToolResult.Ok(ToolHelp.Text(tool.Definition));

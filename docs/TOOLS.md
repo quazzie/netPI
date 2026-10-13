@@ -41,9 +41,9 @@ Every request carries the active tools (the highest-priority registration per na
   sets them when it is applied). Before the first message that is free. In a started chat the change applies from the next model call: tool definitions lead the
   request, so the model re-reads the conversation once (slower on a local model, a full-price read on a paid one), and a
   `tools` notice tells it ("The user switched off for this session: bash.");
-- deferred tools the chat has not loaded (see [Deferred tools](#tool_search-deferred-tools)): an MCP server's unpinned
+- deferred tools (see [Deferred tools](#tool_search-deferred-tools)): an MCP server's unpinned
   tools (`ToolDefinition.Deferred`) and the built-in tools `tools.deferred` names, and deferred-tool infrastructure
-  (`tool_search`) when the chat has no deferred tool it could reach;
+  (`tool_search`, `call_tool`) when the chat has no deferred tool it could reach;
 - for a subagent: the tools its owner chose. With an `agent_spawn` `tools` list exactly those, even tools the owner
   does not have (a limited orchestrator can dispatch an agent with the `ssh` tool; unknown names get the list of
   tools); without one the owner's tools (its allowlist, and its session's switched-off tools, copied to the subagent's
@@ -1277,41 +1277,36 @@ from a script or by name. Without the setting the default list
 tokens of tool definitions instead of ~6 000. `[]` declares every built-in tool. A subagent spawned with a `tools` list
 gets the tools it names declared even when the setting defers them.
 
-The system prompt's Tools section names the built-in tools the setting defers, one line each ("More tools, not loaded
-yet: …" or, with `call_tool`, "More tools, not in your tool list: …"), so the model knows they exist. **A deferred tool called by name runs**
-(in `declare` mode it is loaded with it and declared from the next call; `{"help": true}` gives the arguments before). An MCP server's tools are not listed (there
+The system prompt's Tools section names the built-in tools the setting defers, one line each ("More tools, not
+in your tool list: …"), so the model knows they exist. **A deferred tool called by name runs** (`{"help": true}` gives the arguments before). An MCP server's tools are not listed (there
 can be hundreds); `tool_search` finds them.
  `tool_search { query, limit? (5, at most 10) }` (plugins/NetPI.Runtime) ranks the deferred
 tools the chat may call (switched-off tools and a subagent's allowlist stay out) and returns the best matches. The idea is
 pi 1.0's `tool_search`.
 
-**Loading does not change the request's tools** (`tools.loading`, default `inline`): the tools sit ahead of the
-conversation in a request, so a changed tools block means the backend prefills the whole conversation again. In `inline`
-mode the `tool_search` result carries each match's description and JSON schema (what does not fit ~15 000 characters is
-only named), and the model runs a match with **`call_tool { name, arguments }`** (plugins/NetPI.Runtime `CallTool`;
-`{"help": true}` as the arguments gives a tool's manual). `call_tool` is deferred-tool infrastructure like `tool_search`,
-declared exactly when something is deferred, and never deferred by a list such as `["*"]`. The batch runner unwraps the call
-before any hook sees it: the policy hooks, the workspace guard, parallelism, the events and the after-call hooks all work on
-the inner tool, and the result is stored under the outer call's id. A call to an unknown tool, to `call_tool` or to
-`tool_search` is an error result that says what to do. A deferred tool called directly by name still runs where the backend
-produces such a call (a local backend may refuse a name it was not sent, or force it into another tool: the prompt therefore
-names `call_tool`). `tools.loading = declare` is the earlier behaviour: matches go into `meta.toolsLoaded` and join the
-request's tools, appended after the always-declared tools in load order. A chat keeps the mode of its first load
-(`meta.toolLoading`), and a chat that already has `meta.toolsLoaded` and no mode stays on `declare`, so the switch costs it no prefill.
+**Finding a tool does not change the request's tools.** The tools sit ahead of the conversation in a request, so a
+changed tools block means the backend prefills the whole conversation again. The `tool_search` result therefore carries each
+match's description and JSON schema (what does not fit ~15 000 characters is only named), and the model runs a match with
+**`call_tool { name, arguments }`** (plugins/NetPI.Runtime `CallTool`; `{"help": true}` as the arguments gives a tool's
+manual). `call_tool` is deferred-tool infrastructure like `tool_search`, declared exactly when something is deferred, and
+never deferred by a list such as `["*"]`. The batch runner unwraps the call before any hook sees it: the policy hooks, the
+workspace guard, parallelism, the events and the after-call hooks all work on the inner tool, and the result is stored under
+the outer call's id. A call to an unknown tool, to `call_tool` or to `tool_search` is an error result that says what to do.
+A deferred tool called directly by name still runs where the backend produces such a call (a local backend may refuse a name
+it was not sent, or force it into another tool: the prompt therefore names `call_tool`). Nothing is stored in the chat, no
+`tools` notice is written and there is no cap on how many tools a chat can use.
 
 - Ranking: a query that is a tool's exact name first, then Okapi BM25 over the name (also with `_` as spaces), label,
   category, description, help and the parameters' names and descriptions; camelCase splits, stop words drop, a naive
   singular form (`issues` finds `issue`). `tool_search` drops matches that score below 40% of the best, so a tool that shares
   one word with the query is not returned with the real matches.
 - The description names no tool, so it stays the same while MCP servers connect and the request prefix keeps.
-- `declare` mode only: a chat keeps at most 40 loaded tools (every one is in each request from then on); past that the result
-  says so, and the load (by `tool_search` or a call by name) is a meta change that gives the next call a `tools` notice with cause
-  `loaded` and the model re-reads the conversation once. `inline` has no cap and no notice: nothing in the request changes.
-- The list survives a restart; a fork keeps it; a tool switched off for the chat stays off.
+- A tool switched off for the chat, or outside a subagent's allowlist, is not found and not run.
+- After a compaction the schema a search showed may be gone from the context: `call_tool` with `{"help": true}` shows it again.
 
 ```ts
-content: "Loaded N tools, callable from your next call:\n- name: first line of its description" (+ "Already loaded:" …)
-details: { kind: "tool-search", loaded: string[] /* this call */, matches: string[] /* ranked */ }
+content: "Found N tools. Run one with call_tool …" + per match: "## name", its description, "schema: {json}", its guidelines
+details: { kind: "tool-search", matches: string[] /* ranked */ }
 ```
 
 ## Code mode (`codemode`, plugins/NetPI.CodeMode)
@@ -1344,7 +1339,7 @@ codemode (idea-w9ibt2).
     `meta.codemodeStore`, written only when the script succeeds; `store(key, undefined)` removes one.
 - **Nested calls** go through the runtime's pipeline (`INestedToolCalls` in the contracts, which the runtime puts in
   `ToolContext.Features` of every call the model makes): the tool must be eligible for the chat — deferred tools
-  included, loaded or not, so a script reaches a whole MCP catalogue without declaring it — the before-call hooks
+  included, so a script reaches a whole MCP catalogue without declaring it — the before-call hooks
   (guardrails, plan mode, the workspace guard) may block or rewrite it, and the after-call hooks see it. Calls that change
   something run one at a time, read-only ones up to four at once. `tool_search` and
   `codemode` itself are not callable from a script (a script needs no loader; a call to a name it cannot call gets a hint

@@ -5,8 +5,7 @@ namespace NetPI.Context;
 
 /// <summary>
 /// Why a session's tools changed, so a "tools" notice can say so instead of leaving the model to guess: a plugin was
-/// reloaded, the user switched the tools off, a profile was switched, a setting changed, the model loaded tools with
-/// <c>tool_search</c> (<c>meta.toolsLoaded</c>), or nothing is known.
+/// reloaded, the user switched the tools off, a profile was switched, a setting changed, or nothing is known.
 /// <para>The evidence, strongest first: the session's own switches (<c>meta.toolsOff</c>), a <c>session.changed</c> event
 /// naming the meta keys that changed (the profile switch, a real signal — the host publishes it wherever the meta is
 /// written, so renaming a plugin's notice kind cannot silently lose the cause), then a "profile" notice just before the
@@ -24,8 +23,6 @@ internal sealed class ToolChanges(IPluginContext ctx)
     public const string Settings = "settings";
     public const string Unknown = "unknown";
     public const string RemoteServer = "remote-server";
-    /// <summary>The model loaded deferred tools, with <c>tool_search</c> or by calling one by name (<c>meta.toolsLoaded</c>).</summary>
-    public const string ToolsLoaded = "loaded";
     private readonly Dictionary<string, (string Server, string Reason, DateTimeOffset Time)> _remote = new(StringComparer.Ordinal);
     public void OnRemoteToolsChanged(BusEvent e)
     {
@@ -89,7 +86,6 @@ internal sealed class ToolChanges(IPluginContext ctx)
             new(ToolChanges.Settings, ids, $"{(ids.Count == 1 ? "plugin" : "plugins")} {string.Join(", ", ids)} switched {(kind == "enabled" ? "on" : "off")}");
         public static Change Setting(string name) => new(ToolChanges.Settings, [], "the setting " + name + " changed");
         public static readonly Change Unknown = new(ToolChanges.Unknown, [], "");
-        public static readonly Change Loaded = new(ToolChanges.ToolsLoaded, [], "loaded for this chat");
     }
 
     /// <summary><c>plugins.reloaded</c>: remember it, for the next notice, the tool-set history and the diagnostics tab.</summary>
@@ -180,8 +176,6 @@ internal sealed class ToolChanges(IPluginContext ctx)
         if (removed.Count > 0 && removed.All(n => switchedOff.Contains(n))) return Change.User;
         // the host says which meta keys changed, so a profile switch is named by what it wrote, not by message order
         if (pending is { } change && change.Has(SessionProfile.MetaKey)) return Change.Profile;
-        // meta.toolsLoaded (tool_search, a call by name) only ever grows, so a change that only added tools is a load
-        if (pending is { } load && load.Has(LoadedTools.MetaKey) && removed.Count == 0 && added.Count > 0) return Change.Loaded;
         // fallback: the profiles plugin appends its notice right before the call that sees the profile's tools, and a
         // chat that started before this plugin did has no event to read
         if (context.LastOrDefault(m => m.Role == MessageRole.Notice) is { } notice && notice.MetaString("kind") == ProfileNotice)

@@ -181,7 +181,7 @@ public sealed class ContextPlugin : INetPiPlugin
 
     /// <summary>
     /// Same filtering and order as the agent runtime: allowlist, no orchestration tools at the maximum depth, not the tools
-    /// switched off for the session, no deferred tool the session has not loaded, by name.
+    /// switched off for the session, no deferred tool, by name.
     /// </summary>
     internal static List<IAgentTool> ActiveTools(IPluginContext ctx, AgentInfo? agent, SessionInfo? session = null)
     {

@@ -56,24 +56,14 @@ public static class ToolSelection
         Declared(eligible, exposure).Select(t => t.Definition).ToList();
 
     /// <summary>The eligible tools whose definitions the model is sent (see <see cref="Visible"/>).</summary>
-    public static IEnumerable<IAgentTool> Declared(IEnumerable<IAgentTool> eligible, ToolExposure exposure)
-    {
-        // Stable order, so loading a tool never shifts the tools before it: the always-declared tools keep their (name) order,
-        // loaded deferred tools follow in the order they were loaded. The tools sit ahead of the messages in a request, so
-        // an inserted tool would invalidate the prompt cache from its place on; an appended one only from the end of the tools.
-        var declared = eligible.Where(t => exposure.IsDeclared(t.Definition)).ToList();
-        var order = exposure.LoadOrder;
-        return declared.Where(t => !exposure.IsDeferred(t.Definition))
-            .Concat(declared.Where(t => exposure.IsDeferred(t.Definition))
-                .OrderBy(t => order.TryGetValue(t.Definition.Name, out var i) ? i : int.MaxValue)
-                .ThenBy(t => t.Definition.Name, StringComparer.Ordinal));
-    }
+    public static IEnumerable<IAgentTool> Declared(IEnumerable<IAgentTool> eligible, ToolExposure exposure) =>
+        eligible.Where(t => exposure.IsDeclared(t.Definition));
 }
 
 /// <summary>
-/// Which tools are declared to the model and which are deferred: registered and callable, but not sent until the chat loads
-/// them (<c>tool_search</c>, or a call by name; <see cref="LoadedTools"/>), so a request carries the tools a chat uses, not
-/// every tool there is. A tool is deferred when its definition says so (an MCP server's unpinned tools) or when the chat's
+/// Which tools are declared to the model and which are deferred: registered and callable, but never sent, so a
+/// request carries the tools a chat uses, not every tool there is: <c>tool_search</c> shows a deferred tool's schema and
+/// <c>call_tool</c> runs it, and neither changes the request's tools. A tool is deferred when its definition says so (an MCP server's unpinned tools) or when the chat's
 /// deferred list names it: the session's <c>meta.toolsDeferred</c> (a profile's <c>toolsDeferred</c>, written when the profile
 /// is applied), else the setting <c>tools.deferred</c>, else <see cref="DefaultDeferred"/>. <c>[]</c> declares every tool the
 /// definition does not defer. An entry is a tool name, <c>"*"</c> (every tool) or <c>"!name"</c> (not this one, whatever
@@ -99,45 +89,17 @@ public sealed class ToolExposure
     ];
 
     private readonly DeferredList _list;
-    private readonly HashSet<string> _loaded;
     private readonly IReadOnlyList<string>? _allowlist;
-    private readonly Dictionary<string, int> _order;
 
-    /// <summary>Setting: how a load works. <c>inline</c> (default): the request's tools never change; the schemas come in the
-    /// <c>tool_search</c> result and the tools are called with <c>call_tool</c>. <c>declare</c>: a loaded tool joins the request's tools.</summary>
-    public const string LoadingSetting = "tools.loading";
-    /// <summary>The session's own mode (set when its first tool is loaded, so a chat keeps the mode it started with).</summary>
-    public const string LoadingMetaKey = "toolLoading";
-    public const string Inline = "inline";
-    public const string Declare = "declare";
-
-    /// <summary><see cref="Inline"/> or <see cref="Declare"/>.</summary>
-    public string Mode { get; }
-
-    private ToolExposure(DeferredList list, IReadOnlyList<string> loaded, IReadOnlyList<string>? allowlist, string mode)
+    private ToolExposure(DeferredList list, IReadOnlyList<string>? allowlist)
     {
-        Mode = mode;
         _list = list;
-        _loaded = new HashSet<string>(loaded, StringComparer.Ordinal);
-        _order = new Dictionary<string, int>(StringComparer.Ordinal);
-        for (var i = 0; i < loaded.Count; i++) _order.TryAdd(loaded[i], i);
         _allowlist = allowlist;
     }
 
-    /// <summary>The exposure for one agent's session: its deferred list, its loaded tools, the agent's tool list.</summary>
+    /// <summary>The exposure for one agent's session: its deferred list and the agent's tool list.</summary>
     public static ToolExposure For(ISettings? settings, AgentInfo? agent, SessionInfo? session) =>
-        new(DeferredList.Parse(Entries(settings, session)), LoadedTools.Ordered(session), agent?.ToolAllowlist, ModeOf(settings, session));
-
-    /// <summary>The chat's own mode; else <c>declare</c> for a chat that already has declared loads (it keeps its request as it is,
-    /// so the change costs it no prefill); else the setting; else <c>inline</c>.</summary>
-    public static string ModeOf(ISettings? settings, SessionInfo? session)
-    {
-        if (session?.Meta?[LoadingMetaKey] is JsonValue own && own.TryGetValue<string>(out var m) && (m == Inline || m == Declare)) return m;
-        if (session?.Meta?[LoadedTools.MetaKey] is JsonArray { Count: > 0 }) return Declare;
-        string? setting = null;
-        try { setting = settings?.Get<string>(LoadingSetting); } catch { }
-        return setting == Declare ? Declare : Inline;
-    }
+        new(DeferredList.Parse(Entries(settings, session)), agent?.ToolAllowlist);
 
     /// <summary>The chat's deferred list as written: the session's <c>meta.toolsDeferred</c>, else the setting, else the default.</summary>
     public static IReadOnlyList<string> Entries(ISettings? settings, SessionInfo? session)
@@ -173,13 +135,7 @@ public sealed class ToolExposure
         public bool Names(string tool) => !_except.Contains(tool) && (_all || _names.Contains(tool));
     }
 
-    /// <summary>The session's loaded tools.</summary>
-    public IReadOnlySet<string> Loaded => _loaded;
-
-    /// <summary>Each loaded tool's place in the order it was loaded.</summary>
-    public IReadOnlyDictionary<string, int> LoadOrder => _order;
-
-    /// <summary>Not declared unless loaded: deferred by its definition, or by the chat's list and not named by the agent's tool list.</summary>
+    /// <summary>Not declared: deferred by its definition, or by the chat's list and not named by the agent's tool list.</summary>
     public bool IsDeferred(ToolDefinition definition) =>
         definition.Deferred
         || (_list.Names(definition.Name) && !IsInfrastructure(definition.Name)
@@ -188,49 +144,8 @@ public sealed class ToolExposure
     /// <summary>The tools that reach the deferred ones: a list such as <c>["*"]</c> must not defer them too, or the rest is out of reach.</summary>
     public static bool IsInfrastructure(string name) => name is "tool_search" or "call_tool";
 
-    /// <summary>Whether the model is sent this definition: not deferred, or loaded into the session.</summary>
-    public bool IsDeclared(ToolDefinition definition) => !IsDeferred(definition) || (Mode == Declare && _loaded.Contains(definition.Name));
-}
-
-/// <summary>
-/// Deferred tools loaded into one session: <c>meta.toolsLoaded</c> lists the names <c>tool_search</c> found for it or the
-/// model called by name. A loaded
-/// tool is declared to the model like any other from the next model call on, so it is called directly with its own schema;
-/// the list is the session's, so it survives a restart and a fork keeps it. A tool switched off (<c>meta.toolsOff</c>) stays
-/// off, and a name that no longer names an eligible tool is simply not sent.
-/// </summary>
-public static class LoadedTools
-{
-    public const string MetaKey = "toolsLoaded";
-
-    /// <summary>The tool names loaded into the session (case-sensitive, like tool names in a request); empty when none.</summary>
-    public static HashSet<string> Of(SessionInfo? session) => new(Ordered(session), StringComparer.Ordinal);
-
-    /// <summary>The loaded tool names in the order they were loaded (the list is stored in that order), without repeats.</summary>
-    public static List<string> Ordered(SessionInfo? session)
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var loaded = new List<string>();
-        if (session?.Meta?[MetaKey] is JsonArray names)
-            foreach (var n in names)
-                if (n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) && seen.Add(s.Trim())) loaded.Add(s.Trim());
-        return loaded;
-    }
-
-    /// <summary>Load <paramref name="names"/> into the session (its meta, so the next model call declares them).</summary>
-    public static void Add(ISessionStore sessions, string sessionId, IEnumerable<string> names, string mode = ToolExposure.Declare)
-    {
-        var adding = names.ToList();
-        if (adding.Count == 0) return;
-        sessions.UpdateSession(sessionId, s =>
-        {
-            s.Meta ??= new JsonObject();
-            // the chat keeps the mode it loaded its first tool in (a legacy chat with loads is declare, see ToolExposure.ModeOf)
-            if (s.Meta[ToolExposure.LoadingMetaKey] is null) s.Meta[ToolExposure.LoadingMetaKey] = mode;
-            var loaded = Ordered(s);
-            foreach (var n in adding) if (!loaded.Contains(n, StringComparer.Ordinal)) loaded.Add(n);
-            s.Meta ??= new JsonObject();
-            s.Meta[MetaKey] = new JsonArray([.. loaded.Select(n => (JsonNode?)n)]);
-        });
-    }
+    /// <summary>Whether the model is sent this definition: it is not deferred. A deferred tool is never sent (that would change the
+    /// request's tools, and with them the whole conversation is prefilled again): <c>tool_search</c> shows its schema and
+    /// <c>call_tool</c> runs it.</summary>
+    public bool IsDeclared(ToolDefinition definition) => !IsDeferred(definition);
 }

@@ -33,7 +33,6 @@ internal static class SessionToolSwitches
                 ["description"] = d.Description,
                 ["readOnly"] = d.ReadOnly,
                 ["deferred"] = exposure.IsDeferred(d),
-                ["loaded"] = exposure.IsDeferred(d) && exposure.Loaded.Contains(d.Name),
                 ["pluginId"] = plugins.GetValueOrDefault(t),
                 ["on"] = !ToolLists.Names(off, d.Name, registered),
             });

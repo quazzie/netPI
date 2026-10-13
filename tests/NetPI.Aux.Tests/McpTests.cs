@@ -260,8 +260,6 @@ public static class McpTests
             Check.Equal("",Visible(),"every remote tool is deferred");
             var target=manager.Catalog().Single(t=>t.RemoteName=="weather");
             Check.NotContains(target.Definition.Description,"UNTRUSTED_SERVER");
-            LoadedTools.Add(ctx.Sessions,"ses_1",[target.Definition.Name]);
-            Check.Equal(target.Definition.Name,Visible());
             // an agent's tool list grants only what it names
             Check.Equal("",Visible(new AgentInfo {Id="a",SessionId="ses_1",ToolAllowlist=["read"]}));
             await manager.DisposeAsync();ctx.Unload();Check.Equal(0,ctx.Tools.All.Count);

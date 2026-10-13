@@ -90,7 +90,7 @@ internal sealed class EnvironmentSection : IPromptSection
 /// always sent with the tool definitions). Everything feature-specific comes from the plugin that owns it: tools bring
 /// their own bullets, other plugins register their own sections.
 /// <para>The built-in tools <c>tools.deferred</c> keeps out of the request are named here, one short line each, so the model
-/// knows they exist and calls one by name (that loads it) or finds it with <c>tool_search</c>. An MCP server's deferred
+/// knows they exist and runs one with <c>call_tool</c> or finds it with <c>tool_search</c>. An MCP server's deferred
 /// tools are not listed: there can be hundreds, and <c>tool_search</c> finds them.</para>
 /// </summary>
 internal sealed class ToolsSection(ISettings settings) : IPromptSection
@@ -112,12 +112,9 @@ internal sealed class ToolsSection(ISettings settings) : IPromptSection
         var more = Deferred(c);
         if (more.Count > 0)
         {
-            // call_tool exists when loading does not change the request (ToolExposure.Inline): a name the backend does not know
-            // may be refused or coerced into another tool, so the call goes through the declared dispatcher
-            var viaCallTool = tools.Any(t => t.Name == "call_tool");
-            sb.Append(viaCallTool
-                    ? "- More tools, not in your tool list: run one with call_tool { name, arguments } (arguments {\"help\": true} gives its manual)"
-                    : "- More tools, not loaded yet: call one by name (it runs and stays loaded; {\"help\": true} gives its arguments)")
+            // a name the backend was not sent may be refused or coerced into another tool, so the call goes through the
+            // declared dispatcher
+            sb.Append("- More tools, not in your tool list: run one with call_tool { name, arguments } (arguments {\"help\": true} gives its manual)")
               .Append(tools.Any(t => t.Name == "codemode") ? ", call it from a codemode script (tools.<name>(args))" : "")
               .Append(" or find tools with tool_search:\n");
             foreach (var t in more) sb.Append("  - ").Append(t.Name).Append(": ").Append(SectionUtil.Summary(t.Description, 90)).Append('\n');
