@@ -7,6 +7,7 @@ const PREFS_KEY = 'netpi.prefs';
 const defaultLayout = {
   left: { width: 272, collapsed: false, active: 'core/sessions' },
   right: { width: 360, collapsed: false, active: null },
+  tabs: { left: [], right: [] }, // side-panel tab keys as the user dragged them (tabs.svelte.js)
 };
 const defaultPrefs = {
   theme: 'dark', // dark | light | system
@@ -42,6 +43,10 @@ function merge(base, v) {
   return {
     left: { ...base.left, ...(v.left ?? {}) },
     right: { ...base.right, ...(v.right ?? {}) },
+    tabs: {
+      left: Array.isArray(v.tabs?.left) ? v.tabs.left.filter((k) => typeof k === 'string') : [],
+      right: Array.isArray(v.tabs?.right) ? v.tabs.right.filter((k) => typeof k === 'string') : [],
+    },
   };
 }
 
