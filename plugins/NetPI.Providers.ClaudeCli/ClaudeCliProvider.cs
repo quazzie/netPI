@@ -59,20 +59,23 @@ public sealed class ClaudeCliProvider : IModelProvider
 
     /// <summary>Where the prompt files are written and side calls run.</summary>
     internal string WorkDir => _workDir;
+    internal ICliSessions Sessions => _sessions;
 
     /// <summary>netpi.mjs beside the app (shipped with it), for the prompt note on reaching NetPI; null when it is not there.</summary>
     internal string? RpcScript { get; init; }
     /// <summary>NetPI's home, which netpi.mjs finds the server through (its server.json).</summary>
     internal string? Home { get; init; }
 
-    public string Id => "claude-cli";
-    public string DisplayName => "Claude CLI";
+    public string Id { get; init; } = "claude-cli";
+    public string DisplayName { get; init; } = "Claude CLI";
+    /// <summary>An extra provider (<c>providers.claudeCliExtra</c>) is on unless its entry says otherwise.</summary>
+    internal bool EnabledByDefault { get; init; }
     public bool IsLocal => false;
 
     internal ClaudeCliOptions Options()
     {
-        try { return ClaudeCliOptions.Parse(_config()); }
-        catch (Exception ex) { _log.LogWarning(ex, "claude-cli: could not read settings"); return ClaudeCliOptions.Parse(null); }
+        try { return ClaudeCliOptions.Parse(_config(), EnabledByDefault); }
+        catch (Exception ex) { _log.LogWarning(ex, "claude-cli: could not read settings"); return ClaudeCliOptions.Parse(null, EnabledByDefault); }
     }
 
     private string? _listed;
@@ -101,7 +104,7 @@ public sealed class ClaudeCliProvider : IModelProvider
         {
             Provider = Id,
             Id = id,
-            DisplayName = "Claude CLI: " + id,
+            DisplayName = DisplayName + ": " + id,
             ContextWindow = LimitsOf(id).Window,
             MaxOutputTokens = LimitsOf(id).MaxOutput,
             ManagesOwnContext = true,
@@ -201,7 +204,7 @@ public sealed class ClaudeCliProvider : IModelProvider
         try
         {
             var call = new CliCall(executable, BuildArgs(request, o, tools, promptFile, attempt, disallowed), attempt.Prompt, workDir,
-                TimeSpan.FromSeconds(o.TimeoutSeconds), _hiddenEnv());
+                TimeSpan.FromSeconds(o.TimeoutSeconds), _hiddenEnv(), o.ConfigDir);
             var warned = false;
             await foreach (var line in _runner(call, ct).ConfigureAwait(false))
             {
@@ -409,7 +412,7 @@ public sealed class ClaudeCliProvider : IModelProvider
                 case MessageRole.User or MessageRole.Notice:
                     if (!string.IsNullOrWhiteSpace(m.Text)) blocks.Add(("", m.Text));
                     break;
-                case MessageRole.Assistant when m.Provider != "claude-cli":
+                case MessageRole.Assistant when m.Provider?.StartsWith("claude-cli", StringComparison.Ordinal) != true:
                     if (!string.IsNullOrWhiteSpace(m.Text)) blocks.Add(("[An earlier answer, from another model]", m.Text));
                     break;
                 case MessageRole.Tool:

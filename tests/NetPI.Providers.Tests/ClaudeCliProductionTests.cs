@@ -134,7 +134,7 @@ internal static class ClaudeCliProductionTests
         {
             var learned = 0;
             var withLimits = """{"type":"result","subtype":"success","is_error":false,"result":"ok","modelUsage":{"claude-haiku-4-5":{"contextWindow":400000,"maxOutputTokens":50000}}}""";
-            var p = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines([Init, withLimits], ct)) { OnModelsLearned = () => learned++ };
+            var p = new CL.ClaudeCliProvider(() => Cfg(o => o["models"] = new JsonArray("claude-sonnet-5-5", "claude-haiku-4-5")), null, (_, ct) => Lines([Init, withLimits], ct)) { OnModelsLearned = () => learned++ };
             var before = (await p.ListModelsAsync(true, CancellationToken.None)).ToDictionary(m => m.Id);
             t.Eq(1_000_000, before["claude-sonnet-5-5"].ContextWindow, "a Claude 5 model: 1M");
             t.Eq(200_000, before["claude-haiku-4-5"].ContextWindow, "an earlier one: 200k");

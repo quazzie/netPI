@@ -9,12 +9,14 @@ namespace NetPI.Providers.ClaudeCli;
 /// </summary>
 internal sealed class ClaudeCliOptions
 {
-    public static readonly string[] DefaultModels = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"];
+    public static readonly string[] DefaultModels = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
     public static readonly string[] Efforts = ["low", "medium", "high", "xhigh", "max"];
     public static readonly string[] PermissionModes = ["bypassPermissions", "acceptEdits", "plan", "default"];
 
     public bool Enabled { get; init; }
     public string Executable { get; init; } = "claude";
+    /// <summary>The CLI's own config folder (<c>CLAUDE_CONFIG_DIR</c>), where its login lives: another one is another account. Empty = the default.</summary>
+    public string ConfigDir { get; init; } = "";
     public List<string> Models { get; init; } = [.. DefaultModels];
     /// <summary>The longest one call may run. A CLI that works for an hour on a big task is not stuck: the stall timeout and the
     /// process ending are what detect a dead one, so this is a backstop, and killing a run that was making progress wastes it.</summary>
@@ -39,7 +41,12 @@ internal sealed class ClaudeCliOptions
     /// the calls beyond it wait.</summary>
     public int MaxConcurrent { get; init; } = 2;
 
-    public static ClaudeCliOptions Parse(JsonObject? o)
+    private static string ExpandHome(string path) =>
+        path is "~" || path.StartsWith("~/", StringComparison.Ordinal) || path.StartsWith("~\\", StringComparison.Ordinal)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.TrimStart('~').TrimStart('/', '\\'))
+            : path;
+
+    public static ClaudeCliOptions Parse(JsonObject? o, bool enabledByDefault = false)
     {
         var models = new List<string>();
         if (o.Arr("models") is { } arr)
@@ -48,8 +55,9 @@ internal sealed class ClaudeCliOptions
         var mode = o.Str("permissionMode")?.Trim();
         return new ClaudeCliOptions
         {
-            Enabled = o.Bool("enabled", false),
+            Enabled = o.Bool("enabled", enabledByDefault),
             Executable = string.IsNullOrWhiteSpace(o.Str("executable")) ? "claude" : o.Str("executable")!.Trim(),
+            ConfigDir = ExpandHome((o.Str("configDir") ?? "").Trim()),
             Models = models.Count > 0 ? models : [.. DefaultModels],
             TimeoutSeconds = Math.Clamp(o.Int("timeoutSeconds") ?? 3600, 10, 14400),
             Tools = string.IsNullOrWhiteSpace(o.Str("tools")) ? "default" : o.Str("tools")!.Trim(),

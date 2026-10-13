@@ -14,12 +14,18 @@ namespace NetPI.Providers.ClaudeCli;
 public sealed class ClaudeCliPlugin : INetPiPlugin
 {
     public const string SettingsPath = "providers.claudeCli";
+    /// <summary>More Claude CLI providers (another login each): <c>[{ id, name?, configDir?, executable?, models?, … }]</c>, the keys of <c>providers.claudeCli</c>.</summary>
+    public const string ExtraSettingsPath = "providers.claudeCliExtra";
     private const string UsageCollection = "usage";
     private const string UsageKey = "latest";
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     private IDisposable? _settingsSub;
+    private IPluginContext? _ctx;
+    private ClaudeCliProvider? _template;
+    private readonly Dictionary<string, (ClaudeCliProvider Provider, IDisposable Registration, string Key)> _extras = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _gate = new();
 
     public ClaudeCliProvider? Provider { get; private set; }
 
@@ -32,6 +38,8 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
             [
                 SettingInfo.Bool("providers.claudeCli.enabled", "Enabled", false,
                     "Runs the official `claude` CLI as a subprocess, signed in once with `claude auth login` (subscription, not an API key). The CLI works with its own tools (read, edit, shell, search) in the session's workspace; NetPI's tools are not used."),
+                SettingInfo.Str("providers.claudeCli.configDir", "Config folder", "",
+                    "The CLI's own config folder (CLAUDE_CONFIG_DIR), where its login lives. Empty = the CLI's default (~/.claude)."),
                 SettingInfo.Str("providers.claudeCli.executable", "Executable", "claude",
                     "Name on PATH or a full path. A bare `claude` that is not on PATH is looked for in ~/.local/bin, where the installer puts it."),
                 SettingInfo.List("providers.claudeCli.models", "Models", [.. ClaudeCliOptions.DefaultModels], "Ids passed to `claude --model`."),
@@ -48,6 +56,10 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
                 SettingInfo.Bool("providers.claudeCli.connectors", "Account connectors", false, "Let the CLI load the account's MCP connectors."),
                 SettingInfo.Bool("providers.claudeCli.usage", "Usage pill", true,
                     "Shows the Claude subscription usage (session and weekly windows) in the context ring's popout. It comes from the CLI's own output after each call; pressing the ring also asks Anthropic for the live figure with the CLI's login token (at most once a minute)."),
+                SettingInfo.Records(ExtraSettingsPath, "More Claude CLI providers", [
+                        new("id", "Id", "work"), new("name", "Name", "Claude (work)"), new("configDir", "Config folder", "~/.claude-work"),
+                        new("models", "Models (comma-separated)", "claude-opus-5-5, claude-haiku-5-5", true), new("executable", "Executable", "claude")],
+                    "Each entry is another provider (claude-cli-<id>) with its own login: sign in with `CLAUDE_CONFIG_DIR=<folder> claude auth login`. Other keys of this block can be set in settings.json per entry; it is on unless `enabled` is false."),
                 SettingInfo.Int("providers.claudeCli.stallTimeoutSeconds", "Silence tolerance", 1800,
                     "How long the CLI may stay silent (its own tools and subagents can run for minutes) before the call is declared stalled and retried. 0 never declares a stall: a dead CLI ends the stream on its own.", 0, 7200, "s"),
             ],
@@ -93,17 +105,81 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         // the CLI reports each model's real window with its first answer: the catalog (and the context ring) take it up
         Provider.OnModelsLearned = () => context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = "claude-cli" });
         context.Services.Register<IModelProvider>(Provider);
+        _ctx = context;
+        _template = Provider;
+        ReconcileExtras();
         // Enabling the provider or editing its models changes the catalog: say so, as the other providers do.
         _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, _ =>
         {
+            var extrasChanged = ReconcileExtras();
             if (Provider is { } p && p.ModelsChangedSinceLastList())
                 context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = p.Id });
+            foreach (var e in ExtraProviders().Where(e => e.ModelsChangedSinceLastList()))
+                context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = e.Id });
+            if (extrasChanged) context.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = "claude-cli" });
             PlanWhenEnabled();
         });
         return Task.CompletedTask;
     }
 
     private int _planAsked;
+
+    private ClaudeCliProvider[] ExtraProviders() { lock (_gate) return [.. _extras.Values.Select(e => e.Provider)]; }
+
+    private static JsonObject? FindEntry(IPluginContext ctx, string id)
+    {
+        if (ctx.Settings.GetNode(ExtraSettingsPath) is not JsonArray arr) return null;
+        foreach (var node in arr)
+            if (node is JsonObject o && string.Equals(o.Str("id")?.Trim(), id, StringComparison.OrdinalIgnoreCase)) return o;
+        return null;
+    }
+
+    /// <summary>Registers and unregisters the extra Claude CLI providers to match <c>providers.claudeCliExtra</c>; true when the set changed.</summary>
+    internal bool ReconcileExtras()
+    {
+        var ctx = _ctx;
+        var template = _template;
+        if (ctx is null || template is null) return false;
+        var wanted = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);   // id → display name
+        if (ctx.Settings.GetNode(ExtraSettingsPath) is JsonArray arr)
+            foreach (var node in arr)
+            {
+                if (node is not JsonObject o) continue;
+                var id = o.Str("id")?.Trim();
+                if (string.IsNullOrEmpty(id) || id.Contains('/') || string.Equals(id, template.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    ctx.Logger.LogWarning("{Path}: ignoring entry with invalid id '{Id}'", ExtraSettingsPath, id);
+                    continue;
+                }
+                if (!wanted.ContainsKey(id)) wanted[id] = o.Str("name") is { Length: > 0 } n ? n : id;
+            }
+        var changed = false;
+        lock (_gate)
+        {
+            foreach (var (id, extra) in _extras.ToList())
+            {
+                if (wanted.TryGetValue(id, out var name) && name == extra.Key) continue;
+                try { extra.Registration.Dispose(); } catch { /* registry already disposed */ }
+                _extras.Remove(id);
+                changed = true;
+            }
+            foreach (var (id, name) in wanted)
+            {
+                if (_extras.ContainsKey(id)) continue;
+                var entryId = id;
+                var provider = new ClaudeCliProvider(() => FindEntry(ctx, entryId), ctx.Logger, ProcessRunner.Run,
+                    sessionId => CwdOf(ctx, sessionId), () => HiddenEnvironment(ctx.Settings), null, template.Sessions, template.WorkDir,
+                    () => [.. ctx.Tools.Registrations.Select(r => r.Tool.Definition.Name).Distinct(StringComparer.OrdinalIgnoreCase)])
+                {
+                    Id = "claude-cli-" + id, DisplayName = name, EnabledByDefault = true, RpcScript = template.RpcScript, Home = template.Home,
+                };
+                provider.OnModelsLearned = () => ctx.Events.Publish(EventTypes.ModelsChanged, new JsonObject { ["provider"] = "claude-cli-" + entryId });
+                _extras[id] = (provider, ctx.Services.Register<IModelProvider>(provider), name);
+                changed = true;
+            }
+        }
+        return changed;
+    }
 
     private static ClaudeCliOptions Options(IPluginContext context) => ClaudeCliOptions.Parse(context.Settings.GetNode(SettingsPath) as JsonObject);
 
@@ -194,6 +270,11 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
     {
         _settingsSub?.Dispose();
         _settingsSub = null;
+        lock (_gate)
+        {
+            foreach (var e in _extras.Values) { try { e.Registration.Dispose(); } catch { /* gone */ } }
+            _extras.Clear();
+        }
         return Task.CompletedTask;
     }
 }

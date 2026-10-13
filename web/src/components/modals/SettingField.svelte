@@ -8,6 +8,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import { getAt, setSetting, parseList } from '../../lib/settings.js';
   import ModelSelect from '../ModelSelect.svelte';
+  import RecordsField from './RecordsField.svelte';
   import { pickFolder } from '../../lib/folderPicker.js';
 
   let { setting: s, doc } = $props();
@@ -15,7 +16,7 @@
   const value = $derived(getAt(doc, s.key));
   const isSet = $derived(value !== undefined && value !== null);
   const current = $derived(isSet ? value : s.default);
-  const stacked = $derived(s.type === 'text');
+  const stacked = $derived(s.type === 'text' || s.type === 'records');
   // a text setting whose default is a built-in text (the opening of the system prompt, the AGENTS.md guidance)
   const textDefault = $derived(s.type === 'text' && typeof s.default === 'string' ? s.default : null);
   const shown = () => (textDefault != null && !isSet ? textDefault : toText(value));
@@ -93,6 +94,8 @@
       </div>
     {:else if s.type === 'model'}
       <div class="sel"><ModelSelect value={isSet ? value : null} none={s.placeholder ?? 'the default'} label={s.label ?? s.key} onchange={(ref) => setSetting(s.key, ref)} /></div>
+    {:else if s.type === 'records'}
+      <RecordsField setting={s} {value} />
     {:else if s.type === 'text'}
       <textarea
         class="np-input area"
@@ -129,7 +132,7 @@
         {/if}
       </div>
     {/if}
-    {#if isSet && s.type !== 'bool'}
+    {#if isSet && s.type !== 'bool' && s.type !== 'records'}
       <button class="reset" title="Remove the setting: the default applies again" onclick={() => setSetting(s.key, null)}>Reset</button>
     {:else if isSet && s.type === 'bool' && s.default != null && value !== s.default}
       <button class="reset" title="Back to the default" onclick={() => setSetting(s.key, null)}>Reset</button>

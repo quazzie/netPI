@@ -79,6 +79,8 @@ no SQL outside `src/NetPI.Host/Storage/Sqlite`, and nothing a plugin stores leav
 An array of `{ "id", "name", "baseUrl", "apiKey"?, "transport"?, "local"?, "headers"? }` plus any of the keys above.
 Defaults differ: transport `chat`, `local` only for loopback URLs. Example: LM Studio, a remote llama.cpp, OpenRouter.
 
+In the settings dialog the array is a list of cards (a `records` setting) with Add and Remove.
+
 ### `providers.openrouter` (OpenRouter)
 
 Hundreds of hosted models through one API key. Without a key the provider offers no models. Calls use Chat
@@ -141,8 +143,9 @@ apply, and a run that works through many files uses a lot of them.
 | key | default | |
 |---|---|---|
 | `enabled` | `false` | models are listed only while enabled |
+| `configDir` | – | the CLI's own config folder (`CLAUDE_CONFIG_DIR`), where its login lives; empty = `~/.claude` |
 | `executable` | `claude` | name on PATH or a full path. A bare `claude` that is not on PATH is looked for in `~/.local/bin`, where the installer puts it |
-| `models` | `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-4-5` | ids passed to `--model` |
+| `models` | `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` | ids passed to `--model` |
 | `timeoutSeconds` | `3600` | the longest one call may run before it is killed (10–14400). A backstop: a CLI that makes progress is not stuck, and a dead one ends by itself |
 | `maxConcurrent` | `2` | CLI processes at once (1–16): each is a full Claude Code, and the subscription's rate limits are shared; the other calls wait, and say so |
 | `tools` | `default` | `default`: every built-in tool of the CLI; `none`: text only; or a list for `--tools`, e.g. `Read,Grep,Glob` for read-only. NetPI's own tools are not handed to the CLI; a turn that keeps its Bash is told how it reaches NetPI itself instead: `node "<app>/netpi.mjs" --home "<home>" <method>` (`netpi.mjs` ships beside the app), for the ideas, `memory.search` and the MCP servers NetPI holds (`mcp.read`, `mcp.call`), so a session in another project neither rebuilds an MCP client nor reads a server's URL |
@@ -607,3 +610,7 @@ The `lsp` tool's servers (docs/TOOLS.md).
 |---|---|---|
 | `lsp.maxServers` | `3` | language servers running at once (one per language and workspace root); starting one more stops the least recently used. Each holds a project in memory |
 | `lsp.idleMinutes` | `15` | a server nobody asked for this long is stopped; the next request starts it again |
+
+#### `providers.claudeCliExtra` (more Claude CLI providers)
+
+An array of `{ "id", "name"?, "configDir"?, "executable"?, "models"?, … }` with the keys of `providers.claudeCli`; each entry is another provider `claude-cli-<id>` (a second account, say: sign in with `CLAUDE_CONFIG_DIR=<folder> claude auth login`). An entry is on unless it says `"enabled": false`; it has no usage pill. Add and remove entries in the dialog; the model list follows at once.

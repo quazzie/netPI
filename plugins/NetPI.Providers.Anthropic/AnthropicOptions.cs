@@ -115,7 +115,7 @@ internal static class ClaudeCapabilities
     /// <summary>Used when the models endpoint fails but an API key exists (override with fallbackModels).</summary>
     public static readonly string[] FallbackModels =
     [
-        "claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5",
+        "claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-5-5", "claude-haiku-4-5",
     ];
 
     /// <summary>The efforts of a budget-thinking model and of 4.6 (whose output_config.effort has no xhigh).</summary>

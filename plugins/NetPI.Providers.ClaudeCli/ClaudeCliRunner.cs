@@ -8,7 +8,7 @@ namespace NetPI.Providers.ClaudeCli;
 
 /// <summary>One CLI invocation: what to run, what to feed it on stdin, and which variables of NetPI's environment it must not inherit.</summary>
 internal sealed record CliCall(string Executable, IReadOnlyList<string> Args, string Stdin, string WorkDir, TimeSpan Timeout,
-    IReadOnlyCollection<string>? HiddenEnv = null);
+    IReadOnlyCollection<string>? HiddenEnv = null, string? ConfigDir = null);
 
 /// <summary>Produces the CLI's stdout lines. Replaced in tests; <see cref="ProcessRunner"/> is the real one.</summary>
 internal delegate IAsyncEnumerable<string> CliRunner(CliCall call, CancellationToken ct);
@@ -38,6 +38,7 @@ internal static class ProcessRunner
         foreach (var a in call.Args) psi.ArgumentList.Add(a);
         foreach (var v in AlwaysHidden) psi.Environment.Remove(v);
         foreach (var v in call.HiddenEnv ?? []) psi.Environment.Remove(v);
+        if (!string.IsNullOrEmpty(call.ConfigDir)) psi.Environment["CLAUDE_CONFIG_DIR"] = call.ConfigDir; // another login, another account
         psi.Environment["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"; // the owner's own Claude Code notes are not this agent's memory
 
         using var proc = new Process { StartInfo = psi };

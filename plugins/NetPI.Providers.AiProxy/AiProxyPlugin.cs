@@ -64,6 +64,9 @@ public sealed class AiProxyPlugin : INetPiPlugin
                 SettingInfo.Int("providers.aiproxy.modelsCacheSeconds", "Model list cache", 10, null, 0, 3600, "s"),
                 SettingInfo.Bool("providers.aiproxy.local", "Local models", true, "Their agents share the slots the catalog reports (concurrency); local models are free."),
                 SettingInfo.Bool("providers.aiproxy.enabled", "Enabled", true),
+                SettingInfo.Records(ExtraSettingsPath, "More OpenAI-compatible endpoints", [
+                        new("id", "Id", "lmstudio"), new("name", "Name", "LM Studio"), new("baseUrl", "Server URL", "http://127.0.0.1:1234"), new("apiKey", "API key", "env:NAME")],
+                    "Each entry is another provider (LM Studio, a remote llama.cpp...). Chat Completions by default; other keys of the block can be set in settings.json per entry."),
             ],
         });
         _ctx = context;

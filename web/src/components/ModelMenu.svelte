@@ -46,6 +46,9 @@
     refreshing = false;
   }
 
+  // opening the menu (New agent…, a model field) asks the providers for a fresh list; the cached one shows meanwhile
+  refresh();
+
   function onKey(e) {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
