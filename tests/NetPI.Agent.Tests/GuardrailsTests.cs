@@ -639,7 +639,7 @@ public static class GuardrailsTests
         {
             if (r.SessionId != parent.Id)
                 return Reply.HasToolResult(r) ? Reply.Text("REPORT: blocked") : Reply.Tool("bash", new { command = "git push" });
-            return Reply.HasToolResult(r) ? Reply.Text("parent done") : Reply.Tool("agent_spawn", new { task = "Push it.", name = "pusher" });
+            return Reply.SpawnWaitAnswer(r, new { task = "Push it.", name = "pusher" }, "parent done");
         };
         await h.SendAsync(parent.Id, "delegate");
         var p = await h.IdleAsync(parent.Id, 15_000);
@@ -826,7 +826,7 @@ public static class GuardrailsTests
         {
             if (r.SessionId != parent.Id)
                 return Reply.HasToolResult(r) ? Reply.Text("REPORT: done") : Reply.Tools(Reply.Call("bash", new { command = "git log -1" }), Reply.Call("bash", new { command = "git fetch" }));
-            return Reply.HasToolResult(r) ? Reply.Text("parent done") : Reply.Tool("agent_spawn", new { task = "Look.", name = "looker" });
+            return Reply.SpawnWaitAnswer(r, new { task = "Look.", name = "looker" }, "parent done");
         };
         await h.SendAsync(parent.Id, "delegate");
         var p = await h.IdleAsync(parent.Id, 15_000);

@@ -862,21 +862,14 @@ named agent's model, otherwise the catalog default. Turns, delegation and manual
 (a bare model id is normalized first); an explicit child effort wins. An unavailable selected model is reported,
 including during manual compaction, rather than silently replaced by the global default.
 
-Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }, …], background?, first?, timeoutSeconds? }`.
+Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }, …] }`.
 `taskFile` reads a long task from a file (path relative to the working directory; appended to `task` if both are given), so a batch stays short enough for a model to write in one call. Arguments that end inside an open object or array are reported as cut off, with that advice.
 Every entry is checked first, and every workspace the batch needs is provisioned before the first child starts (a named one
 resolved, the worktree of every worker that writes created, by the same rule a single spawn follows); a bad one starts none of
 them ("subagents[1] (name): …") and releases the worktrees the batch had created. Then they all start together.
 `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
 
-It waits by default: the call returns when the first of them has finished, with its report (`all: true`: when every one has), and while it waits the caller's
-instance is free for its subagents (`agent_choices` marks it: "one is you: free for your subagents while you wait"). A
-turn's tool calls run one after the other, so separate `agent_spawn` calls each wait before the next starts; to run
-several at the same time, start them in one call. `timeoutSeconds` bounds the wait (the ones still running then report
-later on their own). `background: true` is the explicit choice to keep working meanwhile: the call returns at once and
-the result lists each subagent as `running` or `queued` (its agent has no free instance yet), and each report arrives later as an `agent-result` notice (it wakes an idle caller — a subagent that has already finished
-included: it runs again on the report and reports again to its own parent — or steers a running one), unless the
-caller collects it with `agent` `wait` first. A subagent whose turn ends while subagents of its own still run is not finished: it is *parked* (status `yielded`, activity "waiting for N agents", no run and no instance), sends no report to its parent, and a wait on it keeps waiting. Its children's reports or a message wake it; it completes, and reports once, when a run ends with none left. Cancelling a parked agent ends it as `cancelled` and cancels its children. An older `wait: false` means background too.
+It never waits: the call returns at once and the result lists each subagent as `running` or `queued` (its agent has no free instance yet). Each report arrives later as an `agent-result` notice (it wakes an idle caller — a subagent that has already finished included: it runs again on the report and reports again to its own parent — or steers a running one), unless the caller collects it with `agent` `wait` first, which returns at the next report while the caller's instance is free for its subagents (`agent_choices` marks it: "one is you: free for your subagents while you wait"). Start subagents that should run together in one call; wait; start the next piece when an instance frees up; wait again. Ending the turn instead is fine: the reports wake the caller. A subagent whose turn ends while subagents of its own still run is not finished: it is *parked* (status `yielded`, activity "waiting for N agents", no run and no instance), sends no report to its parent, and a wait on it keeps waiting. Its children's reports or a message wake it; it completes, and reports once, when a run ends with none left. Cancelling a parked agent ends it as `cancelled` and cancels its children.
 
 `agent` is one tool with an action per job below (`{ action, … }`; a call with a `message` and no action is `send`);
 `list` and `result` only read (`IReadOnlyCalls`). Until 2026-09-27 each job was a tool of its own (`agent_wait`,
@@ -886,7 +879,7 @@ tool through subagents, and `agent_choices` belongs to another plugin.
 
 ### `agent_wait`
 
-`{ ids?, all?, timeoutSeconds? }`: waits for the given subagents (ids or names) and returns as soon as one has finished, the others keep running (wait again for them; a freed instance can start the next piece meanwhile); `all: true` returns only when every one has (`agent_spawn` takes `all` too). The caller's
+`{ ids?, all? }`: waits for the given subagents (ids or names) and returns as soon as one has finished, the others keep running (wait again for them; a freed instance can start the next piece meanwhile); `all: true` returns only when every one has A wait ends after an hour at the latest. The caller's
 instance is free for them meanwhile and it resumes with priority. Without ids: all of the caller's running subagents, plus
 finished ones whose `agent-result` notice is still queued unseen (the report comes back here and the queued notice is
 dropped, so it arrives once). A new user message interrupts the wait. `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.

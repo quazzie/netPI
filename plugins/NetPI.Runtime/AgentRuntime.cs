@@ -1068,11 +1068,12 @@ internal sealed class AgentRuntime : IAgentRuntime
         bool IsParentOf(AgentState t) => caller is not null && string.Equals(t.Info.ParentAgentId, caller.Info.Id, StringComparison.Ordinal);
         var registered = new List<(AgentState T, bool Parent)>();
         var tasks = new List<Task>();
+        var alreadyDone = false;
         foreach (var t in targets)
         {
             lock (t.Gate)
             {
-                if (t.Run is null && !t.Parked) continue;
+                if (t.Run is null && !t.Parked) { alreadyDone = true; continue; }
                 var parent = IsParentOf(t);
                 t.ResultWaiters++;
                 if (parent) t.ParentWaiters++;
@@ -1083,7 +1084,8 @@ internal sealed class AgentRuntime : IAgentRuntime
 
         try
         {
-            if (tasks.Count > 0) await WaitCoreAsync(caller, tasks, yieldSlot, timeout, ct, any: any).ConfigureAwait(false);
+            // waiting for the first: a target that has finished already is that first one, there is nothing to wait for
+            if (tasks.Count > 0 && !(any && alreadyDone)) await WaitCoreAsync(caller, tasks, yieldSlot, timeout, ct, any: any).ConfigureAwait(false);
         }
         finally
         {

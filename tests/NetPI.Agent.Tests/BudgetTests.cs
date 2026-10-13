@@ -312,7 +312,7 @@ public static class BudgetTests
             if (r.Model.Ref == "cloud/big") return Costing("child report", 0.5);
             var last = r.Messages[^1];
             if (last.Role == MessageRole.Tool || last.Text.Contains("<agent-result")) return Reply.Text("done");
-            return Reply.Tool("agent_spawn", new { task = "do it", model = "cloud/big", background = true });
+            return Reply.Tool("agent_spawn", new { task = "do it", model = "cloud/big" });
         };
         await h.SendAsync(parent.Id, "delegate");
         await Wait.Until(() => h.Messages(parent.Id).Any(m => m.Role == MessageRole.Assistant && m.Text == "done" && h.Messages(parent.Id).Any(x => x.MetaString("kind") == "agent-result")), "report back");
@@ -369,7 +369,7 @@ public static class BudgetTests
             if (r.Model.Ref == "cloud/big") return Reply.Text("child");
             var last = r.Messages[^1];
             if (last.Role == MessageRole.Tool || last.Text.Contains("<agent-result")) return Reply.Text("parent done");
-            return Reply.Tool("agent_spawn", new { task = "paid work", model = "cloud/big", background = true });
+            return Reply.Tool("agent_spawn", new { task = "paid work", model = "cloud/big" });
         };
         await h.SendAsync(parent.Id, "delegate");
         await Wait.Until(() => h.Runtime.GetBySession(parent.Id)?.Children.Count == 1, "spawned");
@@ -416,7 +416,7 @@ public static class BudgetTests
                 1 => Reply.Tool("agent_choices"),
                 2 => Reply.Tool("agent_spawn", new { task = "hard problem" }),
                 3 => Reply.Tool("agent_spawn", new { task = "hard problem", agent = "solo" }),
-                4 => Reply.Tool("agent_spawn", new { task = "hard problem", agent = "big", background = true }),
+                4 => Reply.Tool("agent_spawn", new { task = "hard problem", agent = "big" }),
                 _ => Reply.Text("waiting for it"),
             };
         };

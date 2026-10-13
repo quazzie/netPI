@@ -81,9 +81,9 @@ public static class UnloadTests
             h.Catalog.Handler = (r, ct) =>
             {
                 if (r.SystemPrompt?.Contains("a subagent working for") == true) return Reply.Text("child report");
-                return Reply.HasToolResult(r)
-                    ? Reply.Text("parent done")
-                    : Reply.Tools(Reply.Call("agent_choices"), Reply.Call("agent_spawn", new { task = "work", name = "w" }));
+                var done = r.Messages.SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
+                if (!done.Contains("agent_spawn")) return Reply.Tools(Reply.Call("agent_choices"), Reply.Call("agent_spawn", new { task = "work", name = "w" }));
+                return done.Contains("agent") ? Reply.Text("parent done") : Reply.Tool("agent", new { action = "wait", all = true });
             };
             var runtime = h.Services.Get<IAgentRuntime>()!;
             Check.True(runtime.GetType().Assembly.IsCollectible, "runtime comes from a collectible context");

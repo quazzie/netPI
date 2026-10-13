@@ -382,7 +382,7 @@ public sealed partial class ScenarioEngine
     {
         if (step == 0)
             return new Plan { Text = "Starting the dev server in the background." }
-                .Call("bash", Obj(("command", $"for i in $(seq 1 {tag.PInt("lines", 900)}); do echo \"dev server: request $i\"; sleep {(tag.PInt("ms", 250) / 1000.0).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}; done"), ("background", true)));
+                .Call("bash", Obj(("command", $"for i in $(seq 1 {tag.PInt("lines", 900)}); do echo \"dev server: request $i\"; sleep {(tag.PInt("ms", 250) / 1000.0).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}; done")));
         return Final("The dev server runs in the background. BGPROC-STARTED");
     }
 
@@ -546,7 +546,7 @@ public sealed partial class ScenarioEngine
                 var plan = new Plan { Thinking = $"This splits into {n} independent parts; I'll delegate them.", Text = $"Delegating to {n} workers." };
                 for (var i = 1; i <= n; i++)
                 {
-                    var args = Obj(("task", $"Worker task #{i}: square the number {i} and report the result. [s:sub i={i} delay={delay + (i - 1) * stagger} hold={tag.PInt("workerhold", 0)}]"), ("name", $"worker-{i}"), ("background", true));
+                    var args = Obj(("task", $"Worker task #{i}: square the number {i} and report the result. [s:sub i={i} delay={delay + (i - 1) * stagger} hold={tag.PInt("workerhold", 0)}]"), ("name", $"worker-{i}"));
                     if (model is not null) args["model"] = model;
                     if (tag.Params.TryGetValue("agent", out var agent)) args["agent"] = agent;
                     plan.Call("agent_spawn", args);
@@ -575,21 +575,21 @@ public sealed partial class ScenarioEngine
     {
         if (step == 0)
         {
-            var args = Obj(("task", $"Background task: report the number 7. [s:sub i=7 delay={tag.PInt("delay", 800)}{(tag.Params.TryGetValue("workergate", out var wg) ? $" gate={wg}" : "")}]"), ("name", tag.P("name", "bg-worker")), ("background", true));
+            var args = Obj(("task", $"Background task: report the number 7. [s:sub i=7 delay={tag.PInt("delay", 800)}{(tag.Params.TryGetValue("workergate", out var wg) ? $" gate={wg}" : "")}]"), ("name", tag.P("name", "bg-worker")));
             if (tag.Params.TryGetValue("agent", out var agent)) args["agent"] = agent;
             return new Plan { Text = "Starting a background worker." }.Call("agent_spawn", args);
         }
         return Final("The worker runs in the background; I will report when it finishes. SPAWNBG-STARTED");
     }
 
-    /// <summary>Orchestrator → lead subagent → helper sub-subagent (agent_spawn waits for it), all on the same pool.</summary>
+    /// <summary>Orchestrator → lead subagent → helper sub-subagent (it waits for the helper with agent wait), all on the same pool.</summary>
     private static Plan Nest(ScenarioTag tag, int step, List<NMsg> after)
     {
         switch (step)
         {
             case 0:
                 return new Plan { Text = "Delegating to a lead." }
-                    .Call("agent_spawn", Obj(("task", $"Lead the work: get a helper to square 5, then report. [s:subspawn delay={tag.PInt("delay", 800)}]"), ("name", "lead"), ("background", true)));
+                    .Call("agent_spawn", Obj(("task", $"Lead the work: get a helper to square 5, then report. [s:subspawn delay={tag.PInt("delay", 800)}]"), ("name", "lead")));
             case 1:
                 return new Plan { Text = "Waiting for the lead." }.Call("agent", new JsonObject { ["action"] = "wait", ["all"] = true });
             default:
@@ -604,9 +604,11 @@ public sealed partial class ScenarioEngine
     private static Plan SubSpawn(NRequest req, ScenarioTag tag, int step, List<NMsg> after)
     {
         if (step == 0)
-            return new Plan { Text = "Telling my parent, then delegating to a helper and waiting for it." }
+            return new Plan { Text = "Telling my parent, then delegating to a helper." }
                 .Call("agent", Obj(("action", "send"), ("to", "parent"), ("message", "lead started")))
                 .Call("agent_spawn", Obj(("task", $"Square 5. [s:sub i=5 delay={tag.PInt("delay", 800)}]"), ("name", "helper")));
+        if (step == 1)
+            return new Plan { Text = "Waiting for the helper." }.Call("agent", new JsonObject { ["action"] = "wait", ["all"] = true });
         var result = ToolResults(after).LastOrDefault()?.Text ?? "";
         var report = result.Split('\n').FirstOrDefault(l => l.Contains("Report from", StringComparison.Ordinal))?.Trim() ?? "(no helper report)";
         return Final($"Lead report: helper said \"{report}\"");

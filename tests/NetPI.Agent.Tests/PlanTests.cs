@@ -496,7 +496,7 @@ public static class PlanTests
                 lock (children) children.Add(r);
                 return Reply.HasToolResult(r) ? Reply.Text("REPORT") : Reply.Tools(Reply.Call("write", new { path = "a" }), Reply.Call("read", new { path = "a" }), Reply.Call("plan_submit", Plan()));
             }
-            return Reply.HasToolResult(r) ? Reply.Text("parent done") : Reply.Tool("agent_spawn", spawn);
+            return Reply.SpawnWaitAnswer(r, spawn, "parent done");
         };
         var s = h.NewSession();
         await h.Rpc.InvokeAsync("plan.enter", new { sessionId = s.Id });

@@ -253,7 +253,7 @@ public static class AskTests
         {
             if (r.SessionId != parent.Id)
                 return Reply.HasToolResult(r) ? Reply.Text("REPORT: could not ask") : Reply.Tool("ask_user", new { questions = new[] { Q("Which?", "a", "b") } });
-            return Reply.HasToolResult(r) ? Reply.Text("parent done") : Reply.Tool("agent_spawn", new { task = "Decide something.", name = "worker" });
+            return Reply.SpawnWaitAnswer(r, new { task = "Decide something.", name = "worker" }, "parent done");
         };
         await h.SendAsync(parent.Id, "delegate");
         var p = await h.IdleAsync(parent.Id, 15_000);

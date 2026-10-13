@@ -281,6 +281,14 @@ public static class Reply
     }
 
     public static bool HasToolResult(ModelRequest r) => r.Messages.LastOrDefault()?.Role == MessageRole.Tool;
+
+    /// <summary>A parent that starts subagents (agent_spawn returns at once), waits for their reports, then answers <paramref name="final"/>.</summary>
+    public static IAsyncEnumerable<ModelStreamEvent> SpawnWaitAnswer(ModelRequest r, object spawn, string final)
+    {
+        var results = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
+        if (!results.Contains("agent_spawn")) return Tool("agent_spawn", spawn);
+        return results.Contains("agent") ? Text(final) : Tool("agent", new { action = "wait", all = true });
+    }
 }
 
 // ------------------------------------------------------------------ session store that fails

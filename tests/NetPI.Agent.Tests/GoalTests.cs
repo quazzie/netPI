@@ -594,7 +594,7 @@ public static class GoalTests
             if (Last(r).Contains("still working")) continuation = Last(r);
             return n switch
             {
-                1 => Reply.Tool("agent_spawn", new { task = "the slow part", name = "slowpoke", background = true }),
+                1 => Reply.Tool("agent_spawn", new { task = "the slow part", name = "slowpoke" }),
                 2 => Reply.Text("Spawned it."),                 // ends the run while the child works: continued at once
                 3 => Reply.Tool("work"),                        // the continuation does something
                 4 => Reply.Tool("goal_update", new { status = "complete", summary = "Done." }), // refused: the child still works

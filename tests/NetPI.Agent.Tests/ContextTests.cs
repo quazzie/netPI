@@ -97,8 +97,8 @@ public static class ContextTests
         Check.Contains(prompt, "<system-notice>");
         Check.Contains(prompt, "Use edit for testing.");
         Check.Contains(prompt, "Delegate independent, well-scoped work");
-        Check.Contains(prompt, "in one agent_spawn call: separate calls run one after the other");
-        Check.Contains(prompt, "Pass background: true only when you have other work to do meanwhile");
+        Check.Contains(prompt, "Start independent subagents together in one agent_spawn call");
+        Check.Contains(prompt, "Ending your turn instead is fine: the reports wake you");
         Check.Contains(prompt, "Before you delegate, look at agent_choices and choose an active agent by its note and cost");
         // how the agent tools work is in their definitions (agent_choices marks the caller's free instance), not here
         Check.NotContains(prompt, "instance is free");

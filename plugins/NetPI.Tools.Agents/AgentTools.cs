@@ -187,7 +187,7 @@ internal abstract class AgentToolBase(IPluginContext plugin)
     protected static readonly string[] SpawnGuidelines =
     [
         "Delegate independent, well-scoped work (research, exploring code, separate modules) to subagents with agent_spawn; don't delegate what you can do in a couple of tool calls.",
-        "Start subagents that should run at the same time in one agent_spawn call: separate calls run one after the other. Pass background: true only when you have other work to do meanwhile.",
+        "agent_spawn returns at once. Start independent subagents together in one agent_spawn call, then call agent with action wait: it returns at the next report (you hold no instance meanwhile); start more work when an instance frees up and wait again for the rest. Ending your turn instead is fine: the reports wake you.",
     ];
 }
 
@@ -209,21 +209,19 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     };
 
     internal override string Name => "agent_spawn";
-    internal override string Summary => "Start subagents on tasks (one: task; several at once: subagents) on the agents from agent_choices; returns when the first has reported (all: true: every one) unless background: true.";
+    internal override string Summary => "Start subagents on tasks (one: task; several at once: subagents) on the agents from agent_choices; returns at once, the reports come with agent wait or wake you.";
 
     public ToolDefinition Definition { get; } = new()
     {
         Name = "agent_spawn",
         Label = "Spawn agent",
-        Description = "Start subagents on tasks (one: task; several at once: subagents) on the agents from agent_choices; returns when the first has reported (all: true: every one) unless background: true.",
+        Description = "Start subagents on tasks (one: task; several at once: subagents) on the agents from agent_choices; returns at once, the reports come with agent wait or wake you.",
         Help =
             "Each subagent runs on one of the agents from agent_choices, in its own session, and ends with a final report. " +
             "One: pass task (and agent, name, …). Several at once: pass subagents, each { task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }; " +
             "they start together and all are checked first. agent goes inside each entry, not beside subagents.\n" +
-            "Waiting: by default the call returns when the first has finished, with its report; your instance is free for the others meanwhile, " +
-            "which keep running and report on their own (agent, action wait collects the next one). all: true returns only when every one has finished. " +
-            "background: true returns at once with each subagent's state (running, or queued while its agent has no free instance); each report arrives later on its own. " +
-            "timeoutSeconds bounds a wait.\n" +
+            "The call returns at once with each subagent's state (running, or queued while its agent has no free instance). " +
+            "Each report arrives later on its own and wakes you if you are idle; agent, action wait returns at the next one (your instance is free meanwhile).\n" +
             "task: self-contained (the subagent does not see your conversation): goal, paths, constraints, what to put in the report. " +
             "A long task goes in a file: pass taskFile (relative to your working directory). name: short, e.g. \"tests\". " +
             "agent: an id from agent_choices (required when agents are set up), or \"any\" for the first free one. model: only when no agents are set up (\"provider/model\"). " +
@@ -240,9 +238,6 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
                 ["type"] = "array",
                 ["items"] = Schema(ItemProperties()),
             },
-            ["background"] = Prop("boolean", ""),
-            ["all"] = Prop("boolean", "Return only when every subagent has finished (default: when the first has)"),
-            ["timeoutSeconds"] = Prop("integer", ""),
         }),
     };
 
@@ -272,26 +267,6 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
 
         var started = new List<AgentInfo>(requests.Count);
         foreach (var request in requests) started.Add(await runtime.SpawnAsync(request, ct).ConfigureAwait(false));
-
-        // waiting is the default; background is the explicit choice (an older "wait": false means background too)
-        var background = root.Bool("background") ?? (root.Bool("wait") is { } w ? !w : false);
-        if (!background)
-        {
-            var timeout = root.Double("timeoutSeconds", "timeout") is { } t && t > 0 ? TimeSpan.FromSeconds(t) : (TimeSpan?)null;
-            var first = root.Bool("all") != true;
-            var results = await runtime.WaitAsync(context.AgentId, [.. started.Select(a => a.Id)], yieldSlot: true, timeout, ct, first).ConfigureAwait(false);
-            if (batch is null)
-            {
-                var r = results.FirstOrDefault() ?? runtime.Get(started[0].Id) ?? started[0];
-                return new ToolResult { Content = Report(r), IsError = r.Status == AgentStatus.Failed, Details = Details(r) };
-            }
-            var running = results.Count(a => IsBusy(a.Status));
-            var report = new StringBuilder(running == 0
-                ? $"{results.Count} subagents finished."
-                : $"{results.Count - running} of {results.Count} subagents finished; {running} still running ({(first ? "you asked for the first report; the rest are still working" : "the wait timed out or a new message arrived")}).");
-            foreach (var a in results) report.Append("\n\n").Append(Report(a));
-            return ToolResult.Ok(report.ToString(), new JsonObject { ["agents"] = new JsonArray([.. results.Select(a => (JsonNode)Details(a))]) });
-        }
 
         var sb = new StringBuilder();
         foreach (var a in started)
@@ -506,7 +481,7 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
             Label = "Agents",
             Category = "agents",
             SummaryArg = "action",
-            Description = "Your already-started subagents (not the agents available to start: that is agent_choices, then agent_spawn): wait {ids?, all?, timeoutSeconds?} for their reports (returns when one is done; all: when every one is), send {to, message} (to=\"parent\" for your parent), list, result {id} or cancel {id}.",
+            Description = "Your already-started subagents (not the agents available to start: that is agent_choices, then agent_spawn): wait {ids?, all?} for their reports (returns when one is done; all: when every one is), send {to, message} (to=\"parent\" for your parent), list, result {id} or cancel {id}.",
             Help = string.Join("\n", actions.Select(t => $"- {t.Name}: {t.Summary}")),
             Parameters = new JsonObject
             {
@@ -520,7 +495,6 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
                     ["message"] = new JsonObject { ["type"] = "string" },
                     ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("steer", "queue") },
                     ["all"] = new JsonObject { ["type"] = "boolean" },
-                    ["timeoutSeconds"] = new JsonObject { ["type"] = "integer" },
                 },
                 ["required"] = new JsonArray("action"),
             },
@@ -592,7 +566,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
         }
         if (ids.Count == 0) return ToolResult.Error($"Unknown or out-of-reach agent(s): {string.Join(", ", problems)}. Use agent with action list to see your subagents.");
 
-        var seconds = root.Double("timeoutSeconds", "timeout") is { } t && t > 0 ? t : 3600;
+        const double seconds = 3600;   // an hour; the user's message, or a report, ends a wait sooner
         var first = root.Bool("all") != true;
         var results = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct, first).ConfigureAwait(false);
 
