@@ -39,6 +39,7 @@ public static class SubagentTests
         t.Add("subagents: cancel/send/wait/result are scoped to the caller's own tree (two sessions)", ForeignTreeScope);
         t.Add("subagents: a subagent whose turn ends with subagents running is parked, and reports once when they are done", ParkedUntilChildrenDone);
         t.Add("subagents: cancelling a parked subagent ends it as cancelled and stops its children", CancelParked);
+        t.Add("subagents: a wait with nothing to wait for returns at once", WaitWithNothing);
     }
 
     /// <summary>
@@ -129,6 +130,35 @@ public static class SubagentTests
         Check.True(!waits[0].Content.Contains("SLOW REPORT"), "the slow report is not in the first result");
         Check.Contains(waits[1].Content, "SLOW REPORT");
         Check.Equal(1, h.Messages(parent.Id).Count(m => m.Text.Contains("SLOW REPORT") || m.ToolResults.Any(x => x.Content.Contains("SLOW REPORT"))), "once");
+    }
+
+    /// <summary>Waiting with no subagents, or only ones that finished and reported, does not block; nor does an explicit id of a finished one.</summary>
+    private static async Task WaitWithNothing()
+    {
+        await using var h = await TestHost.StartAsync();
+        var step = 0;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r)) return Reply.Text("CHILD REPORT");
+            return step++ switch
+            {
+                0 => Reply.Tool("agent", new { action = "wait" }),                                        // no subagents at all
+                1 => Reply.Tool("agent_spawn", new { task = "quick", name = "quick" }),
+                2 => Reply.Tool("agent", new { action = "wait" }),                                        // collects the report
+                3 => Reply.Tool("agent", new { action = "wait" }),                                        // all seen: nothing to wait for
+                4 => Reply.Tool("agent", new { action = "wait", ids = new[] { "quick" } }),               // a finished one by name
+                _ => Reply.Text("done"),
+            };
+        };
+        var parent = h.NewSession();
+        await h.SendAsync(parent.Id, "go");
+        await h.IdleAsync(parent.Id, 5_000);
+        var waits = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Where(x => x.Name == "agent").ToList();
+        Check.Equal(4, waits.Count);
+        Check.Contains(waits[0].Content, "You have no subagents");
+        Check.Contains(waits[1].Content, "CHILD REPORT");
+        Check.Contains(waits[2].Content, "None of your subagents is running");
+        Check.Contains(waits[3].Content, "CHILD REPORT");
     }
 
     /// <summary>
