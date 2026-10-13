@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { hostUi } from './host.mjs';
-import { rowState, agentToForm, formToAgent, textToMatch, incidentLine, limitsLine, hookLine, hookToForm, formToHook } from '../../../plugins/NetPI.Webhooks/ui/model.js';
+import { rowState, agentToForm, formToAgent, incidentLine, limitsLine, hookLine, hookToForm, formToHook } from '../../../plugins/NetPI.Webhooks/ui/model.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const bundle = fs.readFileSync(path.join(root, 'plugins/NetPI.Webhooks/wwwroot/ui.js'));
@@ -23,7 +23,7 @@ const hook = (o) => ({
   maxChatsPerHour: 60, createdAt: iso(now - 86_400_000), updatedAt: iso(now - 3_600_000), ...o,
 });
 const fixtures = () => [
-  hook({ id: 'whk_ok', name: 'Checkmk', lastAt: iso(now - 600_000), lastStatus: 'started', lastSessionId: 'ses_a', group: { key: '{{host}}', debounceSeconds: 90, reopenMinutes: 240 },
+  hook({ id: 'whk_ok', name: 'Checkmk', lastAt: iso(now - 600_000), lastStatus: 'started', lastSessionId: 'ses_a', timeoutMinutes: 10,
     pre: { command: 'python', args: ['pre.py'] }, post: { command: 'ssh', args: ['server', 'ha-alert-json'] } }),
   hook({ id: 'whk_skip', name: 'Skipping', lastAt: iso(now - 60_000), lastStatus: 'duplicate', lastReason: 'the chat for nuc was just told this' }),
   hook({ id: 'whk_fail', name: 'Failing', lastAt: iso(now - 60_000), lastStatus: 'failed', lastReason: 'the model is not loaded' }),
@@ -120,7 +120,7 @@ try {
   check('a started row has an ok dot', (await row('Checkmk').getAttribute('data-tone')) === 'ok');
   check('a failed row has an error dot', (await row('Failing').getAttribute('data-tone')) === 'err');
   check('a proposed row says an agent proposed it', (await row('Proposed').innerText()).includes('proposed by an agent'));
-  check('the meta line shows the token tail and the grouping', (await row('Checkmk').innerText()).includes('token …ab12') && (await row('Checkmk').innerText()).includes('one chat per {{host}}'));
+  check('the meta line shows the token tail and the timeout', (await row('Checkmk').innerText()).includes('token …ab12') && (await row('Checkmk').innerText()).includes('timeout 10 min'));
   check('a duplicate row is idle, not an error', (await row('Skipping').getAttribute('data-tone')) === 'idle');
 
   // --- the detail: URL, template, preview
@@ -170,30 +170,26 @@ try {
   await tab.locator('.form input[placeholder="e.g. Checkmk alerts"]').fill('Checkmk alerts');
   await tab.locator('.form select').nth(1).selectOption('sysadmin');
   await tab.locator('.form select').nth(2).selectOption('free');
-  await tab.locator('.form textarea').nth(1).fill('[{"path":"state","in":["CRIT","DOWN"]}]');
-  await tab.locator('.form input[placeholder="{{host}}"]').fill('{{host}}');
-  await tab.waitForSelector('.form input[type=number][max="3600"]', { timeout: 5_000 });
   await tab.locator('.form input[placeholder="program, e.g. python"]').nth(1).fill('ssh');
   await tab.locator('.form textarea[placeholder="arguments, one per line"]').nth(1).fill('server\nx');
-  await tab.waitForSelector('.form input[type=number][max="1440"]', { timeout: 5_000 });
+  await tab.locator('.form input[type=number][max="1440"]').fill('20');
   await tab.locator('.form .f-actions button', { hasText: 'Save' }).click();
   await tab.waitForSelector('.webhooks .token', { timeout: 5_000 });
   const add = await tab.evaluate(() => window.__calls.filter(([m]) => m === 'webhooks.add').at(-1)[1]);
-  check('add sends the after command and leaves the empty before out', add.post?.command === 'ssh' && add.post.args.join(',') === 'server,x' && add.pre === undefined && add.stalledMinutes === 10, JSON.stringify([add.pre, add.post, add.stalledMinutes]));
-  check('add sends name, agent free, match and the incident group', add.name === 'Checkmk alerts' && add.agent === 'free' && add.profile === 'sysadmin' && add.match[0].path === 'state' && add.group.key === '{{host}}' && add.group.debounceSeconds === 90 && add.maxChatsPerHour === 60, JSON.stringify(add));
+  check('add sends the after command and leaves the empty before out', add.post?.command === 'ssh' && add.post.args.join(',') === 'server,x' && add.pre === undefined && add.timeoutMinutes === 20, JSON.stringify([add.pre, add.post, add.timeoutMinutes]));
+  check('add sends name, agent free, profile and the fuse, and nothing about grouping or filters', add.name === 'Checkmk alerts' && add.agent === 'free' && add.profile === 'sysadmin' && add.maxChatsPerHour === 60 && add.group === undefined && add.match === undefined && add.title === undefined && add.alert === undefined, JSON.stringify(add));
   const tokenBox = await tab.locator('.webhooks .token').innerText();
   check('the token box shows the token once, with a curl line', tokenBox.includes('whk_SECRET_TOKEN_wxyz') && tokenBox.includes('curl -X POST'), tokenBox.slice(0, 80));
   await tab.locator('.webhooks .token button', { hasText: 'I have saved it' }).click();
   check('dismissing removes the token box', (await tab.locator('.webhooks .token').count()) === 0);
 
-  // --- a bad match JSON is told before saving
+  // --- a missing name is told before saving
   await tab.locator('.webhooks button', { hasText: 'New' }).first().click();
   await tab.waitForSelector('.form .f-actions button', { timeout: 5_000 });
-  await tab.locator('.form input[placeholder="e.g. Checkmk alerts"]').fill('x');
-  await tab.locator('.form textarea').nth(1).fill('not json');
   await tab.locator('.form .f-actions button', { hasText: 'Save' }).click();
   await tab.waitForSelector('.form .f-err', { timeout: 5_000 });
-  check('invalid match JSON is refused in the form', (await tab.locator('.form .f-err').innerText()).includes('JSON array'));
+  check('a missing name is refused in the form', (await tab.locator('.form .f-err').innerText()).includes('name is required'));
+  check('the form has no filter, incident key or template boxes', (await tab.locator('.form').innerText()).split('\n').every((l) => !/Only when|Incident key|Each item in a batch|Message for a later item|Chat title/.test(l)));
   await tab.locator('.form .f-actions button', { hasText: 'Cancel' }).click();
 
   // --- webhooks.changed reloads
@@ -226,9 +222,8 @@ check('rowState: a disabled proposal', rowState({ enabled: false, proposedBy: 's
 check('rowState: a failed delivery is an error', rowState({ enabled: true, lastStatus: 'failed' }).tone === 'err');
 check('agent list round-trips', formToAgent({ agentChoice: '__list', agentList: ' a , b ' }) === 'a,b' && agentToForm('a,b').agentChoice === '__list');
 check('incidentLine: open and collecting', incidentLine({ key: 'nuc', state: 'open', alertCount: 1 }) === 'nuc · open · 1 alert' && incidentLine({ key: 'x', state: 'collecting', alertCount: 2, startsAt: new Date(Date.now() + 30000).toISOString() }, Date.now()).includes('chat starts in'));
-check('limitsLine: grouped and ungrouped', limitsLine({ group: { key: '{{host}}', debounceSeconds: 60 }, maxChatsPerHour: 60 }).includes('60 s window') && limitsLine({}).includes('every alert its own chat'));
+check('limitsLine: timeout and fuse', limitsLine({ timeoutMinutes: 15, maxChatsPerHour: 60 }) === 'timeout 15 min · fuse 60/h' && limitsLine({ timeoutMinutes: 0 }) === 'no timeout');
 check('hookLine, hookToForm and formToHook', hookLine({ command: 'ssh', args: ['a', 'b'] }) === 'ssh a b' && hookLine({ command: 'x' }) === 'x' && formToHook(' ssh ', 'a\n\n b ').args.join(',') === 'a,b' && Object.keys(formToHook('', 'a')).length === 0 && hookToForm({ command: 'ssh', args: ['a', 'b'] }).args === 'a\nb' && hookToForm(null).command === '');
-check('match text: an array parses, junk does not', textToMatch('[{"path":"x","equals":1}]').length === 1 && textToMatch('x') === null && textToMatch('').length === 0);
 
 const failed = checks.filter((c) => !c.ok);
 console.log(JSON.stringify({ ok: failed.length === 0 && errors.length === 0, checks, errors }));

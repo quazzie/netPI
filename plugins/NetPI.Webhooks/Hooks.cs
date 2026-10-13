@@ -10,21 +10,25 @@ namespace NetPI.Webhooks;
 /// <summary>
 /// Hooks: two optional commands NetPI itself runs around a webhook's work, so a notification never depends on the agent remembering to send it.
 /// <list type="bullet">
-/// <item><c>pre</c> — runs for every payload that arrives (before any filter or grouping). Standard input: <c>{ event: "received", webhook, title, alert }</c>.</item>
-/// <item><c>post</c> — runs when the incident's chat ends or needs attention. <c>event</c> is <c>finished</c> (the run ended: <c>status</c>, the agent's <c>result</c>,
-/// its parsed <c>verdict</c> and a one-paragraph <c>summary</c>), <c>asking</c> (the chat waits for the user: <c>question</c>), <c>stalled</c> (still running after the webhook's
-/// <c>stalledMinutes</c>, default 10, 0 = never: <c>elapsedMinutes</c>) or <c>failed</c> (the alerts could not be turned into a chat: <c>reason</c>). Standard input:
-/// <c>{ event, webhook, title, key, count, sessionId, alert (the first alert), … }</c>.</item>
+/// <item><c>pre</c> (the Before command) — runs for every payload that arrives, before anything else. Standard input: <c>{ event: "received", webhook, title, alert }</c>.
+/// It is also the sender's adapter: if its standard output is a JSON object, <c>skip</c> (true = ignore the payload), <c>start</c> (false = only join a conversation that is
+/// already open, never start one), <c>key</c> (the conversation: the same key joins the chat that handles it), <c>text</c> (how the item reads in the prompt) and <c>title</c>
+/// (the chat's title) shape what happens next. No command, no output, or a command that fails: every field takes its default (nothing skipped, no key, the payload as JSON) —
+/// a broken filter never swallows a payload.</item>
+/// <item><c>post</c> (the After command) — runs when the incident's chat ends or needs attention. <c>event</c> is <c>finished</c> (the run ended: <c>status</c>, the agent's
+/// <c>result</c>, its parsed <c>verdict</c> and a one-paragraph <c>summary</c>), <c>asking</c> (the chat waits for the user: <c>question</c>), <c>timeout</c> (still running after the
+/// webhook's <c>timeoutMinutes</c>, default 10, 0 = never: <c>elapsedMinutes</c>) or <c>failed</c> (the payloads could not be turned into a chat: <c>reason</c>). Standard input:
+/// <c>{ event, webhook, title, key, count, sessionId, alert (the first payload), … }</c>.</item>
 /// </list>
 /// A hook is <c>{ command, args?, timeoutSeconds? }</c>: a program run with no shell and the JSON above on its standard input (alert text never reaches an argument or the
 /// program name); exit code 0 = ok. All the routing (who to tell, when, how) is the script's business, not the webhook's. The verdict is the last <c>VERDICT: word</c> line of
-/// the final answer (<c>unknown</c> when there is none, so a script that notifies "unless noise" also notifies when the agent said nothing, died or stalled). <c>asking</c> and
-/// <c>stalled</c> fire once per wait for an answer. A failing hook is logged and recorded in the history, and never stops the webhook. Only the user can write hooks: an agent's
+/// the final answer (<c>unknown</c> when there is none, so a script that notifies "unless noise" also notifies when the agent said nothing, died or timed out). <c>asking</c> and
+/// <c>timeout</c> fire once per wait for an answer. A failing hook is logged and recorded in the history, and never stops the webhook. Only the user can write hooks: an agent's
 /// change to them pauses the webhook as a proposal.
 /// </summary>
 internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimeProvider time)
 {
-    public const int DefaultStalledMinutes = 10;
+    public const int DefaultTimeoutMinutes = 10;
     public static readonly string[] Slots = ["pre", "post"];
     private static readonly Regex VerdictLine = new(@"^\s*VERDICT:\s*([A-Za-z][A-Za-z_-]*)\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(200));
 
@@ -54,6 +58,29 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
         return clean;
     }
 
+    // ---------------------------------------------------------------- the Before command's answer
+
+    /// <summary>What the Before command said about a payload. The default (no command, no output, a failure) changes nothing.</summary>
+    internal sealed record Adapt(bool Skip = false, bool Start = true, string? Key = null, string? Text = null, string? Title = null)
+    {
+        public static Adapt From(JsonObject? o)
+        {
+            if (o is null) return new Adapt();
+            static string? S(JsonNode? n, int max) => n is null ? null : Template.Show(n).Trim() is { Length: > 0 } s ? Template.Clip(s, max) : null;
+            static bool Flag(JsonNode? n, bool fallback) => n is JsonValue v && v.TryGetValue<bool>(out var b) ? b : fallback;
+            return new Adapt(Flag(o["skip"], false), Flag(o["start"], true), S(o["key"], 200), S(o["text"], 20_000), S(o["title"], 200));
+        }
+
+        /// <summary>What a program's standard output says: a JSON object is read, anything else is the default.</summary>
+        public static Adapt Parse(string? output)
+        {
+            var text = output?.Trim();
+            if (string.IsNullOrEmpty(text) || text[0] != '{') return new Adapt();
+            try { return From(JsonNode.Parse(text) as JsonObject); }
+            catch (System.Text.Json.JsonException) { return new Adapt(); }
+        }
+    }
+
     // ---------------------------------------------------------------- the verdict
 
     /// <summary>The last <c>VERDICT: word</c> line of an answer, lower-cased, else <c>unknown</c>. A deterministic read of a line the prompt asks for: a missing one is "unknown", never a guess.</summary>
@@ -78,22 +105,22 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
     // ---------------------------------------------------------------- running hooks
 
     /// <summary>
-    /// Run the hook of <paramref name="webhook"/> that belongs to <paramref name="evt"/> (<c>received</c> → pre; <c>finished</c>, <c>asking</c>, <c>stalled</c>, <c>failed</c> → post).
+    /// Run the After command of <paramref name="webhook"/> for <paramref name="evt"/> (<c>finished</c>, <c>asking</c>, <c>timeout</c> or <c>failed</c>).
     /// <paramref name="context"/> is mutated (event and webhook are set). <paramref name="fired"/> is the incident's once-keys (null for a payload with no incident); true when it changed.
     /// </summary>
     public async Task<bool> FireAsync(JsonObject webhook, string evt, JsonObject context, JsonArray? fired, string? sessionId, string? incidentKey, CancellationToken ct)
     {
-        var slot = evt == "received" ? "pre" : "post";
-        if (webhook[slot] is not JsonObject hook) return false;
+        if (webhook["post"] is not JsonObject hook) return false;
         var id = webhook["id"]!.GetValue<string>();
         string? once = null;
-        if (evt == "stalled")
+        if (evt == "timeout")
         {
-            var after = webhook["stalledMinutes"] is JsonValue av && av.TryGetValue<int>(out var am) ? am : DefaultStalledMinutes;
+            var after = TimeoutMinutes(webhook);
             if (after <= 0 || context["elapsedMinutes"] is not JsonValue ev || !ev.TryGetValue<double>(out var elapsed) || elapsed < after) return false;
+            context["timeoutMinutes"] = after;
         }
-        // asking and stalled fire once per wait for an answer (the incident's awaiting period)
-        if (evt is "stalled" or "asking")
+        // asking and timeout fire once per wait for an answer (the incident's awaiting period)
+        if (evt is "timeout" or "asking")
         {
             once = $"{evt}@{Template.Show(context["awaitingSince"])}";
             if (fired is not null && fired.Any(f => f?.GetValue<string>() == once)) return false;
@@ -101,11 +128,11 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
         context["event"] = evt;
         context["webhook"] = new JsonObject { ["id"] = id, ["name"] = webhook["name"]?.DeepClone() };
         string detail;
-        try { detail = $"{slot} hook ({evt}): {await RunAsync(hook, context, ct).ConfigureAwait(false)}"; }
+        try { detail = $"After command ({evt}): {(await RunAsync(hook, context, ct).ConfigureAwait(false)).Detail}"; }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            ctx.Logger.LogWarning(ex, "Webhook {Webhook}: the {Slot} hook failed on {Event}", id, slot, evt);
-            detail = $"{slot} hook ({evt}): FAILED — {ex.Message}";
+            ctx.Logger.LogWarning(ex, "Webhook {Webhook}: the After command failed on {Event}", id, evt);
+            detail = $"After command ({evt}): FAILED — {ex.Message}";
         }
         var changed = false;
         if (once is not null && fired is not null) { fired.Add(once); changed = true; }
@@ -114,8 +141,45 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
         return changed;
     }
 
-    /// <summary>Run one hook with a context on its standard input; the one-line result. Used by the hooks and by <c>webhooks.testHook</c>.</summary>
-    public async Task<string> RunAsync(JsonObject hook, JsonObject context, CancellationToken ct)
+    public static int TimeoutMinutes(JsonObject webhook) =>
+        webhook["timeoutMinutes"] is JsonValue v && v.TryGetValue<int>(out var m) ? m : DefaultTimeoutMinutes;
+
+    /// <summary>
+    /// The Before command: run it on a payload and read what it says (see <see cref="Adapt"/>). Never throws and never blocks the payload: no command, a failure or a
+    /// timeout all give the default. The run is a <c>hook</c> row in the history.
+    /// </summary>
+    public async Task<Adapt> PreAsync(JsonObject webhook, JsonNode payload, string title, CancellationToken ct)
+    {
+        if (webhook["pre"] is not JsonObject hook) return new Adapt();
+        var id = webhook["id"]!.GetValue<string>();
+        var context = new JsonObject
+        {
+            ["event"] = "received", ["title"] = title, ["alert"] = payload.DeepClone(),
+            ["webhook"] = new JsonObject { ["id"] = id, ["name"] = webhook["name"]?.DeepClone() },
+        };
+        Adapt adapt;
+        string detail;
+        try
+        {
+            var run = await RunAsync(hook, context, ct).ConfigureAwait(false);
+            adapt = Adapt.Parse(run.Output);
+            detail = $"Before command: {run.Detail}";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ctx.Logger.LogWarning(ex, "Webhook {Webhook}: the Before command failed; the payload goes on unchanged", id);
+            adapt = new Adapt();
+            detail = $"Before command: FAILED — {ex.Message} (the payload goes on unchanged)";
+        }
+        store.Record(id, time.GetUtcNow(), WebhookStore.Hook, detail, null, adapt.Key, Template.Clip(title, 160), null, touch: false);
+        ctx.Events.Publish(WebhookRunner.ChangedEvent, new { id });
+        return adapt;
+    }
+
+    internal sealed record HookRun(string Detail, string Output);
+
+    /// <summary>Run one hook with a context on its standard input; the one-line result and the whole standard output. Used by the hooks and by <c>webhooks.testHook</c>.</summary>
+    public async Task<HookRun> RunAsync(JsonObject hook, JsonObject context, CancellationToken ct)
     {
         var program = hook["command"]!.GetValue<string>();
         var info = new ProcessStartInfo(program)
@@ -151,7 +215,7 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
             var name = Path.GetFileName(program);
             if (process.ExitCode != 0)
                 throw new InvalidOperationException($"{name} exited {process.ExitCode}" + (FirstLine(e.Length > 0 ? e : o) is { Length: > 0 } why ? ": " + why : ""));
-            return $"{name} exited 0" + (FirstLine(o) is { Length: > 0 } said ? ": " + said : "");
+            return new HookRun($"{name} exited 0" + (FirstLine(o) is { Length: > 0 } said ? ": " + said : ""), o);
         }
     }
 

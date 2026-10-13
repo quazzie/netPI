@@ -31,7 +31,7 @@
   const state = $derived(rowState(h));
   const projectName = $derived((projects ?? []).find((p) => p?.id === h.projectId)?.name ?? (h.projectId || 'no project'));
   const meta = $derived(
-    [state.key === 'proposed' ? 'proposed by an agent' : null, h.agent || 'default agent', h.profile ? `profile ${h.profile}` : 'automatic profile', projectName, h.hooks?.length ? `${h.hooks.length} hook${h.hooks.length === 1 ? '' : 's'}` : null, limitsLine(h), `token …${h.tokenHint}`]
+    [state.key === 'proposed' ? 'proposed by an agent' : null, h.agent || 'default agent', h.profile ? `profile ${h.profile}` : 'automatic profile', projectName, h.pre || h.post ? [h.pre ? 'Before' : null, h.post ? 'After' : null].filter(Boolean).join(' + ') : null, limitsLine(h), `token …${h.tokenHint}`]
       .filter(Boolean)
       .join(' · '),
   );
@@ -143,10 +143,6 @@
 
       <div class="np-small np-muted">Prompt</div>
       <div class="prompt np-small" title={h.prompt}>{h.prompt}</div>
-      {#if h.match?.length}
-        <div class="np-small np-muted">Only when</div>
-        <div class="np-mono np-small prompt">{JSON.stringify(h.match)}</div>
-      {/if}
       {#if h.pre}
         <div class="np-small np-muted">Before</div>
         <div class="np-mono np-small prompt" title={hookLine(h.pre)}>{hookLine(h.pre)}</div>
@@ -155,16 +151,13 @@
         <div class="np-small np-muted">After</div>
         <div class="np-mono np-small prompt" title={hookLine(h.post)}>{hookLine(h.post)}</div>
       {/if}
-      {#if h.group?.key}
-        <div class="np-small np-muted">Incidents (one chat per {h.group.key})</div>
-        {#if incidents.length === 0}
-          <div class="np-small np-muted">none open</div>
-        {/if}
+      {#if incidents.length}
+        <div class="np-small np-muted">Conversations</div>
         {#each incidents as i (i.key)}
           <div class="np-small inc" title={incidentLine(i)}>
             <span class="np-ellipsis np-grow">{incidentLine(i)}</span>
             {#if i.sessionId}
-              <button class="inc-open np-small" title="Open the chat that handles this incident" onclick={() => ctx.app.openSession?.(i.sessionId)}>chat</button>
+              <button class="inc-open np-small" title="Open the chat that handles this conversation" onclick={() => ctx.app.openSession?.(i.sessionId)}>chat</button>
             {/if}
           </div>
         {/each}

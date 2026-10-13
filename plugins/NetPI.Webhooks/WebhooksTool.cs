@@ -73,9 +73,9 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
             case "get" or "show":
             {
                 var h = await RpcAsync<JsonObject>("webhooks.get", new JsonObject { ["id"] = RequireId(a) }, ct).ConfigureAwait(false);
-                var text = string.Join("\n", [Line(h), "prompt: " + h["prompt"]?.GetValue<string>(), "title: " + (h["title"]?.GetValue<string>() ?? "(the name)"),
-                    "match: " + (h["match"]?.ToJsonString() ?? "[]"), "profile: " + (h["profile"]?.GetValue<string>() ?? "automatic") + " · hooks: " + (new[] { "pre", "post" }.Where(s => h[s] is JsonObject).ToList() is { Count: > 0 } hk ? string.Join(", ", hk) : "none") + " · group: " + (h["group"]?.ToJsonString() ?? "none (every alert is its own chat)") +
-                    $" · fuse {h["maxChatsPerHour"]} chats per hour"]);
+                var text = string.Join("\n", [Line(h), "prompt: " + h["prompt"]?.GetValue<string>(),
+                    "profile: " + (h["profile"]?.GetValue<string>() ?? "automatic") + " · hooks: " + (new[] { ("pre", "Before"), ("post", "After") }.Where(s => h[s.Item1] is JsonObject).Select(s => s.Item2).ToList() is { Count: > 0 } hk ? string.Join(", ", hk) : "none") +
+                    $" · timeout {h["timeoutMinutes"]} min · fuse {h["maxChatsPerHour"]} chats per hour"]);
                 return ToolResult.Ok(text, new { kind = "webhook", webhook = h });
             }
             case "history":
@@ -99,9 +99,9 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
                 var verdict = planned switch
                 {
                     "skip" => "This payload would be skipped: " + skip + ".",
-                    "append" => "This payload would be appended to the chat already handling the incident.",
-                    "join" => "This payload would join the alerts being collected for its incident.",
-                    "collect" => "This payload would open an incident and wait for more alerts of the same key before starting a chat" + agent + ".",
+                    "append" => "This payload would be appended to the chat already handling its conversation.",
+                    "join" => "This payload would join the items being collected for its conversation.",
+                    "collect" => "This payload would open a conversation and wait for more items with the same key before starting a chat" + agent + ".",
                     _ => "This payload would start a chat" + agent + " at once.",
                 };
                 var text = verdict + (plan["note"]?.GetValue<string>() is { Length: > 0 } note ? " (" + note + ")" : "")

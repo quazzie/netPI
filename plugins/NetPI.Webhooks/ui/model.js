@@ -11,11 +11,11 @@ export function rowState(h) {
     case 'started':
       return { key: 'started', tone: 'ok', label: 'last delivery started a chat' };
     case 'appended':
-      return { key: 'appended', tone: 'ok', label: 'last delivery was added to the chat that handles the incident' };
+      return { key: 'appended', tone: 'ok', label: 'last delivery was added to the chat that handles its conversation' };
     case 'held':
       return { key: 'held', tone: 'ok', label: h.lastReason ? `last delivery: ${h.lastReason}` : 'last delivery is being collected for a chat' };
     case 'duplicate':
-      return { key: 'duplicate', tone: 'idle', label: 'last delivery repeated an alert the chat already had' };
+      return { key: 'duplicate', tone: 'idle', label: 'last delivery repeated what the chat already had' };
     case 'skipped':
       return { key: 'skipped', tone: 'idle', label: h.lastReason ? `last delivery skipped: ${h.lastReason}` : 'last delivery skipped' };
     case 'failed':
@@ -37,27 +37,9 @@ export function formToAgent(f) {
   return f.agentChoice === '__list' ? f.agentList.split(',').map((s) => s.trim()).filter(Boolean).join(',') : f.agentChoice;
 }
 
-/** The match conditions as editable text, and back (null when the text is not a JSON array). */
-export function matchToText(match) {
-  return Array.isArray(match) && match.length ? JSON.stringify(match, null, 2) : '';
-}
-
-export function textToMatch(text) {
-  const t = (text ?? '').trim();
-  if (!t) return [];
-  try {
-    const v = JSON.parse(t);
-    return Array.isArray(v) ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-/** A one-line description of how alerts are grouped, for the row's meta line. */
+/** A one-line description of a webhook's limits, for the row's meta line. */
 export function limitsLine(h) {
-  const bits = [];
-  if (h.group?.key) bits.push(`one chat per ${h.group.key} (${h.group.debounceSeconds ?? 90} s window)`);
-  else bits.push('every alert its own chat');
+  const bits = [h.timeoutMinutes ? `timeout ${h.timeoutMinutes} min` : 'no timeout'];
   if (h.maxChatsPerHour) bits.push(`fuse ${h.maxChatsPerHour}/h`);
   return bits.join(' · ');
 }
