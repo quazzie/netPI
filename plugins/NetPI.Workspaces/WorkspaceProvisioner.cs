@@ -69,8 +69,7 @@ public sealed class WorkspaceProvisioner(
             // Not a git repository: an ordinary folder is the honest answer, and no git workflow is imposed on it.
             if (request.Isolated)
                 ctx.Logger.LogInformation("{Project} is not a git repository; workspace {Name} is a plain folder", project.Name, request.Name);
-            var folder = Path.Combine(Path.GetDirectoryName(projectRoot) ?? projectRoot,
-                $"{Path.GetFileName(projectRoot)}-{Slug(request.Name)}");
+            var folder = Path.Combine(WorktreeRoot(projectRoot), Slug(request.Name));
             Directory.CreateDirectory(folder);
             var plain = store.CreateWorkspace(new WorkspaceInfo
             {
@@ -100,7 +99,11 @@ public sealed class WorkspaceProvisioner(
         if (string.IsNullOrWhiteSpace(startAt))
             return new WorkspaceOutcome(null, $"{projectRoot} has no commits yet, so there is nothing to branch a workspace from. Make the first commit, or work in the project folder without isolation.");
         var baseCommit = startAt.Trim();
-        var target = Path.Combine(WorktreeRoot(projectRoot), Slug(request.Name));
+        // Always the main checkout's .worktrees, even when the project path is itself a linked worktree.
+        var mainCheckout = Path.GetFileName(repoCommon.TrimEnd('/', '\\')) == ".git"
+            ? Path.GetDirectoryName(repoCommon.TrimEnd('/', '\\')) ?? projectRoot
+            : projectRoot;
+        var target = Path.Combine(WorktreeRoot(mainCheckout), Slug(request.Name));
 
         if (Directory.Exists(target))
             return new WorkspaceOutcome(null, $"{target} already exists. Pick another name for the workspace, or remove that folder.");
