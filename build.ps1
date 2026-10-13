@@ -145,6 +145,15 @@ if (-not $SkipWeb) {
         $env:NETPI_NO_COPY = '1'
         try { npm run build; if ($LASTEXITCODE) { throw 'npm run build failed' } }
         finally { Remove-Item Env:NETPI_NO_COPY -ErrorAction SilentlyContinue }
+        # A bundle that changes while its sources did not was committed from other bytes than the committed source (a
+        # CRLF file before web/scripts/lf-sources.mjs, a hand-edited bundle): every checkout that builds then shows it
+        # as modified, which blocks fast-forward merges of branches that commit a bundle. Say so; the fix is to commit it.
+        $bundles = @('web/dist', 'plugins/*/wwwroot/ui.js')
+        $sources = @('web/src', 'web/public', 'web/index.html', 'web/vite.config.js', 'web/scripts', 'plugins/*/ui', 'package.json', 'package-lock.json')
+        $staleBundle = @(git -C $PSScriptRoot status --porcelain -- @bundles 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $staleBundle.Count -and -not @(git -C $PSScriptRoot status --porcelain -- @sources 2>$null).Count) {
+            Write-Host "  the committed web bundle is stale: unchanged sources rebuilt it differently ($($staleBundle.Count) path(s)). Commit the rebuilt web\dist / wwwroot\ui.js." -ForegroundColor Yellow
+        }
     }
     else {
         Write-Host 'npm not found: using the prebuilt web UI (web\dist and plugins\*\wwwroot\ui.js).' -ForegroundColor Yellow

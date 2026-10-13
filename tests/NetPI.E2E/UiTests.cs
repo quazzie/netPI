@@ -115,6 +115,12 @@ public static class UiTests
             await RunUiScript(env, "sessions-panel.mjs", 150);
         }, 180);
 
+        r.Add("ui.panel-tabs", "ui: drag a side-panel tab to the other panel and back between two tabs; the arrangement is stored (localStorage and ui.state) and survives a reload from the host copy", async () =>
+        {
+            // The script puts back the layout it found.
+            await RunUiScript(env, "panel-tabs.mjs", 60);
+        }, 90);
+
         r.Add("ui.ideas-tab", "ui: the Ideas tab and the idea dialog — cards, status, filing with a pasted image, sections, send to chat, reorder, delete, Ctrl+I and /idea, the tab's project, a save after another writer, refining with an agent, tags, ideas.changed — and the start screen's ideas", async () =>
         {
             // The script makes its own project, chats and ideas and removes them; it switches the Ideas plugin off and on.

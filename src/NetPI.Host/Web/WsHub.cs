@@ -12,7 +12,7 @@ namespace NetPI.Host.Web;
 /// WebSocket clients. Subscribes once to the bus and fans every <c>Ui</c> event out: the envelope is serialized once
 /// and queued to every client (broadcast events) or only to clients subscribed to the event's session.
 /// </summary>
-internal sealed class WsHub : IDisposable
+internal sealed class WsHub : IDisposable, IWsClients
 {
     /// <summary>How many WebSocket clients one app serves at once (see the refusal in WebServer.WebSocketAsync).</summary>
     public const int MaxClients = 50;
@@ -41,12 +41,29 @@ internal sealed class WsHub : IDisposable
         byte[]? payload = null;
         foreach (var client in _clients.Values)
         {
-            if (e.SessionId is not null && !client.WantsSession(e.SessionId)) continue;
+            if (e.SessionId is not null && !client.WantsSession(e.SessionId))
+            {
+                // A client that is not subscribed to the session never gets its events (its chat looks frozen while
+                // its broadcasts keep flowing): say so once per 30 s, naming who and what, so a stale subscription is
+                // findable in the log without a debugger attached.
+                client.NoteFiltered(e.Type, e.SessionId);
+                continue;
+            }
             payload ??= Wire.Event(e, _log);
             if (payload is null) return;
             client.Enqueue(payload);
         }
     }
+
+    /// <summary>One connected client as <c>ws.clients</> reports it: who it is, what it receives, how much waits for it.</summary>
+    internal sealed record ClientInfo(string Id, DateTimeOffset ConnectedAt, string Sessions, int Pending, long PendingBytes, int InFlight);
+
+    /// <inheritdoc/>
+    public IReadOnlyList<ClientInfo> Clients() =>
+        _clients.Values.Select(c =>
+            new ClientInfo(c.Id, c.ConnectedAt, c.SessionsDescription(), c.Backlog.Pending, c.Backlog.Bytes, c.InFlight))
+            .OrderBy(c => c.Id, StringComparer.Ordinal)
+            .ToList();
 
     public async Task RunClientAsync(WebSocket socket, CancellationToken ct)
     {
@@ -72,6 +89,15 @@ internal sealed class WsHub : IDisposable
         _subscription.Dispose();
         CloseAll();
     }
+}
+
+/// <summary>
+/// A read-only view of the connected WebSocket clients. The host registers the <see cref="WsHub"/> under it, and
+/// the <c>ws.clients</c> RPC reads through it (the hub is created with the web server, after the kernel's RPC is up).
+/// </summary>
+internal interface IWsClients
+{
+    IReadOnlyList<WsHub.ClientInfo> Clients();
 }
 
 internal sealed class WsClient
@@ -109,9 +135,13 @@ internal sealed class WsClient
         _k = kernel;
         _log = log;
         Id = "c_" + Ids.Short(10);
+        ConnectedAt = DateTimeOffset.UtcNow;
     }
 
     public string Id { get; }
+
+    /// <summary>When the connection was established (<c>ws.clients</c>).</summary>
+    public DateTimeOffset ConnectedAt { get; }
 
     /// <summary>For tests: whether <see cref="Abort"/> has cut this client off.</summary>
     internal bool Aborted => _aborted;
@@ -126,6 +156,36 @@ internal sealed class WsClient
     {
         var f = _filter;
         return f.All || f.Ids.Contains(sessionId);
+    }
+
+    /// <summary>What this client receives, for <c>ws.clients</c> and the drop log: all sessions, or the set it subscribed to.</summary>
+    internal (bool All, string[] Sessions) FilterView()
+    {
+        var f = _filter;
+        return f.All ? (true, []) : (false, [.. f.Ids]);
+    }
+
+    /// <summary>The subscription as one line of text: "*", "(none)" or the session ids.</summary>
+    internal string SessionsDescription()
+    {
+        var (all, sessions) = FilterView();
+        return all ? "*" : sessions.Length == 0 ? "(none)" : string.Join(", ", sessions);
+    }
+
+    private long _lastDropLog;
+
+    /// <summary>
+    /// A session-scoped event was not delivered to this client (it is not subscribed to the session): said at most
+    /// once per 30 s, so a desubscribed client is named in the log without flooding it.
+    /// </summary>
+    internal void NoteFiltered(string type, string sessionId)
+    {
+        var now = Environment.TickCount64;
+        if (now - _lastDropLog < 30_000) return;
+        _lastDropLog = now;
+        _log.LogInformation(
+            "WebSocket client {Id} is not subscribed to session {Session} (it receives {Sessions}): '{Type}' is not delivered to it — that session's chat is frozen for this client until it re-subscribes",
+            Id, sessionId, SessionsDescription(), type);
     }
 
     /// <summary>
@@ -290,6 +350,7 @@ internal sealed class WsClient
                     break;
                 case "sub":
                     _filter = SessionFilter.From(root.TryGetProperty("sessions", out var s) ? s : default);
+                    _log.LogInformation("WebSocket client {Id} now receives {Sessions}", Id, SessionsDescription());
                     break;
                 case "ping":
                     Enqueue(Wire.Pong);

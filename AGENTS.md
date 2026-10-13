@@ -34,6 +34,8 @@
 - Deterministic builds are load-bearing (hot-reload + the contracts check in build.ps1): unchanged sources must rebuild
   byte-identical, same commit in two checkouts included. If a dll's bytes start changing with no source change, diff the
   PDBs (SourceLink, line endings and checkout paths are the known leaks) before touching anything else.
+  Web bundles too: `web/scripts/lf-sources.mjs` compiles UI sources as LF (a CRLF file once baked `\r` into the
+  committed bundle), and `build.ps1` warns when unchanged sources rebuild the committed bundle differently: commit it.
 
 ## Architecture and conventions
 

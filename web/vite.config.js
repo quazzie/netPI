@@ -6,6 +6,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
+import { lfSources } from './scripts/lf-sources.mjs';
 
 const webDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(webDir, '..');
@@ -29,7 +30,7 @@ export default defineConfig(({ mode }) => {
     // public/ holds the one file the page needs before the bundle can run: theme.js applies the saved theme before the
     // first paint, and it is a file rather than an inline <script> so a CSP without 'unsafe-inline' allows it.
     publicDir: 'public',
-    plugins: [svelte()],
+    plugins: [lfSources(), svelte()],
     define: { __SVELTE_VERSION__: JSON.stringify(svelteVersion) },
     resolve: {
       alias: { '@netpi/kit': path.join(webDir, 'src/lib/kit/index.js') },

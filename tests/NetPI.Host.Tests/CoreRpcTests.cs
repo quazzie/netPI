@@ -44,6 +44,7 @@ public static class CoreRpcTests
         ("ui.state.get", "Persisted UI state: { key } → JSON or null", true),
         ("ui.state.set", "Persist UI state: { key, value } → true (null value deletes)", false),
         ("ui.tabs", "Plugin UI tabs → UiTabInfo[]", true),
+        ("ws.clients", "Connected WebSocket clients: their session subscriptions and their queued/in-flight load (diagnostics) → { id, connectedAt, sessions ('*' | '(none)' | ids), pending, pendingBytes, inFlight }[]", true),
     ];
 
     public static void Register(TestRunner r)

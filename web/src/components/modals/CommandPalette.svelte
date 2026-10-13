@@ -4,7 +4,7 @@
   import { escLayer, inertBackground, trapTab } from './Modal.svelte';
   import { app, openSession, newSession, projectOf } from '../../lib/state/app.svelte.js';
   import { modals, prefs, savePrefs, togglePanel, composer, openProjects } from '../../lib/state/ui.svelte.js';
-  import { tabs, openPanelTab } from '../../lib/state/tabs.svelte.js';
+  import { tabs, openPanelTab, resetTabPlacement } from '../../lib/state/tabs.svelte.js';
   import { allCommands } from '../../lib/commands.js';
 
   let { onclose } = $props();
@@ -22,6 +22,7 @@
     act('Settings', 'settings', () => (modals.settings = true), 'Ctrl+,');
     act('Toggle left panel', 'panel-left', () => togglePanel('left'), 'Ctrl+B');
     act('Toggle right panel', 'panel-right', () => togglePanel('right'), 'Ctrl+Alt+B');
+    act('Reset panel tabs (back to their default sides)', 'panel-right', resetTabPlacement);
     act(`Switch to ${prefs.theme === 'light' ? 'dark' : 'light'} theme`, prefs.theme === 'light' ? 'moon' : 'sun', () => {
       prefs.theme = prefs.theme === 'light' ? 'dark' : 'light';
       savePrefs();

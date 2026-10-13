@@ -4,7 +4,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import PluginTabHost from './PluginTabHost.svelte';
   import { layout, saveLayout } from '../../lib/state/ui.svelte.js';
-  import { tabs } from '../../lib/state/tabs.svelte.js';
+  import { tabs, tabDrag, moveTab } from '../../lib/state/tabs.svelte.js';
 
   /** side: 'left' | 'right'. The vertical tab strip sits on the outer edge. */
   let { side } = $props();
@@ -42,6 +42,53 @@
     saveLayout();
   }
 
+  // ---- drag a tab to the other panel or to another place in this strip (the arrangement is saved in the layout)
+  const DRAG_TYPE = 'application/x-netpi-tab'; // not text/plain: a tab dropped on the composer must not paste its key
+  let strip = $state(null);
+  let dropIndex = $state(null); // where the dragged tab would land in this strip
+  let dropTop = $state(0); // the drop line's offset in the strip, px
+
+  // the drop may land in the other panel (or be cancelled): this strip's drop line goes with the drag
+  $effect(() => {
+    if (!tabDrag.key) dropIndex = null;
+  });
+
+  function onTabDragStart(e, t) {
+    e.dataTransfer.setData(DRAG_TYPE, t.key);
+    e.dataTransfer.effectAllowed = 'move';
+    tabDrag.key = t.key;
+  }
+  function endDrag() {
+    tabDrag.key = null;
+    dropIndex = null;
+  }
+  function onDragOver(e) {
+    if (!tabDrag.key || !strip) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const top = strip.getBoundingClientRect().top;
+    const items = [...strip.querySelectorAll('.strip-tab')];
+    let i = items.findIndex((el) => {
+      const r = el.getBoundingClientRect();
+      return e.clientY < r.top + r.height / 2;
+    });
+    if (i < 0) i = items.length;
+    dropIndex = i;
+    const ref = items[i] ?? items[items.length - 1];
+    dropTop = ref ? (items[i] ? ref.getBoundingClientRect().top - 2 : ref.getBoundingClientRect().bottom + 1) - top : 6;
+  }
+  function onDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) dropIndex = null;
+  }
+  function onDrop(e) {
+    if (!tabDrag.key) return;
+    e.preventDefault();
+    const key = tabDrag.key;
+    const i = dropIndex ?? list.length;
+    endDrag();
+    moveTab(key, side, i);
+  }
+
   // ---- resize
   const MIN = 200;
   let dragging = $state(false);
@@ -77,21 +124,38 @@
   }
 </script>
 
-{#if list.length}
-  <aside class="panel {side}" class:open class:dragging>
-    <div class="strip" role="tablist" aria-orientation="vertical" aria-label="{side} panel">
+<!-- an empty side shows its strip while a tab is dragged, so a tab can be dropped there -->
+{#if list.length || tabDrag.key}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <aside
+    class="panel {side}"
+    class:open
+    class:dragging
+    class:drop-target={tabDrag.key && dropIndex != null}
+    ondragover={onDragOver}
+    ondragleave={onDragLeave}
+    ondrop={onDrop}
+  >
+    <div class="strip" role="tablist" aria-orientation="vertical" aria-label="{side} panel" bind:this={strip}>
       {#each list as t (t.key)}
         <button
           class="strip-tab"
+          class:dragged={tabDrag.key === t.key}
           role="tab"
           aria-selected={open && active?.key === t.key}
-          title={t.title}
+          title="{t.title} (drag to move it)"
+          draggable="true"
+          ondragstart={(e) => onTabDragStart(e, t)}
+          ondragend={endDrag}
           onclick={() => clickTab(t)}
         >
           <Icon name={t.icon ?? 'puzzle'} size={15} />
           <span class="strip-label">{t.title}</span>
         </button>
       {/each}
+      {#if dropIndex != null}
+        <div class="drop-line" style:top="{dropTop}px"></div>
+      {/if}
     </div>
 
     <div class="body" style:width="{st.width}px" hidden={!open}>
@@ -142,6 +206,7 @@
     user-select: none;
   }
   .strip {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -197,6 +262,21 @@
     border-radius: 2px;
     background: var(--accent);
     right: -4px; /* outer edge on both sides (the left strip is rotated) */
+  }
+  .strip-tab.dragged {
+    opacity: 0.4;
+  }
+  .panel.drop-target .strip {
+    background: var(--bg-2);
+  }
+  .drop-line {
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+    pointer-events: none;
   }
   .strip-label {
     font-size: 11.5px;
