@@ -195,7 +195,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
         if (method != "POST") return (405, Err("method_not_allowed", "POST only"));
         if (_throttle!.Blocked(from)) return (429, Err("too_many_failures", "too many wrong tokens from this address; try again later"));
 
-        var hook = Store!.Get(parts[1]);
+        var hook = Store!.Resolve(parts[1]);
         if (hook is null || !WebhookStore.TokenMatches(hook, bearer ?? ""))
         {
             _throttle.Fail(from);
@@ -250,7 +250,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
 
     private void Register(IPluginContext ctx, WebhookStore store, WebhookRunner runner)
     {
-        const string Doc = "Webhook: { id, name, enabled, path (\"/hook/<id>\"), tokenHint, projectId?, agent?, profile?, prompt, pre? / post? { command, args?, timeoutSeconds? }, timeoutMinutes, maxChatsPerHour, proposedBy?, lastAt?, lastStatus?, lastReason?, lastSessionId? }";
+        const string Doc = "Webhook: { id, name, slug?, enabled, path (\"/hook/<slug or id>\"), tokenHint, projectId?, agent?, profile?, prompt, pre? / post? { command, args?, timeoutSeconds? }, timeoutMinutes, maxChatsPerHour, proposedBy?, lastAt?, lastStatus?, lastReason?, lastSessionId? }";
 
         ctx.Rpc.Register(new RpcMethod("webhooks.status", "The receiver: { enabled, listening, address?, port?, url?, error? }", ReadOnly: true, []),
             (_, _) => Task.FromResult<object?>(Status()));
@@ -270,10 +270,10 @@ public sealed class WebhooksPlugin : INetPiPlugin
             [RpcParam.Opt("id", RpcParamType.String, "one webhook's; all when omitted")]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.Incidents(req.Str("id")).Select(i => (JsonNode)ShownIncident(i))])));
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.add", "Add a webhook: { name, prompt, projectId?, pre? / post? ({ command, args?, timeoutSeconds? } — a program NetPI runs with no shell and a JSON context on standard input. pre (the Before command) runs for every payload and may answer with JSON on stdout: skip, start (false = only join an open conversation), key (the conversation: the same key joins the chat that handles it), text (how the item reads in the prompt), title; post (the After command) runs when the chat finished, asked, timed out or could not start; see PROTOCOL.md), timeoutMinutes? (10, 0 = never: when post is told the chat is still running), profile? (a profile id from profiles.list: the chat's tools and system prompt; without one it gets the automatic profile, which is the coding profile — no ssh tool — so name one such as a sysadmin profile), agent? (a key, \"any\" = whichever agent has a free instance first, \"free\" = the first free-priced one, or \"a,b\" = the first of these that is available), maxChatsPerHour? (60, 0 = no limit: a fuse, not a quota), enabled? (true), proposedBy? } → Webhook plus token (shown once). The prompt is a template: {{a.b.0.c}} fields of the payload, {{payload}}, {{now}}, {{alerts}} (every item of the batch, as the Before command's text or the payload JSON), {{count}}, {{key}}. proposedBy stores it paused, as a proposal the user enables",
+        ctx.Rpc.Register(new RpcMethod("webhooks.add", "Add a webhook: { name, slug? (the readable name in its URL, /hook/<slug>; default: the name, lower-cased; the id path always works too), prompt, projectId?, pre? / post? ({ command, args?, timeoutSeconds? } — a program NetPI runs with no shell and a JSON context on standard input. pre (the Before command) runs for every payload and may answer with JSON on stdout: skip, start (false = only join an open conversation), key (the conversation: the same key joins the chat that handles it), text (how the item reads in the prompt), title; post (the After command) runs when the chat finished, asked, timed out or could not start; see PROTOCOL.md), timeoutMinutes? (10, 0 = never: when post is told the chat is still running), profile? (a profile id from profiles.list: the chat's tools and system prompt; without one it gets the automatic profile, which is the coding profile — no ssh tool — so name one such as a sysadmin profile), agent? (a key, \"any\" = whichever agent has a free instance first, \"free\" = the first free-priced one, or \"a,b\" = the first of these that is available), maxChatsPerHour? (60, 0 = no limit: a fuse, not a quota), enabled? (true), proposedBy? } → Webhook plus token (shown once). The prompt is a template: {{a.b.0.c}} fields of the payload, {{payload}}, {{now}}, {{alerts}} (every item of the batch, as the Before command's text or the payload JSON), {{count}}, {{key}}. proposedBy stores it paused, as a proposal the user enables",
             Params:
             [
-                RpcParam.Req("name"), RpcParam.Req("prompt"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("profile"), RpcParam.Opt("pre", RpcParamType.Object), RpcParam.Opt("post", RpcParamType.Object), RpcParam.Opt("timeoutMinutes", RpcParamType.Integer),
+                RpcParam.Req("name"), RpcParam.Req("prompt"), RpcParam.Opt("slug"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("profile"), RpcParam.Opt("pre", RpcParamType.Object), RpcParam.Opt("post", RpcParamType.Object), RpcParam.Opt("timeoutMinutes", RpcParamType.Integer),
                 RpcParam.Opt("maxChatsPerHour", RpcParamType.Integer),
                 RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
@@ -286,6 +286,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 {
                     ["id"] = Ids.New("whk"),
                     ["name"] = Name(req.Required("name")),
+                    ["slug"] = SlugFor(store, null, req.Str("slug"), req.Required("name")),
                     ["enabled"] = proposedBy is null && (req.Bool("enabled") ?? true),
                     ["tokenHash"] = WebhookStore.Hash(token),
                     ["tokenHint"] = token[^4..],
@@ -308,10 +309,10 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 return shown;
             });
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.update", "Change a webhook: { id, name?, prompt?, pre? / post? ({} clears), timeoutMinutes?, projectId? (\"\" clears), agent? (\"\" clears), profile? (\"\" = automatic), maxChatsPerHour?, enabled?, proposedBy? } → Webhook. proposedBy (the webhooks tool sets it): a change of what runs pauses the webhook as a proposal for the user, and it cannot enable one",
+        ctx.Rpc.Register(new RpcMethod("webhooks.update", "Change a webhook: { id, name?, slug? (\"\" = only the id path), prompt?, pre? / post? ({} clears), timeoutMinutes?, projectId? (\"\" clears), agent? (\"\" clears), profile? (\"\" = automatic), maxChatsPerHour?, enabled?, proposedBy? } → Webhook. proposedBy (the webhooks tool sets it): a change of what runs pauses the webhook as a proposal for the user, and it cannot enable one",
             Params:
             [
-                RpcParam.Req("id"), RpcParam.Opt("name"), RpcParam.Opt("prompt"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("profile"), RpcParam.Opt("pre", RpcParamType.Object), RpcParam.Opt("post", RpcParamType.Object), RpcParam.Opt("timeoutMinutes", RpcParamType.Integer),
+                RpcParam.Req("id"), RpcParam.Opt("name"), RpcParam.Opt("slug"), RpcParam.Opt("prompt"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("profile"), RpcParam.Opt("pre", RpcParamType.Object), RpcParam.Opt("post", RpcParamType.Object), RpcParam.Opt("timeoutMinutes", RpcParamType.Integer),
                 RpcParam.Opt("maxChatsPerHour", RpcParamType.Integer),
                 RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
@@ -329,6 +330,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                     var now = _time.GetUtcNow();
                     var changesWhatRuns = false;
                     if (req.Str("name") is { } name) doc["name"] = Name(name);
+                    if (req.Str("slug") is { } slug) { doc["slug"] = slug.Trim().Length == 0 ? null : SlugFor(store, id, slug, null); changesWhatRuns = true; }
                     if (req.Str("prompt") is { } prompt) { doc["prompt"] = Prompt(prompt); changesWhatRuns = true; }
                     if (req.Str("projectId") is not null) { doc["projectId"] = project; changesWhatRuns = true; }
                     if (req.Str("agent") is not null) { doc["agent"] = agent; changesWhatRuns = true; }
@@ -410,6 +412,28 @@ public sealed class WebhooksPlugin : INetPiPlugin
 
     private static string? Proposer(RpcRequest req) => req.Str("proposedBy")?.Trim() is { Length: > 0 } by ? by : null;
 
+    /// <summary>
+    /// A webhook's slug: the readable name in its URL. Given, it must be a-z, 0-9, - or _ (1–48 characters, not starting with whk_, which is what ids look like)
+    /// and not taken by another webhook; derived from the name (when none is given), a taken one gets -2, -3…
+    /// </summary>
+    private static string? SlugFor(WebhookStore store, string? selfId, string? given, string? name)
+    {
+        bool Taken(string s) => store.List().Any(h => h["id"]?.GetValue<string>() != selfId && string.Equals(h["slug"]?.GetValue<string>(), s, StringComparison.OrdinalIgnoreCase));
+        if (given is not null && given.Trim().Length > 0)
+        {
+            var slug = given.Trim().ToLowerInvariant();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(slug, "^[a-z0-9][a-z0-9_-]{0,47}$") || slug.StartsWith("whk_", StringComparison.Ordinal))
+                throw new RpcException("bad_request", "the URL name must be 1–48 characters of a-z, 0-9, - or _ (and not start with whk_)");
+            return Taken(slug) ? throw new RpcException("bad_request", $"another webhook already uses the URL name “{slug}”") : slug;
+        }
+        var derived = System.Text.RegularExpressions.Regex.Replace((name ?? "").ToLowerInvariant(), "[^a-z0-9]+", "-").Trim('-');
+        if (derived.Length > 48) derived = derived[..48].Trim('-');
+        if (derived.Length == 0 || derived.StartsWith("whk_", StringComparison.Ordinal)) return null;
+        var candidate = derived;
+        for (var n = 2; Taken(candidate); n++) candidate = (derived.Length > 44 ? derived[..44] : derived) + "-" + n;
+        return candidate;
+    }
+
     private static int Fuse(int value) =>
         value is >= 0 and <= 100_000 ? value : throw new RpcException("bad_request", "maxChatsPerHour must be between 0 (no limit) and 100000");
 
@@ -458,7 +482,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
     {
         var shown = (JsonObject)doc.DeepClone();
         shown.Remove("tokenHash");
-        shown["path"] = "/hook/" + doc["id"]!.GetValue<string>();
+        shown["path"] = "/hook/" + (doc["slug"]?.GetValue<string>() is { Length: > 0 } slug ? slug : doc["id"]!.GetValue<string>());
         return shown;
     }
 

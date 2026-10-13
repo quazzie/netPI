@@ -35,7 +35,7 @@
       .filter(Boolean)
       .join(' · '),
   );
-  const url = $derived(receiver?.url ? receiver.url + h.id : h.path);
+  const url = $derived(receiver?.url ? receiver.url + (h.slug || h.id) : h.path);
 
   function say(msg, level = 'info') {
     flash = msg;

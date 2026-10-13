@@ -31,6 +31,10 @@ internal sealed class WebhookStore(IPluginData data)
 
     public JsonObject? Get(string id) => _hooks.Get(id);
 
+    /// <summary>The webhook a request path names: <c>/hook/&lt;segment&gt;</c> is its id or its slug (the readable name the user chose).</summary>
+    public JsonObject? Resolve(string segment) =>
+        _hooks.Get(segment) ?? List().FirstOrDefault(h => h["slug"]?.GetValue<string>() is { } s && string.Equals(s, segment, StringComparison.OrdinalIgnoreCase));
+
     public IReadOnlyList<JsonObject> List(string? projectId = null)
     {
         var q = new DataQuery();

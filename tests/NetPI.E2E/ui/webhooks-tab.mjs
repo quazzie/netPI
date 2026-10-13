@@ -168,6 +168,7 @@ try {
   await tab.locator('.webhooks button', { hasText: 'New' }).first().click();
   await tab.waitForSelector('[role=dialog] .foot button', { timeout: 5_000 });
   await tab.locator('.form input[placeholder="e.g. Checkmk alerts"]').fill('Checkmk alerts');
+  await tab.locator('.form input[placeholder="checkmk-alerts"]').fill('cmk');
   await tab.locator('.form select').nth(1).selectOption('sysadmin');
   await tab.locator('.form select').nth(2).selectOption('free');
   await tab.locator('.form input[placeholder="program, e.g. python"]').nth(1).fill('ssh');
@@ -177,7 +178,7 @@ try {
   await tab.waitForSelector('.webhooks .token', { timeout: 5_000 });
   const add = await tab.evaluate(() => window.__calls.filter(([m]) => m === 'webhooks.add').at(-1)[1]);
   check('add sends the after command and leaves the empty before out', add.post?.command === 'ssh' && add.post.args.join(',') === 'server,x' && add.pre === undefined && add.timeoutMinutes === 20, JSON.stringify([add.pre, add.post, add.timeoutMinutes]));
-  check('add sends name, agent free, profile and the fuse, and nothing about grouping or filters', add.name === 'Checkmk alerts' && add.agent === 'free' && add.profile === 'sysadmin' && add.maxChatsPerHour === 60 && add.group === undefined && add.match === undefined && add.title === undefined && add.alert === undefined, JSON.stringify(add));
+  check('add sends name, agent free, profile and the fuse, and nothing about grouping or filters', add.name === 'Checkmk alerts' && add.agent === 'free' && add.profile === 'sysadmin' && add.maxChatsPerHour === 60 && add.slug === 'cmk' && add.group === undefined && add.match === undefined && add.title === undefined && add.alert === undefined, JSON.stringify(add));
   const tokenBox = await tab.locator('.webhooks .token').innerText();
   check('the token box shows the token once, with a curl line', tokenBox.includes('whk_SECRET_TOKEN_wxyz') && tokenBox.includes('curl -X POST'), tokenBox.slice(0, 80));
   await tab.locator('.webhooks .token button', { hasText: 'I have saved it' }).click();

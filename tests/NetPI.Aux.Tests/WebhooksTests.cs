@@ -93,7 +93,7 @@ public static class WebhooksTests
             var id = S(added["id"])!;
             var token = S(added["token"])!;
             Check.True(token.StartsWith("whk_") && token.Length > 40, "a long random token");
-            Check.Equal("/hook/" + id, S(added["path"]));
+            Check.Equal("/hook/checkmk", S(added["path"]), "the URL is the name, lower-cased");
             Check.True(added["tokenHash"] is null, "the hash is not shown");
             var got = await env.Get(id);
             Check.True(got["token"] is null && got["tokenHash"] is null, "reading it back shows neither");
@@ -109,6 +109,35 @@ public static class WebhooksTests
             Check.Differs(token, S(rotated["token"])!);
             Check.Equal(401, (await env.Post(id, token, Alert("Other"))).Status, "the old token stopped working");
             Check.Equal(202, (await env.Post(id, S(rotated["token"])!, Alert("Other"))).Status);
+        });
+
+        r.Add("webhooks: a webhook has a readable URL name next to its id; both work, names are unique and checked", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var added = await env.Add(extra: new { name = "Checkmk alerts" });
+            var id = S(added["id"])!; var token = S(added["token"])!;
+            Check.Equal("checkmk-alerts", S(added["slug"]), "derived from the name");
+            Check.Equal("/hook/checkmk-alerts", S(added["path"]));
+            Check.Equal(202, (await env.Plugin.ReceiveAsync("/hook/checkmk-alerts", "POST", IPAddress.Loopback, "application/json", _ => Task.FromResult<string?>(JsonSerializer.Serialize(Alert())), token, CancellationToken.None)).Status, "the readable URL works");
+            Check.Equal(202, (await env.Plugin.ReceiveAsync("/hook/CHECKMK-alerts", "POST", IPAddress.Loopback, "application/json", _ => Task.FromResult<string?>(JsonSerializer.Serialize(Alert("b"))), token, CancellationToken.None)).Status, "case does not matter");
+            Check.Equal(202, (await env.Post(id, token, Alert("c"))).Status, "and so does the id URL");
+            Check.Equal(401, (await env.Plugin.ReceiveAsync("/hook/checkmk-alerts", "POST", IPAddress.Loopback, "application/json", _ => Task.FromResult<string?>("{}"), "whk_wrong", CancellationToken.None)).Status, "the token is still needed");
+
+            var twin = await env.Add(extra: new { name = "Checkmk alerts" });
+            Check.Equal("checkmk-alerts-2", S(twin["slug"]), "a taken derived name gets a number");
+            await Check.ThrowsAsync<RpcException>(() => env.Add(extra: new { name = "other", slug = "checkmk-alerts" }));
+            await Check.ThrowsAsync<RpcException>(() => env.Add(extra: new { name = "other", slug = "has space" }));
+            await Check.ThrowsAsync<RpcException>(() => env.Add(extra: new { name = "other", slug = "whk_abc" }));
+            Check.Equal("my_hook-1", S((await env.Add(extra: new { name = "third", slug = "My_Hook-1" }))["slug"]), "lower-cased");
+
+            var renamed = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id, slug = "cmk" }))!;
+            Check.Equal("/hook/cmk", S(renamed["path"]));
+            Check.Equal(401, (await env.Plugin.ReceiveAsync("/hook/checkmk-alerts", "POST", IPAddress.Loopback, "application/json", _ => Task.FromResult<string?>("{}"), token, CancellationToken.None)).Status, "the old name no longer names it (unknown, like a wrong token)");
+            var cleared = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id, slug = "" }))!;
+            Check.Equal("/hook/" + id, S(cleared["path"]), "no name: the id path");
+            await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("webhooks.update", new { id, slug = "my_hook-1" }));
+            var proposed = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id, slug = "sneaky", proposedBy = "session:ses_1" }))!;
+            Check.Equal(false, proposed["enabled"]!.GetValue<bool>(), "an agent renaming the URL pauses it");
         });
 
         r.Add("webhooks: an ungrouped payload becomes a chat at once, on the project, sent as the system", async () =>
