@@ -1285,7 +1285,7 @@ can be hundreds); `tool_search` finds them.
 tools the chat may call and has not loaded (switched-off tools and a subagent's allowlist stay out) and
 **loads** the matches: their names go into the session's `meta.toolsLoaded` (`LoadedTools` in the contracts), and from
 the next model call on they are declared like any other tool, with their own schemas, and called directly. The idea is
-pi 1.0's `tool_search`.
+pi 1.0's `tool_search`. Loaded tools are appended after the always-declared tools in the order they were loaded (`meta.toolsLoaded` keeps that order), so a load never shifts the tools before it and the prompt-cache prefix up to the end of the tools block survives.
 
 - Ranking: a query that is a tool's exact name first, then Okapi BM25 over the name (also with `_` as spaces), label,
   category, description, help and the parameters' names and descriptions; camelCase splits, stop words drop, a naive

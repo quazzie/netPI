@@ -56,8 +56,18 @@ public static class ToolSelection
         Declared(eligible, exposure).Select(t => t.Definition).ToList();
 
     /// <summary>The eligible tools whose definitions the model is sent (see <see cref="Visible"/>).</summary>
-    public static IEnumerable<IAgentTool> Declared(IEnumerable<IAgentTool> eligible, ToolExposure exposure) =>
-        eligible.Where(t => exposure.IsDeclared(t.Definition));
+    public static IEnumerable<IAgentTool> Declared(IEnumerable<IAgentTool> eligible, ToolExposure exposure)
+    {
+        // Stable order, so loading a tool never shifts the tools before it: the always-declared tools keep their (name) order,
+        // loaded deferred tools follow in the order they were loaded. The tools sit ahead of the messages in a request, so
+        // an inserted tool would invalidate the prompt cache from its place on; an appended one only from the end of the tools.
+        var declared = eligible.Where(t => exposure.IsDeclared(t.Definition)).ToList();
+        var order = exposure.LoadOrder;
+        return declared.Where(t => !exposure.IsDeferred(t.Definition))
+            .Concat(declared.Where(t => exposure.IsDeferred(t.Definition))
+                .OrderBy(t => order.TryGetValue(t.Definition.Name, out var i) ? i : int.MaxValue)
+                .ThenBy(t => t.Definition.Name, StringComparer.Ordinal));
+    }
 }
 
 /// <summary>
@@ -91,17 +101,20 @@ public sealed class ToolExposure
     private readonly DeferredList _list;
     private readonly HashSet<string> _loaded;
     private readonly IReadOnlyList<string>? _allowlist;
+    private readonly Dictionary<string, int> _order;
 
-    private ToolExposure(DeferredList list, HashSet<string> loaded, IReadOnlyList<string>? allowlist)
+    private ToolExposure(DeferredList list, IReadOnlyList<string> loaded, IReadOnlyList<string>? allowlist)
     {
         _list = list;
-        _loaded = loaded;
+        _loaded = new HashSet<string>(loaded, StringComparer.Ordinal);
+        _order = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < loaded.Count; i++) _order.TryAdd(loaded[i], i);
         _allowlist = allowlist;
     }
 
     /// <summary>The exposure for one agent's session: its deferred list, its loaded tools, the agent's tool list.</summary>
     public static ToolExposure For(ISettings? settings, AgentInfo? agent, SessionInfo? session) =>
-        new(DeferredList.Parse(Entries(settings, session)), LoadedTools.Of(session), agent?.ToolAllowlist);
+        new(DeferredList.Parse(Entries(settings, session)), LoadedTools.Ordered(session), agent?.ToolAllowlist);
 
     /// <summary>The chat's deferred list as written: the session's <c>meta.toolsDeferred</c>, else the setting, else the default.</summary>
     public static IReadOnlyList<string> Entries(ISettings? settings, SessionInfo? session)
@@ -140,6 +153,9 @@ public sealed class ToolExposure
     /// <summary>The session's loaded tools.</summary>
     public IReadOnlySet<string> Loaded => _loaded;
 
+    /// <summary>Each loaded tool's place in the order it was loaded.</summary>
+    public IReadOnlyDictionary<string, int> LoadOrder => _order;
+
     /// <summary>Not declared unless loaded: deferred by its definition, or by the chat's list and not named by the agent's tool list.</summary>
     public bool IsDeferred(ToolDefinition definition) =>
         definition.Deferred
@@ -161,12 +177,16 @@ public static class LoadedTools
     public const string MetaKey = "toolsLoaded";
 
     /// <summary>The tool names loaded into the session (case-sensitive, like tool names in a request); empty when none.</summary>
-    public static HashSet<string> Of(SessionInfo? session)
+    public static HashSet<string> Of(SessionInfo? session) => new(Ordered(session), StringComparer.Ordinal);
+
+    /// <summary>The loaded tool names in the order they were loaded (the list is stored in that order), without repeats.</summary>
+    public static List<string> Ordered(SessionInfo? session)
     {
-        var loaded = new HashSet<string>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var loaded = new List<string>();
         if (session?.Meta?[MetaKey] is JsonArray names)
             foreach (var n in names)
-                if (n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s)) loaded.Add(s.Trim());
+                if (n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) && seen.Add(s.Trim())) loaded.Add(s.Trim());
         return loaded;
     }
 
@@ -177,10 +197,10 @@ public static class LoadedTools
         if (adding.Count == 0) return;
         sessions.UpdateSession(sessionId, s =>
         {
-            var loaded = Of(s);
-            foreach (var n in adding) loaded.Add(n);
+            var loaded = Ordered(s);
+            foreach (var n in adding) if (!loaded.Contains(n, StringComparer.Ordinal)) loaded.Add(n);
             s.Meta ??= new JsonObject();
-            s.Meta[MetaKey] = new JsonArray([.. loaded.Order(StringComparer.Ordinal).Select(n => (JsonNode?)n)]);
+            s.Meta[MetaKey] = new JsonArray([.. loaded.Select(n => (JsonNode?)n)]);
         });
     }
 }

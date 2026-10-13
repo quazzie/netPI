@@ -59,11 +59,13 @@ public static class DeferredToolsTests
             Check.False(requests[1].Tools.Any(d => d.Name == "stock_quote"), "only the match is loaded");
             Check.False(requests[2].Tools.Any(d => d.Name == "stock_quote"));
             Check.True(requests[3].Tools.Any(d => d.Name == "stock_quote"), "a call by name loads the tool");
+            Check.Equal(string.Join(",", requests[0].Tools.Select(d => d.Name)), string.Join(",", requests[3].Tools.Take(requests[0].Tools.Count).Select(d => d.Name)), "loading appends: the earlier tools keep their places");
+            Check.Equal("weather_lookup,stock_quote", string.Join(",", requests[3].Tools.Skip(requests[0].Tools.Count).Select(d => d.Name)), "loaded tools follow in load order");
             var results = h.Messages(session.Id).SelectMany(m => m.ToolResults).ToList();
             Check.Contains(results[0].Content, "weather_lookup"); Check.NotContains(results[0].Content, "stock_quote");
             Check.False(results[1].IsError); Check.Equal(1, weather.Calls.Count);
             Check.False(results[2].IsError, "a deferred tool called by name runs"); Check.Equal(1, stocks.Calls.Count);
-            Check.Equal("[\"stock_quote\",\"weather_lookup\"]", h.Sessions.GetSession(session.Id)!.Meta?[LoadedTools.MetaKey]?.ToJsonString());
+            Check.Equal("[\"weather_lookup\",\"stock_quote\"]", h.Sessions.GetSession(session.Id)!.Meta?[LoadedTools.MetaKey]?.ToJsonString());
             var notices = h.Messages(session.Id).Where(m => m.MetaString("kind") == "tools").ToList();
             Check.Equal(2, notices.Count);
             Check.True(notices.All(n => n.MetaString("cause") == "loaded"));
