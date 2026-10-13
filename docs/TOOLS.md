@@ -1278,24 +1278,35 @@ tokens of tool definitions instead of ~6 000. `[]` declares every built-in tool.
 gets the tools it names declared even when the setting defers them.
 
 The system prompt's Tools section names the built-in tools the setting defers, one line each ("More tools, not loaded
-yet: …"), so the model knows they exist. **A deferred tool called by name runs** and is loaded with it: from the next call
-it is declared with its schema (`{"help": true}` gives the arguments before). An MCP server's tools are not listed (there
+yet: …" or, with `call_tool`, "More tools, not in your tool list: …"), so the model knows they exist. **A deferred tool called by name runs**
+(in `declare` mode it is loaded with it and declared from the next call; `{"help": true}` gives the arguments before). An MCP server's tools are not listed (there
 can be hundreds); `tool_search` finds them.
  `tool_search { query, limit? (5, at most 10) }` (plugins/NetPI.Runtime) ranks the deferred
-tools the chat may call and has not loaded (switched-off tools and a subagent's allowlist stay out) and
-**loads** the matches: their names go into the session's `meta.toolsLoaded` (`LoadedTools` in the contracts), and from
-the next model call on they are declared like any other tool, with their own schemas, and called directly. The idea is
-pi 1.0's `tool_search`. Loaded tools are appended after the always-declared tools in the order they were loaded (`meta.toolsLoaded` keeps that order), so a load never shifts the tools before it and the prompt-cache prefix up to the end of the tools block survives.
+tools the chat may call (switched-off tools and a subagent's allowlist stay out) and returns the best matches. The idea is
+pi 1.0's `tool_search`.
+
+**Loading does not change the request's tools** (`tools.loading`, default `inline`): the tools sit ahead of the
+conversation in a request, so a changed tools block means the backend prefills the whole conversation again. In `inline`
+mode the `tool_search` result carries each match's description and JSON schema (what does not fit ~15 000 characters is
+only named), and the model runs a match with **`call_tool { name, arguments }`** (plugins/NetPI.Runtime `CallTool`;
+`{"help": true}` as the arguments gives a tool's manual). `call_tool` is deferred-tool infrastructure like `tool_search`,
+declared exactly when something is deferred, and never deferred by a list such as `["*"]`. The batch runner unwraps the call
+before any hook sees it: the policy hooks, the workspace guard, parallelism, the events and the after-call hooks all work on
+the inner tool, and the result is stored under the outer call's id. A call to an unknown tool, to `call_tool` or to
+`tool_search` is an error result that says what to do. A deferred tool called directly by name still runs where the backend
+produces such a call (a local backend may refuse a name it was not sent, or force it into another tool: the prompt therefore
+names `call_tool`). `tools.loading = declare` is the earlier behaviour: matches go into `meta.toolsLoaded` and join the
+request's tools, appended after the always-declared tools in load order. A chat keeps the mode of its first load
+(`meta.toolLoading`), and a chat that already has `meta.toolsLoaded` and no mode stays on `declare`, so the switch costs it no prefill.
 
 - Ranking: a query that is a tool's exact name first, then Okapi BM25 over the name (also with `_` as spaces), label,
   category, description, help and the parameters' names and descriptions; camelCase splits, stop words drop, a naive
-  singular form (`issues` finds `issue`).
+  singular form (`issues` finds `issue`). `tool_search` drops matches that score below 40% of the best, so a tool that shares
+  one word with the query is not returned with the real matches.
 - The description names no tool, so it stays the same while MCP servers connect and the request prefix keeps.
-- A chat keeps at most 40 loaded tools (every one is in each request from then on); past that the result says so. A
-  loaded name whose tool is gone (its MCP server is down) stays, for when it is back, but takes no room.
-- The load (by `tool_search` or a call by name) is a meta change, so the next call gets a `tools` notice with cause
-  `loaded` ("New: x (loaded for this chat)") carrying the new tools' guidelines. Loading changes the request's tool list, so the model re-reads the
-  conversation once, as with any tool change.
+- `declare` mode only: a chat keeps at most 40 loaded tools (every one is in each request from then on); past that the result
+  says so, and the load (by `tool_search` or a call by name) is a meta change that gives the next call a `tools` notice with cause
+  `loaded` and the model re-reads the conversation once. `inline` has no cap and no notice: nothing in the request changes.
 - The list survives a restart; a fork keeps it; a tool switched off for the chat stays off.
 
 ```ts

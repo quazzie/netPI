@@ -24,11 +24,11 @@ public static class ProfilesTests
         h.Catalog.Handler = (r, ct) => r.SessionId != s.Id || step++ > 0 ? Reply.Text("done") : Reply.Tool("bash", new { command = "echo hi" });
         await Turn(h, s.Id, "go");
         var first = h.Catalog.Requests.First(r => r.SessionId == s.Id);
-        Check.Equal("read", string.Join(",", first.Tools.Select(t => t.Name)), "only the exception is declared");
-        Check.Contains(first.SystemPrompt!, "More tools, not loaded yet");
+        Check.Equal("call_tool,read,tool_search", string.Join(",", first.Tools.Select(t => t.Name)), "only the exception is declared, with the tools that reach the rest");
+        Check.Contains(first.SystemPrompt!, "More tools, not in your tool list");
         Check.Contains(first.SystemPrompt!, "  - bash:");
         Check.False(h.Messages(s.Id).SelectMany(m => m.ToolResults).Single().IsError, "a deferred tool called by name runs");
-        Check.True(Sent(h, s.Id).Contains("bash"), "and is declared from the next call");
+        Check.False(Sent(h, s.Id).Contains("bash"), "and loading it does not change the request's tools");
         Check.Equal("""["*","!read"]""", h.Sessions.GetSession(s.Id)!.Meta?[ToolExposure.MetaKey]?.ToJsonString());
 
         // a profile without a list leaves the chat on the setting (the test host declares everything)

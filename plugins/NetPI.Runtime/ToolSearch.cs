@@ -29,9 +29,9 @@ internal sealed class ToolSearchTool(IPluginContext ctx, AgentRuntime runtime) :
     public ToolDefinition Definition { get; } = new()
     {
         Name = ToolName, Label = "Find tools", Category = "general", ReadOnly = true, SummaryArg = "query",
-        Description = "Find tools that are not loaded yet (deferred tools, such as an MCP server's) by what they do, and load the matches: "
-            + "they are declared to you from your next call, with their full schemas, and you call them directly.",
-        PromptGuidelines = ["When none of your tools fits a task, search with tool_search: it loads matching tools, callable from your next call."],
+        Description = "Find tools that are not in your tool list (deferred tools, such as an MCP server's) by what they do. "
+            + "The result has each match's schema; run a match with call_tool.",
+        PromptGuidelines = ["When none of your tools fits a task, search with tool_search: it shows matching tools with their schemas, and call_tool runs them."],
         Parameters = JsonNode.Parse($$$"""
             {"type":"object","properties":{
               "query":{"type":"string","description":"What the tool should do, in a few words, or a tool name."},
@@ -57,16 +57,24 @@ internal sealed class ToolSearchTool(IPluginContext ctx, AgentRuntime runtime) :
             return Task.FromResult(ToolResult.Ok("No tools to search: every tool you can use is already declared to you.",
                 Details([], [])));
 
-        var ranked = ToolRanking.Rank(candidates.Select(t => t.Definition).ToList(), query).Take(limit).ToList();
+        // only real matches: a tool that shares a single word with the query does not ride along
+        var ranked = ToolRanking.Rank(candidates.Select(t => t.Definition).ToList(), query, MinRelative).Take(limit).ToList();
         if (ranked.Count == 0)
             return Task.FromResult(ToolResult.Ok($"No tool matches \"{query}\" among {candidates.Count} searchable tools. Try other words for what the tool does.",
                 Details([], [])));
+        if (exposure.Mode == ToolExposure.Inline)
+        {
+            // the request's tools never change (that would be a full prefill): the schemas are in this result, and the tools
+            // are run with call_tool. Recorded as loaded for the chat's tool list, not declared.
+            LoadedTools.Add(ctx.Sessions, context.SessionId, ranked.Select(d => d.Name), exposure.Mode);
+            return Task.FromResult(ToolResult.Ok(Inline(ranked), Details(ranked.Select(d => d.Name), ranked.Select(d => d.Name))));
+        }
 
         var fresh = ranked.Where(d => !loaded.Contains(d.Name)).ToList();
         // a loaded name whose tool is gone (its MCP server is down) keeps its place for when it is back, but takes no room
         var room = Math.Max(0, MaxLoaded - candidates.Count(t => loaded.Contains(t.Definition.Name)));
         var loading = fresh.Take(room).ToList();
-        LoadedTools.Add(ctx.Sessions, context.SessionId, loading.Select(d => d.Name));
+        LoadedTools.Add(ctx.Sessions, context.SessionId, loading.Select(d => d.Name), exposure.Mode);
 
         var sb = new StringBuilder();
         if (loading.Count > 0)
@@ -80,6 +88,33 @@ internal sealed class ToolSearchTool(IPluginContext ctx, AgentRuntime runtime) :
             sb.Append(sb.Length > 0 ? "\n" : "").Append($"Not loaded, this chat already has the most loaded tools ({MaxLoaded}):").Append(Lines(skipped));
         return Task.FromResult(ToolResult.Ok(sb.ToString(),
             Details(loading.Select(d => d.Name), ranked.Select(d => d.Name))));
+    }
+
+    /// <summary>Weakest match kept, as a share of the best score.</summary>
+    public const double MinRelative = 0.4;
+    /// <summary>Most characters of schemas in one result (the result cap is 20000; past it the tail would be cut off).</summary>
+    private const int SchemaBudget = 15000;
+
+    /// <summary>The matches with their schemas, for <c>call_tool</c>; what does not fit the budget is named only.</summary>
+    private static string Inline(IReadOnlyList<ToolDefinition> tools)
+    {
+        var sb = new StringBuilder();
+        sb.Append("Found ").Append(tools.Count).Append(tools.Count == 1 ? " tool" : " tools")
+          .Append(". Run one with call_tool { \"name\": ..., \"arguments\": { ... } }; the arguments follow its schema.");
+        var left = new List<ToolDefinition>();
+        var shown = 0;
+        foreach (var d in tools)
+        {
+            var schema = (d.Parameters ?? new JsonObject()).ToJsonString();
+            var block = new StringBuilder("\n\n## ").Append(d.Name).Append('\n').Append(d.Description.Trim()).Append("\nschema: ").Append(schema);
+            foreach (var g in d.PromptGuidelines ?? []) block.Append("\n- ").Append(g);
+            if (shown > 0 && sb.Length + block.Length > SchemaBudget) { left.Add(d); continue; }
+            shown++;
+            sb.Append(block);
+        }
+        if (left.Count > 0)
+            sb.Append("\n\nToo long to show here (search for them by name, one at a time):").Append(Lines(left));
+        return sb.ToString();
     }
 
     private static string Lines(IEnumerable<ToolDefinition> tools) =>

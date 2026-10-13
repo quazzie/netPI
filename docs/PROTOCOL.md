@@ -70,7 +70,7 @@ type Part =
   | { type: 'image'; mediaType: string; data: string /* base64 */ };
 
 interface SessionInfo { id; title; projectId?; parentSessionId?; kind: 'chat'|'subagent'; model?; reasoning?; createdAt; updatedAt; archived; pinned; messageCount; contextTokens;
-  meta?: { goal?: Goal; toolsOff?: string[] /* tools switched off for this chat */; toolsLoaded?: string[] /* deferred tools loaded: by tool_search or a call by name */; toolsDeferred?: string[] /* its profile's deferred list, in place of tools.deferred */; profile?: string|null /* its profile */;
+  meta?: { goal?: Goal; toolsOff?: string[] /* tools switched off for this chat */; toolsLoaded?: string[] /* deferred tools found: by tool_search or a call by name, in load order */; toolLoading?: "inline"|"declare" /* how its loads work (tools.loading) */; toolsDeferred?: string[] /* its profile's deferred list, in place of tools.deferred */; profile?: string|null /* its profile */;
     identity?: string /* the opening of its system prompt, from the profile */; agent?: string /* the agent it runs on (agents.<id>) */;
     cwd?: string /* the folder it runs in: the workspace root when it is bound to one, else the project's */;
     workspaceId?: string /* the checkout it works in (WorkspaceInfo), when it is bound to one */;

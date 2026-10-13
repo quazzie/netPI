@@ -103,8 +103,20 @@ public sealed class ToolExposure
     private readonly IReadOnlyList<string>? _allowlist;
     private readonly Dictionary<string, int> _order;
 
-    private ToolExposure(DeferredList list, IReadOnlyList<string> loaded, IReadOnlyList<string>? allowlist)
+    /// <summary>Setting: how a load works. <c>inline</c> (default): the request's tools never change; the schemas come in the
+    /// <c>tool_search</c> result and the tools are called with <c>call_tool</c>. <c>declare</c>: a loaded tool joins the request's tools.</summary>
+    public const string LoadingSetting = "tools.loading";
+    /// <summary>The session's own mode (set when its first tool is loaded, so a chat keeps the mode it started with).</summary>
+    public const string LoadingMetaKey = "toolLoading";
+    public const string Inline = "inline";
+    public const string Declare = "declare";
+
+    /// <summary><see cref="Inline"/> or <see cref="Declare"/>.</summary>
+    public string Mode { get; }
+
+    private ToolExposure(DeferredList list, IReadOnlyList<string> loaded, IReadOnlyList<string>? allowlist, string mode)
     {
+        Mode = mode;
         _list = list;
         _loaded = new HashSet<string>(loaded, StringComparer.Ordinal);
         _order = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -114,7 +126,18 @@ public sealed class ToolExposure
 
     /// <summary>The exposure for one agent's session: its deferred list, its loaded tools, the agent's tool list.</summary>
     public static ToolExposure For(ISettings? settings, AgentInfo? agent, SessionInfo? session) =>
-        new(DeferredList.Parse(Entries(settings, session)), LoadedTools.Ordered(session), agent?.ToolAllowlist);
+        new(DeferredList.Parse(Entries(settings, session)), LoadedTools.Ordered(session), agent?.ToolAllowlist, ModeOf(settings, session));
+
+    /// <summary>The chat's own mode; else <c>declare</c> for a chat that already has declared loads (it keeps its request as it is,
+    /// so the change costs it no prefill); else the setting; else <c>inline</c>.</summary>
+    public static string ModeOf(ISettings? settings, SessionInfo? session)
+    {
+        if (session?.Meta?[LoadingMetaKey] is JsonValue own && own.TryGetValue<string>(out var m) && (m == Inline || m == Declare)) return m;
+        if (session?.Meta?[LoadedTools.MetaKey] is JsonArray { Count: > 0 }) return Declare;
+        string? setting = null;
+        try { setting = settings?.Get<string>(LoadingSetting); } catch { }
+        return setting == Declare ? Declare : Inline;
+    }
 
     /// <summary>The chat's deferred list as written: the session's <c>meta.toolsDeferred</c>, else the setting, else the default.</summary>
     public static IReadOnlyList<string> Entries(ISettings? settings, SessionInfo? session)
@@ -159,10 +182,14 @@ public sealed class ToolExposure
     /// <summary>Not declared unless loaded: deferred by its definition, or by the chat's list and not named by the agent's tool list.</summary>
     public bool IsDeferred(ToolDefinition definition) =>
         definition.Deferred
-        || (_list.Names(definition.Name) && !(_allowlist?.Contains(definition.Name, StringComparer.OrdinalIgnoreCase) ?? false));
+        || (_list.Names(definition.Name) && !IsInfrastructure(definition.Name)
+            && !(_allowlist?.Contains(definition.Name, StringComparer.OrdinalIgnoreCase) ?? false));
+
+    /// <summary>The tools that reach the deferred ones: a list such as <c>["*"]</c> must not defer them too, or the rest is out of reach.</summary>
+    public static bool IsInfrastructure(string name) => name is "tool_search" or "call_tool";
 
     /// <summary>Whether the model is sent this definition: not deferred, or loaded into the session.</summary>
-    public bool IsDeclared(ToolDefinition definition) => !IsDeferred(definition) || _loaded.Contains(definition.Name);
+    public bool IsDeclared(ToolDefinition definition) => !IsDeferred(definition) || (Mode == Declare && _loaded.Contains(definition.Name));
 }
 
 /// <summary>
@@ -191,12 +218,15 @@ public static class LoadedTools
     }
 
     /// <summary>Load <paramref name="names"/> into the session (its meta, so the next model call declares them).</summary>
-    public static void Add(ISessionStore sessions, string sessionId, IEnumerable<string> names)
+    public static void Add(ISessionStore sessions, string sessionId, IEnumerable<string> names, string mode = ToolExposure.Declare)
     {
         var adding = names.ToList();
         if (adding.Count == 0) return;
         sessions.UpdateSession(sessionId, s =>
         {
+            s.Meta ??= new JsonObject();
+            // the chat keeps the mode it loaded its first tool in (a legacy chat with loads is declare, see ToolExposure.ModeOf)
+            if (s.Meta[ToolExposure.LoadingMetaKey] is null) s.Meta[ToolExposure.LoadingMetaKey] = mode;
             var loaded = Ordered(s);
             foreach (var n in adding) if (!loaded.Contains(n, StringComparer.Ordinal)) loaded.Add(n);
             s.Meta ??= new JsonObject();

@@ -19,6 +19,10 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
     private AgentState State => state;
     private AgentRunContext Rc => rc;
 
+    /// <summary>The <c>call_tool</c> calls of this batch by call id: the runner works on the inner call, the transcript keeps the outer.</summary>
+    private readonly Dictionary<string, ToolCallPart> _outer = new(StringComparer.Ordinal);
+    private string ResultName(ToolCallPart call) => _outer.TryGetValue(call.Id, out var o) ? o.Name : call.Name;
+
     private List<IAgentTool> ActiveTools(SessionInfo session) => rt.ToolsFor(state.Info, session);
 
     private sealed class PreparedCall
@@ -61,6 +65,14 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
     /// <summary>Prepare, invoke and finish every call of the turn (read-only ones in parallel), then persist the results.</summary>
     public async Task RunAsync(ChatMessage assistant, AgentTurnContext turn, List<ToolCallPart> calls, List<IAgentTool> tools, CancellationToken ct)
     {
+        // call_tool { name, arguments } is unwrapped here, before any hook sees the call: everything downstream — policy hooks,
+        // the guard, parallelism, events — works on the inner tool, and its result is stored under the outer call's id
+        calls = [.. calls.Select(c =>
+        {
+            if (CallTool.TryUnwrap(c, tools) is not { } inner) return c;
+            _outer[c.Id] = c;
+            return inner;
+        })];
         var done = new HashSet<string>(StringComparer.Ordinal);
         var started = new HashSet<string>(StringComparer.Ordinal);
         var argsChanged = false;
@@ -173,7 +185,8 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             {
                 // a deferred tool called by name (the prompt lists the deferred built-in tools): it runs, and is loaded, so
                 // the next model call declares it with its schema
-                if (!exposure.IsDeclared(tool.Definition)) LoadedTools.Add(Ctx.Sessions, SessionId, [tool.Definition.Name]);
+                if (!exposure.IsDeclared(tool.Definition) && tool is not IDeferredToolInfrastructure)
+                    LoadedTools.Add(Ctx.Sessions, SessionId, [tool.Definition.Name], exposure.Mode);
                 prepared.Args = ParseArgs(call.Arguments);
                 if (ToolHelp.Asked(tool.Definition, prepared.Args))
                     prepared.Early = ToolResult.Ok(ToolHelp.Text(tool.Definition));
@@ -259,7 +272,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
         return new ToolResultPart
         {
             CallId = p.Call.Id,
-            Name = p.Call.Name,
+            Name = ResultName(p.Call),
             Content = LimitResult(result.Content ?? "", p.Call),
             IsError = result.IsError,
             Images = result.Images,
@@ -390,7 +403,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
     {
         Persist(new ToolResultPart
         {
-            CallId = call.Id, Name = call.Name, Content = content, IsError = isError, DurationMs = 0,
+            CallId = call.Id, Name = ResultName(call), Content = content, IsError = isError, DurationMs = 0,
             Details = skipped is null ? null : new JsonObject { ["skipped"] = skipped },
         }, required: false);
         if (publishEnd)

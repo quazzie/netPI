@@ -112,7 +112,12 @@ internal sealed class ToolsSection(ISettings settings) : IPromptSection
         var more = Deferred(c);
         if (more.Count > 0)
         {
-            sb.Append("- More tools, not loaded yet: call one by name (it runs and stays loaded; {\"help\": true} gives its arguments)")
+            // call_tool exists when loading does not change the request (ToolExposure.Inline): a name the backend does not know
+            // may be refused or coerced into another tool, so the call goes through the declared dispatcher
+            var viaCallTool = tools.Any(t => t.Name == "call_tool");
+            sb.Append(viaCallTool
+                    ? "- More tools, not in your tool list: run one with call_tool { name, arguments } (arguments {\"help\": true} gives its manual)"
+                    : "- More tools, not loaded yet: call one by name (it runs and stays loaded; {\"help\": true} gives its arguments)")
               .Append(tools.Any(t => t.Name == "codemode") ? ", call it from a codemode script (tools.<name>(args))" : "")
               .Append(" or find tools with tool_search:\n");
             foreach (var t in more) sb.Append("  - ").Append(t.Name).Append(": ").Append(SectionUtil.Summary(t.Description, 90)).Append('\n');

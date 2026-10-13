@@ -47,6 +47,7 @@ public sealed class RuntimePlugin : INetPiPlugin
         context.Services.Register<IAgentRuntime>(runtime);
         // infrastructure for deferred tools: a chat without one is not sent it (ToolSelection.Eligible)
         context.Tools.Register(new ToolSearchTool(context, runtime));
+        context.Tools.Register(new CallTool());
 
         // every method declares its parameters (idea-yvcy8b): rpc.list shows them, a request with an unknown or mistyped one is
         // a bad_request that names it, and a handler that reads one it did not declare fails on its first call

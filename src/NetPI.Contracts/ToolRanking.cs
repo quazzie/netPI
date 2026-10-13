@@ -13,8 +13,10 @@ public static class ToolRanking
     /// <summary>
     /// The definitions that match <paramref name="query"/>, best first: a query that is a tool's exact name comes first, the
     /// rest by Okapi BM25 (k1 1.2, b 0.75) over each tool's <see cref="Document"/>. Ties keep name order.
+    /// <paramref name="minRelative"/> (0..1) drops the tools that score below that share of the best score, so a tool that
+    /// shares one word with the query does not ride along with the real matches (an exact name is always kept).
     /// </summary>
-    public static List<ToolDefinition> Rank(IReadOnlyList<ToolDefinition> tools, string query)
+    public static List<ToolDefinition> Rank(IReadOnlyList<ToolDefinition> tools, string query, double minRelative = 0)
     {
         var trimmed = query.Trim();
         var exact = tools.Where(t => string.Equals(t.Name, trimmed, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -44,7 +46,9 @@ public static class ToolRanking
             }
             if (score > 0) scored.Add((tools[i], score));
         }
-        var ranked = scored.OrderByDescending(s => s.Score).ThenBy(s => s.Tool.Name, StringComparer.Ordinal).Select(s => s.Tool);
+        var best = scored.Count == 0 ? 0 : scored.Max(s => s.Score);
+        var ranked = scored.Where(s => s.Score >= best * minRelative)
+            .OrderByDescending(s => s.Score).ThenBy(s => s.Tool.Name, StringComparer.Ordinal).Select(s => s.Tool);
         return [.. exact, .. ranked.Where(t => !exact.Contains(t))];
     }
 
