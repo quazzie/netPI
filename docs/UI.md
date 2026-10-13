@@ -345,6 +345,8 @@ into locals first, because after the parent clears the modal state or the row re
    stream out from them, so a provider that runs its own loop in one call (the Claude CLI: text, tool, text…) reads
    like its finished message instead of one wall of text with every tool below it; only the text run still being
    written shows the caret, and each thinking run has its own timer (idea-xg7ayy, `web/scripts/check-stream-order.mjs`).
+   A tool call (`stream.tool`) and the stream's end flush at once (`flushNow`, which runs even when no delta queued a
+   frame): the Claude CLI often calls a tool before any text, and its row must show while the tool runs.
    The final `message.added` replaces the stream items with the message's own, which are laid out the same. `tool.output` chunks go to `LiveTool` buffers, which keep the last 200KB, flushed the
    same way. `tool.result` (a call the provider ran itself, the Claude CLI's) sets `LiveTool.result`: `ToolRow` and
    `StepsGroup` use it while the stored result is missing, so the row turns done with its result when the call finishes,

@@ -6,6 +6,7 @@
 //
 //   node web/scripts/check-stream-order.mjs
 import { withStream } from '../src/lib/chatItems.js';
+import { flushNow } from '../src/lib/frame.js';
 
 const timing = (ended) => ({ thinkingStartedAt: 1000, thinkingEndedAt: ended ? 2000 : 0 });
 const stream = (segments, ended = false) => ({
@@ -98,6 +99,17 @@ for (const [what, segments, want] of cases) {
   const ok = items.length === 1 && items[0].steps.length === 2;
   if (!ok) failed++;
   console.log(`${ok ? 'ok   ' : 'FAIL '}the stream's first steps join the open group of the finished list`);
+}
+
+// StreamState.tool() pushes its segment and flushes at once (flushNow). The Claude CLI often calls a tool before any
+// text: no delta has queued the frame flush then, and a flush that ran only when queued left the live tool row out of
+// the chat until the run's first text, at its end.
+{
+  let ran = 0;
+  flushNow(() => ran++);
+  const ok = ran === 1;
+  if (!ok) failed++;
+  console.log(`${ok ? 'ok   ' : 'FAIL '}flushNow runs the flush even when no frame was queued for it`);
 }
 
 console.log(failed ? `${failed} check(s) failed` : 'all checks passed');
