@@ -6,7 +6,7 @@
    * says who waits (the names open in a menu, which floats instead of pushing the rest down). Model calls without an
    * agent (a summarizer on another model) show the same way but without the switch.
    */
-  import { Elapsed, IconButton, Pips, tokens, usd } from '@netpi/kit';
+  import { Elapsed, IconButton, tokens, usd } from '@netpi/kit';
   import { shortModel, shortCommand, placeSlots } from './util.js';
   import WaitList from './WaitList.svelte';
 
@@ -20,7 +20,6 @@
   const owners = $derived(pool.owners ?? []);
   const waiters = $derived(pool.waiters ?? []);
   const busyCount = $derived(owners.length);
-  const freeCount = $derived(Math.max(0, capacity - busyCount));
   // one-line rows once an agent has many instances (the tab would be all slots otherwise)
   const compact = $derived(capacity > 4);
 
@@ -28,13 +27,6 @@
   let placed = [];
   const rows = $derived.by(() => (placed = placeSlots(placed, owners, capacity)));
 
-  const look = $derived.by(() => {
-    if (pool.disabled) return { chip: 'off', tone: 'dim' };
-    if (pool.unavailable === 'removed') return { chip: 'removed', tone: 'dim' };
-    if (pool.available === false) return { chip: /isn't loaded/.test(pool.unavailable ?? '') ? 'not loaded' : 'inactive', tone: 'warn' };
-    if (freeCount > 0) return { chip: `${freeCount} free`, tone: 'ok' };
-    return { chip: 'full', tone: 'accent' };
-  });
   const slash = $derived(pool.key.indexOf('/'));
   const name = $derived(agent ? pool.key : slash > 0 ? pool.key.slice(slash + 1) : pool.key);
   // the second line: the model (the provider, for another model call); why it cannot take work when it cannot
@@ -118,7 +110,6 @@
     {:else}
       <span class="key np-mono np-grow"><b>{name}</b></span>
     {/if}
-    {#if usable && capacity > 0}<Pips busy={busyCount} {capacity} max={8} />{/if}
     {#if agent}
       <input
         type="checkbox"
@@ -133,7 +124,6 @@
   </div>
   <div class="cap np-line">
     <span class="second np-mono np-grow" title={second}>{second}</span>
-    <span class="st" data-tone={look.tone}>{look.chip}</span>
   </div>
 
   {#each rows as o, i (i)}
@@ -251,26 +241,6 @@
   }
   .inactive .second {
     font-family: var(--font-sans);
-  }
-  .st {
-    flex: none;
-    font-size: var(--fs-xs);
-    padding: 0 6px;
-    border-radius: 8px;
-    line-height: 16px;
-    background: var(--bg-3);
-    color: var(--fg-muted);
-  }
-  .st[data-tone='accent'] {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .st[data-tone='warn'] {
-    background: var(--warn-soft);
-    color: var(--warn);
-  }
-  .st[data-tone='ok'] {
-    color: var(--ok);
   }
 
   /* a slot: the same height busy or free, so the tab does not move when work starts or ends */
