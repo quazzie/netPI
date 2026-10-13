@@ -322,8 +322,13 @@ async function loadAll({ reconnect }) {
     if (!saved) saved = await fetchRemote(TABS_KEY);
     const tabs = (saved?.tabs ?? []).filter((id) => typeof id === 'string');
     for (const id of tabs) if (!app.sessionsById.has(id)) await fetchSession(id);
-    app.openTabs = tabs.filter((id) => app.sessionsById.has(id));
-    const active = app.openTabs.includes(saved?.active) ? saved.active : (app.openTabs[0] ?? null);
+    // A tab the person opened while this was loading (Ctrl+T right after the page came up) is kept after the saved ones, and
+    // stays the active one: restoring must not erase it.
+    const restored = tabs.filter((id) => app.sessionsById.has(id));
+    app.openTabs = [...restored, ...app.openTabs.filter((id) => !restored.includes(id))];
+    const active = app.activeId && app.openTabs.includes(app.activeId)
+      ? app.activeId
+      : (app.openTabs.includes(saved?.active) ? saved.active : (app.openTabs[0] ?? null));
     app.activeId = active;
     resubscribe();
     if (active) showChat(getChat(active));
