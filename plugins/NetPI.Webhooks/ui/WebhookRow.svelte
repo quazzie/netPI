@@ -3,7 +3,7 @@
   // "try a payload" panel (preview or send), and the delivery history.
   import { StatusDot, IconButton, ConfirmButton, Button, timeAgo } from '@netpi/kit';
   import DeliveryHistory from './DeliveryHistory.svelte';
-  import { rowState, limitsLine, incidentLine } from './model.js';
+  import { rowState, limitsLine, incidentLine, hookLine } from './model.js';
 
   let { h, ctx, projects, receiver, onedit, onchanged, ontoken } = $props();
 
@@ -31,7 +31,7 @@
   const state = $derived(rowState(h));
   const projectName = $derived((projects ?? []).find((p) => p?.id === h.projectId)?.name ?? (h.projectId || 'no project'));
   const meta = $derived(
-    [state.key === 'proposed' ? 'proposed by an agent' : null, h.agent || 'default agent', h.profile ? `profile ${h.profile}` : 'automatic profile', projectName, limitsLine(h), `token …${h.tokenHint}`]
+    [state.key === 'proposed' ? 'proposed by an agent' : null, h.agent || 'default agent', h.profile ? `profile ${h.profile}` : 'automatic profile', projectName, h.hooks?.length ? `${h.hooks.length} hook${h.hooks.length === 1 ? '' : 's'}` : null, limitsLine(h), `token …${h.tokenHint}`]
       .filter(Boolean)
       .join(' · '),
   );
@@ -146,6 +146,12 @@
       {#if h.match?.length}
         <div class="np-small np-muted">Only when</div>
         <div class="np-mono np-small prompt">{JSON.stringify(h.match)}</div>
+      {/if}
+      {#if h.hooks?.length}
+        <div class="np-small np-muted">Hooks</div>
+        {#each h.hooks as hk, n (n)}
+          <div class="np-mono np-small prompt" title={hookLine(hk)}>{n + 1}. {hookLine(hk)}</div>
+        {/each}
       {/if}
       {#if h.group?.key}
         <div class="np-small np-muted">Incidents (one chat per {h.group.key})</div>

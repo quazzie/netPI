@@ -84,7 +84,7 @@ public static class WebhooksTests
         public void FinishChats() { foreach (var a in Runtime.Agents) a.Status = AgentStatus.Completed; }
     }
 
-    private static string? S(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+    internal static string? S(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
     private static object Alert(string service = "Kernel errors", string host = "nuc", string state = "CRIT", string output = "1 in last 30 min") =>
         new { host, service, state, output };

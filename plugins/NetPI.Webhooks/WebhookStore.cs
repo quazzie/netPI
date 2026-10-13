@@ -21,8 +21,8 @@ internal sealed class WebhookStore(IPluginData data)
 {
     public const int HistoryPerWebhook = 200;
     /// <summary>Delivery statuses: held (collecting inside the debounce window), started (a chat began), appended (added to the open chat),
-    /// duplicate (the same alert was just seen), skipped (filtered, disabled, over the fuse), failed.</summary>
-    public const string Held = "held", Started = "started", Appended = "appended", Duplicate = "duplicate", Skipped = "skipped", Failed = "failed";
+    /// duplicate (the same alert was just seen), skipped (filtered, disabled, over the fuse), failed, hook (an action of the webhook's hooks ran, or failed).</summary>
+    public const string Held = "held", Started = "started", Appended = "appended", Duplicate = "duplicate", Skipped = "skipped", Failed = "failed", Hook = "hook";
     public const string Collecting = "collecting", Open = "open";
 
     private readonly IDataCollection _hooks = data.Collection("webhooks", new CollectionSpec().Text("projectId"));
@@ -57,11 +57,12 @@ internal sealed class WebhookStore(IPluginData data)
 
     // ---------------------------------------------------------------- deliveries
 
-    public void Record(string id, DateTimeOffset at, string status, string? reason, string? sessionId, string? key, string? summary, string? from)
+    /// <param name="touch">Whether the row also becomes the webhook's last delivery (a hook's action does not: it is not a delivery).</param>
+    public void Record(string id, DateTimeOffset at, string status, string? reason, string? sessionId, string? key, string? summary, string? from, bool touch = true)
     {
         data.Transaction(() =>
         {
-            if (_hooks.Get(id) is { } doc)
+            if (touch && _hooks.Get(id) is { } doc)
             {
                 doc["lastAt"] = Iso(at);
                 doc["lastStatus"] = status;
@@ -119,6 +120,12 @@ internal sealed class WebhookStore(IPluginData data)
         if (!string.IsNullOrEmpty(webhookId)) q.Eq("webhookId", webhookId);
         return [.. _incidents.Find(q).Select(d => d.Doc)];
     }
+
+    /// <summary>Open incidents whose chat is running or has not been judged finished yet: the loop watches these for the finished / asking / stalled hooks.</summary>
+    public IReadOnlyList<JsonObject> AwaitingIncidents() =>
+        [.. _incidents.Find(new DataQuery().Eq("state", Open).Take(500)).Select(d => d.Doc).Where(d => d["awaiting"] is JsonValue v && v.TryGetValue<bool>(out var b) && b)];
+
+    public bool AnyAwaiting() => AwaitingIncidents().Count > 0;
 
     /// <summary>Incidents that ended long ago are forgotten, so the collection does not grow without bound.</summary>
     public void Prune(DateTimeOffset olderThan) =>

@@ -59,6 +59,10 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 SettingInfo.Int("webhooks.port", "Port", 7432, "The receiver's port (not NetPI's own).", 1, 65535),
                 SettingInfo.List("webhooks.allowFrom", "Accept requests from", ["127.0.0.1/32", "::1/128"], "Addresses or CIDR ranges that may call the receiver, e.g. 192.168.1.2/32 for one server. Everything else is refused before the token is looked at.", "192.168.1.2/32"),
                 SettingInfo.Int("webhooks.maxBodyKb", "Largest payload", 256, "Bigger requests are refused.", 1, 1024, "KB"),
+                SettingInfo.Str("webhooks.mqtt.host", "MQTT broker (for hooks)", "", "The broker a webhook's mqtt hooks publish to, e.g. the Home Assistant broker. Empty: mqtt hooks fail (and say so in the webhook's history).", "192.168.1.2"),
+                SettingInfo.Int("webhooks.mqtt.port", "MQTT port", 1883, null, 1, 65535),
+                SettingInfo.Str("webhooks.mqtt.user", "MQTT user", "", null, null),
+                SettingInfo.Secret("webhooks.mqtt.password", "MQTT password", null, null),
             ],
         });
         var store = Store = new WebhookStore(ctx.Data);
@@ -97,7 +101,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
             {
                 try { await runner.TickAsync(ct).ConfigureAwait(false); }
                 catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogError(ex, "Webhooks: a tick failed"); }
-                var wait = TimeSpan.FromSeconds(30);
+                var wait = TimeSpan.FromSeconds(store.AnyAwaiting() ? 10 : 30);   // watching a chat for its finished / asking / stalled hooks needs a closer look
                 if (store.NextDue() is { } next) wait = TimeSpan.FromTicks(Math.Clamp((next - _time.GetUtcNow()).Ticks, TimeSpan.TicksPerSecond, wait.Ticks));
                 await _wake.WaitAsync(wait, ct).ConfigureAwait(false);
             }
@@ -266,14 +270,14 @@ public sealed class WebhooksPlugin : INetPiPlugin
             [RpcParam.Opt("id", RpcParamType.String, "one webhook's; all when omitted"), RpcParam.Opt("limit", RpcParamType.Integer)]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.History(req.Str("id"), Math.Clamp(req.Int("limit") ?? 50, 1, 500)).Select(d => (JsonNode)d)])));
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.incidents", "Incidents, most recent first: { id? } → { webhookId, key, state (collecting|open), sessionId?, alertCount, openedAt?, lastAt, startsAt?, waiting? (why a collected batch could not start yet) }[]. collecting: alerts are being gathered for the chat; open: the chat that handles the key", ReadOnly: true,
+        ctx.Rpc.Register(new RpcMethod("webhooks.incidents", "Incidents, most recent first: { id? } → { webhookId, key, state (collecting|open), sessionId?, alertCount, openedAt?, lastAt, verdict? (the agent's last VERDICT: line), awaiting? (the chat is being watched for its finished hook), startsAt?, waiting? (why a collected batch could not start yet) }[]. collecting: alerts are being gathered for the chat; open: the chat that handles the key", ReadOnly: true,
             [RpcParam.Opt("id", RpcParamType.String, "one webhook's; all when omitted")]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.Incidents(req.Str("id")).Select(i => (JsonNode)ShownIncident(i))])));
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.add", "Add a webhook: { name, prompt, projectId?, profile? (a profile id from profiles.list: the chat's tools and system prompt; without one it gets the automatic profile, which is the coding profile — no ssh tool — so name one such as a sysadmin profile), agent? (a key, \"any\" = whichever agent has a free instance first, \"free\" = the first free-priced one, or \"a,b\" = the first of these that is available), alert?, followUp?, title?, match? ([{ path, equals|in|notIn|matches|exists }], all must hold to open an incident; an alert that fails it still joins an incident that is open), group? ({ key, debounceSeconds (90), reopenMinutes (240) } — the incident key, e.g. \"{{host}}\": alerts with the same key inside the window become one chat, later ones are appended to it; without group every alert is its own chat at once), maxChatsPerHour? (60, 0 = no limit: a fuse, not a quota), enabled? (true), proposedBy? } → Webhook plus token (shown once). Templates (prompt, alert, followUp, title, group.key): {{a.b.0.c}}, {{payload}}, {{now}}; prompt also {{alerts}} (every alert of the batch, each rendered with alert), {{count}}, {{key}}; followUp also {{alert}}, {{key}}, {{count}}. proposedBy stores it paused, as a proposal the user enables",
+        ctx.Rpc.Register(new RpcMethod("webhooks.add", "Add a webhook: { name, prompt, projectId?, hooks? ([{ on: received|started|finished|asking|stalled|failed, when?, afterMinutes? (stalled), once?, do: { type: \"mqtt\", topic, json|text, retain? } | { type: \"http\", url, method?, headers?, json|text } }] — actions NetPI runs itself at those points; see PROTOCOL.md), profile? (a profile id from profiles.list: the chat's tools and system prompt; without one it gets the automatic profile, which is the coding profile — no ssh tool — so name one such as a sysadmin profile), agent? (a key, \"any\" = whichever agent has a free instance first, \"free\" = the first free-priced one, or \"a,b\" = the first of these that is available), alert?, followUp?, title?, match? ([{ path, equals|in|notIn|matches|exists }], all must hold to open an incident; an alert that fails it still joins an incident that is open), group? ({ key, debounceSeconds (90), reopenMinutes (240) } — the incident key, e.g. \"{{host}}\": alerts with the same key inside the window become one chat, later ones are appended to it; without group every alert is its own chat at once), maxChatsPerHour? (60, 0 = no limit: a fuse, not a quota), enabled? (true), proposedBy? } → Webhook plus token (shown once). Templates (prompt, alert, followUp, title, group.key): {{a.b.0.c}}, {{payload}}, {{now}}; prompt also {{alerts}} (every alert of the batch, each rendered with alert), {{count}}, {{key}}; followUp also {{alert}}, {{key}}, {{count}}. proposedBy stores it paused, as a proposal the user enables",
             Params:
             [
-                RpcParam.Req("name"), RpcParam.Req("prompt"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("profile"), RpcParam.Opt("alert"), RpcParam.Opt("followUp"), RpcParam.Opt("title"),
+                RpcParam.Req("name"), RpcParam.Req("prompt"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("profile"), RpcParam.Opt("hooks", RpcParamType.Array), RpcParam.Opt("alert"), RpcParam.Opt("followUp"), RpcParam.Opt("title"),
                 RpcParam.Opt("match", RpcParamType.Array), RpcParam.Opt("group", RpcParamType.Object), RpcParam.Opt("maxChatsPerHour", RpcParamType.Integer),
                 RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
@@ -293,6 +297,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                     ["agent"] = await AgentAsync(ctx, req.Str("agent"), ct).ConfigureAwait(false),
                     ["profile"] = await ProfileAsync(ctx, req.Str("profile"), ct).ConfigureAwait(false),
                     ["prompt"] = Prompt(req.Required("prompt")),
+                    ["hooks"] = HookEngine.Validate(NetPiJson.ToNode(req.Prop("hooks"))),
                     ["alert"] = Optional(req.Str("alert")),
                     ["followUp"] = Optional(req.Str("followUp")),
                     ["title"] = Optional(req.Str("title")),
@@ -310,10 +315,10 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 return shown;
             });
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.update", "Change a webhook: { id, name?, prompt?, alert?, followUp?, title?, projectId? (\"\" clears), agent? (\"\" clears), profile? (\"\" = automatic), match?, group? ({} clears grouping), maxChatsPerHour?, enabled?, proposedBy? } → Webhook (\"\" clears alert, followUp and title too). proposedBy (the webhooks tool sets it): a change of what runs pauses the webhook as a proposal for the user, and it cannot enable one",
+        ctx.Rpc.Register(new RpcMethod("webhooks.update", "Change a webhook: { id, name?, prompt?, hooks?, alert?, followUp?, title?, projectId? (\"\" clears), agent? (\"\" clears), profile? (\"\" = automatic), match?, group? ({} clears grouping), maxChatsPerHour?, enabled?, proposedBy? } → Webhook (\"\" clears alert, followUp and title too). proposedBy (the webhooks tool sets it): a change of what runs pauses the webhook as a proposal for the user, and it cannot enable one",
             Params:
             [
-                RpcParam.Req("id"), RpcParam.Opt("name"), RpcParam.Opt("prompt"), RpcParam.Opt("alert"), RpcParam.Opt("followUp"), RpcParam.Opt("title"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("profile"),
+                RpcParam.Req("id"), RpcParam.Opt("name"), RpcParam.Opt("prompt"), RpcParam.Opt("alert"), RpcParam.Opt("followUp"), RpcParam.Opt("title"), RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("profile"), RpcParam.Opt("hooks", RpcParamType.Array),
                 RpcParam.Opt("match", RpcParamType.Array), RpcParam.Opt("group", RpcParamType.Object), RpcParam.Opt("maxChatsPerHour", RpcParamType.Integer),
                 RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
@@ -325,6 +330,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 var agent = req.Str("agent") is { } a ? (a.Length == 0 ? null : await AgentAsync(ctx, a, ct).ConfigureAwait(false)) : null;
                 var profile = req.Str("profile") is { } pf ? (pf.Length == 0 ? null : await ProfileAsync(ctx, pf, ct).ConfigureAwait(false)) : null;
                 var match = req.Prop("match") is not null ? Template.ValidateConditions(NetPiJson.ToNode(req.Prop("match"))) : null;
+                var hooks = req.Prop("hooks") is not null ? HookEngine.Validate(NetPiJson.ToNode(req.Prop("hooks"))) : null;
                 var group = req.Prop("group") is not null ? Group(NetPiJson.ToNode(req.Prop("group"))) : null;
                 var updated = store.Change(id, doc =>
                 {
@@ -339,6 +345,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                     if (req.Str("agent") is not null) { doc["agent"] = agent; changesWhatRuns = true; }
                     if (req.Str("profile") is not null) { doc["profile"] = profile; changesWhatRuns = true; }
                     if (match is not null) { doc["match"] = match; changesWhatRuns = true; }
+                    if (hooks is not null) { doc["hooks"] = hooks; changesWhatRuns = true; }
                     if (req.Prop("group") is not null) { doc["group"] = group; changesWhatRuns = true; }
                     if (req.Int("maxChatsPerHour") is { } fuse) doc["maxChatsPerHour"] = Fuse(fuse);
                     var enabled = req.Bool("enabled") ?? WebhookStore.Enabled(doc);
@@ -372,6 +379,20 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 if (!store.Delete(id)) throw new RpcException("not_found", $"Webhook {id} not found");
                 Changed(ctx, id);
                 return Task.FromResult<object?>(true);
+            });
+
+        ctx.Rpc.Register(new RpcMethod("webhooks.testHook", "Run one hook's action now with a sample context (it really publishes / sends): { id, index (1-based, as in the webhook's hooks), context? (the fields the templates use, e.g. { host, service, state, verdict, summary }) } → { ok, detail }. For checking a hook's templates and the broker settings",
+            Params: [RpcParam.Req("id"), RpcParam.Req("index", RpcParamType.Integer), RpcParam.Opt("context", RpcParamType.Object)]),
+            async (req, ct) =>
+            {
+                var hook = Require(store, req.Required("id"));
+                var list = hook["hooks"] as JsonArray ?? [];
+                var index = req.Int("index") ?? 0;
+                if (index < 1 || index > list.Count || list[index - 1] is not JsonObject h) throw new RpcException("bad_request", $"the webhook has {list.Count} hook(s); index is 1-based");
+                var context = NetPiJson.ToNode(req.Prop("context")) as JsonObject ?? new JsonObject();
+                context["event"] = h["on"]?.GetValue<string>();
+                try { return new JsonObject { ["ok"] = true, ["detail"] = await runner.Hooks.RunAsync((JsonObject)h["do"]!, context, ct).ConfigureAwait(false) }; }
+                catch (Exception ex) when (ex is not OperationCanceledException) { return new JsonObject { ["ok"] = false, ["detail"] = ex.Message }; }
             });
 
         ctx.Rpc.Register(new RpcMethod("webhooks.test", "Try a payload on a webhook: { id, payload (any JSON), run? (false) } → without run: { action (start|collect|join|append|skip), skip?, key?, agent?, title, prompt, note? } — what would happen, the prompt (or the follow-up for an open incident) filled in, nothing started or stored; with run: true: the delivery's { status, reason?, sessionId? } as if the payload had arrived (it opens or joins a real incident)",
@@ -437,6 +458,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
         {
             ["webhookId"] = i["webhookId"]?.DeepClone(), ["key"] = i["key"]?.DeepClone(), ["state"] = i["state"]?.DeepClone(),
             ["sessionId"] = i["sessionId"]?.DeepClone(), ["alertCount"] = i["alertCount"]?.DeepClone(), ["openedAt"] = i["openedAt"]?.DeepClone(),
+            ["verdict"] = i["lastVerdict"]?.DeepClone(), ["awaiting"] = i["awaiting"]?.DeepClone(),
             ["lastAt"] = i["lastAtMs"] is JsonValue v && v.TryGetValue<long>(out var ms) ? WebhookStore.Iso(DateTimeOffset.FromUnixTimeMilliseconds(ms)) : null,
         };
         if (i["state"]?.GetValue<string>() == WebhookStore.Collecting && i["startAtMs"] is JsonValue s && s.TryGetValue<long>(out var start))

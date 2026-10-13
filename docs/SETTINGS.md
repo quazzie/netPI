@@ -356,6 +356,7 @@ instructions.
 | `webhooks.port` | `7432` | The receiver's port (1–65535); a busy port is retried for 10 s (a hot reload), then reported by `webhooks.status` |
 | `webhooks.allowFrom` | `["127.0.0.1/32","::1/128"]` | Addresses or CIDR ranges that may call the receiver; anything else is answered 403 before the token is looked at |
 | `webhooks.maxBodyKb` | `256` | Largest payload (1–1024 KB); bigger is answered 413 |
+| `webhooks.mqtt.host` / `.port` / `.user` / `.password` | empty / `1883` / empty / empty (secret) | The broker a webhook's `mqtt` hooks publish to (QoS 0, no TLS), e.g. Home Assistant's. Empty host: an mqtt hook fails and says so in the webhook's history |
 
 A webhook's own settings (incident key and window, the safety fuse `maxChatsPerHour`) are per webhook, in the Webhooks tab. Twenty wrong tokens from one address in ten
 minutes lock that address out (429) for the rest of the window.

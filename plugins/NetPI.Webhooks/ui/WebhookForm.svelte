@@ -2,11 +2,17 @@
   // The add/edit form: an inline panel that replaces the list. Prompt and title are templates over the payload
   // ({{path.to.field}}); "only when" is the match conditions as JSON; the agent is a key, any, free or a list.
   import { Button } from '@netpi/kit';
-  import { agentToForm, formToAgent, matchToText, textToMatch } from './model.js';
+  import { agentToForm, formToAgent, matchToText, textToMatch, hooksToText, textToHooks } from './model.js';
 
   let { ctx, hook = null, projects = [], agents = null, profiles = null, ondone, oncancel } = $props();
 
   const editing = $derived(!!hook);
+  const HOOK_EXAMPLE = `[
+  { "on": "finished", "once": "notify",
+    "when": [{ "path": "verdict", "notIn": ["noise", "resolved"] }],
+    "do": { "type": "mqtt", "topic": "homeassistant/alert",
+            "json": { "title": "{{title}}", "message": "{{summary}}", "id": "alert_{{key}}" } } }
+]`;
 
   // The initial value, computed once when the form mounts: a function passed to $state would be stored as the value itself.
   function initForm() {
@@ -21,6 +27,7 @@
         profile: hook.profile ?? '',
         ...agentToForm(hook.agent),
         match: matchToText(hook.match),
+        hooks: hooksToText(hook.hooks),
         groupKey: hook.group?.key ?? '',
         debounceSeconds: hook.group?.debounceSeconds ?? 90,
         reopenMinutes: hook.group?.reopenMinutes ?? 240,
@@ -43,6 +50,7 @@
       agentChoice: 'any',
       agentList: '',
       match: '',
+      hooks: '',
       groupKey: '',
       debounceSeconds: 90,
       reopenMinutes: 240,
@@ -78,6 +86,11 @@
       error = 'The match conditions must be a JSON array, e.g. [{"path":"state","in":["CRIT","DOWN"]}].';
       return;
     }
+    const hooks = textToHooks(f.hooks);
+    if (hooks === null) {
+      error = 'The hooks must be a JSON array of { on, when?, once?, do }.';
+      return;
+    }
     const group = f.groupKey.trim()
       ? { key: f.groupKey.trim(), debounceSeconds: Number(f.debounceSeconds), reopenMinutes: Number(f.reopenMinutes) }
       : {};
@@ -91,6 +104,7 @@
       profile: f.profile,
       agent: formToAgent(f),
       match,
+      hooks,
       group,
       maxChatsPerHour: Number(f.maxChatsPerHour),
       enabled: f.enabled,
@@ -104,6 +118,7 @@
         // empty optional fields are left out of an add; an update sends them so they can be cleared
         for (const k of ['alert', 'followUp', 'title', 'projectId', 'profile', 'agent']) if (!params[k]) delete params[k];
         if (!params.match.length) delete params.match;
+        if (!params.hooks.length) delete params.hooks;
         if (!params.group.key) delete params.group;
         const created = await ctx.rpc('webhooks.add', params);
         ondone?.(created);
@@ -212,6 +227,16 @@
       <textarea class="np-input" rows="4" placeholder="Default: More from the same incident, with the alert between markers" bind:value={f.followUp}></textarea>
     </label>
   {/if}
+
+  <label class="fld">
+    <span class="f-label">Hooks (optional, JSON): actions NetPI runs itself</span>
+    <textarea class="np-input np-mono" rows="8" data-field="hooks" placeholder={HOOK_EXAMPLE} bind:value={f.hooks}></textarea>
+    <span class="np-small np-dim">
+      <b>on</b>: received (every payload, before filters) · started · finished (the chat's run ended; adds verdict, result, summary, status) · asking (waits for you) · stalled (afterMinutes) · failed.
+      <b>when</b> uses the match syntax over the alert's fields plus those. <b>do</b>: mqtt {'{'}topic, json|text{'}'} (broker in Settings → Webhooks) or http {'{'}url, method, headers, json|text{'}'}; strings are templates.
+      The verdict is the last <span class="np-mono">VERDICT: word</span> line of the chat's final answer (<span class="np-mono">unknown</span> when there is none, so a gate that suppresses only noise fails open).
+    </span>
+  </label>
 
   <label class="fld">
     <span class="f-label">Safety fuse: most new chats per hour (0 = none)</span>

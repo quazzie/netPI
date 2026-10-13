@@ -62,6 +62,34 @@ export function limitsLine(h) {
   return bits.join(' · ');
 }
 
+/** The hooks as editable text, and back (null when the text is not a JSON array). */
+export function hooksToText(hooks) {
+  return Array.isArray(hooks) && hooks.length ? JSON.stringify(hooks, null, 2) : '';
+}
+
+export function textToHooks(text) {
+  const t = (text ?? '').trim();
+  if (!t) return [];
+  try {
+    const v = JSON.parse(t);
+    return Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One hook as a line: "finished → mqtt homeassistant/alert · when verdict not in noise,resolved · once notify". */
+export function hookLine(h) {
+  const action = h.do?.type === 'mqtt' ? `mqtt ${h.do.topic}` : h.do?.type === 'http' ? `${h.do.method ?? 'POST'} ${h.do.url}` : '?';
+  const when = (h.when ?? []).map((c) => {
+    const op = c.in ? `in ${c.in.join(',')}` : c.notIn ? `not in ${c.notIn.join(',')}` : c.equals !== undefined ? `= ${c.equals}` : c.matches ? `~ ${c.matches}` : 'exists';
+    return `${c.path} ${op}`;
+  });
+  return [`${h.on} → ${action}`, when.length ? `when ${when.join(' and ')}` : null, h.on === 'stalled' ? `after ${h.afterMinutes ?? 10} min` : null, h.once ? `once ${h.once}` : null]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 /** An incident as a line: "nuc · open · 3 alerts" or "nuc · collecting, chat starts in 40 s". */
 export function incidentLine(i, nowMs = Date.now()) {
   const alerts = `${i.alertCount ?? 1} alert${(i.alertCount ?? 1) === 1 ? '' : 's'}`;
@@ -69,7 +97,7 @@ export function incidentLine(i, nowMs = Date.now()) {
     const left = Math.max(0, Math.round((Date.parse(i.startsAt) - nowMs) / 1000));
     return i.waiting ? `${i.key} · waiting to start: ${i.waiting}` : `${i.key} · collecting, chat starts in ${left} s · ${alerts}`;
   }
-  return `${i.key} · open · ${alerts}`;
+  return `${i.key} · open · ${alerts}` + (i.awaiting ? ' · chat working' : i.verdict ? ` · verdict ${i.verdict}` : '');
 }
 
 /** How to call the receiver, for the copy box: the curl line a sender's admin can adapt. */

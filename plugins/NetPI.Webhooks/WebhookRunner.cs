@@ -39,6 +39,9 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         "Update your findings. If this is a recovery, check it is real and say so; if it is a new failure, say whether it shares a cause with what you already found.";
 
     private readonly Dictionary<string, SemaphoreSlim> _gates = [];
+    private readonly HookEngine _hooks = new(ctx, store, time);
+
+    internal HookEngine Hooks => _hooks;
 
     /// <summary>What a payload would do, for <c>webhooks.test</c>: <c>start</c> (no grouping), <c>collect</c> (a new incident waits for its window),
     /// <c>join</c> (the incident is collecting), <c>append</c> (an open chat gets it) or <c>skip</c>.</summary>
@@ -69,6 +72,9 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         var summary = Summary(hook, payload, now);
         if (!WebhookStore.Enabled(hook))
             return Finish(id, now, WebhookStore.Skipped, hook["proposedBy"] is not null ? "the webhook is a proposal the user has not enabled" : "the webhook is disabled", null, null, summary, from);
+
+        // the pre-hook: before any filter or grouping, for every payload (an immediate alert for a severe one, a "clear" for a recovery)
+        await _hooks.FireAsync(hook, "received", HookContext(hook, payload, summary), null, null, null, ct).ConfigureAwait(false);
 
         var failedMatch = Template.FailedCondition(hook["match"] as JsonArray, payload);
         var key = GroupKey(hook, payload);
@@ -114,6 +120,8 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
                     inc["lastAtMs"] = now.ToUnixTimeMilliseconds();
                     inc["alertCount"] = (inc["alertCount"]?.GetValue<int>() ?? 1) + 1;
                     inc["lastFingerprint"] = fingerprint;
+                    inc["awaiting"] = true;
+                    inc["awaitingSince"] = now.ToUnixTimeMilliseconds();
                     store.PutIncident(inc);
                     return Finish(id, now, WebhookStore.Appended, null, sessionId, key, summary, from);
                 }
@@ -168,8 +176,99 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
             }
             finally { gate.Release(); }
         }
+        await CheckRunsAsync(now, ct).ConfigureAwait(false);
         store.Prune(now.AddDays(-7));
         return started;
+    }
+
+    // ---------------------------------------------------------------- watching the chats (finished / asking / stalled)
+
+    /// <summary>The context a hook sees for an incident: its first alert's fields plus key, count, sessionId and title.</summary>
+    private static JsonObject IncidentContext(JsonObject inc)
+    {
+        var context = inc["first"] is JsonObject first ? (JsonObject)first.DeepClone() : new JsonObject();
+        context["key"] = inc["key"]?.DeepClone();
+        context["count"] = inc["alertCount"]?.DeepClone() ?? 1;
+        context["sessionId"] = inc["sessionId"]?.DeepClone();
+        context["title"] = inc["title"]?.DeepClone();
+        context["awaitingSince"] = inc["awaitingSince"]?.DeepClone();
+        return context;
+    }
+
+    /// <summary>The context of a payload outside an incident (the received and failed hooks): its fields plus the title.</summary>
+    private static JsonObject HookContext(JsonObject hook, JsonNode payload, string title)
+    {
+        var context = payload is JsonObject o ? (JsonObject)o.DeepClone() : new JsonObject { ["body"] = Template.Show(payload) };
+        context["title"] = title;
+        return context;
+    }
+
+    private static string LastAssistantText(IReadOnlyList<ChatMessage> messages, DateTimeOffset since)
+    {
+        var message = messages.Where(m => m.Role == MessageRole.Assistant && m.CreatedAt >= since).OrderByDescending(m => m.Seq).FirstOrDefault(m => m.Parts.OfType<TextPart>().Any(p => !string.IsNullOrWhiteSpace(p.Text)));
+        return message is null ? "" : string.Join("\n", message.Parts.OfType<TextPart>().Select(p => p.Text)).Trim();
+    }
+
+    /// <summary>
+    /// For every open incident whose chat has been handed alerts: still running → maybe stalled; waiting for the user → asking; ended →
+    /// finished, with the final answer and its verdict. The decision "is it finished" is NetPI's own (the runtime's status), never the agent's.
+    /// </summary>
+    private async Task CheckRunsAsync(DateTimeOffset now, CancellationToken ct)
+    {
+        if (ctx.Services.Get<IAgentRuntime>() is not { } runtime) return;
+        foreach (var listed in store.AwaitingIncidents())
+        {
+            ct.ThrowIfCancellationRequested();
+            var id = listed["webhookId"]!.GetValue<string>();
+            var gate = Gate(id);
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var key = listed["key"]!.GetValue<string>();
+                if (store.GetIncident(id, key) is not { } inc || inc["awaiting"] is not JsonValue aw || !aw.TryGetValue<bool>(out var awaiting) || !awaiting) continue;
+                if (store.Get(id) is not { } hook) { store.DeleteIncident(id, key); continue; }
+                var sid = inc["sessionId"]?.GetValue<string>();
+                if (sid is null || ctx.Sessions.GetSession(sid) is null) { inc["awaiting"] = false; store.PutIncident(inc); continue; }   // the user deleted the chat
+                if (inc["fired"] is not JsonArray fired) inc["fired"] = fired = [];
+                var since = DateTimeOffset.FromUnixTimeMilliseconds(inc["awaitingSince"]?.GetValue<long>() ?? 0);
+                var elapsed = now - since;
+                var context = IncidentContext(inc);
+                var agent = runtime.GetBySession(sid);
+
+                if (agent is { Status: AgentStatus.Queued or AgentStatus.Running or AgentStatus.Yielded })
+                {
+                    if (agent.Status == AgentStatus.Yielded && ctx.Rpc.Exists("ask.pending")
+                        && NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("ask.pending", new JsonObject { ["sessionId"] = sid }, ct).ConfigureAwait(false)) is JsonArray asks && asks.Count > 0)
+                    {
+                        var first = asks[0]?["questions"]?[0]?["question"]?.GetValue<string>();
+                        context["question"] = first ?? "";
+                        await _hooks.FireAsync(hook, "asking", context, fired, sid, key, ct).ConfigureAwait(false);
+                    }
+                    context["elapsedMinutes"] = Math.Round(elapsed.TotalMinutes, 1);
+                    await _hooks.FireAsync(hook, "stalled", context, fired, sid, key, ct).ConfigureAwait(false);
+                    store.PutIncident(inc);
+                    continue;
+                }
+
+                // ended (idle, completed, failed, cancelled, or gone from the runtime)
+                if (elapsed < TimeSpan.FromSeconds(5)) continue;   // a run that was just handed in may not show as running yet
+                var answer = LastAssistantText(ctx.Sessions.GetMessages(sid, null, 40), since);
+                var errored = agent is { Status: AgentStatus.Failed } || !string.IsNullOrEmpty(agent?.Error);
+                if (answer.Length == 0 && !errored && elapsed < TimeSpan.FromSeconds(30)) continue;
+                context["status"] = errored ? "error" : answer.Length == 0 ? "no-answer" : "ok";
+                context["reason"] = agent?.Error ?? "";
+                context["result"] = Template.Clip(answer, 6000);
+                context["verdict"] = HookEngine.Verdict(answer);
+                context["summary"] = HookEngine.Summary(answer);
+                inc["awaiting"] = false;
+                inc["lastVerdict"] = context["verdict"]!.DeepClone();
+                inc["lastResult"] = Template.Clip(answer, 4000);
+                await _hooks.FireAsync(hook, "finished", context, fired, sid, key, ct).ConfigureAwait(false);
+                store.PutIncident(inc);
+                ctx.Events.Publish(ChangedEvent, new { id });
+            }
+            finally { gate.Release(); }
+        }
     }
 
     private async Task<RunResult> FlushAsync(JsonObject hook, JsonObject inc, DateTimeOffset now, CancellationToken ct)
@@ -220,8 +319,8 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         if (fatal is null && hook["profile"]?.GetValue<string>() is { Length: > 0 } profile && !await ProfileExistsAsync(profile, ct).ConfigureAwait(false))
             fatal = $"the profile {profile} no longer exists (profiles.list)";
 
-        if (fatal is not null) return Fail(hook, batch, now, fatal);
-        if (wait is not null) return Defer(hook, batch, now, wait, stored, pacing: fuseWait);
+        if (fatal is not null) return await FailAsync(hook, batch, now, fatal, ct).ConfigureAwait(false);
+        if (wait is not null) return await DeferAsync(hook, batch, now, wait, stored, ct, pacing: fuseWait).ConfigureAwait(false);
 
         var runtime = ctx.Services.Get<IAgentRuntime>()!;
         var prompt = BuildPrompt(hook, batch, now);
@@ -237,7 +336,7 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return Defer(hook, batch, now, "the chat could not be created: " + ex.Message, stored);
+            return await DeferAsync(hook, batch, now, "the chat could not be created: " + ex.Message, stored, ct).ConfigureAwait(false);
         }
         try
         {
@@ -257,30 +356,35 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         {
             try { ctx.Sessions.DeleteSession(session.Id); } catch { /* already gone */ }
             ctx.Logger.LogWarning(ex, "Webhook {Webhook}: the run did not start", id);
-            return Defer(hook, batch, now, "the run did not start: " + ex.Message, stored);
+            return await DeferAsync(hook, batch, now, "the run did not start: " + ex.Message, stored, ct).ConfigureAwait(false);
         }
 
         ctx.Logger.LogInformation("Webhook {Webhook} started {Session} for {Count} alert(s) of {Key}", id, session.Id, batch.Alerts.Count, batch.Key);
-        if (batch.Key is not null)
+        // every chat is tracked as an incident (an ungrouped one under chat:<id>): the finished / asking / stalled hooks watch it
+        var incidentKey = batch.Key ?? "chat:" + session.Id;
+        var fired = new JsonArray();
+        var incidentDoc = new JsonObject
         {
-            var last = batch.Alerts[^1].Payload;
-            store.PutIncident(new JsonObject
-            {
-                ["webhookId"] = id, ["key"] = batch.Key, ["state"] = WebhookStore.Open, ["sessionId"] = session.Id,
-                ["openedAt"] = WebhookStore.Iso(now), ["lastAtMs"] = now.ToUnixTimeMilliseconds(), ["alertCount"] = batch.Alerts.Count,
-                ["lastFingerprint"] = Fingerprint(last), ["pending"] = new JsonArray(), ["startAtMs"] = null,
-            });
-        }
-        return Finish(id, now, WebhookStore.Started, null, session.Id, batch.Key,
+            ["webhookId"] = id, ["key"] = incidentKey, ["state"] = WebhookStore.Open, ["sessionId"] = session.Id,
+            ["openedAt"] = WebhookStore.Iso(now), ["lastAtMs"] = now.ToUnixTimeMilliseconds(), ["alertCount"] = batch.Alerts.Count,
+            ["lastFingerprint"] = Fingerprint(batch.Alerts[^1].Payload), ["pending"] = new JsonArray(), ["startAtMs"] = null,
+            ["awaiting"] = true, ["awaitingSince"] = now.ToUnixTimeMilliseconds(), ["fired"] = fired,
+            ["first"] = first.Payload.DeepClone(), ["title"] = title,
+        };
+        store.PutIncident(incidentDoc);
+        var started = Finish(id, now, WebhookStore.Started, null, session.Id, batch.Key,
             batch.Alerts.Count > 1 ? $"{batch.Alerts.Count} alerts: {summary}" : summary, first.From);
+        await _hooks.FireAsync(hook, "started", IncidentContext(incidentDoc), fired, session.Id, incidentKey, ct).ConfigureAwait(false);
+        store.PutIncident(incidentDoc);
+        return started;
     }
 
     /// <summary>Nothing can start now: keep the batch and try again in 30 s, for 30 minutes — then say it failed, for each alert.</summary>
-    private RunResult Defer(JsonObject hook, Incident batch, DateTimeOffset now, string reason, JsonObject? stored, bool pacing = false)
+    private async Task<RunResult> DeferAsync(JsonObject hook, Incident batch, DateTimeOffset now, string reason, JsonObject? stored, CancellationToken ct, bool pacing = false)
     {
         var id = batch.WebhookId;
         if (stored is null || batch.Key is null)
-            return Fail(hook, batch, now, reason);   // no window to wait in (an ungrouped alert): it is told at once
+            return await FailAsync(hook, batch, now, reason, ct).ConfigureAwait(false);   // no window to wait in (an ungrouped alert): it is told at once
         if (pacing)
         {
             // the fuse paces chats, it does not refuse them: the batch waits as long as the hour needs (it can hold alerts only up to MaxBatch)
@@ -293,7 +397,7 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
             return new RunResult(WebhookStore.Held, reason, null);
         }
         var until = stored["retryUntilMs"] is JsonValue v && v.TryGetValue<long>(out var ms) ? DateTimeOffset.FromUnixTimeMilliseconds(ms) : now + RetryFor;
-        if (now >= until) return Fail(hook, batch, now, reason + $" (gave up after {RetryFor.TotalMinutes:0} min)");
+        if (now >= until) return await FailAsync(hook, batch, now, reason + $" (gave up after {RetryFor.TotalMinutes:0} min)", ct).ConfigureAwait(false);
         var firstTime = stored["retryUntilMs"] is null;
         stored["retryUntilMs"] = until.ToUnixTimeMilliseconds();
         stored["startAtMs"] = now.Add(RetryEvery).ToUnixTimeMilliseconds();
@@ -304,13 +408,17 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         return new RunResult(WebhookStore.Held, reason, null);
     }
 
-    private RunResult Fail(JsonObject hook, Incident batch, DateTimeOffset now, string reason)
+    private async Task<RunResult> FailAsync(JsonObject hook, Incident batch, DateTimeOffset now, string reason, CancellationToken ct)
     {
         var id = batch.WebhookId;
         RunResult last = new(WebhookStore.Failed, reason, null);
         foreach (var a in batch.Alerts)
             last = Finish(id, now, WebhookStore.Failed, reason, null, batch.Key, Summary(hook, a.Payload, now), a.From);
         if (batch.Key is not null) store.DeleteIncident(id, batch.Key);
+        // the post-hook for a batch that never became a chat: it must reach the user as an unreviewed alert
+        var context = HookContext(hook, batch.Alerts[0].Payload, Title(hook, batch));
+        context["key"] = batch.Key ?? ""; context["count"] = batch.Alerts.Count; context["reason"] = reason; context["status"] = "failed";
+        await _hooks.FireAsync(hook, "failed", context, null, null, batch.Key, ct).ConfigureAwait(false);
         return last;
     }
 
