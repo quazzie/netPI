@@ -327,6 +327,12 @@ async function loadAll({ reconnect }) {
     app.activeId = active;
     resubscribe();
     if (active) showChat(getChat(active));
+    // the open tabs whose runs are busy missed the answer that streamed while the page was gone: their stores are
+    // new to this page, so catch each of them up (the active one showChat did)
+    for (const id of app.openTabs) {
+      if (id === active || !BUSY.has(app.agents.get(id)?.status)) continue;
+      getChat(id).catchUpStream();
+    }
   } else {
     // we may have missed events: refresh the active chat, mark the others stale
     resubscribe();
@@ -346,7 +352,12 @@ async function loadAll({ reconnect }) {
 // after a reconnect): its messages, and while its run is busy what its answer has streamed so far, which an unsubscribed
 // page has missed. It is subscribed before this (resubscribe), so the copy and the live events meet.
 function showChat(c) {
-  if (c.loaded && !c.stale) return;
+  if (c.loaded && !c.stale) {
+    // a loaded chat whose run is busy but whose stream is not active has missed the answer in flight (its store was
+    // evicted and re-created, or reloaded stale): catch it up so the live answer is not invisible until it ends
+    if (BUSY.has(app.agents.get(c.id)?.status) && !c.stream.active) c.catchUpStream();
+    return;
+  }
   c.load();
   if (BUSY.has(app.agents.get(c.id)?.status)) c.catchUpStream();
 }

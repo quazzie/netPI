@@ -514,7 +514,13 @@ export class ChatStore {
     try {
       snap = await rpc('agent.stream', { sessionId: this.id });
     } catch {
-      // nothing better to show than what arrives
+      // a just-loaded page's RPC layer may not be ready yet: one retry a moment later, what lands meanwhile stays held
+      try {
+        await new Promise((r) => setTimeout(r, 1500));
+        snap = await rpc('agent.stream', { sessionId: this.id });
+      } catch {
+        // nothing better to show than what arrives
+      }
     }
     const held = this.#held;
     this.#held = null;
