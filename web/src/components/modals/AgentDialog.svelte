@@ -5,7 +5,7 @@
    * a daily cap, plus its state (ready, busy, not loaded) and what the model offers. Every field saves on its own; a new
    * name moves the agent (chats on the old name take another agent on its model).
    */
-  import Modal from './Modal.svelte';
+  import Modal from '../../lib/kit/Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import ModelSelect from '../ModelSelect.svelte';
   import { setSetting } from '../../lib/settings.js';

@@ -110,21 +110,7 @@
     </div>
   {/if}
 
-  {#if editing}
-    <WebhookForm
-      {ctx}
-      hook={editing.hook}
-      {projects}
-      {agents}
-      {profiles}
-      ondone={(created) => {
-        editing = null;
-        if (created?.token) showToken(created, created.token);
-        tab.refresh();
-      }}
-      oncancel={() => (editing = null)}
-    />
-  {:else if error}
+  {#if error}
     <Empty icon="alert">webhooks.list unavailable: {error}</Empty>
   {:else if hooks === null}
     <div class="np-dim np-pad">Loading…</div>
@@ -147,6 +133,22 @@
         />
       {/each}
     </div>
+  {/if}
+
+  {#if editing}
+    <WebhookForm
+      {ctx}
+      hook={editing.hook}
+      {projects}
+      {agents}
+      {profiles}
+      ondone={(created) => {
+        editing = null;
+        if (created?.token) showToken(created, created.token);
+        tab.refresh();
+      }}
+      oncancel={() => (editing = null)}
+    />
   {/if}
 </div>
 

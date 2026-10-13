@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { escLayer } from './modals/Modal.svelte';
+  import { escLayer } from '../lib/kit/Modal.svelte';
   /**
    * Floating panel anchored to an element (fixed positioning, so it escapes overflow clipping). Follows its anchor
    * when anything scrolls; closes on an outside click, on Esc, or when the anchor leaves the window.

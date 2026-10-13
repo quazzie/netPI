@@ -1,7 +1,7 @@
 <script>
   // The add/edit form: an inline panel that replaces the list. The prompt is a template over the payload ({{path.to.field}});
   // the Before command filters and shapes it, the After command reports back; the agent is a key, any, free or a list.
-  import { Button } from '@netpi/kit';
+  import { Button, Modal } from '@netpi/kit';
   import { agentToForm, formToAgent, hookToForm, formToHook } from './model.js';
 
   let { ctx, hook = null, projects = [], agents = null, profiles = null, ondone, oncancel } = $props();
@@ -100,14 +100,12 @@
   }
 </script>
 
+<Modal title={editing ? 'Edit webhook' : 'New webhook'} width={560} onclose={() => !busy && oncancel?.()}>
 <div class="form">
-  <div class="f-head">
-    <div class="np-strong">{editing ? 'Edit webhook' : 'New webhook'}</div>
-    <label class="np-check f-enabled" title={hook?.proposedBy && !hook.enabled ? 'An agent proposed this webhook: enabling it lets it start chats' : ''}>
-      <input type="checkbox" bind:checked={f.enabled} />
-      <span>Enabled</span>
-    </label>
-  </div>
+  <label class="np-check f-enabled" title={hook?.proposedBy && !hook.enabled ? 'An agent proposed this webhook: enabling it lets it start chats' : ''}>
+    <input type="checkbox" bind:checked={f.enabled} />
+    <span>Enabled</span>
+  </label>
 
   <label class="fld">
     <span class="f-label">Name</span>
@@ -185,28 +183,18 @@
     <span class="np-small np-dim">Past it, batches wait instead of being dropped.</span>
   </label>
 
-  {#if error}
-    <div class="f-err" role="alert">{error}</div>
-  {/if}
-
-  <div class="f-actions">
-    <Button variant="primary" size="sm" disabled={busy} onclick={save}>{busy ? 'Saving…' : 'Save'}</Button>
-    <Button variant="ghost" size="sm" disabled={busy} onclick={() => oncancel?.()}>Cancel</Button>
-  </div>
 </div>
+{#snippet footer()}
+  {#if error}<div class="f-err" role="alert">{error}</div>{/if}
+  <Button variant="ghost" size="sm" disabled={busy} onclick={() => oncancel?.()}>Cancel</Button>
+  <Button variant="primary" size="sm" disabled={busy} onclick={save}>{busy ? 'Saving…' : 'Save'}</Button>
+{/snippet}
+</Modal>
 
 <style>
   .form {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px;
-    overflow-y: auto;
-  }
-  .f-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
     gap: 8px;
   }
   .f-enabled {
@@ -224,9 +212,7 @@
   .f-err {
     font-size: 12px;
     color: var(--np-err, #e05555);
-  }
-  .f-actions {
-    display: flex;
-    gap: 6px;
+    flex: 1;
+    min-width: 0;
   }
 </style>

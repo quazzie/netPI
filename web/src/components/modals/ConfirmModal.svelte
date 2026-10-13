@@ -1,5 +1,5 @@
 <script>
-  import Modal from './Modal.svelte';
+  import Modal from '../../lib/kit/Modal.svelte';
   let { data, onclose } = $props();
   function done(v) {
     data.resolve(v);

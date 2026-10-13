@@ -1,6 +1,6 @@
 <script>
   import { untrack } from 'svelte';
-  import Modal from './Modal.svelte';
+  import Modal from '../../lib/kit/Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import SettingField from './SettingField.svelte';
   import AgentsEditor from './AgentsEditor.svelte';

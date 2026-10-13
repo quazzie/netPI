@@ -5,7 +5,7 @@
    * requests until used (empty: the setting tools.deferred), the tools as checkboxes by category, and whether new chats
    * start with it. Every field saves on its own.
    */
-  import Modal from './Modal.svelte';
+  import Modal from '../../lib/kit/Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import { setSetting } from '../../lib/settings.js';
   import { confirmDialog } from '../../lib/state/ui.svelte.js';

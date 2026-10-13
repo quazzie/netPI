@@ -60,7 +60,7 @@
 
 <script>
   import { onMount } from 'svelte';
-  import Icon from '../../lib/kit/Icon.svelte';
+  import Icon from './Icon.svelte';
   /** Centered dialog with overlay. Esc / overlay click → onclose. Tab stays inside it; the app behind it is inert. */
   let { title = '', onclose, width = 520, children, footer = undefined, class: cls = '', padded = true } = $props();
   let dialog = $state();

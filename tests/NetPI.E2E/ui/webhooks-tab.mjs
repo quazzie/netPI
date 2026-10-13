@@ -108,8 +108,8 @@ try {
   check('the empty state says what a webhook is', (await tab.locator('.webhooks .np-empty').innerText()).includes('No webhooks yet'));
   check('an off receiver says so and where to turn it on', (await tab.locator('.webhooks .recv').innerText()).includes('Receiver is off'));
   await tab.locator('.webhooks button', { hasText: 'New webhook' }).click();
-  await tab.waitForSelector('.form .f-actions button', { timeout: 5_000 });
-  check('the form opens from the empty state', (await tab.locator('.form .np-strong').first().innerText()) === 'New webhook');
+  await tab.waitForSelector('[role=dialog] .foot button', { timeout: 5_000 });
+  check('the form opens as a dialog from the empty state', (await tab.locator('[role=dialog] .title').innerText()) === 'New webhook');
 
   // --- the rows, the receiver URL
   await tab.goto(`${base}/`);
@@ -166,14 +166,14 @@ try {
 
   // --- add: the payload, then the token box
   await tab.locator('.webhooks button', { hasText: 'New' }).first().click();
-  await tab.waitForSelector('.form .f-actions button', { timeout: 5_000 });
+  await tab.waitForSelector('[role=dialog] .foot button', { timeout: 5_000 });
   await tab.locator('.form input[placeholder="e.g. Checkmk alerts"]').fill('Checkmk alerts');
   await tab.locator('.form select').nth(1).selectOption('sysadmin');
   await tab.locator('.form select').nth(2).selectOption('free');
   await tab.locator('.form input[placeholder="program, e.g. python"]').nth(1).fill('ssh');
   await tab.locator('.form textarea[placeholder="arguments, one per line"]').nth(1).fill('server\nx');
   await tab.locator('.form input[type=number][max="1440"]').fill('20');
-  await tab.locator('.form .f-actions button', { hasText: 'Save' }).click();
+  await tab.locator('[role=dialog] .foot button', { hasText: 'Save' }).click();
   await tab.waitForSelector('.webhooks .token', { timeout: 5_000 });
   const add = await tab.evaluate(() => window.__calls.filter(([m]) => m === 'webhooks.add').at(-1)[1]);
   check('add sends the after command and leaves the empty before out', add.post?.command === 'ssh' && add.post.args.join(',') === 'server,x' && add.pre === undefined && add.timeoutMinutes === 20, JSON.stringify([add.pre, add.post, add.timeoutMinutes]));
@@ -185,12 +185,19 @@ try {
 
   // --- a missing name is told before saving
   await tab.locator('.webhooks button', { hasText: 'New' }).first().click();
-  await tab.waitForSelector('.form .f-actions button', { timeout: 5_000 });
-  await tab.locator('.form .f-actions button', { hasText: 'Save' }).click();
-  await tab.waitForSelector('.form .f-err', { timeout: 5_000 });
-  check('a missing name is refused in the form', (await tab.locator('.form .f-err').innerText()).includes('name is required'));
+  await tab.waitForSelector('[role=dialog] .foot button', { timeout: 5_000 });
+  await tab.locator('[role=dialog] .foot button', { hasText: 'Save' }).click();
+  await tab.waitForSelector('[role=dialog] .f-err', { timeout: 5_000 });
+  check('a missing name is refused in the form', (await tab.locator('[role=dialog] .f-err').innerText()).includes('name is required'));
   check('the form has no filter, incident key or template boxes', (await tab.locator('.form').innerText()).split('\n').every((l) => !/Only when|Incident key|Each item in a batch|Message for a later item|Chat title/.test(l)));
-  await tab.locator('.form .f-actions button', { hasText: 'Cancel' }).click();
+  if (process.env.WEBHOOK_SHOT) await tab.screenshot({ path: process.env.WEBHOOK_SHOT });
+  await tab.locator('[role=dialog] .foot button', { hasText: 'Cancel' }).click();
+  check('Cancel closes the dialog and the list is still there', (await tab.locator('[role=dialog]').count()) === 0 && (await tab.locator('.webhooks .hook').count()) === 5);
+  await tab.locator('.webhooks button', { hasText: 'New' }).first().click();
+  await tab.waitForSelector('[role=dialog]', { timeout: 5_000 });
+  await tab.keyboard.press('Escape');
+  await tab.waitForFunction(() => document.querySelectorAll('[role=dialog]').length === 0, null, { timeout: 5_000 });
+  check('Esc closes the dialog', true);
 
   // --- webhooks.changed reloads
   const listBefore = await tab.evaluate(() => window.__listCalls);

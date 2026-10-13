@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { escLayer } from './Modal.svelte';
+  import { escLayer } from '../../lib/kit/Modal.svelte';
   let { data, onclose } = $props();
   onMount(() => {
     // Esc belongs to the top layer only: a lightbox opened over a dialog, or over the chat with a dialog behind it,

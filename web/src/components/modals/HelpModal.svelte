@@ -1,5 +1,5 @@
 <script>
-  import Modal from './Modal.svelte';
+  import Modal from '../../lib/kit/Modal.svelte';
   import { allCommands } from '../../lib/commands.js';
   import { prefs } from '../../lib/state/ui.svelte.js';
   let { onclose } = $props();

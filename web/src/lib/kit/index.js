@@ -16,6 +16,7 @@ export { default as Markdown } from './Markdown.svelte';
 export { default as SearchInput } from './SearchInput.svelte';
 export { default as Segmented } from './Segmented.svelte';
 export { default as Menu } from './Menu.svelte';
+export { default as Modal, escLayer, trapTab, inertBackground } from './Modal.svelte';
 export { default as Pips } from './Pips.svelte';
 export { timeAgo, duration, tokens, usd, bytes, relPath, basename, truncate, stamp } from '../format.js';
 // Image handling for anything that attaches one (the composer, the ideas tab): shrink to fit a message, refuse

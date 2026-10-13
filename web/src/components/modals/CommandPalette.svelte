@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
-  import { escLayer, inertBackground, trapTab } from './Modal.svelte';
+  import { escLayer, inertBackground, trapTab } from '../../lib/kit/Modal.svelte';
   import { app, openSession, newSession, projectOf } from '../../lib/state/app.svelte.js';
   import { modals, prefs, savePrefs, togglePanel, composer, openProjects } from '../../lib/state/ui.svelte.js';
   import { tabs, openPanelTab, resetTabPlacement } from '../../lib/state/tabs.svelte.js';

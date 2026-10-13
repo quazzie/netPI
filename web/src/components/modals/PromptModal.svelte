@@ -1,6 +1,6 @@
 <script>
   import { untrack } from 'svelte';
-  import Modal from './Modal.svelte';
+  import Modal from '../../lib/kit/Modal.svelte';
   let { data, onclose } = $props();
   let value = $state(untrack(() => data.value ?? ''));
   function done(v) {

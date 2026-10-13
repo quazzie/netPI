@@ -87,7 +87,7 @@ web/
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
       composer/ Composer, ProfilePicker, ProjectPicker, AgentPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing,
                 QueueChips, GoalStrip, TodoStrip, RunStatus
-      modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
+      modals/  Modals, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
                SettingInfo), SettingsRow, AgentsEditor + AgentDialog, BudgetView, ProfilesEditor + ProfileDialog,
                PluginSwitches
@@ -204,7 +204,7 @@ filter and order, and the remove flow (with its confirm) are `lib/projects.js`, 
 drift apart. The pickers' footer opens the dialog (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
 row click, the edit button) and the command palette. A project created from a picker is attached to that session, or
 in select mode becomes the project new sessions start in. Dialogs can stack (a confirm or the folder picker over the
-projects dialog): `Modal` keeps a stack, and Esc closes only the top one. While a dialog is open it owns the keyboard:
+projects dialog): `Modal` (a kit component, so plugin tabs use it too: `import { Modal } from '@netpi/kit'`; props `title`, `onclose`, `width`, a `footer` snippet) keeps a stack, and Esc closes only the top one. While a dialog is open it owns the keyboard:
 Tab cycles inside it (`trapTab`) and the rest of the app is `inert` (`inertBackground`), so nothing behind the overlay
 can take a click or a key — the app's own Ctrl shortcuts (`App.svelte` `anyModalOpen()`) return early for as long as
 one is open. The command palette and the lightbox are layers of their own, outside `Modal`, and join the same Esc
@@ -459,7 +459,7 @@ unchanged; a path that is found at runtime (bash, pwsh, ssh, the browser) shows 
 
 The Agents, Profiles, Models and Tools pages list their items as rows (`SettingsRow`: a title, a line under it, badges);
 each row opens its own dialog over the settings. Esc closes only the top one (popovers such as the model list are on
-the same Esc stack, `escLayer()` in `Modal.svelte`).
+the same Esc stack, `escLayer()` in `lib/kit/Modal.svelte`).
 
 - **Agents & budget:** `AgentsEditor` has one row per agent (`agents.<id>`: id, model, the note, badges for off / not
   loaded / busy, instances, price); `AgentDialog` edits one: its name (a new name moves it), on/off (`input.np-switch`,

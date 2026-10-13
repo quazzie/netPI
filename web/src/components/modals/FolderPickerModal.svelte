@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import Modal from './Modal.svelte';
+  import Modal from '../../lib/kit/Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import { rpc } from '../../lib/rpc.svelte.js';
 

@@ -1,5 +1,5 @@
 <script>
-  import Modal from './Modal.svelte';
+  import Modal from '../../lib/kit/Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import ProjectsListView from './ProjectsListView.svelte';
   import ProjectsNewView from './ProjectsNewView.svelte';
