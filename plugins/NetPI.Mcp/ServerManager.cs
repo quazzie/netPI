@@ -257,6 +257,10 @@ internal sealed partial class ServerManager : IAsyncDisposable
         if (removed.Length > 0) _ctx.Events.Publish("mcp.toolsChanged", new JsonObject { ["serverId"] = state.Config.Id,
             ["reason"] = reason, ["generation"] = state.Generation, ["added"] = new JsonArray(), ["updated"] = new JsonArray(), ["removed"] = ServerConfig.Array(removed) });
     }
+    /// <summary>What went wrong, in words: a timeout is a cancelled task underneath, and "A task was canceled." tells nobody which server or why.</summary>
+    private static string Why(State state, Exception ex) =>
+        ex is OperationCanceledException ? $"the server did not answer within {state.Config.ConnectTimeoutMs} ms" : ex.Message;
+
     private void SetStatus(State state, string status, string? error)
     {
         lock (_gate) { state.Status = status; state.Error = error; }
@@ -300,15 +304,17 @@ internal sealed partial class ServerManager : IAsyncDisposable
                         var resources = await state.Connection.ListResourcesAsync(Limit("mcp.maxResourceEntries", 2000, 1, 20000),
                             Limit("mcp.maxResourceCatalogChars", 2_000_000, 4096, 16_000_000), refresh.Token).ConfigureAwait(false);
                         Apply(state, raw, resources, command.Reason);
+                        if (state.Error is not null) SetStatus(state, "connected", null);   // a refresh that works again clears the error an earlier failed one left
                     }
                     backoff = 1; command.Done?.TrySetResult();
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { command.Done?.TrySetCanceled(ct); throw; }
                 catch (Exception ex)
                 {
-                    SetStatus(state, state.Disconnected || state.Connection is null ? "failed" : "connected", state.Config.Redact(ex.Message));
+                    var why = state.Config.Redact(Why(state, ex));
+                    SetStatus(state, state.Disconnected || state.Connection is null ? "failed" : "connected", why);
                     backoff = Math.Min(30, backoff * 2);
-                    command.Done?.TrySetException(new McpException(state.Config.Redact(ex.Message)));
+                    command.Done?.TrySetException(new McpException(why));
                 }
             }
         }

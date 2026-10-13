@@ -135,6 +135,10 @@ public static class McpHttpTests
             var before=manager.Catalog().Select(t=>t.Definition.Name).ToArray();fail=true;
             await Check.ThrowsAsync<McpException>(()=>manager.CommandAsync("http",false,CancellationToken.None));
             Check.Equal(string.Join(",",before),string.Join(",",manager.Catalog().Select(t=>t.Definition.Name)));
+            string? Error()=>manager.Snapshot()["servers"]!.AsArray().Single(s=>s!["id"]!.GetValue<string>()=="http")!["error"]?.GetValue<string>();
+            Check.True(Error() is { Length: > 0 },"the failed refresh is shown as an error while the server stays connected");
+            fail=false;await manager.CommandAsync("http",false,CancellationToken.None);
+            Check.True(Error() is null,"and the next refresh that works clears it: a transient failure is not left on the tab");
             ctx.Unload();
         });
     }
