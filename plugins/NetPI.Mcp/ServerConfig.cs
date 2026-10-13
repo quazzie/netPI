@@ -69,11 +69,11 @@ internal sealed record ServerConfig
     /// <summary>An exact URI, or a prefix when the entry ends in <c>*</c>.</summary>
     public bool ExposesResource(string uri) => Resources is null || Resources.Any(entry =>
         entry.EndsWith('*') ? uri.StartsWith(entry[..^1], StringComparison.Ordinal) : string.Equals(entry, uri, StringComparison.Ordinal));
-    public string Secret(string source) => Environment.GetEnvironmentVariable(source) ?? throw new InvalidOperationException($"Environment variable '{source}' is not set.");
+    public string Secret(string source) => EnvSource.Resolve(source) ?? throw new InvalidOperationException($"Environment variable '{source}' is not set.");
     public string Redact(string text)
     {
         foreach (var source in Env.Values.Concat(HeaderEnv.Values))
-            if (Environment.GetEnvironmentVariable(source) is { Length: > 0 } secret) text = text.Replace(secret, "[redacted]", StringComparison.Ordinal);
+            if (EnvSource.Resolve(source) is { Length: > 0 } secret) text = text.Replace(secret, "[redacted]", StringComparison.Ordinal);
         return text.Length > 500 ? text[..500] + "…" : text;
     }
     private static bool ValidEnv(string source) => Regex.IsMatch(source, "^[a-zA-Z_][a-zA-Z0-9_]{0,127}$");

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
@@ -35,6 +36,32 @@ public static class McpTests
             Check.Equal(2, c.Args.Length);
             Check.Throws<RpcException>(() => ServerConfig.Parse("a", new JsonObject { ["transport"]="http", ["url"]="https://user:secret@example.com" }, Path.GetTempPath()));
             Check.Throws<RpcException>(() => ServerConfig.Parse("a", new JsonObject { ["transport"]="http", ["url"]="https://example.com", ["headerEnv"]=new JsonObject { ["Mcp-Name"]="TOKEN" } }, Path.GetTempPath()));
+        });
+        r.Add("mcp: env and header values resolve live: the process environment, then the user and machine registry, so a secret set after start needs no restart", () => {
+            // The process environment is checked first, and a set in this process is visible to it.
+            Environment.SetEnvironmentVariable("NETPI_MCP_ENV_PROCESS", "from-process");
+            try
+            {
+                Check.Equal("from-process", EnvSource.Resolve("NETPI_MCP_ENV_PROCESS"));
+                var c = ServerConfig.Parse("live", new JsonObject { ["command"]="dotnet", ["env"]=new JsonObject { ["A"]="NETPI_MCP_ENV_PROCESS" } }, Path.GetTempPath());
+                Check.Equal("from-process", c.Secret("NETPI_MCP_ENV_PROCESS"));
+                Check.Equal("a [redacted] b", c.Redact("a from-process b"));
+            }
+            finally { Environment.SetEnvironmentVariable("NETPI_MCP_ENV_PROCESS", null); }
+
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) { Check.Skip("the registry fallback is a Windows thing"); return; }
+            const string name = "NETPI_MCP_ENV_REGISTRY";
+            RegistryValue.Delete(name); // a stale one from an earlier run must not skew the test
+            Check.True(EnvSource.Resolve(name) is null, "nothing set yet");
+            RegistryValue.Set(name, "from-registry");
+            try
+            {
+                Check.Equal("from-registry", EnvSource.Resolve(name), "the live registry is read, not the start-time snapshot");
+                var http = ServerConfig.Parse("live", new JsonObject { ["transport"]="http", ["url"]="https://example.com/mcp", ["headerEnv"]=new JsonObject { ["Authorization"]=name } }, Path.GetTempPath());
+                Check.Equal("from-registry", http.Secret(name), "a header's source resolves without a restart");
+            }
+            finally { RegistryValue.Delete(name); }
+            Check.True(EnvSource.Resolve("NETPI_MCP_ENV_NO_SUCH_VARIABLE_XYZ") is null, "an unset variable is null");
         });
         r.Add("mcp: a token in a URL or an argument is found by its shape; words, versions and model names are not (SecretText)", () => {
             Check.True(SecretText.TokenShaped("private_zctpwlX7ZkIAr7oqdfLF88"), "ha-mcp's private path");
