@@ -36,6 +36,7 @@ public static class SubagentTests
         t.Add("subagents: many children ending together neither deadlock with the registry prune nor lose a report", ManyChildrenEndTogether);
         t.Add("subagents: a spawn is planned from the request and the parent alone", PlanAlone);
         t.Add("subagents: agent_spawn and agent wait return at the first report by default while the others keep running", WaitAny);
+        t.Add("subagents: agent_spawn says queued for a subagent that has no free instance, running for the one that has", SpawnReportsQueued);
         t.Add("subagents: cancel/send/wait/result are scoped to the caller's own tree (two sessions)", ForeignTreeScope);
         t.Add("subagents: a subagent whose turn ends with subagents running is parked, and reports once when they are done", ParkedUntilChildrenDone);
         t.Add("subagents: cancelling a parked subagent ends it as cancelled and stops its children", CancelParked);
@@ -130,6 +131,34 @@ public static class SubagentTests
         Check.True(!waits[0].Content.Contains("SLOW REPORT"), "the slow report is not in the first result");
         Check.Contains(waits[1].Content, "SLOW REPORT");
         Check.Equal(1, h.Messages(parent.Id).Count(m => m.Text.Contains("SLOW REPORT") || m.ToolResults.Any(x => x.Content.Contains("SLOW REPORT"))), "once");
+    }
+
+    /// <summary>
+    /// Two instances, the parent holds one: the first child takes the other, the second has to queue. The spawn result must
+    /// say so (not "running" for both, which is what the run's initial status would give), and still return at once.
+    /// </summary>
+    private static async Task SpawnReportsQueued()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 2;
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r)) return Reply.Text("CHILD REPORT", c => gate.Task.WaitAsync(c));
+            var results = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
+            if (results.Count == 0)
+                return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "a", name = "alpha" }, new { task = "b", name = "beta" } } });
+            gate.TrySetResult();
+            return Reply.Text("done");
+        };
+        var parent = h.NewSession();
+        await h.SendAsync(parent.Id, "go");
+        await h.IdleAsync(parent.Id, 15_000);
+        var spawn = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Single(x => x.Name == "agent_spawn");
+        Check.Contains(spawn.Content, "alpha (id ");
+        var lines = spawn.Content.Split('\n');
+        Check.True(lines.Single(l => l.StartsWith("alpha")).EndsWith(": running"), "alpha runs: " + spawn.Content);
+        Check.True(lines.Single(l => l.StartsWith("beta")).EndsWith(": queued"), "beta queues: " + spawn.Content);
     }
 
     /// <summary>Waiting with no subagents, or only ones that finished and reported, does not block; nor does an explicit id of a finished one.</summary>

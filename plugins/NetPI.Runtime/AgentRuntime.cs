@@ -706,6 +706,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                      && !s.CancelledByParent && info.ParentAgentId is not null;
             final = info.Clone();
             s.Run = null;
+            run.SlotDecided.TrySetResult();
             s.Parked = park;
             done = s.RunDone;
             // The agent-result notice the parent gets (and the id a wait needs to drop it from the parent's
@@ -856,16 +857,19 @@ internal sealed class AgentRuntime : IAgentRuntime
                         { Key = model.Ref, AgentId = s.Info.Id, SessionId = s.Info.SessionId, Label = s.Info.Name, ExecutorGeneration = Generation, Priority = priority, Provider = model.Provider }, capacity, out var held))
                     {
                         SetStatus(s, AgentStatus.Queued, "waiting for model capacity");
+                        run.SlotDecided.TrySetResult();
                         await Task.Delay(50, ct).ConfigureAwait(false);
                         continue; // Also re-resolve a scheduler that returned during the gap.
                     }
                     run.Model = model;
                     SetStatus(s, AgentStatus.Running, null, keepActivity: true);
+                    run.SlotDecided.TrySetResult();
                     return new PhysicalSlot(held!, model.Ref, s.Info.Id);
                 }
                 Update(s, i => i.Agent = null);
                 run.Model = model;
                 SetStatus(s, AgentStatus.Running, null, keepActivity: true);
+                run.SlotDecided.TrySetResult();
                 return null;
             }
             // Every agent on the model may take the run: it waits for the first with a free instance, not in one agent's queue.
@@ -890,9 +894,11 @@ internal sealed class AgentRuntime : IAgentRuntime
                 if (agents.Count > 0) NoteAgent(s, lease.Key);
                 else Update(s, i => i.Agent = lease.Key);
                 SetStatus(s, AgentStatus.Running, null, keepActivity: true);
+                run.SlotDecided.TrySetResult();
                 return lease;
             }
             SetStatus(s, AgentStatus.Queued, several ? "waiting for a free agent" : agents.Count == 0 ? $"waiting for a slot on {pool}" : $"waiting for agent {pool}");
+            run.SlotDecided.TrySetResult();
             try
             {
                 lease = await scheduler.AcquireAsync(request, ct).ConfigureAwait(false);
@@ -939,6 +945,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             if (!(scheduler.TryAcquire(request, out var lease) && lease is not null))
             {
                 SetStatus(s, AgentStatus.Queued, several ? "waiting for a free agent" : $"waiting for agent {agents[0]}");
+                s.Run?.SlotDecided.TrySetResult();
                 try { lease = await scheduler.AcquireAsync(request, ct).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
@@ -955,6 +962,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             }
             NoteAgent(s, lease.Key, modelRef);
             SetStatus(s, AgentStatus.Running, "starting");
+            s.Run?.SlotDecided.TrySetResult();
             return (lease, modelRef);
         }
     }
@@ -1048,6 +1056,13 @@ internal sealed class AgentRuntime : IAgentRuntime
             Text = request.Task,
             Source = parentInfo is null ? "system" : "agent:" + parentInfo.Id,
         }, DeliveryMode.Auto).ConfigureAwait(false);
+        // The run takes its slot (or queues for one) on its own task: wait for that, so the caller is told "queued" when it
+        // is, instead of the "running" the run starts with.
+        if (state.Run?.SlotDecided.Task is { } decided)
+        {
+            try { await decided.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
+            catch (TimeoutException) { }
+        }
         return Snapshot(state);
     }
 

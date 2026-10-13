@@ -79,6 +79,8 @@ internal sealed class RunState
     public int Id { get; } = Interlocked.Increment(ref _next);
     public CancellationTokenSource Cts { get; } = new();
     public Task? Task { get; set; }
+    /// <summary>Completes when the run has its slot or is waiting for one (status Running or Queued is then true), or has ended.</summary>
+    public TaskCompletionSource SlotDecided { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     /// <summary>The slot held by this run (null without a scheduler, or while yielded).</summary>
     public IAgentSlot? Lease { get; set; }
     /// <summary>The model the current lease was acquired for (to re-acquire after a yield).</summary>
