@@ -21,6 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { lfSources } from './lf-sources.mjs';
 import { writeHostShims } from './host-shims.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -109,6 +110,7 @@ for (const dir of dirs) {
       logLevel: 'warn',
       publicDir: false,
       plugins: [
+        lfSources(),
         // A tab must not import a svelte entry point the host does not shim: an unshimmed `svelte/…` import resolves
         // to node_modules and bundles a second copy of the runtime, which breaks reactivity across the tab's
         // boundary. The build fails with the file and the import. A tab that uses no svelte at all — or brings its
