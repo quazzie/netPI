@@ -37,8 +37,8 @@ public static class McpTests
             Check.Throws<RpcException>(() => ServerConfig.Parse("a", new JsonObject { ["transport"]="http", ["url"]="https://user:secret@example.com" }, Path.GetTempPath()));
             Check.Throws<RpcException>(() => ServerConfig.Parse("a", new JsonObject { ["transport"]="http", ["url"]="https://example.com", ["headerEnv"]=new JsonObject { ["Mcp-Name"]="TOKEN" } }, Path.GetTempPath()));
         });
-        r.Add("mcp: env and header values resolve live: the process environment, then the user and machine registry, so a secret set after start needs no restart", () => {
-            // The process environment is checked first, and a set in this process is visible to it.
+        r.Add("mcp: env and header values resolve live: the user and machine registry, then the process environment, so a secret set after start needs no restart", () => {
+            // Not in the registry: the process environment is the fallback, and a set in this process is visible to it.
             Environment.SetEnvironmentVariable("NETPI_MCP_ENV_PROCESS", "from-process");
             try
             {

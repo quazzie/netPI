@@ -4,20 +4,24 @@ using System.Text;
 namespace NetPI.Mcp;
 
 /// <summary>
-/// Where the value of a named environment variable comes from. The process environment is a snapshot from
-/// start and goes stale: a secret set in Windows afterwards is invisible to it. The live user and machine
-/// environments (the registry) are the fallback, so a running NetPI picks up a newly set variable at the next
-/// connect, request or reconnect — no restart.
+/// Where the value of a named environment variable comes from. The registry is the user's current intent: a value
+/// set in Windows after the process started (or changed since) wins over the process's own environment, which is
+/// a snapshot from start and goes stale. The process environment is the fallback for a variable the launcher put
+/// there that is not in the registry — so a running NetPI picks up a newly set variable at the next connect,
+/// request or reconnect, without a restart.
 /// </summary>
 internal static class EnvSource
 {
     public static string? Resolve(string name)
     {
-        if (Environment.GetEnvironmentVariable(name) is { } process) return process;
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return null;
-        // User first: that is where the user's own variables (and the ones a script set with scope "User") live.
-        return FromRegistry(HKeyCurrentUser, "Environment", name)
-            ?? FromRegistry(HKeyLocalMachine, @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", name);
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // User first: that is where the user's own variables (and the ones a script set with scope "User") live.
+            var live = FromRegistry(HKeyCurrentUser, "Environment", name)
+                ?? FromRegistry(HKeyLocalMachine, @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", name);
+            if (live is not null) return live;
+        }
+        return Environment.GetEnvironmentVariable(name);
     }
 
     private static string? FromRegistry(IntPtr root, string subKey, string name)

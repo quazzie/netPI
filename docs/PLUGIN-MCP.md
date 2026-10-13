@@ -79,7 +79,7 @@ Use the MCP tab to add, edit, enable, inspect, refresh or reconnect servers. Set
 }
 ```
 
-Environment and header values name source environment variables, never literal credentials. A name is resolved against NetPI's own environment first, then the current user and machine environment on Windows (the registry) — so a variable set after NetPI started is picked up at the next connect, request or reconnect, without a restart. The stdio environment includes only basic platform variables plus explicit mappings; processes run directly without a shell in a fixed absolute working directory. HTTP redirects are disabled.
+Environment and header values name source environment variables, never literal credentials. A name is resolved against the current user and machine environment on Windows (the registry) first — the user's current intent wins over the process's start-time snapshot — with NetPI's own environment as the fallback for a variable only the launcher set. A variable set after NetPI started is picked up at the next connect, request or reconnect, without a restart. The stdio environment includes only basic platform variables plus explicit mappings; processes run directly without a shell in a fixed absolute working directory. HTTP redirects are disabled.
 
 `tools` optionally restricts raw remote tool names; an empty array exposes none. `resources` does the same for resource URIs (exact, or a prefix ending in `*`). `pinned` opts named tools into ordinary eager schemas. `readOnly` is a local override allowing concurrent direct calls; remote annotations do not grant this. Both lists contain raw remote names. Connection and call deadlines default to 5 seconds and 60 seconds.
 
