@@ -21,19 +21,19 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
         Category = "webhooks",
         SummaryArg = "action",
         ReadOnly = false,
-        Description = "Inbound webhooks that start chats (Checkmk alerts, CI, scripts): list, get, history, test a payload, pause. The user manages them in the Webhooks tab.",
+        Description = "Inbound webhooks that start chats (monitoring alerts, CI, scripts): list, get, history, test a payload, pause. The user manages them in the Webhooks tab.",
         PromptGuidelines =
         [
-            "A chat that starts with a webhook alert was started by the webhook named in its first message; later alerts of the same incident arrive in it as further system messages, and the webhook's history (webhooks action history) shows what else arrived. Use action test to see what a payload would do before suggesting a change; tell the user to edit or enable webhooks in the Webhooks tab.",
+            "A chat that starts with a webhook payload was started by the webhook named in its first message; later payloads of the same conversation arrive in it as further system messages, and the webhook's history (webhooks action history) shows what else arrived. Use action test to see what a payload would do before suggesting a change; tell the user to edit or enable webhooks in the Webhooks tab.",
         ],
         Help = """
             Actions:
             - list: every webhook, one line each (state, agent, project, last delivery).
-            - get: one webhook by id, with its prompt template, match conditions and limits.
-            - history: deliveries, newest first (id optional, limit default 20): held (collecting for an incident), started (a chat began),
-              appended (added to the incident's open chat), duplicate, skipped (and why) or failed.
-            - test: id and payload (any JSON) — what it would do (start a chat, open or join an incident, be appended to a running chat, or be
-              filtered), with the prompt filled in. Starts and stores nothing.
+            - get: one webhook by id, with its prompt template, commands and limits.
+            - history: deliveries, newest first (id optional, limit default 20): held (collecting for a conversation), started (a chat began),
+              appended (added to the conversation's open chat), duplicate, skipped (and why) or failed.
+            - test: id and payload (any JSON) — what it would do (start a chat, open or join a conversation, be appended to a running chat, or be
+              skipped), with the prompt filled in. Starts and stores nothing.
             - pause: id — pauses a webhook (enabled false). Resuming, creating, deleting and re-keying are the user's, in the Webhooks tab.
             """,
         Parameters = new JsonObject

@@ -129,14 +129,14 @@ try {
   check('the detail shows where to POST', (await row('Checkmk').locator('.url').innerText()) === 'http://192.168.1.170:7432/hook/whk_ok');
   await row('Checkmk').locator('button', { hasText: 'Preview' }).click();
   await tab.waitForSelector('.webhooks .preview', { timeout: 5_000 });
-  check('Preview shows what would happen and the filled prompt', (await row('Checkmk').locator('.preview').innerText()).includes('Would open the incident “nuc”'));
-  check('the detail lists the incidents with their state', (await row('Checkmk').innerText()).includes('nuc · open · 3 alerts') && (await row('Checkmk').innerText()).includes('server · collecting, chat starts in'));
+  check('Preview shows what would happen and the filled prompt', (await row('Checkmk').locator('.preview').innerText()).includes('Would open the conversation “nuc”'));
+  check('the detail lists the incidents with their state', (await row('Checkmk').innerText()).includes('nuc · open · 3 items') && (await row('Checkmk').innerText()).includes('server · collecting, chat starts in'));
   await row('Checkmk').locator('.inc-open').first().click();
   check('the detail shows the before and after commands', (await row('Checkmk').innerText()).includes('python pre.py') && (await row('Checkmk').innerText()).includes('ssh server ha-alert-json'));
   check('an incident shows the agent\'s verdict', (await row('Checkmk').innerText()).includes('verdict noise'));
   check('an incident row opens its chat', (await tab.evaluate(() => window.__opened)) === 'ses_inc');
   const previewCall = await tab.evaluate(() => window.__calls.filter(([m]) => m === 'webhooks.test').at(-1)[1]);
-  check('Preview sends run:false with the parsed payload', previewCall.run === false && previewCall.payload.service === 'Kernel errors', JSON.stringify(previewCall));
+  check('Preview sends run:false with the parsed payload', previewCall.run === false && previewCall.payload.message === 'hello from the Try box', JSON.stringify(previewCall));
   await row('Checkmk').locator('button', { hasText: 'Send' }).click();
   await tab.waitForFunction(() => window.__opened === 'ses_test', null, { timeout: 5_000 });
   check('Send delivers for real and opens the chat', true);
@@ -167,7 +167,7 @@ try {
   // --- add: the payload, then the token box
   await tab.locator('.webhooks button', { hasText: 'New' }).first().click();
   await tab.waitForSelector('[role=dialog] .foot button', { timeout: 5_000 });
-  await tab.locator('.form input[placeholder="e.g. Checkmk alerts"]').fill('Checkmk alerts');
+  await tab.locator('.form input[placeholder="e.g. Build results"]').fill('Checkmk alerts');
   await tab.locator('.form input[placeholder="checkmk-alerts"]').fill('cmk');
   await tab.locator('.form select').nth(1).selectOption('sysadmin');
   await tab.locator('.form select').nth(2).selectOption('free');
@@ -229,7 +229,7 @@ try {
 check('rowState: a disabled proposal', rowState({ enabled: false, proposedBy: 'session:x' }).key === 'proposed');
 check('rowState: a failed delivery is an error', rowState({ enabled: true, lastStatus: 'failed' }).tone === 'err');
 check('agent list round-trips', formToAgent({ agentChoice: '__list', agentList: ' a , b ' }) === 'a,b' && agentToForm('a,b').agentChoice === '__list');
-check('incidentLine: open and collecting', incidentLine({ key: 'nuc', state: 'open', alertCount: 1 }) === 'nuc · open · 1 alert' && incidentLine({ key: 'x', state: 'collecting', alertCount: 2, startsAt: new Date(Date.now() + 30000).toISOString() }, Date.now()).includes('chat starts in'));
+check('incidentLine: open and collecting', incidentLine({ key: 'nuc', state: 'open', alertCount: 1 }) === 'nuc · open · 1 item' && incidentLine({ key: 'x', state: 'collecting', alertCount: 2, startsAt: new Date(Date.now() + 30000).toISOString() }, Date.now()).includes('chat starts in'));
 check('limitsLine: timeout and fuse', limitsLine({ timeoutMinutes: 15, maxChatsPerHour: 60 }) === 'timeout 15 min · fuse 60/h' && limitsLine({ timeoutMinutes: 0 }) === 'no timeout');
 check('hookLine, hookToForm and formToHook', hookLine({ command: 'ssh', args: ['a', 'b'] }) === 'ssh a b' && hookLine({ command: 'x' }) === 'x' && formToHook(' ssh ', 'a\n\n b ').args.join(',') === 'a,b' && Object.keys(formToHook('', 'a')).length === 0 && hookToForm({ command: 'ssh', args: ['a', 'b'] }).args === 'a\nb' && hookToForm(null).command === '');
 

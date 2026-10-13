@@ -10,7 +10,7 @@
   let open = $state(false);
   let busy = $state(false);
   let flash = $state('');
-  let tryText = $state('{\n  "host": "nuc",\n  "service": "Kernel errors",\n  "state": "CRIT",\n  "output": "1 in last 30 min"\n}');
+  let tryText = $state('{\n  "message": "hello from the Try box"\n}');
   let preview = $state.raw(null);
   let incidents = $state.raw([]);
 
@@ -176,8 +176,8 @@
           {:else}
             <div class="ok">
               {#if preview.action === 'append'}Would be appended to the chat already handling “{preview.key}”.
-              {:else if preview.action === 'join'}Would join the alerts being collected for “{preview.key}”.
-              {:else if preview.action === 'collect'}Would open the incident “{preview.key}” and collect for a while before the chat starts{preview.agent ? ` on ${preview.agent}` : ''}.
+              {:else if preview.action === 'join'}Would join the items being collected for “{preview.key}”.
+              {:else if preview.action === 'collect'}Would open the conversation “{preview.key}” and collect for a while before the chat starts{preview.agent ? ` on ${preview.agent}` : ''}.
               {:else}Would start a chat{preview.agent ? ` on ${preview.agent}` : ''} at once.{/if}
             </div>
             {#if preview.note}<div class="np-muted">{preview.note}</div>{/if}

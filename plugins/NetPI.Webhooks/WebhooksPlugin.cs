@@ -51,7 +51,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
         ctx.Services.Register(new SettingsSection
         {
             Id = "webhooks", Title = "Webhooks", Group = "Agents", Order = 61,
-            Help = "A system that can POST (Checkmk, a CI, a script) starts a chat here. The receiver is its own small listener, separate from NetPI's API, and off until you switch it on. Each webhook has its own token (shown once).",
+            Help = "A system that can POST (a monitoring tool, a CI, a script) starts a chat here. The receiver is its own small listener, separate from NetPI's API, and off until you switch it on. Each webhook has its own token (shown once).",
             Settings =
             [
                 SettingInfo.Bool("webhooks.enabled", "Receive webhooks", false, "Off: the receiver does not listen at all."),
@@ -441,12 +441,12 @@ public sealed class WebhooksPlugin : INetPiPlugin
 
     /// <summary>What <c>webhooks.testHook</c> puts on standard input when the caller gives nothing: the shape a real run has, with obvious sample values.</summary>
     private static JsonObject SampleContext(string slot) => slot == "pre"
-        ? new JsonObject { ["event"] = "received", ["title"] = "sample: something happened", ["alert"] = new JsonObject { ["host"] = "sample-host", ["service"] = "sample service", ["state"] = "CRIT", ["output"] = "this is a test" } }
+        ? new JsonObject { ["event"] = "received", ["title"] = "sample: something happened", ["alert"] = new JsonObject { ["id"] = "sample-1", ["message"] = "this is a test" } }
         : new JsonObject
         {
-            ["event"] = "finished", ["title"] = "sample-host: sample service is CRIT", ["key"] = "sample-host", ["count"] = 1, ["sessionId"] = "ses_sample", ["status"] = "ok", ["verdict"] = "real",
+            ["event"] = "finished", ["title"] = "sample: something happened", ["key"] = "sample-1", ["count"] = 1, ["sessionId"] = "ses_sample", ["status"] = "ok", ["verdict"] = "real",
             ["summary"] = "This is a test of the post hook.", ["result"] = "This is a test of the post hook.\nVERDICT: real",
-            ["alert"] = new JsonObject { ["host"] = "sample-host", ["service"] = "sample service", ["state"] = "CRIT", ["output"] = "this is a test" },
+            ["alert"] = new JsonObject { ["id"] = "sample-1", ["message"] = "this is a test" },
         };
 
     private static JsonObject Require(WebhookStore store, string id) =>

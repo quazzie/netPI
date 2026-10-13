@@ -274,7 +274,7 @@ public static class WebhookHooksTests
             Check.Equal("ok?", S((await Ran(sink, 3))["question"]));
             await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("webhooks.testHook", new { id = S(withPost["id"]), hook = "pre" }));
             var withPre = await env.Add(extra: new { name = "adapter", pre = Hook(sink, 0, "--adapt:key+crit") });
-            var answered = (await env.Ctx.RpcFake.CallAsync("webhooks.testHook", new { id = S(withPre["id"]), hook = "pre" }))!;
+            var answered = (await env.Ctx.RpcFake.CallAsync("webhooks.testHook", new { id = S(withPre["id"]), hook = "pre", context = new { alert = new { host = "sample-host", state = "CRIT" } } }))!;
             Check.Contains(S(answered["output"]), "\"key\":\"sample-host\"");   // what the command printed, so its answer can be checked before a payload arrives
             await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("webhooks.testHook", new { id = S(withPost["id"]), hook = "middle" }));
         });

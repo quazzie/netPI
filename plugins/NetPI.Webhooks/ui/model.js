@@ -61,9 +61,9 @@ export function hookLine(h) {
   return `${h.command}${h.args?.length ? ' ' + h.args.join(' ') : ''}`;
 }
 
-/** An incident as a line: "nuc · open · 3 alerts" or "nuc · collecting, chat starts in 40 s". */
+/** A conversation as a line: "nuc · open · 3 items" or "nuc · collecting, chat starts in 40 s". */
 export function incidentLine(i, nowMs = Date.now()) {
-  const alerts = `${i.alertCount ?? 1} alert${(i.alertCount ?? 1) === 1 ? '' : 's'}`;
+  const alerts = `${i.alertCount ?? 1} item${(i.alertCount ?? 1) === 1 ? '' : 's'}`;
   if (i.state === 'collecting') {
     const left = Math.max(0, Math.round((Date.parse(i.startsAt) - nowMs) / 1000));
     return i.waiting ? `${i.key} · waiting to start: ${i.waiting}` : `${i.key} · collecting, chat starts in ${left} s · ${alerts}`;
@@ -73,5 +73,5 @@ export function incidentLine(i, nowMs = Date.now()) {
 
 /** How to call the receiver, for the copy box: the curl line a sender's admin can adapt. */
 export function curlLine(base, id, token) {
-  return `curl -X POST ${base}${id} -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d '{"host":"nuc","service":"Kernel errors","state":"CRIT","output":"test"}'`;
+  return `curl -X POST ${base}${id} -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d '{"message":"test"}'`;
 }

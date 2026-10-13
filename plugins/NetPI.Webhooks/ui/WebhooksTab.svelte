@@ -115,7 +115,7 @@
   {:else if hooks === null}
     <div class="np-dim np-pad">Loading…</div>
   {:else if hooks.length === 0}
-    <Empty icon="plug">No webhooks yet. A webhook lets another system (Checkmk, a CI job, a script) start a chat here by POSTing to it.</Empty>
+    <Empty icon="plug">No webhooks yet. A webhook lets another system (a monitoring tool, a CI job, a script) start a chat here by POSTing to it.</Empty>
     <div class="np-pad">
       <Button variant="primary" icon="plus" onclick={() => (editing = { hook: null })}>New webhook</Button>
     </div>

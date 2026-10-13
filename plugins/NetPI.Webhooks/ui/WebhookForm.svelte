@@ -111,7 +111,7 @@
 
   <label class="fld">
     <span class="f-label">Name</span>
-    <input class="np-input" placeholder="e.g. Checkmk alerts" bind:value={f.name} />
+    <input class="np-input" placeholder="e.g. Build results" bind:value={f.name} />
   </label>
 
   <label class="fld">
