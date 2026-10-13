@@ -862,7 +862,7 @@ named agent's model, otherwise the catalog default. Turns, delegation and manual
 (a bare model id is normalized first); an explicit child effort wins. An unavailable selected model is reported,
 including during manual compaction, rather than silently replaced by the global default.
 
-Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions? }, …], background?, timeoutSeconds? }`.
+Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }, …], background?, first?, timeoutSeconds? }`.
 `taskFile` reads a long task from a file (path relative to the working directory; appended to `task` if both are given), so a batch stays short enough for a model to write in one call. Arguments that end inside an open object or array are reported as cut off, with that advice.
 Every entry is checked first, and every workspace the batch needs is provisioned before the first child starts (a named one
 resolved, the worktree of every worker that writes created, by the same rule a single spawn follows); a bad one starts none of
@@ -886,7 +886,7 @@ tool through subagents, and `agent_choices` belongs to another plugin.
 
 ### `agent_wait`
 
-`{ ids?, any?, timeoutSeconds? }`: waits for the given subagents (ids or names) and returns their reports (`any: true`: as soon as the first has finished, the others keep running; `agent_spawn` takes `any` too, to return at the first report of a batch); the caller's
+`{ ids?, first?, timeoutSeconds? }`: waits for the given subagents (ids or names) and returns their reports; `first: true` returns as soon as one has finished and the others keep running (`agent_spawn` takes `first` too, to return at the first report of a batch). The caller's
 instance is free for them meanwhile and it resumes with priority. Without ids: all of the caller's running subagents, plus
 finished ones whose `agent-result` notice is still queued unseen (the report comes back here and the queued notice is
 dropped, so it arrives once). A new user message interrupts the wait. `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
