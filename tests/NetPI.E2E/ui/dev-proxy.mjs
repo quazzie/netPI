@@ -4,6 +4,7 @@
 //
 //   node tests/NetPI.E2E/ui/dev-proxy.mjs --url http://127.0.0.1:7470 --token e2e-token
 // Prints one JSON line at the end: { ok, checks: [{name, ok, detail}], errors: [...] }.
+import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -11,14 +12,19 @@ import { fileURLToPath } from 'node:url';
 import { run, check, shot, openStripTab, BASE, TOKEN } from './lib.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const viteBin = path.join(repo, 'node_modules', 'vite', 'bin', 'vite.js');
 const freePort = () => new Promise((resolve, reject) => {
   const s = net.createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
   s.on('error', reject);
 });
 
 await run('dev-proxy', async ({ page, errors }) => {
+  // the dev server runs this checkout's web/vite.config.js, which reads this checkout's node_modules (svelte's version):
+  // a git worktree has none until npm ci runs in it (build.ps1 does that when it builds the web), and the main
+  // checkout's do not count. Say so, not vite's ENOENT.
+  if (!fs.existsSync(viteBin)) throw new Error(`${repo} has no node_modules: run npm ci there (or build the web with build.ps1)`);
   const port = await freePort();
-  const vite = spawn(process.execPath, [path.join(repo, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', 'web/vite.config.js', '--port', String(port), '--strictPort', '--host', '127.0.0.1'], {
+  const vite = spawn(process.execPath, [viteBin, '--config', 'web/vite.config.js', '--port', String(port), '--strictPort', '--host', '127.0.0.1'], {
     cwd: repo,
     env: { ...process.env, NETPI_URL: BASE },
     stdio: ['ignore', 'pipe', 'pipe'],
