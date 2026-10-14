@@ -72,10 +72,14 @@ try {
     if(await page.getByRole('menuitem').count())throw Error('Escape did not close the action menu');
     await menu.click();
     await page.getByRole('menuitem',{name:/Edit/}).click();
-    const draft=await page.getByLabel('Configuration',{exact:true}).inputValue();
+    // the editor is a form (e25a872); its JSON is one click away, and a failed save must keep that draft as typed
+    await page.getByRole('button',{name:'Edit as JSON',exact:true}).click();
+    const json=page.getByLabel('Configuration (JSON)',{exact:true});
+    const draft=(await json.inputValue()).replace(/\}\s*$/,',"timeoutMs":1234}');
+    await json.fill(draft);
     await page.getByRole('button',{name:'Save',exact:true}).click();
     await page.getByRole('alert').waitFor();
-    if(await page.getByLabel('Configuration',{exact:true}).inputValue()!==draft)throw Error('Failed save lost edits');
+    if(await json.inputValue()!==draft)throw Error('Failed save lost edits');
     check('MCP UI '+width+'px: catalog controls and failed-save draft retained', true);
   }
   check('no page errors', errors.length===0, errors.join(' | '));
