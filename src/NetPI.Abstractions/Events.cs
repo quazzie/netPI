@@ -95,7 +95,7 @@ public static class EventTypes
     /// </summary>
     public const string AgentWaiting = "agent.waiting";
     /// <summary>
-    /// A call that waited for the user stopped waiting: <c>{ sessionId, agentId, callId, waitId, kind, reason }</c>, reason
+    /// A call that waited for the user stopped waiting: <c>{ sessionId, agentId, callId, waitId, kind, tool, data, reason }</c>, reason
     /// answered | steered (the user wrote instead) | cancelled (stopped, or its chat deleted). Unscoped, like the cards it
     /// closes; the owners relay it into their own events.
     /// </summary>

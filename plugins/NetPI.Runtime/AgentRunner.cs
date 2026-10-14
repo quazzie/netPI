@@ -78,18 +78,20 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 throw new RunFailedException(msg);
             }
 
+            // 0. the user answered what this batch waited for: its calls are finished first, before anything else reaches the
+            // transcript (their results come right after the calls). Tools need no model slot: the batch runs without one,
+            // so an answer is not lost when the chat's agent went away meanwhile - the next turn's slot check says so.
+            if (run.Resume is { } resume)
+            {
+                var r0 = await ResolveTurnAsync(turnIndex, ct, slot: false).ConfigureAwait(false);
+                if (await FinishBatchAsync(resume, r0.Run, r0.Session, r0.Project, r0.Cwd, r0.Model, turnIndex, ct).ConfigureAwait(false)) break;
+                continue;
+            }
+
             // 1. session, model, project, cwd, slot: re-read every turn (they can change mid-run)
             var resolved = await ResolveTurnAsync(turnIndex, ct).ConfigureAwait(false);
             var (rc, session, model, project, cwd, workspace) = resolved;
             rc.SetAdmissionLease(run.Lease);
-
-            // 1b. the user answered what this batch waited for: its calls are finished first, before anything else reaches
-            // the transcript (their results come right after the calls)
-            if (run.Resume is { } resume)
-            {
-                if (await FinishBatchAsync(resume, rc, session, project, cwd, model, turnIndex, ct).ConfigureAwait(false)) break;
-                continue;
-            }
 
             // 2. steering input → transcript
             DrainSteering();
@@ -230,7 +232,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 turn.Messages = [.. Ctx.Sessions.GetContextMessages(SessionId)];
                 return Task.CompletedTask;
             },
-            AllowedCalls = resume.Waits.Where(w => w.Resolution is { Run: true }).ToDictionary(w => w.CallId, w => w.Kind, StringComparer.Ordinal),
+            AllowedCalls = resume.Waits.Where(w => w.Resolution is { Run: true }).ToDictionary(w => w.CallId, w => w.ToInfo(Info), StringComparer.Ordinal),
         };
         var batch = new ToolBatch(rt, state, rc, HasSteering)
         {
@@ -250,16 +252,17 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     /// model-error hook asked for the turn to be retried.</summary>
     private readonly record struct ModelCallOutcome(ChatMessage? Assistant, long ContextTokens);
 
-    private async Task<TurnResolution> ResolveTurnAsync(int turnIndex, CancellationToken ct)
+    /// <param name="slot">False: no slot is taken (a batch the user answered runs its tools, which need none).</param>
+    private async Task<TurnResolution> ResolveTurnAsync(int turnIndex, CancellationToken ct, bool slot = true)
     {
         var session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
-        if (turnIndex == 0 && SessionAgent.IsAny(session) && run.Lease is not { IsReleased: false })
+        if (slot && turnIndex == 0 && SessionAgent.IsAny(session) && run.Lease is not { IsReleased: false })
         {
             // the chat may use any agent: the first one with a free instance takes the run and its model becomes the chat's
             try
             {
-                var (slot, _) = await rt.AcquireAnySlotAsync(state, 0, ct).ConfigureAwait(false);
-                run.Lease = slot;
+                var (any, _) = await rt.AcquireAnySlotAsync(state, 0, ct).ConfigureAwait(false);
+                run.Lease = any;
             }
             catch (CallRefusedException ex)
             {
@@ -296,7 +299,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         // a slot on the agent
         try
         {
-            await EnsureSlotAsync(model, ct).ConfigureAwait(false);
+            if (slot) await EnsureSlotAsync(model, ct).ConfigureAwait(false);
         }
         catch (CallRefusedException ex)
         {

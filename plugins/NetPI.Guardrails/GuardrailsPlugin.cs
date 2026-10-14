@@ -11,8 +11,9 @@ namespace NetPI.Guardrails;
 /// <c>ask:</c> asks the user first, on the tool's row in the chat: <c>guard.asked</c> (unscoped, so every window hears of
 /// it), answered with <c>guard.answer { approvalId, allow, scope? }</c>, <c>guard.closed</c> when it stops waiting. With
 /// <c>scope: "session"</c> the rule is allowed for the rest of that chat (session meta <c>guardrailsAllowed</c>): it runs
-/// without asking there, announced by <c>guard.cleared { by: "session" }</c>. Meanwhile the run
-/// waits with its instance given back (<see cref="IAgentRuntime.WaitYieldedAsync"/>). In a subagent an ask rule blocks:
+/// without asking there, announced by <c>guard.cleared { by: "session" }</c>. The question is a wait for the user
+/// (<see cref="UserWait"/>, kind <c>guard</c>): the call does not run, the run ends at it holding nothing, and the OK lets
+/// it run in the run that goes on; it survives a reload of this plugin and a restart. In a subagent an ask rule blocks:
 /// nobody watches its chat. With <c>guardrails.secondOpinion</c> on, a decision model reads a shell command before an ask
 /// rule asks, and a confidently read-only one runs without asking (<see cref="SecondOpinion"/>, <c>guard.cleared</c>).
 /// A deliberate wait longer than <c>guardrails.maxSleepSeconds</c> is a rule of its own (<see cref="Sleeps"/>), because a
@@ -23,8 +24,6 @@ namespace NetPI.Guardrails;
 [NetPiPlugin("netpi.guardrails", Name = "Guardrails", Description = "Checks tool calls before they run: blocks dangerous commands, long deliberate waits and changes to protected paths, or asks you first", Order = 67)]
 public sealed class GuardrailsPlugin : INetPiPlugin
 {
-    private Approvals? _approvals;
-
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         // Run state of this plugin: a fork starts without it (the session service remembers the keys even when this plugin is not loaded at a fork).
@@ -52,7 +51,7 @@ public sealed class GuardrailsPlugin : INetPiPlugin
             ],
         });
         var outcomes = new GuardOutcomes(context.Data, context.Logger);
-        var approvals = _approvals = new Approvals(context, outcomes);
+        var approvals = new Approvals(context, outcomes);
         context.Rpc.Register(new RpcMethod("guard.outcomes", "What became of the guard questions: { result? (cleared|session|allowed|allowed-session|denied|steered|cancelled|stopped|subagent), limit? (50) } → { summary: { result: count }, rows: [{ at, result, sessionId, tool, kind, rule, subject, opinion? }] } (newest first)", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("result")]),
             (req, _) => Task.FromResult<object?>(outcomes.Read(req.Str("result"), req.Int("limit") ?? 50)));
         context.Services.Register<IAgentHook>(new GuardHook(context, approvals, new SecondOpinion(context)));
@@ -60,58 +59,53 @@ public sealed class GuardrailsPlugin : INetPiPlugin
             (req, _) => Task.FromResult<object?>(approvals.List(req.Str("sessionId"))));
         context.Rpc.Register(new RpcMethod("guard.answer", "Allow or refuse a tool call that waits for the user's OK: { approvalId, allow, scope?: \"once\" | \"session\" } → true; scope session (with allow) " +
             "allows the rule that asked for the rest of that chat, and the other calls of that chat waiting on the same rule", ReadOnly: false, Params: [RpcParam.Req("approvalId"), RpcParam.Opt("allow", RpcParamType.Boolean), RpcParam.Opt("scope")]),
-            (req, _) => Task.FromResult<object?>(approvals.Answer(req.Required("approvalId"), req.Bool("allow") ?? false,
-                forSession: string.Equals(req.Str("scope"), "session", StringComparison.OrdinalIgnoreCase))));
+            async (req, ct) => await approvals.AnswerAsync(req.Required("approvalId"), req.Bool("allow") ?? false,
+                forSession: string.Equals(req.Str("scope"), "session", StringComparison.OrdinalIgnoreCase), ct).ConfigureAwait(false));
+        // the cards, from the runtime's waits of this kind (sync handlers: an async one left alive roots this load context)
+        context.Events.Subscribe(EventTypes.AgentWaiting, e =>
+        {
+            if (e.As<JsonObject>()?["wait"] is JsonObject w && (string?)w["kind"] == Approvals.Kind) context.Events.Publish("guard.asked", Approvals.Json(w));
+        });
+        context.Events.Subscribe(EventTypes.AgentWaitEnded, e =>
+        {
+            if (e.As<JsonObject>() is not { } d || (string?)d["kind"] != Approvals.Kind || (string?)d["reason"] == "answered") return;   // an answer closes its own
+            approvals.Closed((string)d["waitId"]!, (string?)d["sessionId"] ?? "", (string?)d["callId"], (string?)d["tool"] ?? "", d["data"] as JsonObject,
+                (string?)d["reason"] == "steered" ? "steered" : "cancelled");
+        });
         return Task.CompletedTask;
     }
 
-    /// <summary>What still waits is refused, so its run goes on instead of hanging.</summary>
-    public Task StopAsync(CancellationToken ct)
-    {
-        _approvals?.RefuseAll();
-        return Task.CompletedTask;
-    }
+    /// <summary>Nothing to refuse: the questions are the runtime's, and they wait on through a reload of this plugin.</summary>
+    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
 }
 
-/// <summary>Tool calls that wait for the user's OK, by unique approval id.</summary>
+/// <summary>
+/// Tool calls that wait for the user's OK: the runtime's waits of kind <c>guard</c> (<see cref="UserWait"/>), each with an
+/// approval id of its own. This plugin keeps none of them, so a reload of it loses none.
+/// </summary>
 internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = null)
 {
+    public const string Kind = "guard";
     public GuardOutcomes? Outcomes => outcomes;
-    private readonly ConcurrentDictionary<string, Entry> _byApproval = new(StringComparer.Ordinal);
 
-    internal sealed class Entry
+    /// <summary>The wait a call makes to ask before it runs: its card's data, and what the call reads when it does not run.</summary>
+    public static UserWait Wait(ToolCallPart call, Verdict verdict, Opinion? opinion) => new()
     {
-        public string ApprovalId { get; } = Guid.NewGuid().ToString("N");
-        public required string SessionId { get; init; }
-        public required string CallId { get; init; }
-        public required string AgentId { get; init; }
-        public required string Tool { get; init; }
-        public required Verdict Verdict { get; init; }
-        public Opinion? Opinion { get; init; }
-        public DateTimeOffset AskedAt { get; } = DateTimeOffset.UtcNow;
-        /// <summary>Set by <see cref="RefuseAll"/> when the plugin stops: the waiting run then reports a reload, not a user denial.</summary>
-        public bool Stopped { get; set; }
-        public TaskCompletionSource<bool> Allowed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
+        Id = Guid.NewGuid().ToString("N"),
+        Kind = Kind,
+        Activity = "waiting for your OK",
+        Data = new JsonObject
+        {
+            ["tool"] = call.Name, ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["opinion"] = opinion?.ToJson(),
+        },
+        IfSteered = ToolResult.Error("Blocked: the user wrote a new message instead of answering whether it may run; the message follows. Nothing ran."),
+        IfCancelled = ToolResult.Error("Blocked: the chat was stopped before the user answered whether it may run. Nothing ran."),
+    };
 
-    public Entry Add(string sessionId, string agentId, ToolCallPart call, Verdict verdict, Opinion? opinion)
-    {
-        var e = new Entry { SessionId = sessionId, CallId = call.Id, AgentId = agentId, Tool = call.Name, Verdict = verdict, Opinion = opinion };
-        _byApproval[e.ApprovalId] = e;
-        ctx.Events.Publish("guard.asked", Json(e));
-        return e;
-    }
+    private IAgentRuntime Runtime => ctx.Services.Get<IAgentRuntime>() ?? throw new RpcException("unavailable", "The agent runtime is not running.");
 
-    /// <summary>Stops waiting: <paramref name="status"/> is allowed | denied | steered | cancelled | stopped (the plugin stopped).</summary>
-    public bool Close(Entry e, string status, bool forSession = false)
-    {
-        if (!_byApproval.TryRemove(new KeyValuePair<string, Entry>(e.ApprovalId, e))) return false;
-        var data = new JsonObject { ["approvalId"] = e.ApprovalId, ["sessionId"] = e.SessionId, ["callId"] = e.CallId, ["status"] = status };
-        if (forSession) data["scope"] = "session";
-        ctx.Events.Publish("guard.closed", data);
-        outcomes?.Record(status == "allowed" && forSession ? "allowed-session" : status, e.SessionId, e.Tool, e.Verdict, e.Opinion);
-        return true;
-    }
+    private IEnumerable<WaitingCall> Waiting(string? sessionId) =>
+        ctx.Services.Get<IAgentRuntime>()?.Waits(sessionId, Kind).Where(w => !w.Answered) ?? [];
 
     /// <summary>The session meta key holding the ask rules the user allowed for the rest of that chat.</summary>
     public const string SessionKey = "guardrailsAllowed";
@@ -131,45 +125,59 @@ internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = nu
         });
     }
 
-    public JsonArray List(string? sessionId) =>
-        new([.. _byApproval.Values.Where(e => sessionId is null || e.SessionId == sessionId).OrderBy(e => e.AskedAt).Select(e => (JsonNode)Json(e))]);
+    public JsonArray List(string? sessionId) => new([.. Waiting(sessionId).Select(w => (JsonNode)Json(NetPiJson.ToNode(w)!.AsObject()))]);
 
-    public bool Answer(string approvalId, bool allow, bool forSession = false)
+    /// <summary>
+    /// The user's OK, or no: allowed, the call runs in the run that goes on (the hook lets that rule through for it); refused,
+    /// it is blocked. With <paramref name="forSession"/> the rule is allowed for the rest of the chat, and so are that
+    /// chat's other calls waiting on it.
+    /// </summary>
+    public async Task<bool> AnswerAsync(string approvalId, bool allow, bool forSession, CancellationToken ct)
     {
-        // Closed first, then released: the waiting run's own Close is then a no-op, and a second answer finds nothing.
         forSession &= allow;
-        if (!_byApproval.TryGetValue(approvalId, out var e) || e.Allowed.Task.IsCompleted)
-            throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its run ended).");
-        if (!Close(e, allow ? "allowed" : "denied", forSession))
-            throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its run ended).");
-        if (forSession) AllowInSession(e.SessionId, e.Verdict.Rule);
-        e.Allowed.TrySetResult(allow);
+        var w = Waiting(null).FirstOrDefault(x => x.Id == approvalId)
+                ?? throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its chat moved on).");
+        var rule = (string?)w.Data?["rule"] ?? "";
+        if (forSession) AllowInSession(w.SessionId, rule);
+        var resolution = allow
+            ? WaitResolution.Allow()
+            : WaitResolution.Answer(ToolResult.Error($"Blocked: the user said no to {Subject((string?)w.Data?["kind"], (string?)w.Data?["subject"])}. Nothing ran."));
+        if (!await Runtime.ResolveAsync(w.Id, resolution, ct).ConfigureAwait(false))
+            throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its chat moved on).");
+        Closed(w.Id, w.SessionId, w.CallId, w.Tool, w.Data, allow ? "allowed" : "denied", forSession);
         if (forSession)
-            foreach (var other in _byApproval.Values.Where(o => o.SessionId == e.SessionId && o.Verdict.Rule == e.Verdict.Rule).ToList())
-                if (Close(other, "allowed", forSession: true)) other.Allowed.TrySetResult(true);
+            foreach (var other in Waiting(w.SessionId).Where(o => (string?)o.Data?["rule"] == rule).ToList())
+                if (await Runtime.ResolveAsync(other.Id, WaitResolution.Allow(), ct).ConfigureAwait(false))
+                    Closed(other.Id, other.SessionId, other.CallId, other.Tool, other.Data, "allowed", forSession: true);
         return true;
     }
 
-    public void RefuseAll()
+    /// <summary>A wait stopped: <paramref name="status"/> is allowed | denied | steered | cancelled. The card closes, the outcome is kept.</summary>
+    public void Closed(string approvalId, string sessionId, string? callId, string tool, JsonObject? data, string status, bool forSession = false)
     {
-        // The plugin is stopping (a reload): the answer cannot come, so the wait is refused — but it is not a user
-        // "no", and the waiting run must not be told the user denied it.
-        foreach (var e in _byApproval.Values) { e.Stopped = true; e.Allowed.TrySetResult(false); }
+        var closed = new JsonObject { ["approvalId"] = approvalId, ["sessionId"] = sessionId, ["callId"] = callId, ["status"] = status };
+        if (forSession) closed["scope"] = "session";
+        ctx.Events.Publish("guard.closed", closed);
+        outcomes?.Record(status == "allowed" && forSession ? "allowed-session" : status, sessionId, tool,
+            (string?)data?["kind"] ?? "", (string?)data?["rule"] ?? "", (string?)data?["subject"] ?? "", data?["opinion"] as JsonObject);
     }
 
-    private static JsonObject Json(Entry e) => new()
+    /// <summary>A waiting call as the card, guard.pending and guard.asked show it, from the runtime's wait.</summary>
+    internal static JsonObject Json(JsonObject wait) => new()
     {
-        ["approvalId"] = e.ApprovalId,
-        ["sessionId"] = e.SessionId,
-        ["callId"] = e.CallId,
-        ["agentId"] = e.AgentId,
-        ["tool"] = e.Tool,
-        ["kind"] = e.Verdict.Kind,
-        ["subject"] = e.Verdict.Subject,
-        ["rule"] = e.Verdict.Rule,
-        ["askedAt"] = e.AskedAt.ToString("O"),
-        ["opinion"] = e.Opinion?.ToJson(),
+        ["approvalId"] = wait["id"]?.DeepClone(),
+        ["sessionId"] = wait["sessionId"]?.DeepClone(),
+        ["callId"] = wait["callId"]?.DeepClone(),
+        ["agentId"] = wait["agentId"]?.DeepClone(),
+        ["tool"] = wait["data"]?["tool"]?.DeepClone() ?? wait["tool"]?.DeepClone(),
+        ["kind"] = wait["data"]?["kind"]?.DeepClone(),
+        ["subject"] = wait["data"]?["subject"]?.DeepClone(),
+        ["rule"] = wait["data"]?["rule"]?.DeepClone(),
+        ["askedAt"] = wait["since"]?.DeepClone(),
+        ["opinion"] = wait["data"]?["opinion"]?.DeepClone(),
     };
+
+    internal static string Subject(string? kind, string? subject) => kind == "path" ? $"changing {subject}" : $"`{subject}`";
 }
 
 /// <summary>
@@ -215,8 +223,13 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             // the user allowed does not allow what is in the same command.
             var sleep = Sleeps.Check(call.Name, args, maxSleep, AskOnSleep());
             var rule = rules.Count == 0 ? null : rules.Check(call.Name, args, path => Resolve(run, call, path));
+            // the user's OK for this call (the run that goes on after it): that rule lets it through, another still asks
+            var allowed = turn.AllowedCalls.TryGetValue(call.Id, out var w) && w.Kind == Approvals.Kind ? (string?)w.Data?["rule"] : null;
             foreach (var verdict in Ordered(rule, sleep))
+            {
+                if (verdict.Action != GuardAction.Block && allowed is not null && verdict.Rule == allowed) continue;
                 if (await JudgeAsync(run, call, args, verdict, ct).ConfigureAwait(false) is { } decision) return decision;
+            }
             return null;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -272,48 +285,11 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             approvals.Outcomes?.Record("subagent", run.Session.Id, call.Name, verdict, opinion);
             return Block(Why(verdict) + " It asks the user first, and a subagent can't ask: nobody watches its chat. Nothing ran; say in your report what you needed.");
         }
-        return await AskAsync(run, call, verdict, opinion, ct).ConfigureAwait(false);
-    }
-
-    private async ValueTask<ToolCallDecision?> AskAsync(AgentRunContext run, ToolCallPart call, Verdict verdict, Opinion? opinion, CancellationToken ct)
-    {
-        var entry = approvals.Add(run.Session.Id, run.Agent.Id, call, verdict, opinion);
-        var status = "cancelled";
-        try
-        {
-            var runtime = run.Services.Get<IAgentRuntime>();
-            var answered = runtime is null
-                ? await WaitAsync(entry.Allowed.Task, ct).ConfigureAwait(false)
-                : await runtime.WaitYieldedAsync(run.Agent.Id, entry.Allowed.Task, "waiting for your OK", null, ct).ConfigureAwait(false);
-            if (!answered)
-            {
-                status = "steered";
-                return Block("the user wrote a new message instead of answering whether it may run; the message follows. Nothing ran.");
-            }
-            var allowed = await entry.Allowed.Task.ConfigureAwait(false);
-            if (!allowed && entry.Stopped)
-            {
-                status = "stopped";
-                return Block($"the guardrails plugin stopped (it was reloaded) while this waited for your OK, so it could not be approved. Nothing ran; if guardrails is back, the call can be retried against {Subject(verdict)}.");
-            }
-            status = allowed ? "allowed" : "denied";
-            return allowed ? null : Block($"the user said no to {Subject(verdict)}. Nothing ran.");
-        }
-        finally
-        {
-            approvals.Close(entry, status); // a no-op after guard.answer closed it
-        }
-    }
-
-    private static async Task<bool> WaitAsync(Task until, CancellationToken ct)
-    {
-        await until.WaitAsync(ct).ConfigureAwait(false);
-        return true;
+        // ask: the call waits for the user's OK (the run ends at it; guard.answer goes on with it, allowed or blocked)
+        return new ToolCallDecision { Wait = Approvals.Wait(call, verdict, opinion) };
     }
 
     private static ToolCallDecision Block(string reason) => new() { Block = true, Reason = reason };
-
-    private static string Subject(Verdict v) => v.Kind == "path" ? $"changing {v.Subject}" : $"`{v.Subject}`";
 
     private static string Why(Verdict v) => v.Kind switch
     {

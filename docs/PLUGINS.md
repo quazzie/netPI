@@ -353,7 +353,7 @@ user does not keep anything else waiting. The model's call has no result until t
 
 - **answered**: the owner calls `IAgentRuntime.ResolveAsync(waitId, WaitResolution.Answer(result))` (the call's result)
   or `WaitResolution.Allow()` (a hook's wait: the call runs, through the hooks again, and the hook that asked finds it
-  in `turn.AllowedCalls`). When every wait of the batch is answered, a run finishes the batch — the answers, the calls
+  in `turn.AllowedCalls`, with the wait's kind and data). When every wait of the batch is answered, a run finishes the batch — the answers, the calls
   allowed to run, the calls after them, in order — and calls the model. An answer that comes while the batch is still
   running (another call of it is slow) is kept, and the run goes on the moment the batch stops.
 - **the user writes instead** (`agent.send` from the user, not a queued follow-up): each unanswered wait gets its

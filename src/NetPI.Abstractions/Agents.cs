@@ -273,10 +273,10 @@ public sealed class AgentTurnContext
     public long LastContextTokens { get; set; }
     /// <summary>
     /// The calls of this batch the user allowed to run after a hook asked (<see cref="ToolCallDecision.Wait"/>,
-    /// <see cref="WaitResolution.Allow"/>): call id → the wait's <see cref="UserWait.Kind"/>. The hook that asked lets them
-    /// through. Empty except in the run that goes on after the answer.
+    /// <see cref="WaitResolution.Allow"/>): call id → the wait that allowed it (its kind and data say whose and what: a
+    /// guardrail lets that rule through, and still asks about another). Empty except in the run that goes on after it.
     /// </summary>
-    public IReadOnlyDictionary<string, string> AllowedCalls { get; init; } = new Dictionary<string, string>();
+    public IReadOnlyDictionary<string, WaitingCall> AllowedCalls { get; init; } = new Dictionary<string, WaitingCall>();
 }
 
 public enum TurnAction { Continue, Inject, Replace, Stop }

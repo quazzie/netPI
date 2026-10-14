@@ -13,7 +13,7 @@ public static class GuardrailsTests
         t.Add("guardrails: a blocked command never runs, and the model reads why", BlockedCommand);
         t.Add("guardrails: protected paths: write and edit refuse them, shell commands that name them too", ProtectedPaths);
         t.Add("guardrails: ask rules wait for the user's OK with the instance given back (allow, no, a message instead)", AskRules);
-        t.Add("guardrails: a pending ask refused by the plugin stopping is a reload, not a user no", RefusedByStop);
+        t.Add("guardrails: a pending ask survives a reload of the guardrails plugin; the OK then lets the call run", SurvivesReload);
         t.Add("guardrails: an approval given while the chat's agent is switched off lets the call run - the failure lands on the next turn", ApprovalSurvivesSlotFailure);
         t.Add("guardrails: allowed for this chat, the rule stops asking there (not in other chats, never for a no)", AllowForSession);
         t.Add("guardrails: in a subagent an ask rule blocks; switched off, nothing is checked", SubagentAndOff);
@@ -297,21 +297,35 @@ public static class GuardrailsTests
 
     private static async Task DuplicateIds()
     {
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
-        var approvals = new Approvals(new TestPluginContext(h, "guard-test"));
-        var verdict = new Verdict(GuardAction.Ask, "ask: ^git push", "command", "git push");
-        var call = new ToolCallPart { Id = "call_0", Name = "bash", Arguments = "{}" };
-        var a = approvals.Add("sessionA", "agentA", call, verdict, null);
-        var b = approvals.Add("sessionB", "agentB", call, verdict, null);
-        Check.Equal(2, approvals.List(null).Count);
-        Check.True(a.ApprovalId != b.ApprovalId);
-        approvals.Answer(a.ApprovalId, true);
-        Check.True(await a.Allowed.Task);
-        Check.False(b.Allowed.Task.IsCompleted);
-        await Check.ThrowsAsync<RpcException>(() => Task.Run(() => approvals.Answer(a.ApprovalId, true)));
-        approvals.Answer(b.ApprovalId, false);
-        Check.False(await b.Allowed.Task);
-        Check.Equal(0, approvals.List(null).Count);
+        await using var h = await StartAsync();
+        h.Settings.Set("guardrails.commands", new JsonArray("ask: ^git push"));
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        var a = h.NewSession(model: "fake/solo");
+        var b = h.NewSession(model: "fake/solo");
+        // both models use the same provider call id: an approval meant for one chat must not let the other's call run
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done")
+            : Reply.Stream(Reply.Message(Reply.Call("bash", new { command = $"git push {(r.SessionId == a.Id ? "a" : "b")}" }, "call_0")));
+        await h.SendAsync(a.Id, "push a");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 1, "chat a asks");
+        await h.SendAsync(b.Id, "push b");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 2, "chat b asks");
+        var asked = h.Bus.OfType("guard.asked").Select(FakeBus.Data).ToList();
+        Check.Equal("call_0", (string?)asked[0]["callId"]);
+        Check.Equal("call_0", (string?)asked[1]["callId"]);
+        Check.True((string?)asked[0]["approvalId"] != (string?)asked[1]["approvalId"], "two approvals, two ids");
+        Check.Equal(2, (await h.Rpc.CallAsync("guard.pending", new { }))!.AsArray().Count);
+        var forA = asked.Single(x => (string?)x["sessionId"] == a.Id);
+        var forB = asked.Single(x => (string?)x["sessionId"] == b.Id);
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)forA["approvalId"]!, allow = true });
+        await h.IdleAsync(a.Id);
+        Check.Equal("git push a", ran.Select(x => JsonNode.Parse(x)!["command"]!.GetValue<string>()).Single(), "only chat a's call ran");
+        Check.Equal(AgentStatus.Yielded, h.Runtime.GetBySession(b.Id)!.Status, "chat b still waits");
+        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)forA["approvalId"]!, allow = true }))).Code);
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)forB["approvalId"]!, allow = false });
+        await h.IdleAsync(b.Id);
+        Check.Equal(1, ran.Count, "chat b's call was refused");
+        Check.Equal(0, (await h.Rpc.CallAsync("guard.pending", new { }))!.AsArray().Count);
     }
 
     private static async Task<TestHost> StartAsync(Action<TestHost>? setup = null)
@@ -552,7 +566,7 @@ public static class GuardrailsTests
         Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "solo").Sum(x => x.Busy), "the slot is free");
     }
 
-    private static async Task RefusedByStop()
+    private static async Task SurvivesReload()
     {
         await using var h = await StartAsync();
         h.Settings.Set("guardrails.commands", new JsonArray("ask: ^git push"));
@@ -566,17 +580,18 @@ public static class GuardrailsTests
         await h.SendAsync(s.Id, "push");
         await Wait.Until(() => h.Bus.OfType("guard.asked").Count >= 1, "a tool call waits for the OK");
         await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the call waits with the slot given back");
+        var approvalId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[0])["approvalId"]!;
 
-        // The guardrails plugin stops (a reload): the pending approval is refused, not answered by the user.
+        // The guardrails plugin is reloaded (a publish while the chat waits): the question is the runtime's, nothing is refused
         await h.StopPluginAsync("netpi.guardrails");
-        await Wait.Until(() => h.Bus.OfType("guard.closed").Any(), "the waiting call is released");
+        await h.StartPluginAsync(new GuardrailsPlugin());
+        Check.Equal(0, h.Bus.OfType("guard.closed").Count, "the reload closed nothing");
+        Check.Equal(approvalId, (string?)(await h.Rpc.CallAsync("guard.pending", new { sessionId = s.Id }))!.AsArray().Single()!["approvalId"], "the new version lists it");
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId, allow = true });
         await h.IdleAsync(s.Id);
-
-        Check.Equal(0, ran.Count, "the call did not run");
-        Check.Equal("stopped", (string?)FakeBus.Data(h.Bus.OfType("guard.closed").Last())["status"]);
-        var result = Results(h, s.Id).Last().Content;
-        Check.Contains(result, "guardrails", "names the plugin, not the user");
-        Check.NotContains(result, "the user said no", "a reload is not a user denial");
+        Check.Equal(1, ran.Count, "allowed after the reload: it ran");
+        Check.Equal("bash ran", Results(h, s.Id).Last().Content);
+        Check.Equal("allowed", (string?)FakeBus.Data(h.Bus.OfType("guard.closed").Single())["status"]);
     }
 
     private static async Task AllowForSession()

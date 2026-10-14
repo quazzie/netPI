@@ -1515,7 +1515,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         Emit(EventTypes.AgentWaitEnded, new JsonObject
         {
             ["sessionId"] = s.Info.SessionId, ["agentId"] = s.Info.Id, ["callId"] = w.CallId, ["waitId"] = w.Id, ["kind"] = w.Kind,
-            ["reason"] = reason,
+            ["tool"] = w.Tool, ["data"] = w.Data?.DeepClone(), ["reason"] = reason,
         });
     }
 

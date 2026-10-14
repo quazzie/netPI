@@ -177,7 +177,7 @@ public static class WaitTests
         public ValueTask<ToolCallDecision?> OnBeforeToolCallAsync(AgentTurnContext turn, ToolCallPart call)
         {
             if (call.Name != "act") return ValueTask.FromResult<ToolCallDecision?>(null);
-            if (turn.AllowedCalls.TryGetValue(call.Id, out var kind) && kind == "test") return ValueTask.FromResult<ToolCallDecision?>(null);
+            if (turn.AllowedCalls.TryGetValue(call.Id, out var allowed) && allowed.Kind == "test") return ValueTask.FromResult<ToolCallDecision?>(null);
             Interlocked.Increment(ref Asked);
             return ValueTask.FromResult<ToolCallDecision?>(new ToolCallDecision { Wait = NewWait("w_hook_" + call.Id, "waiting for your OK") });
         }

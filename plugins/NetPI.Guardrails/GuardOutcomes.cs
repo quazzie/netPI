@@ -17,17 +17,21 @@ internal sealed class GuardOutcomes(IPluginData data, ILogger log)
     private readonly IDataCollection _rows = data.Collection("outcomes", new CollectionSpec().Text("at").Text("result"));
     private int _writes;
 
-    public void Record(string result, string sessionId, string tool, Verdict verdict, Opinion? opinion)
+    public void Record(string result, string sessionId, string tool, Verdict verdict, Opinion? opinion) =>
+        Record(result, sessionId, tool, verdict.Kind, verdict.Rule, verdict.Subject, opinion?.ToJson());
+
+    /// <summary>The same from a wait's data (the question was answered or ended after this plugin's version that asked it).</summary>
+    public void Record(string result, string sessionId, string tool, string kind, string rule, string subject, JsonObject? opinion)
     {
         try
         {
             var row = new JsonObject
             {
                 ["at"] = DateTimeOffset.UtcNow.ToString("O"), ["result"] = result, ["sessionId"] = sessionId, ["tool"] = tool,
-                ["kind"] = verdict.Kind, ["rule"] = verdict.Rule,
-                ["subject"] = verdict.Subject is { Length: > 600 } s ? s[..600] + "…" : verdict.Subject,
+                ["kind"] = kind, ["rule"] = rule,
+                ["subject"] = subject is { Length: > 600 } s ? s[..600] + "…" : subject,
             };
-            if (opinion is not null) row["opinion"] = opinion.ToJson();
+            if (opinion is not null) row["opinion"] = opinion.DeepClone();
             _rows.Put($"{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid().ToString("N")[..6]}", row);
             if (Interlocked.Increment(ref _writes) % 200 == 0) Prune();
         }
