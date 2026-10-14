@@ -132,6 +132,9 @@
     {#if o}
       <div
         class="slot busy np-hover-row"
+        data-testid="slot"
+        data-state="busy"
+        data-session={o.sessionId ?? runOf(o)?.sessionId}
         class:compact
         role="button"
         tabindex="0"
@@ -165,7 +168,7 @@
         >
       </div>
     {:else}
-      <div class="slot free" class:compact>
+      <div class="slot free" data-testid="slot" data-state="free" class:compact>
         <span class="dot"></span>
         <span class="t">
           <span class="l1">free</span>

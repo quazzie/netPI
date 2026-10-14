@@ -87,7 +87,7 @@
   }
 </script>
 
-<button bind:this={anchor} class="waiting np-line" aria-expanded={open} title="Who is queued for a free instance" onclick={toggle}>
+<button bind:this={anchor} class="waiting np-line" data-testid="queued" data-count={waiters.length} aria-expanded={open} title="Who is queued for a free instance" onclick={toggle}>
   <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
   <span class="np-grow np-ellipsis">{waiters.length} queued{what ? ` ${what}` : ''}<span class="np-dim">, longest</span><Elapsed since={oldest} class="np-mono longest" /></span>
   {#if critical}<Priority priority={200} />{/if}
@@ -96,7 +96,7 @@
 {#if open}
   <div class="pop" role="menu" bind:this={panel} style:left="{x}px" style:top="{y}px">
     {#each sorted as w (w.agentId + w.since)}
-      <div class="row" role="menuitem">
+      <div class="row" role="menuitem" data-session={w.sessionId}>
         <button
           class="name np-ellipsis"
           title="Open {label(w)}"
@@ -107,7 +107,7 @@
         >
         <Priority priority={w.priority} />
         <Elapsed since={w.since} class="np-mono t" />
-        <IconButton icon="x" title="Cancel this run: it leaves the queue and never starts" size="sm" disabled={cancelling.has(w.agentId) || ctx.hasRpc?.('agent.abort') === false} onclick={() => cancel(w)} />
+        <IconButton icon="x" title="Cancel this run: it leaves the queue and never starts" size="sm" data-testid="cancel-run" disabled={cancelling.has(w.agentId) || ctx.hasRpc?.('agent.abort') === false} onclick={() => cancel(w)} />
       </div>
     {/each}
   </div>

@@ -92,12 +92,12 @@
 </script>
 
 {#if status === 'preparing'}
-  <div class="line">
+  <div class="line" data-testid="ask" data-state={status}>
     <span class="ic"><span class="np-spinner"></span></span>
     <span class="np-line np-baseline np-grow tx"><span class="lbl">Question</span><span class="dim">preparing…</span></span>
   </div>
 {:else if status === 'waiting'}
-  <div class="card" role="group" aria-label="The agent's question">
+  <div class="card" role="group" aria-label="The agent's question" data-testid="ask" data-state={status}>
     <div class="who"><Icon name="message-circle" size={13} /><span>{questions.length > 1 ? `${questions.length} questions for you` : 'A question for you'}</span></div>
     {#each questions as q, i (i)}
       <div class="q">
@@ -124,7 +124,7 @@
     </div>
   </div>
 {:else}
-  <button class="line done" class:open aria-expanded={open} onclick={() => (open = !open)}>
+  <button class="line done" class:open aria-expanded={open} data-testid="ask" data-state={status} onclick={() => (open = !open)}>
     <span class="ic"><Icon name="message-circle" size={14} /></span>
     <span class="np-line np-baseline np-grow tx">
       <span class="lbl">Question</span>

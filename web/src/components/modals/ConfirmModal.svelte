@@ -11,7 +11,7 @@
   {#if data.message}<p class="msg">{data.message}</p>{/if}
   {#snippet footer()}
     <button class="np-btn np-btn-ghost" onclick={() => done(false)}>Cancel</button>
-    <button class="np-btn {data.danger ? 'np-btn-danger' : 'np-btn-primary'}" data-autofocus onclick={() => done(true)}>{data.confirmLabel}</button>
+    <button class="np-btn {data.danger ? 'np-btn-danger' : 'np-btn-primary'}" data-autofocus data-testid="confirm" onclick={() => done(true)}>{data.confirmLabel}</button>
   {/snippet}
 </Modal>
 

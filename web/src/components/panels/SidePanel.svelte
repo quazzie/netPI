@@ -129,6 +129,8 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <aside
     class="panel {side}"
+    data-testid="panel-{side}"
+    data-state={open ? 'open' : 'closed'}
     class:open
     class:dragging
     class:drop-target={tabDrag.key && dropIndex != null}
@@ -140,6 +142,7 @@
       {#each list as t (t.key)}
         <button
           class="strip-tab"
+          data-tab-key={t.key}
           class:dragged={tabDrag.key === t.key}
           role="tab"
           aria-selected={open && active?.key === t.key}
@@ -160,7 +163,7 @@
 
     <div class="body" style:width="{st.width}px" hidden={!open}>
       {#each mounted as t (t.key)}
-        <div class="pane" hidden={active?.key !== t.key}>
+        <div class="pane" data-pane={t.key} hidden={active?.key !== t.key}>
           {#if t.component}
             <t.component visible={open && active?.key === t.key} />
           {:else}

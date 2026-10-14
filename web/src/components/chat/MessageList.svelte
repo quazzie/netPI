@@ -158,7 +158,7 @@
 
 <div class="wrap">
 <div class="scroller np-scroll" bind:this={scroller} onscroll={onScroll}>
-  <div class="content" bind:this={content}>
+  <div class="content" data-testid="chat" data-session={session.id} bind:this={content}>
     {#if chat.hasMore}
       <div class="earlier">
         <button class="np-btn np-btn-sm" onclick={loadEarlier} disabled={chat.loadingEarlier}>

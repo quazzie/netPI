@@ -74,7 +74,7 @@
 </script>
 
 {#snippet foot()}
-  <button class="np-btn np-btn-danger remove" onclick={remove}><Icon name="trash" size={13} /> Remove agent</button>
+  <button class="np-btn np-btn-danger remove" data-testid="remove-agent" onclick={remove}><Icon name="trash" size={13} /> Remove agent</button>
   <span class="spacer"></span>
   <button class="np-btn np-btn-primary" onclick={() => onclose?.()}>Done</button>
 {/snippet}

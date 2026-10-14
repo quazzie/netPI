@@ -173,9 +173,9 @@
 <Modal title="Settings" width={800} padded={false} {onclose}>
   <div class="layout">
     <nav class="nav">
-      <button class:active={section === 'general'} onclick={() => (section = 'general')}><Icon name="sliders" size={14} /> General</button>
+      <button class:active={section === 'general'} data-page="general" onclick={() => (section = 'general')}><Icon name="sliders" size={14} /> General</button>
       {#each layout.pages.filter((p) => p.sections.length || p.id === 'agents' || p.id === 'profiles' || p.id === 'plugins') as p (p.id)}
-        <button class:active={section === p.id} onclick={() => (section = p.id)}><Icon name={p.icon} size={14} /> {p.title}</button>
+        <button class:active={section === p.id} data-page={p.id} onclick={() => (section = p.id)}><Icon name={p.icon} size={14} /> {p.title}</button>
       {/each}
       <div class="nav-gap"></div>
       <button class:active={section === 'json'} onclick={() => (section = 'json')}><Icon name="file-text" size={14} /> settings.json</button>

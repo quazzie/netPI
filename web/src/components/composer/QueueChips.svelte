@@ -30,7 +30,7 @@
 
 <div class="queue">
   {#each chat.ownQueue as q (q.id)}
-    <div class="chip" data-mode={q.mode} data-long={longWait(q) || undefined} title={q.text}>
+    <div class="chip" data-testid="queue-chip" data-mode={q.mode} data-long={longWait(q) || undefined} title={q.text}>
       <Icon name={q.mode === 'steer' ? 'steer' : 'queue'} size={12} />
       <span class="mode">{q.mode === 'steer' ? 'steer' : 'queued'}</span>
       {#if longWait(q)}

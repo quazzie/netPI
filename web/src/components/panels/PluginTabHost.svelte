@@ -107,7 +107,7 @@
   });
 </script>
 
-<div class="plugin-tab">
+<div class="plugin-tab" data-testid="plugin-tab" data-state={phase}>
   {#if phase === 'loading'}
     <div class="state"><span class="np-spinner"></span> Loading {tab.title}…</div>
   {:else if phase === 'error'}

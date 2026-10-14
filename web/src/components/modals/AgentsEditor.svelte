@@ -81,7 +81,7 @@
     </div>
   {/each}
   <div class="add">
-    <button class="np-btn np-btn-sm" bind:this={addBtn} onclick={() => (adding = !adding)}><Icon name="plus" size={12} /> Add agent</button>
+    <button class="np-btn np-btn-sm" data-testid="add-agent" bind:this={addBtn} onclick={() => (adding = !adding)}><Icon name="plus" size={12} /> Add agent</button>
   </div>
 </div>
 

@@ -75,7 +75,7 @@
   }
 </script>
 
-<div class="thinking" class:open class:live={!!s} class:active={live}>
+<div class="thinking" data-testid="thinking" data-state={live ? 'live' : 'done'} class:open class:live={!!s} class:active={live}>
   <button
     class="line"
     aria-expanded={open}
@@ -90,9 +90,9 @@
   </button>
   {#if open && p.text}
     {#if s}
-      <div class="body live-body md np-scroll" use:follow={liveHtml}>{@html liveHtml}</div>
+      <div class="body live-body md np-scroll" data-testid="thinking-body" use:follow={liveHtml}>{@html liveHtml}</div>
     {:else}
-      <div class="body md">{@html renderMarkdown(p.text)}</div>
+      <div class="body md" data-testid="thinking-body">{@html renderMarkdown(p.text)}</div>
     {/if}
   {/if}
 </div>

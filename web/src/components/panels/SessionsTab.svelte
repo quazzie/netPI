@@ -259,6 +259,7 @@
       <Icon name="search" size={13} />
       <input
         class="search-input"
+        data-testid="session-search"
         placeholder="Search sessions"
         bind:value={q}
         onkeydown={(e) => e.key === 'Escape' && (q = '')}

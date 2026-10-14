@@ -97,6 +97,7 @@
           class:current={refOf(m) === current}
           role="option"
           aria-selected={refOf(m) === current}
+          data-model={refOf(m)}
           onclick={() => onchoose?.(refOf(m))}
           onmouseenter={() => (index = i)}
           use:scrollIntoView={i === index}

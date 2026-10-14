@@ -362,6 +362,7 @@
       class:running
       bind:this={root}
       data-composer
+      data-state={running ? 'running' : 'idle'}
       role="group"
       aria-label="Message composer"
       ondragover={(e) => {

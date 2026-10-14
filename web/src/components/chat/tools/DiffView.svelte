@@ -33,14 +33,14 @@
 
 {#if parsed && visibleRows.length}
   {#if pseudo && !result}<div class="note">pending — showing requested edits</div>{/if}
-  <div class="diff np-mono np-scroll">
+  <div class="diff np-mono np-scroll" data-testid="diff">
     {#each rows as r, i (i)}
       {#if r.t === 'file'}
         <div class="dl file" title={r.text}><span class="code">{r.text}</span></div>
       {:else if r.t === 'hunk' || r.t === 'meta'}
         <div class="dl {r.t}"><span class="gut"></span><span class="code">{r.text}</span></div>
       {:else}
-        <div class="dl {r.t}">
+        <div class="dl {r.t}" data-row={r.t}>
           <span class="ln">{r.o ?? ''}</span><span class="ln">{r.n ?? ''}</span><span class="sg">{sign[r.t]}</span><span
             class="code">{r.text}</span
           >
@@ -55,9 +55,9 @@
   {/if}
 {:else if content}
   <div class="note">{d?.created ? 'new file' : 'content'} · {contentLines.length} lines{d?.bytes != null ? ` · ${d.bytes} bytes` : ''}</div>
-  <div class="diff np-mono np-scroll">
+  <div class="diff np-mono np-scroll" data-testid="diff">
     {#each showAllContent ? contentLines : contentLines.slice(0, 60) as l, i (i)}
-      <div class="dl add"><span class="ln"></span><span class="ln">{i + 1}</span><span class="sg">+</span><span class="code">{l}</span></div>
+      <div class="dl add" data-row="add"><span class="ln"></span><span class="ln">{i + 1}</span><span class="sg">+</span><span class="code">{l}</span></div>
     {/each}
   </div>
   {#if contentLines.length > 60}

@@ -138,7 +138,7 @@
   }
 </script>
 
-<div class="tool" data-status={status} class:open>
+<div class="tool" data-tool={call.name} data-status={status} class:open>
   <button class="line" onclick={toggle} aria-expanded={open} disabled={status === 'preparing'}>
     <span class="ic">
       {#if status === 'running' || status === 'preparing'}
@@ -193,7 +193,7 @@
   {/if}
 
   {#if tail}
-    <pre class="tail np-mono">{tail}</pre>
+    <pre class="tail np-mono" data-testid="tool-tail">{tail}</pre>
   {/if}
 
   {#if open}

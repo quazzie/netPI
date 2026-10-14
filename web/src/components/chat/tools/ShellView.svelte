@@ -70,7 +70,7 @@
     <button class="copy" title="Copy command" onclick={copyCmd}><Icon name={copied ? 'check' : 'copy'} size={12} /></button>
   </div>
   {#if output}
-    <pre class="out np-mono np-scroll" class:full bind:this={pre}>{output}</pre>
+    <pre class="out np-mono np-scroll" class:full data-testid="shell-output" bind:this={pre}>{output}</pre>
   {:else}
     <div class="out empty np-mono">{running ? 'waiting for output…' : '(no output)'}</div>
   {/if}

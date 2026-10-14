@@ -47,7 +47,7 @@
 
 <div class="group" class:collapsible class:open>
   {#if collapsible}
-    <button class="head" aria-expanded={open} onclick={() => chat.expanded.set(item.key, !open)}>
+    <button class="head" data-testid="steps-head" aria-expanded={open} onclick={() => chat.expanded.set(item.key, !open)}>
       <span class="chev" class:open><Icon name="chevron-right" size={12} stroke={2} /></span>
       <span class="count">{n} {n === 1 ? 'step' : 'steps'}</span>
       {#if span}<span class="took np-dim">· {duration(span)}</span>{/if}

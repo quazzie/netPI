@@ -151,6 +151,7 @@
     <BudgetPill />
     <button
       class="conn"
+      data-testid="connection"
       data-status={conn.status}
       title={conn.status === 'open' ? `Connected${conn.version ? ` · v${conn.version}` : ''}` : 'Click to retry now'}
       onclick={() => conn.status !== 'open' && reconnectNow()}

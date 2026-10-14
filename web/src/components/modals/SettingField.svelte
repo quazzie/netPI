@@ -73,7 +73,7 @@
 
 </script>
 
-<div class="field" class:stacked>
+<div class="field" data-setting={s.key} class:stacked>
   <div class="lbl">
     <div class="name">
       {s.label ?? s.key}
@@ -109,6 +109,7 @@
         <input
           class="np-input"
           class:bad={!!invalid}
+          aria-invalid={!!invalid}
           type={s.type === 'secret' && !show ? 'password' : 'text'}
           inputmode={s.type === 'int' || s.type === 'number' ? 'decimal' : undefined}
           bind:value={draft}
@@ -130,9 +131,9 @@
       </div>
     {/if}
     {#if isSet && s.type !== 'bool'}
-      <button class="reset" title="Remove the setting: the default applies again" onclick={() => setSetting(s.key, null)}>Reset</button>
+      <button class="reset" data-testid="reset-setting" title="Remove the setting: the default applies again" onclick={() => setSetting(s.key, null)}>Reset</button>
     {:else if isSet && s.type === 'bool' && s.default != null && value !== s.default}
-      <button class="reset" title="Back to the default" onclick={() => setSetting(s.key, null)}>Reset</button>
+      <button class="reset" data-testid="reset-setting" title="Back to the default" onclick={() => setSetting(s.key, null)}>Reset</button>
     {/if}
   </div>
   {#if invalid}<div class="bad-msg">Must be {invalid}.</div>{/if}
