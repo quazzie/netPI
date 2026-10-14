@@ -111,7 +111,7 @@ public sealed class ClaudeCliProvider : IModelProvider
             ManagesOwnContext = true,
             RunsOwnTools = true,
             Concurrency = o.MaxConcurrent,
-            InputModalities = ["text"],
+            InputModalities = ["text", "image"],
             Reasoning = new ReasoningInfo { Supported = true, Efforts = [.. ClaudeCliOptions.Efforts], Default = "medium" },
             StallTimeoutSeconds = o.StallTimeoutSeconds,
             Status = "available",
@@ -121,7 +121,24 @@ public sealed class ClaudeCliProvider : IModelProvider
     }
 
     /// <summary>One try of a call: resume the CLI session of this chat, or start one (the whole conversation as the prompt).</summary>
-    internal sealed record CliAttempt(bool Resume, string CliId, string Prompt, bool Persist);
+    internal sealed record CliAttempt(bool Resume, string CliId, string Prompt, bool Persist, IReadOnlyList<ImagePart>? Images = null)
+    {
+        /// <summary>What goes on stdin: the prompt as text, or with pictures one stream-json user message (text and image blocks).</summary>
+        public string Stdin => Images is not { Count: > 0 } ? Prompt : new JsonObject
+        {
+            ["type"] = "user",
+            ["message"] = new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = new JsonArray(new JsonNode?[] { new JsonObject { ["type"] = "text", ["text"] = Prompt.Length == 0 ? "(see the attached image)" : Prompt } }
+                    .Concat(Images.Select(i => (JsonNode?)new JsonObject
+                    {
+                        ["type"] = "image",
+                        ["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = i.MediaType, ["data"] = i.Data },
+                    })).ToArray()),
+            },
+        }.ToJsonString();
+    }
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -152,7 +169,7 @@ public sealed class ClaudeCliProvider : IModelProvider
                 yield return current;
             }
             if (!retry) yield break;
-            attempt = new CliAttempt(false, Guid.NewGuid().ToString(), RenderPrompt(request), true);
+            attempt = new CliAttempt(false, Guid.NewGuid().ToString(), RenderPrompt(request), true, UserImages(request, 0));
             yield return new StreamNotice("The Claude CLI session of this chat is gone: continuing in a new one with the conversation so far.", "warning");
         }
     }
@@ -164,11 +181,11 @@ public sealed class ClaudeCliProvider : IModelProvider
     /// </summary>
     internal CliAttempt Plan(ModelRequest request, bool agentTurn)
     {
-        if (!agentTurn || string.IsNullOrEmpty(request.SessionId)) return new CliAttempt(false, "", RenderPrompt(request), false);
+        if (!agentTurn || string.IsNullOrEmpty(request.SessionId)) return new CliAttempt(false, "", RenderPrompt(request), false, UserImages(request, 0));
         var maxId = MaxId(request);
         if (_sessions.Get(request.SessionId) is { LastSeenId: > 0 } stored && stored.LastSeenId <= maxId)
-            return new CliAttempt(true, stored.CliId, RenderDelta(request, stored.LastSeenId), true);
-        return new CliAttempt(false, Guid.NewGuid().ToString(), RenderPrompt(request), true);
+            return new CliAttempt(true, stored.CliId, RenderDelta(request, stored.LastSeenId), true, UserImages(request, stored.LastSeenId));
+        return new CliAttempt(false, Guid.NewGuid().ToString(), RenderPrompt(request), true, UserImages(request, 0));
     }
 
     private static long MaxId(ModelRequest request) => request.Messages.Count == 0 ? 0 : request.Messages.Max(m => m.Id);
@@ -204,7 +221,7 @@ public sealed class ClaudeCliProvider : IModelProvider
         var recorded = false;
         try
         {
-            var call = new CliCall(executable, BuildArgs(request, o, tools, promptFile, attempt, disallowed), attempt.Prompt, workDir,
+            var call = new CliCall(executable, BuildArgs(request, o, tools, promptFile, attempt, disallowed), attempt.Stdin, workDir,
                 TimeSpan.FromSeconds(o.TimeoutSeconds), _hiddenEnv(), o.ConfigDir);
             var warned = false;
             await foreach (var line in _runner(call, ct).ConfigureAwait(false))
@@ -391,9 +408,21 @@ public sealed class ClaudeCliProvider : IModelProvider
         else args.AddRange(attempt.Resume ? ["--resume", attempt.CliId] : ["--session-id", attempt.CliId]);
         args.AddRange(["--disable-slash-commands", "--setting-sources", o.SettingSources,
             "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--system-prompt-file", systemPromptFile]);
+        if (attempt.Images is { Count: > 0 }) args.AddRange(["--input-format", "stream-json"]); // pictures need the structured input
         if (request.ReasoningEffort is { } e && ClaudeCliOptions.Efforts.Contains(e, StringComparer.OrdinalIgnoreCase))
             args.AddRange(["--effort", e.ToLowerInvariant()]);
         return args;
+    }
+
+    /// <summary>Most pictures one call carries (the newest): a long chat does not resend every screenshot it ever had.</summary>
+    internal const int MaxImages = 8;
+
+    /// <summary>The pictures the user attached in the messages a call renders (after <paramref name="lastSeenId"/>), the newest <see cref="MaxImages"/>.</summary>
+    internal static List<ImagePart>? UserImages(ModelRequest request, long lastSeenId)
+    {
+        var all = request.Messages.Where(m => (lastSeenId == 0 || m.Id > lastSeenId) && !m.Compacted && m.Role == MessageRole.User)
+            .SelectMany(m => m.Parts.OfType<ImagePart>()).Where(i => i.Data.Length > 0).ToList();
+        return all.Count == 0 ? null : all.Skip(Math.Max(0, all.Count - MaxImages)).ToList();
     }
 
     /// <summary>

@@ -111,6 +111,19 @@ internal static class ClaudeCliTests
             t.Check(e is { Transient: true, ErrorType: "cli_incomplete" }, "a run without a result line is reported, not an empty answer");
         });
 
+        await t.Run("claude-cli: a user's pictures go to the CLI as stream-json image blocks", async () =>
+        {
+            SeenCall? seen = null;
+            var p = new CL.ClaudeCliProvider(() => Cfg(), null, (call, ct) => { seen = new SeenCall(call.Args.ToList(), call.Stdin, false); return Lines([Init, Result], ct); });
+            var msg = new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "What is this?" }, new ImagePart { MediaType = "image/png", Data = "QUJD" }] };
+            await Collect(p, Req(messages: [msg]));
+            t.Check(seen!.Args.Contains("--input-format") && seen.Args[seen.Args.IndexOf("--input-format") + 1] == "stream-json", "structured input is on");
+            var block = System.Text.Json.Nodes.JsonNode.Parse(seen.Stdin)!["message"]!["content"]!.AsArray();
+            t.Eq("What is this?", block[0]!["text"]!.GetValue<string>(), "the text block");
+            t.Eq("QUJD", block[1]!["source"]!["data"]!.GetValue<string>(), "the image block");
+            t.Check((await p.ListModelsAsync(false, default)) is var _ && CL.ClaudeCliProvider.UserImages(Req(messages: [ChatMessage.UserText("x")]), 0) is null, "no pictures: plain text");
+        });
+
         await t.Run("claude-cli: the CLI runs with its own tools in the session folder: no session, no skills, no connectors, the system prompt from a file, effort passed", async () =>
         {
             SeenCall? seen = null;
