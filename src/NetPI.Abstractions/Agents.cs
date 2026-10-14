@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+
 namespace NetPI;
 
 public enum AgentStatus
@@ -7,7 +9,10 @@ public enum AgentStatus
     /// <summary>Waiting for a free slot on its agent.</summary>
     Queued,
     Running,
-    /// <summary>Gave its slot away while waiting for other agents.</summary>
+    /// <summary>
+    /// Gave its slot away while it waits: for other agents (a run that goes on), or for the user (<see cref="UserWait"/>:
+    /// the run ended at the call that waits, and the chat goes on when they answer).
+    /// </summary>
     Yielded,
     /// <summary>Subagent finished its task.</summary>
     Completed,
@@ -131,6 +136,17 @@ public interface IAgentRuntime
         catch (TimeoutException) { return false; }
     }
 
+    /// <summary>The calls that wait for the user (<see cref="UserWait"/>), oldest first: of one chat, of one kind, or all.</summary>
+    IReadOnlyList<WaitingCall> Waits(string? sessionId = null, string? kind = null) => [];
+
+    /// <summary>
+    /// The user answered the wait <paramref name="waitId"/> (<see cref="UserWait.Id"/>). False when nothing waits under that
+    /// id any more: answered already, the user wrote instead, the chat was stopped or deleted. When every wait of the
+    /// chat's tool batch is answered the chat goes on: a run finishes the batch (the answers as the calls' results, the
+    /// calls allowed to run, the calls after them) and calls the model.
+    /// </summary>
+    Task<bool> ResolveAsync(string waitId, WaitResolution resolution, CancellationToken ct = default) => Task.FromResult(false);
+
     /// <summary>Abort the current run of an agent (by agent id or session id).</summary>
     Task<bool> AbortAsync(string agentOrSessionId);
 
@@ -139,6 +155,69 @@ public interface IAgentRuntime
 
     IReadOnlyList<QueuedInput> GetQueue(string sessionId);
     bool RemoveQueued(string sessionId, string inputId);
+}
+
+// ---------------------------------------------------------------- waiting for the user
+
+/// <summary>
+/// A tool call that waits for the user: a question (<c>ask_user</c>), an OK before a call runs (a guardrail), a decision (a
+/// plan, a schedule). A tool returns it in <see cref="ToolResult.Wait"/>, a hook that asks before the call runs in
+/// <see cref="ToolCallDecision.Wait"/>. It ends the run at that call: the runtime keeps it with the agent, which shows as
+/// <see cref="AgentStatus.Yielded"/> with <see cref="Activity"/> and holds no instance and no reload, and it survives a
+/// reload of any plugin and a restart. The call has no result until it ends: the owner answers it
+/// (<see cref="IAgentRuntime.ResolveAsync"/>); a message of the user's ends it with <see cref="IfSteered"/>; stopping the
+/// chat with <see cref="IfCancelled"/>. Anything else for the chat (a subagent's report, a notice) waits until then. The
+/// owner keeps no state of its own: its list of what waits is <see cref="IAgentRuntime.Waits"/>, and
+/// <c>agent.waitEnded</c> says when one stopped waiting. A subagent cannot wait: nobody watches its chat.
+/// </summary>
+public sealed class UserWait
+{
+    /// <summary>Its own id (the card's), unique: never the model's call id, which two chats can share.</summary>
+    public required string Id { get; init; }
+    /// <summary>The owner's name for the kind of wait (ask, guard, plan, plan-enter, schedule): its list, its card.</summary>
+    public required string Kind { get; init; }
+    /// <summary>What the agent shows while it waits: "waiting for your answer".</summary>
+    public required string Activity { get; init; }
+    /// <summary>The owner's data for its card (the questions, the rule, the schedule), stored with the wait.</summary>
+    public JsonObject? Data { get; init; }
+    /// <summary>The call's result when the user writes a new message instead of answering (the message follows it).</summary>
+    public required ToolResult IfSteered { get; init; }
+    /// <summary>The call's result when the chat is stopped before an answer (null: the runtime's abort marker).</summary>
+    public ToolResult? IfCancelled { get; init; }
+}
+
+/// <summary>How the user answered a <see cref="UserWait"/>.</summary>
+public sealed class WaitResolution
+{
+    /// <summary>The call's result: the question answered, the plan decided.</summary>
+    public ToolResult? Result { get; init; }
+    /// <summary>
+    /// The call runs after all: a hook asked before it ran (a guardrail), and the user allowed it. The call goes through
+    /// the hooks again, and <see cref="AgentTurnContext.AllowedCalls"/> tells the one that asked.
+    /// </summary>
+    public bool Run { get; init; }
+
+    public static WaitResolution Answer(ToolResult result) => new() { Result = result };
+    public static WaitResolution Allow() => new() { Run = true };
+}
+
+/// <summary>A call that waits for the user, as <see cref="IAgentRuntime.Waits"/> lists it.</summary>
+public sealed class WaitingCall
+{
+    /// <summary>The wait's own id (<see cref="UserWait.Id"/>).</summary>
+    public required string Id { get; init; }
+    public required string Kind { get; init; }
+    public required string SessionId { get; init; }
+    public required string AgentId { get; init; }
+    /// <summary>The model's id of the call that waits.</summary>
+    public required string CallId { get; init; }
+    /// <summary>The tool that was called.</summary>
+    public required string Tool { get; init; }
+    public string? Activity { get; init; }
+    public JsonObject? Data { get; init; }
+    public DateTimeOffset Since { get; init; }
+    /// <summary>Answered already, while other calls of the same batch still wait.</summary>
+    public bool Answered { get; init; }
 }
 
 // ---------------------------------------------------------------- hooks
@@ -165,7 +244,7 @@ public sealed class AgentRunContext
     public int ToolCallCount { get; set; }
     /// <summary>Plugin scratch state for this run (e.g. nudge counters).</summary>
     public Dictionary<string, object?> Items { get; } = [];
-    /// <summary>Set when the run ends: completed | aborted | failed.</summary>
+    /// <summary>Set when the run ends: completed | aborted | failed | waiting (a call waits for the user, <see cref="UserWait"/>: the chat goes on when they answer).</summary>
     public string? Outcome { get; set; }
     /// <summary>Reason for an aborted run, including executor removal versus a user stop.</summary>
     public string? CancelReason { get; set; }
@@ -192,6 +271,12 @@ public sealed class AgentTurnContext
     public required Func<Task> ReloadMessagesAsync { get; init; }
     /// <summary>Last known context size (tokens) from the previous call's usage, 0 if unknown.</summary>
     public long LastContextTokens { get; set; }
+    /// <summary>
+    /// The calls of this batch the user allowed to run after a hook asked (<see cref="ToolCallDecision.Wait"/>,
+    /// <see cref="WaitResolution.Allow"/>): call id → the wait's <see cref="UserWait.Kind"/>. The hook that asked lets them
+    /// through. Empty except in the run that goes on after the answer.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> AllowedCalls { get; init; } = new Dictionary<string, string>();
 }
 
 public enum TurnAction { Continue, Inject, Replace, Stop }
@@ -216,6 +301,12 @@ public sealed class ToolCallDecision
     public string? Reason { get; init; }
     /// <summary>Replace the arguments JSON before execution.</summary>
     public string? Arguments { get; init; }
+    /// <summary>
+    /// The call waits for the user before it runs (a guardrail's ask rule): it does not run, and the run ends at it
+    /// (<see cref="UserWait"/>). Allowed (<see cref="WaitResolution.Allow"/>), it runs in the run that goes on, through the
+    /// hooks again, with <see cref="AgentTurnContext.AllowedCalls"/> naming it.
+    /// </summary>
+    public UserWait? Wait { get; init; }
 }
 
 public sealed class ModelErrorDecision

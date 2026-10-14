@@ -13,6 +13,8 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
     private AgentRunContext? _rc;
     private long _lastContextTokens = -1;
+    /// <summary>The run ended at calls that wait for the user (<see cref="UserWait"/>): its outcome is "waiting".</summary>
+    private bool _waiting;
 
     private IPluginContext Ctx => rt.Ctx;
     private AgentInfo Info => state.Info;
@@ -27,6 +29,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         try
         {
             await LoopAsync(ct).ConfigureAwait(false);
+            if (_waiting) outcome = "waiting";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -78,9 +81,17 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             // 1. session, model, project, cwd, slot: re-read every turn (they can change mid-run)
             var resolved = await ResolveTurnAsync(turnIndex, ct).ConfigureAwait(false);
             var (rc, session, model, project, cwd, workspace) = resolved;
+            rc.SetAdmissionLease(run.Lease);
+
+            // 1b. the user answered what this batch waited for: its calls are finished first, before anything else reaches
+            // the transcript (their results come right after the calls)
+            if (run.Resume is { } resume)
+            {
+                if (await FinishBatchAsync(resume, rc, session, project, cwd, model, turnIndex, ct).ConfigureAwait(false)) break;
+                continue;
+            }
 
             // 2. steering input → transcript
-            rc.SetAdmissionLease(run.Lease);
             DrainSteering();
 
             // 3. turn context + hooks
@@ -156,7 +167,17 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             }
 
             // 6. tools
-            if (calls.Count > 0) await new ToolBatch(rt, state, rc, HasSteering).RunAsync(assistant, turn, calls, tools, ct).ConfigureAwait(false);
+            if (calls.Count > 0)
+            {
+                var batch = new ToolBatch(rt, state, rc, HasSteering);
+                await batch.RunAsync(assistant, turn, calls, tools, ct).ConfigureAwait(false);
+                // calls wait for the user: the run ends here, holding nothing, and goes on when they answer
+                if (batch.Waiting)
+                {
+                    _waiting = true;
+                    break;
+                }
+            }
 
             if (after is { Action: TurnAction.Inject } && !string.IsNullOrWhiteSpace(after.Text))
             {
@@ -169,6 +190,56 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             if (TakeNextInput()) continue;
             break;
         }
+    }
+
+    /// <summary>
+    /// The batch the user answered (<see cref="RunState.Resume"/>): its calls that have no result yet, in order - an answer
+    /// is its call's result, a call allowed to run runs (the hook that asked reads <see cref="AgentTurnContext.AllowedCalls"/>),
+    /// the calls after the waits run. True when the batch stops at a wait again (the run ends there).
+    /// </summary>
+    private async Task<bool> FinishBatchAsync(PendingBatch resume, AgentRunContext rc, SessionInfo session, ProjectInfo? project, string cwd,
+        ModelInfo model, int turnIndex, CancellationToken ct)
+    {
+        var assistant = Ctx.Sessions.GetMessage(resume.AssistantId);
+        var answered = new HashSet<string>(StringComparer.Ordinal);
+        if (assistant is not null)
+            foreach (var m in Ctx.Sessions.GetMessagesAfter(SessionId, assistant.Seq, 1000))
+                foreach (var r in m.ToolResults) answered.Add(r.CallId);
+        var calls = assistant is null ? [] : resume.Open
+            .Select(o => assistant.ToolCalls.FirstOrDefault(c => c.Id == o.Id))
+            .OfType<ToolCallPart>().Where(c => !answered.Contains(c.Id)).ToList();
+        run.Resume = null;   // taken: from here the batch is this run's like any other
+        if (calls.Count == 0 || assistant is null) return false;
+        var tools = rt.ToolsFor(Info, session);
+        var exposure = ToolExposure.For(Ctx.Settings, Info, session);
+        var defs = ToolSelection.Visible(tools, exposure);
+        IReadOnlyList<ToolDefinition> deferred = [.. tools.Where(t => !exposure.IsDeclared(t.Definition)).Select(t => t.Definition)];
+        var prompt = await BuildPromptAsync(session, project, cwd, model, defs, deferred, ct).ConfigureAwait(false);
+        AgentTurnContext turn = null!;
+        turn = new AgentTurnContext
+        {
+            Run = rc,
+            TurnIndex = turnIndex,
+            SystemPrompt = prompt,
+            Messages = [.. Ctx.Sessions.GetContextMessages(SessionId)],
+            Tools = defs,
+            DeferredTools = deferred,
+            LastContextTokens = Math.Max(0, _lastContextTokens),
+            ReloadMessagesAsync = () =>
+            {
+                turn.Messages = [.. Ctx.Sessions.GetContextMessages(SessionId)];
+                return Task.CompletedTask;
+            },
+            AllowedCalls = resume.Waits.Where(w => w.Resolution is { Run: true }).ToDictionary(w => w.CallId, w => w.Kind, StringComparer.Ordinal),
+        };
+        var batch = new ToolBatch(rt, state, rc, HasSteering)
+        {
+            Resolved = resume.Waits.Where(w => w.Resolution is not null).ToDictionary(w => w.CallId, w => w.Resolution!, StringComparer.Ordinal),
+        };
+        await batch.RunAsync(assistant, turn, calls, tools, ct).ConfigureAwait(false);
+        if (!batch.Waiting) return false;
+        _waiting = true;
+        return true;
     }
 
     /// <summary>What one pass of the loop resolved for this turn: the run's context, the session as it is now, its

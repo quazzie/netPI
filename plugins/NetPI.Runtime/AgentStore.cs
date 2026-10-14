@@ -12,10 +12,15 @@ namespace NetPI.Runtime;
 //       { id, sessionId, parentAgentId, name, status, task, result, error, model, createdAt, finishedAt,
 //         stats: { info: the record's AgentInfo (task and result stored once, at the top level),
 //                  instructions: string|null, notifyParent: bool },
-//         queue: [ { mode: "steer"|"queue", input: UserInput } ] }
+//         queue: [ { mode: "steer"|"queue", input: UserInput } ],
+//         pending: null | the tool batch that waits for the user (PendingBatch; status stays "yielded" while it does):
+//           { assistantId, open: [ { id, resultName } ],
+//             waits: [ { id, kind, activity, callId, tool, data, since, ifSteered: Result, ifCancelled: Result|null,
+//                        resolution: null | { run: bool, result: Result|null } } ] } }
+//       Result: { content, isError, details }
 
 /// <summary>Persisted agent record (so recent agents survive restarts).</summary>
-internal sealed record AgentRecord(AgentInfo Info, string? Instructions, bool NotifyParent, List<QueuedRecord> Queue);
+internal sealed record AgentRecord(AgentInfo Info, string? Instructions, bool NotifyParent, List<QueuedRecord> Queue, PendingBatch? Pending = null);
 
 /// <summary>One input in the agent's queue, with how it was offered (a steer or a follow-up).</summary>
 internal sealed record QueuedRecord(string Mode, UserInput Input);
@@ -58,7 +63,8 @@ internal sealed class AgentStore(IPluginContext ctx)
             return ctx.Data.Transaction(() =>
             {
                 var now = Iso(DateTimeOffset.UtcNow);
-                var rows = _records.Find(new DataQuery().In("status", ["running", "queued", "yielded"]));
+                // a record that waits for the user is not interrupted: its run ended at the call that waits (no run to lose)
+                var rows = _records.Find(new DataQuery().In("status", ["running", "queued", "yielded"])).Where(r => r.Doc["pending"] is not JsonObject).ToList();
                 foreach (var row in rows)
                 {
                     row.Doc["status"] = "failed";
@@ -76,7 +82,8 @@ internal sealed class AgentStore(IPluginContext ctx)
         }
     }
 
-    public void Save(AgentInfo info, string? instructions, bool notifyParent, IReadOnlyList<QueuedRecord> queue)
+    /// <param name="pending">The batch that waits for the user (<see cref="PendingJson"/>, made under the agent's gate), or null.</param>
+    public void Save(AgentInfo info, string? instructions, bool notifyParent, IReadOnlyList<QueuedRecord> queue, JsonObject? pending = null)
     {
         try
         {
@@ -104,6 +111,7 @@ internal sealed class AgentStore(IPluginContext ctx)
                     ["instructions"] = instructions,
                     ["notifyParent"] = notifyParent,
                 },
+                ["pending"] = pending,
             });
         }
         catch (Exception ex)
@@ -121,6 +129,20 @@ internal sealed class AgentStore(IPluginContext ctx)
         catch (Exception ex)
         {
             ctx.Logger.LogWarning(ex, "Failed to load agent records");
+            return [];
+        }
+    }
+
+    /// <summary>The records that wait for the user, however old: they stay in memory until they are answered.</summary>
+    public List<AgentRecord> LoadWaiting()
+    {
+        try
+        {
+            return _records.Find(new DataQuery().Eq("status", "yielded")).Where(d => d.Doc["pending"] is JsonObject).Select(d => Map(d.Doc)).ToList();
+        }
+        catch (Exception ex)
+        {
+            ctx.Logger.LogWarning(ex, "Failed to load the agents that wait for the user");
             return [];
         }
     }
@@ -176,6 +198,72 @@ internal sealed class AgentStore(IPluginContext ctx)
                     catch { /* one corrupt entry: drop it, keep the rest */ }
                 }
         info.QueuedMessages = queue.Count;
-        return new AgentRecord(info, instructions, notify, queue);
+        PendingBatch? pending = null;
+        if (doc["pending"] is JsonObject po)
+        {
+            try { pending = ReadPending(po); }
+            catch { /* corrupt: the agent no longer waits, and its open calls are closed as not executed at the next model call */ }
+        }
+        return new AgentRecord(info, instructions, notify, queue, pending);
     }
+
+    // ---------------------------------------------------------------- the batch that waits for the user
+
+    internal static JsonObject PendingJson(PendingBatch b) => new()
+    {
+        ["assistantId"] = b.AssistantId,
+        ["open"] = new JsonArray([.. b.Open.Select(o => (JsonNode)new JsonObject { ["id"] = o.Id, ["resultName"] = o.ResultName })]),
+        ["waits"] = new JsonArray([.. b.Waits.Select(w => (JsonNode)new JsonObject
+        {
+            ["id"] = w.Id, ["kind"] = w.Kind, ["activity"] = w.Activity, ["callId"] = w.CallId, ["tool"] = w.Tool,
+            ["data"] = w.Data?.DeepClone(), ["since"] = Iso(w.Since),
+            ["ifSteered"] = ResultJson(w.IfSteered),
+            ["ifCancelled"] = w.IfCancelled is null ? null : ResultJson(w.IfCancelled),
+            ["resolution"] = w.Resolution is null ? null : new JsonObject
+            {
+                ["run"] = w.Resolution.Run,
+                ["result"] = w.Resolution.Result is null ? null : ResultJson(w.Resolution.Result),
+            },
+        })]),
+    };
+
+    private static PendingBatch ReadPending(JsonObject o)
+    {
+        var b = new PendingBatch { AssistantId = o["assistantId"]!.GetValue<long>() };
+        foreach (var e in o["open"] as JsonArray ?? [])
+            if (e is JsonObject x && Text(x, "id") is { } id) b.Open.Add(new OpenCall(id, Text(x, "resultName") ?? ""));
+        foreach (var e in o["waits"] as JsonArray ?? [])
+        {
+            if (e is not JsonObject w || Text(w, "id") is not { } id || Text(w, "callId") is not { } callId) continue;
+            b.Waits.Add(new PendingWait
+            {
+                Id = id, Kind = Text(w, "kind") ?? "", Activity = Text(w, "activity") ?? "waiting for you", CallId = callId,
+                Tool = Text(w, "tool") ?? "", Data = w["data"]?.DeepClone() as JsonObject, Since = Time(w, "since") ?? DateTimeOffset.UtcNow,
+                IfSteered = ReadResult(w["ifSteered"] as JsonObject) ?? ToolResult.Ok("No answer: the user wrote a new message instead; it follows."),
+                IfCancelled = ReadResult(w["ifCancelled"] as JsonObject),
+                Resolution = w["resolution"] is JsonObject r
+                    ? new WaitResolution { Run = r["run"] is JsonValue rv && rv.TryGetValue<bool>(out var run) && run, Result = ReadResult(r["result"] as JsonObject) }
+                    : null,
+            });
+        }
+        return b;
+    }
+
+    /// <summary>A result as plain data: its details are JSON, never the owner plugin's own objects (they would keep its old code loaded after a reload).</summary>
+    internal static ToolResult Plain(ToolResult r) => new()
+    {
+        Content = r.Content, IsError = r.IsError, Details = r.Details is null or JsonNode ? r.Details : NetPiJson.ToNode(r.Details),
+    };
+
+    private static JsonObject ResultJson(ToolResult r) => new()
+    {
+        ["content"] = r.Content, ["isError"] = r.IsError, ["details"] = Plain(r).Details is JsonNode d ? d.DeepClone() : null,
+    };
+
+    private static ToolResult? ReadResult(JsonObject? o) => o is null ? null : new ToolResult
+    {
+        Content = Text(o, "content") ?? "",
+        IsError = o["isError"] is JsonValue v && v.TryGetValue<bool>(out var e) && e,
+        Details = o["details"]?.DeepClone(),
+    };
 }

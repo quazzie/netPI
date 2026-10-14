@@ -117,28 +117,46 @@ internal sealed class AgentRuntime : IAgentRuntime
         var interrupted = _store.MarkInterrupted();
         if (interrupted > 0) Ctx.Logger.LogInformation("Marked {Count} interrupted agent(s) as failed", interrupted);
         var records = _store.LoadRecent(MaxFinishedInMemory);
+        // the agents that wait for the user stay in memory however old they are: an answer must find them
+        var waiting = _store.LoadWaiting().Where(w => records.All(r => r.Info.Id != w.Info.Id));
         lock (_gate)
         {
             // oldest first, so the newest agent of a session wins the session mapping
-            foreach (var rec in records.OrderBy(r => r.Info.CreatedAt))
+            foreach (var rec in records.Concat(waiting).OrderBy(r => r.Info.CreatedAt))
             {
                 var s = FromRecord(rec);
                 _agents[s.Info.Id] = s;
                 _bySession[s.Info.SessionId] = s.Info.Id;
             }
         }
+        // Answered before the last generation could go on (it stopped in between): go on once the plugins are up - the
+        // run needs the providers and hooks that start after this one. plugins.changed comes after every start and every
+        // reload; going on is idempotent (TryResume finds nothing to do the second time).
+        Ctx.Events.Subscribe(EventTypes.PluginsChanged, _ =>
+        {
+            List<AgentState> states;
+            lock (_gate) states = [.. _agents.Values];
+            foreach (var s in states) TryResume(s);
+        });
     }
 
     private static AgentState FromRecord(AgentRecord rec)
     {
         var info = rec.Info;
-        if (info.Status.IsBusy())
+        info.Activity = null;
+        if (rec.Pending is { } pending)
+        {
+            // its run ended at calls that wait for the user: nothing was interrupted, it still waits
+            info.Status = AgentStatus.Yielded;
+            info.Activity = WaitActivity(pending);
+            info.Error = null;
+        }
+        else if (info.Status.IsBusy())
         {
             info.Status = AgentStatus.Failed;
             info.Error ??= "interrupted";
         }
-        info.Activity = null;
-        var state = new AgentState(info) { Instructions = rec.Instructions, NotifyParent = rec.NotifyParent };
+        var state = new AgentState(info) { Instructions = rec.Instructions, NotifyParent = rec.NotifyParent, Pending = rec.Pending };
         // The queue is the only copy of input that never reached a run: hand it back on reload so a
         // plugin swap does not lose it (idea-6oulx0). A fresh SteerSignal is fine — nothing was steered to.
         lock (state.Gate)
@@ -330,7 +348,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
     }
 
-    private static bool IsPrunable(AgentState s) => s.Run is null && !s.Parked && s.Steering.Count == 0 && s.FollowUps.Count == 0 && s.ResultWaiters == 0;
+    private static bool IsPrunable(AgentState s) => s.Run is null && !s.Parked && s.Pending is null && s.Steering.Count == 0 && s.FollowUps.Count == 0 && s.ResultWaiters == 0;
 
     internal void Save(AgentState s)
     {
@@ -338,14 +356,16 @@ internal sealed class AgentRuntime : IAgentRuntime
         string? instructions;
         bool notify;
         List<QueuedRecord> queue;
+        JsonObject? pending;
         lock (s.Gate)
         {
             snap = s.Info.Clone();
             instructions = s.Instructions;
             notify = s.NotifyParent;
             queue = s.QueueRecords();
+            pending = s.Pending is { } p ? AgentStore.PendingJson(p) : null;
         }
-        _store.Save(snap, instructions, notify, queue);
+        _store.Save(snap, instructions, notify, queue, pending);
     }
 
     // ---------------------------------------------------------------- events
@@ -548,9 +568,19 @@ internal sealed class AgentRuntime : IAgentRuntime
         RunState? run = null;
         CancellationTokenSource? sig = null;
         List<QueuedRecord> kept = [];
+        PendingBatch? steered = null;
+        var waits = false;
         lock (s.Gate)
         {
-            if (s.Run is not null)
+            if (s.Run is null && s.Pending is not null && !(string.Equals(input.Source, "user", StringComparison.Ordinal) && mode != DeliveryMode.Queue))
+            {
+                // it waits for the user, and this is not the user writing: it waits too (a report, a notice, a follow-up)
+                if (mode == DeliveryMode.Queue) s.FollowUps.Add(input);
+                else s.Steering.Add(input);
+                s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
+                waits = true;
+            }
+            else if (s.Run is not null)
             {
                 if (mode == DeliveryMode.Queue) s.FollowUps.Add(input);
                 else
@@ -567,7 +597,10 @@ internal sealed class AgentRuntime : IAgentRuntime
                 // The queue an aborted or failed run kept (its chips are still there) goes into the transcript before this
                 // input, in the order it waited and with the delivery each item was queued with: the user wrote those
                 // first, and a follow-up is not a steer. Taken here, so the run starts with an empty queue instead of
-                // draining them after this input, all as steers.
+                // draining them after this input, all as steers. And when the user wrote instead of answering what waits,
+                // those calls end as steered first (CloseBatch below), then the queue, then this message.
+                steered = s.Pending;
+                s.Pending = null;
                 kept = s.QueueRecords();
                 s.Steering.Clear();
                 s.FollowUps.Clear();
@@ -576,6 +609,12 @@ internal sealed class AgentRuntime : IAgentRuntime
             }
         }
 
+        if (waits)
+        {
+            PublishQueue(s);
+            PublishStatus(s);
+            return Task.CompletedTask;
+        }
         if (run is null)
         {
             if (sig is not null)
@@ -587,6 +626,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             return Task.CompletedTask;
         }
 
+        if (steered is not null) CloseBatch(s, steered, "steered");
         // A kept agent-result notice claims its child's gate (PersistQueued), outside this agent's gate. When this is the
         // notice of another child finishing (NotifyParent holds that child's gate around this call), the two gates are
         // siblings', never the reverse pair: a second finish at the same moment finds the run started and steers instead.
@@ -624,10 +664,10 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
     }
 
-    /// <summary>Create and register a run. Caller holds <c>s.Gate</c> and has checked <c>s.Run == null</c>.</summary>
-    private RunState BeginRunLocked(AgentState s)
+    /// <summary>Create and register a run. Caller holds <c>s.Gate</c> and has checked <c>s.Run == null</c>. <paramref name="resume"/>: the batch it goes on with.</summary>
+    private RunState BeginRunLocked(AgentState s, PendingBatch? resume = null)
     {
-        var run = new RunState { ReloadHold = Ctx.Services.Get<IReloadGate>()?.Hold(Ctx.PluginId, $"agent {s.Info.Id} running") };
+        var run = new RunState { ReloadHold = Ctx.Services.Get<IReloadGate>()?.Hold(Ctx.PluginId, $"agent {s.Info.Id} running"), Resume = resume };
         s.Run = run;
         // a parked agent's RunDone stays the one its waiters hold: it completes when the agent is finished, not at each run's end
         if (s.RunDone.Task.IsCompleted) s.RunDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -637,8 +677,9 @@ internal sealed class AgentRuntime : IAgentRuntime
         s.PendingNotificationId = null;
         s.NoticeDrained = false;
         if (s.SteerSignal.IsCancellationRequested) s.SteerSignal = new CancellationTokenSource();
-        // A run started for leftover follow-ups delivers the first one right away.
-        if (s.Steering.Count == 0 && s.FollowUps.Count > 0)
+        // A run started for leftover follow-ups delivers the first one right away (not a run that goes on after an answer:
+        // its follow-ups wait for the end of it, as they would have).
+        if (resume is null && s.Steering.Count == 0 && s.FollowUps.Count > 0)
         {
             s.Steering.Add(s.FollowUps[0]);
             s.FollowUps.RemoveAt(0);
@@ -705,18 +746,57 @@ internal sealed class AgentRuntime : IAgentRuntime
         UserInput? notice = null;
         RunState? next = null;
         List<QueuedRecord> queue = [];
+        JsonObject? pendingJson;
         TaskCompletionSource done;
+        // what has to be written for calls that waited: a batch the run never got to go on with (it failed or was stopped
+        // first), one the user wrote over before it ended, or waits of a run that did not end at them
+        var closing = new List<(PendingBatch Batch, string Reason)>();
         lock (s.Gate)
         {
             var info = s.Info;
             info.FinishedAt = DateTimeOffset.UtcNow;
             info.Activity = null;
             if (run.LastAssistantText is not null) info.Result = run.LastAssistantText;
-            var continues = !run.Aborted && !run.Stopping && !_stopping && (s.Steering.Count > 0 || s.FollowUps.Count > 0)
+            if (run.Resume is { } unfinished) closing.Add((unfinished, outcome == "aborted" ? "cancelled" : "failed"));
+            run.Resume = null;
+            // (a stopping runtime keeps the wait as it is: its successor loads it from the record and goes on with it)
+            var waiting = outcome == "waiting" && s.Pending is not null;
+            if (outcome != "waiting" && s.Pending is { } dropped)
+            {
+                s.Pending = null;
+                closing.Add((dropped, outcome == "aborted" ? "cancelled" : "failed"));
+            }
+            PendingBatch? resume = null;
+            if (waiting && !run.Stopping && !_stopping)
+            {
+                if (s.Steering.Any(i => string.Equals(i.Source, "user", StringComparison.Ordinal)))
+                {
+                    // the user wrote while the batch was still running: the waits end as steered, the message follows
+                    closing.Add((s.Pending!, "steered"));
+                    s.Pending = null;
+                    waiting = false;
+                }
+                else if (s.Pending!.AllAnswered)
+                {
+                    // answered while the batch was still running: go on at once
+                    resume = s.Pending;
+                    s.Pending = null;
+                    waiting = false;
+                }
+            }
+            if (outcome == "waiting" && !waiting) outcome = "completed";
+            var continues = !waiting && !run.Aborted && !run.Stopping && !_stopping && (resume is not null || s.Steering.Count > 0 || s.FollowUps.Count > 0)
                             && (outcome == "completed" || run.Delivered);
             park = info.IsSubagent && outcome == "completed" && !continues && !run.Stopping && !_stopping && activeChildren > 0;
             switch (outcome)
             {
+                case "waiting":
+                    // the run ended at calls that wait for the user: the turn goes on when they answer
+                    info.Status = AgentStatus.Yielded;
+                    info.Activity = WaitActivity(s.Pending!);
+                    info.FinishedAt = null;
+                    info.Error = null;
+                    break;
                 case "completed" when park:
                     info.Status = AgentStatus.Yielded;
                     info.Activity = $"waiting for {activeChildren} agent{(activeChildren == 1 ? "" : "s")}";
@@ -755,12 +835,14 @@ internal sealed class AgentRuntime : IAgentRuntime
             // can fail (the model is gone, the budget is spent, the agent is unavailable) come before the queue is drained, so
             // another run would fail the same way, append the same error, and start again for as long as the cause lasts. The
             // queue stays as it is (the chips and "send" are there for it) until the user acts or a run gets further.
-            if (continues) next = BeginRunLocked(s);
+            if (continues) next = BeginRunLocked(s, resume);
             queue = s.QueueRecords();
+            pendingJson = s.Pending is { } p ? AgentStore.PendingJson(p) : null;
         }
 
+        foreach (var (batch, reason) in closing) CloseBatch(s, batch, reason);
         if (!park) done.TrySetResult();
-        _store.Save(final, s.Instructions, s.NotifyParent, queue);
+        _store.Save(final, s.Instructions, s.NotifyParent, queue, pendingJson);
         try
         {
             Ctx.Events.Publish(new BusEvent { Type = EventTypes.AgentStatus, Data = new JsonObject { ["agent"] = NetPiJson.ToNode(final) } });
@@ -1340,6 +1422,8 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
         if (run is null && CancelParked(s, reason, byParent))
             run = new RunState { Aborted = true, Task = Task.CompletedTask };   // there was no run to stop, but the agent was
+        if (run is null && CancelWaiting(s))
+            run = new RunState { Aborted = true, Task = Task.CompletedTask };   // no run either: its calls waited for the user
         if (withChildren)
             foreach (var c in children)
                 if (FindState(c) is { } child) AbortCore(child, "cancelled: parent agent was aborted", byParent: true);
@@ -1381,6 +1465,211 @@ internal sealed class AgentRuntime : IAgentRuntime
         return true;
     }
 
+    // ---------------------------------------------------------------- waiting for the user
+
+    /// <summary>What an agent that waits shows: the first wait still unanswered.</summary>
+    private static string WaitActivity(PendingBatch b) =>
+        b.Waits.FirstOrDefault(w => w.Resolution is null)?.Activity ?? b.Waits.FirstOrDefault()?.Activity ?? "waiting for you";
+
+    /// <summary>A call of the running batch waits for the user (<see cref="ToolBatch"/>): answerable from now on.</summary>
+    internal void AddWait(AgentState s, long assistantId, ToolCallPart call, UserWait wait)
+    {
+        PendingWait w;
+        lock (s.Gate)
+        {
+            if (s.Pending is not { } b || b.AssistantId != assistantId) s.Pending = b = new PendingBatch { AssistantId = assistantId };
+            w = PendingWait.From(wait, call.Id, call.Name);
+            b.Waits.Add(w);
+        }
+        Emit(EventTypes.AgentWaiting, new JsonObject { ["wait"] = NetPiJson.ToNode(w.ToInfo(s.Info)) });
+    }
+
+    internal bool HasPending(AgentState s, long assistantId)
+    {
+        lock (s.Gate) return s.Pending is { } b && b.AssistantId == assistantId;
+    }
+
+    /// <summary>The batch stopped: the calls that have no result yet, in order (the waiting ones among them).</summary>
+    internal void StopPending(AgentState s, long assistantId, List<OpenCall> open)
+    {
+        lock (s.Gate)
+            if (s.Pending is { } b && b.AssistantId == assistantId) b.Open = open;
+    }
+
+    /// <summary>The batch was cancelled with its calls marked already: the waits it registered end (no results are written).</summary>
+    internal void DropPending(AgentState s, long assistantId, string reason)
+    {
+        PendingBatch? b;
+        lock (s.Gate)
+        {
+            b = s.Pending;
+            if (b is null || b.AssistantId != assistantId) return;
+            s.Pending = null;
+        }
+        foreach (var w in b.Waits) PublishWaitEnded(s, w, w.Resolution is null ? reason : "answered", announceAnswered: false);
+    }
+
+    private void PublishWaitEnded(AgentState s, PendingWait w, string reason, bool announceAnswered = true)
+    {
+        if (reason == "answered" && !announceAnswered) return;   // said when it was answered
+        Emit(EventTypes.AgentWaitEnded, new JsonObject
+        {
+            ["sessionId"] = s.Info.SessionId, ["agentId"] = s.Info.Id, ["callId"] = w.CallId, ["waitId"] = w.Id, ["kind"] = w.Kind,
+            ["reason"] = reason,
+        });
+    }
+
+    public IReadOnlyList<WaitingCall> Waits(string? sessionId = null, string? kind = null)
+    {
+        List<AgentState> states;
+        lock (_gate) states = [.. _agents.Values];
+        var list = new List<WaitingCall>();
+        foreach (var s in states)
+        {
+            if (sessionId is not null && s.Info.SessionId != sessionId) continue;
+            lock (s.Gate)
+            {
+                if (s.Pending is not { } b) continue;
+                list.AddRange(b.Waits.Where(w => kind is null || w.Kind == kind).Select(w => w.ToInfo(s.Info)));
+            }
+        }
+        return [.. list.OrderBy(w => w.Since)];
+    }
+
+    public async Task<bool> ResolveAsync(string waitId, WaitResolution resolution, CancellationToken ct = default)
+    {
+        // the run this may start: like SendAsync, not on a version being retired
+        var entered = await EnterGateAsync($"answer {waitId}", ct).ConfigureAwait(false);
+        try
+        {
+            if (_stopping && Ctx.Services.Get<IAgentRuntime>() is { } next && !ReferenceEquals(next, this))
+            {
+                entered?.Dispose();
+                entered = null;
+                return await next.ResolveAsync(waitId, resolution, ct).ConfigureAwait(false);
+            }
+            var plain = new WaitResolution { Run = resolution.Run, Result = resolution.Result is { } r ? AgentStore.Plain(r) : null };
+            List<AgentState> states;
+            lock (_gate) states = [.. _agents.Values];
+            foreach (var s in states)
+            {
+                PendingWait? found = null;
+                lock (s.Gate)
+                {
+                    if (s.Pending?.Waits.FirstOrDefault(w => w.Id == waitId) is not { } w) continue;
+                    if (w.Resolution is not null) return false;
+                    w.Resolution = plain;
+                    found = w;
+                    if (s.Run is null) s.Info.Activity = WaitActivity(s.Pending);
+                }
+                PublishWaitEnded(s, found, "answered");
+                if (!TryResume(s))
+                {
+                    Save(s);
+                    PublishStatus(s);
+                }
+                return true;
+            }
+            return false;
+        }
+        finally { entered?.Dispose(); }
+    }
+
+    /// <summary>Every wait of the batch is answered and no run is going: a run goes on with the batch. False when not (yet).</summary>
+    private bool TryResume(AgentState s)
+    {
+        RunState run;
+        lock (s.Gate)
+        {
+            if (s.Run is not null || s.Pending is not { AllAnswered: true } b || _stopping) return false;
+            s.Pending = null;
+            run = BeginRunLocked(s, b);
+        }
+        LaunchRun(s, run);
+        return true;
+    }
+
+    /// <summary>A stop, or the chat's deletion, while it waits for the user: its calls end as cancelled, the agent is idle.</summary>
+    private bool CancelWaiting(AgentState s)
+    {
+        PendingBatch b;
+        lock (s.Gate)
+        {
+            if (s.Run is not null || s.Pending is null) return false;
+            b = s.Pending;
+            s.Pending = null;
+            s.Info.Status = s.Info.IsSubagent ? AgentStatus.Cancelled : AgentStatus.Idle;
+            s.Info.Activity = null;
+            s.Info.FinishedAt = DateTimeOffset.UtcNow;
+        }
+        CloseBatch(s, b, "cancelled");
+        Save(s);
+        PublishStatus(s);
+        return true;
+    }
+
+    /// <summary>
+    /// Write the results of a batch that will not go on: <paramref name="reason"/> steered (the user wrote instead; the
+    /// message follows), cancelled (stopped, deleted) or failed (the run that was to go on with it failed first). An answer
+    /// is the call's result whatever the reason; an unanswered wait gets the result its owner gave for the case; a call
+    /// allowed to run, and a call after the waits, did not run.
+    /// </summary>
+    private void CloseBatch(AgentState s, PendingBatch b, string reason)
+    {
+        var open = b.Open.Count > 0 ? b.Open : [.. b.Waits.Select(w => new OpenCall(w.CallId, w.Tool))];
+        foreach (var call in open)
+        {
+            var w = b.Waits.FirstOrDefault(x => x.CallId == call.Id);
+            ToolResult result;
+            string? skipped = null;
+            if (w?.Resolution?.Result is { } answer) result = answer;
+            else if (w is not null && w.Resolution is null)
+                result = reason == "steered" ? w.IfSteered : w.IfCancelled ?? Marker(reason, out skipped);
+            else result = Marker(reason, out skipped);
+            PersistToolResult(s, call, result, skipped);
+            if (w is not null && w.Resolution is null) PublishWaitEnded(s, w, reason == "steered" ? "steered" : "cancelled");
+        }
+    }
+
+    private static ToolResult Marker(string reason, out string skipped)
+    {
+        skipped = reason == "steered" ? "steer" : "aborted";
+        return ToolResult.Error(reason switch
+        {
+            "steered" => AgentRunner.SkippedBySteering,
+            "cancelled" => AgentRunner.NotExecutedAbort,
+            _ => "Not executed: the run that was to go on after the answer stopped with an error first (see the notice).",
+        });
+    }
+
+    /// <summary>A result written for a call outside a tool batch (a batch closed while nobody ran it): stored, then its tool.end.</summary>
+    private void PersistToolResult(AgentState s, OpenCall call, ToolResult result, string? skipped)
+    {
+        var details = result.Details as JsonNode ?? (result.Details is null ? null : NetPiJson.ToNode(result.Details));
+        if (skipped is not null)
+        {
+            var o = details as JsonObject ?? new JsonObject();
+            o["skipped"] = skipped;
+            details = o;
+        }
+        try
+        {
+            Ctx.Sessions.AppendMessage(s.Info.SessionId, new ChatMessage
+            {
+                Role = MessageRole.Tool,
+                SessionId = s.Info.SessionId,
+                Parts = [new ToolResultPart { CallId = call.Id, Name = call.ResultName, Content = result.Content ?? "", IsError = result.IsError, Details = details?.DeepClone() }],
+                Meta = new JsonObject { ["agentId"] = s.Info.Id },
+            });
+        }
+        catch (Exception ex) { Ctx.Logger.LogWarning(ex, "Failed to persist the result of {Call} in {Session}", call.Id, s.Info.SessionId); }
+        Emit(EventTypes.ToolEnd, new JsonObject
+        {
+            ["sessionId"] = s.Info.SessionId, ["callId"] = call.Id, ["name"] = call.ResultName, ["isError"] = result.IsError,
+            ["durationMs"] = 0, ["skipped"] = skipped,
+        }, s.Info.SessionId);
+    }
+
     // ---------------------------------------------------------------- queue
 
     public IReadOnlyList<QueuedInput> GetQueue(string sessionId)
@@ -1416,16 +1705,24 @@ internal sealed class AgentRuntime : IAgentRuntime
         var s = FindState(sessionId);
         if (s is null) return false;
         CancellationTokenSource? sig = null;
+        UserInput? writes = null;
         lock (s.Gate)
         {
             var i = s.FollowUps.FindIndex(x => x.Id == inputId);
             if (i < 0) return false;
             var input = s.FollowUps[i];
             s.FollowUps.RemoveAt(i);
-            s.Steering.Add(input);
+            // it waits for the user, and the user's own follow-up is to be delivered now: that is the user writing
+            if (s.Run is null && s.Pending is not null && string.Equals(input.Source, "user", StringComparison.Ordinal)) writes = input;
+            else s.Steering.Add(input);
             // as a steer sent now: a guard approval, ask_user or agent wait reads the signal as "the user wrote"
             if (s.Run is not null && string.Equals(input.Source, "user", StringComparison.Ordinal)) sig = s.SteerSignal;
             s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
+        }
+        if (writes is not null)
+        {
+            _ = DeliverAsync(s, writes, DeliveryMode.Steer);
+            return true;
         }
         if (sig is not null)
         {

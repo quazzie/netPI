@@ -18,6 +18,7 @@ ContextTests.Register(runner);
 PersistenceTests.Register(runner);
 UnloadTests.Register(runner);
 ReloadGateTests.Register(runner);
+WaitTests.Register(runner);
 GoalTests.Register(runner);
 BudgetTests.Register(runner);
 ReservationTests.Register(runner);

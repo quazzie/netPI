@@ -49,6 +49,13 @@ internal sealed partial class ToolBatch
             finally { _slots.Release(); }
         }
 
+        /// <summary>
+        /// A nested call that would wait for the user (a question, a guardrail's OK): a script cannot stop and go on later,
+        /// so it does not run. Made directly, the call waits like any other (<see cref="UserWait"/>).
+        /// </summary>
+        private static ToolResult CannotWait(string name) => ToolResult.Error(
+            $"Not run: {name} waits for the user here (a question, or a guardrail that asks first), and a call made from inside a script cannot wait for them. Call {name} directly, not from the script.");
+
         private async Task<ToolResult> RunAsync(IAgentTool tool, ToolCallPart call, CancellationToken ct)
         {
             var watch = Stopwatch.StartNew();
@@ -60,6 +67,7 @@ internal sealed partial class ToolBatch
                     var decision = await AgentRunner.SafeAsync(batch.Ctx, () => hook.OnBeforeToolCallAsync(turn, call), "OnBeforeToolCall", ct).ConfigureAwait(false);
                     if (decision is null) continue;
                     if (decision.Block) return ToolResult.Error("Blocked: " + (decision.Reason ?? "this tool call was blocked by a policy hook."));
+                    if (decision.Wait is not null) return CannotWait(call.Name);
                     if (decision.Arguments is { } rewritten) call.Arguments = rewritten;
                 }
             }
@@ -72,6 +80,7 @@ internal sealed partial class ToolBatch
             {
                 var args = ParseArgs(call.Arguments);
                 result = await tool.ExecuteAsync(batch.CallContext(call.Id), args, ct).ConfigureAwait(false) ?? ToolResult.Error("The tool returned no result.");
+                if (result.Wait is not null) result = CannotWait(call.Name);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (JsonException ex) { result = ToolResult.Error(InvalidJson(call.Name, ex)); }

@@ -130,9 +130,17 @@ public sealed class ToolResult
     public List<ImagePart>? Images { get; init; }
     /// <summary>Structured data for the UI (serialized to JSON and stored with the result).</summary>
     public object? Details { get; init; }
+    /// <summary>The call waits for the user and has no result yet (<see cref="WaitForUser"/>).</summary>
+    public UserWait? Wait { get; init; }
 
     public static ToolResult Ok(string content, object? details = null) => new() { Content = content, Details = details };
     public static ToolResult Error(string message, object? details = null) => new() { Content = message, IsError = true, Details = details };
+
+    /// <summary>
+    /// The call waits for the user: the run ends at this call, holding nothing, and the chat goes on from it when they
+    /// answer (<see cref="UserWait"/>, <see cref="IAgentRuntime.ResolveAsync"/>).
+    /// </summary>
+    public static ToolResult WaitForUser(UserWait wait) => new() { Wait = wait };
 }
 
 public sealed record ToolRegistration(IAgentTool Tool, string PluginId, int Priority);

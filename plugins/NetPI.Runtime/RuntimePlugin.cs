@@ -101,6 +101,12 @@ public sealed class RuntimePlugin : INetPiPlugin
             Task.FromResult<object?>(runtime.List(req.Bool("includeFinished") ?? true)),
             "Agents (active and recent): { includeFinished? } → AgentInfo[]", true, RpcParam.Opt("includeFinished", RpcParamType.Boolean, "default true"));
 
+        Rpc("agent.waits", (req, _) =>
+            Task.FromResult<object?>(runtime.Waits(req.Str("sessionId"), req.Str("kind"))),
+            "Tool calls that wait for the user (a question, a guardrail's OK, a plan or schedule decision): { sessionId?, kind? } → { id, kind, sessionId, agentId, callId, tool, activity, data, since, answered }[] (oldest first). " +
+            "Kept with the agent, so they survive a reload and a restart; the run ended at them and holds nothing meanwhile",
+            true, RpcParam.Opt("sessionId"), RpcParam.Opt("kind", RpcParamType.String, "ask, guard, plan, plan-enter or schedule"));
+
         Rpc("agent.get", (req, _) =>
         {
             var id = req.Str("id");

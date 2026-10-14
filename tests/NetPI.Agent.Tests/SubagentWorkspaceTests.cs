@@ -64,12 +64,13 @@ public static class SubagentWorkspaceTests
         store.CreateWorkspace(workspace);
         store.SetSessionWorkspace(parent.Id, workspace.Id);
 
-        h.Catalog.Handler = (r, ct) => IsChild(r) || Reply.HasToolResult(r)
+        h.Catalog.Handler = (r, ct) => IsChild(r) || Reply.HasToolResult(r) || HasReport(r)
             ? Reply.Text("done")
             : Reply.Tool("agent_spawn", new { task = "read", name = "reader", agent = "a" });
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id);
         var child = await ChildNamed(h, "reader");
+        Check.Equal(1, h.Sessions.ListSessions(new SessionQuery { IncludeSubagents = true, Limit = 500 }).Count(x => x.Title == "reader"), "one child: the parent answers its report");
         Check.Equal(workspace.Id, SessionWorkspace.Of(child!), "the child did not inherit its parent's workspace");
     }
 
@@ -81,7 +82,7 @@ public static class SubagentWorkspaceTests
         await using var _ = h;
         var parent = h.NewSession(projectId: repo.ProjectId);
 
-        h.Catalog.Handler = (r, ct) => IsChild(r) || Reply.HasToolResult(r)
+        h.Catalog.Handler = (r, ct) => IsChild(r) || Reply.HasToolResult(r) || HasReport(r)
             ? Reply.Text("child done")
             : Reply.Tool("agent_spawn", new { task = "write", name = "writer", agent = "a", isolated = true });
         await h.SendAsync(parent.Id, "go");
@@ -257,16 +258,24 @@ public static class SubagentWorkspaceTests
     {
         await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", JsonNode.Parse("""{ "model": "fake/local" }""")));
         var parent = h.NewSession();
-        h.Catalog.Handler = (r, ct) => IsChild(r) || Reply.HasToolResult(r)
+        h.Catalog.Handler = (r, ct) => IsChild(r) || Reply.HasToolResult(r) || HasReport(r)
             ? Reply.Text("done")
             : Reply.Tool("agent_spawn", new { task = "t", name = "plain", agent = "a", isolated = true });
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id);
         var child = await ChildNamed(h, "plain");
+        Check.Equal(1, h.Sessions.ListSessions(new SessionQuery { IncludeSubagents = true, Limit = 500 }).Count(x => x.Title == "plain"), "one child: the parent answers its report, it does not spawn again");
         Check.Equal(null, SessionWorkspace.Of(child!), "without the workspace plugin nothing should be bound");
     }
 
     private static bool IsChild(ModelRequest r) => r.SystemPrompt?.Contains("a subagent working for") == true;
+
+    /// <summary>
+    /// The parent woken by its child's report (agent_spawn returns at once; the report comes as a notice): it answers. Spawning
+    /// again there made every report start another child, so the parent was never idle for longer than a moment and a test
+    /// passed only when its idle check happened to land in one (it timed out under a loaded suite run).
+    /// </summary>
+    private static bool HasReport(ModelRequest r) => r.Messages.Any(m => m.Text.Contains("<agent-result", StringComparison.Ordinal));
 
     /// <summary>The same as <see cref="Check.Equal"/> for values that must differ.</summary>
     private static void NotEqual<T>(T unexpected, T actual, string? message = null) => Check.False(EqualityComparer<T>.Default.Equals(unexpected, actual), message ?? $"should differ from: {actual}");

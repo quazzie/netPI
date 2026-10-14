@@ -88,6 +88,18 @@ public static class EventTypes
     public const string AgentStatus = "agent.status";
     public const string AgentQueue = "agent.queue";
     public const string AgentNotice = "agent.notice";
+    /// <summary>
+    /// A call waits for the user (<see cref="UserWait"/>), registered with its agent and answerable from now on:
+    /// <c>{ wait: WaitingCall }</c>. Unscoped (every window learns that a chat needs the user); the owners relay it into
+    /// their own card events. A wait the runtime refused (a subagent's, a script's nested call) is never announced.
+    /// </summary>
+    public const string AgentWaiting = "agent.waiting";
+    /// <summary>
+    /// A call that waited for the user stopped waiting: <c>{ sessionId, agentId, callId, waitId, kind, reason }</c>, reason
+    /// answered | steered (the user wrote instead) | cancelled (stopped, or its chat deleted). Unscoped, like the cards it
+    /// closes; the owners relay it into their own events.
+    /// </summary>
+    public const string AgentWaitEnded = "agent.waitEnded";
     public const string SessionContext = "session.context";
     public const string ModelsChanged = "models.changed";
     public const string PluginsChanged = "plugins.changed";

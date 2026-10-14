@@ -342,6 +342,35 @@ be anonymous objects, records or `JsonObject`s — but don't put your types insi
 the old load context was not collected, logs the warning `Plugin <id>: the previous load context is still alive after
 unload (something still references plugin objects); its memory is not reclaimed` (no tab shows it yet).
 
+### Waiting for the user
+
+A tool call that needs the user — a question (`ask_user`), an OK before a call runs (a guardrail's `ask:` rule), a
+decision (`plan_submit`, `plan_enter`, a proposed schedule) — does not wait inside the run. It returns
+`ToolResult.WaitForUser(new UserWait { … })` (a before-call hook returns `ToolCallDecision { Wait = … }` instead, and
+the call does not run), and **the run ends at that call**: the batch stops there (the calls after it stay open), the
+agent shows `Yielded` with the wait's `Activity`, and it holds no slot and no reload hold — a chat that waits for its
+user does not keep anything else waiting. The model's call has no result until the wait ends:
+
+- **answered**: the owner calls `IAgentRuntime.ResolveAsync(waitId, WaitResolution.Answer(result))` (the call's result)
+  or `WaitResolution.Allow()` (a hook's wait: the call runs, through the hooks again, and the hook that asked finds it
+  in `turn.AllowedCalls`). When every wait of the batch is answered, a run finishes the batch — the answers, the calls
+  allowed to run, the calls after them, in order — and calls the model. An answer that comes while the batch is still
+  running (another call of it is slow) is kept, and the run goes on the moment the batch stops.
+- **the user writes instead** (`agent.send` from the user, not a queued follow-up): each unanswered wait gets its
+  `IfSteered` result, the calls after it are skipped as by a steer, then the message, then a run.
+- **the chat is stopped or deleted**: `IfCancelled` (or the abort marker); the agent is idle.
+- **anything else for the chat** — a subagent's report, a goal's or a schedule's notice, a webhook alert — queues until
+  one of the above.
+
+The wait lives in the agent's record (`agent_records`, `pending`), so it survives a reload of the runtime, a reload of
+the owning plugin and a restart (`MarkInterrupted` leaves it alone; a batch answered just before a restart goes on
+after the next start, once the plugins are up). So **the owner keeps no state of its own**: its list of what waits is
+`IAgentRuntime.Waits(kind: …)` (the `*.pending` RPCs are that), its card's data rides in `UserWait.Data`, and it
+announces its card from the runtime's `agent.waiting` and closes it on `agent.waitEnded`. Its results are stored as
+JSON (details included), never as the plugin's own objects. A subagent cannot wait (nobody watches its chat): the
+runtime turns its wait into an error result. Nor can a call made from inside a script (`codemode`): it cannot stop and
+go on later, so the model is told to make that call directly.
+
 ## Tab UI
 
 A tab is an ES module in the plugin's `wwwroot` exporting `mount(el, ctx)` (see `docs/PROTOCOL.md` → "Plugin UI
@@ -390,7 +419,8 @@ reports `reload` or `reload-failed` as usual — a failed one keeps the running 
 change again.
 - *Safe* means **no agent run exists anywhere**, for every plugin, `NetPI.Runtime` included. Not per plugin: a turn
   can reach any plugin (tools, providers, hooks, services resolved per use), and nothing records which ones a run
-  depends on, so a per-plugin rule could not be shown correct. A plugin that has nothing to do with runs simply waits.
+  depends on, so a per-plugin rule could not be shown correct. A plugin that has nothing to do with runs simply waits. A
+  chat that waits for its user (a question, an OK, a decision) has no run and holds nothing: see "Waiting for the user".
 - A new run that starts while a batch is being applied waits for that batch (`EnterAsync`), so it starts on the new
   version and never on one being retired; a retired runtime hands such a message to its successor. A run a plugin's own
   start begins from inside the batch does not wait for it (it would never end); the holds are asked again before each

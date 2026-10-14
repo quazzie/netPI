@@ -36,6 +36,16 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
 
     /// <summary>The <c>call_tool</c> calls of this batch by call id: the runner works on the inner call, the transcript keeps the outer.</summary>
     private readonly Dictionary<string, ToolCallPart> _outer = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The batch a run goes on with after the user answered (<see cref="RunState.Resume"/>): the answers by call id. An
+    /// answered call's result is its answer (no hook, no tool runs again); a call allowed to run goes through the hooks as
+    /// usual, the one that asked reading <see cref="AgentTurnContext.AllowedCalls"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, WaitResolution> Resolved { get; init; } = new Dictionary<string, WaitResolution>();
+
+    /// <summary>The batch stopped at calls that wait for the user: the run ends here (<see cref="AgentState.Pending"/>).</summary>
+    public bool Waiting { get; private set; }
     private string ResultName(ToolCallPart call) => _outer.TryGetValue(call.Id, out var o) ? o.Name : call.Name;
 
     private List<IAgentTool> ActiveTools(SessionInfo session) => rt.ToolsFor(state.Info, session);
@@ -46,6 +56,8 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
         public IAgentTool? Tool { get; set; }
         public JsonElement Args { get; set; }
         public ToolResult? Early { get; set; }
+        /// <summary>The call waits for the user: its tool returned a wait, or a hook asked before it ran.</summary>
+        public UserWait? Wait { get; set; }
         public Stopwatch Watch { get; } = Stopwatch.StartNew();
     }
 
@@ -111,10 +123,11 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
                 using var finish = new SemaphoreSlim(1);
                 await Task.WhenAll(prepared.Select(async p =>
                 {
-                    ToolResultPart result;
+                    ToolResultPart? result;
                     await slots.WaitAsync(ct).ConfigureAwait(false);
-                    try { result = await InvokeAsync(turn, p, ct).ConfigureAwait(false); }
+                    try { result = await InvokeAsync(turn, assistant, p, ct).ConfigureAwait(false); }
                     finally { slots.Release(); }
+                    if (result is null) return;   // it waits for the user: no result until they answer
                     await finish.WaitAsync(CancellationToken.None).ConfigureAwait(false);
                     try
                     {
@@ -133,7 +146,9 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
                     var (p, changed) = await PrepareAsync(turn, calls[i], tools, ct).ConfigureAwait(false);
                     started.Add(calls[i].Id);
                     argsChanged |= changed;
-                    var result = await InvokeAsync(turn, p, ct).ConfigureAwait(false);
+                    var result = await InvokeAsync(turn, assistant, p, ct).ConfigureAwait(false);
+                    // it waits for the user: the batch stops here, and the calls after it run once they answered
+                    if (result is null) break;
                     await FinishAsync(turn, p, result, done, ct).ConfigureAwait(false);
 
                     if (i < calls.Count - 1 && hasSteering())
@@ -152,6 +167,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
         {
             foreach (var c in calls)
                 if (!done.Contains(c.Id)) PersistResult(c, AgentRunner.NotExecutedAbort, isError: true, publishEnd: started.Contains(c.Id), skipped: "aborted");
+            rt.DropPending(state, assistant.Id, "cancelled");   // a wait it registered: its call has the abort marker now
             throw;
         }
         finally
@@ -162,6 +178,12 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
                 catch (Exception ex) { Ctx.Logger.LogDebug(ex, "Failed to update tool call arguments"); }
             }
             rt.SetActivity(state, null);
+        }
+        // calls without a result now wait for the user, or come after one that does: the run ends, and goes on from here
+        if (rt.HasPending(state, assistant.Id))
+        {
+            rt.StopPending(state, assistant.Id, [.. calls.Where(c => !done.Contains(c.Id)).Select(c => new OpenCall(c.Id, ResultName(c)))]);
+            Waiting = true;
         }
     }
 
@@ -189,6 +211,12 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
     {
         var tool = FindTool(tools, call.Name);
         var prepared = new PreparedCall { Call = call, Tool = tool };
+        // answered while it waited: that is its result (it was shown as started then, and nothing runs again)
+        if (Resolved.TryGetValue(call.Id, out var answered) && answered.Result is { } answer)
+        {
+            prepared.Early = answer;
+            return (prepared, false);
+        }
         var changed = false;
         var original = call.Arguments;
         try
@@ -226,6 +254,12 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
                 prepared.Early = ToolResult.Error("Blocked: " + (decision.Reason ?? "this tool call was blocked by a policy hook."));
                 return (prepared, false);
             }
+            if (decision.Wait is { } wait)
+            {
+                // the hook asks the user before the call runs: it waits, with the arguments the hooks before it settled on
+                prepared.Wait = wait;
+                return (prepared, changed);
+            }
             if (decision.Arguments is { } newArgs && newArgs != call.Arguments)
             {
                 call.Arguments = newArgs;
@@ -244,10 +278,16 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
         return (prepared, changed);
     }
 
-    private async Task<ToolResultPart> InvokeAsync(AgentTurnContext turn, PreparedCall p, CancellationToken ct)
+    /// <summary>Run the call. Null when it waits for the user (<see cref="UserWait"/>): registered with the agent, no result yet.</summary>
+    private async Task<ToolResultPart?> InvokeAsync(AgentTurnContext turn, ChatMessage assistant, PreparedCall p, CancellationToken ct)
     {
         ToolResult result;
-        if (p.Early is not null || p.Tool is null)
+        if (p.Wait is not null)
+        {
+            if (Wait(assistant, p) is not { } refused) return null;
+            result = refused;
+        }
+        else if (p.Early is not null || p.Tool is null)
         {
             result = p.Early ?? ToolResult.Error("Unknown tool.");
         }
@@ -262,6 +302,12 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             {
                 if (!StillEligible(p)) result = ToolResult.Error("The tool was disabled or replaced before execution.");
                 else result = await p.Tool.ExecuteAsync(context, p.Args, ct).ConfigureAwait(false) ?? ToolResult.Error("The tool returned no result.");
+                if (result.Wait is { } wait)
+                {
+                    p.Wait = wait;
+                    if (Wait(assistant, p) is not { } refused) return null;
+                    result = refused;
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -290,6 +336,18 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             Details = details,
             DurationMs = p.Watch.ElapsedMilliseconds,
         };
+    }
+
+    /// <summary>
+    /// The call waits for the user: registered with the agent (answerable from now on), null. A subagent cannot wait
+    /// (nobody watches its chat): the error result it gets instead.
+    /// </summary>
+    private ToolResult? Wait(ChatMessage assistant, PreparedCall p)
+    {
+        if (state.Info.IsSubagent)
+            return ToolResult.Error($"{p.Call.Name} waits for the user, and a subagent can't: nobody watches its chat. Put what you need from them in your report instead.");
+        rt.AddWait(state, assistant.Id, p.Call, p.Wait!);
+        return null;
     }
 
     /// <summary>

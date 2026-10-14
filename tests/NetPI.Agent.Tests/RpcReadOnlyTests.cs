@@ -46,7 +46,7 @@ public static class RpcReadOnlyTests
             var all = ctx.Rpc.List();
             var flags = all.ToDictionary(m => m.Method, m => m.ReadOnly);
 
-            foreach (var m in new[] { "agent.queue", "runs.list", "agent.get", "agent.stream", "agent.tools", "guard.pending", "context.preview",
+            foreach (var m in new[] { "agent.queue", "runs.list", "agent.get", "agent.stream", "agent.tools", "agent.waits", "guard.pending", "context.preview",
                                       "context.prompts", "context.toolsets", "agentsmd.list", "profiles.list", "skills.list" })
                 Check.True(flags.TryGetValue(m, out var ro) && ro, $"{m} only reads, so it is marked read-only");
 
@@ -54,7 +54,7 @@ public static class RpcReadOnlyTests
             // cannot slip in unmarked (a read surface no tool can reach, or a write one every tool may call).
             var expected = new Dictionary<string, (string[] ReadOnly, string[] Writable)>
             {
-                ["netpi.runtime"] = (["agent.queue", "runs.list", "agent.get", "agent.stream", "agent.tools"], ["agent.send", "agent.abort", "agent.dequeue", "agent.promote", "agent.setTools"]),
+                ["netpi.runtime"] = (["agent.queue", "runs.list", "agent.get", "agent.stream", "agent.tools", "agent.waits"], ["agent.send", "agent.abort", "agent.dequeue", "agent.promote", "agent.setTools"]),
                 ["netpi.guardrails"] = (["guard.pending", "guard.outcomes"], ["guard.answer"]),
                 ["netpi.context"] = (["context.preview", "context.prompts", "context.toolsets"], ["context.reset"]),
                 ["netpi.agentsmd"] = (["agentsmd.list"], []),

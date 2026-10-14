@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+
 namespace NetPI.Runtime;
 
 /// <summary>Mutable runtime state of one agent. Guard every field with <see cref="Gate"/>.</summary>
@@ -46,6 +48,14 @@ internal sealed class AgentState(AgentInfo info)
     public bool Parked { get; set; }
 
     public bool IsActive => Run is not null || Parked;
+
+    /// <summary>
+    /// The tool batch that waits for the user (<see cref="UserWait"/>): no run, no instance, no reload hold. Set while the
+    /// batch runs (a wait is answerable from the moment its tool returned it), kept when the run ends, persisted with the
+    /// agent's record; taken (set back to null) by whatever closes it: the run that goes on after the answers, a message
+    /// of the user's, a stop, the chat's deletion.
+    /// </summary>
+    public PendingBatch? Pending { get; set; }
 
     public static TaskCompletionSource CompletedTcs()
     {
@@ -104,6 +114,57 @@ internal sealed class RunState
     /// (<c>AgentRuntime.EndRunAsync</c>, after the run it hands over to, if any, took its own).
     /// </summary>
     public IDisposable? ReloadHold { get; set; }
+    /// <summary>
+    /// The batch this run goes on with, the user having answered every wait of it: its calls are finished (the answers,
+    /// the calls allowed to run, the calls after them) before anything else. Null once they are; a run that fails before
+    /// that hands the batch back to the agent (still waiting, its answers kept).
+    /// </summary>
+    public PendingBatch? Resume { get; set; }
+}
+
+/// <summary>
+/// A tool batch stopped at calls that wait for the user: the assistant message the calls are in, the calls that have no
+/// result yet (the waiting ones among them) in the order the model made them, and the waits with their answers so far.
+/// Exactly one of the run that goes on, a message of the user's, a stop or the chat's deletion writes their results.
+/// </summary>
+internal sealed class PendingBatch
+{
+    /// <summary>The id of the assistant message whose calls these are.</summary>
+    public required long AssistantId { get; init; }
+    /// <summary>The calls with no result yet, in the model's order; set when the batch stops (a wait is answerable before that).</summary>
+    public List<OpenCall> Open { get; set; } = [];
+    public List<PendingWait> Waits { get; } = [];
+    public bool AllAnswered => Waits.Count > 0 && Waits.All(w => w.Resolution is not null);
+}
+
+/// <summary>A call of a stopped batch with no result yet: its id, and the name its result is stored under (the outer <c>call_tool</c>'s, for a call made through it).</summary>
+internal sealed record OpenCall(string Id, string ResultName);
+
+/// <summary>One call that waits for the user (<see cref="UserWait"/>), with the answer once there is one.</summary>
+internal sealed class PendingWait
+{
+    public required string Id { get; init; }
+    public required string Kind { get; init; }
+    public required string Activity { get; init; }
+    public required string CallId { get; init; }
+    public required string Tool { get; init; }
+    public JsonObject? Data { get; init; }
+    public required ToolResult IfSteered { get; init; }
+    public ToolResult? IfCancelled { get; init; }
+    public DateTimeOffset Since { get; init; } = DateTimeOffset.UtcNow;
+    public WaitResolution? Resolution { get; set; }
+
+    public static PendingWait From(UserWait w, string callId, string tool) => new()
+    {
+        Id = w.Id, Kind = w.Kind, Activity = w.Activity, CallId = callId, Tool = tool, Data = w.Data?.DeepClone().AsObject(),
+        IfSteered = AgentStore.Plain(w.IfSteered), IfCancelled = w.IfCancelled is null ? null : AgentStore.Plain(w.IfCancelled),
+    };
+
+    public WaitingCall ToInfo(AgentInfo agent) => new()
+    {
+        Id = Id, Kind = Kind, SessionId = agent.SessionId, AgentId = agent.Id, CallId = CallId, Tool = Tool, Activity = Activity,
+        Data = Data?.DeepClone().AsObject(), Since = Since, Answered = Resolution is not null,
+    };
 }
 
 internal static class AgentInfoExtensions
