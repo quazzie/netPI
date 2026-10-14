@@ -237,7 +237,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
                     "settings: plugins.quiet = false applies them; diag.overview .deferred");
             else
                 Add("info", "plugins", $"{held.Count} plugin reload(s) wait until no agent run is active ({string.Join(", ", held)}); the running versions keep serving, and the host applies them when the last run ends.",
-                    "diag.overview .reloadGate.holds (the runs it waits for); plugins.reloadDrainMinutes");
+                    "diag.overview .reloadGate.holds (the runs it waits for)");
         }
 
         // providers whose models are all offline

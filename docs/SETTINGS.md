@@ -4,7 +4,7 @@ Agent rework additions (2026-10-01): `decide.bulkModel` (empty) selects an expli
 
 All settings live in `~/.netpi/settings.json` (Windows: `%USERPROFILE%\.netpi\settings.json`; override the folder
 with `NETPI_HOME`). The file is created on first start with the **core keys only** — `server.port`,
-`server.devOrigins`, `plugins.disabled`, `plugins.dirs`, `plugins.quiet`, `plugins.reloadDrainMinutes`, `tools.disabled` — and nothing about one
+`server.devOrigins`, `plugins.disabled`, `plugins.dirs`, `plugins.quiet`, `tools.disabled` — and nothing about one
 machine: no default model, no agents, no provider. Every other setting belongs to a plugin and appears with the
 default that plugin declares (`settings.schema`), so a fresh install is what each owner says it is. The file accepts
 `//` comments and trailing commas, and is watched: edits apply live. Keys are shown as dotted paths —
@@ -35,7 +35,6 @@ so the default applies again). The agents and the budget have their own page; th
 | `plugins.enabled` | `[]` | turn on plugins whose `plugin.json` says `enabled: false` |
 | `plugins.dirs` | `[]` | extra plugin folders (besides `<app>/plugins` and `~/.netpi/plugins`) |
 | `plugins.quiet` | `false` | while on, a plugin reload (a `/reload`, a build that replaced a plugin's files) is recorded and **not applied**: the running version keeps serving, so nothing swaps under a running chat and no in-memory plugin state is lost. Switching it off applies everything that piled up, in plugin start order. `diag.overview` lists what is waiting in `deferred`, and `plugins.reloaded` says `kind: "deferred", reason: "quiet"`. The one thing a git worktree cannot do: the running app is one process that every session shares. A switch in **Settings → General**. Without it a reload still never happens under an agent run (the reload gate, docs/PLUGINS.md) |
-| `plugins.reloadDrainMinutes` | `30` | a plugin reload waits until no agent run is active (the reload gate). Once one has waited this many minutes, a user's message that would start a new run on an idle chat waits for the deferred reloads instead, so overlapping chats cannot put them off for ever; runs already going are never touched, steers and work started from inside a run never wait. `0` = never: reloads wait for the first idle moment. 0–1440, **Settings → General** |
 | `tools.deferred` | the default list | built-in tools kept out of requests until a chat uses them (called by name or found with `tool_search`); absent: `ToolExposure.DefaultDeferred` (all but the file and shell tools, `codemode`, `tool_search`, `ask_user`), `[]`: every built-in tool declared; `"*"` (every tool) and `"!name"` (an exception) work too. A profile can have its own (`profiles.<id>.toolsDeferred`). Only in this file (docs/TOOLS.md, "Deferred tools") |
 | `tools.disabled` | `[]` | tool names hidden from every chat (e.g. `["pwsh"]`); only in this file: the dialog switches whole plugins, and each chat switches its own tools (the composer's tools button, `meta.toolsOff`) |
 | `logging.level` | `Information` | host log level (`~/.netpi/logs/netpi-YYYYMMDD.log`) |

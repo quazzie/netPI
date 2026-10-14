@@ -13,7 +13,6 @@ public static class ReloadGateTests
     {
         t.Add("reload gate: a run holds the gate from start to end, a queued follow-up included; the gate opens once, when the last run ends", HeldForTheRun);
         t.Add("reload gate: a new run waits for a reload being applied, a steer does not", NewRunWaitsForApply);
-        t.Add("reload gate: after the drain limit a user's new chat turn yields to the deferred reload; the running agent finishes untouched", DrainDoesNotTouchRuns);
     }
 
     private static async Task<(TestHost Host, ReloadGate Gate)> StartAsync()
@@ -84,43 +83,4 @@ public static class ReloadGateTests
         Check.Equal(1, a.Runs);
     }
 
-    private static async Task DrainDoesNotTouchRuns()
-    {
-        var (h, gate) = await StartAsync();
-        await using var host = h;
-        var now = DateTimeOffset.UtcNow;
-        gate.Now = () => now;
-        gate.DrainAfter = TimeSpan.FromMinutes(30);
-        var applied = 0;
-        var pending = 0;   // what the plugin manager knows: a reload is deferred
-        gate.Opened = () => Task.Run(() =>
-        {
-            if (Volatile.Read(ref pending) == 0 || !gate.TryBeginApply(out _)) return;
-            Volatile.Write(ref pending, 0);
-            Interlocked.Increment(ref applied);
-            gate.EndApply();
-        });
-        var release = new TaskCompletionSource();
-        h.Catalog.Handler = Blocked(release.Task);
-        var running = h.NewSession();
-        await h.SendAsync(running.Id, "long task");
-        Volatile.Write(ref pending, 1);
-        gate.Deferred();   // a publish arrived: its reload waits for the run
-
-        now += TimeSpan.FromMinutes(31);
-        var other = h.NewSession();
-        var send = h.SendAsync(other.Id, "a new chat turn");
-        await Wait.Until(() => gate.Waiting == 1, "the user's new run yields to the overdue reload");
-        await h.SendAsync(running.Id, "a steer into the running chat");   // never waits: no run starts
-        Check.Equal(AgentStatus.Running, h.Runtime.GetBySession(running.Id)!.Status, "the running agent is untouched");
-        Check.Equal(0, Volatile.Read(ref applied), "and nothing is forced");
-
-        release.SetResult();
-        var a = await h.IdleAsync(running.Id);
-        Check.Equal(AgentStatus.Idle, a.Status, "finished normally, not failed");
-        Check.True(a.Error is null, a.Error ?? "");
-        await send.WaitAsync(TimeSpan.FromSeconds(10));
-        Check.Equal(1, Volatile.Read(ref applied), "the reload went in between");
-        Check.Equal(AgentStatus.Idle, (await h.IdleAsync(other.Id)).Status);
-    }
 }

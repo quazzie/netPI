@@ -6,9 +6,6 @@ internal static class CoreSettings
     /// <summary>What <c>plugins.quiet</c> means while the key is unset (the first-run document and <c>PluginManager</c> read it).</summary>
     public const bool QuietDefault = false;
 
-    /// <summary>What <c>plugins.reloadDrainMinutes</c> means while the key is unset (read by <c>PluginManager</c>).</summary>
-    public const int DrainMinutesDefault = 30;
-
     /// <param name="defaultWorkspace">The working folder of sessions without a project when the setting is empty.</param>
     public static IReadOnlyList<SettingsSection> Sections(string defaultWorkspace) =>
     [
@@ -26,8 +23,6 @@ internal static class CoreSettings
                     "Host log in ~/.netpi/logs."),
                 SettingInfo.Bool("plugins.quiet", "Quiet plugin reloads", QuietDefault,
                     "While on, a plugin reload is recorded and not applied: the running version keeps serving, so nothing swaps under a running chat. Switching it off applies everything that piled up."),
-                SettingInfo.Int("plugins.reloadDrainMinutes", "Stop waiting for idle after", DrainMinutesDefault,
-                    "A plugin reload waits until no agent run is active. Once one has waited this long, a new chat turn waits for it instead (the runs going on are never touched; it is applied when they end). 0 = never: reloads wait for the first idle moment.", 0, 1440, "min"),
                 new SettingInfo
                 {
                     Key = "server.port", Type = "int", Label = "Port", Default = System.Text.Json.Nodes.JsonValue.Create(7431),

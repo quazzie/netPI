@@ -5,10 +5,8 @@ namespace NetPI.Host.Plugins;
 /// flag the plugin manager raises while it applies a batch of reloads. A batch is applied only when no hold is alive
 /// (<see cref="TryBeginApply"/>); work that enters while one is applied waits for that batch alone
 /// (<see cref="EnterAsync"/>) and then holds the gate. When the last hold goes, <see cref="Opened"/> tells the manager
-/// to go on. No timer and no polling: the manager is woken by the release itself.
-/// <para>No starvation: once a reload has been deferred for <see cref="DrainAfter"/>, work that enters with
-/// <c>yieldToReload</c> (a user starting a new run) waits until the deferred reloads are applied - the runs already
-/// going are never touched, so the gate opens when they end.</para>
+/// to go on. No timer and no polling: the manager is woken by the release itself. Nothing ever waits for a reload that is
+/// only deferred: a busy app keeps the old versions until it is idle, or until the next start loads the new files.
 /// </summary>
 internal sealed class ReloadGate : IReloadGate, IDisposable
 {
@@ -25,14 +23,6 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
     private readonly List<Waiter> _waiters = [];
     private bool _applying;
     private bool _disposed;
-    /// <summary>When the oldest reload still deferred for the holds was asked for (null: none).</summary>
-    private DateTimeOffset? _pendingSince;
-
-    /// <summary>How long a deferred reload waits before new runs yield to it (zero or less: never). Set by the manager.</summary>
-    public TimeSpan DrainAfter { get; set; }
-
-    /// <summary>The clock (tests).</summary>
-    public Func<DateTimeOffset> Now { get; set; } = () => DateTimeOffset.UtcNow;
 
     /// <summary>Raised when the last hold was released (on the releasing thread: keep it short and schedule the work).</summary>
     public Action? Opened { get; set; }
@@ -44,13 +34,13 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
         return h;
     }
 
-    public ValueTask<IDisposable> EnterAsync(string owner, string reason, bool yieldToReload = false, CancellationToken ct = default)
+    public ValueTask<IDisposable> EnterAsync(string owner, string reason, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         Waiter w;
         lock (_lock)
         {
-            if (_disposed || s_inApply.Value is { Active: true } || !(_applying || (yieldToReload && DrainingLocked())))
+            if (_disposed || !_applying || s_inApply.Value is { Active: true })
             {
                 var h = new Handle(this, owner, reason);
                 _holds.Add(h);
@@ -76,36 +66,10 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
         lock (_lock) return [.. _holds.Select(h => $"{h.Owner}: {h.Reason} (since {h.Since:HH:mm:ss}Z)")];
     }
 
-    /// <summary>Whether a deferred reload has waited long enough that new runs yield to it.</summary>
-    public bool Draining
-    {
-        get { lock (_lock) return DrainingLocked(); }
-    }
-
-    private bool DrainingLocked() =>
-        _pendingSince is { } since && DrainAfter > TimeSpan.Zero && Now() - since >= DrainAfter && !_disposed;
-
     /// <summary>How many callers wait in <see cref="EnterAsync"/> (tests, diagnostics).</summary>
     public int Waiting
     {
         get { lock (_lock) return _waiters.Count; }
-    }
-
-    /// <summary>A reload was deferred because the gate is held: the drain clock starts with the first one.</summary>
-    public void Deferred()
-    {
-        lock (_lock) _pendingSince ??= Now();
-    }
-
-    /// <summary>Nothing is deferred for the holds any more (<c>plugins.quiet</c> took over, or it was dropped): whoever yielded goes on.</summary>
-    public void NothingDeferred()
-    {
-        lock (_lock)
-        {
-            _pendingSince = null;
-            if (_applying) return;   // EndApply admits them
-        }
-        EndApply();
     }
 
     /// <summary>How many holds are alive (tests, diagnostics).</summary>
@@ -141,7 +105,6 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
             _flow?.End();
             _flow = null;
             _applying = false;
-            _pendingSince = null;   // the batch took every deferred reload; one deferred again starts the clock again
             admitted = [.. _waiters.Select(w => (w, new Handle(this, w.Owner, w.Reason)))];
             _waiters.Clear();
             _holds.AddRange(admitted.Select(a => a.H));

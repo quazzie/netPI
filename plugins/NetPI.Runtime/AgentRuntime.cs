@@ -514,12 +514,9 @@ internal sealed class AgentRuntime : IAgentRuntime
     public async Task<AgentInfo> SendAsync(string sessionId, UserInput input, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default)
     {
         var state = GetOrCreateForSession(sessionId);
-        bool starts;
-        lock (state.Gate) starts = state.Run is null;
-        // A run this starts waits for a plugin reload being applied right now, so it starts on the new version and not on
-        // one being retired; a user's new run also yields to reloads deferred for too long (plugins.reloadDrainMinutes),
-        // so overlapping chats cannot put them off for ever. Never from inside a run: the reload waits for that run.
-        var entered = await EnterGateAsync($"send to {sessionId}", starts && input.Source == "user" && !s_inRun.Value, ct).ConfigureAwait(false);
+        // A run this starts waits for a plugin reload being applied right now (a batch takes seconds), so it starts on the
+        // new version and not on one being retired. Never for a reload that is only deferred.
+        var entered = await EnterGateAsync($"send to {sessionId}", ct).ConfigureAwait(false);
         try
         {
             // a reload of this plugin was applied while this waited: this instance is retired, its successor takes the input
@@ -535,13 +532,10 @@ internal sealed class AgentRuntime : IAgentRuntime
         finally { entered?.Dispose(); }   // the run it started holds the gate on its own (BeginRunLocked)
     }
 
-    /// <summary>The flow of a run (its runner, its tools, its end): work started from there must not yield to a reload, which waits for that run.</summary>
-    private static readonly AsyncLocal<bool> s_inRun = new();
-
-    private async ValueTask<IDisposable?> EnterGateAsync(string reason, bool yieldToReload, CancellationToken ct)
+    private async ValueTask<IDisposable?> EnterGateAsync(string reason, CancellationToken ct)
     {
         if (Ctx.Services.Get<IReloadGate>() is not { } gate) return null;
-        var entering = gate.EnterAsync(Ctx.PluginId, reason, yieldToReload, ct);
+        var entering = gate.EnterAsync(Ctx.PluginId, reason, ct);
         if (entering.IsCompleted) return entering.Result;
         Ctx.Logger.LogInformation("{Reason}: waiting for a plugin reload to be applied first", reason);
         return await entering.ConfigureAwait(false);
@@ -665,11 +659,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         Save(s);
         PublishStatus(s);
         var runner = new AgentRunner(this, s, run);
-        run.Task = Task.Run(() =>
-        {
-            s_inRun.Value = true;
-            return runner.RunAsync();
-        });
+        run.Task = Task.Run(runner.RunAsync);
     }
 
     /// <summary>Called by the runner when a run ends (always, from its finally block).</summary>
@@ -1026,8 +1016,8 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     public async Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default)
     {
-        // like SendAsync: not on a version being retired (never yielding to a deferred reload: a run spawns most subagents)
-        using (await EnterGateAsync("spawn", yieldToReload: false, ct).ConfigureAwait(false))
+        // like SendAsync: not on a version being retired
+        using (await EnterGateAsync("spawn", ct).ConfigureAwait(false))
         {
             if (_stopping && Ctx.Services.Get<IAgentRuntime>() is { } next && !ReferenceEquals(next, this))
                 return await next.SpawnAsync(request, ct).ConfigureAwait(false);

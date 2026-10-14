@@ -112,7 +112,8 @@ public interface IPluginManager
 /// A plugin whose work a reload would disturb holds it for as long as that work lasts - the runtime holds it while any
 /// agent is busy, because reloading a plugin under a run can end the run or take a tool away from it. A reload asked
 /// for meanwhile (a build replaced the files, <c>/reload</c>) is deferred, and the host applies it when the last hold
-/// is released. The gate never forces one: while holds overlap, the reloads wait.
+/// is released. The gate never forces a reload and never holds work back for one: while holds overlap, the reloads wait
+/// - for the first moment nothing holds the gate, or for the next start, which loads the new files anyway.
 /// </summary>
 public interface IReloadGate
 {
@@ -120,14 +121,11 @@ public interface IReloadGate
     IDisposable Hold(string owner, string reason);
 
     /// <summary>
-    /// <see cref="Hold"/>, but first wait for the reloads being applied right now, if any: work that starts from outside -
-    /// a new run - then starts after that swap, not on the version it retires. With <paramref name="yieldToReload"/> it
-    /// also waits while a reload has been deferred longer than <c>plugins.reloadDrainMinutes</c>, until that reload is
-    /// applied (it is, once the holds already taken are released): so reloads cannot be put off for ever by runs that
-    /// keep overlapping. Only for work nothing running waits for (a user's new run) - a run that waited for itself would
-    /// never end.
+    /// <see cref="Hold"/>, but first wait for the reloads being applied right now, if any (a batch takes seconds): work that
+    /// starts from outside - a new run - then starts after that swap, not on the version it retires. Never for a reload
+    /// that is only deferred.
     /// </summary>
-    ValueTask<IDisposable> EnterAsync(string owner, string reason, bool yieldToReload = false, CancellationToken ct = default);
+    ValueTask<IDisposable> EnterAsync(string owner, string reason, CancellationToken ct = default);
 
     /// <summary>What holds the gate now, oldest first: <c>"owner: reason (since …)"</c>.</summary>
     IReadOnlyList<string> Holders();

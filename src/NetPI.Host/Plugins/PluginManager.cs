@@ -213,13 +213,6 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         lock (_deferred) return [.. _deferred.Select(e => e.Id)];
     }
 
-    /// <summary><c>plugins.reloadDrainMinutes</c>: how long a deferred reload waits before users' new runs yield to it.</summary>
-    private TimeSpan DrainAfter()
-    {
-        try { return TimeSpan.FromMinutes(Math.Max(0, _k.Settings.Get("plugins.reloadDrainMinutes", Rpc.CoreSettings.DrainMinutesDefault))); }
-        catch { return TimeSpan.FromMinutes(Rpc.CoreSettings.DrainMinutesDefault); }
-    }
-
     private Task ApplyDeferredAsync(CancellationToken ct) => ApplyPendingAsync(null, ct);
 
     /// <summary>Record a reload request: false when the same plugin is already waiting (requests coalesce).</summary>
@@ -243,17 +236,14 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     {
         while (!_disposed)
         {
-            _reloadGate.DrainAfter = DrainAfter();
             if (Quiet())
             {
-                _reloadGate.NothingDeferred();   // quiet waits for a person, not for runs: no run yields to it
                 if (requested is not null) AnnounceDeferred(requested.Id, "quiet", "plugins.quiet");
                 return;
             }
             if (!_reloadGate.TryBeginApply(out var held))
             {
                 if (!held) return;   // a batch is under way: it takes this request before it ends
-                _reloadGate.Deferred();
                 if (requested is not null) AnnounceDeferred(requested.Id, "busy", string.Join("; ", _reloadGate.Holders()));
                 return;
             }

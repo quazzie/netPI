@@ -393,10 +393,11 @@ change again.
   depends on, so a per-plugin rule could not be shown correct. A plugin that has nothing to do with runs simply waits.
 - A new run that starts while a batch is being applied waits for that batch (`EnterAsync`), so it starts on the new
   version and never on one being retired; a retired runtime hands such a message to its successor.
-- **No starvation:** if a reload has waited `plugins.reloadDrainMinutes` (default 30, 0 = never), a *user's* message that
-  would start a new run on an idle chat waits until the deferred reloads are applied — that is, until the runs already
-  going end. Running agents are never touched, steering into a running chat never waits, and work started from inside
-  a run (subagents, follow-ups, notices) never yields, since the reload waits for that run.
+- **Nothing waits for a deferred reload.** A busy app keeps the running versions until the first moment no run exists,
+  or until the next start, which loads the new files anyway: the cost of a reload that keeps waiting is a stale plugin,
+  never a run held back. `diag.overview .deferred` lists what waits and `.reloadGate.holds` the runs that hold it. (Until
+  2026-10-14 a `plugins.reloadDrainMinutes` made a user's new message wait for an overdue reload; it waited inside
+  `agent.send`, before the message was stored, behind runs that could be waiting for that same user, so it went.)
 - Host shutdown drops deferred reloads (logged): their files are on disk, so the next start loads the new versions.
 - A plugin that is stopped for good (disabled, removed) has any holds it left behind released, with a warning.
 - Not gated: a plugin's `wwwroot` (served from the real folder, so a publish updates a tab's UI at once), loading a
