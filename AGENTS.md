@@ -19,9 +19,10 @@
 - Plain builds use `artifacts/dev/app`; they must never touch the installed app.
 - After merging, publish yourself with `.\build.ps1 -Publish` — never leave it to the user. The script decides: plugins
   hot-reload and the web UI swaps in place (no restart; a window refresh shows it); host files, or plugins built against
-  changed contracts, are staged for the next start automatically. There is nothing else to choose. `-NextStart` (reload
-  nothing, stage everything) only when the user asks for it; the "tools" notice chats get from a reload is no reason to
-  avoid it. Report what the script printed: went live, or waits in `.pending`.
+  changed contracts, are staged for the next start automatically; so is `NetPI.Runtime` while any chat is mid-turn, because
+  reloading it ends every run in flight (a reload must never close a run: if one ever does, that is a bug to report). There
+  is nothing else to choose. `-NextStart` (reload nothing, stage everything) only when the user asks for it. Report what the
+  script printed: went live, or waits in `.pending`.
 - App changes are done when `-Publish` has run. A restart does not install Git changes.
 - Docs-only changes need no build/publish. Ask before stopping the owner's app.
 - Commands and install details: `Get-Help .\build.ps1 -Full`, [HANDOFF](docs/HANDOFF.md). UI: `npm ci`, `npm run build`; Git handles LF.
