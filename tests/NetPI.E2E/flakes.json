@@ -1,11 +1,11 @@
 {
-  "note": "Flake ledger: how often each test has failed, and the runner's own diagnosis when it last did. Updated by every run; a pass marks an entry quiet rather than deleting it.",
+  "note": "Flake ledger: how often each test has failed, and the runner\u0027s own diagnosis when it last did. Updated by every run; a pass marks an entry quiet rather than deleting it.",
   "flakes": [
     {
       "id": "mcp.deferred",
-      "runs": 7,
+      "runs": 11,
       "failures": 2,
-      "rate": 0.2857,
+      "rate": 0.1818,
       "firstSeen": "20261014-184206-a1da",
       "lastFailure": "20261014-185528-ece3",
       "cause": "substring not found: mcp_fixture_weather_cee736733870baa5 \u2014 responsive",
@@ -13,9 +13,9 @@
     },
     {
       "id": "context.workspace-binding",
-      "runs": 40,
+      "runs": 44,
       "failures": 3,
-      "rate": 0.075,
+      "rate": 0.0682,
       "firstSeen": "20261002-212304-85ab",
       "lastFailure": "20261002-212332-b31e",
       "cause": "timed out after 30000ms waiting for session.workspace after the delete. Last events: \u2014 responsive",
@@ -23,12 +23,12 @@
     },
     {
       "id": "sessions.delete-orchestrator",
-      "runs": 30,
+      "runs": 34,
       "failures": 1,
-      "rate": 0.0333,
+      "rate": 0.0294,
       "firstSeen": "20261005-160936-f110",
       "lastFailure": "20261005-160936-f110",
-      "cause": "no agent of the deleted tree still busy: main:running (busy.Any(a => a.S(\"id\") == parentId || kids.Any(k => k.S(\"id\") == a.S(\"id\")))) \u2014 responsive",
+      "cause": "no agent of the deleted tree still busy: main:running (busy.Any(a =\u003E a.S(\u0022id\u0022) == parentId || kids.Any(k =\u003E k.S(\u0022id\u0022) == a.S(\u0022id\u0022)))) \u2014 responsive",
       "quiet": true
     }
   ]

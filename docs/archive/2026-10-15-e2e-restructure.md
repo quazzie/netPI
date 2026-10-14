@@ -100,6 +100,15 @@ a console or page error, and `ui.chat` opens every side-panel tab, so "the tab l
   Playwright's 30 s (`PROBE`). Those development runs are not in the flake ledger: it was reset to the committed one less
   the removed tests' rows, so the journeys' history starts with the gate runs below.
 
+## The gate (2026-10-15)
+
+Three full `.\scripts\e2e.ps1` runs in a row after the deletion, 79 tests each (70 C#, 8 journeys, the contract check),
+4 shards: 79/79 in 51 s, 79/79 in 48 s, and 79/79 in 69 s with a no-incremental solution build looping in another worktree
+the whole time (seven builds finished during the run, CPU at 94% twenty seconds in). The unit gate (`scripts\test.ps1`, the
+six .NET suites and `UI`) ran after them: all green, `UI` 74 of 74. After merging master (four commits: the top bar's
+waiting menu, Webhooks without a collection window, tool timers) a fourth full run passed 79 of 79; the Webhooks node test
+follows master's `waiting` state, and the fixture test master had updated stays deleted.
+
 ## From the stopped load-flake session (findings in the session notes, read here)
 
 - `ui.smoke`'s "1 queued" existed only between the orchestrator's yield and the first worker's end: replaced by
