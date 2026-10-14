@@ -56,6 +56,10 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             ["processes"] = await ProcessesAsync(ct).ConfigureAwait(false),
             ["reloads"] = reloads.ToJson(),
             ["deferred"] = deferred is null || Quietly(deferred) is not { Count: > 0 } ids ? null : new JsonArray(ids.Select(i => (JsonNode?)i).ToArray()),
+            // what keeps reloads waiting: one hold per active agent run (absent on a host without the gate)
+            ["reloadGate"] = ctx.Services.Get<IReloadGate>() is { } gate
+                ? new JsonObject { ["holds"] = new JsonArray([.. gate.Holders().Select(h => (JsonNode?)h)]) }
+                : null,
             ["problems"] = await ProblemsAsync(ct).ConfigureAwait(false),
             ["more"] = new JsonArray([.. ctx.Rpc.List().Where(m => m.Method.StartsWith("diag.", StringComparison.Ordinal))
                 .OrderBy(m => m.Method, StringComparer.Ordinal)
@@ -70,7 +74,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         return list.Count == 0 ? null : list[list.Count / 2];
     }
 
-    /// <summary>The plugins whose reload <c>plugins.quiet</c> is holding back, or null when the host cannot say.</summary>
+    /// <summary>The plugins whose reload is waiting (for an active run to end, or for <c>plugins.quiet</c>), or null when the host cannot say.</summary>
     private static IReadOnlyList<string>? Quietly(IPluginManager pm)
     {
         try { return pm.Deferred(); }
@@ -225,10 +229,16 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             Add("info", "plugins", $"{r.Summary} {Ago(now - r.Time)} ago — {r.Impact}.",
                 r.Tools.Count == 0 ? "diag.reloads" : "diag.toolsets { sessionId } of a chat that holds one of those tools; diag.logs { contains: \"Reloading plugin\" }");
 
-        // what plugins.quiet is holding back, if it is on
+        // what waits: for plugins.quiet to go off, or for the agent runs that hold the reload gate to end
         if (ctx.Services.Get<IPluginManager>() is { } manager && Quietly(manager) is { Count: > 0 } held)
-            Add("info", "plugins", $"plugins.quiet is on: {held.Count} plugin reload(s) are waiting ({string.Join(", ", held)}); the running versions keep serving.",
-                "settings: plugins.quiet = false applies them; diag.overview .deferred");
+        {
+            if (ctx.Settings.Get("plugins.quiet", false))
+                Add("info", "plugins", $"plugins.quiet is on: {held.Count} plugin reload(s) are waiting ({string.Join(", ", held)}); the running versions keep serving.",
+                    "settings: plugins.quiet = false applies them; diag.overview .deferred");
+            else
+                Add("info", "plugins", $"{held.Count} plugin reload(s) wait until no agent run is active ({string.Join(", ", held)}); the running versions keep serving, and the host applies them when the last run ends.",
+                    "diag.overview .reloadGate.holds (the runs it waits for); plugins.reloadDrainMinutes");
+        }
 
         // providers whose models are all offline
         foreach (var g in ctx.Models.Cached.GroupBy(m => m.Provider))

@@ -21,13 +21,14 @@ public sealed class Reloads(IPluginContext ctx)
 
     /// <summary>One <c>plugins.reloaded</c> event: which plugins, when, what the host was doing, and what it cost.</summary>
     public sealed record Record(IReadOnlyList<string> Ids, DateTimeOffset Time, string Kind, IReadOnlyList<string> BusySessions,
-        IReadOnlyList<string> Tools)
+        IReadOnlyList<string> Tools, string? Reason = null)
     {
         public string Summary => Kind switch
         {
             "disabled" => $"Plugins switched off: {string.Join(", ", Ids)}",
             "enabled" => $"Plugins switched on: {string.Join(", ", Ids)}",
             "reload-failed" => $"Plugin reload failed, still on the running version: {string.Join(", ", Ids)}",
+            "deferred" when Reason == "busy" => $"Plugin reload deferred until no agent run is active, the running version keeps serving: {string.Join(", ", Ids)}",
             "deferred" => $"Plugin reload deferred (plugins.quiet), the running version keeps serving: {string.Join(", ", Ids)}",
             _ => $"Plugins reloaded: {string.Join(", ", Ids)}",
         };
@@ -50,6 +51,7 @@ public sealed class Reloads(IPluginContext ctx)
             ["ids"] = new JsonArray(Ids.Select(i => (JsonNode?)i).ToArray()),
             ["time"] = Time.ToString("O", CultureInfo.InvariantCulture),
             ["kind"] = Kind,
+            ["reason"] = Reason,
             ["summary"] = Summary,
             ["tools"] = new JsonArray(Tools.Select(t => (JsonNode?)t).ToArray()),
             ["busySessions"] = new JsonArray(BusySessions.Select(s => (JsonNode?)s).ToArray()),
@@ -74,7 +76,7 @@ public sealed class Reloads(IPluginContext ctx)
             .Select(r => r.Tool.Definition.Name).Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal).ToList();
         lock (_gate)
         {
-            _list.AddFirst(new Record(ids, e.Time, d?["kind"]?.GetValue<string>() ?? "reload", busy, tools));
+            _list.AddFirst(new Record(ids, e.Time, d?["kind"]?.GetValue<string>() ?? "reload", busy, tools, d?["reason"]?.GetValue<string>()));
             while (_list.Count > Capacity) _list.RemoveLast();
             while (_list.Last is { } old && DateTimeOffset.UtcNow - old.Value.Time > Window) _list.RemoveLast();
         }
