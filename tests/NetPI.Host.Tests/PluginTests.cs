@@ -202,11 +202,12 @@ public static class PluginTests
             await using var server = await StartAsync(pluginsRoot);
             var gate = server.Kernel.Plugins.Gate;
             Check.True(ReferenceEquals(gate, server.Kernel.Services.Get<IReloadGate>()), "the gate is the registered service");
-            var deferred = new List<string>();
+            // every plugins.reloaded event in order (one subscriber, one event type: delivered in publish order)
+            var events = new List<string>();
             using var sub = server.Events.Subscribe(EventTypes.PluginsReloaded, e =>
             {
                 var o = JsonSerializer.SerializeToNode(e.Data)!.AsObject();
-                if ((string?)o["kind"] == "deferred") lock (deferred) deferred.Add((string?)o["reason"] ?? "");
+                lock (events) events.Add($"{(string?)o["kind"]}:{(string?)o["reason"]}");
             });
             var runA = gate.Hold("test.runtime", "agent a running");
             var runB = gate.Hold("test.runtime", "agent b running");
@@ -220,7 +221,6 @@ public static class PluginTests
             await server.Kernel.Plugins.ReloadAsync("test.sample");
             await server.Kernel.Plugins.ReloadAsync("test.sample");
             Check.Equal(1, server.Plugins.Deferred().Count, "requests for the same plugin coalesce");
-            lock (deferred) Check.Equal("busy", string.Join(",", deferred), "announced once, with its reason");
             Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"), "the running version keeps serving");
             Check.True(ReferenceEquals(oldContext, CurrentContext(server).Target), "the same load context, untouched");
 
@@ -236,6 +236,9 @@ public static class PluginTests
                 "the deferred reload was applied when the gate opened", 20_000);
             Check.Equal("v2", (string?)await server.Rpc.InvokeAsync("sample.value"));
             Check.Equal(0, server.Plugins.Deferred().Count, "the queue is empty");
+            // the bus delivers asynchronously: wait for the applied reload's event, which comes after any deferral's
+            await Wait.Until(() => { lock (events) return events.Contains("reload:"); }, "plugins.reloaded kind reload", 10_000);
+            lock (events) Check.Equal("deferred:busy,reload:", string.Join(",", events), "the deferral announced once, with its reason, then the reload");
         });
 
         r.Add("plugins: a deferred reload that fails to start keeps the running version", async () =>
