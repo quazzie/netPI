@@ -17,12 +17,12 @@
 - Follow `C:\AI\Projects\AGENTS.md`. Use your own worktree/branch; preserve others' edits; stage explicit paths.
 - One commit per piece. Merge into `master` from the main checkout, verify ancestry, remove your merged tree/branch.
 - Plain builds use `artifacts/dev/app`; they must never touch the installed app.
-- Merge before publishing app changes, then publish yourself — never leave it to the user. Go live first:
-  `.\build.ps1 -Publish` hot-reloads changed plugins and swaps `wwwroot` in place (the server reads it from disk per
-  request; a window refresh picks the new UI up) — no restart. Fall back to `-Publish -NextStart` (staged in `.pending`
-  until the next start) only when going live would disrupt: an active turn runs through a plugin being replaced, a
-  plugin cannot hot-reload, or host files changed (the host only changes at a restart). Say which one you did.
-- App changes are done when installed (live) or staged in the live app's `.pending`; say which. A restart does not install Git changes.
+- After merging, publish yourself with `.\build.ps1 -Publish` — never leave it to the user. The script decides: plugins
+  hot-reload and the web UI swaps in place (no restart; a window refresh shows it); host files, or plugins built against
+  changed contracts, are staged for the next start automatically. There is nothing else to choose. `-NextStart` (reload
+  nothing, stage everything) only when the user asks for it; the "tools" notice chats get from a reload is no reason to
+  avoid it. Report what the script printed: went live, or waits in `.pending`.
+- App changes are done when `-Publish` has run. A restart does not install Git changes.
 - Docs-only changes need no build/publish. Ask before stopping the owner's app.
 - Commands and install details: `Get-Help .\build.ps1 -Full`, [HANDOFF](docs/HANDOFF.md). UI: `npm ci`, `npm run build`; Git handles LF.
 
