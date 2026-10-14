@@ -141,7 +141,13 @@ try {
   await tab.waitForFunction(() => window.__opened === 'ses_test', null, { timeout: 5_000 });
   check('Send delivers for real and opens the chat', true);
   await tab.waitForFunction(() => document.body.innerText.includes('nuc / x is OK'), null, { timeout: 5_000 }).catch(() => {});
-  check('the delivery history lists a delivery with its status', (await row('Checkmk').innerText()).toLowerCase().includes('appended'));
+  // the deliveries open in a dialog from the row's history button (60f95ee)
+  await row('Checkmk').locator('button[title="Deliveries"]').click();
+  const deliveries = tab.locator('[role=dialog]', { has: tab.locator('.title', { hasText: 'Deliveries' }) });
+  await deliveries.waitFor({ timeout: 5_000 }).catch(() => {});
+  await tab.waitForFunction(() => [...document.querySelectorAll('[role=dialog]')].some((d) => /appended/i.test(d.innerText)), null, { timeout: 5_000 }).catch(() => {});
+  check('the delivery history lists a delivery with its status', (await deliveries.innerText().catch(() => '')).toLowerCase().includes('appended'), await deliveries.innerText().catch(() => 'no dialog'));
+  await deliveries.locator('button.x').click().catch(() => {});
 
   // --- pause, and the two-step delete
   await row('Skipping').hover();
