@@ -170,13 +170,20 @@ await run('smoke', async ({ page, errors }) => {
   // a live state; never read the assertion's evidence only after taking one. The hold is what keeps the state up; the
   // workers' own thinking time (delay) only made both rounds of workers longer (it was 2500 ms, from before the hold).
   await send('Square 1..3 in parallel [s:spawn n=3 delay=300 workerhold=3000]');
-  // the agent shows a row per instance: two workers hold the two instances, the third waits (one line, its name in a menu)
-  const workText = await page.waitForFunction(() => {
-    const t = document.querySelector('.panel.right > .body')?.innerText ?? '';
-    return (t.match(/worker-\d/g) ?? []).length >= 2 && /\bfull\b/.test(t) && /1\s+waiting/.test(t) ? t : null;
-  }, null, { timeout: 15_000 }).then((handle) => handle.jsonValue()).catch(async () => 'NOT SEEN: ' + (await page.locator('.panel.right > .body').innerText().catch(() => '')));
+  // the agent shows a row per instance: two workers hold the two instances, the third waits (one line, its name in a menu).
+  // Full is busy rows and no free one left (the free/full pill went in d7afbc1; the count is in the row's title).
+  const work = await page.waitForFunction(() => {
+    const body = document.querySelector('.panel.right > .body');
+    const text = body?.innerText ?? '';
+    const busy = body?.querySelectorAll('.slot.busy').length ?? 0;
+    const free = body?.querySelectorAll('.slot.free').length ?? 0;
+    return (text.match(/worker-\d/g) ?? []).length >= 2 && busy >= 2 && free === 0 && /1\s+waiting/.test(text) ? { text, busy, free } : null;
+  }, null, { timeout: 15_000 }).then((handle) => handle.jsonValue())
+    .catch(async () => ({ text: 'NOT SEEN: ' + (await page.locator('.panel.right > .body').innerText().catch(() => '')), busy: -1, free: -1 }));
+  const workText = work.text;
   check('work tab lists the running workers', (workText.match(/worker-\d/g) ?? []).length >= 2, workText.slice(0, 160).replace(/\s+/g, ' '));
-  check('work tab shows the qwen agent full, with the third worker waiting', /\bfull\b/.test(workText) && /1\s+waiting/.test(workText));
+  check('work tab shows the qwen agent full, with the third worker waiting', work.busy >= 2 && work.free === 0 && /1\s+waiting/.test(workText),
+    `${work.busy} busy, ${work.free} free`);
   await shot(page, 'ui-10-subagents-running');
   check('subagent run finished', await idle());
   await chatShows(page, 'SPAWN-DONE');
