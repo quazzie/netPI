@@ -3,7 +3,7 @@ public static class McpTests
 {
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("mcp.deferred", "mcp: real server and MockLlm load one deferred remote tool with tool_search and call it directly",async () => {
+        r.Add("mcp.deferred", "mcp: real server and MockLlm find one deferred remote tool with tool_search and call it by name; the request's tools never change",async () => {
             string? constantTools = null, constantInstructions = null;
             foreach (var count in new[] { 10, 100, 1000 })
             {
@@ -32,9 +32,11 @@ public static class McpTests
                 constantTools ??= serialized; Check.Equal(constantTools, serialized);
                 constantInstructions ??= first.S("instructions"); Check.Equal(constantInstructions, first.S("instructions"));
                 Check.Contains(serialized,"tool_search"); Check.NotContains(serialized,target.S("id")!);
-                // loaded: declared with its own schema from the next request on, and nothing else of the catalog with it
+                // finding it does not change the request's tools (no prefill, 0f4a6e2): the next request declares the same
+                // tools, the remote one still not among them, and the call by name runs all the same
                 var second=await env.MockRequest(requests[1].L("seq"));
-                Check.Contains(second.P("tools").GetRawText(),target.S("id")!);
+                Check.Equal(serialized, second.P("tools").GetRawText(), "the tools of the request after tool_search");
+                Check.NotContains(second.P("tools").GetRawText(),target.S("id")!);
                 foreach(var entry in requests)
                     Check.NotContains((await env.MockRequest(entry.L("seq"))).S("instructions"),"UNTRUSTED_SERVER_INSTRUCTIONS");
                 Check.True(outputs.All(o => !o.B("isError")));
