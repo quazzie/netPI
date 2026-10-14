@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -7,42 +6,42 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.Plan;
 
-/// <summary>How a waiting <c>plan_submit</c> (or <c>plan_enter</c>) ended: approve | approve-new | revise | cancel | enter | decline | withdrawn | replaced.</summary>
-internal sealed record PlanDecision(string Kind, string? Feedback = null, string? NewSessionId = null, string? IdeaId = null, bool Todos = false)
-{
-    public static readonly PlanDecision Withdrawn = new("withdrawn");
-    public static readonly PlanDecision Replaced = new("replaced");
-}
-
-/// <summary>A tool call that waits for the user: its own id (never the model's call id, which two chats can share), the chat, the call.</summary>
-internal sealed class Waiter
-{
-    public required string Id { get; init; }
-    public required string SessionId { get; init; }
-    public required string CallId { get; init; }
-    public required string AgentId { get; init; }
-    public string? Reason { get; init; }
-    public DateTimeOffset AskedAt { get; } = DateTimeOffset.UtcNow;
-    public TaskCompletionSource<PlanDecision> Decision { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-}
+/// <summary>How a waiting <c>plan_submit</c> ended: approve | approve-new | revise | cancel.</summary>
+internal sealed record PlanDecision(string Kind, string? Feedback = null, string? NewSessionId = null, string? IdeaId = null, bool Todos = false);
 
 /// <summary>
 /// Plan mode's behaviour: entering and leaving, the plan a chat submits and what the user decides about it. The tools,
 /// the RPC methods and the slash command are thin over this.
 /// <para>
-/// A decision made while the run still waits in <c>plan_submit</c> is handed to it (its tool result carries it on, with the
-/// run's instance given back meanwhile). One made when the run is gone (NetPI restarted, the run was stopped) does the same
-/// work and tells the chat with a message instead, so a plan never gets stuck on a card nobody waits on.
+/// <c>plan_submit</c> and <c>plan_enter</c> are waits for the user (<see cref="UserWait"/>, kinds <c>plan</c> and
+/// <c>plan-enter</c>): the run ends at the call, holding nothing, and the decision is its result in the run that goes on;
+/// they survive a reload of this plugin and a restart, because the runtime keeps them. A decision made when no call waits
+/// for it any more (the user wrote instead, the chat was stopped) does the same work and tells the chat with a message
+/// instead, so a plan never gets stuck on a card nobody waits on.
 /// </para>
 /// </summary>
 internal sealed class PlanService(IPluginContext ctx, PlanStore store)
 {
     public const string NoticeOn = "plan";
     public const string NoticeOff = "plan-off";
+    public const string PlanKind = "plan";
+    public const string EnterKind = "plan-enter";
 
-    private readonly ConcurrentDictionary<string, Waiter> _plans = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, Waiter> _enters = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    private IAgentRuntime? Runtime => ctx.Services.Get<IAgentRuntime>();
+
+    /// <summary>The call of plan_submit that waits for this plan's decision, or null.</summary>
+    private WaitingCall? PlanWait(string planId) =>
+        Runtime?.Waits(kind: PlanKind).FirstOrDefault(w => !w.Answered && (string?)w.Data?["planId"] == planId);
+
+    /// <summary>The decision goes to the plan_submit that waits for it: true when one did.</summary>
+    private async Task<bool> ResolvePlanAsync(JsonObject doc, PlanDecision d, CancellationToken ct)
+    {
+        if (PlanWait(doc["id"]!.GetValue<string>()) is not { } w || Runtime is not { } runtime) return false;
+        var status = d.Kind switch { "approve" or "approve-new" => "approved", "revise" => "revised", "cancel" => "cancelled", var other => other };
+        return await runtime.ResolveAsync(w.Id, WaitResolution.Answer(Done(Render(doc, d), doc, status, d)), ct).ConfigureAwait(false);
+    }
 
     public const string OnText =
         "Plan mode is on: the user wants a plan before anything changes. You are read-only. write, edit, the shell (bash, pwsh, ssh, process), the browser and the windows tool are " +
@@ -84,7 +83,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                 doc = d;
             }
             Announce(PlanMode.Set(ctx.Sessions, sessionId, null));
-            if (doc is not null && _plans.TryGetValue(doc["id"]!.GetValue<string>(), out var w)) w.Decision.TrySetResult(new PlanDecision("cancel"));
+            if (doc is not null) await ResolvePlanAsync(doc, new PlanDecision("cancel"), CancellationToken.None).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
         Changed(sessionId, doc, "off");
@@ -124,7 +123,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
 
     /// <summary>
     /// <c>plan_submit</c>: stores the plan as the chat's next revision (the same plan again is not a new revision), then waits
-    /// for the user's decision with the run's instance given back.
+    /// for the user's decision: the run ends at the call, and goes on with the decision as its result.
     /// </summary>
     public async Task<ToolResult> SubmitAsync(ToolContext context, PlanBody body, CancellationToken ct)
     {
@@ -136,7 +135,6 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
             return ToolResult.Error("This chat is not in plan mode, so there is no plan to submit. The user starts one with /plan; you can offer it with plan_enter.");
 
         JsonObject doc;
-        Waiter waiter;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -147,39 +145,24 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
             else store.Revise(doc, body, context.CallId);
             store.Put(doc);
             PlanMode.Set(ctx.Sessions, context.SessionId, PlanMode.Awaiting, doc["id"]!.GetValue<string>(), body.Title);
-            var planId = doc["id"]!.GetValue<string>();
-            waiter = new Waiter { Id = planId, SessionId = context.SessionId, CallId = context.CallId, AgentId = context.AgentId };
-            if (_plans.TryGetValue(planId, out var older)) older.Decision.TrySetResult(PlanDecision.Replaced);
-            _plans[planId] = waiter;
         }
         finally { _gate.Release(); }
         Changed(context.SessionId, doc, PlanMode.Awaiting, submitted: true);
-
-        var status = "cancelled";
-        try
+        return ToolResult.WaitForUser(new UserWait
         {
-            var decided = runtime is null
-                ? await WaitAsync(waiter.Decision.Task, ct).ConfigureAwait(false)
-                : await runtime.WaitYieldedAsync(context.AgentId, waiter.Decision.Task, "waiting for your decision on the plan", null, ct).ConfigureAwait(false);
-            if (!decided)
-            {
-                status = "steered";
-                await ReopenAsync(doc["id"]!.GetValue<string>(), ct).ConfigureAwait(false);
-                return Done("No decision: the user wrote a new message instead; it follows. Plan mode stays on: answer it, and call plan_submit again when the plan is ready (or changed).",
-                    doc, status);
-            }
-            var decision = await waiter.Decision.Task.ConfigureAwait(false);
-            status = decision.Kind switch { "approve" or "approve-new" => "approved", "revise" => "revised", "cancel" => "cancelled", var other => other };
-            return Done(Render(doc, decision), doc, status, decision);
-        }
-        finally
-        {
-            _plans.TryRemove(new KeyValuePair<string, Waiter>(waiter.Id, waiter));
-        }
+            Id = "planw_" + Ids.Short(12),
+            Kind = PlanKind,
+            Activity = "waiting for your decision on the plan",
+            Data = new JsonObject { ["planId"] = doc["id"]?.DeepClone(), ["revision"] = doc["revision"]?.DeepClone(), ["title"] = doc["title"]?.DeepClone() },
+            IfSteered = Done("No decision: the user wrote a new message instead; it follows. Plan mode stays on: answer it, and call plan_submit again when the plan is ready (or changed).",
+                doc, "steered"),
+            IfCancelled = Done("No decision: the chat was stopped before the user decided. The plan still waits on its card; their decision will come as a message.",
+                doc, "cancelled"),
+        });
     }
 
     /// <summary>The user wrote instead of deciding: the plan is being talked about, not decided, until the next plan_submit.</summary>
-    private async Task ReopenAsync(string planId, CancellationToken ct)
+    internal async Task ReopenAsync(string planId, CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         JsonObject? doc;
@@ -208,9 +191,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
             "approve-new" => $"The user approved your plan “{title}” and moved it to a new chat ({d.NewSessionId}), which carries it out; this chat is archived. " +
                              "Do nothing more here: end your turn with one short sentence.",
             "revise" => $"The user asked for changes to revision {n}:\n{d.Feedback}\nRevise the plan and call plan_submit again (it becomes revision {n + 1}). Plan mode stays on.",
-            "cancel" => "The user cancelled the plan: nothing was approved and plan mode is off. Stop planning; ask what they want instead if it is not clear.",
-            "replaced" => "This plan was submitted again: the newer plan_submit call waits for the decision.",
-            _ => "The plan tool restarted (an update), so this wait ended. Your plan still waits for the user: call plan_submit again with the same plan to keep waiting for the decision.",
+            _ => "The user cancelled the plan: nothing was approved and plan mode is off. Stop planning; ask what they want instead if it is not clear.",
         };
     }
 
@@ -227,73 +208,57 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
         ["newSessionId"] = d?.NewSessionId,
     });
 
-    private static async Task<bool> WaitAsync(Task until, CancellationToken ct)
-    {
-        await until.WaitAsync(ct).ConfigureAwait(false);
-        return true;
-    }
-
     /// <summary>
     /// <c>plan_enter</c>: the model proposes plan mode. The user confirms on a card (enter) or declines; entering is the
-    /// same as /plan. Nothing changes without the answer.
+    /// same as /plan. Nothing changes without the answer: the call waits for it (the run ends there).
     /// </summary>
-    public async Task<ToolResult> OfferAsync(ToolContext context, string? reason, CancellationToken ct)
+    public Task<ToolResult> OfferAsync(ToolContext context, string? reason, CancellationToken ct)
     {
-        var runtime = context.Services.Get<IAgentRuntime>();
-        if (runtime?.Get(context.AgentId)?.IsSubagent == true)
-            return ToolResult.Error("Only the main agent can propose plan mode: nobody watches a subagent's chat.");
+        if (context.Services.Get<IAgentRuntime>()?.Get(context.AgentId)?.IsSubagent == true)
+            return Task.FromResult(ToolResult.Error("Only the main agent can propose plan mode: nobody watches a subagent's chat."));
         if (PlanMode.Active(ctx.Sessions.GetSession(context.SessionId)))
-            return ToolResult.Error("This chat is already in plan mode.");
-        var w = new Waiter { Id = "planq_" + Ids.Short(12), SessionId = context.SessionId, CallId = context.CallId, AgentId = context.AgentId, Reason = reason };
-        _enters[w.Id] = w;
-        ctx.Events.Publish("plan.enter.asked", EnterJson(w));
-        var status = "cancelled";
-        try
+            return Task.FromResult(ToolResult.Error("This chat is already in plan mode."));
+        return Task.FromResult(ToolResult.WaitForUser(new UserWait
         {
-            var decided = runtime is null
-                ? await WaitAsync(w.Decision.Task, ct).ConfigureAwait(false)
-                : await runtime.WaitYieldedAsync(context.AgentId, w.Decision.Task, "waiting for your OK to plan", null, ct).ConfigureAwait(false);
-            if (!decided)
-            {
-                status = "steered";
-                return ToolResult.Ok("No answer: the user wrote a new message instead; it follows.", EnterDetails(w, status));
-            }
-            var d = await w.Decision.Task.ConfigureAwait(false);
-            if (d.Kind == "enter")
-            {
-                status = "entered";
-                return ToolResult.Ok(OnText, EnterDetails(w, status));
-            }
-            status = d.Kind == "decline" ? "declined" : "withdrawn";
-            return ToolResult.Ok(d.Kind == "decline"
-                ? "The user declined plan mode: go ahead without a plan (or ask what they prefer)."
-                : "No answer: the plan plugin restarted. Ask again if you still want plan mode.", EnterDetails(w, status));
-        }
-        finally
-        {
-            if (_enters.TryRemove(new KeyValuePair<string, Waiter>(w.Id, w)))
-                ctx.Events.Publish("plan.enter.closed", new JsonObject { ["id"] = w.Id, ["sessionId"] = w.SessionId, ["callId"] = w.CallId, ["status"] = status });
-        }
+            Id = "planq_" + Ids.Short(12),
+            Kind = EnterKind,
+            Activity = "waiting for your OK to plan",
+            Data = new JsonObject { ["reason"] = reason },
+            IfSteered = ToolResult.Ok("No answer: the user wrote a new message instead; it follows.", EnterDetails(reason, "steered")),
+            IfCancelled = ToolResult.Ok("No answer: the chat was stopped before the user answered.", EnterDetails(reason, "cancelled")),
+        }));
     }
 
-    public bool AnswerEnter(string requestId, bool enter)
+    public async Task<bool> AnswerEnterAsync(string requestId, bool enter, CancellationToken ct)
     {
-        if (!_enters.TryGetValue(requestId, out var w)) throw new RpcException("not_found", "No plan-mode offer waits with that id (it was answered, or its run ended).");
+        var w = Runtime?.Waits(kind: EnterKind).FirstOrDefault(x => x.Id == requestId && !x.Answered)
+                ?? throw new RpcException("not_found", "No plan-mode offer waits with that id (it was answered, or its chat moved on).");
         // plan mode is on before the run goes on, so its next tool call is already checked
         if (enter) Enter(w.SessionId);
-        if (!w.Decision.TrySetResult(new PlanDecision(enter ? "enter" : "decline"))) throw new RpcException("not_found", "The offer was already answered.");
+        var reason = (string?)w.Data?["reason"];
+        var result = enter
+            ? ToolResult.Ok(OnText, EnterDetails(reason, "entered"))
+            : ToolResult.Ok("The user declined plan mode: go ahead without a plan (or ask what they prefer).", EnterDetails(reason, "declined"));
+        if (!await Runtime!.ResolveAsync(w.Id, WaitResolution.Answer(result), ct).ConfigureAwait(false))
+            throw new RpcException("not_found", "The offer was already answered.");
+        EnterClosed(w.Id, w.SessionId, w.CallId, enter ? "entered" : "declined");
         return true;
     }
 
-    public JsonArray Offers(string? sessionId) =>
-        new([.. _enters.Values.Where(w => sessionId is null || w.SessionId == sessionId).OrderBy(w => w.AskedAt).Select(w => (JsonNode)EnterJson(w))]);
+    public void EnterClosed(string id, string sessionId, string? callId, string status) =>
+        ctx.Events.Publish("plan.enter.closed", new JsonObject { ["id"] = id, ["sessionId"] = sessionId, ["callId"] = callId, ["status"] = status });
 
-    private static JsonObject EnterJson(Waiter w) => new()
+    public JsonArray Offers(string? sessionId) =>
+        new([.. (Runtime?.Waits(sessionId, EnterKind) ?? []).Where(w => !w.Answered).Select(w => (JsonNode)EnterJson(NetPiJson.ToNode(w)!.AsObject()))]);
+
+    /// <summary>A waiting offer as the card, plan.offers and plan.enter.asked show it, from the runtime's wait.</summary>
+    internal static JsonObject EnterJson(JsonObject wait) => new()
     {
-        ["id"] = w.Id, ["sessionId"] = w.SessionId, ["callId"] = w.CallId, ["agentId"] = w.AgentId, ["reason"] = w.Reason, ["askedAt"] = w.AskedAt.ToString("O"),
+        ["id"] = wait["id"]?.DeepClone(), ["sessionId"] = wait["sessionId"]?.DeepClone(), ["callId"] = wait["callId"]?.DeepClone(),
+        ["agentId"] = wait["agentId"]?.DeepClone(), ["reason"] = wait["data"]?["reason"]?.DeepClone(), ["askedAt"] = wait["since"]?.DeepClone(),
     };
 
-    private static JsonObject EnterDetails(Waiter w, string status) => new() { ["kind"] = "plan-enter", ["reason"] = w.Reason, ["status"] = status };
+    private static JsonObject EnterDetails(string? reason, string status) => new() { ["kind"] = "plan-enter", ["reason"] = reason, ["status"] = status };
 
     // ---------------------------------------------------------------- the user's decision
 
@@ -385,11 +350,10 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
         if (status != wanted) throw new RpcException("bad_request", $"This plan is {status}, so it cannot be {verb} now" + (status == PlanStore.Revising ? " (a new revision is being written)." : "."));
     }
 
-    /// <summary>Hands the decision to the run that waits for it, or, when none does, tells the chat with a message.</summary>
+    /// <summary>Hands the decision to the plan_submit that waits for it, or, when none does, tells the chat with a message.</summary>
     private async Task DeliverAsync(JsonObject doc, PlanDecision d, CancellationToken ct)
     {
-        var planId = doc["id"]!.GetValue<string>();
-        if (_plans.TryGetValue(planId, out var w) && w.Decision.TrySetResult(d)) return;
+        if (await ResolvePlanAsync(doc, d, ct).ConfigureAwait(false)) return;
         var runtime = ctx.Services.Get<IAgentRuntime>();
         if (runtime is null) return;
         var text = d.Kind switch
@@ -558,12 +522,6 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
         });
     }
 
-    /// <summary>A waiting wait ends as withdrawn when this plugin stops, so its run goes on (with its slot back) instead of hanging.</summary>
-    public void WithdrawAll()
-    {
-        foreach (var w in _plans.Values) w.Decision.TrySetResult(PlanDecision.Withdrawn);
-        foreach (var w in _enters.Values) w.Decision.TrySetResult(PlanDecision.Withdrawn);
-    }
-
-    public bool Waits(string planId) => _plans.ContainsKey(planId);
+    /// <summary>Whether a plan_submit waits for this plan's decision.</summary>
+    public bool Waits(string planId) => PlanWait(planId) is not null;
 }

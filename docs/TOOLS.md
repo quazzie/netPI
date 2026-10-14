@@ -796,8 +796,9 @@ that started a research subagent) is in plan mode, and the provider then gives t
 
 `{ title, summary?, steps: (string | { text, detail? })[], files?: (string | { path, note? })[], risks?, tests?, openQuestions?: string[] }`
 (lenient: `step`/`task`, `file`/`what`, a JSON string; at most 40 steps, 60 files, 20 of each list). Stores the plan as the chat's
-next revision (the same plan again, as after a plugin reload, is not a new revision) and waits for the user's decision with the run's
-instance given back (`IAgentRuntime.WaitYieldedAsync`: "waiting for your decision on the plan"). Only in plan mode, only the main
+next revision (the same plan again, as after a stop, is not a new revision) and waits for the user's decision: a wait for the user
+(`UserWait` kind `plan`, "waiting for your decision on the plan"), so the run ends at the call holding nothing, the decision is its
+result in the run that goes on, and it survives a reload of the plugin or the runtime and a restart. Only in plan mode, only the main
 agent. The result text is one of:
 
 - `The user approved your plan “…” (revision n). Plan mode is off…` (with `It is saved as idea …`, and that the todo list holds the steps);
@@ -805,10 +806,10 @@ agent. The result text is one of:
 - `The user asked for changes to revision n:` + the feedback (revise, submit again; plan mode stays on);
 - `The user cancelled the plan…` (plan mode is off);
 - `No decision: the user wrote a new message instead; it follows.` (the plan is `revising`, the mode `planning`);
-- `The plan tool restarted…` when the plugin stopped (a hot reload): the plan still waits, submitting it again keeps waiting.
+- `No decision: the chat was stopped before the user decided…` (`cancelled`): the plan stays on its card, awaiting.
 
-`Details`: `{ kind: 'plan', planId, revision, title, plan, status: approved | revised | cancelled | steered | withdrawn | replaced,
-feedback?, ideaId?, newSessionId? }`. A decision made when no run waits (NetPI restarted, the run was stopped) does the same work and tells the
+`Details`: `{ kind: 'plan', planId, revision, title, plan, status: approved | revised | cancelled | steered,
+feedback?, ideaId?, newSessionId? }`. A decision made when no call waits for it (the chat was stopped, or the user wrote instead) does the same work and tells the
 chat with a message (the approval text, or `Please revise the plan: …`).
 
 What a decision does (`plan.answer`): **approve** saves the plan as an idea (status `planned`, tag `plan`, a `plan` section; an idea
@@ -821,8 +822,8 @@ workspace, written only on that click, the same file again on a second click) le
 ### `plan_enter`
 
 `{ reason? }`. The model proposes plan mode for a large, risky or unclear change; the user answers on a card (Enter plan mode / Not now) and
-the run waits like `ask_user`. Result `Plan mode is on…` (`Details.status: entered`) or `The user declined plan mode…` (`declined`; also
-`steered`, `withdrawn`). Not in plan mode already; not for subagents. `plan.offers` lists the offers that wait.
+the call waits like `ask_user` (`UserWait` kind `plan-enter`). Result `Plan mode is on…` (`Details.status: entered`) or `The user declined plan mode…` (`declined`; also
+`steered`, `cancelled`). Not in plan mode already; not for subagents. `plan.offers` lists the offers that wait.
 
 ```ts
 details: { questions: { question, options: { label, description? }[], multiple }[], answers: string[][] | null,

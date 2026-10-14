@@ -24,7 +24,7 @@ public static class PlanTests
         t.Add("plan: a subagent is bound while the chat that started it is in plan mode", ChildBound);
         t.Add("plan: MCP tools pass when read-only or matching plan.mcpAllow, everything else is blocked", Mcp);
         t.Add("plan: plan_enter waits for the user's answer and enters (or not)", EnterOffer);
-        t.Add("plan: the plugin reloading ends the wait as withdrawn, and the same plan submitted again keeps its revision", ReloadDuringWait);
+        t.Add("plan: the wait survives a reload of the plugin; a stop leaves the plan on its card, and the same plan submitted again keeps its revision", ReloadDuringWait);
         t.Add("plan: /plan enters (with a task it starts the run), shows, leaves; the chat is told once per change", Command);
         t.Add("plan: a fork starts without plan mode", ForkReset);
         t.Add("plan: a messageless chat's enter and exit are announced with session.updated, so a window's row sees the mode", MessagelessAnnounce);
@@ -651,20 +651,29 @@ public static class PlanTests
         h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref step) switch
         {
             1 => Reply.Tool("plan_submit", Plan()),
-            2 => Reply.Text("the tool restarted; I will submit it again"),
-            3 => Reply.Tool("plan_submit", Plan()),
+            2 => Reply.Tool("plan_submit", Plan()),
             _ => Reply.Text("ok"),
         };
         await h.SendAsync(s.Id, "go");
         var planId = (string)(await ChangedAsync(h, s.Id, "awaiting", 1))["planId"]!;
+        await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the plan waits for the decision");
+
+        // a reload of the plugin while it waits: the wait is the runtime's, nothing is withdrawn
         await h.StopPluginAsync("netpi.plan");
+        await h.StartPluginAsync(new PlanPlugin());
+        Check.Equal(0, Results(h, s.Id).Count(r => r.Name == "plan_submit"), "no result: it still waits");
+        Check.Equal(true, (bool?)(await h.Rpc.CallAsync("plan.list", new { sessionId = s.Id }))!.AsArray().Single()!["waiting"], "the new version sees the call that waits");
+        Check.Equal("waiting for your decision on the plan", h.Runtime.GetBySession(s.Id)!.Activity);
+
+        // the chat is stopped: the plan stays on its card, awaiting
+        await h.Runtime.AbortAsync(s.Id);
         await h.IdleAsync(s.Id);
         var first = Results(h, s.Id).Single(r => r.Name == "plan_submit");
-        Check.Contains(first.Content, "The plan tool restarted");
-        Check.Equal("withdrawn", (string?)first.Details!["status"]);
+        Check.Contains(first.Content, "No decision: the chat was stopped");
+        Check.Equal("cancelled", (string?)first.Details!["status"]);
         Check.Equal("awaiting", ModeOf(h, s.Id), "the plan itself still waits for the user");
+        Check.Equal(false, (bool?)(await h.Rpc.CallAsync("plan.list", new { sessionId = s.Id }))!.AsArray().Single()!["waiting"], "no call waits for it now");
 
-        await h.StartPluginAsync(new PlanPlugin());
         await h.SendAsync(s.Id, "submit it again");
         await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "waiting again");
         var again = (await h.Rpc.CallAsync("plan.get", new { planId }))!;
@@ -673,6 +682,7 @@ public static class PlanTests
         await h.Rpc.InvokeAsync("plan.answer", new { planId, decision = "approve" });
         await h.IdleAsync(s.Id);
         Check.Contains(Results(h, s.Id).Last(r => r.Name == "plan_submit").Content, "The user approved your plan");
+        Check.Equal("ok", h.Messages(s.Id)[^1].Text);
     }
 
     private static async Task Command()

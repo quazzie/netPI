@@ -5,7 +5,7 @@ namespace NetPI.Plan;
 /// <summary>
 /// Plan mode (<c>/plan</c>): a chat that may only read. The agent explores (read, grep, find, ls, the web, MCP tools that read,
 /// read-only research subagents on any agent), asks with <c>ask_user</c>, and submits a structured plan with
-/// <c>plan_submit</c>; the run waits, with its instance given back, while the user approves it (saved as an idea, optionally in
+/// <c>plan_submit</c>; the call waits for the user (the run ends at it, holding nothing) while they approve it (saved as an idea, optionally in
 /// a new chat that takes the chat's place), asks for changes, saves it as an idea or a file, or cancels. The model can offer
 /// the mode itself with <c>plan_enter</c> (the user confirms on a card).
 /// <para>
@@ -18,14 +18,12 @@ namespace NetPI.Plan;
 [NetPiPlugin("netpi.plan", Name = "Plan mode", Description = "/plan: explore read-only, submit a plan, the user approves it, asks for changes or saves it", Order = 67)]
 public sealed class PlanPlugin : INetPiPlugin
 {
-    private PlanService? _service;
-
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         // Run state of this plugin: a fork starts without it (the session service remembers the keys even when this plugin is not loaded at a fork).
         context.Sessions.DeclareForkReset(PlanMode.MetaKey, PlanMode.FromKey);
         var store = new PlanStore(context);
-        var service = _service = new PlanService(context, store);
+        var service = new PlanService(context, store);
 
         context.Tools.Register(new PlanSubmitTool(service));
         context.Tools.Register(new PlanEnterTool(service));
@@ -69,13 +67,35 @@ public sealed class PlanPlugin : INetPiPlugin
         context.Rpc.Register(new RpcMethod("plan.offers", "Plan-mode offers waiting for the user (plan_enter): { sessionId? } → { id, sessionId, callId, reason, askedAt }[]", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
             (req, _) => Task.FromResult<object?>(service.Offers(req.Str("sessionId"))));
         context.Rpc.Register(new RpcMethod("plan.enterAnswer", "Answer a plan-mode offer: { id, enter } → true", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Opt("enter", RpcParamType.Boolean)]),
-            (req, _) => Task.FromResult<object?>(service.AnswerEnter(req.Required("id"), req.Bool("enter") == true)));
+            async (req, token) => await service.AnswerEnterAsync(req.Required("id"), req.Bool("enter") == true, token).ConfigureAwait(false));
         context.Rpc.Register(new RpcMethod("plan.command", "/plan command: { sessionId, args } → status text", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("args", RpcParamType.String, "/plan's text: a task, off or show"), RpcParam.Opt("planId")]),
             async (req, token) => await Command(context, service, req.Required("sessionId"), req.Str("args")?.Trim() ?? "", token).ConfigureAwait(false));
         context.Ui.AddCommand(new SlashCommandInfo
         {
             Name = "plan", Description = "Plan mode: explore read-only and submit a plan to approve (/plan off leaves it)",
             Rpc = "plan.command", ArgsHint = "[task] | off | show",
+        });
+
+        // the cards, from the runtime's waits of these kinds (sync handlers: an async one left alive roots this load context)
+        context.Events.Subscribe(EventTypes.AgentWaiting, e =>
+        {
+            if (e.As<JsonObject>()?["wait"] is not JsonObject w) return;
+            if ((string?)w["kind"] == PlanService.EnterKind) context.Events.Publish("plan.enter.asked", PlanService.EnterJson(w));
+            else if ((string?)w["kind"] == PlanService.PlanKind && (string?)w["data"]?["planId"] is { } planId && store.Get(planId) is { } doc)
+                service.Changed((string?)w["sessionId"] ?? "", doc, PlanMode.Awaiting);   // the plan's card now has a call that waits
+        });
+        context.Events.Subscribe(EventTypes.AgentWaitEnded, e =>
+        {
+            if (e.As<JsonObject>() is not { } d || (string?)d["reason"] == "answered") return;   // an answer closes its own
+            var sessionId = (string?)d["sessionId"] ?? "";
+            if ((string?)d["kind"] == PlanService.EnterKind)
+                service.EnterClosed((string)d["waitId"]!, sessionId, (string?)d["callId"], (string?)d["reason"] == "steered" ? "steered" : "cancelled");
+            else if ((string?)d["kind"] == PlanService.PlanKind && (string?)d["data"]?["planId"] is { } planId)
+            {
+                // the user wrote instead of deciding: the plan is talked about until the next plan_submit; a stop leaves it on its card
+                if ((string?)d["reason"] == "steered") _ = Task.Run(() => service.ReopenAsync(planId, CancellationToken.None));
+                else if (store.Get(planId) is { } doc) service.Changed(sessionId, doc, PlanMode.State(context.Sessions.GetSession(sessionId)) ?? "off");
+            }
         });
 
         // the host publishes { id } as the payload (no session on the envelope), like sessions.delete does
@@ -86,12 +106,8 @@ public sealed class PlanPlugin : INetPiPlugin
         return Task.CompletedTask;
     }
 
-    /// <summary>A waiting plan or offer ends as withdrawn, so its run goes on (with its instance back) instead of hanging.</summary>
-    public Task StopAsync(CancellationToken ct)
-    {
-        _service?.WithdrawAll();
-        return Task.CompletedTask;
-    }
+    /// <summary>Nothing to withdraw: the waiting plans and offers are the runtime's, and they wait on through a reload of this plugin.</summary>
+    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
 
     private static JsonNode? Get(IPluginContext context, PlanStore store, RpcRequest req)
     {
