@@ -1,10 +1,15 @@
-// What the browser tests against a REAL netpi-server + MockLlm share (the scripts in this folder, started by
-// UiTests.RunUiScript): the arguments, checks and screenshots, the browser and its error listeners, the server's RPC over
-// HTTP, a tap on the page's WebSocket, MockLlm's gates, and the one JSON line at the end the C# side reads:
-// { ok, checks: [{ name, ok, detail }], errors: [...] }.
+// What the UI journeys against a REAL netpi-server + MockLlm share (the scripts in this folder, started by
+// UiTests.RunUiScript): the arguments, checks and screenshots, the browser and its error listeners, waiting for a state
+// (expectEventually), the server's RPC over HTTP, a tap on the page's WebSocket, MockLlm's gates, and the one JSON line at
+// the end the C# side reads: { ok, checks: [{ name, ok, detail }], errors: [...] }. The rules a journey keeps are in
+// docs/TESTING.md ("UI journeys").
 //
-//   import { run, arg, check, shot } from './lib.mjs';
-//   await run('pin', async ({ page }) => { … check('…', ok); await shot(page, 'ui-pin-01'); … });
+//   import { run, expectEventually, openApp, openSession, lastAnswer, MODEL } from './lib.mjs';
+//   await run('chat', async ({ page }) => {
+//     await openApp(page);
+//     const chat = await openSession(page, id, title);
+//     await expectEventually('the answer is shown', () => lastAnswer(chat), { pass: (t) => t.includes('ECHO-DONE'), timeout: MODEL });
+//   });
 //
 // Arguments every script gets from the wrapper: --url (the server), --token, --mock (MockLlm), --app (the server's app
 // folder, a copy the test may change), --work (a folder for the project directories a script makes), --out (the

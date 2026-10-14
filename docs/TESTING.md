@@ -1,6 +1,6 @@
 # Testing NetPI
 
-The Host plugin-independence gate scans every plugin project and current shared/imported build declarations for peer dependencies, then starts/stops each plugin alone. Agent regressions cover reload admission, shutdown timeout, waiter cancellation, prompt races, profiles without Context and reset forks after Context reload. Aux tests cover alternate providers. In the browser, `ui.work-tab` exercises an agent's instances on a model's physical slots, and `ui.connection` the composer and Diagnostics without the runtime, context and compaction plugins and their recovery. Every UI test drives the real server: a script in `tests/NetPI.E2E/ui` ("Writing one", below).
+The Host plugin-independence gate scans every plugin project and current shared/imported build declarations for peer dependencies, then starts/stops each plugin alone. Agent regressions cover reload admission, shutdown timeout, waiter cancellation, prompt races, profiles without Context and reset forks after Context reload. Aux tests cover alternate providers. In the browser, eight UI journeys check what a person would notice broken, against the real server ("UI journeys", below); the UI's pure logic is unit-tested with `node --test` (`web/test`, the `UI` suite).
 
 Three layers, all without NuGet packages (console runners, no test framework):
 
@@ -57,9 +57,9 @@ Verification follows the change, not the fact that it will be merged:
 |---|---|
 | Docs or comments | Review the diff and check changed links; no test suite |
 | Formatting or line endings | Check the diff, checkout policy and affected build output; no full gate |
-| Small plugin UI edit | Build its bundle and check the affected UI behavior or layout |
-| Plugin behavior | Owning unit tests and affected E2E cases (`-Only`, `-Tag` or `-Changed`) |
-| Shared contracts or cross-cutting behavior | Full unit and E2E gates once the changes are ready |
+| UI change (`web/`, `plugins/*/ui`) | Build the bundles; `-Suite UI` when a pure module changed; the UI journeys `-Changed` selects (`-Tag ui` for all) |
+| Server or plugin behavior | Owning unit tests and the C# E2E cases `-Changed` selects (`-Only`, `-Tag`); no browser |
+| Shared contracts or cross-cutting behavior | Full unit and E2E gates (the C# tests and the UI journeys) once the changes are ready |
 
 An explicit request can call for wider testing. Otherwise broaden checks only when affected scope or new evidence
 justifies it. A merge alone does not. After a failure, read the evidence and rerun the failing and affected tests.
@@ -313,8 +313,8 @@ dotnet tests/NetPI.E2E/bin/Release/NetPI.E2E.dll [options] [test id | filter]...
 so they cannot disturb one another; the selected tests are split over them by how long each took last time
 (`artifacts/e2elogs/timings.json`), longest first, and each shard runs its tests in registration order. Two runs at once (two
 agents) share nothing: ports, work folders, screenshots and result folders are per run. Measured on one 16-core machine
-(2026-10-07): the whole suite (80 tests) takes ~46 s in 4 shards, and the longest single test (`ui.smoke`, ~23 s) bounds it. A
-fixed pause in a ui script is what makes that number creep (ui.smoke had grown to 43 s): wait for the state a check reads.
+(2026-10-07): the whole suite (80 tests) takes ~46 s in 4 shards, and the longest single test (`ui.smoke`, ~23 s, removed since) bounds
+it. A fixed pause in a ui script is what makes that number creep (ui.smoke had grown to 43 s): wait for the state a check reads.
 
 **Results.** Every run leaves `artifacts/e2elogs/<run>/`: `report.json` (selection, per-test outcome and time, per-shard
 setup/test/teardown time, revision), `console.txt` (from the script), `screenshots/`, and `failures/<id>.txt` for each failed
@@ -389,8 +389,10 @@ afternoon (2026-10-01); a unit test that fails sometimes is run the same way (`d
 **Ids and tags.** An id is `area.name` (`retry.drop`); the area is also a tag. `tests/NetPI.E2E/Catalog.cs` holds the other tags.
 `smoke` is one representative test per boundary: startup, chat and a real file tool, the Responses/Chat/Anthropic adapters, abort
 and slot scheduling, persistence across a restart and a reload while active (the `lifecycle` tag is the wider group of those). The
-browser tests (`ui`, `needs-node`) are not in smoke yet. `areas.json` maps source paths to tags/ids for `-Changed`; `--self-test`
-fails when it names something that does not exist or a plugin has no rule.
+UI journeys (`ui`, `needs-node`) are not in smoke. `areas.json` maps source paths to tags/ids for `-Changed`, the most specific
+rule (the longest path) deciding for each file: server and plugin code goes to the C# tests, `web/`, a plugin's `ui/` and its
+bundles in `wwwroot/` to the UI journeys, a shared contract to everything. `--self-test` fails when it names something that does
+not exist or a plugin has no rule.
 
 **Each test works alone.** Checked by running every test on its own fresh server (`-Fresh`); a test that depends on another
 having run first (or that asserts a server-wide total) is a bug. Two were found that way: the usage summary total and
@@ -455,25 +457,57 @@ Coverage (run `--list` for the names):
 - **server**: session-scoped events only reach subscribed clients (HTTP RPC and its auth are the Host suite's), external `settings.json`
   edits applied live, automatic session titles, projects CRUD, SIGTERM during a run → exit 0 → restart keeps sessions,
   messages and projects.
-- **UI** (`ui/smoke.mjs`, Playwright): open a prepared session, send `[s:tools]` (streaming block, tool rows, diff, final
-  answer), Work/Ideas/Diagnostics/Files tabs against the real server, subagents live in the Work tab, steering with
-  Enter, Esc abort, a retried stream; fails on console errors or failed requests. Screenshots:
-  `tests/NetPI.E2E/screenshots/ui-*.png`. Beside it one script per area (`ui.composer`, `ui.chat-run`, `ui.work-tab`,
-  `ui.connection`, …: `--list --tag ui`), each against the same server and mock model; `-Tag ui` runs them all.
+- **UI**: the journeys below (`--list --tag ui`), and `ui.rpc-contract`, which needs no browser: every RPC method the UI
+  calls by name exists in the server's `rpc.list`.
 
 The UI tests need `node` and Playwright: `playwright-core` is a devDependency (installed with the other
 dependencies), and both the E2E scripts (`ui/lib.mjs`) and the UI's node checks (`web/scripts/pw.mjs`) resolve it. If Playwright's own
 Chromium build is not downloaded (`npx playwright-core install chromium`) the tests fall back to an installed Edge or
 Chrome and print `browser: msedge`. Use `--no-ui` without Playwright.
 
-**Writing one.** A UI test is a script in `tests/NetPI.E2E/ui` built on `ui/lib.mjs`: `run(name, body, options)` gives the
-body a page with its error listeners and prints the result line, and the lib has `rpc()` over HTTP, `send()` (a run,
-waited for), MockLlm's `gates`, `openApp`/`openSession`/`openStripTab`, and `tapSocket` (the page's WebSocket frames, an
-answer held back, the connection dropped and restored). A script seeds what it needs itself (names with `STAMP`, folders
-with `newDir`) and removes it in a `finally`; `keepsSettings` fails it when the settings document is not as it found it.
-`UiTests.RunUiScript` runs it with `--url --token --mock --app --work --out`; give it a `needs-node` tag in `Catalog.cs`.
-Because a script seeds itself it runs against any server, which is the fast loop: start MockLlm and a copy of
-`artifacts/dev/app` once, then
+### UI journeys
+
+Eight scripts in `tests/NetPI.E2E/ui`, each a thing a person does and would notice broken, against a real server and MockLlm
+(Playwright; screenshots in the run's `screenshots/`):
+
+| id | script | the journey |
+|---|---|---|
+| `ui.chat` | `chat.mjs` | open a chat from the list, have the agent edit a file: the answer streams, the tool rows finish, the edit's diff, the final answer; every side-panel tab opens (a plugin bundle that no longer loads is its error state) |
+| `ui.chat-control` | `chat-control.mjs` | Enter while it runs steers (a steer chip), Alt+Enter queues (a queued chip), Esc stops an answer and keeps what was written |
+| `ui.tools` | `tools.mjs` | thinking shown and opened while it streams, a shell command's output in its row while it runs, a dropped stream retried without its discarded text |
+| `ui.reconnect` | `reconnect.mjs` | the socket drops and comes back: reconnecting shown, a run that ended meanwhile shows its stored answer, a streaming answer goes on with no gap, a new run reaches the page |
+| `ui.work` | `work.mjs` | the Work tab: an agent's two instances busy, a third chat queued and cancelled from the tab, rows that stay put as runs end |
+| `ui.settings` | `settings.mjs` | a number saved, reset and refused out of range; an agent added from the model search, edited and removed after a confirm; a chat's profile picker that stays open through a failed reload |
+| `ui.asks` | `asks.mjs` | an `ask_user` card that survives a reload, answered by an option, in the person's own words and with its Send button |
+| `ui.new-chat` | `new-chat.mjs` | a new chat from the start screen in a project: the chevron picks it, the first answer lists the chat, the main button starts the next one there |
+
+Everything else a UI test used to check is either the server's (a C# test), pure logic (`web/test`), or was given up on purpose:
+[archive/2026-10-15-e2e-restructure.md](archive/2026-10-15-e2e-restructure.md) lists each removed script and where its
+behaviour is still covered. The rules a journey keeps, because the old suite broke on intended UI changes and flaked under load:
+
+- **Wait for a state, then check it once.** `expectEventually(name, probe, { pass, timeout, stop, quiet })` (`ui/lib.mjs`) polls the
+  probe until `pass(value)` holds and records one check, with the value it saw or, on a miss, the last value or error. No swallowed
+  wait followed by a one-shot read, and no fixed sleep: a pause is too short on a loaded machine and too long on an idle one. A
+  one-shot `check()` is for a state that is already settled (read after an `expectEventually` that waited for it).
+- **The timeouts scale with the machine.** `SLOW` (1 to 4) is the larger of `NETPI_UI_SLOW` (the runner passes its
+  `--timeout-scale`) and a measurement taken when the script starts: the faster of two short MockLlm echo replies against the
+  ~260 ms one takes on an idle machine. `expectEventually`, `until`, `waitIdle` and `gates.waiting` multiply by it; each script prints
+  it (`machine: x1.3`).
+- **Hold a live state instead of racing it.** A running state is held at a MockLlm gate (`gate=<name>` in the scenario tag,
+  `gates.waiting`/`gates.release`), a shell command by a file the journey writes (`[s:fgwait file=…]`), never by timing.
+- **Find elements by role, label or a data attribute**: `getByRole`, `getByTestId` (`data-testid`), and `data-state` / `data-status`
+  / `data-mode` / `data-session` / `data-tab-key` / `data-pane` / `data-setting` / `data-page` that the components carry for this. No
+  CSS classes, and no assertion on wording or pixels unless the wording is the behaviour; a marker the mock writes (`TOOLS-DONE`) or
+  an option it offers is content, not the UI's wording. A journey that needs a hook adds the attribute to the component.
+- `run(name, body, { tap, keepsSettings, http })` gives the body a page with its error listeners and prints the result line;
+  `rpc()` over HTTP, `send()` (a run, waited for), `openApp`, `showTab(key)`, `openSession(id, title)`, `unfoldSteps`, `lastAnswer`
+  and `tapSocket` (the page's WebSocket: frames, held answers, a drop and restore; the HTTP calls its drop fails are not counted
+  as console errors). A script seeds what it needs (names with `STAMP`, folders with `newDir`) and removes it in a `finally`;
+  `keepsSettings` fails it when the settings document is not as it found it. Register it in `UiTests.cs` (`RunUiScript`) and give
+  it a `needs-node` tag in `Catalog.cs`.
+
+A new journey is for something a person does that no C# test and no `web/test` file can see. Because a script seeds itself it
+runs against any server, which is the fast loop: start MockLlm and a copy of `artifacts/dev/app` once, then
 `node tests/NetPI.E2E/ui/<script>.mjs --url http://127.0.0.1:<port> --token <token> --mock http://127.0.0.1:<mock port>`.
 
 The browser is also what measures the chat's markdown: `node web/scripts/bench-stream.mjs` streams a long answer through
@@ -531,6 +565,6 @@ Fresh suite results are recorded in STATUS.md. Live paid billing and Linux/macOS
 
 ## MCP fixtures
 
-MCP tests run in the existing Aux, Agent, Host and E2E suites. The shared `McpFixture.cs` mode launches a protocol-only stdio child via `--mcp-fixture`. HTTP fixtures bind local ephemeral ports. Run the scoped cases with filters `mcp`, `deferred:` and `mcp host:`; the E2E filter `mcp` includes actual Responses request captures and the narrow-panel UI check. The standalone UI check is `node tests/NetPI.E2E/ui/mcp-smoke.mjs`. All fixtures use isolated homes/processes and never install into the running app.
+MCP tests run in the existing Aux, Agent, Host and E2E suites. The shared `McpFixture.cs` mode launches a protocol-only stdio child via `--mcp-fixture`. HTTP fixtures bind local ephemeral ports. Run the scoped cases with filters `mcp`, `deferred:` and `mcp host:`; the E2E filter `mcp` includes actual Responses request captures. All fixtures use isolated homes/processes and never install into the running app.
 
 Browser launches disable Edge's `msWindowTabManagerPublic` feature, including the browser and screenshot tools exercised by the Aux suite and the Playwright UI smoke tests. Otherwise headless Edge can leave Explorer-owned tab proxies in Alt-Tab after the browser exits. This flag prevents new entries; restarting Windows Explorer clears old entries (and briefly restarts the taskbar).

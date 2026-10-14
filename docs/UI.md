@@ -379,7 +379,7 @@ Timings measured by the old mock walkthrough (headless Chromium):
   the profile, project and effort pickers drop their labels, at 520px the separator and the chat cost go, at 400px
   the `/` and `@` buttons (typing them opens the same popups), and at 340px the gaps close and the agent's label
   narrows to 52px. Nothing passes the edge and Send stays on screen down to the 286px both open side panels leave
-  (`ui.composer`'s narrow widths, idea-ziqr1i).
+  (idea-ziqr1i; no test checks the widths since `ui.composer` went on 2026-10-15).
 - **Enter** sends. While the agent runs, Enter **steers** and **Alt+Enter** **queues**. **Shift+Enter** inserts
   a newline. **Esc** and the **Stop** button stop the run alone (`agent.abort { subagents: false }`): the subagents it started keep
   working and their reports still wake the chat, so a parent can be stopped and redirected without losing its workers.

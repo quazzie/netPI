@@ -32,8 +32,9 @@
 ## Verification
 
 - Docs/formatting: check diffs, links or affected build output. No test suites.
-- Small UI edits: bundle build and focused UI check. Behavior changes: owning regression tests and affected E2E.
-- Full gates only for shared contracts, cross-cutting behavior or explicit requests—never merely for merging.
+- UI changes (`web/`, `plugins/*/ui`): bundle build, `.\scripts\test.ps1 -Suite UI` for pure UI logic, and the UI journeys `e2e.ps1 -Changed` picks.
+- Server/plugin behavior: owning regression tests and the C# E2E cases `-Changed` picks; no browser.
+- Shared contracts: both. Full gates only for shared contracts, cross-cutting behavior or explicit requests—never merely for merging.
 - Fix flaky tests; a passing retry is not a fix. Read saved evidence and rerun only affected tests. Do not merge unresolved failures.
 - Commands, selection, mocks and failure evidence: [TESTING](docs/TESTING.md).
 - Deterministic builds are load-bearing (hot-reload + the contracts check in build.ps1): unchanged sources must rebuild
