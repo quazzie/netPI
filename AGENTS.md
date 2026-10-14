@@ -18,11 +18,12 @@
 - One commit per piece. Merge into `master` from the main checkout, verify ancestry, remove your merged tree/branch.
 - Plain builds use `artifacts/dev/app`; they must never touch the installed app.
 - After merging, publish yourself with `.\build.ps1 -Publish` — never leave it to the user. The script decides: plugins
-  hot-reload and the web UI swaps in place (no restart; a window refresh shows it); host files, or plugins built against
-  changed contracts, are staged for the next start automatically; so are ALL plugins while any chat is mid-turn (a reload must
-  never disturb a run: reloading `NetPI.Runtime` ends every run in flight; if a reload ever closes a run, that is a bug to
-  report). Hot-reload if no run is active, else staged — the script picks. There is nothing else to choose. `-NextStart` (reload nothing, stage everything) only when the user asks for it. Report what the
-  script printed: went live, or waits in `.pending`.
+  are staged in place and the running host reloads them itself when no agent run is active (its reload gate: at once when
+  idle, else when the last run ends; a reload must never disturb a run — if one ever closes a run, that is a bug to
+  report); the web UI swaps in place (a window refresh shows it); host files, or plugins built against changed contracts,
+  wait in `.pending` for the next start. A host without the gate (started before it existed) gets its plugins in
+  `.pending` while a chat is mid-turn. There is nothing else to choose. `-NextStart` (reload nothing, stage everything)
+  only when the user asks for it. Report what the script printed: staged (reloads when idle), or waits in `.pending`.
 - App changes are done when `-Publish` has run. A restart does not install Git changes.
 - Docs-only changes need no build/publish. Ask before stopping the owner's app.
 - Commands and install details: `Get-Help .\build.ps1 -Full`, [HANDOFF](docs/HANDOFF.md). UI: `npm ci`, `npm run build`; Git handles LF.

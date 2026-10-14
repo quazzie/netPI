@@ -5,14 +5,14 @@
 
 .DESCRIPTION
   A build lands in artifacts\dev\app (NetPI.exe, netpi-server.exe, plugins\, wwwroot\) and nothing else: a running
-  NetPI loads its plugins from artifacts\app and reloads one as soon as that file changes, so building — even just
+  NetPI watches artifacts\app\plugins and reloads a plugin whose files changed, so building — even just
   `dotnet build` of a plugin or a test project that references one — must not write there. That is why the default
   output is the dev tree and installing is a separate, deliberate step:
 
     .\build.ps1                build into artifacts\dev\app. The running app is untouched.
-    .\build.ps1 -Publish       build, then install into artifacts\app. A running NetPI hot-reloads the changed plugins,
-                               so every chat that holds one of their tools gets a "tools" notice; the script says which
-                               plugins and how many chats are mid-turn before it does.
+    .\build.ps1 -Publish       build, then install into artifacts\app. Installing a plugin only stages it: the running
+                               NetPI keeps serving from its shadow copy and reloads the plugin itself when no agent run
+                               is active (its reload gate; at once when idle). A reload never ends or disturbs a run.
     .\build.ps1 -Publish -NextStart
                                the host files and plugins wait in artifacts\app\.pending for the next start; the web
                                UI is swapped in place (a window refresh picks it up — the server reads it from disk).
@@ -209,8 +209,8 @@ function Enter-InstallLock([string] $path) {
     throw "Another publish has held $path for two minutes. If no build is running, delete it."
 }
 
-# ---- what the running app is doing right now: a publish that hot-reloads plugins disturbs the chats that hold their
-# tools, so say so before doing it. Read-only, best effort: any failure just means no report. Only a plugin that
+# ---- what the running app is doing right now: which chats are mid-turn (their runs hold the reload gate, so the plugins
+# reload after them), and whether the host has the gate at all. Read-only, best effort: any failure just means no report. Only a plugin that
 # registers tools can take any away (a hook-only one swaps under a run and announces nothing), so the report names the
 # tools actually at stake instead of warning about every reload.
 function Get-LiveChats {
@@ -219,7 +219,8 @@ function Get-LiveChats {
         $o = node scripts/netpi.mjs diag.overview --compact --timeout 5 2>$null | ConvertFrom-Json
         if (-not $o) { return $null }
         $busy = @($o.runs | Where-Object { $_.status -in 'running', 'queued' })
-        return [pscustomobject]@{ Busy = $busy; Total = @($o.runs).Count }
+        # Gated: the host has the reload gate, so it defers every plugin reload while an agent run is active
+        return [pscustomobject]@{ Busy = $busy; Total = @($o.runs).Count; Gated = $null -ne $o.reloadGate }
     } catch { return $null }
 }
 
@@ -239,23 +240,13 @@ function Show-PublishCost([string[]] $pluginNames) {
     if (-not $live) { return }
     $names = if ($pluginNames.Count) { $pluginNames -join ', ' } else { 'the web UI' }
     $tools = Get-PluginTools $pluginNames
-    if ($null -ne $tools -and $tools.Count -eq 0) {
-        Write-Host "Installing into the running app: $names. They register no tools, so no chat loses any." -ForegroundColor Green
-        return
-    }
+    $what = if ($null -ne $tools -and $tools.Count) { " ($($tools.Count) tool(s): $($tools -join ', '))" } else { '' }
     if (-not $live.Busy.Count) {
-        $what = if ($null -ne $tools) { "$($tools.Count) tool(s) reload ($($tools -join ', '))" } else { 'plugins reload' }
-        Write-Host "Installing into the running app: $names — $what. No chat is mid-turn." -ForegroundColor Green
+        Write-Host "Installing into the running app: $names$what. No chat is mid-turn: they reload now." -ForegroundColor Green
         return
     }
     $who = @($live.Busy | ForEach-Object { $_.name }) -join ', '
-    Write-Host "About to install into the running app: $names." -ForegroundColor Yellow
-    if ($null -ne $tools) {
-        Write-Host "$($live.Busy.Count) chat(s) mid-turn ($who); $($tools.Count) tool(s) go away for a moment ($($tools -join ', ')), and a chat holding one gets a notice at its next model call." -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "$($live.Busy.Count) chat(s) mid-turn ($who); -NextStart defers the whole install to a restart." -ForegroundColor Yellow
-    }
+    Write-Host "Installing into the running app: $names$what. $($live.Busy.Count) chat(s) mid-turn ($who): the host reloads them when no agent run is active." -ForegroundColor Yellow
 }
 
 # ---- .NET: always into the dev tree. Nothing below this point can fail halfway into artifacts\app.
@@ -405,17 +396,19 @@ if ($Publish) {
                 Copy-Item -Path (Join-Path $dev 'wwwroot\*') -Destination $web -Recurse -Force
             }
 
-            # plugins: changed files go into place and the running NetPI reloads those plugins, or wait in .pending
+            # plugins: changed files go into place - staged: the running NetPI serves from shadow copies and its reload gate
+            # applies them when no agent run is active - or wait in .pending for the next start
             $devPlugins = Join-Path $dev 'plugins'
             $pluginFiles = @(Get-Changed $devPlugins (Join-Path $app 'plugins'))
             $pluginNames = @($pluginFiles | ForEach-Object { $_.Split('\')[0] } | Sort-Object -Unique)
             $pluginsWait = $defer -or $newContracts
-            # A reload must never disturb a run: plugins go in live only while no chat is mid-turn (reloading NetPI.Runtime
-            # even ends every run in flight, and a reloaded tool vanishes from a turn that is using it). Otherwise they all
-            # wait in .pending for the next start, and the script says why.
-            if (-not $pluginsWait -and $pluginNames.Count -and ($live = Get-LiveChats) -and $live.Busy.Count) {
+            # A reload must never disturb a run. A host with the reload gate (diag.overview has .reloadGate) guarantees that
+            # itself. One started before the gate existed reloads at once: while any chat is mid-turn there, the plugins
+            # wait in .pending for its next start instead.
+            $live = if (-not $pluginsWait -and $pluginNames.Count) { Get-LiveChats }
+            if ($live -and -not $live.Gated -and $live.Busy.Count) {
                 $pluginsWait = $true
-                Write-Host "$($live.Busy.Count) chat(s) are mid-turn ($(@($live.Busy | ForEach-Object { $_.name }) -join ', ')): the plugins are NOT reloaded now." -ForegroundColor Yellow
+                Write-Host "$($live.Busy.Count) chat(s) are mid-turn ($(@($live.Busy | ForEach-Object { $_.name }) -join ', ')) and the running NetPI has no reload gate: the plugins are NOT reloaded now." -ForegroundColor Yellow
             }
             if ($pluginsWait) {
                 foreach ($name in $pluginNames) {
@@ -430,7 +423,10 @@ if ($Publish) {
 
             Write-Host ''
             if ($pluginNames.Count -and -not $pluginsWait) {
-                Write-Host "Plugins updated in place (the running NetPI reloads them): $($pluginNames -join ', ')" -ForegroundColor Green
+                $when = if ($live -and $live.Gated) { 'when no agent run is active (at once if idle; diag.overview .deferred lists what still waits)' }
+                        elseif ($live) { 'now (it has no reload gate yet; no chat is mid-turn)' }
+                        else { 'when its reload gate allows (could not ask it: a host with the gate waits for active runs, an older one reloads at once)' }
+                Write-Host "Plugins staged in place: $($pluginNames -join ', '). The running NetPI reloads them $when." -ForegroundColor Green
             }
             if ($pluginNames.Count -and $pluginsWait) {
                 $why = if ($newContracts) { 'The contracts changed: the running NetPI keeps its plugins' } else { 'The running NetPI keeps its plugins' }
