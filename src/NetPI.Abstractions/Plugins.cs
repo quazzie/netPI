@@ -121,6 +121,13 @@ public interface IReloadGate
     IDisposable Hold(string owner, string reason);
 
     /// <summary>
+    /// Keep only the reload of <paramref name="owner"/> (a plugin id) from being applied until the returned handle is
+    /// disposed; every other plugin reloads as usual. For state of that plugin that outlives any run and that its reload
+    /// would end: the shell's background processes, which its stop kills. Never waits.
+    /// </summary>
+    IDisposable HoldOwn(string owner, string reason);
+
+    /// <summary>
     /// <see cref="Hold"/>, but first wait for the reloads being applied right now, if any (a batch takes seconds): work that
     /// starts from outside - a new run - then starts after that swap, not on the version it retires. Never for a reload
     /// that is only deferred.

@@ -932,6 +932,42 @@ public static class ShellTests
             Check.Equal("", output);
         });
 
+        r.Add("background: a live process holds the shell plugin's own reload; the last one ending releases it", async () =>
+        {
+            var taken = 0;
+            var released = 0;
+            var registry = new ProcessRegistry(new FakeBus(), () =>
+            {
+                Interlocked.Increment(ref taken);
+                return new Disposer(() => Interlocked.Increment(ref released));
+            });
+            var svc = new ShellService(registry, null, Path.Combine(T.TempDir("shell"), "tmp"));
+            var dir = T.TempDir("bg-hold");
+            Check.False(registry.HoldsReload, "nothing runs: no hold");
+            ToolResult a, b;
+            using (NoStartupWait())
+            {
+                a = await T.Run(Bash(svc), dir, new { command = "sleep 30", background = true });
+                b = await T.Run(Bash(svc), dir, new { command = "sleep 30", background = true });
+            }
+            Check.True(registry.HoldsReload, "a background job holds the reload");
+            Check.Equal(1, Volatile.Read(ref taken), "one hold for all of them");
+            var first = registry.Get(T.D(a).Str("processId")!)!;
+            first.Kill();
+            await first.Completion.WaitAsync(TimeSpan.FromSeconds(8));
+            Check.True(registry.HoldsReload, "one still runs");
+            Check.Equal(0, Volatile.Read(ref released));
+            var second = registry.Get(T.D(b).Str("processId")!)!;
+            second.Kill();
+            await second.Completion.WaitAsync(TimeSpan.FromSeconds(8));
+            await Wait.Until(() => !registry.HoldsReload, "released with the last one", 5000);
+            Check.Equal(1, Volatile.Read(ref released));
+            var fg = await T.Run(Bash(svc), dir, new { command = "echo done" });
+            Check.Contains(fg.Content, "done");
+            await Wait.Until(() => !registry.HoldsReload, "a finished foreground command leaves nothing held", 5000);
+            Check.Equal(2, Volatile.Read(ref taken), "it held the reload while it ran");
+        });
+
         r.Add("pwsh: encoding helpers; tool reports absence clearly or runs when present", async () =>
         {
             var script = ShellLaunch.PwshScript("Write-Output 'hé'");

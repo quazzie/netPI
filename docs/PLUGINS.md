@@ -383,7 +383,7 @@ build, `plugins.reload` / `/reload`, a rescan that finds a changed assembly — 
 (queued for a slot included) to its end, after the run it hands over to (a follow-up, a parent woken by a subagent's
 result) has taken its own hold. While any hold is alive a reload request is only recorded: the running version keeps
 serving from its shadow copy, `plugins.reloaded` says `kind: "deferred", reason: "busy"` once per request, the log says
-`reload deferred until no agent run is active (<holders>)`, and `IPluginManager.Deferred()` / `diag.overview .deferred`
+`reload deferred until what holds it ends (<holders>)`, and `IPluginManager.Deferred()` / `diag.overview .deferred`
 list it. Requests for the same plugin coalesce. When the last hold is released the host applies everything waiting in one
 batch (no timer, no polling: the release wakes it) and logs `Applying N deferred plugin reload(s)`; each reload then
 reports `reload` or `reload-failed` as usual — a failed one keeps the running version and is not retried until its files
@@ -392,7 +392,14 @@ change again.
   can reach any plugin (tools, providers, hooks, services resolved per use), and nothing records which ones a run
   depends on, so a per-plugin rule could not be shown correct. A plugin that has nothing to do with runs simply waits.
 - A new run that starts while a batch is being applied waits for that batch (`EnterAsync`), so it starts on the new
-  version and never on one being retired; a retired runtime hands such a message to its successor.
+  version and never on one being retired; a retired runtime hands such a message to its successor. A run a plugin's own
+  start begins from inside the batch does not wait for it (it would never end); the holds are asked again before each
+  plugin of the batch, so the rest waits for that run instead of being swapped under it.
+- **A plugin can hold its own reload** (`IReloadGate.HoldOwn`) for state of its own that outlives any run and that its
+  reload would end: only that plugin waits, the batch applies the others. The shell holds it while any process it
+  started is alive (its stop kills them all, so a reload would kill a dev server a chat left running in the background);
+  `diag.overview .reloadGate.holds` shows `netpi.tools.shell (its own reload): …`. Browser tabs and MCP server
+  connections are still lost when their plugin reloads (the owner's choice, 2026-10-14).
 - **Nothing waits for a deferred reload.** A busy app keeps the running versions until the first moment no run exists,
   or until the next start, which loads the new files anyway: the cost of a reload that keeps waiting is a stale plugin,
   never a run held back. `diag.overview .deferred` lists what waits and `.reloadGate.holds` the runs that hold it. (Until

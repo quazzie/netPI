@@ -227,10 +227,13 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     }
 
     /// <summary>
-    /// Apply the reloads asked for - only when that is safe: <c>plugins.quiet</c> is off and nothing holds the gate (no
-    /// agent run is active). Otherwise they stay deferred: the release of the last hold, or quiet switched off, calls this
-    /// again. One batch at a time; a request that comes while one is applied is taken by that batch before it ends.
-    /// <paramref name="requested"/> is the plugin just asked for when that request is new: its deferral is announced.
+    /// Apply the reloads asked for - only when that is safe: <c>plugins.quiet</c> is off, nothing holds every reload (no
+    /// agent run is active), and the plugin does not hold its own (the shell while its processes run). Otherwise they stay
+    /// deferred: the release of the hold, or quiet switched off, calls this again. One batch at a time; a request that
+    /// comes while one is applied is taken by that batch before it ends. Before each plugin the holds are asked again: a
+    /// run that a plugin's start began from inside the batch (it does not wait for the batch it is part of) stops the rest,
+    /// which waits for that run like any other reload. <paramref name="requested"/> is the plugin just asked for when that
+    /// request is new: its deferral is announced.
     /// </summary>
     private async Task ApplyPendingAsync(PluginEntry? requested, CancellationToken ct)
     {
@@ -244,24 +247,42 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             if (!_reloadGate.TryBeginApply(out var held))
             {
                 if (!held) return;   // a batch is under way: it takes this request before it ends
-                if (requested is not null) AnnounceDeferred(requested.Id, "busy", string.Join("; ", _reloadGate.Holders()));
+                if (requested is not null) AnnounceDeferred(requested.Id, "busy", string.Join("; ", _reloadGate.HoldersOf(requested.Id)));
                 return;
             }
+            var stopped = false;
             try
             {
                 List<PluginEntry> batch;
-                lock (_deferred) { batch = [.. _deferred]; _deferred.Clear(); }
+                lock (_deferred)
+                {
+                    batch = [.. _deferred.Where(e => !_reloadGate.IsHeld(e.Id))];
+                    foreach (var e in batch) _deferred.Remove(e);
+                }
+                if (requested is not null && !batch.Contains(requested))
+                    AnnounceDeferred(requested.Id, "busy", string.Join("; ", _reloadGate.HoldersOf(requested.Id)));
                 var waited = batch.Where(e => !ReferenceEquals(e, requested)).Select(e => e.Id).ToList();
                 if (waited.Count > 0) _log.LogInformation("Applying {Count} deferred plugin reload(s): {Ids}", waited.Count, string.Join(", ", waited));
-                foreach (var e in batch)
+                for (var i = 0; i < batch.Count; i++)
                 {
+                    var e = batch[i];
+                    if (_reloadGate.Held || _reloadGate.IsHeld(e.Id))
+                    {
+                        var rest = batch.Skip(i).ToList();
+                        lock (_deferred) _deferred.InsertRange(0, rest.Where(x => !_deferred.Contains(x)));
+                        _log.LogInformation("Plugin reloads wait again ({Holders}): {Ids}", string.Join("; ", _reloadGate.HoldersOf(e.Id)), string.Join(", ", rest.Select(x => x.Id)));
+                        PublishReloaded([.. rest.Select(x => x.Id)], "deferred", "busy");
+                        stopped = true;
+                        break;
+                    }
                     try { await ApplyReloadAsync(e, ct).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                     catch (Exception ex) { _log.LogWarning(ex, "Reloading {Plugin} failed", e.Id); }
                 }
             }
             finally { _reloadGate.EndApply(); }
-            lock (_deferred) if (_deferred.Count == 0) return;
+            if (stopped) return;   // the hold that stopped it wakes this again when it goes
+            lock (_deferred) if (!_deferred.Any(e => !_reloadGate.IsHeld(e.Id))) return;   // only plugins holding their own are left
             requested = null;
         }
     }
@@ -272,7 +293,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         if (reason == "quiet")
             _log.LogInformation("Plugin {Id}: reload deferred (plugins.quiet) - the running version keeps serving", id);
         else
-            _log.LogInformation("Plugin {Id}: reload deferred until no agent run is active ({Holders}) - the running version keeps serving", id, detail);
+            _log.LogInformation("Plugin {Id}: reload deferred until what holds it ends ({Holders}) - the running version keeps serving", id, detail);
         PublishReloaded([id], "deferred", reason);
         PublishChanged();
     }

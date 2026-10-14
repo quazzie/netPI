@@ -38,7 +38,9 @@ public sealed class ShellPlugin : INetPiPlugin
                     "Environment variables a bash/pwsh command never sees, on top of NetPI's own secrets (NETPI_TOKEN, the provider and search keys, and every variable a secret setting or an MCP server reads)."),
             ],
         });
-        _registry = new ProcessRegistry(context.Events);
+        // Its own reload waits while a process it started is alive: the stop below kills them (IReloadGate.HoldOwn)
+        _registry = new ProcessRegistry(context.Events,
+            () => context.Services.Get<IReloadGate>()?.HoldOwn(context.PluginId, "processes it started are running (its reload would kill them)"));
         var settings = context.Settings;
         _registry.WatchSilence(() => settings.GetOr("shell.idleMinutes", 5.0) is var m and > 0 ? TimeSpan.FromMinutes(m) : null);
         var service = new ShellService(_registry, context.Settings);

@@ -2,11 +2,12 @@ namespace NetPI.Host.Plugins;
 
 /// <summary>
 /// The host's <see cref="IReloadGate"/>: the holds plugins take while a reload would disturb their work, and the one
-/// flag the plugin manager raises while it applies a batch of reloads. A batch is applied only when no hold is alive
-/// (<see cref="TryBeginApply"/>); work that enters while one is applied waits for that batch alone
-/// (<see cref="EnterAsync"/>) and then holds the gate. When the last hold goes, <see cref="Opened"/> tells the manager
-/// to go on. No timer and no polling: the manager is woken by the release itself. Nothing ever waits for a reload that is
-/// only deferred: a busy app keeps the old versions until it is idle, or until the next start loads the new files.
+/// flag the plugin manager raises while it applies a batch of reloads. A batch is applied only when no hold of every
+/// reload is alive (<see cref="TryBeginApply"/>), and it leaves out the plugins that hold their own (<see cref="IsHeld"/>);
+/// work that enters while one is applied waits for that batch alone (<see cref="EnterAsync"/>) and then holds the gate.
+/// When a release leaves nothing holding every reload, <see cref="Opened"/> tells the manager to go on. No timer and no
+/// polling: the manager is woken by the release itself. Nothing ever waits for a reload that is only deferred: a busy
+/// app keeps the old versions until it is idle, or until the next start loads the new files.
 /// </summary>
 internal sealed class ReloadGate : IReloadGate, IDisposable
 {
@@ -24,12 +25,19 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
     private bool _applying;
     private bool _disposed;
 
-    /// <summary>Raised when the last hold was released (on the releasing thread: keep it short and schedule the work).</summary>
+    /// <summary>
+    /// Raised when a release leaves no hold of every reload alive (the last run ended, or a plugin's own hold went): on the
+    /// releasing thread, so keep it short and schedule the work.
+    /// </summary>
     public Action? Opened { get; set; }
 
-    public IDisposable Hold(string owner, string reason)
+    public IDisposable Hold(string owner, string reason) => Add(owner, reason, own: false);
+
+    public IDisposable HoldOwn(string owner, string reason) => Add(owner, reason, own: true);
+
+    private Handle Add(string owner, string reason, bool own)
     {
-        var h = new Handle(this, owner, reason);
+        var h = new Handle(this, owner, reason, own);
         lock (_lock) _holds.Add(h);
         return h;
     }
@@ -42,7 +50,7 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
         {
             if (_disposed || !_applying || s_inApply.Value is { Active: true })
             {
-                var h = new Handle(this, owner, reason);
+                var h = new Handle(this, owner, reason, own: false);
                 _holds.Add(h);
                 return ValueTask.FromResult<IDisposable>(h);
             }
@@ -63,7 +71,29 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
 
     public IReadOnlyList<string> Holders()
     {
-        lock (_lock) return [.. _holds.Select(h => $"{h.Owner}: {h.Reason} (since {h.Since:HH:mm:ss}Z)")];
+        lock (_lock) return [.. _holds.Select(Text)];
+    }
+
+    /// <summary>What holds the reload of <paramref name="pluginId"/>: every hold of every reload, and that plugin's own.</summary>
+    public IReadOnlyList<string> HoldersOf(string pluginId)
+    {
+        lock (_lock) return [.. _holds.Where(h => !h.Own || Same(h.Owner, pluginId)).Select(Text)];
+    }
+
+    private static string Text(Handle h) => $"{h.Owner}{(h.Own ? " (its own reload)" : "")}: {h.Reason} (since {h.Since:HH:mm:ss}Z)";
+
+    private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Whether something holds every reload now (a run): a batch that is under way stops before its next plugin.</summary>
+    public bool Held
+    {
+        get { lock (_lock) return _holds.Any(h => !h.Own); }
+    }
+
+    /// <summary>Whether <paramref name="pluginId"/> holds its own reload: a batch leaves it waiting, and applies the rest.</summary>
+    public bool IsHeld(string pluginId)
+    {
+        lock (_lock) return _holds.Any(h => h.Own && Same(h.Owner, pluginId));
     }
 
     /// <summary>How many callers wait in <see cref="EnterAsync"/> (tests, diagnostics).</summary>
@@ -72,22 +102,23 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
         get { lock (_lock) return _waiters.Count; }
     }
 
-    /// <summary>How many holds are alive (tests, diagnostics).</summary>
+    /// <summary>How many holds are alive, of both kinds (tests, diagnostics).</summary>
     public int Count
     {
         get { lock (_lock) return _holds.Count; }
     }
 
     /// <summary>
-    /// Start applying one reload: true when nothing holds the gate and no other reload is being applied. Otherwise
-    /// <paramref name="held"/> says whether holds are the reason (then the reload is deferred until <see cref="Opened"/>)
-    /// or another apply is under way (whose flow goes on with what is pending).
+    /// Start applying a batch: true when nothing holds every reload and no other batch is being applied. Otherwise
+    /// <paramref name="held"/> says whether holds are the reason (then the reloads are deferred until <see cref="Opened"/>)
+    /// or another batch is under way (whose flow goes on with what is pending). A plugin's own hold does not stop a
+    /// batch: the manager leaves that plugin out (<see cref="IsHeld"/>).
     /// </summary>
     public bool TryBeginApply(out bool held)
     {
         lock (_lock)
         {
-            held = _holds.Count > 0;
+            held = _holds.Any(h => !h.Own);
             if (_disposed || _applying || held) return false;
             _applying = true;
             _flow = new ApplyFlow();
@@ -96,7 +127,7 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
         return true;
     }
 
-    /// <summary>The reload is done: whatever waited to enter now holds the gate and goes on.</summary>
+    /// <summary>The batch is done: whatever waited to enter now holds the gate and goes on.</summary>
     public void EndApply()
     {
         List<(Waiter W, Handle H)> admitted;
@@ -105,7 +136,7 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
             _flow?.End();
             _flow = null;
             _applying = false;
-            admitted = [.. _waiters.Select(w => (w, new Handle(this, w.Owner, w.Reason)))];
+            admitted = [.. _waiters.Select(w => (w, new Handle(this, w.Owner, w.Reason, own: false)))];
             _waiters.Clear();
             _holds.AddRange(admitted.Select(a => a.H));
         }
@@ -123,8 +154,8 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
         bool open;
         lock (_lock)
         {
-            n = _holds.RemoveAll(h => string.Equals(h.Owner, owner, StringComparison.OrdinalIgnoreCase));
-            open = n > 0 && _holds.Count == 0 && !_applying && !_disposed;
+            n = _holds.RemoveAll(h => Same(h.Owner, owner));
+            open = n > 0 && OpenLocked();
         }
         if (open) Opened?.Invoke();
         return n;
@@ -136,10 +167,13 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
         lock (_lock)
         {
             if (!_holds.Remove(h)) return;
-            open = _holds.Count == 0 && !_applying && !_disposed;
+            open = OpenLocked();
         }
         if (open) Opened?.Invoke();
     }
+
+    /// <summary>A release opens the gate when nothing holds every reload any more (own holds left are the manager's to skip).</summary>
+    private bool OpenLocked() => !_applying && !_disposed && !_holds.Any(x => !x.Own);
 
     /// <summary>Shutdown: nothing is applied any more, and whatever waits to enter goes on.</summary>
     public void Dispose()
@@ -152,11 +186,13 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
         EndApply();
     }
 
-    private sealed class Handle(ReloadGate gate, string owner, string reason) : IDisposable
+    private sealed class Handle(ReloadGate gate, string owner, string reason, bool own) : IDisposable
     {
         private int _released;
         public string Owner { get; } = owner;
         public string Reason { get; } = reason;
+        /// <summary>Holds only the owner's reload (<see cref="IReloadGate.HoldOwn"/>), not every reload.</summary>
+        public bool Own { get; } = own;
         public DateTimeOffset Since { get; } = DateTimeOffset.UtcNow;
         public void Dispose()
         {

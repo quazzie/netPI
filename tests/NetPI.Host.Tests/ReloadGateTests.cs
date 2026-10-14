@@ -50,6 +50,30 @@ public static class ReloadGateTests
             Check.False(gate.TryBeginApply(out var held) || !held, "so the next apply waits for it");
         });
 
+        r.Add("reload gate: a plugin's own hold holds its reload alone - a batch begins, IsHeld names it, its release opens the gate", () =>
+        {
+            using var gate = new ReloadGate();
+            var opened = 0;
+            gate.Opened = () => Interlocked.Increment(ref opened);
+            var own = gate.HoldOwn("netpi.tools.shell", "processes are running");
+            Check.True(gate.IsHeld("NetPI.Tools.Shell"), "its own reload, by plugin id (any case)");
+            Check.False(gate.IsHeld("netpi.runtime"), "no other plugin's");
+            Check.False(gate.Held, "and not every reload");
+            Check.Contains(gate.HoldersOf("netpi.tools.shell").Single(), "netpi.tools.shell (its own reload): processes are running");
+            Check.Equal(0, gate.HoldersOf("netpi.runtime").Count, "another plugin is held by nothing");
+            var run = gate.Hold("netpi.runtime", "agent running");
+            Check.Equal(2, gate.HoldersOf("netpi.tools.shell").Count, "a run holds the shell's reload too");
+            Check.Equal(1, gate.HoldersOf("netpi.runtime").Count);
+            run.Dispose();
+            Check.Equal(1, opened, "the run's release opens the gate, though an own hold is left");
+            Check.True(Task.Run(() => gate.TryBeginApply(out _)).Result, "an own hold does not stop a batch");
+            gate.EndApply();
+            own.Dispose();
+            Check.Equal(2, opened, "its release opens the gate for the plugin it held");
+            Check.False(gate.IsHeld("netpi.tools.shell"));
+            return Task.CompletedTask;
+        });
+
         r.Add("reload gate: shutdown releases waiters and applies nothing; a stopped plugin's leftover holds are dropped", async () =>
         {
             var gate = new ReloadGate();

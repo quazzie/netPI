@@ -241,6 +241,44 @@ public static class PluginTests
             lock (events) Check.Equal("deferred:busy,reload:", string.Join(",", events), "the deferral announced once, with its reason, then the reload");
         });
 
+        r.Add("plugins: a plugin holding its own reload waits alone: another plugin's own hold blocks nothing, its own release applies it", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            await using var server = await StartAsync(pluginsRoot);
+            var gate = server.Kernel.Plugins.Gate;
+            var events = new List<string>();
+            using var sub = server.Events.Subscribe(EventTypes.PluginsReloaded, e =>
+            {
+                var o = JsonSerializer.SerializeToNode(e.Data)!.AsObject();
+                lock (events) events.Add($"{(string?)o["kind"]}:{(string?)o["reason"]}");
+            });
+
+            // only another plugin holds its own reload: this one goes in at once
+            var other = gate.HoldOwn("test.other", "its processes are running");
+            foreach (var file in Directory.GetFiles(SampleBuild.Dir("v2")))
+                File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
+            await Wait.Until(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running", LoadCount: 2 },
+                "reloaded while another plugin held its own", 20_000);
+            Check.Equal("v2", (string?)await server.Rpc.InvokeAsync("sample.value"));
+
+            // it holds its own: the reload waits for that hold alone
+            var own = gate.HoldOwn("test.sample", "its processes are running");
+            foreach (var file in Directory.GetFiles(SampleBuild.Dir("v1")))
+                File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
+            await Wait.Until(() => server.Plugins.Deferred().Contains("test.sample"), "the reload was deferred", 20_000);
+            Check.Equal("v2", (string?)await server.Rpc.InvokeAsync("sample.value"), "the running version keeps serving");
+            Check.Equal(2, server.Plugins.List().Single(p => p.Id == "test.sample").LoadCount);
+            own.Dispose();
+            await Wait.Until(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running", LoadCount: 3 },
+                "applied when its own hold went", 20_000);
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"));
+            Check.Equal(0, server.Plugins.Deferred().Count);
+            other.Dispose();
+            await Wait.Until(() => { lock (events) return events.Count(x => x == "reload:") == 2; }, "two reloads announced", 10_000);
+            lock (events) Check.Equal("reload:,deferred:busy,reload:", string.Join(",", events));
+        });
+
         r.Add("plugins: a deferred reload that fails to start keeps the running version", async () =>
         {
             await SampleBuild.EnsureAsync();

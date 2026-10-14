@@ -56,7 +56,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             ["processes"] = await ProcessesAsync(ct).ConfigureAwait(false),
             ["reloads"] = reloads.ToJson(),
             ["deferred"] = deferred is null || Quietly(deferred) is not { Count: > 0 } ids ? null : new JsonArray(ids.Select(i => (JsonNode?)i).ToArray()),
-            // what keeps reloads waiting: one hold per active agent run (absent on a host without the gate)
+            // what keeps reloads waiting: one hold per active agent run, and a plugin's hold of its own reload (absent on a host without the gate)
             ["reloadGate"] = ctx.Services.Get<IReloadGate>() is { } gate
                 ? new JsonObject { ["holds"] = new JsonArray([.. gate.Holders().Select(h => (JsonNode?)h)]) }
                 : null,
@@ -236,7 +236,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
                 Add("info", "plugins", $"plugins.quiet is on: {held.Count} plugin reload(s) are waiting ({string.Join(", ", held)}); the running versions keep serving.",
                     "settings: plugins.quiet = false applies them; diag.overview .deferred");
             else
-                Add("info", "plugins", $"{held.Count} plugin reload(s) wait until no agent run is active ({string.Join(", ", held)}); the running versions keep serving, and the host applies them when the last run ends.",
+                Add("info", "plugins", $"{held.Count} plugin reload(s) wait ({string.Join(", ", held)}): for the agent runs going to end, or for a plugin that holds its own reload (the shell while its processes run). The running versions keep serving; the host applies them when what holds them ends.",
                     "diag.overview .reloadGate.holds (the runs it waits for)");
         }
 

@@ -94,6 +94,13 @@ public sealed class ManagedProcess : IDisposable
     /// <summary>Called once when the process has finished (status set, output drained).</summary>
     internal Action<ManagedProcess>? OnExited { get; set; }
 
+    /// <summary>
+    /// Called once when a tree that outlived its shell (a descendant held the pipes after the shell exited, so
+    /// <see cref="OnExited"/> came while <see cref="TreeMayBeAlive"/> was still true) is done after all. The registry's own
+    /// callback (never a caller's closure), so keeping it pins nothing.
+    /// </summary>
+    internal Action<ManagedProcess>? OnTreeDone { get; set; }
+
     /// <summary>Grace period to drain output after the shell exited (orphaned grandchildren may keep the pipes open).</summary>
     public static TimeSpan DrainGrace { get; set; } = TimeSpan.FromMilliseconds(750);
 
@@ -294,11 +301,17 @@ public sealed class ManagedProcess : IDisposable
     {
         await pumpsDone.ConfigureAwait(false);
         OutputReachedEof = true;
+        try { OnTreeDone?.Invoke(this); } catch { }
+        OnTreeDone = null;
     }
 }
 
-/// <summary>Running processes plus the most recent finished ones (last 50).</summary>
-public sealed class ProcessRegistry(IEventBus? events = null)
+/// <summary>
+/// Running processes plus the most recent finished ones (last 50). With <paramref name="holdReload"/> it holds the shell
+/// plugin's own reload while any process tree may be alive (<see cref="IReloadGate.HoldOwn"/>): the plugin's stop kills
+/// them all, so a reload would kill a dev server a chat left running in the background, with no run going at all.
+/// </summary>
+public sealed class ProcessRegistry(IEventBus? events = null, Func<IDisposable?>? holdReload = null)
 {
     public const int KeepFinished = 50;
     /// <summary>In-memory output kept for finished foreground commands (trimmed after the result was formatted).</summary>
@@ -330,6 +343,8 @@ public sealed class ProcessRegistry(IEventBus? events = null)
     internal void Add(ManagedProcess p)
     {
         _all[p.Id] = p;
+        p.OnTreeDone = _ => Recount();
+        Recount();
         Publish(ProcessEvents.Started, p);
     }
 
@@ -341,6 +356,30 @@ public sealed class ProcessRegistry(IEventBus? events = null)
         {
             if (_all.TryRemove(old, out var removed)) removed.Dispose();
         }
+        Recount();
+    }
+
+    private readonly Lock _holdLock = new();
+    private IDisposable? _reloadHold;
+
+    /// <summary>Whether this registry holds the plugin's reload now (tests).</summary>
+    internal bool HoldsReload
+    {
+        get { lock (_holdLock) return _reloadHold is not null; }
+    }
+
+    /// <summary>Take the reload hold with the first live process tree, release it with the last.</summary>
+    private void Recount()
+    {
+        if (holdReload is null) return;
+        IDisposable? release = null;
+        lock (_holdLock)
+        {
+            var alive = _all.Values.Any(x => x.TreeMayBeAlive);
+            if (alive && _reloadHold is null) _reloadHold = holdReload();
+            else if (!alive && _reloadHold is not null) (release, _reloadHold) = (_reloadHold, null);
+        }
+        release?.Dispose();   // outside the lock: the release may start the reload that waited for it
     }
 
     private void Publish(string type, ManagedProcess p)
