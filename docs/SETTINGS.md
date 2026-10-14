@@ -482,8 +482,8 @@ checks catch the plain cases (a command built at run time gets through): they ar
 | `guardrails.secondOpinionThreshold` | `0.2` | a command runs without asking only when p(destructive), p(stops a process) and p(changes a remote) are each below it (0.01–0.5); p(read-only) is shown on the card but not required (the model underrates builds and test runs). At 0.3 a hub quit was cleared in the hand-labelled set, at 0.2 no risky command |
 
 The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive root (`rm`, `rd`, `del`, `Remove-Item` of
-`C:\`, `/c`); `mkfs`; `dd … of=/dev/…` (not `/dev/null`); `format C:`; `shutdown`, `reboot`, `poweroff`, `halt`,
-`Stop-Computer`, `Restart-Computer`; a fork bomb; `powershell` / `powershell.exe` (Windows PowerShell 5.1: use `pwsh`, PowerShell 7). Each is anchored at the start of a command part, so `grep shutdown` or
+`C:\`, `/c`); `mkfs`; `dd … of=/dev/…` (not `/dev/null`); `format C:`; a fork bomb. These are blocked. Asked first (`ask:`), since the user may well want them done: `shutdown`, `reboot`, `poweroff`, `halt`, `systemctl reboot|poweroff|halt`,
+`Stop-Computer`, `Restart-Computer`, and `powershell` / `powershell.exe` (Windows PowerShell 5.1: use `pwsh`, PowerShell 7). Each is anchored at the start of a command part, so `grep shutdown` or
 `echo 'rm -rf /'` pass. A deliberate long wait is a rule of its own (`guardrails.maxSleepSeconds`), because only a parsed
 number tells a five-minute sleep from a one-second one.
 

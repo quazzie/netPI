@@ -39,15 +39,15 @@ public static class GuardrailsTests
     private static Task WindowsOpen()
     {
         var rules = RuleSet.Parse(RuleSet.DefaultCommands, RuleSet.DefaultPaths, Home);
-        Check.True(Judge(rules, "windows", new { action = "open", app = "shutdown", args = "/s /t 0" }) is { Action: GuardAction.Block, Kind: "command" },
+        Check.True(Judge(rules, "windows", new { action = "open", app = "shutdown", args = "/s /t 0" }) is { Action: GuardAction.Ask, Kind: "command" },
             "shutdown through the windows tool");
-        Check.True(Judge(rules, "Windows", new { verb = "launch", program = "shutdown", arguments = "/r" }) is { Action: GuardAction.Block },
+        Check.True(Judge(rules, "Windows", new { verb = "launch", program = "shutdown", arguments = "/r" }) is { Action: GuardAction.Ask },
             "any action synonym and argument name the tool reads");
         Check.True(Judge(rules, "windows", new { action = "open", app = "notepad", args = Path.Combine(Home, ".ssh", "id_rsa") }) is { Kind: "path" },
             "a program pointed at a protected file");
         Check.True(Judge(rules, "windows", new { action = "open", app = "notepad", args = "notes.txt" }) is null, "an ordinary program runs");
         foreach (var c in (string[])["powershell -Command Get-Date", "powershell.exe -File a.ps1", "& powershell.exe -NoProfile", @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -c 1", "cd x && powershell -c 1"])
-            Check.True(Judge(rules, "bash", new { command = c }) is { Action: GuardAction.Block, Kind: "command" }, $"Windows PowerShell is blocked: {c}");
+            Check.True(Judge(rules, "bash", new { command = c }) is { Action: GuardAction.Ask, Kind: "command" }, $"Windows PowerShell asks: {c}");
         foreach (var c in (string[])["pwsh -NoProfile -File a.ps1", "grep powershell notes.txt", "echo powershell.exe", "Get-Help powershell"])
             Check.True(Judge(rules, "bash", new { command = c }) is null, $"not Windows PowerShell: {c}");
         Check.True(Judge(rules, "windows", new { action = "type", n = 3, text = "shutdown /s" }) is null, "typing text is not a command start");
@@ -124,7 +124,7 @@ public static class GuardrailsTests
             "rm -rf / 2>/dev/null", "rm -rf ~ # tidy", "rm -rf ~/ >/dev/null 2>&1", "rm -rf \"$HOME\"", "sudo -n rm -rf /",
             "sudo -u root rm -rf /", "if x; then rm -rf /; fi", "rm -rf \\\n/", "env FOO=1 rm -rf /", "time rm -rf /", "command rm -rf /",
             "nohup rm -rf / &", "rm -rf / &> out.log", "rm -rf '/'", "ls && rm -rf / # why not", "rm -rf / >> log", "rm -rf /  2> err.txt",
-            "Remove-Item -Recurse -Force C:\\ 2>$null", "sudo shutdown -h now # bye",
+            "Remove-Item -Recurse -Force C:\\ 2>$null",
         ];
         foreach (var c in blocked) Check.True(Blocks(c), $"blocked: {c}");
 
@@ -858,10 +858,14 @@ public static class GuardrailsTests
         [
             "rm -rf /", "sudo rm -rf / --no-preserve-root", "rm -rf ~", "rm -fr ~/", "rm -rf $HOME/*", "cd x && rm -rf /*",
             "rm -rf C:/", "rm -rf /c", "Remove-Item -Recurse -Force C:\\", "del /s /q C:\\", "mkfs.ext4 /dev/sda1",
-            "dd if=/dev/zero of=/dev/sda bs=1M", "format C: /q", "shutdown /s /t 0", "sudo reboot", "Stop-Computer -Force", ":(){ :|:& };:",
+            "dd if=/dev/zero of=/dev/sda bs=1M", "format C: /q", ":(){ :|:& };:",
         ];
         foreach (var c in blocked)
             Check.True(Bash(c) is { Action: GuardAction.Block, Kind: "command" }, $"blocked: {c}");
+
+        // restarting a machine is asked about, not refused
+        foreach (var c in (string[])["shutdown /s /t 0", "sudo reboot", "sudo shutdown -h now # bye", "systemctl reboot", "Stop-Computer -Force", "Restart-Computer"])
+            Check.True(Bash(c) is { Action: GuardAction.Ask, Kind: "command" }, $"asks: {c}");
 
         string[] fine =
         [

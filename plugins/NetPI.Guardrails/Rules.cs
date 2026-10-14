@@ -39,11 +39,13 @@ internal sealed partial class RuleSet
         @"^(sudo\s+)?mkfs(\.\S+)?(\s|$)",
         @"^(sudo\s+)?dd\s.*\bof=/dev/(?!null\b)",
         @"^format(\.com)?\s+[a-z]:",
-        @"^(sudo\s+)?(shutdown|reboot|poweroff|halt)(\s|$)",
-        @"^(Stop|Restart)-Computer(\s|$)",
+        // Asked, not blocked: restarting a machine is something the user may well ask an agent to do
+        @"ask: ^(sudo\s+)?(shutdown|reboot|poweroff|halt)(\s|$)",
+        @"ask: ^systemctl\s+(reboot|poweroff|halt)(\s|$)",
+        @"ask: ^(Stop|Restart)-Computer(\s|$)",
         @"^:\(\)\s*\{",
         // Windows PowerShell 5.1 lacks what the scripts here use (&&, GetRelativePath, UTF-8 defaults): pwsh is PowerShell 7
-        @"^(&\s*)?(\S*[\\/])?powershell(\.exe)?(\s|$)",
+        @"ask: ^(&\s*)?(\S*[\\/])?powershell(\.exe)?(\s|$)",
     ];
 
     /// <summary>NetPI's own home asks first; SSH keys and config stay untouched.</summary>
