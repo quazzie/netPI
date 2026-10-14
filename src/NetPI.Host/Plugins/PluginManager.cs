@@ -37,8 +37,12 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     private readonly SemaphoreSlim _op = new(1, 1);
     private readonly Lock _gate = new();
     private readonly List<PluginEntry> _entries = [];
-    /// <summary>Plugins whose reload waits for <c>plugins.quiet</c> to end (see <see cref="Quiet"/>).</summary>
-    private readonly List<string> _deferred = [];
+    /// <summary>
+    /// Plugins whose reload is asked for and not applied yet, oldest first, each once: waiting for the gate
+    /// (<see cref="Gate"/>: an agent run is active), for <c>plugins.quiet</c> to end, or for the batch under way.
+    /// </summary>
+    private readonly List<PluginEntry> _deferred = [];
+    private readonly ReloadGate _reloadGate = new();
     private readonly Dictionary<string, FileSystemWatcher> _watchers = new(PathUtil.Comparer);
     private readonly Debouncer _rescan;
     private readonly Debouncer _applyEnabled;
@@ -59,7 +63,15 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         _shadowRoot = Path.Combine(kernel.Paths.Home, "shadow");
         _rescan = new Debouncer(ReloadDelay, () => _ = Guard(RescanAsync(_shutdown.Token), "rescan"));
         _applyEnabled = new Debouncer(TimeSpan.FromMilliseconds(200), () => _ = Guard(ApplyEnabledStateAsync(_shutdown.Token), "apply enabled state"));
+        // The last hold released (on the releasing thread, maybe inside a plugin's lock): apply what waited, off that thread.
+        _reloadGate.Opened = () =>
+        {
+            if (!_disposed && Deferred().Count > 0) _ = Task.Run(() => Guard(ApplyDeferredAsync(_shutdown.Token), "apply deferred reloads"));
+        };
     }
+
+    /// <summary>The one door every reload goes through (registered as <see cref="IReloadGate"/>).</summary>
+    internal ReloadGate Gate => _reloadGate;
 
     // ------------------------------------------------------------------ IPluginManager
 
@@ -195,25 +207,83 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         catch { return Rpc.CoreSettings.QuietDefault; }
     }
 
-    /// <summary>The plugin ids whose reload is waiting for quiet to end, oldest first.</summary>
+    /// <summary>The plugin ids whose reload is asked for and not applied yet, oldest first.</summary>
     public IReadOnlyList<string> Deferred()
     {
-        lock (_deferred) return [.. _deferred];
+        lock (_deferred) return [.. _deferred.Select(e => e.Id)];
     }
 
-    private async Task ApplyDeferredAsync(CancellationToken ct)
+    /// <summary><c>plugins.reloadDrainMinutes</c>: how long a deferred reload waits before users' new runs yield to it.</summary>
+    private TimeSpan DrainAfter()
     {
-        List<string> ids;
-        lock (_deferred) { ids = [.. _deferred]; _deferred.Clear(); }
-        if (ids.Count == 0) return;
-        _log.LogInformation("Applying {Count} deferred plugin reload(s): {Ids}", ids.Count, string.Join(", ", ids));
-        foreach (var id in ids)
+        try { return TimeSpan.FromMinutes(Math.Max(0, _k.Settings.Get("plugins.reloadDrainMinutes", Rpc.CoreSettings.DrainMinutesDefault))); }
+        catch { return TimeSpan.FromMinutes(Rpc.CoreSettings.DrainMinutesDefault); }
+    }
+
+    private Task ApplyDeferredAsync(CancellationToken ct) => ApplyPendingAsync(null, ct);
+
+    /// <summary>Record a reload request: false when the same plugin is already waiting (requests coalesce).</summary>
+    private bool Request(PluginEntry e)
+    {
+        lock (_deferred)
         {
-            var e = FindById(id);
-            if (e is null) continue;
-            try { await ReloadEntryAsync(e, ct).ConfigureAwait(false); }
-            catch (Exception ex) { _log.LogWarning(ex, "Reloading {Plugin} failed", id); }
+            if (_deferred.Contains(e)) return false;   // by entry, not id: two folders can claim one id (see RunningTwin)
+            _deferred.Add(e);
+            return true;
         }
+    }
+
+    /// <summary>
+    /// Apply the reloads asked for - only when that is safe: <c>plugins.quiet</c> is off and nothing holds the gate (no
+    /// agent run is active). Otherwise they stay deferred: the release of the last hold, or quiet switched off, calls this
+    /// again. One batch at a time; a request that comes while one is applied is taken by that batch before it ends.
+    /// <paramref name="requested"/> is the plugin just asked for when that request is new: its deferral is announced.
+    /// </summary>
+    private async Task ApplyPendingAsync(PluginEntry? requested, CancellationToken ct)
+    {
+        while (!_disposed)
+        {
+            _reloadGate.DrainAfter = DrainAfter();
+            if (Quiet())
+            {
+                _reloadGate.NothingDeferred();   // quiet waits for a person, not for runs: no run yields to it
+                if (requested is not null) AnnounceDeferred(requested.Id, "quiet", "plugins.quiet");
+                return;
+            }
+            if (!_reloadGate.TryBeginApply(out var held))
+            {
+                if (!held) return;   // a batch is under way: it takes this request before it ends
+                _reloadGate.Deferred();
+                if (requested is not null) AnnounceDeferred(requested.Id, "busy", string.Join("; ", _reloadGate.Holders()));
+                return;
+            }
+            try
+            {
+                List<PluginEntry> batch;
+                lock (_deferred) { batch = [.. _deferred]; _deferred.Clear(); }
+                var waited = batch.Where(e => !ReferenceEquals(e, requested)).Select(e => e.Id).ToList();
+                if (waited.Count > 0) _log.LogInformation("Applying {Count} deferred plugin reload(s): {Ids}", waited.Count, string.Join(", ", waited));
+                foreach (var e in batch)
+                {
+                    try { await ApplyReloadAsync(e, ct).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                    catch (Exception ex) { _log.LogWarning(ex, "Reloading {Plugin} failed", e.Id); }
+                }
+            }
+            finally { _reloadGate.EndApply(); }
+            lock (_deferred) if (_deferred.Count == 0) return;
+            requested = null;
+        }
+    }
+
+    /// <summary>Say once per request that a reload waits, and why: the log, <c>plugins.reloaded</c> (kind deferred) and the plugin list.</summary>
+    private void AnnounceDeferred(string id, string reason, string detail)
+    {
+        if (reason == "quiet")
+            _log.LogInformation("Plugin {Id}: reload deferred (plugins.quiet) - the running version keeps serving", id);
+        else
+            _log.LogInformation("Plugin {Id}: reload deferred until no agent run is active ({Holders}) - the running version keeps serving", id, detail);
+        PublishReloaded([id], "deferred", reason);
         PublishChanged();
     }
 
@@ -429,6 +499,9 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         load.Stopping?.Dispose();
         await UnloadContextAsync(e, load, track).ConfigureAwait(false);
         if (e.State == "running") e.State = "stopped";
+        // stopped for good (disabled, removed): holds it never released cannot keep every reload waiting
+        var dropped = _reloadGate.ReleaseOwner(e.Id);
+        if (dropped > 0) _log.LogWarning("Plugin {Id} stopped with {Count} reload hold(s) still taken; released", e.Id, dropped);
     }
 
     private async Task StopQuietlyAsync(INetPiPlugin instance, string id)
@@ -607,18 +680,16 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         e.Instance = load.Instance; e.Scope = load.Scope; e.Stopping = load.Stopping;
     }
 
-    private async Task ReloadEntryAsync(PluginEntry e, CancellationToken ct)
+    /// <summary>
+    /// Every reload comes here (the watcher, <c>plugins.reload</c>, a rescan that finds a changed assembly): it is
+    /// recorded and applied when safe (<see cref="ApplyPendingAsync"/>), never under an active agent run.
+    /// </summary>
+    private Task ReloadEntryAsync(PluginEntry e, CancellationToken ct) =>
+        ApplyPendingAsync(Request(e) ? e : null, ct);
+
+    /// <summary>The swap itself; only <see cref="ApplyPendingAsync"/> calls it, with the gate's apply begun.</summary>
+    private async Task ApplyReloadAsync(PluginEntry e, CancellationToken ct)
     {
-        // plugins.quiet: record it and leave the running version alone. Nothing moves under a chat; switching quiet off
-        // applies everything that piled up (OnSettingsChanged).
-        if (Quiet())
-        {
-            lock (_deferred) if (!_deferred.Contains(e.Id)) _deferred.Add(e.Id);
-            _log.LogInformation("Plugin {Id}: reload deferred (plugins.quiet) - the running version keeps serving", e.Id);
-            PublishReloaded([e.Id], "deferred");
-            PublishChanged();
-            return;
-        }
         await _op.WaitAsync(ct).ConfigureAwait(false);
         var swapped = false;
         var attempted = false;   // a load was tried: only then is a reload, or its failure, announced
@@ -1043,8 +1114,13 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         _k.Bus.Publish(new BusEvent { Type = EventTypes.PluginsChanged, Data = new { }, Source = "host" });
 
     /// <summary>What changed, for the plugins that keep state a reload touches (a chat's tools, e.g.).</summary>
-    private void PublishReloaded(IReadOnlyList<string> ids, string kind) =>
-        _k.Bus.Publish(new BusEvent { Type = EventTypes.PluginsReloaded, Data = new { ids, kind }, Source = "host" });
+    private void PublishReloaded(IReadOnlyList<string> ids, string kind, string? reason = null) =>
+        _k.Bus.Publish(new BusEvent
+        {
+            Type = EventTypes.PluginsReloaded,
+            Data = reason is null ? new { ids, kind } : new { ids, kind, reason },
+            Source = "host",
+        });
 
     private async Task Guard(Task task, string what)
     {
@@ -1066,6 +1142,10 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         _rescan.Dispose();
         _applyEnabled.Dispose();
         foreach (var e in Snapshot()) e.DisposeTimers();
+        // Deferred reloads are dropped, not forced: their files are on disk, so the next start loads the new versions.
+        if (Deferred() is { Count: > 0 } left)
+            _log.LogInformation("Shutting down with {Count} deferred plugin reload(s) not applied ({Ids}); the next start loads them", left.Count, string.Join(", ", left));
+        _reloadGate.Dispose();
         _shutdown.Cancel();
         await _op.WaitAsync().ConfigureAwait(false);
         try

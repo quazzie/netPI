@@ -357,7 +357,7 @@ Plain JavaScript works too: just drop a `wwwroot/ui.js`. Style with the host CSS
 ```powershell
 .\build.ps1 -Run                          # once: build, install, start
 dotnet build plugins\MyPlugin              # → artifacts\dev\app: the running app sees nothing
-.\build.ps1 -Publish                       # install: the running NetPI hot-reloads the changed plugins
+.\build.ps1 -Publish                       # install (stage): the running NetPI reloads them when no agent run is active
 npm run build:plugins                      # tab UI → the built output (artifacts\dev\app by default)
 ```
 
@@ -377,15 +377,40 @@ a named lock — a file that only one instance writes briefly is fine. `StopAsyn
 replaced version arrive *after* the new one is up, so cleanup there must tolerate the overlap too. Reloads are
 serialised, one at a time.
 
+**A reload never happens under an agent run (the reload gate).** Every reload — the folder watcher after a publish or
+build, `plugins.reload` / `/reload`, a rescan that finds a changed assembly — goes through one door in the host,
+`IReloadGate` (`src/NetPI.Host/Plugins/ReloadGate.cs`). The runtime holds it for each run, from the run's start
+(queued for a slot included) to its end, after the run it hands over to (a follow-up, a parent woken by a subagent's
+result) has taken its own hold. While any hold is alive a reload request is only recorded: the running version keeps
+serving from its shadow copy, `plugins.reloaded` says `kind: "deferred", reason: "busy"` once per request, the log says
+`reload deferred until no agent run is active (<holders>)`, and `IPluginManager.Deferred()` / `diag.overview .deferred`
+list it. Requests for the same plugin coalesce. When the last hold is released the host applies everything waiting in one
+batch (no timer, no polling: the release wakes it) and logs `Applying N deferred plugin reload(s)`; each reload then
+reports `reload` or `reload-failed` as usual — a failed one keeps the running version and is not retried until its files
+change again.
+- *Safe* means **no agent run exists anywhere**, for every plugin, `NetPI.Runtime` included. Not per plugin: a turn
+  can reach any plugin (tools, providers, hooks, services resolved per use), and nothing records which ones a run
+  depends on, so a per-plugin rule could not be shown correct. A plugin that has nothing to do with runs simply waits.
+- A new run that starts while a batch is being applied waits for that batch (`EnterAsync`), so it starts on the new
+  version and never on one being retired; a retired runtime hands such a message to its successor.
+- **No starvation:** if a reload has waited `plugins.reloadDrainMinutes` (default 30, 0 = never), a *user's* message that
+  would start a new run on an idle chat waits until the deferred reloads are applied — that is, until the runs already
+  going end. Running agents are never touched, steering into a running chat never waits, and work started from inside
+  a run (subagents, follow-ups, notices) never yields, since the reload waits for that run.
+- Host shutdown drops deferred reloads (logged): their files are on disk, so the next start loads the new versions.
+- A plugin that is stopped for good (disabled, removed) has any holds it left behind released, with a warning.
+- Not gated: a plugin's `wwwroot` (served from the real folder, so a publish updates a tab's UI at once), loading a
+  newly found plugin folder, and switching a plugin off (`plugins.disabled`) or removing its folder — those stop it now.
+
 A new host goes in place for the next start (the running files are moved into the app folder's `.old`). After a
 contract change every plugin's output changes, and reloaded they would run on the old contracts, so they wait in
 `.pending` and the next start installs them (`PendingBuild`, before anything loads). `-Publish -NextStart` does that
 with every change, the web UI included: the running NetPI gets nothing, and `-Pending` lists what waits.
 
 Every session shares the one running app, so a reload reaches all of them — a git worktree isolates the files, not the
-process. Two things keep that cheap: the swap above, and **`plugins.quiet`** (settings), which records reloads instead
-of applying them, so nothing moves under a running chat at all until you switch it off — then everything that piled up
-is applied in start order.
+process. Three things keep that cheap: the swap above, the reload gate, and **`plugins.quiet`** (settings), which records
+reloads instead of applying them even when no run is active, until you switch it off — then everything that piled up is
+applied (still through the gate).
 
 `/reload [pluginId]` in the chat, or the Diagnostics tab, reloads plugins on demand.
 

@@ -92,12 +92,43 @@ public sealed class PluginInfo
 public interface IPluginManager
 {
     IReadOnlyList<PluginInfo> List();
+    /// <summary>
+    /// Ask for a reload. It goes through the <see cref="IReloadGate"/> like every other: this returns once the reload
+    /// was applied, or once it was deferred (something holds the gate, or <c>plugins.quiet</c> is on) - then
+    /// <see cref="Deferred"/> lists it and it is applied when nothing holds the gate any more.
+    /// </summary>
     Task ReloadAsync(string pluginId, CancellationToken ct = default);
     Task SetEnabledAsync(string pluginId, bool enabled, CancellationToken ct = default);
     Task RescanAsync(CancellationToken ct = default);
     /// <summary>
-    /// Plugins whose reload is waiting for <c>plugins.quiet</c> to be switched off, oldest first (empty otherwise).
-    /// While quiet is on a reload is recorded and not applied, so the running version keeps serving.
+    /// Plugins whose reload is waiting, oldest first (empty otherwise): for the gate (<see cref="IReloadGate"/>: an
+    /// agent is busy) or for <c>plugins.quiet</c> to be switched off. The running version keeps serving meanwhile.
     /// </summary>
     IReadOnlyList<string> Deferred() => [];
+}
+
+/// <summary>
+/// The one door every plugin reload goes through (implemented by the host: <c>ctx.Services.Get&lt;IReloadGate&gt;()</c>).
+/// A plugin whose work a reload would disturb holds it for as long as that work lasts - the runtime holds it while any
+/// agent is busy, because reloading a plugin under a run can end the run or take a tool away from it. A reload asked
+/// for meanwhile (a build replaced the files, <c>/reload</c>) is deferred, and the host applies it when the last hold
+/// is released. The gate never forces one: while holds overlap, the reloads wait.
+/// </summary>
+public interface IReloadGate
+{
+    /// <summary>Keep reloads from being applied until the returned handle is disposed. Never waits; disposing twice is harmless.</summary>
+    IDisposable Hold(string owner, string reason);
+
+    /// <summary>
+    /// <see cref="Hold"/>, but first wait for the reloads being applied right now, if any: work that starts from outside -
+    /// a new run - then starts after that swap, not on the version it retires. With <paramref name="yieldToReload"/> it
+    /// also waits while a reload has been deferred longer than <c>plugins.reloadDrainMinutes</c>, until that reload is
+    /// applied (it is, once the holds already taken are released): so reloads cannot be put off for ever by runs that
+    /// keep overlapping. Only for work nothing running waits for (a user's new run) - a run that waited for itself would
+    /// never end.
+    /// </summary>
+    ValueTask<IDisposable> EnterAsync(string owner, string reason, bool yieldToReload = false, CancellationToken ct = default);
+
+    /// <summary>What holds the gate now, oldest first: <c>"owner: reason (since …)"</c>.</summary>
+    IReadOnlyList<string> Holders();
 }

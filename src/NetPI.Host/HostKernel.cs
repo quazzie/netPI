@@ -148,6 +148,7 @@ internal sealed class HostKernel : IAsyncDisposable
 
         // Host services, also reachable through IServiceRegistry (e.g. from a ToolContext).
         _subscriptions.Add(Services.Register<IPluginManager>(Plugins));
+        _subscriptions.Add(Services.Register<IReloadGate>(Plugins.Gate));
         _subscriptions.Add(Services.Register<ISessionStore>(Sessions));
         _subscriptions.Add(Services.Register<IModelCatalog>(Models));
         _subscriptions.Add(Services.Register<ISettings>(Settings));

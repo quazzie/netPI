@@ -195,6 +195,81 @@ public static class PluginTests
             Check.Equal(0, server.Plugins.Deferred().Count, "the queue is empty");
         });
 
+        r.Add("plugins: a reload waits while the reload gate is held (an agent runs), coalesces, and is applied when the last hold goes", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            await using var server = await StartAsync(pluginsRoot);
+            var gate = server.Kernel.Plugins.Gate;
+            Check.True(ReferenceEquals(gate, server.Kernel.Services.Get<IReloadGate>()), "the gate is the registered service");
+            var deferred = new List<string>();
+            using var sub = server.Events.Subscribe(EventTypes.PluginsReloaded, e =>
+            {
+                var o = JsonSerializer.SerializeToNode(e.Data)!.AsObject();
+                if ((string?)o["kind"] == "deferred") lock (deferred) deferred.Add((string?)o["reason"] ?? "");
+            });
+            var runA = gate.Hold("test.runtime", "agent a running");
+            var runB = gate.Hold("test.runtime", "agent b running");
+            var oldContext = CurrentContext(server).Target;
+
+            // a publish while agents run: the files change, the running version does not
+            foreach (var file in Directory.GetFiles(SampleBuild.Dir("v2")))
+                File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
+            await Wait.Until(() => server.Plugins.Deferred().Contains("test.sample"), "the reload was deferred", 20_000);
+            // asked again (rpc, another build): still one waiting reload, announced once
+            await server.Kernel.Plugins.ReloadAsync("test.sample");
+            await server.Kernel.Plugins.ReloadAsync("test.sample");
+            Check.Equal(1, server.Plugins.Deferred().Count, "requests for the same plugin coalesce");
+            lock (deferred) Check.Equal("busy", string.Join(",", deferred), "announced once, with its reason");
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"), "the running version keeps serving");
+            Check.True(ReferenceEquals(oldContext, CurrentContext(server).Target), "the same load context, untouched");
+
+            // one run ends: another still holds the gate
+            runA.Dispose();
+            runA.Dispose();   // harmless twice
+            Check.Equal(1, server.Plugins.List().Single(p => p.Id == "test.sample").LoadCount, "not while a run is left");
+            Check.True(server.Plugins.Deferred().Contains("test.sample"), "still waiting");
+
+            // the last run ends: the reload is applied, once
+            runB.Dispose();
+            await Wait.Until(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running", LoadCount: 2 },
+                "the deferred reload was applied when the gate opened", 20_000);
+            Check.Equal("v2", (string?)await server.Rpc.InvokeAsync("sample.value"));
+            Check.Equal(0, server.Plugins.Deferred().Count, "the queue is empty");
+        });
+
+        r.Add("plugins: a deferred reload that fails to start keeps the running version", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            await using var server = await StartAsync(pluginsRoot);
+            var run = server.Kernel.Plugins.Gate.Hold("test.runtime", "agent running");
+            foreach (var file in Directory.GetFiles(SampleBuild.Dir("fail")))
+                File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
+            await Wait.Until(() => server.Plugins.Deferred().Contains("test.sample"), "the reload was deferred", 20_000);
+            run.Dispose();
+            await Wait.Until(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running" } info && info.Error is not null,
+                "the deferred swap was tried and rolled back", 20_000);
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"), "the old version kept serving");
+            Check.Equal(0, server.Plugins.Deferred().Count, "a failed reload is not retried until its files change again");
+            Check.Equal(0, server.Kernel.Plugins.Gate.Count, "and the gate is open");
+        });
+
+        r.Add("plugins: shutting down with a deferred reload drops it (the next start loads the new files)", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            var server = await StartAsync(pluginsRoot);
+            var run = server.Kernel.Plugins.Gate.Hold("test.runtime", "agent running");
+            foreach (var file in Directory.GetFiles(SampleBuild.Dir("v2")))
+                File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
+            await Wait.Until(() => server.Plugins.Deferred().Contains("test.sample"), "the reload was deferred", 20_000);
+            await server.DisposeAsync();
+            run.Dispose();   // a run ending during shutdown does not apply anything any more
+            await using var next = await StartAsync(pluginsRoot);
+            Check.Equal("v2", (string?)await next.Rpc.InvokeAsync("sample.value"), "the next start runs the new version");
+        });
+
         r.Add("plugins: wwwroot changes only bump the UI version (no reload)", async () =>
         {
             await SampleBuild.EnsureAsync();

@@ -15,6 +15,7 @@ ContextCacheTests.Register(runner);
 ModelCatalogTests.Register(runner);
 ServerTests.Register(runner);
 PluginTests.Register(runner);
+ReloadGateTests.Register(runner);
 PluginIndependenceTests.Register(runner);
 BackupTests.Register(runner);
 BuildTests.Register(runner);
