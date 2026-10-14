@@ -931,6 +931,10 @@ names or an inline `<svg …>` string.
   latest budget notice; after a confirm it calls `budget.allow`. The top bar shows the budget (`BudgetPill`:
   `budget.status`, then `usage.changed`) only once it needs attention, amber from `budget.warnPercent`, red when spent;
   a click opens Settings on Agents & budget (`modals.settings = 'agents'`).
+- `WaitingMenu` (top bar, beside the connection dot): an orange dot, the count and a chevron, only while a chat waits for the user.
+  The menu (`waitingItems()` in `state/waiting.svelte.js`, oldest first) lists open questions, tool OKs, plans, plan-mode offers,
+  schedule proposals and budget stops (a budget stop is seen live from its `budget` notice with `canOverride`, so a reload forgets it);
+  a row opens its chat. The same states make a tab's dot `asking`. Subagent chats are left out.
 - The Claude subscription usage is not in the top bar: it is in the context ring's popout of a Claude CLI chat (above). The reading
   is what the Claude CLI printed after its last call, so it is as fresh as the last call (kept across restarts, marked old after
   six hours).

@@ -9,8 +9,8 @@ import { toast, syncUiStateFromHost, composer, openView } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
-import { loadAsks, askEvent, pendingIn, approvalIn, pruneSession } from './asks.svelte.js';
-import { loadPlans, planEvent, planWaiting, prunePlans } from './plans.svelte.js';
+import { loadAsks, askEvent, pendingIn, approvalIn, budgetIn, budgetStop, pruneSession } from './asks.svelte.js';
+import { loadPlans, planEvent, planWaiting, offerWaiting, prunePlans } from './plans.svelte.js';
 import { loadScheduleProposals, scheduleEvent, pruneScheduleProposals, proposalIn } from './schedules.svelte.js';
 import { welcomeIdeas } from './welcomeIdeas.svelte.js';
 import { formatBytes, payloadBytes, sendBudget } from '../images.js';
@@ -124,7 +124,7 @@ export function waitingOn(sessionId) {
 
 /** Status for tab dots: asking (a question, or a tool call, waits for the user) | running | queued | yielded | waiting (on its subagents) | error | unread | idle */
 export function sessionStatus(sessionId) {
-  if (pendingIn(sessionId) || approvalIn(sessionId) || planWaiting(sessionId) || proposalIn(sessionId)) return 'asking';
+  if (pendingIn(sessionId) || approvalIn(sessionId) || planWaiting(sessionId) || offerWaiting(sessionId) || proposalIn(sessionId) || budgetIn(sessionId)) return 'asking';
   const a = app.agents.get(sessionId);
   if (a) {
     if (a.status === 'running') return 'running';
@@ -784,9 +784,11 @@ function approvalNotification(d) {
 
 // The budget stopped a paid call and asks whether this chat may go over it.
 function messageNotification(sid, m) {
+  if (m && m.role !== 'notice') budgetStop(sid, false); // the chat went on after the stop
   if (m?.role !== 'notice' || m.meta?.kind !== 'budget' || !m.meta?.canOverride) return;
   const s = app.sessionsById.get(sid);
   if (s?.kind === 'subagent') return;
+  budgetStop(sid, true);
   notifyAbout(sid, s, firstLine((m.parts ?? []).filter((p) => p.type === 'text').map((p) => p.text).join('\n')));
 }
 

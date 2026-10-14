@@ -10,6 +10,7 @@ export const asks = {
   closed: new SvelteMap(), // question id -> { status: answered|steered|withdrawn|cancelled, answers, text }
   approvals: new SvelteMap(), // approvalId -> { sessionId, callId, agentId, tool, kind: command|path, subject, rule, askedAt, opinion? }
   cleared: new SvelteMap(), // [sessionId, callId] -> guard.cleared: an ask rule matched, and the second opinion let it run without asking
+  budget: new SvelteMap(), // sessionId -> { sessionId, askedAt }: the budget stopped the chat and asks whether it may go over (budget.onLimit "ask")
 };
 
 /** A question's own id. A plugin without one (an older build, hot reloaded on its own) falls back to the tool call's. */
@@ -47,6 +48,15 @@ export function pendingFor(sessionId, callId) {
 export function closedFor(sessionId, callId) {
   for (const a of asks.closed.values()) if (a.sessionId === sessionId && a.callId === callId) return a;
   return null;
+}
+
+/** The budget stopped this chat and offers to let it go over. Seen live only: nothing on the server holds it, so a reload forgets it. */
+export const budgetIn = (sessionId) => asks.budget.get(sessionId) ?? null;
+
+/** A budget notice with canOverride arrived (set), or the chat went on (clear): a later message, or the user's allowance. */
+export function budgetStop(sessionId, on) {
+  if (on) asks.budget.set(sessionId, { sessionId, askedAt: new Date().toISOString() });
+  else asks.budget.delete(sessionId);
 }
 
 /** A tool call of a chat that waits for the user's OK. */
@@ -107,6 +117,7 @@ export function askEvent(type, d) {
 /** The session went: drop its closed answers and guard clears (the maps would otherwise keep one entry per closed
  * ask of a deleted chat). */
 export function pruneSession(sessionId) {
+  asks.budget.delete(sessionId);
   for (const [id, a] of asks.closed) if (a.sessionId === sessionId) asks.closed.delete(id);
   for (const key of [...asks.cleared.keys()]) if (JSON.parse(key)[0] === sessionId) asks.cleared.delete(key);
 }

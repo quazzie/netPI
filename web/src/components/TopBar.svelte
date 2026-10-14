@@ -3,6 +3,7 @@
   import Icon from '../lib/kit/Icon.svelte';
   import IconButton from '../lib/kit/IconButton.svelte';
   import BudgetPill from './BudgetPill.svelte';
+  import WaitingMenu from './WaitingMenu.svelte';
   import { app, activate, closeTab, moveTab, newSession, sessionStatus, waitingOn, projectOf } from '../lib/state/app.svelte.js';
   import { modals } from '../lib/state/ui.svelte.js';
   import { conn, reconnectNow } from '../lib/rpc.svelte.js';
@@ -149,6 +150,7 @@
 
   <div class="right">
     <BudgetPill />
+    <WaitingMenu />
     <button
       class="conn"
       data-status={conn.status}

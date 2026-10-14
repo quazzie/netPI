@@ -66,8 +66,12 @@ public static class StreamReplayTests
         await Wait.Until(() => string.Concat(h.Bus.OfType(EventTypes.ToolOutput).Where(e => e.SessionId == s.Id).Select(e => (string?)FakeBus.Data(e)["chunk"])) == "compiling\nlinking\n",
             "the output streamed");
 
-        var events = await Events(h, s.Id);
+        long now = 0;
+        var before = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var events = await Events(h, s.Id, snap => now = (long)snap["now"]!);
         var types = string.Join(",", events.Select(Type));
+        var ts = (long)events[0]!["ts"]!;
+        Check.True(ts > 0 && ts <= before && ts <= now, "the call's start carries when it began (ts), and the snapshot the server's time (now)");
         Check.Equal("tool.start,tool.output", types, "the call's start and its output so far as one event (the model call's stream ended)");
         Check.Equal("compiling\nlinking\n", (string?)events[1]!["d"]!["chunk"]);
 

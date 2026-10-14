@@ -20,7 +20,11 @@ internal sealed class StreamReplay
     /// <summary>The tail of a running call's output that is kept: what the page keeps of it (chat.svelte.js OUTPUT_CAP).</summary>
     public const int MaxToolOutput = 200_000;
 
-    private sealed record Entry(string Type, JsonObject Data, long Seq);
+    private sealed record Entry(string Type, JsonObject Data, long Seq)
+    {
+        /// <summary>When the bus event happened (epoch ms): a replayed tool.start tells the page when the call really began.</summary>
+        public long Ts { get; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
 
     private sealed class Chat
     {
@@ -51,8 +55,9 @@ internal sealed class StreamReplay
             var events = new JsonArray();
             if (_chats.TryGetValue(sessionId, out var chat))
                 foreach (var e in chat.Stream.Concat(chat.Tools.Values.SelectMany(t => t)).OrderBy(e => e.Seq))
-                    events.Add(new JsonObject { ["type"] = e.Type, ["d"] = e.Data.DeepClone(), ["seq"] = e.Seq });
-            return new JsonObject { ["seq"] = _seq, ["events"] = events };
+                    events.Add(new JsonObject { ["type"] = e.Type, ["d"] = e.Data.DeepClone(), ["seq"] = e.Seq, ["ts"] = e.Ts });
+            // `now`: the server's clock, so the page can correct the ts values for a clock that differs from its own
+            return new JsonObject { ["seq"] = _seq, ["now"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ["events"] = events };
         }
     }
 

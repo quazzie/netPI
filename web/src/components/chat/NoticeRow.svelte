@@ -4,6 +4,7 @@
   import { openSession } from '../../lib/state/app.svelte.js';
   import { confirmDialog, toast } from '../../lib/state/ui.svelte.js';
   import { rpc } from '../../lib/rpc.svelte.js';
+  import { budgetStop } from '../../lib/state/asks.svelte.js';
   import { stamp, firstLine, truncate } from '../../lib/format.js';
 
   /**
@@ -82,6 +83,7 @@
     try {
       await rpc('budget.allow', { sessionId: msg.sessionId });
       allowed = true;
+      budgetStop(msg.sessionId, false);
     } catch (e) {
       toast(e.message, 'error');
     }
