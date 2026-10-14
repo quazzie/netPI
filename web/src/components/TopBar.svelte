@@ -77,7 +77,7 @@
       s.title || 'New session',
       p ? `project: ${p.name}` : null,
       s.model ? `model: ${s.model}` : null,
-      w.length ? `waiting for ${w.length} agent${w.length === 1 ? '' : 's'}: ${w.map((x) => x.name || x.id).join(', ')}` : null,
+      w.length ? `waiting on ${w.length} subagent${w.length === 1 ? '' : 's'}: ${w.map((x) => x.name || x.id).join(', ')}` : null,
     ]
       .filter(Boolean)
       .join('\n');

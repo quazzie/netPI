@@ -608,7 +608,7 @@ shown once, with a ready `curl` line. The form is deliberately small: name, URL 
 Finished), each with a count. The open or closed state of each section is remembered (`storageKey`,
 versioned `work.v2.*` so the defaults of this layout apply).
 
-- A summary line shows what is **working**, **waiting** and **free** across the agents that can take work (and `+N other`
+- A summary line shows what is **working**, **queued** and **free** across the agents that can take work (and `+N other`
   for model calls without an agent, which opens a menu of them). Under it, only when a budget is set (or something was
   spent): **This month** against the budget (`usage.summary.budget`: a bar, today's spend, "spent" when it is).
 - **Agents** (`AgentPool`, the block under that, no section title): every agent the user set up, always. One list
@@ -621,10 +621,10 @@ versioned `work.v2.*` so the defaults of this layout apply).
   run id): chat title, then the activity — or, while the chat runs a foreground shell command, the command (`$ dotnet
   build …`), so a command starting or ending never changes the tab's size — and the elapsed time; subagents hold their
   own instance, so they are rows too, marked `sub` with the chat they work for; clicking opens the session, the hover
-  button stops that run alone (`agent.abort { sessionId, subagents: false }`; Shift+click stops its subagents too). Under the rows one line, always there, says `no one waiting` or `N
-  waiting, longest 14m`; clicking it opens who waits in a floating list (`WaitList`, `position: fixed`, so it never
-  pushes the tab down): each row opens its chat and has an **x** that cancels that run (`agent.abort { subagents: false }`: a run
-  still waiting for an instance is cancelled before it starts, and the subagents the chat's earlier runs started keep working). The last line of the agent is what it has done this period
+  button stops that run alone (`agent.abort { sessionId, subagents: false }`; Shift+click stops its subagents too). A busy row whose run is not at normal priority has a chip (`low`, `high`, `critical`; `Priority.svelte`, from the holder's `priority`). Under the rows one line, always there, says `nothing queued` or `N
+  queued, longest 14m` (with a `critical` chip when a critical run is among them); clicking it opens who is queued in a floating list (`WaitList`, `position: fixed`, so it never
+  pushes the tab down), in the order they get an instance (priority, then arrival): each row opens its chat, shows its priority chip, and has an **x** that cancels that run (`agent.abort { subagents: false }`: a run
+  still queued for an instance is cancelled before it starts, and the subagents the chat's earlier runs started keep working). "Queued" is a run waiting for an instance; "waiting" is kept for chats waiting on their subagents or on the user. The last line of the agent is what it has done this period
   (`usage.summary.models`: `412 calls · 1.2M↑ 86k↓`, a cost when it has one; the tooltip adds cache reads). An agent that cannot take work (off, or its model is not loaded)
   has a header and its reason only. Model calls without an agent show only in the summary chip.
 - **Background** (collapsed by default; `<n> running`): the commands that outlive a tool call (dev servers, watchers) and any
@@ -911,8 +911,8 @@ names or an inline `<svg …>` string.
 - A chat whose own run has ended while its subagents are still running, queued or yielded is `waiting`
   (`waitingOn(sessionId)` in `app.svelte.js`, from the runs' `parentSessionId`): its turn is over but it is not done,
   since their reports start its next run. The dot is the yielded ring, breathing. The session row's second line says
-  "waiting for N agents" instead of the message count, the tab's tooltip names them, and the Work tab lists such a chat
-  under the agents ("<title> · waiting for N agents", click to open), because a chat without a run holds no instance
+  "waiting on N subagents" instead of the message count, the tab's tooltip names them, and the Work tab lists such a chat
+  under the agents ("<title> · waiting on N subagents", click to open), because a chat without a run holds no instance
   and has no row there otherwise.
 - Scoped events carry a non-null `sid`. The UI also falls back to `d.sessionId`.
 - `agent.status` is broadcast whenever `status` **or** `activity` changes. The run status line above the composer

@@ -2,13 +2,15 @@
   /**
    * One agent in the Work tab: a model with a number of instances ("slots"). It always draws one row per slot, the same
    * height busy or free, and a running job keeps its row (placeSlots), so nothing in the tab moves when work starts or
-   * ends. A busy row says who holds the slot and what it is doing; a free one says so. Under the rows a single line
-   * says who waits (the names open in a menu, which floats instead of pushing the rest down). Model calls without an
+   * ends. A busy row says who holds the slot and what it is doing (and its priority, when it is not normal); a free one
+   * says so. Under the rows a single line says who is queued (the names open in a menu, which floats instead of pushing
+   * the rest down). Model calls without an
    * agent (a summarizer on another model) show the same way but without the switch.
    */
   import { Elapsed, IconButton, tokens, usd } from '@netpi/kit';
   import { shortModel, shortCommand, placeSlots } from './util.js';
   import WaitList from './WaitList.svelte';
+  import Priority from './Priority.svelte';
 
   // cmds: the foreground commands running now, by chat (a busy row shows its chat's command); use: what this agent has done
   // this period (usage.summary)
@@ -103,7 +105,7 @@
 <div class="pool" class:inactive={!usable} data-agent={agent ? pool.key : null}>
   <div
     class="head np-line"
-    title="{agent ? `Agent ${pool.key} on ${pool.model}` : pool.key} — {busyCount}/{pool.capacity} busy{waiters.length ? `, ${waiters.length} waiting` : ''}{pool.use ? `\n${pool.use}` : ''}"
+    title="{agent ? `Agent ${pool.key} on ${pool.model}` : pool.key} — {busyCount}/{pool.capacity} busy{waiters.length ? `, ${waiters.length} queued` : ''}{pool.use ? `\n${pool.use}` : ''}"
   >
     {#if agent}
       <button class="key np-mono np-grow" title="Open in Settings → Agents" onclick={() => ctx.app.openSettings?.('agents', pool.key)}><b>{name}</b></button>
@@ -142,6 +144,7 @@
           <span class="l1 np-line np-baseline">
             <span class="name">{who(o)}</span>
             {#if runOf(o)?.isSubagent}<span class="sub">sub</span>{/if}
+            <Priority priority={o.priority} />
             {#if compact && forWhom(o)}<span class="for np-grow">for {forWhom(o)}</span>{/if}
             {#if compact}<Elapsed since={o.since} class="np-mono el" />{/if}
           </span>
@@ -177,7 +180,7 @@
       {#if waiters.length}
         <WaitList {waiters} label={waiterLabel} {ctx} />
       {:else}
-        <span class="nobody np-line">no one waiting</span>
+        <span class="nobody np-line">nothing queued</span>
       {/if}
     </div>
   {/if}
@@ -345,7 +348,7 @@
     white-space: nowrap;
   }
 
-  /* one row for the queue, always there, so a waiting run appearing or leaving moves nothing */
+  /* one row for the queue, always there, so a queued run appearing or leaving moves nothing */
   .wait {
     margin: 3px 0 0 6px;
     min-height: 22px;

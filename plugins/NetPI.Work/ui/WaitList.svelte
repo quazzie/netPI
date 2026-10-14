@@ -1,18 +1,22 @@
 <script>
   /**
-   * The waiting line of an agent ("4 waiting, longest 14m") and, opened, who waits. A floating list (position: fixed, so
-   * opening it never pushes the tab down): each row opens its chat, shows how long it has waited, and has an x that
-   * cancels that run (agent.abort with subagents false: a run waiting for an instance is cancelled before it ever starts,
-   * and the subagents the chat's earlier runs started keep working).
+   * The queue line of an agent ("4 queued, longest 14m") and, opened, who is queued, in the order they get an instance:
+   * priority, then arrival. A floating list (position: fixed, so opening it never pushes the tab down): each row opens its
+   * chat, shows its priority when it is not normal and how long it has waited, and has an x that cancels that run
+   * (agent.abort with subagents false: a run queued for an instance is cancelled before it ever starts, and the
+   * subagents the chat's earlier runs started keep working).
    */
   import { tick } from 'svelte';
   import { Elapsed, Icon, IconButton } from '@netpi/kit';
+  import Priority from './Priority.svelte';
+  import { priorityLevel } from './util.js';
 
   // what: how the line says who they wait for ("for any agent"), when it is not the agent the line sits under
   let { waiters, label, ctx, what = '' } = $props();
 
-  const sorted = $derived(waiters.slice().sort((a, b) => (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0)));
-  const oldest = $derived(sorted[0]?.since ?? null);
+  const sorted = $derived(waiters.slice().sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0)));
+  const oldest = $derived(waiters.reduce((min, w) => (!min || (Date.parse(w.since) || 0) < (Date.parse(min) || 0) ? w.since : min), null));
+  const critical = $derived(waiters.filter((w) => priorityLevel(w.priority) === 'critical').length);
 
   let open = $state(false);
   let anchor = $state();
@@ -72,7 +76,7 @@
     cancelling = new Set(cancelling).add(w.agentId);
     try {
       const ok = await ctx.rpc('agent.abort', { sessionId: w.sessionId, subagents: false });
-      if (!ok) ctx.app.toast(`${name} was not waiting any more`, 'warn');
+      if (!ok) ctx.app.toast(`${name} was not queued any more`, 'warn');
     } catch (err) {
       ctx.app.toast(`Cancel failed: ${err?.message ?? err}`, 'error');
     } finally {
@@ -83,9 +87,10 @@
   }
 </script>
 
-<button bind:this={anchor} class="waiting np-line" aria-expanded={open} title="Who is waiting for a free instance" onclick={toggle}>
+<button bind:this={anchor} class="waiting np-line" aria-expanded={open} title="Who is queued for a free instance" onclick={toggle}>
   <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
-  <span class="np-grow np-ellipsis">{waiters.length} waiting{what ? ` ${what}` : ''}<span class="np-dim">, longest</span><Elapsed since={oldest} class="np-mono longest" /></span>
+  <span class="np-grow np-ellipsis">{waiters.length} queued{what ? ` ${what}` : ''}<span class="np-dim">, longest</span><Elapsed since={oldest} class="np-mono longest" /></span>
+  {#if critical}<Priority priority={200} />{/if}
 </button>
 
 {#if open}
@@ -100,8 +105,9 @@
             open = false;
           }}>{label(w)}</button
         >
+        <Priority priority={w.priority} />
         <Elapsed since={w.since} class="np-mono t" />
-        <IconButton icon="x" title="Cancel this run: it stops waiting and never starts" size="sm" disabled={cancelling.has(w.agentId) || ctx.hasRpc?.('agent.abort') === false} onclick={() => cancel(w)} />
+        <IconButton icon="x" title="Cancel this run: it leaves the queue and never starts" size="sm" disabled={cancelling.has(w.agentId) || ctx.hasRpc?.('agent.abort') === false} onclick={() => cancel(w)} />
       </div>
     {/each}
   </div>

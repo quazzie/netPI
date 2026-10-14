@@ -98,12 +98,12 @@ await run('work-tab', async ({ page, socket }) => {
     // a chat whose turn ended while its subagent works is not done: the Work tab and its row in the sessions list say so
     const waitingChat = page.locator('.work .waiting-chat');
     await waitingChat.first().waitFor({ timeout: 5000 }).catch(() => {});
-    check('work: a chat whose subagents still work is listed as waiting for them',
-      (await waitingChat.count()) === 1 && (await waitingChat.innerText()).includes(REFACTOR) && /waiting for 1 agent\b/.test(await waitingChat.innerText()),
+    check('work: a chat whose subagents still work is listed as waiting on them',
+      (await waitingChat.count()) === 1 && (await waitingChat.innerText()).includes(REFACTOR) && /waiting on 1 subagent\b/.test(await waitingChat.innerText()),
       (await waitingChat.allInnerTexts()).join(' | '));
     const refactorRow = page.locator(`.srow[data-session="${refactor}"]`);
     check('sessions: its row says it waits for its subagent, with the waiting dot',
-      /waiting for 1 agent\b/.test(await refactorRow.locator('.waiting').innerText().catch(() => '')) && (await refactorRow.locator('.np-dot').first().getAttribute('data-status').catch(() => '')) === 'waiting',
+      /waiting on 1 subagent\b/.test(await refactorRow.locator('.waiting').innerText().catch(() => '')) && (await refactorRow.locator('.np-dot').first().getAttribute('data-status').catch(() => '')) === 'waiting',
       `${await refactorRow.count()} rows`);
     await shot(page, 'ui-work-01-waiting-chat');
 
@@ -136,8 +136,8 @@ await run('work-tab', async ({ page, socket }) => {
     await rpc('agent.send', { sessionId: refactor, text: `Check the backoff math. [s:say gate=${GC}]` });
     const waitLine = pool.locator('.waiting');
     await waitLine.waitFor({ timeout: 10_000 }).catch(() => {});
-    check('work: the summary counts working, waiting and free', /2 working/.test(await summary()) && /1 waiting/.test(await summary()) && /0 free/.test(await summary()), await summary());
-    check('work: the waiting runs are one line under the agent', (await waitLine.count()) === 1 && /1 waiting/.test(await waitLine.innerText()));
+    check('work: the summary counts working, queued and free', /2 working/.test(await summary()) && /1 queued/.test(await summary()) && /0 free/.test(await summary()), await summary());
+    check('work: the queued runs are one line under the agent', (await waitLine.count()) === 1 && /1 queued/.test(await waitLine.innerText()));
     const heightBefore = Math.round((await page.locator('.work').boundingBox()).height);
     await waitLine.click();
     const waitRow = page.locator('.work .pop .row', { hasText: REFACTOR });
@@ -149,24 +149,24 @@ await run('work-tab', async ({ page, socket }) => {
     await waitLine.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
     await waitingChat.first().waitFor({ timeout: 5000 }).catch(() => {});
     // agent.abort { subagents: false }: a plain abort cancels the chat's whole tree, its background subagent with the run
-    check('work: an x on a waiting run cancels that run alone: no one waits, the chat\'s background subagent keeps working',
-      (await waitLine.count()) === 0 && /no one waiting/.test(await pool.innerText()) && (await pool.locator('.slot.busy', { hasText: 'surveyor' }).count()) === 1
+    check('work: an x on a queued run cancels that run alone: nothing is queued, the chat\'s background subagent keeps working',
+      (await waitLine.count()) === 0 && /nothing queued/.test(await pool.innerText()) && (await pool.locator('.slot.busy', { hasText: 'surveyor' }).count()) === 1
         && (await status(refactor)) !== 'queued' && (await rpc('agent.get', { sessionId: surveyorSid }))?.status === 'running' && (await waitingChat.count()) === 1,
       `${await status(refactor)} | ${(await rpc('agent.get', { sessionId: surveyorSid }))?.status} | ${await pool.innerText()}`);
 
     // ---- a run that may go to either of two agents waits in nobody's queue: one line, always there, so it moves nothing
     const unassigned = page.locator('.work .unassigned');
-    check('work: the line for runs waiting for any agent is there when no one waits', /no one waiting for any agent/.test(await unassigned.innerText()));
+    check('work: the line for runs queued for any agent is there when nothing is queued', /nothing queued for any agent/.test(await unassigned.innerText()));
     await rpc('settings.set', { path: `agents.${Q2}`, value: { model: QWEN } });
     await page.locator(`.work .pool[data-agent="${Q2}"]`).waitFor({ timeout: 10_000 });
     await page.waitForTimeout(300);
     const geo0 = await geometry();
     const any = await chat('Waiter for any agent');
     await rpc('agent.send', { sessionId: any, text: 'Any agent will do. [s:say]' });
-    await until('the run waiting for any agent', async () => /1 waiting for any agent/.test(await unassigned.innerText()), 10_000).catch(() => {});
+    await until('the run queued for any agent', async () => /1 queued for any agent/.test(await unassigned.innerText()), 10_000).catch(() => {});
     const geo1 = await geometry();
-    check('work: a run waiting for any agent is one line, counted as waiting, and nothing moves',
-      /1 waiting for any agent/.test(await unassigned.innerText()) && /1 waiting/.test(await summary()) && JSON.stringify(geo0) === JSON.stringify(geo1),
+    check('work: a run queued for any agent is one line, counted as queued, and nothing moves',
+      /1 queued for any agent/.test(await unassigned.innerText()) && /1 queued/.test(await summary()) && JSON.stringify(geo0) === JSON.stringify(geo1),
       `${await unassigned.innerText()} | ${await summary()} | ${JSON.stringify([geo0, geo1])}`);
     await rpc('agent.abort', { sessionId: any });
     await rpc('settings.set', { path: `agents.${Q2}`, value: null });
@@ -177,7 +177,7 @@ await run('work-tab', async ({ page, socket }) => {
     await rpc('agent.send', { sessionId: refactor, text: `And the jitter? [s:say gate=${GB}]` });
     await waitLine.waitFor({ timeout: 10_000 }).catch(() => {});
     await waitingChat.first().waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
-    check('work: …and not while its own run waits for an instance', (await waitingChat.count()) === 0 && /1 waiting/.test(await waitLine.innerText()));
+    check('work: …and not while its own run is queued for an instance', (await waitingChat.count()) === 0 && /1 queued/.test(await waitLine.innerText()));
     await page.waitForTimeout(300);
     const g0 = await geometry();
     const at = await rowNames();
@@ -190,7 +190,7 @@ await run('work-tab', async ({ page, socket }) => {
     const g1 = await geometry();
     check('work: a waiting run takes the instance that ended, in the same row, and nothing moves',
       surveyorRow >= 0 && JSON.stringify(g0) === JSON.stringify(g1) && (await rowNames())[surveyorRow] === REFACTOR, JSON.stringify([at, await rowNames(), g0, g1]));
-    check('work: the waiting line stays, saying no one waits', /no one waiting/.test(await pool.innerText()) && (await waitLine.count()) === 0);
+    check('work: the queue line stays, saying nothing is queued', /nothing queued/.test(await pool.innerText()) && (await waitLine.count()) === 0);
     fs.writeFileSync(path.join(dir, FLAG), 'done\n'); // the foreground command ends, and its chat's run with it
     await waitIdle(index, 1, 30_000);
     await until('a free row', async () => (await rowNames())[indexRowAt] === 'free', 10_000).catch(() => {});

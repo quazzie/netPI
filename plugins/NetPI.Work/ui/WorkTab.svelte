@@ -175,7 +175,7 @@
     <!-- stats that do not fit are dropped whole, least important last -->
     <span class="stats np-fit">
       <span class="stat" title="Instances running a chat or subagent"><b>{working}</b> working</span>
-      <span class="stat" class:warn={waiting > 0} title="Runs waiting for a free instance"><b>{waiting}</b> waiting</span>
+      <span class="stat" class:warn={waiting > 0} title="Runs queued for a free instance"><b>{waiting}</b> queued</span>
       <span class="stat" class:ok={free > 0} title="Free instances, ready for work"><b>{free}</b> free</span>
       {#if otherCalls.length}
         <Menu items={otherItems} minWidth={220} placement="bottom-start">
@@ -231,12 +231,12 @@
         {/each}
       {/if}
       {#if setUp.length}
-        <!-- runs that may go to any of several agents wait here, in nobody's queue; the line is always there, so it moves nothing -->
+        <!-- runs that may go to any of several agents queue here, in nobody's own queue; the line is always there, so it moves nothing -->
         <div class="unassigned">
           {#if unassigned.length}
             <WaitList waiters={unassigned} label={unassignedLabel} {ctx} what="for any agent" />
           {:else}
-            <span class="nobody np-line">no one waiting for any agent</span>
+            <span class="nobody np-line">nothing queued for any agent</span>
           {/if}
         </div>
       {/if}
@@ -248,7 +248,7 @@
         >
           <span class="np-dot" data-status="waiting"></span>
           <span class="wtitle np-ellipsis">{titles.get(w.parent.sessionId) ?? w.parent.name}</span>
-          <span class="wcount">waiting for {w.kids.length} agent{w.kids.length === 1 ? '' : 's'}</span>
+          <span class="wcount">waiting on {w.kids.length} subagent{w.kids.length === 1 ? '' : 's'}</span>
         </button>
       {/each}
       {#if errors.runs}<div class="na">Runs not available — {errors.runs}</div>{/if}

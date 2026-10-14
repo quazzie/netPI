@@ -208,7 +208,7 @@
           {#if status === 'waiting'}
             {@const w = waitingOn(s.id)}
             <span class="waiting" title="Its turn ended while its subagents work; their reports start its next run: {w.map((x) => x.name || x.id).join(', ')}"
-              >waiting for {w.length} agent{w.length === 1 ? '' : 's'}</span
+              >waiting on {w.length} subagent{w.length === 1 ? '' : 's'}</span
             >
           {:else if depth === 0 && s.messageCount}<span class="count">{s.messageCount} msgs</span>{/if}
           {#if kids?.length}
