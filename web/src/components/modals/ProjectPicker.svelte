@@ -101,7 +101,7 @@
         <div class="section">{r.header}</div>
       {:else}
         {@const fav = select && r.p.id && favIds.has(r.p.id)}
-        <button class="item" class:active={r.i === index} class:current={current === r.p.id} onclick={() => choose(r.p)} onmouseenter={() => (index = r.i)}>
+        <button class="item" data-project={r.p.id} class:active={r.i === index} class:current={current === r.p.id} onclick={() => choose(r.p)} onmouseenter={() => (index = r.i)}>
           <Icon name={r.p.id ? (fav ? 'star' : 'folder') : 'x'} size={14} class={fav ? 'fav' : ''} />
           <span class="main">
             <span class="np-ellipsis name">{r.p.name}</span>

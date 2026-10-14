@@ -51,6 +51,7 @@
   onclick={toggle}
   {title}
   aria-label="Project"
+  data-project={project?.id ?? ''}
   aria-haspopup="dialog"
 >
   <Icon name="folder" size={13} />

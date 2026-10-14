@@ -73,6 +73,7 @@ public static class Catalog
         ["ui.work"] = "needs-node",
         ["ui.settings-next"] = "needs-node",
         ["ui.asks"] = "needs-node",
+        ["ui.new-chat"] = "needs-node",
     };
 
     public static IReadOnlyCollection<string> ExtraIds => Extra.Keys;

@@ -76,6 +76,9 @@ public static class UiTests
         // The script makes its own chat.
         r.Add("ui.asks", "ui journey: what a chat asks the user — the ask_user card survives a page reload, an option answers it, so does an answer typed in the message box, and a two-question card is sent with its button; the run goes on with the answer", () =>
             RunUiScript(env, "asks.mjs", 300), 330);
+        // The script makes its own project; it starts with no chat tabs open (freshTabs).
+        r.Add("ui.new-chat", "ui journey: a new chat from the start screen in a project — the chevron picks the project and starts the chat in it, the first answer lists it in the sessions panel, and the main button then starts the next chat in that project", () =>
+            RunUiScript(env, "new-chat.mjs", 300), 330);
         r.Add("ui.smoke", "ui: send [s:tools] in the browser, streamed text + tool rows, plugin tabs, no console errors (screenshots)", async () =>
         {
             var p = await env.NewProject("ui-demo", CoreTests.Seed);

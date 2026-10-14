@@ -60,7 +60,7 @@
   });
 </script>
 
-<div class="welcome np-scroll">
+<div class="welcome np-scroll" data-testid="welcome">
   <div class="inner">
     <div class="hero">
       <svg width="40" height="40" viewBox="0 0 32 32" aria-hidden="true">
@@ -87,6 +87,8 @@
           <div class="split" bind:this={targetEl}>
             <button
               class="np-btn big target"
+              data-testid="start-in-project"
+              data-project={target?.id ?? ''}
               onclick={startInTarget}
               title={target ? `Start a session in ${target.name}` : 'Start a session in the default workspace'}
             >
@@ -95,6 +97,7 @@
             </button>
             <button
               class="np-btn big target-more"
+              data-testid="pick-project"
               onclick={pickTarget}
               aria-haspopup="dialog"
               aria-label="Pick another project"
