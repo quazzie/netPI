@@ -27,6 +27,12 @@ export function planWaiting(sessionId) {
   return null;
 }
 
+/** An offer of plan mode (plan_enter) of this chat waits for the user's answer. */
+export function offerWaiting(sessionId) {
+  for (const o of plans.offers.values()) if (o.sessionId === sessionId) return o;
+  return null;
+}
+
 /** The offer of plan mode this tool call made, waiting or closed. */
 export function offerForCall(sessionId, callId) {
   for (const o of plans.offers.values()) if (o.sessionId === sessionId && o.callId === callId) return { ...o, status: 'waiting' };
