@@ -21,7 +21,7 @@ export class LiveTool {
   result = $state.raw(null);
   durationMs = $state(null);
   truncated = $state(false);
-  startedAt = Date.now();
+  startedAt = Date.now(); // a call replayed from the server's snapshot carries its real start (d.startedAt)
   name = '';
   label = '';
   arguments = null; // the call's JSON arguments, when tool.start carried them (a call the provider runs itself is still streaming in the chat)
@@ -34,6 +34,7 @@ export class LiveTool {
     this.name = d?.name ?? '';
     this.label = d?.label ?? '';
     this.arguments = d?.arguments ?? null;
+    if (d?.startedAt) this.startedAt = d.startedAt;
   }
   append(chunk) {
     this.#buf += chunk;
@@ -527,7 +528,10 @@ export class ChatStore {
     let events = held;
     if (snap) {
       const copied = (type) => type.startsWith('stream.') || type.startsWith('tool.');
-      const copy = (snap.events ?? []).map((e) => [e.type, e.d ?? {}, e.seq]);
+      // a call that is still running began when the server saw tool.start, not when this page replays it: the server's
+      // time of it, moved onto this page's clock (the two may differ), keeps its timer going across tab switches
+      const skew = snap.now ? Date.now() - snap.now : 0;
+      const copy = (snap.events ?? []).map((e) => [e.type, e.type === 'tool.start' && e.ts ? { ...e.d, startedAt: e.ts + skew } : (e.d ?? {}), e.seq]);
       clearTimeout(this.#endTimer);
       this.stream.clear();
       for (const [type, d] of copy) if (type === 'tool.start') this.live.delete(d.callId);
