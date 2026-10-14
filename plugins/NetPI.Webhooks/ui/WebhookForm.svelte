@@ -17,6 +17,7 @@
         projectId: hook.projectId ?? '',
         profile: hook.profile ?? '',
         ...agentToForm(hook.agent),
+        priority: hook.priority ?? 'normal',
         preCommand: hookToForm(hook.pre).command,
         preArgs: hookToForm(hook.pre).args,
         postCommand: hookToForm(hook.post).command,
@@ -37,6 +38,7 @@
       profile: '',
       agentChoice: 'any',
       agentList: '',
+      priority: 'normal',
       preCommand: '',
       preArgs: '',
       postCommand: '',
@@ -76,6 +78,7 @@
       projectId: f.projectId,
       profile: f.profile,
       agent: formToAgent(f),
+      priority: f.priority,
       pre: formToHook(f.preCommand, f.preArgs),
       post: formToHook(f.postCommand, f.postArgs),
       timeoutMinutes: Number(f.timeoutMinutes),
@@ -164,6 +167,17 @@
     {#if f.agentChoice === '__list'}
       <input class="np-input" placeholder="sonnet, qwen3-27b, home (the first available one runs)" bind:value={f.agentList} />
     {/if}
+  </label>
+
+  <label class="fld">
+    <span class="f-label">Priority</span>
+    <select class="np-input" bind:value={f.priority}>
+      <option value="low">Low: after other queued work</option>
+      <option value="normal">Normal</option>
+      <option value="high">High: first in the queue</option>
+      <option value="critical">Critical: takes an instance from lower work</option>
+    </select>
+    <span class="np-small np-dim">The order its chats queue in while their agent is busy. A critical chat takes the instance of a lower chat started for you (never one of your own chats) at its next model call, or once its tool has run a minute.</span>
   </label>
 
   <div class="fld">

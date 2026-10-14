@@ -172,7 +172,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             if (calls.Count > 0)
             {
                 var batch = new ToolBatch(rt, state, rc, HasSteering);
-                await batch.RunAsync(assistant, turn, calls, tools, ct).ConfigureAwait(false);
+                await LendingAsync(batch.RunAsync(assistant, turn, calls, tools, ct)).ConfigureAwait(false);
                 // calls wait for the user: the run ends here, holding nothing, and goes on when they answer
                 if (batch.Waiting)
                 {
@@ -261,7 +261,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             // the chat may use any agent: the first one with a free instance takes the run and its model becomes the chat's
             try
             {
-                var (any, _) = await rt.AcquireAnySlotAsync(state, 0, ct).ConfigureAwait(false);
+                var (any, _) = await rt.AcquireAnySlotAsync(state, ct).ConfigureAwait(false);
                 run.Lease = any;
             }
             catch (CallRefusedException ex)
@@ -505,14 +505,63 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
     // ---------------------------------------------------------------- slot
 
+    /// <summary>
+    /// Runs the tool batch <paramref name="tools"/>; once it has run for <see cref="AgentRuntime.LendSlotAfter"/> (the model
+    /// instance idles meanwhile), the slot goes to a critical run that wants it. The tools go on, and the next model call
+    /// queues for a slot again (<see cref="EnsureSlotAsync"/>), so the results reach the model as usual.
+    /// </summary>
+    private async Task LendingAsync(Task tools)
+    {
+        using var done = new CancellationTokenSource();
+        var lender = LendAsync(done.Token);
+        try { await tools.ConfigureAwait(false); }
+        finally
+        {
+            done.Cancel();
+            await lender.ConfigureAwait(false);
+        }
+    }
+
+    private async Task LendAsync(CancellationToken done)
+    {
+        try
+        {
+            await Task.Delay(rt.LendSlotAfter, done).ConfigureAwait(false);
+            while (run.Lease is { IsReleased: false } lease)
+            {
+                using (var either = CancellationTokenSource.CreateLinkedTokenSource(done, lease.Wanted))
+                {
+                    try { await Task.Delay(Timeout.Infinite, either.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { }
+                }
+                if (done.IsCancellationRequested || !ReferenceEquals(run.Lease, lease)) return;   // the batch ended, or a wait took the slot
+                if (!lease.GiveUpIfWanted()) continue;   // no one needs it any more: a fresh signal to wait for
+                if (run.ClearLease(lease)) run.SlotLent = true;
+                rt.SetActivity(state, "slot lent to a critical run, tools still running");
+                return;
+            }
+        }
+        catch (OperationCanceledException) { }   // the batch ended first
+        catch (Exception ex) { Ctx.Logger.LogWarning(ex, "Lending the slot of {Agent} failed", Info.Id); }
+    }
+
     private async Task EnsureSlotAsync(ModelInfo model, CancellationToken ct)
     {
+        // A critical run waits for this run's slot: given up here, between two model calls, and the run queues for one
+        // again (first among its own level). One given up while the tools ran (LendAsync) queues the same way.
+        var paused = run.SlotLent;
+        run.SlotLent = false;
+        if (run.Lease is { IsReleased: false } wanted && wanted.Wanted.IsCancellationRequested && wanted.GiveUpIfWanted())
+        {
+            run.ClearLease(wanted);
+            paused = true;
+        }
         var scheduler = Ctx.Services.Get<IAgentScheduler>();
         if (scheduler is null)
         {
             if (run.Lease is { IsReleased: false } && run.Model?.Ref == model.Ref) return;
             run.Lease?.Dispose();
-            run.Lease = await rt.AcquireSlotAsync(state, run, model, 0, ct).ConfigureAwait(false);
+            run.Lease = await rt.AcquireSlotAsync(state, run, model, resume: paused, ct, paused).ConfigureAwait(false);
             run.Model = model;
             if (Info.Status != AgentStatus.Running) rt.SetStatus(state, AgentStatus.Running, null, keepActivity: true);
             return;
@@ -535,7 +584,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             run.Lease = null;
             old.Dispose();
         }
-        run.Lease = await rt.AcquireSlotAsync(state, run, model, 0, ct).ConfigureAwait(false);
+        run.Lease = await rt.AcquireSlotAsync(state, run, model, resume: paused, ct, paused).ConfigureAwait(false);
     }
 
     // ---------------------------------------------------------------- prompt

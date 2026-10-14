@@ -32,7 +32,7 @@
   const state = $derived(rowState(h));
   const projectName = $derived((projects ?? []).find((p) => p?.id === h.projectId)?.name ?? (h.projectId || 'no project'));
   const meta = $derived(
-    [state.key === 'proposed' ? 'proposed by an agent' : null, h.agent || 'default agent', h.profile ? `profile ${h.profile}` : 'automatic profile', projectName, h.pre || h.post ? [h.pre ? 'Before' : null, h.post ? 'After' : null].filter(Boolean).join(' + ') : null, limitsLine(h), `token …${h.tokenHint}`]
+    [state.key === 'proposed' ? 'proposed by an agent' : null, h.agent || 'default agent', h.priority && h.priority !== 'normal' ? `${h.priority} priority` : null, h.profile ? `profile ${h.profile}` : 'automatic profile', projectName, h.pre || h.post ? [h.pre ? 'Before' : null, h.post ? 'After' : null].filter(Boolean).join(' + ') : null, limitsLine(h), `token …${h.tokenHint}`]
       .filter(Boolean)
       .join(' · '),
   );

@@ -11,7 +11,10 @@ namespace NetPI.Agents;
 /// <c>models.localSlots</c>, clamped to one): no more
 /// runs on the model than it serves. Model calls without an agent (a separate summarizer, and every call while no agent
 /// is set up) get a slot per model while they run: a local model by its concurrency (<c>models.localSlots</c>),
-/// a cloud provider's models together (<c>models.cloudSlots</c>). Waiters are served by priority (desc), then FIFO.
+/// a cloud provider's models together (<c>models.cloudSlots</c>). Waiters are served by priority (desc), then FIFO, and
+/// wait until they get a slot or are cancelled. A critical waiter (<see cref="RunPriority.Preempts"/>) with no slot free
+/// signals the pausable runs below it that could free one (<see cref="IAgentSlot.Wanted"/>); the first of them to reach a
+/// point where it can stop gives its slot up (<see cref="IAgentSlot.GiveUpIfWanted"/>).
 /// </summary>
 internal sealed class AgentScheduler : IAgentScheduler
 {
@@ -43,13 +46,10 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// <summary>A coalesced <c>agents.changed</c> is still on its timer or being sent: a test waits for this instead of guessing at the window.</summary>
     internal bool PublishPending => Volatile.Read(ref _publishPending) > 0;
 
-    /// <summary>How long one second of <c>agents.queueTimeoutSeconds</c> lasts: a second (tests shorten it).</summary>
-    internal TimeSpan QueueTimeoutUnit { get; set; } = TimeSpan.FromSeconds(1);
-
     // ---------------------------------------------------------------- agents
 
     /// <summary>Keys under <c>agents</c> that are settings, not agent ids.</summary>
-    internal static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "maxDepth", "queueMax", "queueTimeoutSeconds", SessionAgent.Any };
+    internal static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "maxDepth", SessionAgent.Any };
 
     internal sealed record AgentConfig(string Id, string Model, JsonObject Cfg)
     {
@@ -129,8 +129,6 @@ internal sealed class AgentScheduler : IAgentScheduler
         public DateTimeOffset Since { get; } = DateTimeOffset.UtcNow;
         public TaskCompletionSource<IAgentSlot> Tcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public CancellationTokenRegistration Registration { get; set; }
-        /// <summary>Fails the waiter when its longest wait (<see cref="QueueTimeoutSeconds"/>) is up; stopped on grant/cancel.</summary>
-        public CancellationTokenSource? WaitTimeout { get; set; }
         /// <summary>Waits for any of several agents instead of one (it is in <c>_floating</c>, not in a pool's queue).</summary>
         public bool Floating => Request.Candidates is { Count: > 1 };
     }
@@ -139,17 +137,42 @@ internal sealed class AgentScheduler : IAgentScheduler
     {
         public string? LeaseId => (physical as IResourceLease)?.Id;
         private int _released;
+        private CancellationTokenSource _wanted = new();
         public string Key { get; } = request.Key;
         public string AgentId { get; } = request.AgentId;
         public string? SessionId { get; } = request.SessionId;
         public string? Label { get; } = request.Label;
+        public int Priority { get; } = request.Priority;
+        public bool Pausable { get; } = request.Pausable;
         public DateTimeOffset AcquiredAt { get; } = DateTimeOffset.UtcNow;
         public bool IsReleased => Volatile.Read(ref _released) != 0;
         // The admitted call stays on this resource even if its agent is rebound while it runs.
         public string? LocalModel { get; } = localModel;
+        public CancellationToken Wanted => Volatile.Read(ref _wanted).Token;
+
+        /// <summary>
+        /// A critical run waits for this slot. Caller holds the scheduler's gate: the token's callbacks (a run waiting on it)
+        /// run on the pool, never inline under the gate.
+        /// </summary>
+        internal void Want()
+        {
+            var cts = Volatile.Read(ref _wanted);
+            if (!cts.IsCancellationRequested) _ = cts.CancelAsync();
+        }
+
+        /// <summary>No one needs it any more: a fresh token for the next time. Caller holds the scheduler's gate.</summary>
+        internal void Renew()
+        {
+            if (Volatile.Read(ref _wanted).IsCancellationRequested) Volatile.Write(ref _wanted, new CancellationTokenSource());
+        }
+
+        public bool GiveUpIfWanted() => owner.GiveUp(this);
 
         /// <summary>Mark released without granting anything (scheduler stopped).</summary>
         internal bool MarkReleased() => Interlocked.Exchange(ref _released, 1) == 0;
+
+        /// <summary>The physical slot, freed at once (the scheduler's give-up does this under its gate).</summary>
+        internal void ReleasePhysical() => physical?.Dispose();
 
         public void Dispose()
         {
@@ -157,22 +180,6 @@ internal sealed class AgentScheduler : IAgentScheduler
             physical?.Dispose();
             owner.Release(this);
         }
-    }
-
-    private int Setting(string path, int fallback)
-    {
-        try
-        {
-            var n = _ctx.Settings.GetNode(path);
-            if (n is JsonValue v)
-            {
-                if (v.TryGetValue<int>(out var i)) return i;
-                if (v.TryGetValue<double>(out var d)) return (int)d;
-                if (v.TryGetValue<string>(out var s) && int.TryParse(s, out i)) return i;
-            }
-        }
-        catch { /* bad settings value */ }
-        return fallback;
     }
 
     private static int? ReadInt(JsonNode? n)
@@ -400,7 +407,6 @@ internal sealed class AgentScheduler : IAgentScheduler
         foreach (var (w, reason) in refused)
         {
             w.Registration.Unregister();
-            StopWaitTimeout(w);
             w.Tcs.TrySetException(new CallRefusedException(w.Floating ? NoneAvailable(w.Request.Candidates!, reason) : UnavailableMessage(w.Request.Key, reason)) { Kind = "unavailable" });
         }
         var signature = Signature();
@@ -439,13 +445,13 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// <summary>The request as it is granted: for the agent that took it.</summary>
     private static AgentSlotRequest Bind(AgentSlotRequest r, Pool pool) => new()
     {
-        Key = pool.Key, AgentId = r.AgentId, SessionId = r.SessionId, Label = r.Label, Priority = r.Priority,
+        Key = pool.Key, AgentId = r.AgentId, SessionId = r.SessionId, Label = r.Label, Priority = r.Priority, Pausable = r.Pausable,
         Provider = pool.Provider ?? r.Provider, ExecutorGeneration = r.ExecutorGeneration,
     };
 
     private static AgentSlotRequest Copy(AgentSlotRequest r, string key, IReadOnlyList<string>? candidates) => new()
     {
-        Key = key, Candidates = candidates, AgentId = r.AgentId, SessionId = r.SessionId, Label = r.Label, Priority = r.Priority,
+        Key = key, Candidates = candidates, AgentId = r.AgentId, SessionId = r.SessionId, Label = r.Label, Priority = r.Priority, Pausable = r.Pausable,
         Provider = r.Provider, ExecutorGeneration = r.ExecutorGeneration,
     };
 
@@ -489,7 +495,7 @@ internal sealed class AgentScheduler : IAgentScheduler
                     || pool is null && modelInfo is { Status: null or "loaded" };
                 var unavailable = canTakeWork ? null : pool is null ? "Model is unavailable" : AvailabilityOf(pool).Reason;
                 var owners = _resources is null
-                    ? g.Value.SelectMany(p => p.Owners).Select(o => new SlotHolder { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Since = o.AcquiredAt }).ToList()
+                    ? g.Value.SelectMany(p => p.Owners).Select(o => new SlotHolder { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Priority = o.Priority, Since = o.AcquiredAt }).ToList()
                     : held.Where(x => string.Equals(x.Resource, g.Key, StringComparison.OrdinalIgnoreCase)).Select(x => x.Holder).ToList();
                 return new ModelResourceSlots
                 {
@@ -536,7 +542,7 @@ internal sealed class AgentScheduler : IAgentScheduler
                         Busy = PoolBusy(p),
                         Queued = p.Waiters.Count,
                         Models = [.. p.Models],
-                        Owners = held is null ? p.Owners.Select(o => new SlotHolder { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Since = o.AcquiredAt }).ToList()
+                        Owners = held is null ? p.Owners.Select(o => new SlotHolder { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Priority = o.Priority, Since = o.AcquiredAt }).ToList()
                             : held.Where(x => string.Equals(x.Key, p.Key, StringComparison.OrdinalIgnoreCase)).Select(x => x.Holder).ToList(),
                         Waiters = p.Waiters.Select(w => new SlotHolder { AgentId = w.Request.AgentId, SessionId = w.Request.SessionId, Label = w.Request.Label, Since = w.Since, Priority = w.Request.Priority,
                             WaitingFor = p.Configured && PoolBusy(p) >= p.Capacity ? "agent instances" : resource?.Busy >= resource?.Capacity ? "model capacity" : "earlier queued work" }).ToList(),
@@ -626,22 +632,6 @@ internal sealed class AgentScheduler : IAgentScheduler
         return true;
     }
 
-    /// <summary>How long a pool's wait queue may grow (<c>agents.queueMax</c>): beyond it a new run is refused, not parked.</summary>
-    private int QueueMax() => Math.Max(0, Setting("agents.queueMax", 20));
-
-    /// <summary>The longest a waiter may wait for a slot (<c>agents.queueTimeoutSeconds</c>): after it, the run fails. 0, the default: a waiter stays queued.</summary>
-    private int QueueTimeoutSeconds() => Math.Max(0, Setting("agents.queueTimeoutSeconds", 0));
-
-    private static string QueueFull(Pool pool, int maxWaiters) => maxWaiters <= 0
-        ? $"The agent \"{pool.Key}\" takes no waiting runs (agents.queueMax is 0): run it when a slot is free, or use another agent."
-        : $"The agent \"{pool.Key}\" has no free slot and {maxWaiters} run(s) are already queued (the cap is agents.queueMax = {maxWaiters}). Run it again later, or use another agent.";
-
-    private static string QueueTimedOut(string poolKey, int seconds) =>
-        $"The agent \"{poolKey}\" had no free slot for {seconds} s (agents.queueTimeoutSeconds). Run it again later, or use another agent.";
-
-    private static string QueueTimedOutAny(int seconds) =>
-        $"No agent had a free instance for {seconds} s (agents.queueTimeoutSeconds). Run it again later.";
-
     /// <summary>
     /// A run that may go to several agents waits in none of their queues: the first with a free instance takes it (see
     /// <see cref="Pump"/>), so an agent that frees up first is not passed over because the run was queued behind another.
@@ -653,7 +643,6 @@ internal sealed class AgentScheduler : IAgentScheduler
         ct.ThrowIfCancellationRequested();
 
         Waiter waiter;
-        var maxWaiters = QueueMax();
         lock (_gate)
         {
             if (_stopped) throw new OperationCanceledException("The agent scheduler was stopped (plugin reload).");
@@ -670,14 +659,11 @@ internal sealed class AgentScheduler : IAgentScheduler
                 SchedulePublish();
                 return ValueTask.FromResult<IAgentSlot>(lease);
             }
-            if (_floating.Count >= maxWaiters)
-                throw new CallRefusedException(maxWaiters <= 0
-                    ? "Agents take no waiting runs (agents.queueMax is 0): run it when an instance is free."
-                    : $"No agent has a free instance and {maxWaiters} run(s) are already waiting for one (the cap is agents.queueMax = {maxWaiters}). Run it again later.") { Kind = "unavailable" };
             waiter = new Waiter { Request = Copy(request, eligible[0], eligible), Seq = ++_seq };
             var index = _floating.FindIndex(w => w.Request.Priority < request.Priority);
             if (index < 0) _floating.Add(waiter); else _floating.Insert(index, waiter);
             AttachWaiter(waiter, ct);
+            SignalWanted();
         }
         SchedulePublish();
         return new ValueTask<IAgentSlot>(waiter.Tcs.Task);
@@ -689,9 +675,6 @@ internal sealed class AgentScheduler : IAgentScheduler
         ct.ThrowIfCancellationRequested();
 
         Waiter waiter;
-        // A burst past the pool's capacity (an unbounded subagents array) used to park in the queue without limit or
-        // timeout; both limits are settings, and over either the run is refused with a clear error, not a silent hang.
-        var maxWaiters = QueueMax();
         lock (_gate)
         {
             if (_stopped) throw new OperationCanceledException("The agent scheduler was stopped (plugin reload).");
@@ -709,13 +692,14 @@ internal sealed class AgentScheduler : IAgentScheduler
                     return ValueTask.FromResult<IAgentSlot>(lease);
                 }
             }
-            if (pool.Waiters.Count >= maxWaiters)
-                throw new CallRefusedException(QueueFull(pool, maxWaiters)) { Kind = "unavailable" };
+            // A run waits until it gets a slot or is cancelled (its chat stopped, its parent cancelling it): the queue has
+            // no cap and no longest wait, and every waiting run is in the Work tab with its cancel button.
             waiter = new Waiter { Request = request, Seq = ++_seq };
             // priority desc, then FIFO
             var index = pool.Waiters.FindIndex(w => w.Request.Priority < request.Priority);
             if (index < 0) pool.Waiters.Add(waiter); else pool.Waiters.Insert(index, waiter);
             AttachWaiter(waiter, ct);
+            SignalWanted();
         }
         SchedulePublish();
         return new ValueTask<IAgentSlot>(waiter.Tcs.Task);
@@ -724,28 +708,6 @@ internal sealed class AgentScheduler : IAgentScheduler
     // Queue publication and cleanup attachment share the gate; no terminal path can race a late attachment.
     private void AttachWaiter(Waiter waiter, CancellationToken ct)
     {
-        var queueTimeout = QueueTimeoutSeconds();
-        if (queueTimeout is > 0)
-        {
-            // In line and still stuck (a run that never ends, a slot that never frees): fail the waiter instead of
-            // letting it wait forever.
-            waiter.WaitTimeout = new CancellationTokenSource();
-            var tcs = waiter.Tcs;
-            var w = waiter;
-            _ = Task.Delay(queueTimeout * QueueTimeoutUnit, waiter.WaitTimeout.Token).ContinueWith(_ =>
-            {
-                bool dropped;
-                lock (_gate) dropped = w.Floating ? _floating.Remove(w) : _pools.TryGetValue(w.Request.Key, out var p) && p.Waiters.Remove(w);
-                if (dropped)
-                {
-                    StopWaitTimeout(w);
-                    w.Registration.Unregister();
-                    tcs.TrySetException(new CallRefusedException(w.Floating ? QueueTimedOutAny(queueTimeout) : QueueTimedOut(w.Request.Key, queueTimeout)) { Kind = "unavailable" });
-                    SchedulePublish();
-                }
-                // No ExecuteSynchronously: this runs on the pool, so a Cancel from a path holding _gate cannot deadlock.
-            }, TaskScheduler.Default);
-        }
         if (ct.CanBeCanceled)
         {
             waiter.Registration = ct.Register(() => Cancel(waiter, ct));
@@ -766,7 +728,6 @@ internal sealed class AgentScheduler : IAgentScheduler
         if (removed)
         {
             waiter.Registration.Unregister();
-            StopWaitTimeout(waiter);
             waiter.Tcs.TrySetCanceled(ct);
             SchedulePublish();
         }
@@ -797,9 +758,16 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// <summary>
     /// Choose eligible work across pools by priority then arrival, skipping pools at their own cap. The work is the head of
     /// each pool's queue and the runs that wait for any of several agents: one of those goes to the first of its agents
-    /// that can take it, so whichever agent frees up first serves the oldest run it is eligible for.
+    /// that can take it, so whichever agent frees up first serves the oldest run it is eligible for. A critical run still
+    /// waiting afterwards signals the runs that could make room for it (<see cref="SignalWanted"/>).
     /// </summary>
     private void Pump()
+    {
+        Grant();
+        SignalWanted();
+    }
+
+    private void Grant()
     {
         while (true)
         {
@@ -822,7 +790,6 @@ internal sealed class AgentScheduler : IAgentScheduler
             if (lease is null) return;
             if (best.Floating) _floating.Remove(best); else bestPool.Waiters.Remove(best);
             best.Registration.Unregister(); // never Dispose under the lock: it would wait for a running callback
-            StopWaitTimeout(best);
             bestPool.Owners.Add(lease);
             if (!best.Tcs.TrySetResult(lease))
             {
@@ -832,19 +799,71 @@ internal sealed class AgentScheduler : IAgentScheduler
         }
     }
 
+    // ---------------------------------------------------------------- a critical run takes a slot
+
+    /// <summary>The waiting runs that take a slot from a pausable run below them (<see cref="RunPriority.Preempts"/>). Caller holds <see cref="_gate"/>.</summary>
+    private IEnumerable<Waiter> CriticalWaiters() =>
+        _pools.Values.SelectMany(p => p.Waiters).Concat(_floating).Where(w => RunPriority.Preempts(w.Request.Priority));
+
     /// <summary>
-    /// Stops a waiter's queue timeout. The delay's continuation holds the Waiter, which lives in this plugin's load
-    /// context, so it must not outlive the wait: disposing alone would leave the delay pending for the whole timeout
-    /// (minutes by default) and keep the context alive with it. Cancelling completes the delay at once; its
-    /// continuation runs on the pool, never inline, so calling this while holding <see cref="_gate"/> is safe.
+    /// The runs that could make room for <paramref name="w"/>: pausable runs below it on an agent it may go to that is
+    /// full, or, when what is full is the slots of the local model that agent runs on, on any agent on that model. Caller
+    /// holds <see cref="_gate"/>.
     /// </summary>
-    private static void StopWaitTimeout(Waiter w)
+    private IEnumerable<Lease> Victims(Waiter w)
     {
-        var cts = w.WaitTimeout;
-        if (cts is null) return;
-        w.WaitTimeout = null;
-        try { cts.Cancel(); } catch (ObjectDisposedException) { }
-        cts.Dispose();
+        foreach (var key in Candidates(w.Request))
+        {
+            if (!_pools.TryGetValue(key, out var pool) || !AvailabilityOf(pool).Available) continue;
+            IEnumerable<Lease> holders;
+            if (PoolBusy(pool) >= pool.Capacity) holders = pool.Owners;
+            else if (LocalModelOf(pool) is { } model && ModelSlots(model) is { } slots && BusyOn(model) >= slots)
+                holders = _pools.Values.SelectMany(p => p.Owners).Where(o => string.Equals(o.LocalModel, model, StringComparison.OrdinalIgnoreCase));
+            else continue;   // there is room: the next grant takes it
+            foreach (var lease in holders)
+                if (lease.Pausable && !lease.IsReleased && lease.Priority < w.Request.Priority && !RunPriority.Preempts(lease.Priority))
+                    yield return lease;
+        }
+    }
+
+    /// <summary>
+    /// Signals every run that could make room for a critical run still waiting (<see cref="IAgentSlot.Wanted"/>): the first of
+    /// them to reach a point where it can stop gives its slot up, and the others find no one waiting and go on. Caller
+    /// holds <see cref="_gate"/>.
+    /// </summary>
+    private void SignalWanted()
+    {
+        foreach (var w in CriticalWaiters())
+            foreach (var lease in Victims(w))
+                lease.Want();
+    }
+
+    /// <summary>
+    /// <see cref="IAgentSlot.GiveUpIfWanted"/>: releases <paramref name="lease"/> when it makes room for a critical run that
+    /// still waits, and grants that run the slot, all under the gate (a second run signalled for the same one then finds no
+    /// one waiting and keeps its slot); otherwise the lease gets a fresh token.
+    /// </summary>
+    internal bool GiveUp(Lease lease)
+    {
+        lock (_gate)
+        {
+            if (lease.IsReleased || _stopped) return false;
+            if (!CriticalWaiters().Any(w => Victims(w).Contains(lease)))
+            {
+                lease.Renew();
+                return false;
+            }
+            lease.MarkReleased();
+            lease.ReleasePhysical();
+            if (_pools.TryGetValue(lease.Key, out var pool) && pool.Owners.Remove(lease))
+            {
+                Pump();
+                if (!pool.Configured && pool.Owners.Count == 0 && pool.Waiters.Count == 0) _pools.Remove(pool.Key);
+            }
+        }
+        _ctx.Logger.LogInformation("{Agent} gave its slot on {Key} to a critical run", lease.AgentId, lease.Key);
+        SchedulePublish();
+        return true;
     }
 
     /// <summary>Fail waiters; active calls keep their host leases until their owners dispose them.</summary>
@@ -865,7 +884,6 @@ internal sealed class AgentScheduler : IAgentScheduler
         foreach (var w in waiters)
         {
             w.Registration.Unregister();
-            StopWaitTimeout(w);
             w.Tcs.TrySetException(new OperationCanceledException("The agent scheduler was stopped (plugin reload)."));
         }
     }

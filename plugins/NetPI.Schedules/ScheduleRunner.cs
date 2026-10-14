@@ -65,7 +65,12 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
             {
                 Title = Clip($"Scheduled: {name}", 80),
                 ProjectId = projectId,
-                Meta = new JsonObject { ["schedule"] = id },
+                Meta = new JsonObject
+                {
+                    ["schedule"] = id,
+                    // the chat was started for the user: it queues at the schedule's level (and may be paused for a critical run)
+                    [RunPriority.MetaKey] = RunPriority.Name(RunPriority.Parse(schedule["priority"]?.GetValue<string>()) ?? RunPriority.Normal),
+                },
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

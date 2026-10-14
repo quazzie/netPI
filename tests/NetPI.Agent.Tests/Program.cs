@@ -12,6 +12,7 @@ StreamReplayTests.Register(runner);
 SubagentTests.Register(runner);
 SubagentWorkspaceTests.Register(runner);
 SchedulerTests.Register(runner);
+PriorityTests.Register(runner);
 ResourceSchedulerTests.Register(runner);
 AgentReworkTests.Register(runner);
 ContextTests.Register(runner);

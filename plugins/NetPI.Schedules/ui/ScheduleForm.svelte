@@ -24,6 +24,7 @@
         tz: c.tz,
         projectId: schedule.projectId ?? '',
         agent: schedule.agent ?? '',
+        priority: schedule.priority ?? 'normal',
         enabled: schedule.enabled !== false,
       };
     }
@@ -37,6 +38,7 @@
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       projectId: ctx.app.activeProject?.id ?? '',
       agent: '',
+      priority: 'normal',
       enabled: true,
     };
   }
@@ -81,6 +83,7 @@
     };
     if (f.projectId) params.projectId = f.projectId;
     if (f.agent) params.agent = f.agent;
+    if (f.priority !== 'normal') params.priority = f.priority;
 
     busy = true;
     try {
@@ -90,6 +93,7 @@
         if (f.prompt !== (schedule.prompt ?? '')) p.prompt = f.prompt;
         if (f.projectId !== (schedule.projectId ?? '')) p.projectId = f.projectId;
         if (f.agent !== (schedule.agent ?? '')) p.agent = f.agent;
+        if (f.priority !== (schedule.priority ?? 'normal')) p.priority = f.priority;
         if (cadenceChanged(formToCadence(f), cadenceToForm(schedule.cadence))) p.cadence = formToCadence(f);
         // a cadence change alone would resume a paused schedule; `enabled` is what the user sees, so it wins
         await ctx.rpc('schedules.update', p);
@@ -190,6 +194,16 @@
         {/each}
       </select>
     {/if}
+  </label>
+
+  <label class="fld">
+    <span class="f-label">Priority</span>
+    <select class="np-input" bind:value={f.priority} title="The order its chats queue in while their agent is busy">
+      <option value="low">Low: after other queued work</option>
+      <option value="normal">Normal</option>
+      <option value="high">High: first in the queue</option>
+      <option value="critical">Critical: takes an instance from lower work</option>
+    </select>
   </label>
 
   {#if editing}

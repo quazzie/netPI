@@ -866,7 +866,11 @@ named agent's model, otherwise the catalog default. Turns, delegation and manual
 (a bare model id is normalized first); an explicit child effort wins. An unavailable selected model is reported,
 including during manual compaction, rather than silently replaced by the global default.
 
-Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }, …] }`.
+`priority` (`low`, `normal`, `high`): the order the subagent queues in while its agent has no free instance (SETTINGS.md
+"Priority"); default the caller's own, never above it (`critical` is refused: a subagent does not take instances from
+other runs, and a critical chat's subagents run at `high`). Work that can wait goes at `low`.
+
+Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority? }, …] }`.
 `taskFile` reads a long task from a file (path relative to the working directory; appended to `task` if both are given), so a batch stays short enough for a model to write in one call. Arguments that end inside an open object or array are reported as cut off, with that advice.
 Every entry is checked first, and every workspace the batch needs is provisioned before the first child starts (a named one
 resolved, the worktree of every worker that writes created, by the same rule a single spawn follows); a bad one starts none of
@@ -884,7 +888,7 @@ tool through subagents, and `agent_choices` belongs to another plugin.
 ### `agent_wait`
 
 `{ ids?, all? }`: waits for the given subagents (ids or names) and returns as soon as one has finished, the others keep running (wait again for them; a freed instance can start the next piece meanwhile); `all: true` returns only when every one has A wait ends after an hour at the latest. The caller's
-instance is free for them meanwhile and it resumes with priority. Without ids: all of the caller's running subagents, plus
+instance is free for them meanwhile and it queues for one again first among the runs of its own priority. Without ids: all of the caller's running subagents, plus
 finished ones whose `agent-result` notice is still queued unseen (the report comes back here and the queued notice is
 dropped, so it arrives once). A new user message interrupts the wait. `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
 
@@ -955,14 +959,14 @@ is one validation path, and it adds the model-facing guards the RPCs leave to th
 
 ### `schedules` (summary arg `action`)
 
-`{ action: list | get | history | add | update | run, id?, prompt?, name?, cadence?, projectId?, agent?, enabled?, limit? }`
+`{ action: list | get | history | add | update | run, id?, prompt?, name?, cadence?, projectId?, agent?, priority?, enabled?, limit? }`
 
 Synonyms: `create`/`new` → add, `pause`/`resume` → update (with `enabled` forced), `edit`/`change` → update, `show` → get.
 With no action: an id plus a change means update, an id alone means get, a prompt plus a cadence means add, otherwise list.
 
 - `list`: every schedule (or `projectId`'s), one plain-text line each — `id · name · when · enabled|proposed|paused|finished · next <local time> · last <status: reason> <ago>` —
   with `now` in the machine's local time and offset (a `once` time is computed from it). Capped at 100 lines.
-- `get`: one schedule plus its full prompt, project and agent.
+- `get`: one schedule plus its full prompt, project, agent and priority (`priority`: `low`, `normal`, `high` or `critical`, its chats' place in the queue; a change of it is a change of what runs, so an agent's waits for the user like any other).
 - `history`: a schedule's runs, newest first (`limit`, default 20): time · status · reason · chat.
 - `add`: `prompt` + `cadence` (`{ kind: once, at }` a future ISO 8601 time with its offset, or `Z` — one without is refused ·
   `{ kind: every, minutes }` · `{ kind: daily, time, tz? }` an IANA zone, default the machine's). The project defaults to
@@ -1009,7 +1013,7 @@ narrow view of that door.
 `{ action: list | get | history | test | pause, id?, payload?, limit? }`
 
 - `list` / `get` / `history`: the webhooks (one plain-text line each: id · name · state · agent · last delivery), one with its prompt template,
-  which commands it has (Before / After), its timeout and fuse, and the deliveries (started / skipped and why / failed). The token never appears.
+  its priority, which commands it has (Before / After), its timeout and fuse, and the deliveries (started / skipped and why / failed). The token never appears.
 - `test`: `id` + `payload` (JSON) — what that payload would do (start a chat, open or join an incident, be appended to the chat already handling it, or be skipped and why), with the title and prompt (or follow-up message) filled in. Starts and stores nothing.
 - `pause`: `enabled: false`. Everything else — creating, changing, enabling, re-keying, deleting — is refused with “up to the user, in the Webhooks
   tab”: a webhook is a door in from the network, its token must not pass through a chat, and a chat a webhook started must not be able to widen

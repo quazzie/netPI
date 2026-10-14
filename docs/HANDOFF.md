@@ -18,6 +18,21 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 ## Current state (2026-09-28)
 
+### Run priorities: critical chats take an instance (2026-10-14)
+
+A chat's runs queue for an instance by its `meta.priority` (`RunPriority` in `src/NetPI.Contracts/AgentSlots.cs`: low,
+normal, high, critical), set by whatever started the chat for the user: a webhook's or schedule's `priority` field, or
+`agent_spawn`'s `priority` (default the parent's, never above it nor above high). The user's own chats carry none: normal,
+and never paused. A **critical** run that finds no free instance signals the pausable runs below it on the agents it may
+use (or on their local model) through `IAgentSlot.Wanted`; the first to reach a stopping point hands its instance over
+with `GiveUpIfWanted` (atomic in the scheduler, so one critical run never pauses two): at its next model call, or once
+its tool batch has run for a minute (`AgentRuntime.LendSlotAfter`), the tool going on and its result reaching the model
+when the run has an instance again. A run that gave its instance away queues again at its level +50 (first in its level).
+The queue cap and time limit (`agents.queueMax`, `agents.queueTimeoutSeconds`) are gone: a queued run waits until it
+runs or is cancelled. The Work tab says "queued" for runs waiting for an instance and "waiting on N subagents" for chats
+waiting on their subagents (also in the session list and the top bar), with priority chips. Tests: `priority:` and
+`scheduler:` in the Agent suite. Contract change: a publish stages everything for the next start.
+
 ### Reloads never disturb a run, and waits for the user survive them (2026-10-14)
 
 Every plugin reload goes through one gate in the host (`IReloadGate`, `src/NetPI.Host/Plugins/ReloadGate.cs`): each agent

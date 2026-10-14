@@ -571,9 +571,10 @@ Per-tab narrow layouts:
   `sub` mark and `for <parent chat>`), then the activity and elapsed time; a free one says `free`. A process shows its
   command + elapsed/exit, then pid · bg · size · cwd … time ago.
 - **Schedules:** a row reads a status dot · name · right-aligned next-run label (`in 3 h`, `tomorrow 07:30`, `paused`,
-  `proposed`, `finished`, `overdue`); line 2 is one meta line (when · project · agent · last-run chip). The hover actions are
+  `proposed`, `finished`, `overdue`); line 2 is one meta line (when · project · agent · priority when not normal · last-run chip). The hover actions are
   run now, pause/resume, edit, history and a two-step delete; expanding a row shows the prompt, the ids, **Open last
-  chat** and the run history. The add/edit form replaces the list (no modal), stacked fields. A schedule an agent added
+  chat** and the run history. The add/edit form replaces the list (no modal), stacked fields; its **Priority** (low,
+  normal, high, critical) is its chats' place in the queue (SETTINGS.md "Priority"). A schedule an agent added
   or changed (`proposedBy`) is **proposed**: a warning dot, "proposed by an agent" leading its meta line, and the resume
   button (titled to say so) is the approval that lets it run.
 - **Ideas:** a full-width title, a 2-line summary, then one meta line: status pill · project badge · priority · tags ·
@@ -600,7 +601,7 @@ session-scoped to the chat a run started.
 **Webhooks** (`netpi.webhooks`, left, order 26 — after Schedules). The receiver's state (off / listening on a URL / why it could not start), then each
 webhook: pause/resume, edit (an inline form), a two-step new token and delete, and a detail with the URL to POST to, the prompt, a “try a payload” box
 (Preview shows the filled-in prompt and every verdict and starts nothing; Send delivers it for real) its before / after commands, the open conversations of the webhook (open, or collecting with the seconds left, or waiting to start and why; each with a link to its chat) and, from the clock button, the delivery history in a dialog (held / started / appended / duplicate / skipped / failed). A new or re-keyed token is
-shown once, with a ready `curl` line. The form is deliberately small: name, URL name, prompt, project, profile, agent, a program with its arguments (one per line) for the Before and the After command, a timeout in minutes and the fuse. Filtering, grouping and wording belong to the Before command. Reads `webhooks.*` plus `projects.list`, `profiles.list` and `agents.list` (absent ones degrade their own feature); refreshes on
+shown once, with a ready `curl` line. The form is deliberately small: name, URL name, prompt, project, profile, agent, priority (low, normal, high, critical: its chats' place in the queue, and a critical one takes an instance from lower work started for the user — SETTINGS.md "Priority"; the row's meta line names it when it is not normal), a program with its arguments (one per line) for the Before and the After command, a timeout in minutes and the fuse. Filtering, grouping and wording belong to the Before command. Reads `webhooks.*` plus `projects.list`, `profiles.list` and `agents.list` (absent ones degrade their own feature); refreshes on
 `webhooks.changed`, `settings.changed` and a 30 s poll.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,

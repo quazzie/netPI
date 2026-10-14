@@ -184,6 +184,22 @@ public static class SchedulesTests
             }
         });
 
+        r.Add("schedules: priority is low, normal, high or critical, stamped on the chats it starts; an agent changing it makes a proposal", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var s = await env.Add(new { kind = "every", minutes = 30 }, extra: new { priority = "High" });
+            var id = S(s["id"])!;
+            Check.Equal("high", S(s["priority"]), "checked and normalized");
+            await Check.ThrowsAsync<RpcException>(() => env.Add(new { kind = "every", minutes = 30 }, extra: new { priority = "soon" }));
+            env.Time.Advance(TimeSpan.FromMinutes(30));
+            Check.Equal(1, await env.Tick());
+            var chat = env.Ctx.SessionsFake.GetSession(env.Runtime.Sent.Single().SessionId)!;
+            Check.Equal("high", S(chat.Meta?[RunPriority.MetaKey]));
+            var proposed = (await env.Ctx.RpcFake.CallAsync("schedules.update", new { id, priority = "critical", proposedBy = "session:ses_1" }))!;
+            Check.Equal("critical", S(proposed["priority"]));
+            Check.Equal(false, proposed["enabled"]!.GetValue<bool>(), "an agent's change of priority waits for the user");
+        });
+
         r.Add("schedules: a due run starts a fresh chat on the project through the runtime, once, and the next run moves on", async () =>
         {
             var env = await new Env().StartAsync();
@@ -201,6 +217,7 @@ public static class SchedulesTests
             Check.Equal(env.Project.Id, chat.ProjectId);
             Check.Equal("Scheduled: Digest", chat.Title);
             Check.Equal(id, S(chat.Meta?["schedule"]), "the chat says which schedule started it");
+            Check.Equal("normal", S(chat.Meta?[RunPriority.MetaKey]), "and carries its level: a chat started for the user");
             Check.Equal("Summarise yesterday's commits", input.Text);
             Check.Equal("system", input.Source);
 

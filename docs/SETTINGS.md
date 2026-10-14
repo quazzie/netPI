@@ -208,8 +208,6 @@ see the CLI's calls under their NetPI names, so a goal set earlier still counts 
 | `agent.maxToolResultChars` | `20000` | a longer tool result is saved to a file: the agent gets its start and end and the path, to read the rest in parts or grep it (`read` pages, the bash and `ssh` `run` tails stay under it) |
 | `agent.parallelReadOnlyTools` | `true` | run several read-only calls of one turn concurrently |
 | `agents.maxDepth` | `3` | subagent nesting depth (deeper agents get no orchestration tools) |
-| `agents.queueMax` | `20` | the longest an agent's queue of waiting runs grows: beyond it a new run is refused with a clear error instead of waiting (0: no waiting at all) |
-| `agents.queueTimeoutSeconds` | `0` | a run that has waited this long for a free slot fails with a clear error (0, the default: no time limit, a waiting run stays queued until a slot is free) |
 | `models.localSlots` | `1` | concurrent runs of one local model without a catalog `concurrency` (Settings → Models) |
 | `models.cloudSlots` | `4` | concurrent runs across one cloud provider's models (Settings → Models) |
 
@@ -283,12 +281,22 @@ where a chat runs, the profile who it is.
   that chat is eligible for every agent that can take work, whatever its model, and the chat's model follows the agent
   it gets. Each run decides again (a run keeps its agent while it lasts). `any` is not an agent id.
 - **Waiting:** a run waits for a free instance; with more than one agent it can use it waits **unassigned**, in nobody's
-  queue, and `agents.unassigned` / the Work tab list it. With one agent it waits in that agent's queue. Queues are capped
-  (`agents.queueMax`) and can be timed (`agents.queueTimeoutSeconds`, off by default): a burst past the cap is refused at
-  once, and a run waits as long as it takes unless a time limit is set, after which it fails with a clear error. Queued
-  calls across agents and unassigned runs are admitted by priority, then arrival order; a pool at its own instance limit
-  does not hold up another eligible pool. A parent resuming after a wait retains its higher priority. FIFO applies within
-  a priority class; active calls are not preempted.
+  queue, and `agents.unassigned` / the Work tab list it. With one agent it waits in that agent's queue. A queued run
+  stays queued until it gets an instance or is cancelled (its chat stopped, its parent cancelling it, the x in the Work
+  tab): the queue has no cap and no time limit (`agents.queueMax` and `agents.queueTimeoutSeconds` are gone; left in a
+  settings file they do nothing). Queued calls across agents and unassigned runs are admitted by priority, then arrival
+  order; a pool at its own instance limit does not hold up another eligible pool.
+- **Priority:** a chat's runs queue at its `meta.priority` — `low`, `normal`, `high` or `critical` (-100, 0, 100, 200) —
+  which whatever started the chat for the user sets: a webhook's and a schedule's `priority`, `agent_spawn`'s `priority`
+  (a subagent's default is its parent's, never above it nor above `high`). A chat the user started has none: normal.
+  A run that queues again after giving its instance away (a wait for its subagents, a pause) gets +50: first among its
+  own level, still behind the levels above. **Critical** goes further: when no instance it could use is free, it takes
+  one from a run below it that may be paused — a run of a chat started for the user (one with a `meta.priority`), never
+  the user's own chat, never another critical one. That run gives its instance up at its next model call (active
+  inference is never cut off), or as soon as a tool call of it has run for a minute: the tool keeps running, and its
+  result reaches the model as usual once the run has an instance again. A paused run shows "paused for a critical run".
+  On a local model the paused run will likely read its context in again when it goes on (its cache on the instance is
+  gone).
 - **With no agents at all** (a settings file without any) every model call gets a slot per model:
   positive catalog concurrency, otherwise `models.localSlots` (1, clamped to at least 1), per local model;
   `models.cloudSlots` (4) per

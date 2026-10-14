@@ -140,6 +140,22 @@ public static class WebhooksTests
             Check.Equal(false, proposed["enabled"]!.GetValue<bool>(), "an agent renaming the URL pauses it");
         });
 
+        r.Add("webhooks: priority is low, normal, high or critical; it is stamped on the chats, and an agent raising it pauses the webhook", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var added = await env.Add(extra: new { priority = "Critical" });
+            var id = S(added["id"])!;
+            Check.Equal("critical", S(added["priority"]), "checked and normalized");
+            await Check.ThrowsAsync<RpcException>(() => env.Add(extra: new { priority = "urgent" }));
+            await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("webhooks.update", new { id, priority = "asap" }));
+            Check.Equal(202, (await env.Post(id, S(added["token"])!, Alert())).Status);
+            Check.Equal("critical", env.Ctx.SessionsFake.Sessions.Single().Meta?[RunPriority.MetaKey]?.GetValue<string>());
+            var lowered = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id, priority = "low" }))!;
+            Check.Equal("low", S(lowered["priority"]));
+            var raised = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id, priority = "critical", proposedBy = "session:ses_1" }))!;
+            Check.Equal(false, raised["enabled"]!.GetValue<bool>(), "an agent changing its priority pauses it as a proposal");
+        });
+
         r.Add("webhooks: an ungrouped payload becomes a chat at once, on the project, sent as the system", async () =>
         {
             var env = await new Env().StartAsync();
@@ -151,6 +167,8 @@ public static class WebhooksTests
             Check.Equal(env.Project.Id, session.ProjectId);
             Check.Equal("Webhook: nuc / Kernel errors is CRIT", session.Title);
             Check.Equal(S(added["id"]), session.Meta?["webhook"]?.GetValue<string>());
+            Check.Equal("normal", S(added["priority"]), "a webhook's chats run at normal unless it says otherwise");
+            Check.Equal("normal", session.Meta?[RunPriority.MetaKey]?.GetValue<string>(), "the chat carries its level: one started for the user");
             var sent = env.Runtime.Sent.Single();
             Check.Equal("system", sent.Input.Source);
             Check.Equal("Alert: Kernel errors on nuc is CRIT. disk \"/\" is 91 %", sent.Input.Text);

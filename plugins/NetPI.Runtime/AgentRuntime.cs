@@ -16,7 +16,9 @@ internal sealed class AgentRuntime : IAgentRuntime
 {
     public const int MaxFinishedInMemory = 100;
     public const int ResultNoticeChars = 8000;
-    public const int YieldPriority = 100;
+
+    /// <summary>How long a run's tools have run before its slot may go to a critical run that wants it (tests shorten it).</summary>
+    internal TimeSpan LendSlotAfter { get; set; } = TimeSpan.FromMinutes(1);
 
     private readonly AgentStore _store;
     private readonly SubagentPlanner _planner;
@@ -955,12 +957,25 @@ internal sealed class AgentRuntime : IAgentRuntime
     }
 
     /// <summary>
+    /// The priority a run of the chat queues at (<see cref="RunPriority"/>, plus <see cref="RunPriority.Resume"/> when it
+    /// queues again after giving its slot away), and whether it may give its slot to a critical run.
+    /// </summary>
+    private (int Priority, bool Pausable) PriorityOf(AgentState s, bool resume)
+    {
+        var session = Ctx.Sessions.GetSession(s.Info.SessionId);
+        return (RunPriority.Of(session) + (resume ? RunPriority.Resume : 0), RunPriority.Stamped(session));
+    }
+
+    /// <summary>
     /// Acquire a slot for <paramref name="model"/> on the session's agent (status Queued while waiting). Returns null without
     /// a scheduler. Survives a scheduler reload (its waiters are cancelled → re-resolve and retry). Throws
-    /// <see cref="CallRefusedException"/> when a limit stops it or the agent can't take work.
+    /// <see cref="CallRefusedException"/> when a limit stops it or the agent can't take work. <paramref name="resume"/>: the
+    /// run gave its slot away (a wait for its subagents, a critical run) and queues first among its own level;
+    /// <paramref name="paused"/>: it gave it to a critical run, which its activity says while it waits.
     /// </summary>
-    internal async Task<IAgentSlot?> AcquireSlotAsync(AgentState s, RunState run, ModelInfo model, int priority, CancellationToken ct)
+    internal async Task<IAgentSlot?> AcquireSlotAsync(AgentState s, RunState run, ModelInfo model, bool resume, CancellationToken ct, bool paused = false)
     {
+        var (priority, pausable) = PriorityOf(s, resume);
         while (true)
         {
             ct.ThrowIfCancellationRequested();
@@ -1003,6 +1018,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 Label = s.Info.Name,
                 ExecutorGeneration = Generation,
                 Priority = priority,
+                Pausable = pausable,
                 Provider = model.Provider,
             };
             if (scheduler.TryAcquire(request, out var lease) && lease is not null)
@@ -1014,7 +1030,8 @@ internal sealed class AgentRuntime : IAgentRuntime
                 run.SlotDecided.TrySetResult();
                 return lease;
             }
-            SetStatus(s, AgentStatus.Queued, several ? "waiting for a free agent" : agents.Count == 0 ? $"waiting for a slot on {pool}" : $"waiting for agent {pool}");
+            SetStatus(s, AgentStatus.Queued, paused ? "paused for a critical run"
+                : several ? "waiting for a free agent" : agents.Count == 0 ? $"waiting for a slot on {pool}" : $"waiting for agent {pool}");
             run.SlotDecided.TrySetResult();
             try
             {
@@ -1038,8 +1055,9 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// the chat's model becomes that agent's model. The slot comes first because the models differ per agent. Survives a
     /// scheduler reload like <see cref="AcquireSlotAsync"/>.
     /// </summary>
-    internal async Task<(IAgentSlot Slot, string ModelRef)> AcquireAnySlotAsync(AgentState s, int priority, CancellationToken ct)
+    internal async Task<(IAgentSlot Slot, string ModelRef)> AcquireAnySlotAsync(AgentState s, CancellationToken ct)
     {
+        var (priority, pausable) = PriorityOf(s, resume: false);
         while (true)
         {
             ct.ThrowIfCancellationRequested();
@@ -1058,6 +1076,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 Label = s.Info.Name,
                 ExecutorGeneration = Generation,
                 Priority = priority,
+                Pausable = pausable,
             };
             if (!(scheduler.TryAcquire(request, out var lease) && lease is not null))
             {
@@ -1096,6 +1115,17 @@ internal sealed class AgentRuntime : IAgentRuntime
         public void Dispose() { if (Interlocked.Exchange(ref _released, 1) == 0) held.Dispose(); }
     }
 
+    /// <summary>
+    /// The level a subagent's runs queue at (<see cref="RunPriority"/>): the one it asked for, else its parent's; never above
+    /// its parent's nor above high, so a subagent never takes a slot from another run.
+    /// </summary>
+    internal static string ChildPriority(int? requested, SessionInfo? parentSession)
+    {
+        var parent = RunPriority.Of(parentSession);
+        var level = Math.Min(Math.Min(requested ?? parent, parent), RunPriority.High);
+        return RunPriority.Name(Math.Max(level, RunPriority.Low));
+    }
+
     public async Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default)
     {
         // like SendAsync: not on a version being retired
@@ -1129,6 +1159,8 @@ internal sealed class AgentRuntime : IAgentRuntime
         // Everything the child needs is decided before its session exists (SubagentPlanner): a refused model, workspace or
         // tool list must not leave a runnable child behind, and the plan itself needs no running agent.
         var plan = await _planner.PlanAsync(request, parentInfo, parentSession, id, name, ct).ConfigureAwait(false);
+        var meta = plan.Meta;
+        meta[RunPriority.MetaKey] = ChildPriority(request.Priority, parentSession);
         var session = Ctx.Sessions.CreateSession(new SessionInfo
         {
             Title = name,
@@ -1137,7 +1169,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             ProjectId = request.ProjectId ?? parentSession?.ProjectId,
             Model = plan.ModelRef,
             Reasoning = plan.Reasoning,
-            Meta = plan.Meta,
+            Meta = meta,
         });
 
         var state = new AgentState(new AgentInfo
@@ -1333,7 +1365,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 {
                     try
                     {
-                        run.Lease = await AcquireSlotAsync(caller, run, model, YieldPriority, ct).ConfigureAwait(false);
+                        run.Lease = await AcquireSlotAsync(caller, run, model, resume: true, ct).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {

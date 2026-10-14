@@ -206,6 +206,11 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         ["taskFile"] = Prop("string", "A file holding the task (appended to task, if any): for a long brief, write it to a file first so the call stays short"),
         ["workspace"] = Prop("string", "An existing workspace id or name; \"new\" (or isolated: true) gives the subagent its own worktree and branch"),
         ["isolated"] = Prop("boolean", "Give the subagent its own worktree and branch, so its writes cannot reach yours"),
+        ["priority"] = new JsonObject
+        {
+            ["type"] = "string", ["enum"] = new JsonArray("low", "normal", "high"),
+            ["description"] = "Where it queues while its agent has no free instance (default: your own priority; never above it)",
+        },
     };
 
     internal override string Name => "agent_spawn";
@@ -218,14 +223,15 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         Description = "Start subagents on tasks (one: task; several at once: subagents) on the agents from agent_choices; returns at once, the reports come with agent wait or wake you.",
         Help =
             "Each subagent runs on one of the agents from agent_choices, in its own session, and ends with a final report. " +
-            "One: pass task (and agent, name, …). Several at once: pass subagents, each { task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }; " +
+            "One: pass task (and agent, name, …). Several at once: pass subagents, each { task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority? }; " +
             "they start together and all are checked first. agent goes inside each entry, not beside subagents.\n" +
             "The call returns at once with each subagent's state (running, or queued while its agent has no free instance). " +
             "Each report arrives later on its own and wakes you if you are idle; agent, action wait returns at the next one (your instance is free meanwhile).\n" +
             "task: self-contained (the subagent does not see your conversation): goal, paths, constraints, what to put in the report. " +
             "A long task goes in a file: pass taskFile (relative to your working directory). name: short, e.g. \"tests\". " +
             "agent: an id from agent_choices (required when agents are set up), or \"any\" for the first free one. model: only when no agents are set up (\"provider/model\"). " +
-            "tools: by name, may include tools you lack; default: yours. instructions: extra system-prompt text.\n" +
+            "tools: by name, may include tools you lack; default: yours. instructions: extra system-prompt text. " +
+            "priority: low, normal or high, the order it queues in while its agent is busy (default: yours, and never above yours); low for background work that can wait.\n" +
             "workspace: a subagent that only reads shares yours; one that writes gets its own git worktree and branch (merge it yourself afterwards; " +
             "it comes back in the report). isolated: true or workspace: \"new\" forces one; pass the same workspace to subagents that must see each other's files.",
         Category = "agents",
@@ -295,6 +301,12 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             task = string.IsNullOrWhiteSpace(task) ? fileText : task + "\n\n" + fileText;
         }
         if (string.IsNullOrWhiteSpace(task)) return (null, "Missing 'task' (or 'taskFile'): describe the subagent's task completely.");
+        int? priority = null;
+        if (itemArgs.Str("priority") is { Length: > 0 } level)
+        {
+            priority = RunPriority.Parse(level);
+            if (priority is null || priority > RunPriority.High) return (null, $"priority \"{level}\": a subagent's priority is low, normal or high.");
+        }
         var (workspace, isolated) = WorkspaceArgs(itemArgs);
 
         // the agents the user set up are the menu: one of them is required (an active one); without any, a model ref or your model
@@ -349,6 +361,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             Tools = tools,
             Instructions = itemArgs.Str("instructions", "systemPrompt"),
             ParentAgentId = context.AgentId,
+            Priority = priority,
         };
         if (workspace is not null || isolated) spawn.Features.Set(new SpawnWorkspace(workspace, isolated));
         return (spawn, null);

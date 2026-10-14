@@ -16,10 +16,11 @@ public static class SchedulerTests
         t.Add("agents: more instances wake waiters; instances follow the catalog", CapacityIncrease);
         t.Add("scheduler: agents.changed is debounced, and only sent on changes", Debounce);
         t.Add("scheduler: a price or a daily cap set on an agent is announced (agents.changed)", PriceIsAnnounced);
-        t.Add("scheduler: the wait queue has a cap and a longest wait (agents.queueMax/queueTimeoutSeconds)", QueueCapAndTimeout);
-        t.Add("scheduler: by default a waiting run stays queued (no queue timeout)", QueueHasNoTimeoutByDefault);
+        t.Add("scheduler: the queue has no cap and no longest wait: a run waits until it gets a slot or is cancelled", QueueHasNoLimits);
+        t.Add("scheduler: a critical waiter signals the pausable runs below it; the first to give up hands it the slot, the others keep theirs", CriticalTakesASlot);
+        t.Add("scheduler: a critical run takes a slot on its local model from a run on another agent on that model", CriticalOnSharedModel);
         t.Add("scheduler: a run waits for any of several agents and the first to free up takes it", LateBinding);
-        t.Add("scheduler: unassigned runs queue with the others by priority and arrival, and are cancelled, timed out and refused like them", LateBindingOrderAndEnds);
+        t.Add("scheduler: unassigned runs queue with the others by priority and arrival, and are cancelled and refused like them", LateBindingOrderAndEnds);
         t.Add("scheduler: any agent: every agent that can take work, a free one first, the last one as the tie-break", AnyAgentCandidates);
         t.Add("agents: a chat's run goes to the first agent on its model that frees up, not the one it was queued behind", RunsGoToTheFirstFreeAgent);
         t.Add("agents: a chat on \"any\" runs on whichever agent is free and its model follows (agents.use any)", ChatsOnAnyAgent);
@@ -29,6 +30,10 @@ public static class SchedulerTests
     }
 
     private static AgentSlotRequest Req(string pool, string agent, int priority = 0) => new() { Key = pool, AgentId = agent, Priority = priority, Label = agent };
+
+    /// <summary>A run of a chat started for the user (a webhook's, a subagent's): it may give its slot to a critical one.</summary>
+    private static AgentSlotRequest Pausable(string pool, string agent, int priority = 0) =>
+        new() { Key = pool, AgentId = agent, Priority = priority, Label = agent, Pausable = true };
 
     /// <summary>A run that may go to any of the pools: it waits in none of their queues.</summary>
     private static AgentSlotRequest Any(string agent, int priority, params string[] pools) =>
@@ -395,43 +400,113 @@ public static class SchedulerTests
         Check.Equal(2.0, (double)a["dailyLimitUsd"]!, "the announced daily cap");
     }
 
-    private static async Task QueueCapAndTimeout()
+    private static async Task QueueHasNoLimits()
     {
         await using var h = await TestHost.StartAsync(x =>
         {
             x.Settings.SetQuiet("agents.solo", J("""{ "model": "fake/solo" }"""));
+            // the settings that used to cap the queue and time a wait out are gone: left in a settings file they do nothing
             x.Settings.SetQuiet("agents.queueMax", JsonValue.Create(1));
-            x.Settings.SetQuiet("agents.queueTimeoutSeconds", JsonValue.Create(2));
+            x.Settings.SetQuiet("agents.queueTimeoutSeconds", JsonValue.Create(1));
         }, plugins: TestHost.Plugins.Agents);
         var s = h.Scheduler!;
         var listed = (JsonArray)(await h.Rpc.CallAsync("agents.list"))!;
-        Check.Equal("solo", string.Join("|", listed.Select(p => (string?)p!["key"])), "the queue settings are not agents");
+        Check.Equal("solo", string.Join("|", listed.Select(p => (string?)p!["key"])), "the old queue settings are not agents");
 
         var a = await s.AcquireAsync(Req("solo", "A"), CancellationToken.None);
-        var w1 = s.AcquireAsync(Req("solo", "W1"), CancellationToken.None).AsTask();
-        Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "one waiter in line");
+        // more than the old cap of 20, and each waits past the old longest wait
+        var waiters = Enumerable.Range(0, 25).Select(i => s.AcquireAsync(Req("solo", "W" + i), CancellationToken.None).AsTask()).ToList();
+        using var cts = new CancellationTokenSource();
+        var cancelled = s.AcquireAsync(Req("solo", "C"), cts.Token).AsTask();
+        await Task.Delay(1300);
+        Check.False(waiters.Any(w => w.IsCompleted) || cancelled.IsCompleted, "no run is refused or failed for waiting");
+        Check.Equal(26, s.Snapshot().Single(p => p.Key == "solo").Queued, "every one is in line");
 
-        // beyond the cap: refused at once (the callers handle it and tell the user), not parked
-        try { await s.AcquireAsync(Req("solo", "W2"), CancellationToken.None); throw new AssertException("expected CallRefusedException"); }
-        catch (CallRefusedException ex) { Check.Contains(ex.Message, "agents.queueMax"); }
-        Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "the refused one is not queued");
+        // cancelled (its chat stopped, its parent cancelling it): the one way out of the queue besides getting a slot
+        cts.Cancel();
+        try { await cancelled.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected cancellation"); }
+        catch (OperationCanceledException) { }
+        Check.Equal(25, s.Snapshot().Single(p => p.Key == "solo").Queued);
 
-        // a free slot goes to the waiter in line: the cap does not disturb the normal flow
         a.Dispose();
-        var lw1 = await w1.WaitAsync(TimeSpan.FromSeconds(3));
-        Check.Equal("W1", lw1.AgentId);
+        for (var i = 0; i < waiters.Count; i++)
+        {
+            var got = await waiters[i].WaitAsync(TimeSpan.FromSeconds(3));
+            Check.Equal("W" + i, got.AgentId, "in arrival order");
+            got.Dispose();
+        }
+        Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
+    }
 
-        // a waiter that waits longer than queueTimeoutSeconds fails with a clear error instead of waiting forever (each
-        // of its "seconds" a quarter of one here: the wait is what is tested, not its length in real seconds)
-        lw1.Dispose();
-        ((AgentScheduler)s).QueueTimeoutUnit = TimeSpan.FromMilliseconds(250);
-        var a2 = await s.AcquireAsync(Req("solo", "A2"), CancellationToken.None);
-        var w3 = s.AcquireAsync(Req("solo", "W3"), CancellationToken.None).AsTask();
-        Check.Equal("queued", s.Snapshot().Single(p => p.Key == "solo").Status);   // in line the moment AcquireAsync returns
-        try { await w3.WaitAsync(TimeSpan.FromSeconds(10)); throw new AssertException("expected CallRefusedException"); }
-        catch (CallRefusedException ex) { Check.Contains(ex.Message, "agents.queueTimeoutSeconds"); Check.Contains(ex.Message, "2 s"); }
-        Check.True(s.Snapshot().Single(p => p.Key == "solo").Waiters.Count == 0, "the timed-out waiter is gone");
-        a2.Dispose();
+    private static async Task CriticalTakesASlot()
+    {
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 2 }""")),
+            plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        var mine = await s.AcquireAsync(Req("a", "MINE"), CancellationToken.None);   // the user's own chat
+        var bg = await s.AcquireAsync(Pausable("a", "BG"), CancellationToken.None);   // a webhook's, at normal
+
+        // a high run goes to the front of the queue, and that is all it does
+        var high = s.AcquireAsync(Pausable("a", "HIGH", RunPriority.High), CancellationToken.None).AsTask();
+        Check.False(bg.Wanted.IsCancellationRequested || mine.Wanted.IsCancellationRequested, "a high run signals no one");
+
+        var crit = s.AcquireAsync(Req("a", "CRIT", RunPriority.Critical), CancellationToken.None).AsTask();
+        Check.Equal("CRIT,HIGH", string.Join(",", s.Snapshot().Single(p => p.Key == "a").Waiters.Select(w => w.AgentId)), "critical first");
+        Check.True(bg.Wanted.IsCancellationRequested, "the pausable run below it is signalled");
+        Check.False(mine.Wanted.IsCancellationRequested, "the user's own chat is not");
+        Check.False(mine.GiveUpIfWanted(), "and keeps its slot even when it asks");
+        Check.False(mine.IsReleased);
+        Check.True(bg.GiveUpIfWanted(), "the signalled run gives its slot up");
+        Check.True(bg.IsReleased);
+        var lcrit = await crit.WaitAsync(TimeSpan.FromSeconds(2));
+        Check.Equal("CRIT", lcrit.AgentId, "and the critical run has it");
+        Check.False(high.IsCompleted, "not the next in line");
+        bg.Dispose();   // idempotent: frees nothing more
+        Check.Equal(2, s.Snapshot().Single(p => p.Key == "a").Busy);
+
+        // two pausable runs below the next critical one: both are signalled, the first to give up serves it, and the
+        // second finds no one waiting, keeps its slot and gets a fresh signal
+        lcrit.Dispose();
+        var lhigh = await high.WaitAsync(TimeSpan.FromSeconds(2));
+        mine.Dispose();
+        var low = await s.AcquireAsync(Pausable("a", "LOW", RunPriority.Low), CancellationToken.None);
+        var crit2 = s.AcquireAsync(Pausable("a", "CRIT2", RunPriority.Critical), CancellationToken.None).AsTask();
+        Check.True(lhigh.Wanted.IsCancellationRequested && low.Wanted.IsCancellationRequested, "every pausable run below it is signalled");
+        Check.True(lhigh.GiveUpIfWanted());
+        var lcrit2 = await crit2.WaitAsync(TimeSpan.FromSeconds(2));
+        Check.False(low.GiveUpIfWanted(), "no one waits any more: it keeps its slot");
+        Check.False(low.IsReleased);
+        Check.False(low.Wanted.IsCancellationRequested, "and waits for a fresh signal");
+
+        // a critical run is never paused for another one
+        var crit3 = s.AcquireAsync(Req("a", "CRIT3", RunPriority.Critical), CancellationToken.None).AsTask();
+        Check.False(lcrit2.Wanted.IsCancellationRequested, "a critical run is not signalled");
+        Check.True(low.Wanted.IsCancellationRequested, "the low one is");
+        Check.True(low.GiveUpIfWanted());
+        (await crit3.WaitAsync(TimeSpan.FromSeconds(2))).Dispose();
+        lcrit2.Dispose();
+        Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
+    }
+
+    private static async Task CriticalOnSharedModel()
+    {
+        // two agents on one local model with two slots: the model is full while agent x still has a free instance
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.x", J("""{ "model": "fake/local", "instances": 2 }"""));
+            x.Settings.SetQuiet("agents.y", J("""{ "model": "fake/local", "instances": 2 }"""));
+        }, plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        var x1 = await s.AcquireAsync(Pausable("x", "X1"), CancellationToken.None);
+        var y1 = await s.AcquireAsync(Pausable("y", "Y1"), CancellationToken.None);
+        var crit = s.AcquireAsync(Req("x", "CRIT", RunPriority.Critical), CancellationToken.None).AsTask();
+        Check.True(x1.Wanted.IsCancellationRequested && y1.Wanted.IsCancellationRequested, "both runs on the model can make room");
+        Check.True(y1.GiveUpIfWanted(), "a run on the other agent gives its slot up");
+        var lcrit = await crit.WaitAsync(TimeSpan.FromSeconds(2));
+        Check.Equal("x", lcrit.Key);
+        Check.False(x1.GiveUpIfWanted(), "the other keeps its own");
+        lcrit.Dispose();
+        x1.Dispose();
         Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
     }
 
@@ -475,7 +550,6 @@ public static class SchedulerTests
         {
             x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }"""));
             x.Settings.SetQuiet("agents.b", J("""{ "model": "fake/local", "instances": 1 }"""));
-            x.Settings.SetQuiet("agents.queueTimeoutSeconds", JsonValue.Create(3));
         }, plugins: TestHost.Plugins.Agents);
         var s = h.Scheduler!;
         var a1 = await s.AcquireAsync(Req("a", "A1"), CancellationToken.None);
@@ -522,16 +596,6 @@ public static class SchedulerTests
         try { await c.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected cancellation"); }
         catch (OperationCanceledException) { }
         Check.Equal(0, s.Unassigned().Count, "a cancelled run leaves the list");
-
-        // timed out like a queued run (agents.queueTimeoutSeconds = 3; each of its "seconds" a tenth of one here, and
-        // only for this run: the waiters before and after it must not time out while the test looks at them)
-        var scheduler = (AgentScheduler)s;
-        scheduler.QueueTimeoutUnit = TimeSpan.FromMilliseconds(100);
-        var t = s.AcquireAsync(Any("T", 0, "a", "b"), CancellationToken.None).AsTask();
-        scheduler.QueueTimeoutUnit = TimeSpan.FromSeconds(1);
-        try { await t.WaitAsync(TimeSpan.FromSeconds(6)); throw new AssertException("expected CallRefusedException"); }
-        catch (CallRefusedException ex) { Check.Contains(ex.Message, "No agent had a free instance for 3 s"); }
-        Check.Equal(0, s.Unassigned().Count);
 
         // refused when none of its agents can take work any more
         var r = s.AcquireAsync(Any("R", 0, "a", "b"), CancellationToken.None).AsTask();
@@ -674,25 +738,6 @@ public static class SchedulerTests
         await h.Bus.DrainAsync();
         await h.SendAsync(any.Id, "nobody");
         Check.Contains((await h.IdleAsync(any.Id)).Error, "No agent can take work now");
-    }
-
-    private static async Task QueueHasNoTimeoutByDefault()
-    {
-        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.solo", J("""{ "model": "fake/solo" }""")),
-            plugins: TestHost.Plugins.Agents);
-        var s = h.Scheduler!;
-        // A "second" of agents.queueTimeoutSeconds lasts a millisecond here: 300 ms of waiting outlasts any default
-        // timeout up to five minutes, where 3 real seconds only showed there was none of 1 or 2 s.
-        ((AgentScheduler)s).QueueTimeoutUnit = TimeSpan.FromMilliseconds(1);
-        var a = await s.AcquireAsync(Req("solo", "A"), CancellationToken.None);
-        var w = s.AcquireAsync(Req("solo", "W"), CancellationToken.None).AsTask();
-        await Task.Delay(300);
-        Check.False(w.IsCompleted, "a waiter is not failed just for waiting");
-        Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "it is still in line");
-        a.Dispose();
-        var got = await w.WaitAsync(TimeSpan.FromSeconds(3));
-        Check.Equal("W", got.AgentId);
-        got.Dispose();
     }
 
     private static async Task ReloadDuringWait()

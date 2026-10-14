@@ -88,6 +88,11 @@ public sealed class SpawnRequest
     public string? Instructions { get; init; }
     /// <summary>When the subagent finishes and nobody is waiting on it, notify the parent (waking it if idle).</summary>
     public bool NotifyParent { get; init; } = true;
+    /// <summary>
+    /// The level its runs queue at (low -100, normal 0, high 100; NetPI.Contracts' <c>RunPriority</c>). Null: its parent's.
+    /// Never above its parent's, nor above high: a subagent does not take slots from other runs.
+    /// </summary>
+    public int? Priority { get; init; }
 }
 
 public sealed class QueuedInput

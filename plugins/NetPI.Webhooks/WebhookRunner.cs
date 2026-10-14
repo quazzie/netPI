@@ -339,7 +339,12 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
             {
                 Title = Template.Clip("Webhook: " + title.ReplaceLineEndings(" "), 80),
                 ProjectId = hook["projectId"]?.GetValue<string>(),
-                Meta = new JsonObject { ["webhook"] = id, ["webhookName"] = hook["name"]?.GetValue<string>() ?? id, ["incident"] = batch.Key },
+                Meta = new JsonObject
+                {
+                    ["webhook"] = id, ["webhookName"] = hook["name"]?.GetValue<string>() ?? id, ["incident"] = batch.Key,
+                    // the chat was started for the user: it queues at the webhook's level, and a critical one takes an instance
+                    [RunPriority.MetaKey] = RunPriority.Name(RunPriority.Parse(hook["priority"]?.GetValue<string>()) ?? RunPriority.Normal),
+                },
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

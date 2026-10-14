@@ -72,7 +72,7 @@
   }
 
   const meta = $derived(
-    [state.key === 'proposed' ? 'proposed by an agent' : null, s.when, projectName, agentLabel, state.key === 'proposed' ? null : lastSummary]
+    [state.key === 'proposed' ? 'proposed by an agent' : null, s.when, projectName, agentLabel, s.priority && s.priority !== 'normal' ? `${s.priority} priority` : null, state.key === 'proposed' ? null : lastSummary]
       .filter(Boolean)
       .join(' · '),
   );

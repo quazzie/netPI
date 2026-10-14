@@ -3,7 +3,9 @@ namespace NetPI;
 /// <summary>
 /// The agents' slots: every agent (<c>agents.&lt;id&gt;</c>, a model with instances) has as many slots as instances, and
 /// model calls without an agent get slots per model. A run holds a slot for its whole run; when all are taken, runs
-/// queue. A waiting orchestrator can yield its slot to its workers and resume later with only their results.
+/// queue, by priority (<see cref="RunPriority"/>) and then arrival, until they get one or are cancelled. A waiting
+/// orchestrator can yield its slot to its workers and resume later with only their results, and a critical run can take
+/// the slot of a run below it that may be paused (<see cref="IAgentSlot.Wanted"/>).
 /// </summary>
 public interface IAgentScheduler
 {
@@ -32,7 +34,7 @@ public interface IAgentScheduler
     IReadOnlyList<SlotHolder> Unassigned() => [];
 
     IReadOnlyList<AgentSlots> Snapshot();
-    /// <summary>Wait for a slot (FIFO within priority). Throws <see cref="CallRefusedException"/> when the run is refused (the provider is over a limit, or the agent is not available).</summary>
+    /// <summary>Wait for a slot (FIFO within priority), for as long as it takes. Throws <see cref="CallRefusedException"/> when the run is refused (the provider is over a limit, or the agent is not available).</summary>
     ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct);
     bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease);
     IReadOnlyList<ModelResourceSlots> Resources() => [];
@@ -51,8 +53,13 @@ public sealed class AgentSlotRequest
     public required string AgentId { get; init; }
     public string? SessionId { get; init; }
     public string? Label { get; init; }
-    /// <summary>Higher runs first. Agents resuming after a yield use a high priority.</summary>
+    /// <summary>Higher runs first: the run's level (<see cref="RunPriority"/>), plus <see cref="RunPriority.Resume"/> when it queues again after giving its slot away.</summary>
     public int Priority { get; init; }
+    /// <summary>
+    /// The run may give its slot to a critical one (<see cref="RunPriority.Preempts"/>): a run of a chat that was started
+    /// for the user (<see cref="RunPriority.Stamped"/>), never one of the user's own chats.
+    /// </summary>
+    public bool Pausable { get; init; }
     public string? Provider { get; init; }
     public string? ExecutorGeneration { get; init; }
 }
@@ -64,6 +71,17 @@ public interface IAgentSlot : IDisposable
     string AgentId { get; }
     DateTimeOffset AcquiredAt { get; }
     bool IsReleased { get; }
+    /// <summary>
+    /// Cancelled when a critical run waits for a slot this one could give up (a <see cref="AgentSlotRequest.Pausable"/> run
+    /// below it): the run gives it up at its next model call, or while a tool call of it has run for a minute. A fresh
+    /// token once <see cref="GiveUpIfWanted"/> found that no one needs it any more.
+    /// </summary>
+    CancellationToken Wanted => CancellationToken.None;
+    /// <summary>
+    /// Releases the slot to the critical run that waits for it, if one still does, in one step with the scheduler (two
+    /// runs never both give theirs up for one): true when it was released, and the run must queue for a slot again.
+    /// </summary>
+    bool GiveUpIfWanted() => false;
 }
 
 public sealed class SlotHolder
@@ -122,6 +140,54 @@ public sealed class AgentSlots
     public double SpentTodayUsd { get; set; }
     /// <summary>The agent's own daily cap (<c>agents.&lt;id&gt;.budget.limitUsd</c>).</summary>
     public double? DailyLimitUsd { get; set; }
+}
+
+/// <summary>
+/// How urgent a chat's runs are: they queue for a slot by it, and a critical run takes the slot of a run below it that may
+/// be paused. A chat's level is <c>meta.priority</c> (<c>low</c>, <c>normal</c>, <c>high</c> or <c>critical</c>), set by
+/// whatever started the chat for the user: a webhook, a schedule, a subagent's spawn. That mark is also what makes its runs
+/// pausable: a chat the user started has none, runs at normal and is never paused.
+/// </summary>
+public static class RunPriority
+{
+    public const string MetaKey = "priority";
+    public const int Low = -100;
+    public const int Normal = 0;
+    public const int High = 100;
+    public const int Critical = 200;
+    /// <summary>
+    /// Added when a run queues again after giving its slot away (a wait for its subagents, a pause for a critical run):
+    /// first among the runs of its own level, still behind the levels above it.
+    /// </summary>
+    public const int Resume = 50;
+    /// <summary>The levels, lowest first.</summary>
+    public static readonly IReadOnlyList<string> Names = ["low", "normal", "high", "critical"];
+
+    /// <summary>The level a name stands for; null for anything else.</summary>
+    public static int? Parse(string? name) => name?.Trim().ToLowerInvariant() switch
+    {
+        "low" => Low,
+        "normal" => Normal,
+        "high" => High,
+        "critical" => Critical,
+        _ => null,
+    };
+
+    /// <summary>The level a priority is in (a resuming run's included).</summary>
+    public static string Name(int priority) =>
+        priority >= Critical ? "critical" : priority >= High ? "high" : priority >= Normal ? "normal" : "low";
+
+    /// <summary>The level of a chat's runs: its <c>meta.priority</c>, normal without one.</summary>
+    public static int Of(SessionInfo? session) => Parse(Text(session)) ?? Normal;
+
+    /// <summary>The chat was started for the user and carries a level: only such a chat's runs are paused for a critical one.</summary>
+    public static bool Stamped(SessionInfo? session) => Parse(Text(session)) is not null;
+
+    /// <summary>A run at this priority takes the slot of a pausable run below it when none is free.</summary>
+    public static bool Preempts(int priority) => priority >= Critical;
+
+    private static string? Text(SessionInfo? session) =>
+        session?.Meta?[MetaKey] is System.Text.Json.Nodes.JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 }
 
 /// <summary>

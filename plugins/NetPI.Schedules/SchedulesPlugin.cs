@@ -120,7 +120,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
 
     private void Register(IPluginContext ctx, ScheduleStore store, ScheduleRunner runner, PendingProposals proposals)
     {
-        const string Doc = "Schedule: { id, name, prompt, projectId?, agent?, cadence: { kind: once|every|daily, at? | minutes? | time?, tz? }, enabled, nextRunAt?, lastRunAt?, lastStatus? (ran|skipped|failed|missed), lastReason?, lastSessionId?, finishedAt? }";
+        const string Doc = "Schedule: { id, name, prompt, projectId?, agent?, priority, cadence: { kind: once|every|daily, at? | minutes? | time?, tz? }, enabled, nextRunAt?, lastRunAt?, lastStatus? (ran|skipped|failed|missed), lastReason?, lastSessionId?, finishedAt? }";
 
         ctx.Rpc.Register(new RpcMethod("schedules.list", "The schedules, oldest first: { projectId? } → Schedule[]. " + Doc, ReadOnly: true,
             [RpcParam.Opt("projectId", RpcParamType.String, "only this project's")]),
@@ -133,11 +133,11 @@ public sealed class SchedulesPlugin : INetPiPlugin
             [RpcParam.Opt("id", RpcParamType.String, "one schedule's; all when omitted"), RpcParam.Opt("limit", RpcParamType.Integer)]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.History(req.Str("id"), Math.Clamp(req.Int("limit") ?? 50, 1, 500)).Select(d => (JsonNode)d)])));
 
-        ctx.Rpc.Register(new RpcMethod("schedules.add", "Add a schedule: { prompt, cadence, name?, projectId?, agent? (an agent key or \"any\"), enabled? (true), proposedBy? } → Schedule. The prompt starts a fresh chat on the project at each run. proposedBy (the schedules tool sets it: who proposed it) stores it paused, as a proposal the user enables in the Schedules tab",
+        ctx.Rpc.Register(new RpcMethod("schedules.add", "Add a schedule: { prompt, cadence, name?, projectId?, agent? (an agent key or \"any\"), priority? (low | normal (the default) | high | critical: the order its chats queue in while their agent is busy), enabled? (true), proposedBy? } → Schedule. The prompt starts a fresh chat on the project at each run. proposedBy (the schedules tool sets it: who proposed it) stores it paused, as a proposal the user enables in the Schedules tab",
             Params:
             [
                 RpcParam.Req("prompt"), RpcParam.Req("cadence", RpcParamType.Object), RpcParam.Opt("name"), RpcParam.Opt("projectId"),
-                RpcParam.Opt("agent"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
+                RpcParam.Opt("agent"), RpcParam.Opt("priority", RpcParamType.String, "low | normal | high | critical"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
             async (req, ct) =>
             {
@@ -157,6 +157,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
                     ["prompt"] = prompt,
                     ["projectId"] = projectId,
                     ["agent"] = agent,
+                    ["priority"] = Priority(req.Str("priority") ?? "normal"),
                     ["cadence"] = cadence.ToJson(),
                     ["enabled"] = proposedBy is null && (req.Bool("enabled") ?? true),
                     ["createdAt"] = ScheduleStore.Iso(now),
@@ -169,11 +170,11 @@ public sealed class SchedulesPlugin : INetPiPlugin
                 return Shown(doc);
             });
 
-        ctx.Rpc.Register(new RpcMethod("schedules.update", "Change a schedule: { id, prompt?, cadence?, name?, projectId? (\"\" clears), agent? (\"\" clears), enabled?, proposedBy? } → Schedule. enabled: false pauses it, true resumes it from now (a finished once needs a new cadence) and approves a proposed one. proposedBy (the schedules tool sets it): a change of what runs (prompt, cadence, project, agent) pauses the schedule as a proposal for the user, and it cannot enable one",
+        ctx.Rpc.Register(new RpcMethod("schedules.update", "Change a schedule: { id, prompt?, cadence?, name?, projectId? (\"\" clears), agent? (\"\" clears), priority?, enabled?, proposedBy? } → Schedule. enabled: false pauses it, true resumes it from now (a finished once needs a new cadence) and approves a proposed one. proposedBy (the schedules tool sets it): a change of what runs (prompt, cadence, project, agent, priority) pauses the schedule as a proposal for the user, and it cannot enable one",
             Params:
             [
                 RpcParam.Req("id"), RpcParam.Opt("prompt"), RpcParam.Opt("cadence", RpcParamType.Object), RpcParam.Opt("name"),
-                RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
+                RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("priority", RpcParamType.String, "low | normal | high | critical"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
             async (req, ct) =>
             {
@@ -185,6 +186,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
                 // have the same due time claimed again.
                 var project = req.Str("projectId") is { } p ? (p.Length == 0 ? null : await ProjectAsync(ctx, p).ConfigureAwait(false)) : null;
                 var agent = req.Str("agent") is { } a ? (a.Length == 0 ? null : await AgentAsync(ctx, a, ct).ConfigureAwait(false)) : null;
+                var priority = req.Str("priority") is { } pr ? Priority(pr) : null;
                 var updated = store.Change(id, doc =>
                 {
                     var now = _time.GetUtcNow();
@@ -197,6 +199,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
                     if (req.Str("name") is { } name && name.Trim().Length > 0) doc["name"] = name.Trim();
                     if (req.Str("projectId") is not null) doc["projectId"] = project;
                     if (req.Str("agent") is not null) doc["agent"] = agent;
+                    if (priority is not null) doc["priority"] = priority;
                     var cadenceChanged = req.Prop("cadence") is not null;
                     var cadence = cadenceChanged ? Cadence.Parse(NetPiJson.ToNode(req.Prop("cadence")), MinMinutes(ctx)) : ScheduleStore.CadenceOf(doc);
                     if (cadenceChanged)
@@ -211,7 +214,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
                     if (Proposer(req) is { } proposer)
                     {
                         if (req.Bool("enabled") == true) throw new RpcException("bad_request", "an agent cannot enable a schedule: the user does, in the Schedules tab");
-                        if (req.Str("prompt") is not null || cadenceChanged || req.Str("projectId") is not null || req.Str("agent") is not null)
+                        if (req.Str("prompt") is not null || cadenceChanged || req.Str("projectId") is not null || req.Str("agent") is not null || priority is not null)
                         {
                             enabled = false;
                             doc["proposedBy"] = proposer;
@@ -262,6 +265,11 @@ public sealed class SchedulesPlugin : INetPiPlugin
         store.Get(id) ?? throw new RpcException("not_found", $"Schedule {id} not found");
 
     /// <summary>A schedule as the RPCs answer it: the stored document plus its cadence in words.</summary>
+    /// <summary>The level its chats run at (<see cref="RunPriority"/>), checked.</summary>
+    private static string Priority(string value) => RunPriority.Parse(value) is { } level
+        ? RunPriority.Name(level)
+        : throw new RpcException("bad_request", $"priority must be one of {string.Join(", ", RunPriority.Names)}");
+
     private static JsonObject Shown(JsonObject doc)
     {
         var shown = (JsonObject)doc.DeepClone();

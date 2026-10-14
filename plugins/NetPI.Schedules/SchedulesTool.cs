@@ -84,6 +84,7 @@ internal sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyC
                 },
                 ["projectId"] = new JsonObject { ["type"] = "string", ["description"] = "add/update/list: a project id or name; add defaults to this chat's project; \"\" = none" },
                 ["agent"] = new JsonObject { ["type"] = "string", ["description"] = "add/update: an agent key, \"any\", or \"\" to clear" },
+                ["priority"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("low", "normal", "high", "critical"), ["description"] = "add/update: the order its chats queue in while their agent is busy (default normal)" },
                 ["enabled"] = new JsonObject { ["type"] = "boolean", ["description"] = "update: false pauses (enabling is the user's, in the Schedules tab)" },
                 ["limit"] = new JsonObject { ["type"] = "integer", ["description"] = "history: how many runs (default 20)" },
             },
@@ -141,7 +142,7 @@ internal sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyC
                 var now = DateTimeOffset.Now;
                 var prompt = s["prompt"]?.GetValue<string>() ?? "";
                 var agent = s["agent"]?.GetValue<string>() ?? "default";
-                var text = string.Join("\n", [Line(s, now), "prompt: " + prompt, "project: " + project, "agent: " + agent]);
+                var text = string.Join("\n", [Line(s, now), "prompt: " + prompt, "project: " + project, "agent: " + agent, "priority: " + (s["priority"]?.GetValue<string>() ?? "normal")]);
                 return ToolResult.Ok(text, new { kind = "schedule", schedule = s });
             }
             case "history":
@@ -338,7 +339,7 @@ internal sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyC
         }
         var hasId = a.Str("id") is not null;
         var hasChange = a.Str("prompt") is not null || a.Has("cadence") || a.Str("name") is not null
-            || a.Bool("enabled") is not null || a.Str("projectId") is not null || a.Str("agent") is not null;
+            || a.Bool("enabled") is not null || a.Str("projectId") is not null || a.Str("agent") is not null || a.Str("priority") is not null;
         if (hasId && hasChange) return "update";
         if (hasId) return "get";
         if (a.Str("prompt") is not null && a.Has("cadence")) return "add";
@@ -354,6 +355,7 @@ internal sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyC
         var project = a.Str("projectId") ?? projectIdDefault;
         if (project is not null) p["projectId"] = project;
         if (a.Str("agent") is { } agent) p["agent"] = agent;
+        if (a.Str("priority") is { } priority) p["priority"] = priority;
         if (forcedEnabled is { } f) p["enabled"] = f;
         else if (a.Bool("enabled") is { } e) p["enabled"] = e;
     }

@@ -91,8 +91,16 @@ internal sealed class RunState
     public Task? Task { get; set; }
     /// <summary>Completes when the run has its slot or is waiting for one (status Running or Queued is then true), or has ended.</summary>
     public TaskCompletionSource SlotDecided { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    /// <summary>The slot held by this run (null without a scheduler, or while yielded).</summary>
-    public IAgentSlot? Lease { get; set; }
+    private IAgentSlot? _lease;
+    /// <summary>The slot held by this run (null without a scheduler, while yielded, or once given to a critical run).</summary>
+    public IAgentSlot? Lease { get => Volatile.Read(ref _lease); set => Volatile.Write(ref _lease, value); }
+    /// <summary>Clears <see cref="Lease"/> if it still is <paramref name="lease"/> (a wait may have swapped it meanwhile).</summary>
+    public bool ClearLease(IAgentSlot lease) => ReferenceEquals(Interlocked.CompareExchange(ref _lease, null, lease), lease);
+    /// <summary>
+    /// The run gave its slot to a critical run while its tools ran (<c>AgentRunner</c>): the next model call queues for one
+    /// again, first among its own level, and its activity says why.
+    /// </summary>
+    public bool SlotLent { get; set; }
     /// <summary>The model the current lease was acquired for (to re-acquire after a yield).</summary>
     public ModelInfo? Model { get; set; }
     /// <summary>User abort (don't auto-start queued input afterwards).</summary>
