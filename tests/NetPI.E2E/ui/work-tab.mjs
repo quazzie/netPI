@@ -114,12 +114,15 @@ await run('work-tab', async ({ page, socket }) => {
     const e1 = await elapsed();
     check('work: a running elapsed time ticks', e0.length > 0 && e0.join('|') !== e1.join('|'), `${e0.join(' ')} → ${e1.join(' ')}`);
 
-    // an agent whose model is not loaded is listed, says why, and has a switch like the others
+    // an agent whose model is not loaded is listed, says why, and has a switch like the others (the state chip went in
+    // d7afbc1: the row is dimmed, its second line says why, and the switch is the on/off)
     const gemma = page.locator(`.work .pool[data-agent="${G}"]`);
-    check('work: an agent whose model is not loaded is listed as such', (await gemma.locator('.st').innerText()) === 'not loaded' && /isn't loaded/.test(await gemma.locator('.second').innerText()), await gemma.innerText());
-    await gemma.locator('input.np-switch').click();
-    await until('the agent off', async () => (await gemma.locator('.st').innerText()) === 'off', 5000).catch(() => {});
-    check('work: the switch takes an agent off (agents.setEnabled)', (await rpc('settings.get')).settings.agents?.[G]?.disabled === true && (await gemma.locator('.st').innerText()) === 'off');
+    const sw = gemma.locator('input.np-switch');
+    check('work: an agent whose model is not loaded is listed as such',
+      (await gemma.evaluate((el) => el.classList.contains('inactive'))) && /isn't loaded/.test(await gemma.locator('.second').innerText()), await gemma.innerText());
+    await sw.click();
+    await until('the agent off', async () => !(await sw.isChecked()), 5000).catch(() => {});
+    check('work: the switch takes an agent off (agents.setEnabled)', (await rpc('settings.get')).settings.agents?.[G]?.disabled === true && !(await sw.isChecked()));
     await gemma.locator('input.np-switch').click();
     await until('the agent on', async () => !(await rpc('settings.get')).settings.agents?.[G]?.disabled, 5000).catch(() => {});
     check('work: and back on', !(await rpc('settings.get')).settings.agents?.[G]?.disabled);
@@ -195,7 +198,8 @@ await run('work-tab', async ({ page, socket }) => {
     const g2 = await geometry();
     check('work: an instance that ended turns free in place, as tall as a busy one, and nothing moves',
       indexRowAt >= 0 && JSON.stringify(g0) === JSON.stringify(g2) && (await rowNames())[indexRowAt] === 'free', JSON.stringify([await rowNames(), g0, g2]));
-    check('work: the summary and the agent say what is free', /1 working/.test(await summary()) && /1 free/.test(await summary()) && (await pool.locator('.st').innerText()) === '1 free', `${await summary()} | ${await pool.locator('.st').innerText()}`);
+    check('work: the summary and the agent say what is free', /1 working/.test(await summary()) && /1 free/.test(await summary()) && (await pool.locator('.slot.free').count()) === 1,
+      `${await summary()} | ${await pool.locator('.slot.free').count()} free row(s)`);
     await shot(page, 'ui-work-03-free');
     await gates.release(GB);
     await until('the chat to finish', async () => ['idle', 'completed'].includes(await status(refactor)), 30_000).catch(() => {});

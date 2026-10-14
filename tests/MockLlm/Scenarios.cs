@@ -382,7 +382,7 @@ public sealed partial class ScenarioEngine
     {
         if (step == 0)
             return new Plan { Text = "Starting the dev server in the background." }
-                .Call("bash", Obj(("command", $"for i in $(seq 1 {tag.PInt("lines", 900)}); do echo \"dev server: request $i\"; sleep {(tag.PInt("ms", 250) / 1000.0).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}; done")));
+                .Call("bash", Obj(("command", $"for i in $(seq 1 {tag.PInt("lines", 900)}); do echo \"dev server: request $i\"; sleep {(tag.PInt("ms", 250) / 1000.0).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}; done"), ("background", true)));
         return Final("The dev server runs in the background. BGPROC-STARTED");
     }
 
