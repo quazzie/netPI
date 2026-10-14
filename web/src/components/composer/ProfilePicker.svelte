@@ -15,11 +15,17 @@
   let btn = $state();
   let profiles = $state([]);
 
+  // Every settings.changed and plugins.changed loads the list again. A load that fails keeps the list it had: emptying it
+  // hid the button and unmounted a picker the person had open. The picker goes when the Profiles plugin does (its
+  // methods leave rpc.list), and of loads that overlap only the newest answer counts.
+  let loads = 0;
   async function load() {
+    const n = ++loads;
     try {
-      profiles = (await rpc('profiles.list'))?.profiles ?? [];
+      const list = (await rpc('profiles.list'))?.profiles ?? [];
+      if (n === loads) profiles = list;
     } catch {
-      profiles = [];
+      /* the list it had stays */
     }
   }
   $effect(() => {
@@ -44,14 +50,14 @@
   }
 </script>
 
-{#if profiles.length && session.kind !== 'subagent'}
+{#if profiles.length && hasRpc('profiles.list') && session.kind !== 'subagent'}
   <button class="pick" disabled={!hasRpc('profiles.apply')} class:none={!current} bind:this={btn} onclick={() => (open = !open)} title="Profile: {currentName}" aria-label="Profile">
     <Icon name="user" size={13} />
     <span class="np-ellipsis">{currentName}</span>
   </button>
   {#if open}
     <Popover anchor={btn} placement="top-start" width={270} onclose={() => (open = false)}>
-      <div class="list profile-pop">
+      <div class="list profile-pop" data-testid="profile-picker">
         <div class="title">Profile</div>
         <div class="help np-dim">
           {#if started}
@@ -63,7 +69,7 @@
           {/if}
         </div>
         {#each profiles as p (p.id)}
-          <button class="opt" class:current={current === p.id} title={p.prompt ?? ''} onclick={() => choose(p.id)}>
+          <button class="opt" data-testid="profile-option" class:current={current === p.id} title={p.prompt ?? ''} onclick={() => choose(p.id)}>
             <span class="np-ellipsis">{p.name}</span>{#if current === p.id}<Icon name="check" size={13} />{/if}
           </button>
         {/each}
