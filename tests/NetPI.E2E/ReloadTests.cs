@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace NetPI.E2E;
 
-/// <summary>Hot reload while the server runs: file-triggered, RPC-triggered, and reloading the agent runtime mid-run.</summary>
+/// <summary>Hot reload while the server runs: file-triggered, RPC-triggered, and a reload of the agent runtime asked for mid-run (it waits for the run).</summary>
 public static class ReloadTests
 {
     private static async Task<JsonElement> Plugin(Env env, string id) =>
@@ -66,20 +66,26 @@ public static class ReloadTests
             Check.True(leaks.Count == 0, "all old load contexts collected, leaking: " + string.Join(", ", leaks));
         }, 150);
 
-        r.Add("reload.runtime-midrun", "hot reload: reloading the agent runtime mid-run ends the run cleanly; the session continues afterwards", async () =>
+        r.Add("reload.runtime-midrun", "hot reload: a reload of the agent runtime asked for mid-run waits for the run, which finishes normally; the reload follows", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
             var mark = env.Client.Mark();
-            await env.Rpc("agent.send", new { sessionId = sid, text = "slow [s:slow ms=6000]" });
+            var before = (await Plugin(env, "netpi.runtime")).L("loadCount");
+            var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "slow [s:slow ms=4000]" });
             await env.Client.WaitFor(mark, e => e.Type == "stream.delta" && e.Sid == sid, "streaming", 20_000);
             Check.True((await env.Rpc("plugins.reload", new { id = "netpi.runtime" }, 60_000)).GetBoolean());
+            var deferred = await env.Client.WaitFor(mark, e => e.Type == "plugins.reloaded" && e.D.S("kind") == "deferred", "the reload was deferred", 10_000);
+            Check.Equal("busy", deferred.D.S("reason"), "deferred for the active run");
+            Check.Equal(before, (await Plugin(env, "netpi.runtime")).L("loadCount"), "not reloaded under the run");
+            var done = await env.WaitIdle(sid, mark, agent.L("runs"), 30_000);
+            var finished = await env.Result(sid, mark, done);
+            Check.Contains(finished.FinalText, "SLOW-DONE", "the run finished normally");
+            Check.False(finished.Role("notice").Any(), "no error notice: " + string.Join(" | ", finished.Role("notice").Select(RunResult.Text)));
+            await env.Client.WaitFor(mark, e => e.Type == "plugins.reloaded" && e.D.S("kind") == "reload"
+                && e.D.Arr("ids").Any(i => i.GetString() == "netpi.runtime"), "the reload applied after the run", 30_000);
+            Check.Equal(before + 1, (await Plugin(env, "netpi.runtime")).L("loadCount"));
             Check.Equal("running", (await Plugin(env, "netpi.runtime")).S("state"));
-            var page = await env.Rpc("sessions.messages", new { id = sid, limit = 50 });
-            var msgs = page.Arr("messages").ToList();
-            Check.Equal("aborted", msgs.Last(m => m.S("role") == "assistant").S("stopReason"), "partial answer kept as aborted");
-            var after = await env.Rpc("agent.get", new { sessionId = sid });
-            Check.True(after.ValueKind == JsonValueKind.Null || after.S("status") is "idle" or "failed", "agent not running after reload: " + after.GetRawText());
             var run = await env.Run(sid, "again [s:echo]");
             Check.Contains(run.FinalText, "ECHO-DONE");
             var unloaded = await env.Client.WaitFor(mark, e => e.Type == "plugins.unloaded" && e.D.S("id") == "netpi.runtime", "agent plugin unloaded", 30_000);

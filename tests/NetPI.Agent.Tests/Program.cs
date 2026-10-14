@@ -17,6 +17,7 @@ AgentReworkTests.Register(runner);
 ContextTests.Register(runner);
 PersistenceTests.Register(runner);
 UnloadTests.Register(runner);
+ReloadGateTests.Register(runner);
 GoalTests.Register(runner);
 BudgetTests.Register(runner);
 ReservationTests.Register(runner);

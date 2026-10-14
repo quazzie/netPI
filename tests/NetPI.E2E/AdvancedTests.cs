@@ -225,7 +225,7 @@ public static class AdvancedTests
             Check.Equal("cancelled", (await Children(env, parentId)).Single(k => k.S("name") == "worker-2").S("status"));
         }, 60);
 
-        r.Add("reload.provider-midstream", "provider reload mid-stream: the running call finishes, the next call uses the new provider instance", async () =>
+        r.Add("reload.provider-midstream", "provider reload mid-stream: deferred until the run ends (the reload gate), the call finishes, the next call uses the new provider instance", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -235,7 +235,7 @@ public static class AdvancedTests
             Check.True((await env.Rpc("plugins.reload", new { id = "netpi.providers.aiproxy" }, 60_000)).GetBoolean());
             var done = await env.WaitIdle(sid, mark, agent.L("runs"), 30_000);
             var run = await env.Result(sid, mark, done);
-            // The in-flight stream keeps running on the old instance (its response is already open); the next call
+            // The reload waits for the run (the reload gate), so the stream finishes on the old instance; the next call
             // uses the new one. Either way the user sees no error.
             Check.False(run.Role("notice").Any(), "no error notice: " + string.Join(" | ", run.Role("notice").Select(RunResult.Text)));
             Check.Contains(run.FinalText, "SLOW-DONE");

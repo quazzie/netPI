@@ -98,6 +98,12 @@ internal sealed class RunState
     /// same queue would fail the same way: see <c>AgentRuntime.EndRunAsync</c>.
     /// </summary>
     public bool Delivered { get; set; }
+    /// <summary>
+    /// This run's hold on the host's reload gate (<c>IReloadGate</c>): no plugin is reloaded while a run lives - a reload
+    /// of this plugin would end it, one of another plugin could take a tool away from it. Released when the run has ended
+    /// (<c>AgentRuntime.EndRunAsync</c>, after the run it hands over to, if any, took its own).
+    /// </summary>
+    public IDisposable? ReloadHold { get; set; }
 }
 
 internal static class AgentInfoExtensions
