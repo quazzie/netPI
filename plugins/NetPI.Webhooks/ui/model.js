@@ -12,8 +12,8 @@ export function rowState(h) {
       return { key: 'started', tone: 'ok', label: 'last delivery started a chat' };
     case 'appended':
       return { key: 'appended', tone: 'ok', label: 'last delivery was added to the chat that handles its conversation' };
-    case 'held':
-      return { key: 'held', tone: 'ok', label: h.lastReason ? `last delivery: ${h.lastReason}` : 'last delivery is being collected for a chat' };
+    case 'waiting':
+      return { key: 'waiting', tone: 'ok', label: h.lastReason ? `last delivery waits for its chat: ${h.lastReason}` : 'last delivery waits for its chat to start' };
     case 'duplicate':
       return { key: 'duplicate', tone: 'idle', label: 'last delivery repeated what the chat already had' };
     case 'skipped':
@@ -61,12 +61,11 @@ export function hookLine(h) {
   return `${h.command}${h.args?.length ? ' ' + h.args.join(' ') : ''}`;
 }
 
-/** A conversation as a line: "nuc · open · 3 items" or "nuc · collecting, chat starts in 40 s". */
-export function incidentLine(i, nowMs = Date.now()) {
+/** A conversation as a line: "nuc · open · 3 items" or "nuc · waiting to start: the model is not loaded · 2 items". */
+export function incidentLine(i) {
   const alerts = `${i.alertCount ?? 1} item${(i.alertCount ?? 1) === 1 ? '' : 's'}`;
-  if (i.state === 'collecting') {
-    const left = Math.max(0, Math.round((Date.parse(i.startsAt) - nowMs) / 1000));
-    return i.waiting ? `${i.key} · waiting to start: ${i.waiting}` : `${i.key} · collecting, chat starts in ${left} s · ${alerts}`;
+  if (i.state === 'waiting') {
+    return `${i.key} · waiting to start` + (i.waiting ? `: ${i.waiting}` : '') + ` · ${alerts}`;
   }
   return `${i.key} · open · ${alerts}` + (i.awaiting ? ' · chat working' : i.verdict ? ` · verdict ${i.verdict}` : '');
 }

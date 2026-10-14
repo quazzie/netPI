@@ -10,9 +10,9 @@ namespace NetPI.Aux.Tests;
 
 /// <summary>
 /// Inbound webhooks: the token (shown once, stored hashed), the receiver's rules (allow list, wrong tokens, size, throttle), the
-/// payload → prompt template and match conditions, incidents (a group key opens a debounce window, later alerts join the batch or are
-/// appended to the open chat, recoveries reach the chat that has the incident, repeats are duplicates), a batch that cannot start
-/// waiting instead of vanishing, the agent choices, proposals that wait for the user, the tool's limits, and the real listener over a socket.
+/// payload → prompt template, incidents (a conversation key starts its chat at once, later alerts are appended to the open chat,
+/// recoveries reach the chat that has the incident, repeats are duplicates), a chat that cannot start waiting with its alerts
+/// instead of vanishing, the agent choices, proposals that wait for the user, the tool's limits, and the real listener over a socket.
 /// </summary>
 public static class WebhooksTests
 {
@@ -219,10 +219,10 @@ public static class WebhooksTests
             Check.Equal("started", S((await env.Post(S(broken["id"])!, S(broken["token"])!, Alert(state: "OK"))).Body["status"]), "broken JSON: the defaults");
             var wrongTypes = await env.Add(extra: new { name = "types", pre = WebhookHooksTests.Hook(sink, 0, "--say={\"skip\": \"yes\", \"key\": 7, \"start\": 1}") });
             var typed = await env.Post(S(wrongTypes["id"])!, S(wrongTypes["token"])!, Alert(state: "OK"));
-            Check.Equal("held", S(typed.Body["status"]), "a flag that is not a boolean is ignored; a number is a fine key");
+            Check.Equal("started", S(typed.Body["status"]), "a flag that is not a boolean is ignored; a number is a fine key");
         });
 
-        r.Add("webhooks: a storm on one host is one chat — alerts inside the window are collected and start together", async () =>
+        r.Add("webhooks: a storm on one host is one chat — the first alert starts it at once and the rest are appended, nothing is held back", async () =>
         {
             var env = await new Env().StartAsync();
             var added = await env.AddGrouped();
@@ -230,35 +230,37 @@ public static class WebhooksTests
 
             var first = await env.Post(id, token, Alert("Kernel errors", "nuc"));
             Check.Equal(202, first.Status);
-            Check.Equal("held", S(first.Body["status"]));
-            Check.Contains(S(first.Body["reason"]), "collecting for 90 s");
+            Check.Equal("started", S(first.Body["status"]), "a new conversation's chat starts at once: nothing is held back to collect more");
+            Check.Equal(1, env.Ctx.SessionsFake.Sessions.Count);
+            Check.Contains(env.Runtime.Sent.Single().Input.Text, "Incident nuc, 1 alert(s)");
             env.Time.Advance(TimeSpan.FromSeconds(30));
-            Check.Equal("held", S((await env.Post(id, token, Alert("Container radio", "nuc", output: "Exited (1)"))).Body["status"]), "same host: joins the batch");
-            Check.Contains(S((await env.Post(id, token, Alert("Container yue2", "nuc", output: "Exited (1)"))).Body["reason"]), "collected with “nuc”");
-            Check.Equal("held", S((await env.Post(id, token, Alert("Disk", "server"))).Body["status"]), "another host: its own incident");
-            Check.Equal("duplicate", S((await env.Post(id, token, Alert("Container yue2", "nuc", output: "Exited (1)"))).Body["status"]), "the very same alert twice in a batch is one");
-            Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count, "nothing starts inside the window");
-            Check.Equal(0, await env.Tick(), "and a tick inside the window starts nothing");
-            Check.Equal(2, (await env.Incidents(id)).Count, "two incidents collecting");
+            Check.Equal("appended", S((await env.Post(id, token, Alert("Container radio", "nuc", output: "Exited (1)"))).Body["status"]), "same host: appended to its chat");
+            Check.Equal("appended", S((await env.Post(id, token, Alert("Container yue2", "nuc", output: "Exited (1)"))).Body["status"]));
+            Check.Equal("started", S((await env.Post(id, token, Alert("Disk", "server"))).Body["status"]), "another host: a conversation of its own, started at once");
+            Check.Equal("duplicate", S((await env.Post(id, token, Alert("Container yue2", "nuc", output: "Exited (1)"))).Body["status"]), "the very same alert again is a duplicate");
+            Check.Equal(2, env.Ctx.SessionsFake.Sessions.Count, "one chat per host");
+            Check.Equal(0, await env.Tick(), "nothing waits, so a tick starts nothing");
+            Check.True((await env.Incidents(id)).All(i => S(i!["state"]) == "open"), "no conversation is waiting");
 
-            env.Time.Advance(TimeSpan.FromSeconds(61));   // 91 s after the nuc's first alert
-            Check.Equal(1, await env.Tick(), "only the nuc's window has ended");
-            var nuc = env.Ctx.SessionsFake.Sessions.Single();
-            Check.Equal("Webhook: nuc / Kernel errors is CRIT (+2 more)", nuc.Title);
-            var prompt = env.Runtime.Sent.Single().Input.Text;
-            Check.Contains(prompt, "Incident nuc, 3 alert(s)");
-            Check.True(prompt.Contains("[1/3]") && prompt.Contains("[3/3]"), "the alerts are numbered");
-            Check.True(prompt.Contains("Kernel errors is CRIT") && prompt.Contains("Container radio is CRIT (Exited (1))") && prompt.Contains("Container yue2 is CRIT"), "all three alerts are in it");
+            var nuc = env.Ctx.SessionsFake.Sessions.First();
+            Check.Equal("Webhook: nuc / Kernel errors is CRIT", nuc.Title);
+            Check.Contains(env.Runtime.Sent[1].Input.Text, "More arrived for this conversation (nuc)", "the second alert went to the same chat");
+            var history = (await env.History(id)).Select(h => S(h!["status"])).Where(s => s != "hook").ToList();   // (the Before command has its own rows)
+            Check.Equal("appended:2,duplicate:1,started:2", string.Join(",", history.GroupBy(x => x).OrderBy(g => g.Key).Select(g => $"{g.Key}:{g.Count()}")), "no waiting or held rows");
+        });
 
-            env.Time.Advance(TimeSpan.FromSeconds(30));
-            Check.Equal(1, await env.Tick());
-            Check.Equal(2, env.Ctx.SessionsFake.Sessions.Count, "the server's incident became its own chat");
-            var states = (await env.Incidents(id)).Select(i => S(i!["state"])).ToList();
-            Check.Equal("open,open", string.Join(",", states));
-            var history = (await env.History(id)).Select(h => S(h!["status"])).ToList();
-            Check.Equal(4, history.Count(h => h == "held"));
-            Check.Equal(2, history.Count(h => h == "started"));
-            Check.Equal(1, history.Count(h => h == "duplicate"));
+        r.Add("webhooks: a webhook document an older version wrote with a debounce group still starts its chat at once", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var added = await env.AddGrouped();
+            var id = S(added["id"])!; var token = S(added["token"])!;
+            var doc = env.Plugin.Store!.Get(id)!;
+            doc["group"] = new JsonObject { ["key"] = "host", ["debounceSeconds"] = 600, ["reopenMinutes"] = 240 };
+            env.Plugin.Store!.Put(doc);
+
+            Check.Equal("started", S((await env.Post(id, token, Alert())).Body["status"]), "the stored debounce is ignored");
+            Check.Equal(1, env.Ctx.SessionsFake.Sessions.Count);
+            Check.Equal(0, await env.Tick(), "nothing waits for a window");
         });
 
         r.Add("webhooks: later alerts of an open incident are appended to its chat; recoveries reach it; repeats are duplicates", async () =>
@@ -267,8 +269,6 @@ public static class WebhooksTests
             var added = await env.AddGrouped();
             var id = S(added["id"])!; var token = S(added["token"])!;
             await env.Post(id, token, Alert("Kernel errors"));
-            env.Time.Advance(TimeSpan.FromSeconds(91));
-            await env.Tick();
             var session = env.Ctx.SessionsFake.Sessions.Single();
             Check.Equal(1, env.Runtime.Sent.Count);
 
@@ -299,10 +299,10 @@ public static class WebhooksTests
             Check.Equal(1, env.Ctx.SessionsFake.Sessions.Count);
 
             var other = await env.Post(id, token, Alert("Disk", host: "server"));
-            Check.Equal("held", S(other.Body["status"]), "another host opens its own incident");
+            Check.Equal("started", S(other.Body["status"]), "another host opens its own incident");
             // (rows made in the same millisecond have no defined order: count them)
             var rows = (await env.History(id)).Select(h => S(h!["status"])).Where(s => s != "hook").ToList();
-            Check.Equal("appended:2,duplicate:1,held:2,skipped:1,started:1", string.Join(",", rows.GroupBy(x => x).OrderBy(g => g.Key).Select(g => $"{g.Key}:{g.Count()}")));
+            Check.Equal("appended:2,duplicate:1,skipped:1,started:2", string.Join(",", rows.GroupBy(x => x).OrderBy(g => g.Key).Select(g => $"{g.Key}:{g.Count()}")));
         });
 
         r.Add("webhooks: a finished chat is reopened for four hours; after that, or when the chat is gone, the alert opens a new incident", async () =>
@@ -311,8 +311,6 @@ public static class WebhooksTests
             var added = await env.AddGrouped();
             var id = S(added["id"])!; var token = S(added["token"])!;
             await env.Post(id, token, Alert("Kernel errors"));
-            env.Time.Advance(TimeSpan.FromSeconds(91));
-            await env.Tick();
             env.FinishChats();
 
             env.Time.Advance(TimeSpan.FromMinutes(30));
@@ -322,14 +320,12 @@ public static class WebhooksTests
 
             env.Time.Advance(TimeSpan.FromMinutes(241));
             var late = await env.Post(id, token, Alert("Container yue2"));
-            Check.Equal("held", S(late.Body["status"]), "four hours after the last activity it is a new conversation");
-            env.Time.Advance(TimeSpan.FromSeconds(91));
-            await env.Tick();
+            Check.Equal("started", S(late.Body["status"]), "four hours after the last activity it is a new conversation, and its chat starts at once");
             Check.Equal(2, env.Ctx.SessionsFake.Sessions.Count);
 
             env.Ctx.SessionsFake.Sessions.Clear();   // the user deleted the chat
             var orphan = await env.Post(id, token, Alert("Disk"));
-            Check.Equal("held", S(orphan.Body["status"]), "the chat is gone: a new incident, not a lost alert");
+            Check.Equal("started", S(orphan.Body["status"]), "the chat is gone: a new conversation, not a lost alert");
         });
 
         r.Add("webhooks: without a Before command every payload is its own chat at once, and nothing waits", async () =>
@@ -343,32 +339,39 @@ public static class WebhooksTests
             Check.Equal(2, env.Ctx.SessionsFake.Sessions.Count);
         });
 
-        r.Add("webhooks: a batch that cannot start waits and is retried for 30 minutes instead of being dropped — then each alert is told it failed", async () =>
+        r.Add("webhooks: a chat that cannot start waits with its alerts and is tried again for 30 minutes instead of being dropped — then each alert is told it failed", async () =>
         {
             var env = await new Env().StartAsync();
             env.Agents(("local", false, true));   // the only free agent is not loaded
             var added = await env.AddGrouped(extra: new { agent = "local" });
             var id = S(added["id"])!; var token = S(added["token"])!;
-            await env.Post(id, token, Alert("Kernel errors"));
-            await env.Post(id, token, Alert("Container radio"));
-            env.Time.Advance(TimeSpan.FromSeconds(91));
-            Check.Equal(0, await env.Tick());
-            var inc = (await env.Incidents(id)).Single();
-            Check.Equal("collecting", S(inc!["state"]));
-            Check.Contains(S(inc["waiting"]), "unavailable");
+            var waiting = await env.Post(id, token, Alert("Kernel errors"));
+            Check.Equal(202, waiting.Status, "accepted: it waits for its chat");
+            Check.Equal("waiting", S(waiting.Body["status"]));
+            Check.Contains(S(waiting.Body["reason"]), "unavailable");
+            var second = await env.Post(id, token, Alert("Container radio"));
+            Check.Equal("waiting", S(second.Body["status"]), "the same conversation: the payload waits with the first");
+            var dry = (await env.Ctx.RpcFake.CallAsync("webhooks.test", new { id, payload = Alert("Disk"), adapt = new { key = "nuc" } }))!;
+            Check.Equal("join", S(dry["action"]), "a dry run says it would wait with them too");
             Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count);
-            Check.Equal(2, ((JsonArray)(await env.History(id))).Count(h => S(h!["status"]) == "held"), "nothing is lost meanwhile");
+            var inc = (await env.Incidents(id)).Single();
+            Check.Equal("waiting", S(inc!["state"]));
+            Check.Contains(S(inc["waiting"]), "unavailable");
+            Check.Equal(2, ((JsonArray)(await env.History(id))).Count(h => S(h!["status"]) == "waiting"), "nothing is lost meanwhile");
 
             env.Time.Advance(TimeSpan.FromMinutes(5));
+            Check.Equal(0, await env.Tick(), "still unavailable: tried again, nothing starts");
             env.Agents(("local", true, true));   // the model loaded
+            env.Time.Advance(TimeSpan.FromSeconds(31));   // the next try is 30 s after the last
             Check.Equal(1, await env.Tick(), "the next try starts it");
+            Check.Equal(1, env.Runtime.Sent.Count);
             Check.Contains(env.Runtime.Sent.Single().Input.Text, "Container radio", "with both alerts");
 
             // a webhook whose agent never comes back
             var env2 = await new Env().StartAsync();
             env2.Agents(("local", false, true));
             var added2 = await env2.AddGrouped(extra: new { agent = "local" });
-            await env2.Post(S(added2["id"])!, S(added2["token"])!, Alert("Kernel errors"));
+            Check.Equal("waiting", S((await env2.Post(S(added2["id"])!, S(added2["token"])!, Alert("Kernel errors"))).Body["status"]));
             for (var i = 0; i < 70; i++) { env2.Time.Advance(TimeSpan.FromSeconds(30)); await env2.Tick(); }
             var rows = (await env2.History(S(added2["id"])!)).Select(h => S(h!["status"])).ToList();
             Check.True(rows.Contains("failed"), "after 30 minutes the alert is reported failed");
@@ -380,15 +383,14 @@ public static class WebhooksTests
             var env = await new Env().StartAsync();
             var added = await env.AddGrouped(extra: new { maxChatsPerHour = 1 });
             var id = S(added["id"])!; var token = S(added["token"])!;
-            await env.Post(id, token, Alert("a", host: "nuc"));
-            await env.Post(id, token, Alert("b", host: "server"));
-            env.Time.Advance(TimeSpan.FromSeconds(91));
-            Check.Equal(1, await env.Tick(), "one chat fits the fuse");
+            Check.Equal("started", S((await env.Post(id, token, Alert("a", host: "nuc"))).Body["status"]), "one chat fits the fuse");
+            var b = await env.Post(id, token, Alert("b", host: "server"));
+            Check.Equal("waiting", S(b.Body["status"]), "the other conversation waits: the fuse is full");
             Check.Equal(1, env.Ctx.SessionsFake.Sessions.Count);
             env.Time.Advance(TimeSpan.FromMinutes(30));
             Check.Equal(0, await env.Tick(), "still inside the hour");
-            Check.Equal(1, (await env.Incidents(id)).Count(i => S(i!["state"]) == "collecting"), "the other waits — the fuse paces, it does not expire");
-            Check.Contains(S((await env.Incidents(id)).First(i => S(i!["state"]) == "collecting")!["waiting"]), "safety fuse");
+            Check.Equal(1, (await env.Incidents(id)).Count(i => S(i!["state"]) == "waiting"), "the other waits — the fuse paces, it does not expire");
+            Check.Contains(S((await env.Incidents(id)).First(i => S(i!["state"]) == "waiting")!["waiting"]), "safety fuse");
             env.Time.Advance(TimeSpan.FromMinutes(31));
             Check.Equal(1, await env.Tick(), "an hour after the first, it starts");
             Check.Equal(2, env.Ctx.SessionsFake.Sessions.Count);
@@ -518,15 +520,16 @@ public static class WebhooksTests
             Check.Equal(true, (await env.Get(id))["enabled"]!.GetValue<bool>(), "the user resumes it");
             Check.True((await env.Get(id))["proposedBy"] is null, "and the proposal mark is gone");
 
-            // a webhook disabled while a batch is collecting: its alerts are reported, not lost
-            var g = await env.AddGrouped();
-            await env.Post(S(g["id"])!, S(g["token"])!, Alert());
+            // a webhook disabled while its conversation's chat waits to start: the waiting alerts are reported, not lost
+            env.Agents(("local", false, true));
+            var g = await env.AddGrouped(extra: new { agent = "local" });
+            Check.Equal("waiting", S((await env.Post(S(g["id"])!, S(g["token"])!, Alert())).Body["status"]));
             await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id = S(g["id"]), enabled = false });
-            env.Time.Advance(TimeSpan.FromSeconds(91));
+            env.Time.Advance(TimeSpan.FromSeconds(31));
             var chatsBefore = env.Ctx.SessionsFake.Sessions.Count;
             await env.Tick();
             Check.Equal(chatsBefore, env.Ctx.SessionsFake.Sessions.Count, "no chat started for it");
-            Check.True((await env.History(S(g["id"])!)).Any(h => S(h!["reason"])?.Contains("disabled before its window ended") == true), "its collected alert is reported, not lost");
+            Check.True((await env.History(S(g["id"])!)).Any(h => S(h!["reason"])?.Contains("disabled before its chat started") == true), "its waiting alert is reported, not lost");
         });
 
         r.Add("webhooks: update changes the prompt, timeout and fuse; bad values are refused", async () =>
@@ -545,7 +548,7 @@ public static class WebhooksTests
             await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("webhooks.update", new { id, prompt = "  " }));
         });
 
-        r.Add("webhooks: test shows what a payload would do - start, collect, join, append or skip - without storing anything or running the Before command", async () =>
+        r.Add("webhooks: test shows what a payload would do - start, join, append or skip - without storing anything or running the Before command", async () =>
         {
             var env = await new Env().StartAsync();
             var added = await env.AddGrouped();
@@ -554,27 +557,24 @@ public static class WebhooksTests
             var nuc = new { key = "nuc", text = "Kernel errors is CRIT (1 in last 30 min)" };
 
             Check.Equal("start", S((await Test(Alert()))["action"]), "without the Before command's answer: no key, so a chat of its own");
-            var collect = await Test(Alert(), nuc);
-            Check.Equal("collect", S(collect["action"]));
-            Check.Contains(S(collect["note"]), "wait 90 s");
-            Check.Contains(S(collect["prompt"]), "Incident nuc, 1 alert(s)");
-            Check.Contains(S(collect["prompt"]), "Kernel errors is CRIT (1 in last 30 min)");
+            var start = await Test(Alert(), nuc);
+            Check.Equal("start", S(start["action"]), "a new conversation's chat would start at once");
+            Check.Contains(S(start["note"]), "start the conversation “nuc” now");
+            Check.Contains(S(start["prompt"]), "Incident nuc, 1 alert(s)");
+            Check.Contains(S(start["prompt"]), "Kernel errors is CRIT (1 in last 30 min)");
             Check.Equal("skip", S((await Test(Alert(state: "OK"), new { key = "nuc", skip = true }))["action"]));
             Check.Equal("skip", S((await Test(Alert(state: "OK"), new { key = "nuc", start = false }))["action"]), "a recovery with nothing open");
             Check.Equal(0, (await env.Incidents(id)).Count, "a test stores no incident");
             Check.Equal(0, ((JsonArray)(await env.History(id))).Count, "no delivery, and the Before command did not run");
 
             await env.Post(id, token, Alert("a"));
-            Check.Equal("join", S((await Test(Alert("b"), nuc))["action"]));
-            env.Time.Advance(TimeSpan.FromSeconds(91));
-            await env.Tick();
             var append = await Test(Alert("c"), nuc);
             Check.Equal("append", S(append["action"]));
             Check.Contains(S(append["prompt"]), "More arrived for this conversation");
             Check.Equal("append", S((await Test(Alert("d", state: "OK"), new { key = "nuc", start = false }))["action"]), "a recovery would be appended to the open conversation");
 
             var ran = (await env.Ctx.RpcFake.CallAsync("webhooks.test", new { id, payload = Alert("e", host: "server"), run = true }))!;
-            Check.Equal("held", S(ran["status"]));
+            Check.Equal("started", S(ran["status"]));
             Check.True((await env.History(id)).Any(h => S(h!["from"]) == "test"), "a test run is marked as such");
             await env.Ctx.RpcFake.CallAsync("webhooks.delete", new { id });
             Check.Equal(0, ((JsonArray)(await env.History(id))).Count);
@@ -582,10 +582,11 @@ public static class WebhooksTests
             await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("webhooks.get", new { id }));
         });
 
-        r.Add("webhooks: hooks, runs and collecting incidents survive a restart; the collected alerts start their chat afterwards", async () =>
+        r.Add("webhooks: hooks, runs and waiting incidents survive a restart; the waiting alerts start their chat afterwards", async () =>
         {
             var env = await new Env().StartAsync();
-            var added = await env.AddGrouped();
+            env.Agents(("local", false, true));
+            var added = await env.AddGrouped(extra: new { agent = "local" });
             await env.Post(S(added["id"])!, S(added["token"])!, Alert("Kernel errors"));
             await env.Post(S(added["id"])!, S(added["token"])!, Alert("Container radio"));
             env.Ctx.Unload();
@@ -595,10 +596,10 @@ public static class WebhooksTests
             ctx2.SessionsFake.Projects.AddRange(env.Ctx.SessionsFake.Projects);
             await plugin2.StartAsync(ctx2, CancellationToken.None);
             Check.Equal(1, ((JsonArray)(await ctx2.RpcFake.CallAsync("webhooks.list", new { }))!).Count);
-            Check.Equal(1, ((JsonArray)(await ctx2.RpcFake.CallAsync("webhooks.incidents", new { }))!).Count, "the collecting incident is still there");
-            env.Time.Advance(TimeSpan.FromSeconds(91));
+            Check.Equal(1, ((JsonArray)(await ctx2.RpcFake.CallAsync("webhooks.incidents", new { }))!).Count, "the waiting incident is still there");
+            env.Time.Advance(TimeSpan.FromSeconds(31));
             Check.Equal(1, await plugin2.Runner!.TickAsync(CancellationToken.None));
-            Check.Contains(env.Runtime.Sent.Single().Input.Text, "Container radio", "both alerts, collected before the restart");
+            Check.Contains(env.Runtime.Sent.Single().Input.Text, "Container radio", "both alerts, waiting before the restart");
             var (status, answer) = await plugin2.ReceiveAsync("/hook/" + S(added["id"]), "POST", IPAddress.Loopback, null,
                 _ => Task.FromResult<string?>(JsonSerializer.Serialize(Alert("Disk"))), S(added["token"]), CancellationToken.None);
             Check.Equal(202, status, "the stored hash still accepts the token: " + answer.ToJsonString());
@@ -622,7 +623,7 @@ public static class WebhooksTests
             Check.Contains(test.Content, "start a chat");
             Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count);
             await env.Post(id, S(added["token"])!, Alert());
-            Check.Contains((await Call(new { action = "history", id })).Content, "held");
+            Check.Contains((await Call(new { action = "history", id })).Content, "started");
             foreach (var refused in new[] { "add", "update", "enable", "delete", "rotate" })
                 Check.True((await Call(new { action = refused, id })).IsError, refused + " is the user's");
             var paused = await Call(new { action = "pause", id });

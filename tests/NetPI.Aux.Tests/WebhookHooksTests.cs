@@ -111,8 +111,6 @@ public static class WebhookHooksTests
             var added = await env.AddGrouped(extra: new { post = Hook(sink) });
             var id = S(added["id"])!; var token = S(added["token"])!;
             await env.Post(id, token, Alert("Kernel errors"));
-            env.Time.Advance(TimeSpan.FromSeconds(91));
-            await env.Tick();
             var sid = env.Ctx.SessionsFake.Sessions.Single().Id;
 
             env.Time.Advance(TimeSpan.FromSeconds(30));
@@ -148,8 +146,6 @@ public static class WebhookHooksTests
             // an errored run says so
             var added2 = await env.AddGrouped(extra: new { name = "second", post = Hook(sink) });
             await env.Post(S(added2["id"])!, S(added2["token"])!, Alert("Disk", host: "server"));
-            env.Time.Advance(TimeSpan.FromSeconds(91));
-            await env.Tick();
             var failedAgent = env.Runtime.Agents.Last();
             failedAgent.Status = AgentStatus.Failed;
             failedAgent.Error = "the model is not loaded";
@@ -167,8 +163,6 @@ public static class WebhookHooksTests
             var added = await env.AddGrouped(extra: new { post = Hook(sink), timeoutMinutes = 5 });
             var id = S(added["id"])!; var token = S(added["token"])!;
             await env.Post(id, token, Alert("Kernel errors"));
-            env.Time.Advance(TimeSpan.FromSeconds(91));
-            await env.Tick();
 
             env.Time.Advance(TimeSpan.FromMinutes(4));
             await env.Tick();
@@ -201,8 +195,6 @@ public static class WebhookHooksTests
             var (env0, sink0) = await Setup();
             var never = await env0.AddGrouped(extra: new { post = Hook(sink0), timeoutMinutes = 0 });
             await env0.Post(S(never["id"])!, S(never["token"])!, Alert("Kernel errors"));
-            env0.Time.Advance(TimeSpan.FromSeconds(91));
-            await env0.Tick();
             env0.Time.Advance(TimeSpan.FromHours(2));
             await env0.Tick();
             await Task.Delay(200);

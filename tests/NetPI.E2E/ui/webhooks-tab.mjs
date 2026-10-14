@@ -51,12 +51,12 @@ const ctx = {
     if (method === 'profiles.list') return { defaultProfile: 'coder', profiles: [{ id: 'coder', name: 'Coder' }, { id: 'sysadmin', name: 'Sysadmin' }] };
     if (method === 'webhooks.incidents') return [
       { webhookId: params.id, key: 'nuc', state: 'open', alertCount: 3, sessionId: 'ses_inc', verdict: 'noise' },
-      { webhookId: params.id, key: 'server', state: 'collecting', alertCount: 1, startsAt: new Date(Date.now() + 40000).toISOString() },
+      { webhookId: params.id, key: 'server', state: 'waiting', alertCount: 1, waiting: 'the model is not loaded' },
     ];
     if (method === 'webhooks.history') return [{ webhookId: params.id, at: new Date().toISOString(), status: 'appended', reason: null, summary: 'nuc / x is OK' }];
     window.__calls.push([method, params]);
     if (method === 'webhooks.add') return { id: 'whk_new', name: params.name, path: '/hook/whk_new', tokenHint: 'wxyz', token: 'whk_SECRET_TOKEN_wxyz', ...params };
-    if (method === 'webhooks.test' && !params.run) return { action: 'collect', skip: null, key: 'nuc', agent: 'any', title: 'nuc / Kernel errors is CRIT', prompt: 'Alert: Kernel errors on nuc', note: null };
+    if (method === 'webhooks.test' && !params.run) return { action: 'start', skip: null, key: 'nuc', agent: 'any', title: 'nuc / Kernel errors is CRIT', prompt: 'Alert: Kernel errors on nuc', note: null };
     if (method === 'webhooks.test') return { status: 'started', sessionId: 'ses_test' };
     if (method === 'webhooks.update') return { ...hooks().find((x) => x.id === params.id), ...params };
     return true;
@@ -129,8 +129,8 @@ try {
   check('the detail shows where to POST', (await row('Checkmk').locator('.url').innerText()) === 'http://192.168.1.170:7432/hook/whk_ok');
   await row('Checkmk').locator('button', { hasText: 'Preview' }).click();
   await tab.waitForSelector('.webhooks .preview', { timeout: 5_000 });
-  check('Preview shows what would happen and the filled prompt', (await row('Checkmk').locator('.preview').innerText()).includes('Would open the conversation “nuc”'));
-  check('the detail lists the incidents with their state', (await row('Checkmk').innerText()).includes('nuc · open · 3 items') && (await row('Checkmk').innerText()).includes('server · collecting, chat starts in'));
+  check('Preview shows what would happen and the filled prompt', (await row('Checkmk').locator('.preview').innerText()).includes('Would start a chat on any at once'));
+  check('the detail lists the incidents with their state', (await row('Checkmk').innerText()).includes('nuc · open · 3 items') && (await row('Checkmk').innerText()).includes('server · waiting to start: the model is not loaded'));
   await row('Checkmk').locator('.inc-open').first().click();
   check('the detail shows the before and after commands', (await row('Checkmk').innerText()).includes('python pre.py') && (await row('Checkmk').innerText()).includes('ssh server ha-alert-json'));
   check('an incident shows the agent\'s verdict', (await row('Checkmk').innerText()).includes('verdict noise'));
@@ -235,7 +235,7 @@ try {
 check('rowState: a disabled proposal', rowState({ enabled: false, proposedBy: 'session:x' }).key === 'proposed');
 check('rowState: a failed delivery is an error', rowState({ enabled: true, lastStatus: 'failed' }).tone === 'err');
 check('agent list round-trips', formToAgent({ agentChoice: '__list', agentList: ' a , b ' }) === 'a,b' && agentToForm('a,b').agentChoice === '__list');
-check('incidentLine: open and collecting', incidentLine({ key: 'nuc', state: 'open', alertCount: 1 }) === 'nuc · open · 1 item' && incidentLine({ key: 'x', state: 'collecting', alertCount: 2, startsAt: new Date(Date.now() + 30000).toISOString() }, Date.now()).includes('chat starts in'));
+check('incidentLine: open and waiting', incidentLine({ key: 'nuc', state: 'open', alertCount: 1 }) === 'nuc · open · 1 item' && incidentLine({ key: 'x', state: 'waiting', alertCount: 2, waiting: 'the model is not loaded' }) === 'x · waiting to start: the model is not loaded · 2 items');
 check('limitsLine: timeout and fuse', limitsLine({ timeoutMinutes: 15, maxChatsPerHour: 60 }) === 'timeout 15 min · fuse 60/h' && limitsLine({ timeoutMinutes: 0 }) === 'no timeout');
 check('hookLine, hookToForm and formToHook', hookLine({ command: 'ssh', args: ['a', 'b'] }) === 'ssh a b' && hookLine({ command: 'x' }) === 'x' && formToHook(' ssh ', 'a\n\n b ').args.join(',') === 'a,b' && Object.keys(formToHook('', 'a')).length === 0 && hookToForm({ command: 'ssh', args: ['a', 'b'] }).args === 'a\nb' && hookToForm(null).command === '');
 

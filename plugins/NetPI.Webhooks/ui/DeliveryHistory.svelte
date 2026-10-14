@@ -79,7 +79,7 @@
   }
   .h-status[data-status='started'],
   .h-status[data-status='appended'] { color: var(--np-ok, #4caf7d); }
-  .h-status[data-status='held'] { color: var(--np-accent, #6aa3f0); }
+  .h-status[data-status='waiting'] { color: var(--np-accent, #6aa3f0); }
   .h-status[data-status='duplicate'] { opacity: 0.6; }
   .h-status[data-status='hook'] { color: var(--np-warn, #d9a441); }
   .h-status[data-status='skipped'] { color: var(--np-warn, #d9a441); }
