@@ -179,7 +179,9 @@ try {
     if (-not $SkipBuild) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         # the web UI: rebuild the bundles only when their sources changed after the last build here (a fresh checkout trusts the committed ones)
-        $webInputs = @('web\src', 'web\index.html', 'web\vite.config.js') + @(Get-ChildItem plugins -Directory | ForEach-Object { Join-Path $_.FullName 'ui' })
+        # relative: Get-Newest joins every path onto the repository, and an absolute plugin path joined that way does not
+        # exist, so a change to a plugin tab alone never rebuilt its bundle
+        $webInputs = @('web\src', 'web\index.html', 'web\vite.config.js') + @(Get-ChildItem plugins -Directory | ForEach-Object { "plugins\$($_.Name)\ui" })
         $webNewest = Get-Newest $webInputs
         if ($stamps.ContainsKey('web') -and $webNewest -gt $stamps['web'] -and (Get-Command npm -ErrorAction SilentlyContinue) -and (Test-Path node_modules)) {
             Write-Host 'web UI sources changed: npm run build' -ForegroundColor DarkGray
