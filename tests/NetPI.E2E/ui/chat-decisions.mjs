@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { run, check, shot, openApp, openSession, rpc, send, gates, newDir, STAMP } from './lib.mjs';
+import { run, check, shot, openApp, openSession, rpc, send, gates, newDir, STAMP, unfoldSteps } from './lib.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf8' });
 const origin = newDir(`dec-origin-${STAMP}.git`);
@@ -84,6 +84,7 @@ await run('chat-decisions', async ({ page }) => {
     await page.locator('.composer.running').waitFor({ timeout: 5_000 }).catch(() => {});
     await idle();
     check('guardrails: allowed in this chat, the next push does not ask', asksBefore === 0 && (await page.locator('.tool .approve').count()) === 0);
+    await unfoldSteps(page);   // the finished run's steps fold
     check('guardrails: its row says it was allowed in this chat', (await page.locator('.tool .state', { hasText: 'allowed in this chat' }).count()) > 0);
 
     // ---- fork: a new chat from a message
@@ -127,6 +128,7 @@ await run('chat-decisions', async ({ page }) => {
     await idle();
     const goalNotices = await page.locator('.notice', { has: page.locator('.label', { hasText: /^Goal$/ }) }).count();
     check('goal notices: set, resumed, one automatic continuation', goalNotices === 3, String(goalNotices));
+    await unfoldSteps(page);
     check('the goal_update row shows complete', (await page.locator('.tool .np-badge', { hasText: 'complete' }).count()) >= 1);
     check('the strip says achieved, with the summary', (await page.locator('.goal .state').innerText().catch(() => '')) === 'Achieved'
       && (await page.locator('.goal .reason').innerText().catch(() => '')).includes('The page renders'), await page.locator('.goal').innerText().catch(() => 'no strip'));

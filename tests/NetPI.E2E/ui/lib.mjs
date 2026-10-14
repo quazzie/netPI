@@ -171,6 +171,16 @@ export async function openSession(page, title) {
 
 // Wait until the chat shows `marker` (what the next check reads), not for a fixed pause: a pause is too long on an idle
 // machine and too short on a loaded one. A marker that never comes leaves the check after it to fail with the text it saw.
+/**
+ * Open the folded step groups of the chat on screen: a finished run's steps fold (Settings → Steps, "Fold when done",
+ * the default since 46cd063), and a folded group renders no tool rows, so a check on a row of a finished turn opens them
+ * first, as a person would.
+ */
+export async function unfoldSteps(page, max = 20) {
+  const closed = page.locator('.content:visible .group.collapsible .head[aria-expanded="false"]');
+  for (let n = 0; n < max && (await closed.count()); n++) await closed.first().click();
+}
+
 export const chatShows = (page, marker, ms = 10_000) =>
   page.waitForFunction((m) => (document.querySelector('.scroller > .content')?.innerText ?? '').includes(m), marker, { timeout: ms }).catch(() => {});
 // The same for the right panel's open tab: its own text, once it is more than the "Loading…" placeholder (and holds `includes`).
