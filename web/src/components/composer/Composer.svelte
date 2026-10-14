@@ -267,7 +267,7 @@
     if (e.key === 'Escape') {
       if (running) {
         e.preventDefault();
-        abortAgent(session.id);
+        abortAgent(session.id, e.shiftKey);
       }
       return;
     }
@@ -467,7 +467,7 @@
             ownContext={!!model?.managesOwnContext} claudeUsage={claudeCli} />
         {/if}
         {#if running && !canSend}
-          <button class="send stop" title="Stop (Esc)" aria-label="Stop" onclick={() => abortAgent(session.id)}>
+          <button class="send stop" title="Stop (Esc); its subagents keep working. Shift: stop them too (Shift+Esc)" aria-label="Stop" onclick={(e) => abortAgent(session.id, e.shiftKey)}>
             <Icon name="stop" size={14} />
           </button>
         {:else}

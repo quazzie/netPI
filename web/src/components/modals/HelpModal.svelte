@@ -17,7 +17,8 @@
     [prefs.enterSends ? 'Enter' : 'Ctrl+Enter', 'Send (steer while the agent runs)'],
     ['Alt+Enter', 'Queue for after the current run'],
     ['Shift+Enter', 'New line'],
-    ['Esc', 'Stop the running agent'],
+    ['Esc', 'Stop the running agent (its subagents keep working)'],
+    ['Shift+Esc', 'Stop the running agent and its subagents'],
     ['/', 'Commands'],
     ['@', 'Mention a file'],
   ];

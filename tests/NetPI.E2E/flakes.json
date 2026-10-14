@@ -2,6 +2,16 @@
   "note": "Flake ledger: how often each test has failed, and the runner\u0027s own diagnosis when it last did. Updated by every run; a pass marks an entry quiet rather than deleting it.",
   "flakes": [
     {
+      "id": "ui.work-tab",
+      "runs": 2,
+      "failures": 2,
+      "rate": 1,
+      "firstSeen": "20261014-164851-df41",
+      "lastFailure": "20261014-164942-b961",
+      "cause": "1 ui check(s) failed: \u2014 responsive",
+      "quiet": false
+    },
+    {
       "id": "ui.idea-image",
       "runs": 18,
       "failures": 3,

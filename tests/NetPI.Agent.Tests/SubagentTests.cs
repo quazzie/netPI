@@ -19,6 +19,7 @@ public static class SubagentTests
         t.Add("subagents: another model, tools allowlist, max depth", SpawnOptions);
         t.Add("subagents: aborting a parent cancels its children", AbortCascade);
         t.Add("subagents: a run stopped alone (agent.abort subagents false) leaves the background subagent working, and its report arrives", AbortRunAlone);
+        t.Add("subagents: stopping a parent alone while it waits on its subagent leaves the subagent working, and its report wakes the parent", StopParentWhileWaiting);
         t.Add("subagents: deleting a chat stops its run and its subagents' at once, and gives their slots back", DeleteStopsTree);
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / agent_choices", ToolsMisc);
@@ -1207,6 +1208,40 @@ public static class SubagentTests
         childGate.SetResult();
         await h.StatusAsync(childId, AgentStatus.Completed);
         await Wait.Until(() => h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"), "its report reaches the chat");
+    }
+
+    /// <summary>
+    /// The chat's Stop (and Esc) is <c>agent.abort { subagents: false }</c>, so the user can stop a parent and redirect it
+    /// without losing its workers: stopped in its agent wait, the parent goes idle, the subagent keeps working, and its
+    /// report wakes the parent for a new run.
+    /// </summary>
+    private static async Task StopParentWhileWaiting()
+    {
+        await using var h = await TestHost.StartAsync();
+        var parent = h.NewSession();
+        var childGate = new TaskCompletionSource();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r)) return Reply.Text("WORKER RESULT", c => childGate.Task.WaitAsync(c));
+            if (Reply.LastUser(r).Contains("<agent-result")) return Reply.Text("got the report");
+            return r.Messages.Any(m => m.ToolResults.Any(x => x.Name == "agent_spawn"))
+                ? Reply.Tool("agent", new { action = "wait", all = true })
+                : Reply.Tool("agent_spawn", new { task = "work", name = "worker" });
+        };
+        await h.SendAsync(parent.Id, "go");
+        await Wait.Until(() => h.Runtime.GetBySession(parent.Id)?.Status == AgentStatus.Yielded, "parent yielded in its wait");
+        var childId = h.Runtime.GetBySession(parent.Id)!.Children.Single();
+        await h.StatusAsync(childId, AgentStatus.Running);
+
+        Check.True((bool)(await h.Rpc.CallAsync("agent.abort", new { sessionId = parent.Id, subagents = false }))!, "the parent is stopped");
+        await h.IdleAsync(parent.Id);
+        Check.Equal(AgentStatus.Running, h.Runtime.Get(childId)!.Status, "the subagent keeps working");
+
+        childGate.SetResult();
+        await h.StatusAsync(childId, AgentStatus.Completed);
+        await Wait.Until(() => h.Runtime.GetBySession(parent.Id) is { Runs: 2 } a && !a.Status.IsBusy(), "the report wakes the parent for a second run");
+        Check.True(h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"), "the report is in the chat");
+        Check.Equal(0, h.Scheduler!.Snapshot().Sum(x => x.Busy + x.Queued));
     }
 
     /// <summary>
