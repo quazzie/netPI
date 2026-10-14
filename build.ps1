@@ -410,15 +410,12 @@ if ($Publish) {
             $pluginFiles = @(Get-Changed $devPlugins (Join-Path $app 'plugins'))
             $pluginNames = @($pluginFiles | ForEach-Object { $_.Split('\')[0] } | Sort-Object -Unique)
             $pluginsWait = $defer -or $newContracts
-            # NetPI.Runtime owns the runs: reloading it stops every run in flight and marks it failed. While a chat is
-            # mid-turn it waits for the next start; the other plugins still reload.
-            if (-not $pluginsWait -and ($pluginNames -contains 'NetPI.Runtime') -and ($busy = (Get-LiveChats)) -and $busy.Busy.Count) {
-                $held = Join-Path $pendingDir 'plugins\NetPI.Runtime'
-                New-Item -ItemType Directory -Force (Join-Path $pendingDir 'plugins') | Out-Null
-                Copy-Item -Recurse -Force (Join-Path $devPlugins 'NetPI.Runtime') $held
-                $pluginFiles = @($pluginFiles | Where-Object { $_.Split('\')[0] -ne 'NetPI.Runtime' })
-                $pluginNames = @($pluginNames | Where-Object { $_ -ne 'NetPI.Runtime' })
-                Write-Host "NetPI.Runtime is NOT reloaded: $($busy.Busy.Count) chat(s) are mid-turn ($(@($busy.Busy | ForEach-Object { $_.name }) -join ', ')) and a reload would end their runs. It waits in artifacts\app\.pending for the next start." -ForegroundColor Yellow
+            # A reload must never disturb a run: plugins go in live only while no chat is mid-turn (reloading NetPI.Runtime
+            # even ends every run in flight, and a reloaded tool vanishes from a turn that is using it). Otherwise they all
+            # wait in .pending for the next start, and the script says why.
+            if (-not $pluginsWait -and $pluginNames.Count -and ($live = Get-LiveChats) -and $live.Busy.Count) {
+                $pluginsWait = $true
+                Write-Host "$($live.Busy.Count) chat(s) are mid-turn ($(@($live.Busy | ForEach-Object { $_.name }) -join ', ')): the plugins are NOT reloaded now." -ForegroundColor Yellow
             }
             if ($pluginsWait) {
                 foreach ($name in $pluginNames) {
