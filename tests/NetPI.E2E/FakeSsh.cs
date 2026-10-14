@@ -58,6 +58,7 @@ internal static class FakeSsh
         var psi = new ProcessStartInfo(Bash())
         {
             UseShellExecute = false,
+            CreateNoWindow = true,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,

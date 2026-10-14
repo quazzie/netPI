@@ -68,7 +68,7 @@ public static class RpcReadOnlyTests
             // fake registry records no owner, so they are grouped by their prefix instead.
             var expected = new Dictionary<string, (string[] ReadOnly, string[] Writable)>
             {
-                ["processes."] = (["processes.list", "processes.output"], ["processes.kill"]),
+                ["processes."] = (["processes.list", "processes.output"], ["processes.kill", "processes.killCall"]),
                 ["files."] = (["files.commits", "files.git", "files.list", "files.scope", "files.search"], ["files.open"]),
             };
             foreach (var (prefix, (readOnly, writable)) in expected)
