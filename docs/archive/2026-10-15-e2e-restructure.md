@@ -119,8 +119,12 @@ follows master's `waiting` state, and the fixture test master had updated stays 
   unmounted an open picker until the next good load: the likely cause of `ui.settings`' detaching options. Fixed in 8eef6b7
   (a failed load keeps the list; the picker goes with the plugin's methods; only the newest of overlapping loads counts),
   with a check in `ui.settings` that fails one `profiles.list` on purpose; it failed before the fix and passes after.
-- The ~7 s between a tool batch and the next model request was not located (the session stopped before it found the
-  middleware or hook). Left open.
+- The ~7 s between a tool batch and the next model request, measured afterwards (stage marks on the turn path, four
+  servers at 93% CPU, 60 turns): NetPI's own part is 0-67 ms from a tool batch's end to the provider's POST, and the
+  parent's turn after `agent_spawn` starts at once. The seconds were MockLlm stalling inside the loaded runner (one first
+  event took 5.7 s after a POST sent in 1 ms) and slot waits by design. One real defect turned up on the way: a read of
+  a stale model catalog with no refresh running started one and waited for every provider's listing (up to 5 s each),
+  and a turn's model lookup is such a read. Fixed: such a read answers from the cache and refreshes in the background.
 
 ## Left for the owner
 

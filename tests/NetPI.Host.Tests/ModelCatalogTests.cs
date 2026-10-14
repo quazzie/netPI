@@ -305,6 +305,34 @@ public static class ModelCatalogTests
             Check.Equal("held/v3", string.Join(",", catalog.Cached.Select(m => m.Ref)), "the removed provider does not come back with the pending refresh");
         });
 
+        r.Add("models: a stale cache answers a read at once and refreshes in the background, so a turn's model lookup never waits for a listing", async () =>
+        {
+            var dir = T.TempDir("models");
+            await using var bus = new EventBus(NullLogger.Instance);
+            using var settings = new SettingsStore(Path.Combine(dir, "settings.json"), NullLogger.Instance);
+            var services = new ServiceRegistry();
+            using var catalog = new ModelCatalog(services, settings, bus, NullLogger.Instance);
+            var held = new HeldProvider("held");
+            using var reg = services.Register<IModelProvider>(held);
+            var first = catalog.ListAsync(refresh: true);
+            await Wait.Until(() => held.CallCount >= 1, "the first listing reached the provider");
+            held.Call(0).TrySetResult([Model("held", "m")]);
+            await first;
+
+            // models.changed (or the poll) marks the cache stale, and the refresh it schedules starts 250 ms later. A read in
+            // between used to start that refresh itself and wait for every provider's listing (up to 5 s each): the agent
+            // runner's model lookup at the start of a turn was such a read. Here the provider does not answer at all.
+            catalog.Invalidate();
+            var found = catalog.FindAsync("held/m");
+            var answered = await Task.WhenAny(found, Task.Delay(TimeSpan.FromSeconds(3))) == found;
+            Check.True(answered, "a read of a stale cache answers without waiting for the provider's listing");
+            await Wait.Until(() => held.CallCount >= 2, "the stale cache is refreshed in the background");
+            held.Call(1).TrySetResult([Model("held", "m"), Model("held", "n")]);
+            Check.Equal("held/m", (await found)?.Ref ?? "", "the read answers with the cached model");
+            await Wait.Until(() => catalog.Cached.Count == 2, "the background refresh replaces the cache");
+            Check.True(await catalog.FindAsync("held/n") is not null, "a later read sees what the refresh listed");
+            Check.Equal(2, held.CallCount, "one refresh for the stale cache, not one per read");
+        });
         r.Add("models: stream normalizes messages and runs middleware lowest Order outermost", async () =>
         {
             var dir = T.TempDir("models");

@@ -88,8 +88,10 @@ public static class CoreTests
             try
             {
                 model.Created = original + 100;
-                await env.Client.WaitFor(mark, e => e.Type == "models.changed",
-                    "background catalog refresh after backend restart", 15_000);
+                // the provider's own models.changed ({ provider }) asks the catalog to list again; the catalog's ({ count })
+                // follows once its view changed, and models.list answers from that view (it does not wait for a refresh)
+                await env.Client.WaitFor(mark, e => e.Type == "models.changed" && e.D.L("count") > 0,
+                    "the catalog's models.changed after the backend restart", 15_000);
                 var listed = (await env.Rpc("models.list")).Arr("models").Single(m => m.S("ref") == Qwen);
                 Check.Equal(original + 100, listed.P("extra").L("created"));
                 Check.Equal("loaded", listed.S("status"));

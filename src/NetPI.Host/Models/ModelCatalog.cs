@@ -29,6 +29,9 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
     private IReadOnlyList<ModelInfo> _cached = [];
     private string _signature = "";
     private bool _dirty = true;
+    /// <summary>A provider came or went since the last refresh was started: the cache lacks its models (or still holds a
+    /// removed one's), so a read waits for a refresh instead of answering from it.</summary>
+    private bool _providersChanged;
     private Task<IReadOnlyList<ModelInfo>>? _inflight;
     private int _generation;
     private bool _disposed;
@@ -99,21 +102,45 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
 
     public void OnServiceChanged(Type type)
     {
-        if (typeof(IModelProvider).IsAssignableFrom(type) || type.IsAssignableFrom(typeof(IModelProvider))) Invalidate();
+        if (!typeof(IModelProvider).IsAssignableFrom(type) && !type.IsAssignableFrom(typeof(IModelProvider))) return;
+        lock (_gate) _providersChanged = true;
+        Invalidate();
     }
 
     public async Task<IReadOnlyList<ModelInfo>> ListAsync(bool refresh = false, CancellationToken ct = default)
     {
-        Task<IReadOnlyList<ModelInfo>> task;
+        Task<IReadOnlyList<ModelInfo>>? task = null;
+        Task<IReadOnlyList<ModelInfo>>? background = null;
+        IReadOnlyList<ModelInfo> cached;
         lock (_gate)
         {
+            cached = _cached;
             if (!refresh && !_dirty && _inflight is null) return _cached;
             // A read never waits on a refresh: a provider that hangs would otherwise delay the next model call by its
-            // whole timeout, with a perfectly good cache sitting right there. An empty cache is the exception - there is
-            // nothing to hand back yet, so a caller arriving during the first load still joins it.
-            if (!refresh && _inflight is not null && _cached.Count > 0) return _cached;
-            if (_inflight is not null && !refresh) task = _inflight;
-            else task = _inflight = RefreshAsync(refresh, ++_generation);
+            // whole timeout, with a perfectly good cache sitting right there. That holds for a stale cache with no
+            // refresh running yet too (models.changed or the poll marks it, and the debounced refresh starts 250 ms
+            // later): the read starts that refresh in the background and answers from the cache. A turn's model lookup
+            // used to start it and wait for every provider's listing, up to 5 s each on a slow backend (2026-10-15).
+            // The exceptions wait: an empty cache (nothing to hand back yet: a caller during the first load joins it),
+            // and a provider that came or went (the cache lacks its models: the read waits for a refresh that started
+            // after the change, so a model call right after a provider plugin loads finds its models).
+            if (!refresh && _cached.Count > 0 && !_providersChanged)
+            {
+                if (_inflight is null) background = _inflight = RefreshAsync(false, ++_generation);
+            }
+            else if (_inflight is not null && !refresh && !_providersChanged) task = _inflight;
+            else
+            {
+                _providersChanged = false; // this refresh lists the providers as they are now
+                task = _inflight = RefreshAsync(refresh, ++_generation);
+            }
+        }
+        if (task is null)
+        {
+            // nobody awaits it: its failure is logged, as the debounced refresh's is
+            background?.ContinueWith(t => _log.LogWarning(t.Exception, "Model catalog refresh failed"), CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            return cached;
         }
         return await task.WaitAsync(ct).ConfigureAwait(false);
     }
