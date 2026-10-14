@@ -46,6 +46,10 @@ public static class GuardrailsTests
         Check.True(Judge(rules, "windows", new { action = "open", app = "notepad", args = Path.Combine(Home, ".ssh", "id_rsa") }) is { Kind: "path" },
             "a program pointed at a protected file");
         Check.True(Judge(rules, "windows", new { action = "open", app = "notepad", args = "notes.txt" }) is null, "an ordinary program runs");
+        foreach (var c in (string[])["powershell -Command Get-Date", "powershell.exe -File a.ps1", "& powershell.exe -NoProfile", @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -c 1", "cd x && powershell -c 1"])
+            Check.True(Judge(rules, "bash", new { command = c }) is { Action: GuardAction.Block, Kind: "command" }, $"Windows PowerShell is blocked: {c}");
+        foreach (var c in (string[])["pwsh -NoProfile -File a.ps1", "grep powershell notes.txt", "echo powershell.exe", "Get-Help powershell"])
+            Check.True(Judge(rules, "bash", new { command = c }) is null, $"not Windows PowerShell: {c}");
         Check.True(Judge(rules, "windows", new { action = "type", n = 3, text = "shutdown /s" }) is null, "typing text is not a command start");
         Check.Equal("calc /x", ToolPathArgs.WindowsOpenCommand("windows", ToolArgs.Parse("""{"action":"start","exe":"calc","args":"/x"}""")));
         return Task.CompletedTask;

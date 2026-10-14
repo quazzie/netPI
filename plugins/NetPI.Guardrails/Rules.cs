@@ -42,6 +42,8 @@ internal sealed partial class RuleSet
         @"^(sudo\s+)?(shutdown|reboot|poweroff|halt)(\s|$)",
         @"^(Stop|Restart)-Computer(\s|$)",
         @"^:\(\)\s*\{",
+        // Windows PowerShell 5.1 lacks what the scripts here use (&&, GetRelativePath, UTF-8 defaults): pwsh is PowerShell 7
+        @"^(&\s*)?(\S*[\\/])?powershell(\.exe)?(\s|$)",
     ];
 
     /// <summary>NetPI's own home asks first; SSH keys and config stay untouched.</summary>

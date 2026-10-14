@@ -1,13 +1,14 @@
 <script>
   // One webhook row: dot + name, a meta line, hover actions, and the expandable detail — where to POST, the template, a
   // "try a payload" panel (preview or send), and the delivery history.
-  import { StatusDot, IconButton, ConfirmButton, Button, timeAgo } from '@netpi/kit';
+  import { StatusDot, IconButton, ConfirmButton, Button, Modal, timeAgo } from '@netpi/kit';
   import DeliveryHistory from './DeliveryHistory.svelte';
   import { rowState, limitsLine, incidentLine, hookLine } from './model.js';
 
   let { h, ctx, projects, receiver, onedit, onchanged, ontoken } = $props();
 
   let open = $state(false);
+  let historyOpen = $state(false); // the deliveries, in a dialog
   let busy = $state(false);
   let flash = $state('');
   let tryText = $state('{\n  "message": "hello from the Try box"\n}');
@@ -128,7 +129,7 @@
       onclick={togglePause}
     />
     <IconButton icon="pencil" size="sm" title="Edit" onclick={() => onedit?.()} />
-    <IconButton icon="history" size="sm" title="Details and deliveries" pressed={open} onclick={() => (open = !open)} />
+    <IconButton icon="history" size="sm" title="Deliveries" pressed={historyOpen} onclick={() => (historyOpen = true)} />
     <ConfirmButton icon="refresh" title="New token (the old one stops working)" confirmLabel="New token?" onconfirm={rotate} />
     <ConfirmButton icon="trash" title="Delete" confirmLabel="Delete?" onconfirm={del} />
   </span>
@@ -191,8 +192,13 @@
         <Button size="sm" variant="ghost" icon="message" title="Open the chat this webhook last started"
           onclick={() => ctx.app.openSession?.(h.lastSessionId)}>Open last chat</Button>
       {/if}
-      <DeliveryHistory {ctx} webhookId={h.id} refreshKey={open ? (h.lastAt ?? h.updatedAt) : null} />
     </div>
+  {/if}
+
+  {#if historyOpen}
+    <Modal title={`Deliveries · ${h.name}`} width={640} onclose={() => (historyOpen = false)}>
+      <DeliveryHistory {ctx} webhookId={h.id} refreshKey={h.lastAt ?? h.updatedAt} />
+    </Modal>
   {/if}
 </div>
 

@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
   One check on the checkout a build runs from, shared by build.ps1 and scripts\test.ps1.

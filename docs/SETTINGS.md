@@ -483,7 +483,7 @@ checks catch the plain cases (a command built at run time gets through): they ar
 
 The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive root (`rm`, `rd`, `del`, `Remove-Item` of
 `C:\`, `/c`); `mkfs`; `dd … of=/dev/…` (not `/dev/null`); `format C:`; `shutdown`, `reboot`, `poweroff`, `halt`,
-`Stop-Computer`, `Restart-Computer`; a fork bomb. Each is anchored at the start of a command part, so `grep shutdown` or
+`Stop-Computer`, `Restart-Computer`; a fork bomb; `powershell` / `powershell.exe` (Windows PowerShell 5.1: use `pwsh`, PowerShell 7). Each is anchored at the start of a command part, so `grep shutdown` or
 `echo 'rm -rf /'` pass. A deliberate long wait is a rule of its own (`guardrails.maxSleepSeconds`), because only a parsed
 number tells a five-minute sleep from a one-second one.
 

@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
   Run the real-server end-to-end suite the way a development loop needs it: only what the change can affect, in seconds;

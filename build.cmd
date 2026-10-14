@@ -11,10 +11,13 @@ rem   build -Test                  build and run the unit test suites
 rem   build -SkipWeb               don't run npm even if it is installed
 rem   build -Configuration Debug   Debug instead of Release
 rem   build /?                     build.ps1's help
-rem Uses PowerShell 7 (pwsh) when it is installed, else Windows PowerShell.
+rem Needs PowerShell 7 (pwsh); Windows PowerShell 5.1 lacks what the scripts use.
 setlocal
-set "PS=powershell.exe"
-where pwsh >nul 2>&1 && set "PS=pwsh"
+set "PS=pwsh"
+where pwsh >nul 2>&1 || (
+  echo build: PowerShell 7 ^(pwsh^) is required - install it with: winget install Microsoft.PowerShell
+  exit /b 1
+)
 if "%~1"=="/?" (
   "%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0build.ps1" -?
   exit /b 0

@@ -319,9 +319,14 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
     {
         "sleep" => $"`{v.Subject}` waits {v.Detail} (guardrails.maxSleepSeconds). Run the work itself with a matching " +
             "`timeout` \u2014 the call returns the moment it finishes \u2014 or start it with `background: true` and wait for it with `process wait`.",
-        "command" => $"`{v.Subject}` matches the guardrail `{v.Rule}` (guardrails.commands).",
+        "command" => $"`{v.Subject}` matches the guardrail `{v.Rule}` (guardrails.commands)." +
+            (IsWindowsPowerShell(v.Subject) ? " Windows PowerShell 5.1 is not used here: run it with `pwsh` (PowerShell 7) or the pwsh tool." : ""),
         _ => $"{v.Subject} is protected by the guardrail `{v.Rule}` (guardrails.paths).",
     };
+
+    private static bool IsWindowsPowerShell(string command) =>
+        System.Text.RegularExpressions.Regex.IsMatch(command, @"^\W*(\S*[\\/])?powershell(\.exe)?(\s|$)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     private static string Resolve(AgentRunContext run, ToolCallPart call, string path) => new ToolContext
     {
