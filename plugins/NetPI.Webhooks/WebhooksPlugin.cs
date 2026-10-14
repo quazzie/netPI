@@ -9,9 +9,9 @@ namespace NetPI.Webhooks;
 /// Inbound webhooks (idea-wmpsrw, from the Checkmk rollout): another system POSTs to <c>/hook/{id}</c> on the plugin's own
 /// receiver (<see cref="WebhookListener"/>) with the webhook's bearer token, and the payload starts a fresh chat on a project —
 /// on a named agent, <c>any</c> agent with a free instance, the first <c>free</c>-priced agent, or the first of a list — with a
-/// prompt filled in from the payload. Payloads are grouped into conversations by a key the Before command names (say the host): the first opens a collecting window, the
-/// rest of the window joins the same chat, and later ones are appended to the chat that handles the incident — nothing is dropped,
-/// and a storm becomes one conversation per incident instead of a pile of chats. The receiver is off until <c>webhooks.enabled</c>, listens on <c>webhooks.bind</c>:<c>webhooks.port</c> and
+/// prompt filled in from the payload. Payloads are grouped into conversations by a key the Before command names (say the host): the first starts its chat at once,
+/// and later ones are appended to the chat that handles the incident — nothing is dropped, and a storm becomes one conversation per incident instead of a pile of chats.
+/// NetPI holds no payload back to group it: a sender that wants a batch groups its own alerts before it posts them. The receiver is off until <c>webhooks.enabled</c>, listens on <c>webhooks.bind</c>:<c>webhooks.port</c> and
 /// answers only <c>webhooks.allowFrom</c>. Starting a run is <see cref="WebhookRunner"/>; the webhooks are in <see cref="WebhookStore"/>.
 /// </summary>
 [NetPiPlugin("netpi.webhooks", Name = "Webhooks", Description = "Inbound webhooks: an authenticated POST from another system starts a fresh chat on a project, on a chosen agent, any free agent or the first free-priced one", Order = 97)]
@@ -87,7 +87,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
         }
     }
 
-    /// <summary>Starts the chats of incidents whose collecting window has ended; sleeps until the soonest one (at most 30 s), or until a new alert is held.</summary>
+    /// <summary>Tries again the chats that are waiting to start when they are due; sleeps until the soonest one (at most 30 s), or until a payload starts waiting.</summary>
     private async Task LoopAsync(IPluginContext ctx, WebhookStore store, WebhookRunner runner, CancellationToken ct)
     {
         try
@@ -208,11 +208,11 @@ public sealed class WebhooksPlugin : INetPiPlugin
         if (text is null) return (413, Err("too_large", $"the payload is larger than {maxBytes / 1024} KB (webhooks.maxBodyKb)"));
         var payload = Body.Payload(text, contentType);
         var result = await Runner!.HandleAsync(hook, payload, from, ct).ConfigureAwait(false);
-        if (result.Status == WebhookStore.Held) _wake.Release();
+        if (result.Status == WebhookStore.Waiting) _wake.Release();
         var body = new JsonObject { ["status"] = result.Status, ["reason"] = result.Reason, ["sessionId"] = result.SessionId };
         return result.Status switch
         {
-            WebhookStore.Started or WebhookStore.Held or WebhookStore.Appended => (202, body),   // accepted: a chat has it, or will at the end of the window
+            WebhookStore.Started or WebhookStore.Waiting or WebhookStore.Appended => (202, body),   // accepted: a chat has it, or it waits for its chat to start
             WebhookStore.Skipped or WebhookStore.Duplicate => (200, body),
             _ => (500, body),
         };
@@ -262,11 +262,11 @@ public sealed class WebhooksPlugin : INetPiPlugin
         ctx.Rpc.Register(new RpcMethod("webhooks.get", "One webhook: { id } → Webhook", ReadOnly: true, [RpcParam.Req("id")]),
             (req, _) => Task.FromResult<object?>(Shown(Require(store, req.Required("id")))));
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.history", "Deliveries, newest first: { id?, limit? (50) } → { webhookId, at, status (held|started|appended|duplicate|skipped|failed), reason?, sessionId?, key?, summary?, from? }[]. held: collecting inside the debounce window; started: a chat began; appended: added to the incident's open chat; duplicate: that chat was just told the same", ReadOnly: true,
+        ctx.Rpc.Register(new RpcMethod("webhooks.history", "Deliveries, newest first: { id?, limit? (50) } → { webhookId, at, status (waiting|started|appended|duplicate|skipped|failed), reason?, sessionId?, key?, summary?, from? }[]. waiting: its conversation's chat cannot start yet (tried again every 30 s for 30 min); started: a chat began; appended: added to the incident's open chat; duplicate: that chat was just told the same", ReadOnly: true,
             [RpcParam.Opt("id", RpcParamType.String, "one webhook's; all when omitted"), RpcParam.Opt("limit", RpcParamType.Integer)]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.History(req.Str("id"), Math.Clamp(req.Int("limit") ?? 50, 1, 500)).Select(d => (JsonNode)d)])));
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.incidents", "Incidents, most recent first: { id? } → { webhookId, key, state (collecting|open), sessionId?, alertCount, openedAt?, lastAt, verdict? (the agent's last VERDICT: line), awaiting? (the chat is being watched for its finished hook), startsAt?, waiting? (why a collected batch could not start yet) }[]. collecting: alerts are being gathered for the chat; open: the chat that handles the key", ReadOnly: true,
+        ctx.Rpc.Register(new RpcMethod("webhooks.incidents", "Incidents, most recent first: { id? } → { webhookId, key, state (waiting|open), sessionId?, alertCount, openedAt?, lastAt, verdict? (the agent's last VERDICT: line), awaiting? (the chat is being watched for its finished hook), startsAt? (the next try), waiting? (why its chat has not started yet) }[]. waiting: the chat has not started (no agent, the model not loaded, the fuse) and its payloads wait with it; open: the chat that handles the key", ReadOnly: true,
             [RpcParam.Opt("id", RpcParamType.String, "one webhook's; all when omitted")]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.Incidents(req.Str("id")).Select(i => (JsonNode)ShownIncident(i))])));
 
@@ -394,7 +394,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 catch (Exception ex) when (ex is not OperationCanceledException) { return new JsonObject { ["ok"] = false, ["detail"] = ex.Message }; }
             });
 
-        ctx.Rpc.Register(new RpcMethod("webhooks.test", "Try a payload on a webhook: { id, payload (any JSON), adapt? (what the Before command would answer: { skip?, start?, key?, text?, title? }; the command itself is not run in a dry run), run? (false) } → without run: { action (start|collect|join|append|skip), skip?, key?, agent?, title, prompt, note? } — what would happen, the prompt (or the follow-up for an open incident) filled in, nothing started or stored; with run: true: the delivery's { status, reason?, sessionId? } as if the payload had arrived (it opens or joins a real incident)",
+        ctx.Rpc.Register(new RpcMethod("webhooks.test", "Try a payload on a webhook: { id, payload (any JSON), adapt? (what the Before command would answer: { skip?, start?, key?, text?, title? }; the command itself is not run in a dry run), run? (false) } → without run: { action (start|join|append|skip), skip?, key?, agent?, title, prompt, note? } — what would happen, the prompt (or the follow-up for an open incident) filled in, nothing started or stored; with run: true: the delivery's { status, reason?, sessionId? } as if the payload had arrived (it starts, joins or appends to a real conversation)",
             Params: [RpcParam.Req("id"), RpcParam.Opt("payload", RpcParamType.Any), RpcParam.Opt("adapt", RpcParamType.Object), RpcParam.Opt("run", RpcParamType.Boolean)]),
             async (req, ct) =>
             {
@@ -403,7 +403,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 if (req.Bool("run") == true)
                 {
                     var result = await runner.HandleAsync(hook, payload, "test", ct).ConfigureAwait(false);
-                    if (result.Status == WebhookStore.Held) _wake.Release();
+                    if (result.Status == WebhookStore.Waiting) _wake.Release();
                     return new JsonObject { ["status"] = result.Status, ["reason"] = result.Reason, ["sessionId"] = result.SessionId };
                 }
                 var plan = await runner.PlanAsync(hook, payload, NetPiJson.ToNode(req.Prop("adapt")) as JsonObject, ct).ConfigureAwait(false);
@@ -462,7 +462,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
         prompt.Trim() is { Length: > 0 } p ? p : throw new RpcException("bad_request", "the prompt cannot be empty");
 
 
-    /// <summary>An incident as <c>webhooks.incidents</c> answers it: without the collected payloads (they may be large), with when the chat starts.</summary>
+    /// <summary>An incident as <c>webhooks.incidents</c> answers it: without the waiting payloads (they may be large), with when its chat is next tried.</summary>
     private static JsonObject ShownIncident(JsonObject i)
     {
         var shown = new JsonObject
@@ -472,7 +472,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
             ["verdict"] = i["lastVerdict"]?.DeepClone(), ["awaiting"] = i["awaiting"]?.DeepClone(),
             ["lastAt"] = i["lastAtMs"] is JsonValue v && v.TryGetValue<long>(out var ms) ? WebhookStore.Iso(DateTimeOffset.FromUnixTimeMilliseconds(ms)) : null,
         };
-        if (i["state"]?.GetValue<string>() == WebhookStore.Collecting && i["startAtMs"] is JsonValue s && s.TryGetValue<long>(out var start))
+        if (i["state"]?.GetValue<string>() == WebhookStore.Waiting && i["startAtMs"] is JsonValue s && s.TryGetValue<long>(out var start))
         {
             shown["startsAt"] = WebhookStore.Iso(DateTimeOffset.FromUnixTimeMilliseconds(start));
             shown["waiting"] = i["lastReason"]?.DeepClone();

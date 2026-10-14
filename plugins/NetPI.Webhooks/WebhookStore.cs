@@ -8,22 +8,22 @@ namespace NetPI.Webhooks;
 /// <summary>
 /// The webhooks, their delivery history and their incidents in the plugin's own collections.
 /// <para>A webhook: <c>{ id, name, enabled, tokenHash, tokenHint, projectId?, agent?, prompt, alert?, followUp?, title?, match?,
-/// group? { key, debounceSeconds, reopenMinutes }, maxChatsPerHour, proposedBy?, createdAt, updatedAt, lastAt?, lastStatus?,
-/// lastReason?, lastSessionId? }</c>. A delivery (a row of the history): <c>{ webhookId, atMs, at, status, reason?, sessionId?, key?,
+/// maxChatsPerHour, proposedBy?, createdAt, updatedAt, lastAt?, lastStatus?, lastReason?, lastSessionId? }</c>. A delivery (a row of the history): <c>{ webhookId, atMs, at, status, reason?, sessionId?, key?,
 /// summary?, from? }</c>. The bearer token itself is shown once, when it is made; only its SHA-256 is stored, so a leaked database does
-/// not leak a working token.</para>
-/// <para>An incident is the unit a group key makes: <c>{ webhookId, key, state: collecting|open, startAtMs?, pending: [{ payload, at, from }],
-/// retryUntilMs?, sessionId?, openedAt?, lastAtMs, alertCount, lastFingerprint? }</c>. <c>collecting</c> holds the alerts that arrived
-/// inside the debounce window (persisted, so a restart does not lose them); <c>open</c> names the chat that handles it, which later alerts
-/// with the same key are appended to.</para>
+/// not leak a working token. A <c>group</c> an older version stored is ignored: NetPI holds no payload to group it, the sender does that.</para>
+/// <para>An incident is the unit a conversation key makes: <c>{ webhookId, key, state: waiting|open, startAtMs?, pending: [{ payload, at, from }],
+/// retryUntilMs?, sessionId?, openedAt?, lastAtMs, alertCount, lastFingerprint? }</c>. <c>waiting</c> holds the alerts of a conversation whose chat
+/// cannot start yet (no agent, the model not loaded, the safety fuse): they are tried again every 30 s for 30 minutes, and persisted, so a
+/// restart does not lose them. <c>open</c> names the chat that handles it, which later alerts with the same key are appended to.</para>
 /// </summary>
 internal sealed class WebhookStore(IPluginData data)
 {
     public const int HistoryPerWebhook = 200;
-    /// <summary>Delivery statuses: held (collecting inside the debounce window), started (a chat began), appended (added to the open chat),
-    /// duplicate (the same alert was just seen), skipped (filtered, disabled, over the fuse), failed, hook (an action of the webhook's hooks ran, or failed).</summary>
-    public const string Held = "held", Started = "started", Appended = "appended", Duplicate = "duplicate", Skipped = "skipped", Failed = "failed", Hook = "hook";
-    public const string Collecting = "collecting", Open = "open";
+    /// <summary>Delivery statuses: started (a chat began), appended (added to the open chat), duplicate (the same alert was just seen), skipped (filtered,
+    /// disabled, over the fuse), failed, waiting (the conversation's chat cannot start yet; the alert is kept and tried again), hook (an action of the webhook's hooks ran, or failed).
+    /// As an incident state, waiting is a conversation whose chat has not started yet.</summary>
+    public const string Waiting = "waiting", Started = "started", Appended = "appended", Duplicate = "duplicate", Skipped = "skipped", Failed = "failed", Hook = "hook";
+    public const string Open = "open";
 
     private readonly IDataCollection _hooks = data.Collection("webhooks", new CollectionSpec().Text("projectId"));
     private readonly IDataCollection _runs = data.Collection("runs", new CollectionSpec().Text("webhookId").Integer("atMs").Text("key"));
@@ -108,14 +108,14 @@ internal sealed class WebhookStore(IPluginData data)
 
     public void DeleteIncident(string webhookId, string groupKey) => _incidents.Delete(IncidentKey(webhookId, groupKey));
 
-    /// <summary>Incidents whose debounce window has ended, oldest first.</summary>
+    /// <summary>Waiting incidents whose chat is due to be tried again, oldest first.</summary>
     public IReadOnlyList<JsonObject> DueIncidents(DateTimeOffset now) =>
-        [.. _incidents.Find(new DataQuery().Eq("state", Collecting).Le("startAtMs", now.ToUnixTimeMilliseconds()).Order("startAtMs"))
+        [.. _incidents.Find(new DataQuery().Eq("state", Waiting).Le("startAtMs", now.ToUnixTimeMilliseconds()).Order("startAtMs"))
             .Select(d => d.Doc)];
 
-    /// <summary>The soonest moment a collecting incident is due, for the loop's sleep.</summary>
+    /// <summary>The soonest moment a waiting incident is due to be tried again, for the loop's sleep.</summary>
     public DateTimeOffset? NextDue() =>
-        _incidents.Find(new DataQuery().Eq("state", Collecting).NotNull("startAtMs").Order("startAtMs").Take(1))
+        _incidents.Find(new DataQuery().Eq("state", Waiting).NotNull("startAtMs").Order("startAtMs").Take(1))
             .Select(d => (DateTimeOffset?)DateTimeOffset.FromUnixTimeMilliseconds(d.Doc["startAtMs"]!.GetValue<long>())).FirstOrDefault();
 
     public IReadOnlyList<JsonObject> Incidents(string? webhookId)

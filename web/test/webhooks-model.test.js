@@ -17,13 +17,14 @@ test('rowState: the last delivery decides the dot', () => {
   const tone = (lastStatus, extra = {}) => rowState({ enabled: true, lastStatus, ...extra }).tone;
   assert.equal(tone('started'), 'ok');
   assert.equal(tone('appended'), 'ok');
-  assert.equal(tone('held'), 'ok');
+  assert.equal(tone('waiting'), 'ok');
   assert.equal(tone('duplicate'), 'idle', 'a repeat is not an error');
   assert.equal(tone('skipped'), 'idle');
   assert.equal(tone('failed'), 'err');
   assert.equal(tone(undefined), 'ok');
   assert.equal(rowState({ enabled: true }).key, 'idle');
   assert.match(rowState({ enabled: true, lastStatus: 'failed', lastReason: 'boom' }).label, /boom/);
+  assert.match(rowState({ enabled: true, lastStatus: 'waiting', lastReason: 'the model is not loaded' }).label, /the model is not loaded/);
 });
 
 test('the agent choice round-trips through the form', () => {
@@ -48,14 +49,12 @@ test('a hook as form fields and back; an empty command clears it', () => {
   assert.equal(hookLine({ command: 'x' }), 'x');
 });
 
-test('incidentLine: an open conversation and one still collecting', () => {
-  const now = Date.parse('2026-10-14T12:00:00Z');
-  assert.equal(incidentLine({ key: 'nuc', state: 'open', alertCount: 1 }, now), 'nuc · open · 1 item');
-  assert.equal(incidentLine({ key: 'nuc', state: 'open', alertCount: 3, awaiting: true }, now), 'nuc · open · 3 items · chat working');
-  assert.equal(incidentLine({ key: 'nuc', state: 'open', verdict: 'OK' }, now), 'nuc · open · 1 item · verdict OK');
-  const collecting = { key: 'x', state: 'collecting', alertCount: 2, startsAt: new Date(now + 30_000).toISOString() };
-  assert.equal(incidentLine(collecting, now), 'x · collecting, chat starts in 30 s · 2 items');
-  assert.equal(incidentLine({ ...collecting, waiting: 'no agent' }, now), 'x · waiting to start: no agent');
+test('incidentLine: an open conversation and one whose chat waits to start', () => {
+  assert.equal(incidentLine({ key: 'nuc', state: 'open', alertCount: 1 }), 'nuc · open · 1 item');
+  assert.equal(incidentLine({ key: 'nuc', state: 'open', alertCount: 3, awaiting: true }), 'nuc · open · 3 items · chat working');
+  assert.equal(incidentLine({ key: 'nuc', state: 'open', verdict: 'OK' }), 'nuc · open · 1 item · verdict OK');
+  assert.equal(incidentLine({ key: 'x', state: 'waiting', alertCount: 2, waiting: 'the model is not loaded' }), 'x · waiting to start: the model is not loaded · 2 items');
+  assert.equal(incidentLine({ key: 'x', state: 'waiting', alertCount: 1 }), 'x · waiting to start · 1 item');
 });
 
 test('curlLine: a POST with the bearer token', () => {

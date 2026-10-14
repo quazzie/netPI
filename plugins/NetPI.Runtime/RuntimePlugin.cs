@@ -126,7 +126,7 @@ public sealed class RuntimePlugin : INetPiPlugin
             for (var i = 0; i < 400 && replay.Seq < upTo; i++) await Task.Delay(5, ct).ConfigureAwait(false);
             return replay.Snapshot(sessionId);
         },
-            "What a chat's answer has streamed so far, for a page that opens it mid-answer: { sessionId } → { seq, events: [{ type, d, seq }] } (the stream.* events of the model call in flight, the tool.* events of the calls still running; complete up to seq)", true, session);
+            "What a chat's answer has streamed so far, for a page that opens it mid-answer: { sessionId } → { seq, now, events: [{ type, d, seq, ts }] } (ts: when the server saw the event, epoch ms, now: the server's clock, so the page can place a running call's start on its own clock; the stream.* events of the model call in flight, the tool.* events of the calls still running; complete up to seq)", true, session);
 
         Rpc("agent.tools", (req, _) =>
             Task.FromResult<object?>(SessionToolSwitches.Info(context, runtime, req.Required("sessionId"))),

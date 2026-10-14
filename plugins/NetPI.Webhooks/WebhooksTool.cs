@@ -30,10 +30,10 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
             Actions:
             - list: every webhook, one line each (state, agent, project, last delivery).
             - get: one webhook by id, with its prompt template, commands and limits.
-            - history: deliveries, newest first (id optional, limit default 20): held (collecting for a conversation), started (a chat began),
-              appended (added to the conversation's open chat), duplicate, skipped (and why) or failed.
-            - test: id and payload (any JSON) — what it would do (start a chat, open or join a conversation, be appended to a running chat, or be
-              skipped), with the prompt filled in. Starts and stores nothing.
+            - history: deliveries, newest first (id optional, limit default 20): started (a chat began), appended (added to the conversation's open chat),
+              waiting (its chat cannot start yet and is tried again), duplicate, skipped (and why) or failed.
+            - test: id and payload (any JSON) — what it would do (start a chat, wait with a conversation whose chat has not started, be appended to a
+              running chat, or be skipped), with the prompt filled in. Starts and stores nothing.
             - pause: id — pauses a webhook (enabled false). Resuming, creating, deleting and re-keying are the user's, in the Webhooks tab.
             """,
         Parameters = new JsonObject
@@ -100,8 +100,7 @@ public sealed class WebhooksTool(IPluginContext ctx) : IAgentTool, IReadOnlyCall
                 {
                     "skip" => "This payload would be skipped: " + skip + ".",
                     "append" => "This payload would be appended to the chat already handling its conversation.",
-                    "join" => "This payload would join the items being collected for its conversation.",
-                    "collect" => "This payload would open a conversation and wait for more items with the same key before starting a chat" + agent + ".",
+                    "join" => "This payload would wait with the items of its conversation, whose chat has not started yet.",
                     _ => "This payload would start a chat" + agent + " at once.",
                 };
                 var text = verdict + (plan["note"]?.GetValue<string>() is { Length: > 0 } note ? " (" + note + ")" : "")

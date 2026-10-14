@@ -600,7 +600,7 @@ session-scoped to the chat a run started.
 
 **Webhooks** (`netpi.webhooks`, left, order 26 — after Schedules). The receiver's state (off / listening on a URL / why it could not start), then each
 webhook: pause/resume, edit (an inline form), a two-step new token and delete, and a detail with the URL to POST to, the prompt, a “try a payload” box
-(Preview shows the filled-in prompt and every verdict and starts nothing; Send delivers it for real) its before / after commands, the open conversations of the webhook (open, or collecting with the seconds left, or waiting to start and why; each with a link to its chat) and, from the clock button, the delivery history in a dialog (held / started / appended / duplicate / skipped / failed). A new or re-keyed token is
+(Preview shows the filled-in prompt and every verdict and starts nothing; Send delivers it for real) its before / after commands, the open conversations of the webhook (open, or waiting to start and why; each with a link to its chat) and, from the clock button, the delivery history in a dialog (waiting / started / appended / duplicate / skipped / failed). A new or re-keyed token is
 shown once, with a ready `curl` line. The form is deliberately small: name, URL name, prompt, project, profile, agent, priority (low, normal, high, critical: its chats' place in the queue, and a critical one takes an instance from lower work started for the user — SETTINGS.md "Priority"; the row's meta line names it when it is not normal), a program with its arguments (one per line) for the Before and the After command, a timeout in minutes and the fuse. Filtering, grouping and wording belong to the Before command. Reads `webhooks.*` plus `projects.list`, `profiles.list` and `agents.list` (absent ones degrade their own feature); refreshes on
 `webhooks.changed`, `settings.changed` and a 30 s poll.
 
@@ -931,6 +931,10 @@ names or an inline `<svg …>` string.
   latest budget notice; after a confirm it calls `budget.allow`. The top bar shows the budget (`BudgetPill`:
   `budget.status`, then `usage.changed`) only once it needs attention, amber from `budget.warnPercent`, red when spent;
   a click opens Settings on Agents & budget (`modals.settings = 'agents'`).
+- `WaitingMenu` (top bar, beside the connection dot): an orange dot, the count and a chevron, only while a chat waits for the user.
+  The menu (`waitingItems()` in `state/waiting.svelte.js`, oldest first) lists open questions, tool OKs, plans, plan-mode offers,
+  schedule proposals and budget stops (a budget stop is seen live from its `budget` notice with `canOverride`, so a reload forgets it);
+  a row opens its chat. The same states make a tab's dot `asking`. Subagent chats are left out.
 - The Claude subscription usage is not in the top bar: it is in the context ring's popout of a Claude CLI chat (above). The reading
   is what the Claude CLI printed after its last call, so it is as fresh as the last call (kept across restarts, marked old after
   six hours).

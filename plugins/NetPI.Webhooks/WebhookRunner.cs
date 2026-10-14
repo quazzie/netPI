@@ -10,24 +10,24 @@ namespace NetPI.Webhooks;
 /// Turns accepted payloads into chats without losing one. A payload is either
 /// <list type="bullet">
 /// <item>filtered on purpose (the webhook is off, or its Before command said to skip it, or to only join a conversation that is not open),</item>
-/// <item><b>held</b>: the first of a new conversation. Its key (named by the Before command, say the host) opens a collecting window of
-/// <see cref="DefaultDebounceSeconds"/> s, and every payload with the same key that arrives inside it joins the same batch, so a host outage is one chat that knows all six failed services,</item>
-/// <item><b>appended</b> to the chat that already handles the incident (running, or finished less than <see cref="DefaultReopenMinutes"/> minutes ago), as a
-/// follow-up message that wakes it — recoveries and new failures land where the context is, or</item>
-/// <item>a <b>duplicate</b> of what that chat was just told.</item>
+/// <item><b>started</b>: the first payload of a new conversation. Its key (named by the Before command, say the host) starts the chat at once: NetPI
+/// holds nothing back to group payloads, the sender does that,</item>
+/// <item><b>appended</b> to the chat that already handles the conversation (running, or finished less than <see cref="DefaultReopenMinutes"/> minutes ago), as a
+/// follow-up message that wakes it — recoveries and new failures land where the context is,</item>
+/// <item>a <b>duplicate</b> of what that chat was just told, or</item>
+/// <item><b>waiting</b>: the chat cannot start now (no agent available, the model not loaded, the safety fuse). The payload is kept with its conversation,
+/// later payloads with the same key wait with it, and the start is tried again every 30 seconds for 30 minutes instead of being dropped.</item>
 /// </list>
-/// When the window ends, the batch starts one chat (<c>CreateSession</c> with meta <c>webhook</c>, <c>agents.use</c>,
+/// A chat starts as a scheduled run does (<c>CreateSession</c> with meta <c>webhook</c>, <c>agents.use</c>,
 /// <c>profiles.apply</c> with the webhook's own profile — or <c>profiles.applyAuto</c> when it names none —, <c>IAgentRuntime.SendAsync</c>
-/// as the system), as a scheduled run does. A webhook should name its profile when its chats need particular tools: the automatic profile is whatever a new chat gets. If the chat cannot start
-/// now (no agent available, the model not loaded, the safety fuse), the batch waits and is retried every 30 seconds for 30 minutes
-/// instead of being dropped. There is no concurrency cap: NetPI queues runs for the agent's instances itself, and the budget is the
+/// as the system). A webhook should name its profile when its chats need particular tools: the automatic profile is whatever a new chat gets. There is no concurrency cap: NetPI queues runs for the agent's instances itself, and the budget is the
 /// Agents plugin's to enforce.
 /// </summary>
 internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, TimeProvider time)
 {
     public const string ChangedEvent = "webhooks.changed", RanEvent = "webhooks.ran";
-    public const int DefaultDebounceSeconds = 90, DefaultReopenMinutes = 240, DefaultMaxChatsPerHour = 60;
-    /// <summary>The most alerts one collecting batch holds: past it the sender is flooding, and the extra alerts are reported skipped.</summary>
+    public const int DefaultReopenMinutes = 240, DefaultMaxChatsPerHour = 60;
+    /// <summary>The most alerts one conversation may hold while its chat waits to start: past it the sender is flooding, and the extra alerts are reported skipped.</summary>
     public const int MaxBatch = 200;
     public static readonly TimeSpan RetryEvery = TimeSpan.FromSeconds(30), RetryFor = TimeSpan.FromMinutes(30);
     /// <summary>The same alert twice inside this long is one alert: a sender that repeats itself does not wake the chat again.</summary>
@@ -43,8 +43,8 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
 
     internal HookEngine Hooks => _hooks;
 
-    /// <summary>What a payload would do, for <c>webhooks.test</c>: <c>start</c> (no grouping), <c>collect</c> (a new incident waits for its window),
-    /// <c>join</c> (the incident is collecting), <c>append</c> (an open chat gets it) or <c>skip</c>.</summary>
+    /// <summary>What a payload would do, for <c>webhooks.test</c>: <c>start</c> (a chat starts at once), <c>join</c> (the conversation's chat is waiting to start,
+    /// and the payload waits with it), <c>append</c> (an open chat gets it) or <c>skip</c>.</summary>
     internal sealed record Plan(string Action, string? Skip, string? Key, string Title, string Prompt, string? AgentKey, string? Note);
 
     internal sealed record RunResult(string Status, string? Reason, string? SessionId);
@@ -84,24 +84,24 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         if (key is null)
         {
             if (!adapt.Start) return Finish(id, now, WebhookStore.Skipped, "the Before command said not to start a chat and gave no conversation key to join", null, null, summary, from);
-            return await StartChatAsync(hook, new Incident(id, null, [item]), now, ct, immediate: true).ConfigureAwait(false);
+            return await StartChatAsync(hook, new Incident(id, null, [item]), now, ct).ConfigureAwait(false);
         }
 
         if (store.GetIncident(id, key) is { } inc)
         {
-            if (inc["state"]?.GetValue<string>() == WebhookStore.Collecting)
+            if (inc["state"]?.GetValue<string>() == WebhookStore.Waiting)
             {
+                // the conversation's chat has not started yet: this payload waits with the others
                 if (inc["pending"] is not JsonArray pending) inc["pending"] = pending = [];
                 if (pending.OfType<JsonObject>().Any(p => Fingerprint(p["payload"]) == fingerprint))
-                    return Finish(id, now, WebhookStore.Duplicate, "the same payload is already in the batch being collected", null, key, summary, from);
+                    return Finish(id, now, WebhookStore.Duplicate, "the same payload is already waiting for the chat", null, key, summary, from);
                 if (pending.Count >= MaxBatch)
-                    return Finish(id, now, WebhookStore.Skipped, $"the batch for “{key}” already holds {MaxBatch} payloads", null, key, summary, from);
+                    return Finish(id, now, WebhookStore.Skipped, $"the items waiting for “{key}” already hold {MaxBatch} payloads", null, key, summary, from);
                 pending.Add(Pending(item));
                 inc["alertCount"] = pending.Count;
                 inc["lastAtMs"] = now.ToUnixTimeMilliseconds();
                 store.PutIncident(inc);
-                var left = Math.Max(0, (int)(DateTimeOffset.FromUnixTimeMilliseconds(inc["startAtMs"]!.GetValue<long>()) - now).TotalSeconds);
-                return Finish(id, now, WebhookStore.Held, $"collected with “{key}”; the chat starts in {left} s", null, key, summary, from);
+                return Finish(id, now, WebhookStore.Waiting, $"waiting with “{key}”: {inc["lastReason"]?.GetValue<string>() ?? "its chat has not started yet"}", null, key, summary, from);
             }
             if (IsLive(inc, now))
             {
@@ -137,14 +137,19 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         if (!adapt.Start)
             return Finish(id, now, WebhookStore.Skipped, $"no open conversation for “{key}”, and the Before command said not to start one", null, key, summary, from);
 
+        // a new conversation: its chat starts at once, through the same path a waiting one takes when it is tried again. The payload is
+        // kept under the conversation only while the chat cannot start (then it is a waiting incident, tried again every 30 s)
         var incident = new JsonObject
         {
-            ["webhookId"] = id, ["key"] = key, ["state"] = WebhookStore.Collecting,
-            ["startAtMs"] = now.AddSeconds(DefaultDebounceSeconds).ToUnixTimeMilliseconds(), ["lastAtMs"] = now.ToUnixTimeMilliseconds(), ["alertCount"] = 1,
+            ["webhookId"] = id, ["key"] = key, ["state"] = WebhookStore.Waiting,
+            ["startAtMs"] = now.ToUnixTimeMilliseconds(), ["lastAtMs"] = now.ToUnixTimeMilliseconds(), ["alertCount"] = 1,
             ["pending"] = new JsonArray(Pending(item)),
         };
         store.PutIncident(incident);
-        return Finish(id, now, WebhookStore.Held, $"new conversation “{key}”: collecting for {DefaultDebounceSeconds} s before the chat starts", null, key, summary, from);
+        var result = await FlushAsync(hook, incident, now, ct).ConfigureAwait(false);
+        return result.Status == WebhookStore.Waiting
+            ? Finish(id, now, WebhookStore.Waiting, result.Reason, null, key, summary, from)
+            : result;
     }
 
     private static JsonObject Pending(Alert a) => new()
@@ -157,9 +162,9 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
 
     private static string WebhookName(JsonObject hook) => hook["name"]?.GetValue<string>() ?? hook["id"]!.GetValue<string>();
 
-    // ---------------------------------------------------------------- the window ends
+    // ---------------------------------------------------------------- waiting chats are tried again
 
-    /// <summary>Start the chats of every incident whose collecting window has ended; the number started.</summary>
+    /// <summary>Try again the chats of every waiting conversation that is due; the number started.</summary>
     public async Task<int> TickAsync(CancellationToken ct)
     {
         var now = time.GetUtcNow();
@@ -172,8 +177,8 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
             await gate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                // re-read under the gate: an alert may have joined, or another tick flushed it
-                if (store.GetIncident(id, due["key"]!.GetValue<string>()) is not { } inc || inc["state"]?.GetValue<string>() != WebhookStore.Collecting) continue;
+                // re-read under the gate: an alert may have joined, or another tick started it
+                if (store.GetIncident(id, due["key"]!.GetValue<string>()) is not { } inc || inc["state"]?.GetValue<string>() != WebhookStore.Waiting) continue;
                 if (DateTimeOffset.FromUnixTimeMilliseconds(inc["startAtMs"]!.GetValue<long>()) > now) continue;
                 if (store.Get(id) is not { } hook)
                 {
@@ -286,15 +291,15 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         var alerts = (inc["pending"] as JsonArray ?? []).OfType<JsonObject>()
             .Select(p => new Alert(p["payload"]?.DeepClone() ?? new JsonObject(), DateTimeOffset.TryParse(p["at"]?.GetValue<string>(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at) ? at : now, p["from"]?.GetValue<string>(), p["text"]?.GetValue<string>(), p["title"]?.GetValue<string>()))
             .ToList();
-        if (alerts.Count == 0) { store.DeleteIncident(id, key); return new RunResult(WebhookStore.Skipped, "nothing was collected", null); }
+        if (alerts.Count == 0) { store.DeleteIncident(id, key); return new RunResult(WebhookStore.Skipped, "nothing was waiting", null); }
 
         if (!WebhookStore.Enabled(hook))
         {
-            foreach (var a in alerts) Finish(id, now, WebhookStore.Skipped, "the webhook was disabled before its window ended", null, key, a.Title ?? WebhookName(hook), a.From);
+            foreach (var a in alerts) Finish(id, now, WebhookStore.Skipped, "the webhook was disabled before its chat started", null, key, a.Title ?? WebhookName(hook), a.From);
             store.DeleteIncident(id, key);
             return new RunResult(WebhookStore.Skipped, "the webhook was disabled", null);
         }
-        var result = await StartChatAsync(hook, new Incident(id, key, alerts), now, ct, immediate: false, inc).ConfigureAwait(false);
+        var result = await StartChatAsync(hook, new Incident(id, key, alerts), now, ct, inc).ConfigureAwait(false);
         return result;
     }
 
@@ -303,7 +308,7 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
     private sealed record Alert(JsonNode Payload, DateTimeOffset At, string? From, string? Text = null, string? Title = null);
     private sealed record Incident(string WebhookId, string? Key, List<Alert> Alerts);
 
-    private async Task<RunResult> StartChatAsync(JsonObject hook, Incident batch, DateTimeOffset now, CancellationToken ct, bool immediate, JsonObject? stored = null)
+    private async Task<RunResult> StartChatAsync(JsonObject hook, Incident batch, DateTimeOffset now, CancellationToken ct, JsonObject? stored = null)
     {
         var id = batch.WebhookId;
         var first = batch.Alerts[0];
@@ -395,7 +400,7 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
     {
         var id = batch.WebhookId;
         if (stored is null || batch.Key is null)
-            return await FailAsync(hook, batch, now, reason, ct).ConfigureAwait(false);   // no window to wait in (an ungrouped alert): it is told at once
+            return await FailAsync(hook, batch, now, reason, ct).ConfigureAwait(false);   // no conversation to wait under (an ungrouped alert): it is told at once
         if (pacing)
         {
             // the fuse paces chats, it does not refuse them: the batch waits as long as the hour needs (it can hold alerts only up to MaxBatch)
@@ -405,7 +410,7 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
             store.PutIncident(stored);
             if (first) ctx.Logger.LogWarning("Webhook {Webhook}: {Count} alert(s) of {Key} wait: {Reason}", id, batch.Alerts.Count, batch.Key, reason);
             ctx.Events.Publish(ChangedEvent, new { id });
-            return new RunResult(WebhookStore.Held, reason, null);
+            return new RunResult(WebhookStore.Waiting, reason, null);
         }
         var until = stored["retryUntilMs"] is JsonValue v && v.TryGetValue<long>(out var ms) ? DateTimeOffset.FromUnixTimeMilliseconds(ms) : now + RetryFor;
         if (now >= until) return await FailAsync(hook, batch, now, reason + $" (gave up after {RetryFor.TotalMinutes:0} min)", ct).ConfigureAwait(false);
@@ -416,7 +421,7 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         store.PutIncident(stored);
         if (firstTime) ctx.Logger.LogWarning("Webhook {Webhook}: {Count} alert(s) of {Key} wait: {Reason}", id, batch.Alerts.Count, batch.Key, reason);
         ctx.Events.Publish(ChangedEvent, new { id });
-        return new RunResult(WebhookStore.Held, reason, null);
+        return new RunResult(WebhookStore.Waiting, reason, null);
     }
 
     private async Task<RunResult> FailAsync(JsonObject hook, Incident batch, DateTimeOffset now, string reason, CancellationToken ct)
@@ -565,15 +570,15 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
             return new Plan("skip", hook["proposedBy"] is not null ? "the webhook is a proposal the user has not enabled" : "the webhook is disabled", key, title, prompt, agentKey, note);
         if (said.Skip) return new Plan("skip", "the Before command would skip it", key, title, prompt, agentKey, note);
         var inc = key is null ? null : store.GetIncident(id, key);
-        if (inc is not null && inc["state"]?.GetValue<string>() == WebhookStore.Collecting)
-            return new Plan("join", null, key, title, prompt, agentKey, "it would join the batch being collected for “" + key + "”");
+        if (inc is not null && inc["state"]?.GetValue<string>() == WebhookStore.Waiting)
+            return new Plan("join", null, key, title, prompt, agentKey, "it would wait with the items of “" + key + "”, whose chat has not started yet");
         if (inc is not null && IsLive(inc, now))
             return new Plan("append", null, key, title, FollowUpText(batch.Alerts[0], key!, (inc["alertCount"]?.GetValue<int>() ?? 1) + 1, now), agentKey,
                 "it would be sent to the chat " + inc["sessionId"]?.GetValue<string>());
         if (!said.Start) return new Plan("skip", key is null ? "no conversation key to join, and the Before command would not start one" : $"no open conversation for “{key}”, and the Before command would not start one", key, title, prompt, agentKey, note);
         return key is null
             ? new Plan("start", null, null, title, prompt, agentKey, note)
-            : new Plan("collect", null, key, title, prompt, agentKey, $"it would open the conversation “{key}” and wait {DefaultDebounceSeconds} s for more items" + (note is null ? "" : "; " + note));
+            : new Plan("start", null, key, title, prompt, agentKey, $"it would start the conversation “{key}” now" + (note is null ? "" : "; " + note));
     }
 
     private static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;

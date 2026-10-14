@@ -93,8 +93,8 @@
     if (r.status === 'started' || r.status === 'appended') {
       say(r.status === 'started' ? `Started a chat for “${h.name}”` : `Added to the open chat of “${h.name}”`);
       if (r.sessionId) ctx.app.openSession?.(r.sessionId);
-    } else if (r.status === 'held') {
-      say(r.reason ?? 'Collecting; the chat starts when the window ends');
+    } else if (r.status === 'waiting') {
+      say(r.reason ?? 'Waiting for its chat to start');
     } else {
       say(r.reason ? `${r.status}: ${r.reason}` : r.status, 'warn');
     }
@@ -177,8 +177,7 @@
           {:else}
             <div class="ok">
               {#if preview.action === 'append'}Would be appended to the chat already handling “{preview.key}”.
-              {:else if preview.action === 'join'}Would join the items being collected for “{preview.key}”.
-              {:else if preview.action === 'collect'}Would open the conversation “{preview.key}” and collect for a while before the chat starts{preview.agent ? ` on ${preview.agent}` : ''}.
+              {:else if preview.action === 'join'}Would wait with the items of “{preview.key}”, whose chat has not started yet.
               {:else}Would start a chat{preview.agent ? ` on ${preview.agent}` : ''} at once.{/if}
             </div>
             {#if preview.note}<div class="np-muted">{preview.note}</div>{/if}
