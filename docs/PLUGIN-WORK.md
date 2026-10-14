@@ -68,7 +68,7 @@ output is available through `processes.output { id, tail? }`.
 
 Useful actions from the tab (other plugins' RPCs):
 
-- `agent.abort { sessionId }`: stop an agent.
+- `agent.abort { sessionId, subagents? }`: stop an agent; `subagents: false` leaves its subagents working (the UI's Stop does this; Shift stops them too).
 - `processes.kill { id }`: kill a process tree.
 - `ctx.app.openSession(agent.sessionId)`: jump to an agent's or subagent's session.
 

@@ -71,9 +71,15 @@ const BUILTIN = [
   { name: 'help', description: 'Commands and keyboard shortcuts', source: 'builtin', run: () => (modals.help = true) },
   {
     name: 'abort',
-    description: 'Stop the running agent (Esc)',
+    description: 'Stop the running agent; its subagents keep working (Esc)',
     source: 'builtin',
     run: (args, { sessionId }) => sessionId && abortAgent(sessionId),
+  },
+  {
+    name: 'abort-all',
+    description: 'Stop the running agent and its subagents (Shift+Esc)',
+    source: 'builtin',
+    run: (args, { sessionId }) => sessionId && abortAgent(sessionId, true),
   },
 ];
 

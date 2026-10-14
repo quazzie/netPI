@@ -381,9 +381,11 @@ Timings measured by the old mock walkthrough (headless Chromium):
   narrows to 52px. Nothing passes the edge and Send stays on screen down to the 286px both open side panels leave
   (`ui.composer`'s narrow widths, idea-ziqr1i).
 - **Enter** sends. While the agent runs, Enter **steers** and **Alt+Enter** **queues**. **Shift+Enter** inserts
-  a newline. **Esc** stops the run (`agent.abort`); Esc in another field (a title rename, the session search) only
+  a newline. **Esc** and the **Stop** button stop the run alone (`agent.abort { subagents: false }`): the subagents it started keep
+  working and their reports still wake the chat, so a parent can be stopped and redirected without losing its workers.
+  **Shift+Esc** / Shift+click on Stop stop its subagents too (`subagents: true`). Esc in another field (a title rename, the session search) only
   leaves that field. Settings can switch sending to **Ctrl+Enter**; the hints follow.
-- `/` opens the commands popup: the built-ins `/new /rename /agent /project /goal /settings /help /abort`, plus
+- `/` opens the commands popup: the built-ins `/new /rename /agent /project /goal /settings /help /abort /abort-all`, plus
   commands from `ui.commands`. A command with `rpc` is called with `{ sessionId, args }`, and a string result
   is shown as a toast. A command with `clientAction` is handled by the client:
   `openTab:<pluginId/tabId>`, `insert:<text>` or `settings`. The session's skills are listed too, as `/skill:name`
@@ -618,7 +620,7 @@ versioned `work.v2.*` so the defaults of this layout apply).
   run id): chat title, then the activity — or, while the chat runs a foreground shell command, the command (`$ dotnet
   build …`), so a command starting or ending never changes the tab's size — and the elapsed time; subagents hold their
   own instance, so they are rows too, marked `sub` with the chat they work for; clicking opens the session, the hover
-  button stops it (`agent.abort { sessionId }`). Under the rows one line, always there, says `no one waiting` or `N
+  button stops that run alone (`agent.abort { sessionId, subagents: false }`; Shift+click stops its subagents too). Under the rows one line, always there, says `no one waiting` or `N
   waiting, longest 14m`; clicking it opens who waits in a floating list (`WaitList`, `position: fixed`, so it never
   pushes the tab down): each row opens its chat and has an **x** that cancels that run (`agent.abort { subagents: false }`: a run
   still waiting for an instance is cancelled before it starts, and the subagents the chat's earlier runs started keep working). The last line of the agent is what it has done this period

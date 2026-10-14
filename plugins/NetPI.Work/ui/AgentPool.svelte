@@ -90,7 +90,7 @@
     const label = who(o);
     stopping = o.agentId;
     try {
-      const ok = await ctx.rpc('agent.abort', { sessionId });
+      const ok = await ctx.rpc('agent.abort', { sessionId, subagents: !!e?.shiftKey }); // like the chat's Stop: Shift stops its subagents too
       if (!ok) ctx.app.toast(`${label} was not running`, 'warn');
     } catch (err) {
       ctx.app.toast(`Abort failed: ${err.message}`, 'error');
@@ -158,7 +158,7 @@
           {/if}
         </span>
         <span class="np-hover-actions"
-          ><IconButton icon="stop" title="Stop ({who(o)})" size="sm" disabled={stopping === o.agentId || ctx.hasRpc?.('agent.abort') === false} onclick={(e) => stop(e, o)} /></span
+          ><IconButton icon="stop" title="Stop ({who(o)}); its subagents keep working. Shift: stop them too" size="sm" disabled={stopping === o.agentId || ctx.hasRpc?.('agent.abort') === false} onclick={(e) => stop(e, o)} /></span
         >
       </div>
     {:else}

@@ -621,9 +621,13 @@ export async function sendMessage(sessionId, text, images, mode = 'auto') {
   }
 }
 
-export async function abortAgent(sessionId) {
+/**
+ * Stops the chat's run. By default the run alone: the subagents it started keep working and report back (which wakes the
+ * chat), so a parent can be stopped and redirected without losing its workers. `all` stops its subagents too (Shift+Esc).
+ */
+export async function abortAgent(sessionId, all = false) {
   try {
-    await rpc('agent.abort', { sessionId });
+    await rpc('agent.abort', { sessionId, subagents: all });
   } catch (e) {
     toast(`Abort failed: ${e.message}`, 'error');
   }
