@@ -1,116 +1,72 @@
-using System.Collections.Concurrent;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace NetPI.Schedules;
 
-/// <summary>How a waiting schedule proposal ended: allowed (enabled, the updated schedule rides along) or discarded (deleted).</summary>
-internal sealed record ProposalDecision(string Kind, JsonObject? Schedule = null)
-{
-    /// <summary>The plugin stopped while the proposal waited: the schedule stays a proposal in the Schedules tab.</summary>
-    public static readonly ProposalDecision Withdrawn = new("withdrawn");
-}
-
 /// <summary>
-/// The user's OK on a schedule an agent proposed (<c>schedules</c> add): the tool call waits for it with its instance
-/// given back, like <c>ask_user</c>. The card in the chat is the <c>schedule.proposed</c> / <c>schedule.decided</c>
-/// events (unscoped, the session in their data) and the <c>schedules.decide</c> RPC (allow enables the proposal, the
-/// user's own enable; discard deletes it). The schedule itself is persisted as a proposal (paused, <c>proposedBy</c>);
-/// only the wait is here, in memory — a restart or a stopped run leaves the proposal in the Schedules tab.
+/// The user's OK on a schedule an agent proposed (<c>schedules</c> add): the tool call is a wait for the user
+/// (<see cref="UserWait"/>, kind <c>schedule</c>), like <c>ask_user</c> — the run ends at it and goes on with the decision.
+/// The card in the chat is the <c>schedule.proposed</c> / <c>schedule.decided</c> events (unscoped, the session in their
+/// data; relayed from the runtime's <c>agent.waiting</c> / <c>agent.waitEnded</c>) and the <c>schedules.decide</c> RPC
+/// (allow enables the proposal, the user's own enable; discard deletes it). The schedule itself is persisted as a
+/// proposal (paused, <c>proposedBy</c>), and the wait is the runtime's: this plugin keeps none, so a reload of it loses
+/// none. A steer or a stop leaves the proposal in the Schedules tab.
 /// </summary>
 internal sealed class PendingProposals(IPluginContext ctx)
 {
-    private readonly ConcurrentDictionary<string, Entry> _byId = new(StringComparer.Ordinal);
+    public const string Kind = "schedule";
 
-    internal sealed class Entry
-    {
-        public required string Id { get; init; }
-        public required string SessionId { get; init; }
-        public required string CallId { get; init; }
-        public required string AgentId { get; init; }
-        public required JsonObject Schedule { get; init; }
-        public DateTimeOffset AskedAt { get; } = DateTimeOffset.UtcNow;
-        public TaskCompletionSource<ProposalDecision> Decision { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
+    private IEnumerable<WaitingCall> Waiting(string? sessionId) =>
+        ctx.Services.Get<IAgentRuntime>()?.Waits(sessionId, Kind).Where(w => !w.Answered) ?? [];
 
-    public Entry Add(ToolContext context, JsonObject schedule)
-    {
-        var e = new Entry
-        {
-            Id = "schq_" + Ids.Short(12),
-            SessionId = context.SessionId,
-            CallId = context.CallId,
-            AgentId = context.AgentId,
-            Schedule = schedule,
-        };
-        _byId[e.Id] = e;
-        ctx.Events.Publish("schedule.proposed", Json(e)); // unscoped: every window learns that a chat needs the user
-        return e;
-    }
-
-    /// <summary>Stops the wait: <paramref name="status"/> is allowed | discarded | steered | withdrawn | cancelled.</summary>
-    public void Close(Entry e, string status, string? decision = null)
-    {
-        if (!_byId.TryRemove(new KeyValuePair<string, Entry>(e.Id, e))) return;
-        ctx.Events.Publish("schedule.decided", new JsonObject
-        {
-            ["id"] = e.Id,
-            ["sessionId"] = e.SessionId,
-            ["callId"] = e.CallId,
-            ["status"] = status,
-            ["decision"] = decision,
-        });
-    }
-
-    public JsonArray List(string? sessionId) =>
-        new([.. _byId.Values.Where(e => sessionId is null || e.SessionId == sessionId).OrderBy(e => e.AskedAt).Select(e => (JsonNode)Json(e))]);
+    public JsonArray List(string? sessionId) => new([.. Waiting(sessionId).Select(w => (JsonNode)Json(NetPiJson.ToNode(w)!.AsObject()))]);
 
     /// <summary>
     /// The user's decision on the card: allow is the user's own enable of the proposal (it runs from now on), discard
-    /// deletes it. Both go through the plugin's own RPCs, so the Schedules tab sees the same state a tab click would.
+    /// deletes it. Both go through the plugin's own RPCs, so the Schedules tab sees the same state a tab click would; then
+    /// the waiting call goes on with it.
     /// </summary>
     public async Task<JsonObject> DecideAsync(string id, string decision, CancellationToken ct)
     {
-        if (!_byId.TryGetValue(id, out var e)) throw new RpcException("not_found", "No schedule proposal waits with that id (it was decided, or its run ended).");
-        var scheduleId = e.Schedule["id"]?.GetValue<string>() ?? throw new RpcException("bad_request", "The proposal has no schedule id.");
-        switch (decision)
+        if (decision is not ("allow" or "discard")) throw new RpcException("bad_request", "decision is allow or discard");
+        var w = Waiting(null).FirstOrDefault(x => x.Id == id)
+                ?? throw new RpcException("not_found", "No schedule proposal waits with that id (it was decided, or its chat moved on).");
+        var proposed = w.Data?["schedule"] as JsonObject ?? throw new RpcException("bad_request", "The proposal has no schedule.");
+        var scheduleId = proposed["id"]?.GetValue<string>() ?? throw new RpcException("bad_request", "The proposal has no schedule id.");
+        var project = (string?)w.Data?["project"];
+        JsonObject answer;
+        JsonObject? updated = null;
+        if (decision == "allow")
+            answer = updated = (JsonObject)(await ctx.Rpc.InvokeAsync("schedules.update", new JsonObject { ["id"] = scheduleId, ["enabled"] = true }, ct).ConfigureAwait(false))!;
+        else
         {
-            case "allow":
-                {
-                    var updated = (JsonObject)(await ctx.Rpc.InvokeAsync("schedules.update", new JsonObject { ["id"] = scheduleId, ["enabled"] = true }, ct).ConfigureAwait(false))!;
-                    if (!e.Decision.TrySetResult(new ProposalDecision("allow", updated))) throw new RpcException("not_found", "The proposal was already decided.");
-                    Close(e, "allowed", "allow");
-                    return updated;
-                }
-            case "discard":
-                {
-                    await ctx.Rpc.InvokeAsync("schedules.delete", new JsonObject { ["id"] = scheduleId }, ct).ConfigureAwait(false);
-                    if (!e.Decision.TrySetResult(new ProposalDecision("discard"))) throw new RpcException("not_found", "The proposal was already decided.");
-                    Close(e, "discarded", "discard");
-                    return new JsonObject { ["id"] = scheduleId };
-                }
-            default:
-                throw new RpcException("bad_request", "decision is allow or discard");
+            await ctx.Rpc.InvokeAsync("schedules.delete", new JsonObject { ["id"] = scheduleId }, ct).ConfigureAwait(false);
+            answer = new JsonObject { ["id"] = scheduleId };
         }
+        var runtime = ctx.Services.Get<IAgentRuntime>() ?? throw new RpcException("unavailable", "The agent runtime is not running.");
+        await runtime.ResolveAsync(w.Id, WaitResolution.Answer(SchedulesTool.Decided(decision, proposed, updated, project)), ct).ConfigureAwait(false);
+        Closed(w.Id, w.SessionId, w.CallId, decision == "allow" ? "allowed" : "discarded", decision);
+        return answer;
     }
 
-    /// <summary>The plugin goes: the waits end as withdrawn, so their runs go on (with their slot back) instead of hanging.</summary>
-    public void WithdrawAll()
-    {
-        foreach (var e in _byId.Values)
+    /// <summary>The card closes: <paramref name="status"/> is allowed | discarded | steered | cancelled.</summary>
+    public void Closed(string id, string sessionId, string? callId, string status, string? decision = null) =>
+        ctx.Events.Publish("schedule.decided", new JsonObject
         {
-            e.Decision.TrySetResult(ProposalDecision.Withdrawn);
-            Close(e, "withdrawn");
-        }
-    }
+            ["id"] = id,
+            ["sessionId"] = sessionId,
+            ["callId"] = callId,
+            ["status"] = status,
+            ["decision"] = decision,
+        });
 
-    private static JsonObject Json(Entry e) => new()
+    /// <summary>A waiting proposal as the card, schedules.proposals and schedule.proposed show it, from the runtime's wait.</summary>
+    internal static JsonObject Json(JsonObject wait) => new()
     {
-        ["id"] = e.Id,
-        ["sessionId"] = e.SessionId,
-        ["callId"] = e.CallId,
-        ["agentId"] = e.AgentId,
-        ["schedule"] = e.Schedule.DeepClone(),
-        ["askedAt"] = e.AskedAt.ToString("O"),
+        ["id"] = wait["id"]?.DeepClone(),
+        ["sessionId"] = wait["sessionId"]?.DeepClone(),
+        ["callId"] = wait["callId"]?.DeepClone(),
+        ["agentId"] = wait["agentId"]?.DeepClone(),
+        ["schedule"] = wait["data"]?["schedule"]?.DeepClone(),
+        ["askedAt"] = wait["since"]?.DeepClone(),
     };
 }

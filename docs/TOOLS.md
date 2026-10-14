@@ -968,9 +968,10 @@ With no action: an id plus a change means update, an id alone means get, a promp
   `{ kind: every, minutes }` · `{ kind: daily, time, tz? }` an IANA zone, default the machine's). The project defaults to
   the calling chat's; `""` means none. The result echoes the machine's now. **The schedule is a proposal that waits:** it is
   stored paused with `proposedBy: "session:<chat>"`, and the call then waits for the user's decision on a card in the chat
-  (the `schedule.proposed` / `schedule.decided` events, the `schedules.decide` RPC), with the run's instance given back
-  meanwhile, like `ask_user`: **allow** enables it (it runs from then on) and **discard** deletes it. A steer (the user
-  writes a message) or the plugin stopping leaves it a proposal in the Schedules tab. A subagent's add has no card —
+  (the `schedule.proposed` / `schedule.decided` events, the `schedules.decide` RPC): a wait for the user like `ask_user`
+  (`UserWait` kind `schedule`: the run ends at the call and goes on with the decision; a reload or a restart keeps it):
+  **allow** enables it (it runs from then on) and **discard** deletes it. A steer (the user writes a message) or a stop of
+  the chat leaves it a proposal in the Schedules tab. A subagent's add has no card —
   nobody watches its chat — and stays a paused proposal the model tells its parent about.
 - `update`: change any field, or pause with `enabled: false`. A change of what runs (prompt, cadence, project, agent) pauses
   the schedule as a proposal until the user enables it again; a new name does not. Enabling or resuming is refused: that is
@@ -990,7 +991,7 @@ is exhausted (a free agent runs on a spent budget), and a run missed while the h
 
 ```ts
 details: { kind: "schedules", schedules: Schedule[], now }          // list
-          | { kind: "schedule", schedule, project?, status?, created? }  // get / add / update (add: status allowed | discarded | steered | withdrawn | cancelled | proposal; the schedule is the post-decision one on an allow)
+          | { kind: "schedule", schedule, project?, status?, created? }  // get / add / update (add: status allowed | discarded | steered | cancelled | proposal; the schedule is the post-decision one on an allow)
           | { kind: "schedule-history", scheduleId, runs }          // history
           | { kind: "schedule-run", id, status, reason?, sessionId? } // run
 ```

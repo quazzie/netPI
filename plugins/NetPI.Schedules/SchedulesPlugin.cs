@@ -56,7 +56,17 @@ public sealed class SchedulesPlugin : INetPiPlugin
         var runner = Runner = new ScheduleRunner(ctx, store, _time);
         var proposals = Proposals = new PendingProposals(ctx);
         Register(ctx, store, runner, proposals);
-        ctx.Tools.Register(new SchedulesTool(ctx, proposals));
+        ctx.Tools.Register(new SchedulesTool(ctx));
+        // the cards, from the runtime's waits of this kind (sync handlers: an async one left alive roots this load context)
+        ctx.Events.Subscribe(EventTypes.AgentWaiting, e =>
+        {
+            if (e.As<JsonObject>()?["wait"] is JsonObject w && (string?)w["kind"] == PendingProposals.Kind) ctx.Events.Publish("schedule.proposed", PendingProposals.Json(w));
+        });
+        ctx.Events.Subscribe(EventTypes.AgentWaitEnded, e =>
+        {
+            if (e.As<JsonObject>() is not { } d || (string?)d["kind"] != PendingProposals.Kind || (string?)d["reason"] == "answered") return;   // a decision closes its own
+            proposals.Closed((string)d["waitId"]!, (string?)d["sessionId"] ?? "", (string?)d["callId"], (string?)d["reason"] == "steered" ? "steered" : "cancelled");
+        });
         ctx.Ui.AddTab(new UiTabInfo
         {
             Id = "schedules", Title = "Schedules", Panel = UiPanel.Left, Order = 25, Module = "ui.js",
@@ -75,8 +85,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
     {
         _stop?.Cancel();
         if (_worker is { } w) { try { await w.ConfigureAwait(false); } catch (OperationCanceledException) { } }
-        // a waiting tool call must not outlive the plugin: its run goes on, the proposal stays in the Schedules tab
-        Proposals?.WithdrawAll();
+        // nothing to withdraw: a proposal's wait is the runtime's, and it waits on through a reload of this plugin
     }
 
     private async Task LoopAsync(IPluginContext ctx, ScheduleStore store, ScheduleRunner runner, CancellationToken ct)

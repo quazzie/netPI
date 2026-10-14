@@ -18,10 +18,60 @@ public static class SchedulesTests
         public void Advance(TimeSpan by) => Now += by;
     }
 
-    /// <summary>A runtime that records what it was sent; <see cref="Fail"/> makes the next send throw. <see cref="Steer"/>
-    /// makes <c>WaitYieldedAsync</c> come back "the user wrote a new message instead" (steered) without the wait ending.</summary>
+    /// <summary>
+    /// A runtime that records what it was sent; <see cref="Fail"/> makes the next send throw. It holds the waits a tool
+    /// returns (<see cref="HoldAsync"/>, what the real runtime's tool batch does): listed by <c>Waits</c>, announced, and
+    /// ended by <c>ResolveAsync</c> with the answer, or at once with the wait's <c>IfSteered</c> while <see cref="Steer"/>
+    /// is set (the user wrote instead).
+    /// </summary>
     internal sealed class RecordingRuntime : IAgentRuntime
     {
+        private readonly List<(WaitingCall Info, UserWait Wait, TaskCompletionSource<ToolResult> Done)> _waits = [];
+        /// <summary>The bus the waits are announced on (the plugin's: its relays turn them into the card events).</summary>
+        public IEventBus? Events { get; set; }
+
+        /// <summary>The call's result once its wait ends (the answer, or what a steer gives it).</summary>
+        public Task<ToolResult> HoldAsync(ToolContext context, string tool, UserWait wait)
+        {
+            var info = new WaitingCall
+            {
+                Id = wait.Id, Kind = wait.Kind, SessionId = context.SessionId, AgentId = context.AgentId, CallId = context.CallId, Tool = tool,
+                Activity = wait.Activity, Data = wait.Data, Since = DateTimeOffset.UtcNow,
+            };
+            var done = new TaskCompletionSource<ToolResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_waits) _waits.Add((info, wait, done));
+            Events?.Publish(EventTypes.AgentWaiting, new JsonObject { ["wait"] = NetPiJson.ToNode(info) });
+            if (Steer) End(info.Id, wait.IfSteered, "steered");
+            return done.Task;
+        }
+
+        private bool End(string waitId, ToolResult result, string reason)
+        {
+            (WaitingCall Info, UserWait Wait, TaskCompletionSource<ToolResult> Done) w;
+            lock (_waits)
+            {
+                var i = _waits.FindIndex(x => x.Info.Id == waitId);
+                if (i < 0) return false;
+                w = _waits[i];
+                _waits.RemoveAt(i);
+            }
+            Events?.Publish(EventTypes.AgentWaitEnded, new JsonObject
+            {
+                ["sessionId"] = w.Info.SessionId, ["agentId"] = w.Info.AgentId, ["callId"] = w.Info.CallId, ["waitId"] = waitId,
+                ["kind"] = w.Info.Kind, ["tool"] = w.Info.Tool, ["data"] = w.Info.Data?.DeepClone(), ["reason"] = reason,
+            });
+            w.Done.TrySetResult(result);
+            return true;
+        }
+
+        public IReadOnlyList<WaitingCall> Waits(string? sessionId = null, string? kind = null)
+        {
+            lock (_waits) return [.. _waits.Select(w => w.Info).Where(w => (sessionId is null || w.SessionId == sessionId) && (kind is null || w.Kind == kind))];
+        }
+
+        public Task<bool> ResolveAsync(string waitId, WaitResolution resolution, CancellationToken ct = default) =>
+            Task.FromResult(End(waitId, resolution.Result ?? ToolResult.Ok("allowed"), "answered"));
+
         public List<(string SessionId, UserInput Input)> Sent { get; } = [];
         public List<AgentInfo> Agents { get; } = [];
         public bool Fail { get; set; }
@@ -43,23 +93,6 @@ public static class SchedulesTests
         public Task<bool> MessageAsync(string fromAgentId, string toAgentId, string text, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => Task.FromResult(false);
         public IReadOnlyList<QueuedInput> GetQueue(string sessionId) => [];
         public bool RemoveQueued(string sessionId, string inputId) => false;
-
-        /// <summary>The default <c>WaitYieldedAsync</c> (the interface's), plus the steer: a test that sets <see cref="Steer"/>
-        /// gets "the user wrote a new message instead" back, like a real steer does.</summary>
-        Task<bool> IAgentRuntime.WaitYieldedAsync(string? callerAgentId, Task until, string activity, TimeSpan? timeout, CancellationToken ct)
-        {
-            if (Steer) return Task.FromResult(false);
-            return WaitUntil(until, timeout, ct);
-            static async Task<bool> WaitUntil(Task until, TimeSpan? timeout, CancellationToken ct)
-            {
-                try
-                {
-                    await until.WaitAsync(timeout ?? Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
-                    return true;
-                }
-                catch (TimeoutException) { return false; }
-            }
-        }
     }
 
     internal sealed class Env
@@ -76,6 +109,7 @@ public static class SchedulesTests
             Ctx = new FakePluginContext(_home, "netpi.schedules");
             Project = Ctx.SessionsFake.CreateProject("demo", _home);
             Ctx.ServicesFake.Register<IAgentRuntime>(Runtime);
+            Runtime.Events = Ctx.Events;
         }
 
         public async Task<Env> StartAsync()
@@ -93,6 +127,7 @@ public static class SchedulesTests
             Ctx = new FakePluginContext(_home, "netpi.schedules");
             Ctx.SessionsFake.Projects.AddRange(projects);
             Ctx.ServicesFake.Register<IAgentRuntime>(Runtime);
+            Runtime.Events = Ctx.Events;
             await StartAsync();
         }
 

@@ -23,8 +23,9 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 A `schedules` **add** is now a proposal that *waits*: stored paused with `proposedBy`, the tool call yields (like `ask_user`)
 and a card in the chat (`schedule`, `ScheduleCard`) asks the user to **Allow** (the user's own enable — it runs from then on)
 or **Discard** (deleted). `schedule.proposed` / `schedule.decided` events, `schedules.decide` / `schedules.proposals` RPCs
-(`plugins/NetPI.Schedules/ScheduleProposals.cs`); a steer, a plugin stop or a subagent's add (no card: nobody watches its
-chat) leave the schedule a paused proposal in the Schedules tab. Covered by `SchedulesToolTests` (Aux) and the web bundle;
+(`plugins/NetPI.Schedules/ScheduleProposals.cs`); a steer, a stop of the chat or a subagent's add (no card: nobody watches its
+chat) leave the schedule a paused proposal in the Schedules tab. Since 2026-10-14 the wait is a durable wait for the user (it
+survives a reload of the plugin and a restart; docs/PLUGINS.md "Waiting for the user"). Covered by `SchedulesToolTests` (Aux) and the web bundle;
 documented in TOOLS.md, PROTOCOL.md and UI.md.
 
 ### The UI tests run against the real server (2026-10-11)

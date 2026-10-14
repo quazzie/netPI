@@ -12,18 +12,18 @@ namespace NetPI.Schedules;
 /// is capped at <see cref="MaxSchedules"/>. Deleting a schedule is up to the user, in the Schedules tab.
 /// <para>
 /// An add is a proposal: stored paused with <c>proposedBy</c>, and the call then waits for the user's OK on a card in
-/// the chat (<see cref="PendingProposals"/>: <c>schedule.proposed</c> / <c>schedule.decided</c>, <c>schedules.decide</c>),
-/// with the run's instance given back meanwhile, like <c>ask_user</c>. Allow enables the schedule, discard deletes it.
+/// the chat (<see cref="PendingProposals"/>: <c>schedule.proposed</c> / <c>schedule.decided</c>, <c>schedules.decide</c>):
+/// a wait for the user (<see cref="UserWait"/>, kind <c>schedule</c>), like <c>ask_user</c>, so the run ends at the call
+/// and goes on with the decision. Allow enables the schedule, discard deletes it.
 /// A subagent's add does not wait — nobody watches a subagent's chat — and stays a proposal in the Schedules tab.
 /// </para>
 /// </summary>
-internal sealed class SchedulesTool(IPluginContext ctx, PendingProposals proposals) : IAgentTool, IReadOnlyCalls
+internal sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyCalls
 {
     /// <summary>A runaway add loop is capped; the user deletes in the tab, the model does not.</summary>
     public const int MaxSchedules = 50;
 
     private readonly IPluginContext _ctx = ctx;
-    private readonly PendingProposals _proposals = proposals;
 
     public ToolDefinition Definition { get; } = new()
     {
@@ -212,34 +212,33 @@ internal sealed class SchedulesTool(IPluginContext ctx, PendingProposals proposa
                 $"one an agent sets up waits for the user's OK. Now is {Stamp(now)}. Each run starts a fresh chat on project {project}.",
                 Details(s, project, "proposal"));
 
-        var e = _proposals.Add(context, s);
-        var status = "cancelled";
-        try
+        // the call waits for the user's decision (the run ends here and goes on with it: PendingProposals.DecideAsync)
+        return ToolResult.WaitForUser(new UserWait
         {
-            var decided = await runtime.WaitYieldedAsync(context.AgentId, e.Decision.Task, "waiting for your decision on the schedule", null, ct).ConfigureAwait(false);
-            if (!decided)
-            {
-                status = "steered";
-                return ToolResult.Ok(
-                    $"No decision: the user wrote a new message instead; it follows. The schedule “{name}” ({sid}, {when}) stays a proposal in the Schedules tab (paused) until they enable it there.",
-                    Details(s, project, status));
-            }
-            var d = await e.Decision.Task.ConfigureAwait(false);
-            status = d.Kind switch { "allow" => "allowed", "discard" => "discarded", _ => "withdrawn" };
-            var shown = d.Schedule ?? s;   // an allow rides the updated schedule (enabled, the proposal mark gone)
-            var text = status switch
-            {
-                "allowed" => $"The user allowed the schedule “{name}” ({sid}, {when}): it is enabled and runs from now on, each run a fresh chat on project {project}. Now is {Stamp(now)}.",
-                "discarded" => $"The user discarded the schedule “{name}” ({sid}): it is deleted. Do not add it again unless asked.",
-                _ => $"No decision: the schedules plugin stopped, so the card went away. The schedule “{name}” ({sid}, {when}) stays a proposal in the Schedules tab (paused) until the user enables it there.",
-            };
-            return ToolResult.Ok(text, Details(shown, project, status));
-        }
-        finally
-        {
-            // a decision already closed the entry (DecideAsync does it); this covers a steer, a stop and a cancelled run
-            _proposals.Close(e, status);
-        }
+            Id = "schq_" + Ids.Short(12),
+            Kind = PendingProposals.Kind,
+            Activity = "waiting for your decision on the schedule",
+            Data = new JsonObject { ["schedule"] = s.DeepClone(), ["project"] = project },
+            IfSteered = ToolResult.Ok(
+                $"No decision: the user wrote a new message instead; it follows. The schedule “{name}” ({sid}, {when}) stays a proposal in the Schedules tab (paused) until they enable it there.",
+                Details(s, project, "steered")),
+            IfCancelled = ToolResult.Ok(
+                $"No decision: the chat was stopped before the user decided. The schedule “{name}” ({sid}, {when}) stays a proposal in the Schedules tab (paused) until they enable it there.",
+                Details(s, project, "cancelled")),
+        });
+    }
+
+    /// <summary>What the waiting call reads when the user decided: allowed (the enabled schedule) or discarded.</summary>
+    internal static ToolResult Decided(string decision, JsonObject proposed, JsonObject? updated, string? project)
+    {
+        var name = proposed["name"]?.GetValue<string>() ?? "?";
+        var when = proposed["when"]?.GetValue<string>() ?? "?";
+        var sid = proposed["id"]?.GetValue<string>() ?? "?";
+        return decision == "allow"
+            ? ToolResult.Ok($"The user allowed the schedule “{name}” ({sid}, {when}): it is enabled and runs from now on, each run a fresh chat on project {project}. Now is {Stamp(DateTimeOffset.Now)}.",
+                Details(updated ?? proposed, project, "allowed"))
+            : ToolResult.Ok($"The user discarded the schedule “{name}” ({sid}): it is deleted. Do not add it again unless asked.",
+                Details(proposed, project, "discarded"));
     }
 
     private static object Details(JsonObject schedule, string? project, string status) => new JsonObject

@@ -9,12 +9,13 @@ namespace NetPI.Aux.Tests;
 /// these tests check the model text (Content, no JSON), the Details shape, the action inference, and the tool-side
 /// guards that the RPCs deliberately leave to the user's tab: a schedule's own chat cannot grow the schedule set,
 /// and the set is capped. An add is a proposal that waits for the user's decision on the card in the chat
-/// (<c>schedule.proposed</c> / <c>schedules.decide</c>): allow enables it, discard deletes it, a steer and a plugin
-/// stop leave it a proposal in the tab, and a subagent's add does not wait at all.
+/// (<c>schedule.proposed</c> / <c>schedules.decide</c>): allow enables it, discard deletes it, a steer leaves it a
+/// proposal in the tab, a reload of the plugin leaves the wait alone, and a subagent's add does not wait at all. The
+/// call's wait is held by the test's runtime (<see cref="SchedulesTests.RecordingRuntime.HoldAsync"/>), as the real one does.
 /// </summary>
 public static class SchedulesToolTests
 {
-    private static SchedulesTool Tool(SchedulesTests.Env env) => new(env.Ctx, env.Plugin?.Proposals ?? new PendingProposals(env.Ctx));
+    private static SchedulesTool Tool(SchedulesTests.Env env) => new(env.Ctx);
 
     private static ToolContext Tc(SchedulesTests.Env env, SessionInfo? session = null, ProjectInfo? project = null) => new()
     {
@@ -23,8 +24,13 @@ public static class SchedulesToolTests
         Services = env.Ctx.Services, Events = env.Ctx.Events,
     };
 
-    private static async Task<ToolResult> Call(SchedulesTests.Env env, object args, SessionInfo? session = null, ProjectInfo? project = null) =>
-        await Tool(env).ExecuteAsync(Tc(env, session, project), T.Args(args), CancellationToken.None);
+    /// <summary>The tool's result; for a call that waits for the user, the result it gets when that wait ends.</summary>
+    private static async Task<ToolResult> Call(SchedulesTests.Env env, object args, SessionInfo? session = null, ProjectInfo? project = null)
+    {
+        var context = Tc(env, session, project);
+        var result = await Tool(env).ExecuteAsync(context, T.Args(args), CancellationToken.None);
+        return result.Wait is { } wait ? await env.Runtime.HoldAsync(context, "schedules", wait) : result;
+    }
 
     /// <summary>The proposal a just-started add is waiting on (the newest open one; a steer closed its own already).</summary>
     private static async Task<string> ProposedId(SchedulesTests.Env env)
@@ -221,18 +227,20 @@ public static class SchedulesToolTests
             Check.Equal(0, none.Count, "no card: nothing waits");
         });
 
-        r.Add("schedules tool: the plugin stopping withdraws the wait; the proposal stays in the tab", async () =>
+        r.Add("schedules tool: a reload of the plugin leaves the wait alone; the new version decides it", async () =>
         {
             var env = await new SchedulesTests.Env().StartAsync();
             var t = Task.Run(() => Call(env, new { action = "add", prompt = "Late", cadence = new { kind = "every", minutes = 60 } }));
             var pid = await ProposedId(env);
             await env.Plugin.StopAsync(CancellationToken.None);
+            await env.RestartAsync();   // a new version of the plugin (a new context on the same home)
+            Check.False(t.IsCompleted, "nothing was withdrawn: the call still waits");
+            Check.Equal(pid, S((await Proposals(env))[0]!["id"]), "the new version lists the wait");
+            await env.Ctx.RpcFake.CallAsync("schedules.decide", new { id = pid, decision = "allow" });
             var r = await t;
             Check.False(r.IsError, r.Content);
-            Check.Contains(r.Content, "plugin stopped");
-            Check.Contains(r.Content, "stays a proposal");
-            var id = S(Details(r)["schedule"]!["id"])!;
-            Check.False((await env.Get(id))["enabled"]!.GetValue<bool>(), "the schedule is still there, paused");
+            Check.Contains(r.Content, "allowed");
+            Check.True((await env.Get(S(Details(r)["schedule"]!["id"])!))["enabled"]!.GetValue<bool>(), "allowed after the reload: it runs");
             Check.Equal(0, (await Proposals(env)).Count, "the wait is gone");
         });
 
