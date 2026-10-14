@@ -173,7 +173,7 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
         {
             mp = ManagedProcess.Start(id, spec, command, cwd, capture, live,
                 background ? TimeSpan.FromMilliseconds(250) : TimeSpan.FromMilliseconds(50),
-                ctx.SessionId, ctx.AgentId, background, Registry.OnExited, Registry.Add, ctx.Workspace()?.WorkspaceId, ctx.Workspace()?.Branch);
+                ctx.SessionId, ctx.AgentId, background, Registry.OnExited, Registry.Add, ctx.Workspace()?.WorkspaceId, ctx.Workspace()?.Branch, ctx.CallId);
         }
         catch (Exception ex)
         {
@@ -267,6 +267,7 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
     private ToolResult FormatForeground(ManagedProcess mp, int timeoutSeconds, bool timedOut, bool aborted,
         WorkspaceBinding? workspace = null, bool elsewhere = false, ChangeTracker.Report? changes = null, bool editLike = false, bool outside = false)
     {
+        var killed = !timedOut && !aborted && mp.Status == "killed"; // stopped from the chat (processes.killCall)
         var full = ToolOutput.ResolveCarriageReturns(mp.Output.Snapshot());
         var (tail, truncated, totalLines, shownLines) = ToolOutput.TailLines(full, ToolOutput.ModelMaxLines, ToolResultLimit.Fit(Settings, ToolOutput.ModelMaxBytes));
         var complete = mp.Output.Complete;
@@ -286,6 +287,7 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
         sb.Append(tail.Length > 0 ? tail : "(no output)");
         if (timedOut) sb.Append($"\n[timed out after {timeoutSeconds}s; the process tree was killed. Use a longer timeout or background=true for long-running commands.]");
         else if (aborted) sb.Append("\n[aborted; the process tree was killed]");
+        else if (killed) sb.Append("\n[killed from the chat; the process tree was killed]");
         else if (mp.ExitCode is { } code && code != 0) sb.Append($"\n[exit code {code}]");
         sb.Append(WhereNote(workspace, elsewhere, mp.Cwd));
         if (!mp.OutputReachedEof)
@@ -295,7 +297,7 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
         return new ToolResult
         {
             Content = sb.ToString(),
-            IsError = timedOut || aborted,
+            IsError = timedOut || aborted || killed,
             Details = Details(mp, truncated, fullPath, timedOut, aborted, changes),
         };
     }

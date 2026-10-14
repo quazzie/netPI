@@ -8,7 +8,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | plugin | id | tools | RPC |
 |---|---|---|---|
 | `plugins/NetPI.Tools.Files` | `netpi.tools.files` | `read` `write` `edit` `grep` `find` `ls` `git` | `files.search`, `files.list`, `files.open`, `files.git` |
-| `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process` | `processes.list`, `processes.output`, `processes.kill` |
+| `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process` | `processes.list`, `processes.output`, `processes.kill`, `processes.killCall` |
 | `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `browser` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
 | `plugins/NetPI.Ask` | `netpi.ask` | `ask_user` | `ask.pending`, `ask.answer` |
@@ -420,6 +420,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 
 RPC: `processes.list` → `ProcessInfo[]` (running first, newest first) · `processes.output { id, tail? (500) }` → `string` ·
 `processes.kill { id }` → `bool` (false if it was not running). An unknown id gives `not_found`.
+`processes.killCall { sessionId, callId }` → `bool`: kills the running command a tool call started (the chat's Kill button on an expanded, running `bash`/`pwsh` call); the call then ends as an error "[killed from the chat…]" with the output so far (`details.status: "killed"`).
 
 Events (broadcast):
 

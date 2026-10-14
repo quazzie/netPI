@@ -15,6 +15,8 @@ public sealed class ProcessInfo
     public required string Cwd { get; init; }
     public string? SessionId { get; init; }
     public string? AgentId { get; init; }
+    /// <summary>The tool call that started it: the chat finds a stuck foreground command by it.</summary>
+    public string? CallId { get; init; }
     /// <summary>The workspace the process was started in. It keeps that workspace's ownership for as long as it runs, so
     /// a cleanup that would delete the checkout has to wait for it (IWorkspaceProcesses).</summary>
     public string? WorkspaceId { get; init; }
@@ -62,6 +64,8 @@ public sealed class ManagedProcess : IDisposable
     public string Cwd { get; }
     public string? SessionId { get; init; }
     public string? AgentId { get; init; }
+    /// <summary>The tool call that started it: the chat finds a stuck foreground command by it.</summary>
+    public string? CallId { get; init; }
     /// <summary>The workspace the process was started in. It keeps that workspace's ownership for as long as it runs, so
     /// a cleanup that would delete the checkout has to wait for it (IWorkspaceProcesses).</summary>
     public string? WorkspaceId { get; init; }
@@ -110,7 +114,7 @@ public sealed class ManagedProcess : IDisposable
     public static ManagedProcess Start(string id, LaunchSpec spec, string command, string cwd, OutputCapture output,
         Action<string>? live = null, TimeSpan? liveInterval = null, string? sessionId = null, string? agentId = null, bool background = false,
         Action<ManagedProcess>? onExited = null, Action<ManagedProcess>? onStarted = null,
-        string? workspaceId = null, string? workspaceBranch = null)
+        string? workspaceId = null, string? workspaceBranch = null, string? callId = null)
     {
         var psi = new ProcessStartInfo(spec.Executable)
         {
@@ -137,6 +141,7 @@ public sealed class ManagedProcess : IDisposable
         {
             SessionId = sessionId,
             AgentId = agentId,
+            CallId = callId,
             Background = background,
             WorkspaceId = workspaceId,
             WorkspaceBranch = workspaceBranch,
@@ -262,7 +267,7 @@ public sealed class ManagedProcess : IDisposable
         {
             return new ProcessInfo
             {
-                Id = Id, Pid = Pid, Shell = Shell, Command = Command, Cwd = Cwd, SessionId = SessionId, AgentId = AgentId,
+                Id = Id, Pid = Pid, Shell = Shell, Command = Command, Cwd = Cwd, SessionId = SessionId, AgentId = AgentId, CallId = CallId,
                 WorkspaceId = WorkspaceId, WorkspaceBranch = WorkspaceBranch,
                 Background = Background, Status = _status, ExitCode = ExitCode, StartedAt = StartedAt, EndedAt = EndedAt,
                 OutputBytes = Output.TotalBytes,
@@ -313,6 +318,10 @@ public sealed class ProcessRegistry(IEventBus? events = null)
             return _all.Values.Where(x => x.Pid == pid).OrderByDescending(x => x.StartedAt).FirstOrDefault();
         return null;
     }
+
+    /// <summary>The running process a tool call of a session started (a foreground command the user wants to stop), or null.</summary>
+    public ManagedProcess? ByCall(string sessionId, string callId) =>
+        _all.Values.FirstOrDefault(p => p.IsRunning && p.CallId == callId && p.SessionId == sessionId);
 
     /// <summary>Running first, then finished; newest first.</summary>
     public IReadOnlyList<ManagedProcess> List() =>

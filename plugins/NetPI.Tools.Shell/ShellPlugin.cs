@@ -76,6 +76,10 @@ public sealed class ShellPlugin : INetPiPlugin
             return Task.FromResult<object?>(p.Kill());
         });
 
+        context.Rpc.Register(new RpcMethod("processes.killCall", "Kill the process tree a running tool call started (a foreground command): { sessionId, callId } → bool", ReadOnly: false,
+            Params: [RpcParam.Req("sessionId"), RpcParam.Req("callId")]),
+            (req, _) => Task.FromResult<object?>(registry.ByCall(req.Required("sessionId"), req.Required("callId"))?.Kill() ?? false));
+
         var bash = ShellLocator.FindBash(context.Settings);
         var pwsh = ShellLocator.FindPwsh(context.Settings, out var legacy);
         context.Logger.LogInformation("Shell tools: bash={Bash}, pwsh={Pwsh}{Legacy}", bash ?? "(not found)", pwsh ?? "(not found)", legacy ? " (Windows PowerShell)" : "");

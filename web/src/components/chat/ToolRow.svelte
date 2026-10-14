@@ -207,7 +207,7 @@
         </button>
       {/if}
       {#if meta.view === 'shell'}
-        <ShellView name={name} {args} {result} live={lt} />
+        <ShellView name={name} {args} {result} live={lt} chatId={chat.id} callId={call.id} />
       {:else if meta.view === 'edit' || meta.view === 'write'}
         <DiffView name={name} {args} {result} />
       {:else if meta.view === 'read'}

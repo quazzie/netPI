@@ -241,6 +241,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `processes.list` | netpi.tools.shell | → `ProcessInfo[]` |
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |
 | `processes.kill` | netpi.tools.shell | `{ id }` → `bool` |
+| `processes.killCall` | netpi.tools.shell | `{ sessionId, callId }` → `bool` (the running command that tool call started) |
 | `embed.texts` | netpi.embeddings | `{ texts: string[], kind?: "document" \| "query" }` → `{ model, dim, vectors }`: the configured embedding model's vectors (normalized; a query gets `embed.queryPrefix`). Errors: `off` (no `embed.model`), `unavailable` (backing off after a failure), `timeout`, `unreachable`, or the server's code |
 | `embed.status` | netpi.embeddings | → `{ model, baseUrl, available, downUntil?, lastError?, calls, failures, p50Ms }` (read-only) |
 | `decide.decision` | netpi.decide | `{ messages, branches: [{ id?, content, labels }], model?, share_state? }` → NInfer's `/v1/decision` answer through the same server (`{ branches: [{ id, probabilities, mass, … }], usage, … }` plus `ms`); thinking off unless the caller sets it. The `messages` are the shared state NInfer caches across requests. Errors keep the server's code and request id |

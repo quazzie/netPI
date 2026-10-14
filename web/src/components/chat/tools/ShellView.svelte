@@ -3,9 +3,12 @@
   import DiffView from './DiffView.svelte';
   import { arg } from '../../../lib/tools.js';
   import { copyText } from '../../../lib/markdown.js';
+  import { rpc } from '../../../lib/rpc.svelte.js';
+  import { toast } from '../../../lib/state/ui.svelte.js';
+  import ConfirmButton from '../../../lib/kit/ConfirmButton.svelte';
 
   /** bash / pwsh: command, live output (tool.output) or final result, exit code and process info */
-  let { name, args, result, live } = $props();
+  let { name, args, result, live, chatId = '', callId = '' } = $props();
 
   const cmd = $derived(String(arg(args, 'command', 'cmd', 'script') ?? ''));
   const d = $derived(result?.details ?? {});
@@ -39,6 +42,17 @@
       }
     }
   });
+
+  // a command that looks stuck: kill its process tree (the call then ends with the output so far)
+  const killable = $derived(running && (name === 'bash' || name === 'pwsh') && !!chatId && !!callId);
+  async function kill() {
+    try {
+      const ok = await rpc('processes.killCall', { sessionId: chatId, callId });
+      if (!ok) toast('The command is not running any more', 'warn');
+    } catch (e) {
+      toast(`Kill failed: ${e.message}`, 'error');
+    }
+  }
 
   let copied = $state(false);
   async function copyCmd() {
@@ -78,6 +92,8 @@
   <div class="foot">
     {#if running}
       <span class="np-badge" data-tone="accent"><span class="np-spinner" style="width:9px;height:9px"></span> running</span>
+    {:else if d.status === 'killed' && !d.timedOut && !d.aborted}
+      <span class="np-badge" data-tone="err">killed</span>
     {:else if d.timedOut}
       <span class="np-badge" data-tone="err">timed out</span>
     {:else if d.aborted}
@@ -92,6 +108,7 @@
     {#if d.cwd}<span class="np-dim np-ellipsis cwd" title={d.cwd}>{d.cwd}</span>{/if}
     {#if live?.truncated || d.truncated}<span class="np-dim">output truncated{d.fullOutputPath ? ` · full log ${d.fullOutputPath}` : ''}</span>{/if}
     <span class="np-spacer"></span>
+    {#if killable}<ConfirmButton icon="kill" label="Kill" confirmLabel="Kill?" title="Kill the command and its child processes" onconfirm={kill} />{/if}
     {#if lineCount > 20}
       <button class="np-btn np-btn-ghost np-btn-sm" onclick={() => (full = !full)}>{full ? 'Collapse' : 'Show all'}</button>
     {/if}
