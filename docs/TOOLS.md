@@ -748,8 +748,9 @@ details: { items: { text, status }[], done, total }
 at most 8 options each; a question up to 1000 characters, an option label up to 400 and its description up to 600,
 longer text cut with a `…`) asks the user and waits for the answers. The label is what the user picks, so it carries the
 choice itself and the description what it means — the card wraps both. The questions appear in the chat below the agent's
-message, and the run waits with its instance given back, like `agent` `wait` (`IAgentRuntime.WaitYieldedAsync`): the
-agent shows as yielded, "waiting for your answer", and takes an instance again, ahead of the queue, once answered.
+message, and the run ends at the call (a wait for the user, `UserWait` kind `ask`, docs/PLUGINS.md "Waiting for the
+user"): the agent shows as yielded, "waiting for your answer", holding no instance and no reload, and the chat goes on
+with the answer as the call's result. The question survives a reload of the ask plugin or the runtime, and a restart.
 Lenient: one question at the top level (`question` with `options`), options as plain strings, `text`, `choices`,
 `value`, `detail`, `multiSelect`, a JSON string. The user picks options (`ask.answer { callId, answers }`, the picks per
 question), writes their own words (`text`), or both. The result is:
@@ -757,7 +758,8 @@ question), writes their own words (`text`), or both. The result is:
 - `The user answered: <picks>` (with `They added: <text>`), or `The user answered in their own words: <text>`; with
   several questions, each question with its picks, `(nothing picked)` for none;
 - `No answer: the user wrote a new message instead; it follows.` when the user sends a message (a steer) instead;
-- `No answer: the question was withdrawn…` when the plugin stops. Stopping the run cancels the call like any other.
+- `No answer: the chat was stopped before the user answered.` when the chat is stopped (or deleted) while it waits.
+Anything else for the chat meanwhile (a subagent's report, a notice) waits for the answer.
 
 Subagents can't ask (an error: nobody watches their chat). `ask.pending { sessionId? }` lists the questions that wait;
 each has an `id` of its own (`ask_…`), because a tool call id belongs to the model and two chats can hold the same one;
@@ -824,7 +826,7 @@ the run waits like `ask_user`. Result `Plan mode is on…` (`Details.status: ent
 
 ```ts
 details: { questions: { question, options: { label, description? }[], multiple }[], answers: string[][] | null,
-  text: string | null, status: 'answered'|'steered'|'withdrawn' }
+  text: string | null, status: 'answered'|'steered'|'cancelled' }
 ```
 
 ---

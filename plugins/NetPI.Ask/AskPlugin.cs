@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -6,37 +5,51 @@ using System.Text.Json.Nodes;
 namespace NetPI.Ask;
 
 /// <summary>
-/// <c>ask_user</c>: the agent asks the user questions, with options to pick from, and waits for the answers with its
-/// instance given back meanwhile (<see cref="IAgentRuntime.WaitYieldedAsync"/>, like agent wait). The UI shows the
-/// questions inline in the chat and answers through <c>ask.answer</c>; <c>ask.pending</c> lists the questions that wait.
-/// Every question has an id of its own (<c>ask_…</c>, like a guard approval): a tool call id belongs to the model that
-/// made it, and two chats can hold the same one, so it cannot say which question is being answered.
+/// <c>ask_user</c>: the agent asks the user questions, with options to pick from, and waits for the answers. The call is
+/// a wait for the user (<see cref="UserWait"/>, kind <c>ask</c>): the run ends at it, holding no instance and no reload,
+/// and goes on when the user answers; the question survives a reload of this plugin and a restart, because the runtime
+/// keeps it. The UI shows the questions inline in the chat and answers through <c>ask.answer</c>; <c>ask.pending</c>
+/// lists the questions that wait (the runtime's waits of kind <c>ask</c>). Every question has an id of its own
+/// (<c>ask_…</c>, like a guard approval): a tool call id belongs to the model that made it, and two chats can hold the
+/// same one, so it cannot say which question is being answered.
 /// Events (unscoped, the session in their data, so a window without the chat open hears of it too): <c>ask.asked</c>
 /// when a question starts waiting, <c>ask.closed</c> when it stops (answered, steered: the user wrote a new message
-/// instead, withdrawn: this plugin stopped, cancelled: the run was stopped). Subagents can't ask: nobody watches their chat.
+/// instead, cancelled: the chat was stopped or deleted), both relayed from the runtime's <c>agent.waiting</c> /
+/// <c>agent.waitEnded</c>. Subagents can't ask: nobody watches their chat.
 /// </summary>
 [NetPiPlugin("netpi.ask", Name = "Ask the user", Description = "ask_user: the agent asks you questions inline in the chat and waits for your answers", Order = 66)]
 public sealed class AskPlugin : INetPiPlugin
 {
-    private PendingAsks? _pending;
+    public const string Kind = "ask";
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
-        var pending = _pending = new PendingAsks(context);
-        context.Tools.Register(new AskUserTool(pending));
+        var pending = new PendingAsks(context);
+        context.Tools.Register(new AskUserTool());
         context.Rpc.Register(new RpcMethod("ask.pending", "Questions waiting for the user: { sessionId? } → { id, sessionId, callId, agentId, agentName, questions, askedAt }[]", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
             (req, _) => Task.FromResult<object?>(pending.List(req.Str("sessionId"))));
         context.Rpc.Register(new RpcMethod("ask.answer", "Answer a waiting question: { id, answers?: string[][] (the options picked, per question), text? } → true (id, or callId + sessionId for an older caller)", ReadOnly: false, Params: [RpcParam.Opt("id", RpcParamType.String, "the question card's id"), RpcParam.Opt("sessionId"), RpcParam.Opt("callId"), RpcParam.Opt("answers", RpcParamType.Array, "the options picked, per question"), RpcParam.Opt("text", RpcParamType.String, "the user's own words")]),
-            (req, _) => Task.FromResult<object?>(pending.Answer(req)));
+            async (req, ct) => await pending.AnswerAsync(req, ct).ConfigureAwait(false));
+        // the cards: the runtime announces a question once it waits, and says when it stopped waiting (sync handlers: an
+        // async one left alive would root this plugin's load context)
+        context.Events.Subscribe(EventTypes.AgentWaiting, e =>
+        {
+            if (e.As<JsonObject>()?["wait"] is JsonObject w && (string?)w["kind"] == Kind) context.Events.Publish("ask.asked", PendingAsks.Json(w));
+        });
+        context.Events.Subscribe(EventTypes.AgentWaitEnded, e =>
+        {
+            if (e.As<JsonObject>() is not { } d || (string?)d["kind"] != Kind || (string?)d["reason"] == "answered") return;   // an answer closes its own card
+            context.Events.Publish("ask.closed", new JsonObject
+            {
+                ["id"] = d["waitId"]?.DeepClone(), ["sessionId"] = d["sessionId"]?.DeepClone(), ["callId"] = d["callId"]?.DeepClone(),
+                ["status"] = d["reason"]?.DeepClone(), ["answers"] = null, ["text"] = null,
+            });
+        });
         return Task.CompletedTask;
     }
 
-    /// <summary>Waiting questions end as withdrawn, so their runs go on (with their slot back) instead of hanging.</summary>
-    public Task StopAsync(CancellationToken ct)
-    {
-        _pending?.WithdrawAll();
-        return Task.CompletedTask;
-    }
+    /// <summary>Nothing to withdraw: the questions are the runtime's, and they wait on through a reload of this plugin.</summary>
+    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
 }
 
 internal sealed record AskOption(string Label, string? Description);
@@ -44,62 +57,30 @@ internal sealed record AskOption(string Label, string? Description);
 internal sealed record AskQuestion(string Question, IReadOnlyList<AskOption> Options, bool Multiple);
 
 /// <summary>Per question the options picked (an empty list: none), and the user's own words.</summary>
-internal sealed record AskAnswer(IReadOnlyList<IReadOnlyList<string>> Selected, string? Text)
-{
-    public static readonly AskAnswer Withdrawn = new([], null);
-}
+internal sealed record AskAnswer(IReadOnlyList<IReadOnlyList<string>> Selected, string? Text);
 
-/// <summary>The questions that wait for an answer, by the question's own id (never by the tool call's, which two chats can share).</summary>
+/// <summary>
+/// The questions that wait, read from the runtime (its waits of kind <c>ask</c>, the questions in their data) — this
+/// plugin keeps none, so a reload of it loses none. By the question's own id, never by the tool call's.
+/// </summary>
 internal sealed class PendingAsks(IPluginContext ctx)
 {
-    private readonly ConcurrentDictionary<string, Entry> _byId = new(StringComparer.Ordinal);
+    private IAgentRuntime Runtime => ctx.Services.Get<IAgentRuntime>() ?? throw new RpcException("unavailable", "The agent runtime is not running.");
 
-    internal sealed class Entry
+    private IEnumerable<WaitingCall> Waiting(string? sessionId) =>
+        ctx.Services.Get<IAgentRuntime>()?.Waits(sessionId, AskPlugin.Kind).Where(w => !w.Answered) ?? [];
+
+    public JsonArray List(string? sessionId) => new([.. Waiting(sessionId).Select(w => (JsonNode)Json(NetPiJson.ToNode(w)!.AsObject()))]);
+
+    public async Task<bool> AnswerAsync(RpcRequest req, CancellationToken ct)
     {
-        public required string Id { get; init; }
-        public required string SessionId { get; init; }
-        public required string CallId { get; init; }
-        public required string AgentId { get; init; }
-        public string? AgentName { get; init; }
-        public required IReadOnlyList<AskQuestion> Questions { get; init; }
-        public DateTimeOffset AskedAt { get; } = DateTimeOffset.UtcNow;
-        public TaskCompletionSource<AskAnswer> Answer { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
-
-    public Entry Add(ToolContext context, IReadOnlyList<AskQuestion> questions, string? agentName)
-    {
-        var e = new Entry
-        {
-            Id = "ask_" + Ids.Short(12), SessionId = context.SessionId, CallId = context.CallId,
-            AgentId = context.AgentId, AgentName = agentName, Questions = questions,
-        };
-        _byId[e.Id] = e;
-        ctx.Events.Publish("ask.asked", Json(e)); // unscoped: every window learns that a chat needs the user
-        return e;
-    }
-
-    /// <summary>Stops waiting: <paramref name="status"/> is answered | steered | withdrawn | cancelled.</summary>
-    public void Close(Entry e, string status, AskAnswer? answer = null)
-    {
-        if (!_byId.TryRemove(new KeyValuePair<string, Entry>(e.Id, e))) return;
-        ctx.Events.Publish("ask.closed", new JsonObject
-        {
-            ["id"] = e.Id,
-            ["sessionId"] = e.SessionId,
-            ["callId"] = e.CallId,
-            ["status"] = status,
-            ["answers"] = answer is null ? null : AnswersJson(answer),
-            ["text"] = answer?.Text,
-        });
-    }
-
-    public JsonArray List(string? sessionId) =>
-        new([.. _byId.Values.Where(e => sessionId is null || e.SessionId == sessionId).OrderBy(e => e.AskedAt).Select(e => (JsonNode)Json(e))]);
-
-    public bool Answer(RpcRequest req)
-    {
-        var e = Find(req.Str("id"), req.Str("callId"), req.Str("sessionId"));
-        if (e is null) throw new RpcException("not_found", "No question waits with that id (it was answered, or its run ended).");
+        var id = req.Str("id");
+        var callId = req.Str("callId");
+        var sessionId = req.Str("sessionId");
+        var w = Waiting(null).FirstOrDefault(x => !string.IsNullOrEmpty(id) ? x.Id == id : x.CallId == callId && (sessionId is null || x.SessionId == sessionId));
+        if (w is null || (string.IsNullOrEmpty(id) && string.IsNullOrEmpty(callId)))
+            throw new RpcException("not_found", "No question waits with that id (it was answered, or its chat moved on).");
+        var questions = Questions(w.Data);
         var selected = new List<IReadOnlyList<string>>();
         if (req.Prop("answers") is { ValueKind: JsonValueKind.Array } answers)
         {
@@ -114,40 +95,45 @@ internal sealed class PendingAsks(IPluginContext ctx)
                 selected.Add([.. picked.Where(x => x.Length > 0).Distinct()]);
             }
         }
-        while (selected.Count < e.Questions.Count) selected.Add([]);
-        if (selected.Count > e.Questions.Count) selected.RemoveRange(e.Questions.Count, selected.Count - e.Questions.Count);
+        while (selected.Count < questions.Count) selected.Add([]);
+        if (selected.Count > questions.Count) selected.RemoveRange(questions.Count, selected.Count - questions.Count);
         var text = req.Str("text")?.Trim();
         if (string.IsNullOrEmpty(text)) text = null;
         if (text is null && selected.All(s => s.Count == 0)) throw new RpcException("bad_request", "An answer needs an option picked or some text.");
         var answer = new AskAnswer(selected, text);
-        if (!e.Answer.TrySetResult(answer)) throw new RpcException("not_found", "The question was already answered.");
-        Close(e, "answered", answer);
+        var result = ToolResult.Ok(AskUserTool.Render(questions, answer), AskUserTool.Details(questions, answer, "answered"));
+        if (!await Runtime.ResolveAsync(w.Id, WaitResolution.Answer(result), ct).ConfigureAwait(false))
+            throw new RpcException("not_found", "The question was already answered.");
+        ctx.Events.Publish("ask.closed", new JsonObject
+        {
+            ["id"] = w.Id,
+            ["sessionId"] = w.SessionId,
+            ["callId"] = w.CallId,
+            ["status"] = "answered",
+            ["answers"] = AnswersJson(answer),
+            ["text"] = answer.Text,
+        });
         return true;
     }
 
-    public void WithdrawAll()
+    /// <summary>A waiting question as the card, ask.pending and ask.asked show it, from the runtime's wait.</summary>
+    internal static JsonObject Json(JsonObject wait) => new()
     {
-        foreach (var e in _byId.Values) e.Answer.TrySetResult(AskAnswer.Withdrawn);
-    }
-
-    /// <summary>The question a caller means. Its own id, or the tool call's together with the chat (an older caller).</summary>
-    private Entry? Find(string? id, string? callId, string? sessionId)
-    {
-        if (!string.IsNullOrEmpty(id) && _byId.TryGetValue(id, out var byId)) return byId;
-        if (string.IsNullOrEmpty(callId)) return null;
-        return _byId.Values.FirstOrDefault(x => x.CallId == callId && (sessionId is null || x.SessionId == sessionId));
-    }
-
-    private static JsonObject Json(Entry e) => new()
-    {
-        ["id"] = e.Id,
-        ["sessionId"] = e.SessionId,
-        ["callId"] = e.CallId,
-        ["agentId"] = e.AgentId,
-        ["agentName"] = e.AgentName,
-        ["questions"] = QuestionsJson(e.Questions),
-        ["askedAt"] = e.AskedAt.ToString("O"),
+        ["id"] = wait["id"]?.DeepClone(),
+        ["sessionId"] = wait["sessionId"]?.DeepClone(),
+        ["callId"] = wait["callId"]?.DeepClone(),
+        ["agentId"] = wait["agentId"]?.DeepClone(),
+        ["agentName"] = wait["data"]?["agentName"]?.DeepClone(),
+        ["questions"] = wait["data"]?["questions"]?.DeepClone() ?? new JsonArray(),
+        ["askedAt"] = wait["since"]?.DeepClone(),
     };
+
+    /// <summary>The questions back from a wait's data (as <see cref="QuestionsJson"/> wrote them).</summary>
+    internal static List<AskQuestion> Questions(JsonObject? data) =>
+        [.. (data?["questions"] as JsonArray ?? []).OfType<JsonObject>().Select(q => new AskQuestion(
+            (string?)q["question"] ?? "",
+            [.. (q["options"] as JsonArray ?? []).OfType<JsonObject>().Select(o => new AskOption((string?)o["label"] ?? "", (string?)o["description"]))],
+            q["multiple"] is JsonValue m && m.TryGetValue<bool>(out var multiple) && multiple))];
 
     internal static JsonArray QuestionsJson(IReadOnlyList<AskQuestion> questions) => new([.. questions.Select(q => (JsonNode)new JsonObject
     {
@@ -159,7 +145,7 @@ internal sealed class PendingAsks(IPluginContext ctx)
     internal static JsonArray AnswersJson(AskAnswer a) => new([.. a.Selected.Select(s => (JsonNode)new JsonArray([.. s.Select(x => (JsonNode)x)]))]);
 }
 
-internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
+internal sealed class AskUserTool : IAgentTool
 {
     public const int MaxQuestions = 4;
     public const int MaxOptions = 8;
@@ -234,49 +220,25 @@ internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
         },
     };
 
-    public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
+    public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
-        if (!TryParse(args, out var questions, out var error)) return ToolResult.Error(error);
-        var runtime = context.Services.Get<IAgentRuntime>();
-        var agent = runtime?.Get(context.AgentId);
+        if (!TryParse(args, out var questions, out var error)) return Task.FromResult(ToolResult.Error(error));
+        var agent = context.Services.Get<IAgentRuntime>()?.Get(context.AgentId);
         if (agent?.IsSubagent == true)
-            return ToolResult.Error("Only the main agent can ask the user: nobody watches a subagent's chat. Put the question in your report instead.");
-
-        var entry = pending.Add(context, questions, agent?.Name);
-        var status = "cancelled";
-        try
+            return Task.FromResult(ToolResult.Error("Only the main agent can ask the user: nobody watches a subagent's chat. Put the question in your report instead."));
+        // the run ends here and goes on with the answer (PendingAsks.AnswerAsync), however long that takes
+        return Task.FromResult(ToolResult.WaitForUser(new UserWait
         {
-            var answered = runtime is null
-                ? await WaitAsync(entry.Answer.Task, ct).ConfigureAwait(false)
-                : await runtime.WaitYieldedAsync(context.AgentId, entry.Answer.Task, "waiting for your answer", null, ct).ConfigureAwait(false);
-            if (!answered)
-            {
-                status = "steered";
-                return ToolResult.Ok("No answer: the user wrote a new message instead; it follows.", Details(questions, null, status));
-            }
-            var answer = await entry.Answer.Task.ConfigureAwait(false);
-            if (ReferenceEquals(answer, AskAnswer.Withdrawn))
-            {
-                status = "withdrawn";
-                return ToolResult.Ok("No answer: the question was withdrawn (the ask plugin stopped). Ask again if you still need it.",
-                    Details(questions, null, status));
-            }
-            status = "answered";
-            return ToolResult.Ok(Render(questions, answer), Details(questions, answer, status));
-        }
-        finally
-        {
-            pending.Close(entry, status); // a no-op after ask.answer closed it
-        }
+            Id = "ask_" + Ids.Short(12),
+            Kind = AskPlugin.Kind,
+            Activity = "waiting for your answer",
+            Data = new JsonObject { ["questions"] = PendingAsks.QuestionsJson(questions), ["agentName"] = agent?.Name },
+            IfSteered = ToolResult.Ok("No answer: the user wrote a new message instead; it follows.", Details(questions, null, "steered")),
+            IfCancelled = ToolResult.Ok("No answer: the chat was stopped before the user answered.", Details(questions, null, "cancelled")),
+        }));
     }
 
-    private static async Task<bool> WaitAsync(Task until, CancellationToken ct)
-    {
-        await until.WaitAsync(ct).ConfigureAwait(false);
-        return true;
-    }
-
-    private static object Details(IReadOnlyList<AskQuestion> questions, AskAnswer? answer, string status) => new JsonObject
+    internal static JsonObject Details(IReadOnlyList<AskQuestion> questions, AskAnswer? answer, string status) => new()
     {
         ["questions"] = PendingAsks.QuestionsJson(questions),
         ["answers"] = answer is null ? null : PendingAsks.AnswersJson(answer),

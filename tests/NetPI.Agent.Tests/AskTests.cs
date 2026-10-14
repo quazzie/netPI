@@ -15,6 +15,7 @@ public static class AskTests
         t.Add("ask_user: subagents can't ask", SubagentRefused);
         t.Add("ask_user: lenient arguments, limits, and the answer the model reads", Parsing);
         t.Add("ask_user: an answer given while the chat's agent is switched off is not lost - the slot failure lands on the next turn", AnswerSurvivesSlotFailure);
+        t.Add("ask_user: a question survives a reload of the ask plugin and of the runtime; the answer then goes on", SurvivesReloads);
     }
 
     private static async Task<TestHost> StartAsync(Action<TestHost>? setup = null)
@@ -243,6 +244,34 @@ public static class AskTests
         Check.True(h.Catalog.Requests.Last().Messages.SelectMany(m => m.ToolResults).Any(t => (t.Content ?? "").Contains("The user answered: A")),
             "the model reads the answer given while it was offline");
         Check.Equal("done", h.Messages(s.Id)[^1].Text);
+    }
+
+    private static async Task SurvivesReloads()
+    {
+        await using var h = await StartAsync();
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("went on") : Reply.Tool("ask_user", new { questions = new[] { Q("Keep it?", "yes", "no") } });
+        await h.SendAsync(s.Id, "ask me");
+        var id = (string)(await AskedAsync(h, s.Id))["id"]!;
+        await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the question waits");
+
+        // both plugins are swapped while it waits (what a publish does once no run is active): nothing is withdrawn
+        await h.StopPluginAsync("netpi.ask");
+        await h.StartPluginAsync(new AskPlugin());
+        await h.StopPluginAsync("netpi.runtime");
+        await h.StartPluginAsync(new NetPI.Runtime.RuntimePlugin());
+        Check.Equal(0, h.Bus.OfType("ask.closed").Count, "the question was not closed by the reloads");
+        var pending = (await h.Rpc.CallAsync("ask.pending", new { sessionId = s.Id }))!.AsArray();
+        Check.Equal(id, (string?)pending.Single()!["id"], "the new versions list it");
+        Check.Equal("Keep it?", (string?)pending.Single()!["questions"]![0]!["question"]);
+        Check.Equal(AgentStatus.Yielded, h.Runtime.GetBySession(s.Id)!.Status);
+        Check.Equal("waiting for your answer", h.Runtime.GetBySession(s.Id)!.Activity);
+
+        Check.Equal(true, await h.Rpc.InvokeAsync("ask.answer", new { id, answers = new[] { new[] { "yes" } } }));
+        await h.IdleAsync(s.Id);
+        Check.Equal("The user answered: yes", Result(h, s.Id).Content);
+        Check.Equal("went on", h.Messages(s.Id)[^1].Text);
+        Check.Equal("answered", (string?)FakeBus.Data(h.Bus.OfType("ask.closed").Single())["status"]);
     }
 
     private static async Task SubagentRefused()
