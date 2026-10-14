@@ -8,7 +8,8 @@
     "build": "npm run build:web && npm run build:plugins",
     "build:web": "vite build --config web/vite.config.js && node web/scripts/sync-dist.mjs",
     "build:plugins": "node web/scripts/build-plugins.mjs",
-    "dev": "vite --config web/vite.config.js"
+    "dev": "vite --config web/vite.config.js",
+    "test": "node --test \"web/test/*.test.js\""
   },
   "dependencies": {
     "dompurify": "^3.4.16",

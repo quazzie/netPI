@@ -1,8 +1,7 @@
-#!/usr/bin/env node
-// splitLive (web/src/lib/live.js) says where the finished blocks of a streaming answer end. A cut is only right where no
-// open block crosses it, so each case below is a text, the cut it must take (null: none yet) and why:
-//
-//   node web/scripts/check-live-split.mjs
+// Where the finished blocks of a streaming answer end (splitLive, web/src/lib/live.js). A cut is only right where no open
+// block crosses it, so each case is a text, the cut it must take (null: none yet) and why.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { splitLive } from '../src/lib/live.js';
 
 const cases = [
@@ -20,25 +19,21 @@ const cases = [
   ['a heading, a paragraph, a third complete', '# Title\n\nBody text.\n\nMore.\n', '# Title\n\nBody text.\n\n'],
 ];
 
-let failed = 0;
 for (const [what, text, want] of cases) {
-  const cut = splitLive(text);
-  const got = cut === 0 ? null : text.slice(0, cut);
-  const ok = got === want;
-  if (!ok) failed++;
-  console.log(`${ok ? 'ok   ' : 'FAIL '}${what}${ok ? '' : `  (cut ${JSON.stringify(got)}, wanted ${JSON.stringify(want)})`}`);
+  test(what, () => {
+    const cut = splitLive(text);
+    assert.equal(cut === 0 ? null : text.slice(0, cut), want);
+  });
 }
 
 // the text grows a character at a time, as it streams: a cut taken once is still the cut (it never moves back), and the
 // blocks it leaves behind are never changed by what follows
-const answer = 'A.\n\nB.\n\n1. x\n\n   y\n\n2. z\n\nC is being written';
-let last = 0;
-let moved = null;
-for (let n = 1; n <= answer.length && moved === null; n++) {
-  const cut = splitLive(answer.slice(0, n));
-  if (cut < last) moved = `${last} → ${cut} at ${n}`;
-  last = cut;
-}
-if (moved) failed++;
-console.log(`${moved ? 'FAIL ' : 'ok   '}the cut never moves back as the text grows${moved ? ` (${moved})` : ''}`);
-process.exit(failed ? 1 : 0);
+test('the cut never moves back as the text grows', () => {
+  const answer = 'A.\n\nB.\n\n1. x\n\n   y\n\n2. z\n\nC is being written';
+  let last = 0;
+  for (let n = 1; n <= answer.length; n++) {
+    const cut = splitLive(answer.slice(0, n));
+    assert.ok(cut >= last, `${last} → ${cut} at ${n}`);
+    last = cut;
+  }
+});

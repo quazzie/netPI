@@ -52,7 +52,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$suites = if ($Suite) { $Suite } else { @('Providers', 'Tools', 'Agent', 'Aux', 'Host', 'Storage') }
+$suites = if ($Suite) { $Suite } else { @('UI', 'Providers', 'Tools', 'Agent', 'Aux', 'Host', 'Storage') }
+# 'UI' is not a .NET project: it is `node --test` over web/test (the UI's pure modules), with nothing to build. It runs
+# first, here in this process, and the .NET suites after it.
+$runUi = $suites -contains 'UI'
+$suites = @($suites | Where-Object { $_ -ne 'UI' })
 $repoRoot = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path
 # The tree these tests run against: its index must be HEAD (see the check). Advisory, and only in the main checkout.
 . (Join-Path $PSScriptRoot 'checkout.ps1')
@@ -78,9 +82,54 @@ try {
 
     "NetPI unit tests, $(Get-Date -Format s) ($Config$scope, run $runId)" | Set-Content $log
 
+    # ---------------------------------------------------------------- the UI suite (node --test)
+    if ($runUi) {
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $out = @(); $code = 0; $skipped = 0; $bodies = $null; $noMatch = $false; $failedTests = @()
+        if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            $out = @('node is not on PATH: the UI suite (web/test) needs Node 22 or later')
+            $skipped = 1
+            $summary = '0 passed, 0 failed, 1 skipped (no node on PATH)'
+        }
+        else {
+            # TAP, because it is plain ASCII and says per test "ok" / "not ok". -Only becomes one case-insensitive
+            # pattern of the escaped names, so it selects as the .NET runners do (substrings, OR-ed).
+            $nodeArgs = @('--test', '--test-reporter=tap')
+            if ($Only) {
+                $alts = ($Only | ForEach-Object { $_ -replace '[.*+?^${}()|[\]\\/]', '\$&' }) -join '|'
+                $nodeArgs += "--test-name-pattern=/$alts/i"
+            }
+            $nodeArgs += 'web/test/*.test.js'
+            $out = @(& node @nodeArgs 2>&1 | ForEach-Object { "$_" })
+            $code = $LASTEXITCODE
+            # A file with no test that matched -Only is reported as a passing test named after the file: not a test.
+            $passed = @($out | Where-Object { $_ -match '^ok \d+ - ' -and $_ -notmatch '\.test\.js$' }).Count
+            $failedTests = @($out | Where-Object { $_ -match '^not ok \d+ - (.*)$' } | ForEach-Object { ($_ -replace '^not ok \d+ - ', '').Trim() })
+            $ms = $out | Where-Object { $_ -match '^# duration_ms ' } | Select-Object -Last 1
+            if ($ms) { $bodies = [math]::Round([double]($ms -replace '^# duration_ms ', '') / 1000, 2) }
+            $noMatch = $passed -eq 0 -and $failedTests.Count -eq 0
+            $summary = "$passed passed, $($failedTests.Count) failed, 0 skipped, $($passed + $failedTests.Count) total in $bodies s"
+        }
+        $sw.Stop()
+        "== web/test (node --test, exit $code, $([math]::Round($sw.Elapsed.TotalSeconds, 1))s) ==" | Add-Content $log
+        $out | Add-Content $log
+        $suiteOutput['UI'] = @($out)
+        $wall = [math]::Round($sw.Elapsed.TotalSeconds, 2)
+        $results.Add([ordered]@{
+                suite = 'UI'; exitCode = $code; wallSeconds = $wall; reportedBodySeconds = $bodies
+                outsideTestTimersSeconds = $(if ($null -ne $bodies) { [math]::Round($wall - $bodies, 2) } else { $null })
+                matchedNothing = $noMatch; skipped = $skipped; summary = $summary
+            })
+        foreach ($f in $failedTests) { $failures.Add([pscustomobject]@{ Suite = 'UI'; Name = $f }) }
+        if ($code -ne 0 -and $failedTests.Count -eq 0 -and -not $skipped) {
+            $failures.Add([pscustomobject]@{ Suite = 'UI'; Name = "(node --test exited $code without reporting a failure)" })
+        }
+    }
+
     # ---------------------------------------------------------------- build the selected graph once
     $build = [ordered]@{ seconds = 0.0; built = $false }
-    if (-not $SkipBuild) {
+    if (-not $suites.Count) { }
+    elseif (-not $SkipBuild) {
         $slnDir = 'artifacts\test-speed'
         $sln = Join-Path $slnDir "netpi-tests-$runId.slnx"
         New-Item -ItemType Directory -Path $slnDir -Force | Out-Null
@@ -298,6 +347,17 @@ try {
     # is an upload, not the log), and "[Aux] workspaces: …" alone says nothing about why.
     foreach ($f in $realFailures) {
         $lines = @($suiteOutput[$f.Suite])
+        if ($f.Suite -eq 'UI') {
+            # TAP: the "not ok" line and its YAML block (the assertion, expected/actual, the stack), up to the next test
+            $at = [array]::FindIndex([string[]]$lines, [Predicate[string]] { param($l) $l -match '^not ok \d+ - ' -and $l.EndsWith($f.Name) })
+            if ($at -lt 0) { continue }
+            $to = $at
+            while ($to + 1 -lt $lines.Count -and $to - $at -lt 40 -and $lines[$to + 1] -notmatch '^(not )?ok \d+ |^# Subtest|^1\.\.') { $to++ }
+            Write-Host ''
+            Write-Host ("---- [UI] {0}" -f $f.Name) -ForegroundColor Red
+            foreach ($l in $lines[$at..$to]) { Write-Host "  $l" -ForegroundColor Red }
+            continue
+        }
         $at = -1
         for ($i = 0; $i -lt $lines.Count; $i++) {
             if ($lines[$i] -match '^\s*FAIL\s+' -and $lines[$i].Contains($f.Name)) { $at = $i; break }

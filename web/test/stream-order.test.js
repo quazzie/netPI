@@ -1,10 +1,9 @@
-#!/usr/bin/env node
 // withStream (web/src/lib/chatItems.js) lays the answer being streamed out like the finished message. A provider that
 // runs its own loop (the Claude CLI) streams thinking, text, a tool call, more text, another tool call… in one model
 // call; joined, the text read as one wall of paragraphs with every tool below it until the message replaced it
 // (idea-xg7ayy). Each case is a stream's segments and the items it must become, in order.
-//
-//   node web/scripts/check-stream-order.mjs
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { withStream } from '../src/lib/chatItems.js';
 import { flushNow } from '../src/lib/frame.js';
 
@@ -67,50 +66,37 @@ const cases = [
   ],
 ];
 
-let failed = 0;
 for (const [what, segments, want] of cases) {
-  const got = shape(withStream([], stream(segments)));
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failed++;
-  console.log(`${ok ? 'ok   ' : 'FAIL '}${what}${ok ? '' : `\n       got    ${JSON.stringify(got)}\n       wanted ${JSON.stringify(want)}`}`);
+  test(what, () => assert.deepEqual(shape(withStream([], stream(segments))), want));
 }
 
-// each thinking run keeps its own timing (its row's timer), and keys are stable as the stream grows
-{
+test('each thinking run carries its own timing and key', () => {
   const a = { kind: 'thinking', text: 'first', timing: timing(true) };
   const b = { kind: 'thinking', text: 'second', timing: timing(false) };
-  const items = withStream([], stream([a, { kind: 'tool', callId: 'c1', name: 'Read' }, b]));
-  const steps = items[0]?.steps ?? [];
-  const ok = steps[0]?.stream === a.timing && steps[2]?.stream === b.timing && steps[0]?.key !== steps[2]?.key;
-  if (!ok) failed++;
-  console.log(`${ok ? 'ok   ' : 'FAIL '}each thinking run carries its own timing and key`);
-  const grown = withStream([], stream([{ kind: 'text', text: 'One.' }, { kind: 'tool', callId: 'c1', name: 'Read' }, { kind: 'text', text: 'Two' }]));
-  const grown2 = withStream([], stream([{ kind: 'text', text: 'One.' }, { kind: 'tool', callId: 'c1', name: 'Read' }, { kind: 'text', text: 'Two more' }]));
-  const keys = (list) => list.map((i) => i.key).join(',');
-  const stable = keys(grown) === keys(grown2);
-  if (!stable) failed++;
-  console.log(`${stable ? 'ok   ' : 'FAIL '}the keys do not move while the last text grows  (${keys(grown2)})`);
-}
+  const steps = withStream([], stream([a, { kind: 'tool', callId: 'c1', name: 'Read' }, b]))[0]?.steps ?? [];
+  assert.equal(steps[0]?.stream, a.timing);
+  assert.equal(steps[2]?.stream, b.timing);
+  assert.notEqual(steps[0]?.key, steps[2]?.key);
+});
 
-// a finished list's open steps group is continued by the stream, as before
-{
+test('the keys do not move while the last text grows', () => {
+  const keys = (text) => withStream([], stream([{ kind: 'text', text: 'One.' }, { kind: 'tool', callId: 'c1', name: 'Read' }, { kind: 'text', text }]))
+    .map((i) => i.key).join(',');
+  assert.equal(keys('Two'), keys('Two more'));
+});
+
+test("the stream's first steps join the open group of the finished list", () => {
   const open = { kind: 'steps', key: 'g1', steps: [{ kind: 'tool', key: 'cX', call: { name: 'Bash' } }] };
   const items = withStream([open], stream([{ kind: 'tool', callId: 'c1', name: 'Read' }]));
-  const ok = items.length === 1 && items[0].steps.length === 2;
-  if (!ok) failed++;
-  console.log(`${ok ? 'ok   ' : 'FAIL '}the stream's first steps join the open group of the finished list`);
-}
+  assert.equal(items.length, 1);
+  assert.equal(items[0].steps.length, 2);
+});
 
 // StreamState.tool() pushes its segment and flushes at once (flushNow). The Claude CLI often calls a tool before any
 // text: no delta has queued the frame flush then, and a flush that ran only when queued left the live tool row out of
 // the chat until the run's first text, at its end.
-{
+test('flushNow runs the flush even when no frame was queued for it', () => {
   let ran = 0;
   flushNow(() => ran++);
-  const ok = ran === 1;
-  if (!ok) failed++;
-  console.log(`${ok ? 'ok   ' : 'FAIL '}flushNow runs the flush even when no frame was queued for it`);
-}
-
-console.log(failed ? `${failed} check(s) failed` : 'all checks passed');
-process.exit(failed ? 1 : 0);
+  assert.equal(ran, 1);
+});

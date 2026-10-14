@@ -6,7 +6,7 @@ Three layers, all without NuGet packages (console runners, no test framework):
 
 | layer | where | what it needs |
 |---|---|---|
-| unit suites | `tests/NetPI.{Host,Providers,Tools,Agent,Aux,Storage}.Tests` | the built projects |
+| unit suites | `tests/NetPI.{Host,Providers,Tools,Agent,Aux,Storage}.Tests`, and `web/test` (`node --test`, the UI's pure modules) | the built projects; Node 22+ for `web/test` |
 | mock model server | `tests/MockLlm` | nothing (ASP.NET shared framework) |
 | end-to-end suite | `tests/NetPI.E2E` | the built app (`artifacts/dev/app`, which `scripts/e2e.ps1` builds as needed), the mock, and for the UI tests Node 22 + Playwright (`playwright-core` devDependency; falls back to an installed Edge/Chrome) |
 
@@ -68,10 +68,12 @@ justifies it. A merge alone does not. After a failure, read the evidence and rer
 
 Start with the affected tests. `scripts/test.ps1 -Suite <suite> -Only "<name>"` builds and runs that selection,
 keeps the whole output in `artifacts/testlogs/<timestamp>.txt`, and finishes with failing test names as a
-ready-to-paste `-Only` command. Without selectors it runs all six suites; use that only for the broad scope above.
+ready-to-paste `-Only` command. Without selectors it runs all seven suites (the six .NET ones and `UI`, below); use that only
+for the broad scope above.
 
 ```powershell
-.\scripts\test.ps1                                   # build + run all six, print a re-run command for the failures
+.\scripts\test.ps1                                   # build + run all seven, print a re-run command for the failures
+.\scripts\test.ps1 -Suite UI                         # the UI's pure modules only (node --test, no build, ~1 s)
 .\scripts\test.ps1 -Only "settings:", "goal:"        # just tests whose name contains these (substring, OR-ed)
 .\scripts\test.ps1 -Suite Aux -SkipBuild             # one suite, reusing the build (nothing changed)
 .\scripts\test.ps1 -Suite Aux,Host -SkipBuild        # two: a [string[]] takes a comma, not a second -Suite
@@ -126,6 +128,15 @@ dotnet tests/NetPI.Host.Tests/bin/Release/NetPI.Host.Tests.dll backup  # the sna
                                                     # into a new home, and the SQLite-backed ideas backlog travelling in it and coming
                                                     # back (BackupTests, ReviewBackupTests)
 ```
+
+**The UI suite** (`-Suite UI`, or `npm test`) is `node --test` over `web/test/*.test.js`: the UI's pure modules, imported
+as they are, with no browser and no server — the Work tab's slot placement and priority levels
+(`plugins/NetPI.Work/ui/util.js`), the Schedules, Webhooks, Ideas and MCP tabs' models (a schedule's skip reasons are
+read from `ScheduleRunner.cs` itself, so a reworded reason fails here), and from `web/src/lib` the formatters, the diff
+and turn numbers, where a streaming answer may be cut (`live.js`), the order a stream is laid out in (`chatItems.js`
+`withStream`) and the RPC client's deadline (`rpc.svelte.js`, run in a vm with a fake clock and a fetch that never
+answers, so only a deadline can end a call). A logic change in one of those modules gets its test here, not a browser
+check. `node:test` and `node:assert` are all it uses: no npm package. `-Only` selects by test name as for the .NET suites.
 
 Every runner takes optional name filters (`… NetPI.Agent.Tests.dll abort scheduler`) and exits with 0 when all selected
 tests pass. `NETPI_TEST_LOGS=1` shows host logs in the Host suite.
@@ -487,12 +498,6 @@ at all, still builds.
 projects dialog share) and for the three views of the dialog: the counts, the filter and order, and the remove flow in
 Node against stubbed state, then the views themselves in a headless browser — rows and counts, the filter narrowing
 the list, both forms, and what a failing rpc leaves on screen instead of a spinner.
-
-`node web/scripts/check-rpc-deadline.mjs` is the unit suite for the RPC client's deadline (`web/src/lib/rpc.svelte.js`):
-the timeout is set when the call is made and is kept through the switch to the HTTP fallback (the fetch continues
-with the time still left in it, as an AbortSignal) and through the reading of the response body; a call with no
-timeout waits for the server, no default is invented for it. The real client source runs in a vm with a controllable
-clock, fake timers and a fetch that never answers, so only a deadline can end a call.
 
 On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
 `/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.
