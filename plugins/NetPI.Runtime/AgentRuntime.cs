@@ -1268,18 +1268,12 @@ internal sealed class AgentRuntime : IAgentRuntime
         return results;
     }
 
-    public async Task<bool> WaitYieldedAsync(string? callerAgentId, Task until, string activity, TimeSpan? timeout = null, CancellationToken ct = default)
-    {
-        await WaitCoreAsync(FindState(callerAgentId), [until], yieldSlot: true, timeout, ct, activity).ConfigureAwait(false);
-        return until.IsCompleted;
-    }
-
     /// <summary>
-    /// Waits for <paramref name="tasks"/> with the caller's slot given back (when it holds one), until they end, the timeout
-    /// passes or the user steers the caller. <paramref name="activity"/> replaces the "waiting for N agents" countdown.
+    /// Waits for <paramref name="tasks"/> (agents' runs) with the caller's slot given back (when it holds one), until they
+    /// end, the timeout passes or the user steers the caller. (Waiting for the user is not this: <see cref="UserWait"/>.)
     /// </summary>
     private async Task WaitCoreAsync(AgentState? caller, List<Task> tasks, bool yieldSlot, TimeSpan? timeout, CancellationToken ct,
-        string? activity = null, bool any = false)
+        bool any = false)
     {
         RunState? run = null;
         CancellationToken steer = default;
@@ -1295,8 +1289,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         IAgentSlot? yielded = null;
         var model = run?.Model;
         static string WaitingFor(int n) => $"waiting for {n} agent{(n == 1 ? "" : "s")}";
-        var countdown = activity is null;
-        activity ??= WaitingFor(tasks.Count);
+        var activity = WaitingFor(tasks.Count);
         if (caller is not null && yieldSlot && run?.Lease is { IsReleased: false } lease && model is not null)
         {
             run.Lease = null;
@@ -1311,7 +1304,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         // keep the caller's activity current ("waiting for 2 agents" → "waiting for 1 agent") as workers finish
         var remaining = tasks.Count;
         var waiting = 1;
-        if (caller is not null && countdown && tasks.Count > 1)
+        if (caller is not null && tasks.Count > 1)
         {
             foreach (var task in tasks)
                 _ = task.ContinueWith(_ =>
@@ -1715,7 +1708,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             // it waits for the user, and the user's own follow-up is to be delivered now: that is the user writing
             if (s.Run is null && s.Pending is not null && string.Equals(input.Source, "user", StringComparison.Ordinal)) writes = input;
             else s.Steering.Add(input);
-            // as a steer sent now: a guard approval, ask_user or agent wait reads the signal as "the user wrote"
+            // as a steer sent now: an agent wait reads the signal as "the user wrote"
             if (s.Run is not null && string.Equals(input.Source, "user", StringComparison.Ordinal)) sig = s.SteerSignal;
             s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
         }
@@ -1742,7 +1735,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             if (removed)
             {
                 s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
-                // The steer that cancelled the signal is gone: with nothing left to steer to, a guard approval, ask_user or
+                // The steer that cancelled the signal is gone: with nothing left to steer to, an
                 // agent wait must not read the old cancel as "the user wrote a new message" and return at once.
                 if (s.Steering.Count == 0 && s.SteerSignal.IsCancellationRequested) s.SteerSignal = new CancellationTokenSource();
             }

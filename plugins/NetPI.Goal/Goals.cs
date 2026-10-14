@@ -532,6 +532,9 @@ internal sealed class Goals(IPluginContext ctx)
         if (run.Agent.IsSubagent) return;
         var goal = Get(sid);
         if (goal is not { Status: Goal.Active }) return;
+        // the run ended at a call that waits for the user (a question, an OK, a decision): the turn is not over. Neither
+        // pause nor go on - the run that goes on after the answer ends again, and that end decides.
+        if (run.Outcome == "waiting") return;
 
         if (run.CancelReason == "plugin reloaded")
         {

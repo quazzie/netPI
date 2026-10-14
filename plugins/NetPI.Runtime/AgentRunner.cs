@@ -471,7 +471,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             // The steers are taken: a fresh signal, whether or not the old one was cancelled yet. A user's steer cancels
             // its signal after the add, outside the gate (DeliverAsync), so a cancel can land after this drain took the
             // steer — on the old signal, which nothing reads any more, instead of on the live one with nothing queued
-            // (that made the next agent wait or ask_user return at once for a message that was already read).
+            // (that made the next agent wait return at once for a message that was already read).
             state.SteerSignal = new CancellationTokenSource();
         }
         foreach (var input in items) rt.PersistQueued(state, input, "steer");

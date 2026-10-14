@@ -27,6 +27,7 @@ public static class GoalTests
         t.Add("goal: a completion is reviewed against the evidence: gaps refuse it, a second refusal blocks it for the user", ReviewRefusesThenBlocks);
         t.Add("goal: a completion the review passes closes the goal; a review that cannot run never holds it back", ReviewPasses);
         t.Add("goal: a run that ends while its subagents work is continued at once, naming them; completing is refused until they report", ContinueWhileSubagentsWork);
+        t.Add("goal: a run that ends waiting for the user neither pauses the goal nor goes on; the run after the answer decides", WaitsForUser);
     }
 
     /// <summary>The goal plugin on a test host. The completion review is off unless asked for: it is one more model call,
@@ -110,6 +111,35 @@ public static class GoalTests
         Check.Equal("Both parts done, checked with work.", (string?)GoalOf(h, s.Id)!["reason"]);
         Check.Equal(5 * 110L, IntOf(h, s.Id, "tokensUsed"));
         Check.Equal("All done.", h.Messages(s.Id)[^1].Text);
+    }
+
+    private static async Task WaitsForUser()
+    {
+        var (h, _) = await Start();
+        await using var _h = h;
+        h.AddTool(new FakeTool("confirm", (c, a, ct) => Task.FromResult(ToolResult.WaitForUser(new UserWait
+        {
+            Id = "w_goal", Kind = "test", Activity = "waiting for your OK", IfSteered = ToolResult.Ok("no answer"),
+        }))));
+        var s = h.NewSession();
+        var calls = 0;
+        h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref calls) switch
+        {
+            1 => Reply.Tool("confirm"),
+            2 => Reply.Tool("goal_update", new { status = "complete", summary = "Confirmed and done." }),
+            _ => Reply.Text("Done."),
+        };
+        await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Do it once confirmed" });
+        await Wait.Until(() => h.Runtime.Waits(s.Id).Count == 1 && h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the run waits for the user");
+        await h.Bus.DrainAsync();
+        await Task.Delay(150);   // a continuation would have started by now
+        Check.Equal("active", StatusOf(h, s.Id), "waiting for the user does not pause the goal");
+        Check.Equal(1, h.Runtime.GetBySession(s.Id)!.Runs, "nor start another run");
+        Check.Equal(0, IntOf(h, s.Id, "continuations"));
+
+        Check.True(await h.Runtime.ResolveAsync("w_goal", WaitResolution.Answer(ToolResult.Ok("confirmed"))));
+        await SettledAsync(h, s.Id, "complete");
+        Check.Equal("Confirmed and done.", (string?)GoalOf(h, s.Id)!["reason"]);
     }
 
     private static async Task NoProgress()
