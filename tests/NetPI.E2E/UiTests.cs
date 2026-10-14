@@ -184,7 +184,7 @@ public static class UiTests
 
         // The script makes its own project and chats; the ssh client is this runner's own exe (FakeSsh.cs), and the Claude CLI a
         // script it writes. web.*, ssh.* and providers.claudeCli are put back after.
-        r.Add("ui.tool-cards", "ui: tool calls as a person reads them — thinking opened while it streams, the plan above the composer, web search, fetch and a screenshot, an image in the chat, the tools-changed notice; ssh run, read, edit and copy through a stand-in client; the Claude CLI's own tools done while its call runs; file links that ask first; an answer's HTML and images kept as text and links", () =>
+        r.Add("ui.tool-cards", "ui: tool calls as a person reads them — thinking opened while it streams, the plan above the composer, web search, fetch and a screenshot, an image in the chat, no tools notice for deferred tools called by name; ssh run, read, edit and copy through a stand-in client; the Claude CLI's own tools done while its call runs; file links that ask first; an answer's HTML and images kept as text and links", () =>
             RunUiScript(env, "tool-cards.mjs", 180, "--ssh", Path.ChangeExtension(typeof(UiTests).Assembly.Location, OperatingSystem.IsWindows() ? ".exe" : null)), 210);
 
         // The script edits a plugin bundle in this server's own app copy (and puts it back), drops and restores the page's socket

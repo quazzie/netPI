@@ -12,7 +12,7 @@
 // Prints one JSON line at the end: { ok, checks: [{name, ok, detail}], errors: [...] }.
 import fs from 'node:fs';
 import path from 'node:path';
-import { run, arg, check, shot, openApp, openSession, rpc, send, gates, newDir, waitIdle, MOCK, STAMP } from './lib.mjs';
+import { run, arg, check, shot, openApp, openSession, rpc, send, gates, newDir, waitIdle, MOCK, STAMP, unfoldSteps } from './lib.mjs';
 
 const CLAUDE = 'anthropic/claude-haiku-4-5'; // the screenshot needs a model that reads images
 const SSH = arg('ssh', ''); // the E2E runner's exe: it stands in for ssh and scp (tests/NetPI.E2E/FakeSsh.cs)
@@ -63,6 +63,7 @@ await run('tool-cards', async ({ page, socket }) => {
     await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
     await page.waitForTimeout(400);
     check('the plan hides once every item is done', (await page.locator('.dock .strip').count()) === 0);
+    await unfoldSteps(page);   // the finished run's steps fold (46cd063); the thinking row keeps its own open state
     check('finished thinking of an opened stream stays open', (await page.locator('.thinking.open .body').count()) >= 1);
     const shown = page.locator('.item[data-kind="shown"]');
     check('show_image puts the image in the chat, outside the steps', (await shown.locator('img').count()) === 1 && (await shown.innerText()).includes('The demo as it renders now'));
@@ -72,7 +73,8 @@ await run('tool-cards', async ({ page, socket }) => {
     await page.keyboard.press('Escape');
     await page.waitForTimeout(200);
     if (await page.locator('.lb').count()) await page.locator('.lb').click();
-    check('a tools notice says which tools are new', (await page.locator('.notice', { hasText: 'Tools changed' }).count()) >= 1, (await page.locator('.notice').allInnerTexts()).join(' | '));
+    // the web tools are deferred and called by name: that changes nothing in the request, so no tools notice (0f4a6e2)
+    check('calling deferred tools by name writes no tools notice', (await page.locator('.notice', { hasText: 'Tools changed' }).count()) === 0, (await page.locator('.notice').allInnerTexts()).join(' | '));
 
     // open the folded steps and the web cards
     const closed = page.locator('.group.collapsible .head[aria-expanded="false"]');
@@ -215,12 +217,20 @@ await run('tool-cards', async ({ page, socket }) => {
     const body = await bashRow.locator('.body').innerText().catch(() => '');
     check('provider tools: the result is in the row before anything is stored', body.includes('notes.txt'), JSON.stringify(body.slice(0, 120)));
     await page.waitForTimeout(300);
-    const snap = () => page.evaluate(() => [...document.querySelectorAll('.tool')].map((t) => ({ s: t.dataset.status, top: Math.round(t.getBoundingClientRect().top), h: Math.round(t.getBoundingClientRect().height), body: t.querySelector('.body')?.innerText ?? '' })));
+    // the rows as they stand: status, size, content and where each sits relative to the first (the steps group's head that
+    // appears above them when the finished run folds moves them all alike, and is not what storing the messages may change)
+    const snap = () => page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.tool')];
+      const first = rows[0]?.getBoundingClientRect().top ?? 0;
+      return rows.map((t) => ({ s: t.dataset.status, top: Math.round(t.getBoundingClientRect().top - first), h: Math.round(t.getBoundingClientRect().height), body: t.querySelector('.body')?.innerText ?? '' }));
+    });
     const mid = await snap();
     fs.writeFileSync(path.join(cli, 'release'), ''); // the CLI ends the call
     await waitIdle(local.id, 2, 30_000);
     await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
     await page.waitForTimeout(400);
+    await unfoldSteps(page);   // the run ended: its steps fold (46cd063); opened again they must be as they were
+    await page.waitForTimeout(150);
     const end = await snap();
     const endRoles = await stored();
     check('provider tools: the tool messages are stored after the assistant message', endRoles.slice(-3).join(',') === 'assistant,tool,tool', endRoles.join(','));
