@@ -48,6 +48,34 @@ public static class UiTests
             // No server needed: the script mounts the committed plugin bundle with a stub ctx that answers webhooks.*.
             await RunUiScript(env, "webhooks-tab.mjs", 90);
         }, 120);
+        r.Add("ui.chat", "ui journey: open a chat, have the agent edit a file — the answer streams, the tool rows finish, the edit's diff, the final answer; every side-panel tab opens", async () =>
+        {
+            var p = await env.NewProject("ui-chat", CoreTests.Seed);
+            var title = $"UI chat {Guid.NewGuid().ToString("N")[..6]}";
+            var s = await env.NewSession(projectId: p.S("id"), title: title);
+            // a chat with no messages is transient (not listed): give it one
+            await env.Run(s.S("id")!, "hello [s:echo]");
+            await RunUiScript(env, "chat.mjs", 300, "--session-id", s.S("id")!, "--session", title);
+            Check.Equal("ALPHA-UI line\nbeta line\ngamma line\n", File.ReadAllText(Path.Combine(p.S("path")!, "notes.txt")), "the run the page started edited the file");
+        }, 330);
+        // The script makes its own chat; what it watches waits at MockLlm gates.
+        r.Add("ui.chat-control", "ui journey: steer a running chat (Enter, a steer chip), queue a follow-up (Alt+Enter, a queued chip) and stop an answer with Esc (what was written stays)", () =>
+            RunUiScript(env, "chat-control.mjs", 300), 330);
+        // The script makes its own project and chat; the thinking waits at a MockLlm gate, the command for a file it writes.
+        r.Add("ui.tools", "ui journey: the agent at work — thinking shown and opened while it streams, a shell command's output in its row while it runs, a dropped stream retried without its discarded text", () =>
+            RunUiScript(env, "tools.mjs", 300), 330);
+        // The script makes its own chat; it drops and restores the page's socket (tapSocket), the server keeps running.
+        r.Add("ui.reconnect", "ui journey: the page loses its connection and gets it back — reconnecting shown, a run that ended meanwhile shows its stored answer and no half-written one, a streaming answer goes on with no gap, a new run reaches the page", () =>
+            RunUiScript(env, "reconnect.mjs", 300), 330);
+        // The script sets up its own agent (qwen, two instances) and removes it; its runs wait at MockLlm gates.
+        r.Add("ui.work", "ui journey: the Work tab — an agent's two instances busy, a third chat queued and cancelled from the tab (it never starts), a finished run's row freed while the other keeps its row", () =>
+            RunUiScript(env, "work.mjs", 300), 330);
+        // The script changes settings and changes them back; keepsSettings fails it when the document differs after.
+        r.Add("ui.settings-next", "ui journey: settings — a number saved, reset and refused out of range; an agent added from the model search, its instances set, removed after a confirm", () =>
+            RunUiScript(env, "settings.next.mjs", 300), 330);
+        // The script makes its own chat.
+        r.Add("ui.asks", "ui journey: what a chat asks the user — the ask_user card survives a page reload, an option answers it, so does an answer typed in the message box, and a two-question card is sent with its button; the run goes on with the answer", () =>
+            RunUiScript(env, "asks.mjs", 300), 330);
         r.Add("ui.smoke", "ui: send [s:tools] in the browser, streamed text + tool rows, plugin tabs, no console errors (screenshots)", async () =>
         {
             var p = await env.NewProject("ui-demo", CoreTests.Seed);
@@ -206,12 +234,16 @@ public static class UiTests
     /// Runs ui/<paramref name="script"/> with node against this shard's server and mock (<c>--url --token --mock --app --work --out</c>,
     /// then <paramref name="args"/>) and echoes its check lines. It fails on a failed check, a missing result line (the script
     /// died), a non-zero exit or the timeout, naming every failed check, the browser's errors and stderr at once: stopping at
-    /// the first made a run of ~25 s reveal one problem at a time.
+    /// the first made a run of ~25 s reveal one problem at a time. The runner's --timeout-scale stretches the timeout and goes
+    /// to the script as NETPI_UI_SLOW, where it is the least its own waits are stretched by (lib.mjs SLOW).
     /// </summary>
     private static async Task RunUiScript(Env env, string script, int timeoutSeconds, params string[] args)
     {
         var name = Path.GetFileNameWithoutExtension(script);
+        var scale = Math.Max(1, env.Options.TimeoutScale);
+        timeoutSeconds = (int)Math.Ceiling(timeoutSeconds * scale);
         var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        psi.Environment["NETPI_UI_SLOW"] = scale.ToString(System.Globalization.CultureInfo.InvariantCulture);
         psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", script));
         foreach (var a in new[] { "--url", env.BaseUrl, "--token", Env.Token, "--mock", env.MockUrl, "--app", env.AppDir, "--work", env.Projects, "--out", env.ScreenshotDir }.Concat(args))
             psi.ArgumentList.Add(a);

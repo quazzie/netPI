@@ -66,6 +66,13 @@ public static class Catalog
         ["ui.diagnostics-tab"] = "needs-node",
         ["ui.files-tab"] = "needs-node",
         ["ui.mcp-tab"] = "needs-node",
+        ["ui.chat"] = "needs-node",
+        ["ui.chat-control"] = "needs-node",
+        ["ui.tools"] = "needs-node",
+        ["ui.reconnect"] = "needs-node",
+        ["ui.work"] = "needs-node",
+        ["ui.settings-next"] = "needs-node",
+        ["ui.asks"] = "needs-node",
     };
 
     public static IReadOnlyCollection<string> ExtraIds => Extra.Keys;

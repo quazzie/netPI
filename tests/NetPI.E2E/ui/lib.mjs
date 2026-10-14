@@ -48,6 +48,60 @@ export function check(name, ok, detail = '') {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? ` (${detail})` : ''}`);
 }
 
+/** How long a journey waits, on an idle machine (both are multiplied by SLOW): PAGE for the page to react to what the journey
+ * did or to an event it already got, MODEL for anything a model reply or a run has to come first for. A wait that passes
+ * returns at once, so these only bound how long a miss takes to report. */
+export const PAGE = 15_000;
+export const MODEL = 60_000;
+/** For a read inside a probe (getAttribute, innerText): wait at most a second for the element. A probe that throws is "not
+ * yet" and the next round reads again; Playwright's own default would hold one round for 30 s. */
+export const PROBE = { timeout: 1_000 };
+
+/** What a failed `expectEventually(…, { stop: true })` throws: run() ends the journey without reporting it twice. */
+class Stop extends Error {}
+
+/** A value as a check's detail: short, one line. */
+function describe(v) {
+  if (v === undefined || v === null || typeof v === 'boolean') return String(v);
+  const s = typeof v === 'string' ? v : JSON.stringify(v);
+  const line = String(s).replace(/\s+/g, ' ').trim();
+  return line.length > 200 ? line.slice(0, 199) + '…' : line;
+}
+
+/**
+ * The one way a journey looks at the page: polls `probe` until `pass(value)` holds (by default: the value is truthy) and
+ * records ONE check — passed with the value it saw, or failed with the last value (or the error the probe threw) once
+ * `timeout` ms are up. A probe that throws (an element that is not there yet) counts as "not yet". The timeout is for an
+ * idle machine and is multiplied by SLOW. Returns the value, or null when it never came; with `stop` a miss ends the
+ * journey (for a step everything after it needs), and `quiet` records the check only when it fails (a step on the way,
+ * not something the journey is about).
+ *   expectEventually('the answer is shown', () => chat.innerText(), { pass: (t) => t.includes('ECHO-DONE') })
+ */
+export async function expectEventually(name, probe, { timeout = PAGE, every = 100, pass = Boolean, stop = false, quiet = false } = {}) {
+  const limit = Math.round(timeout * SLOW);
+  const end = Date.now() + limit;
+  let last;
+  let error = null;
+  for (;;) {
+    try {
+      last = await probe();
+      error = null;
+      if (pass(last)) {
+        if (!quiet) check(name, true, typeof last === 'boolean' ? '' : describe(last));
+        return last;
+      }
+    } catch (e) {
+      error = e;
+    }
+    if (Date.now() >= end) break;
+    await new Promise((r) => setTimeout(r, every));
+  }
+  const seen = error ? `error: ${describe(error.message ?? error)}` : `seen: ${describe(last)}`;
+  check(name, false, `not within ${limit} ms; last ${seen}`);
+  if (stop) throw new Stop(name);
+  return null;
+}
+
 export async function shot(page, name) {
   fs.mkdirSync(OUT, { recursive: true });
   await page.screenshot({ path: path.join(OUT, `${name}.png`) });
@@ -93,27 +147,29 @@ export async function rpc(method, params = {}) {
   return body;
 }
 
-/** Polls `probe` until it returns something truthy (and returns it), or throws after `timeout` ms naming `what`. */
+/** Polls `probe` until it returns something truthy (and returns it), or throws after `timeout` ms (× SLOW) naming `what`.
+ * For setting up a journey's state over RPC; what the page shows is checked with expectEventually. */
 export const until = async (what, probe, timeout, every = 100) => {
-  const end = Date.now() + timeout;
+  const limit = Math.round(timeout * SLOW);
+  const end = Date.now() + limit;
   for (;;) {
     const v = await probe();
     if (v) return v;
-    if (Date.now() > end) throw new Error(`timed out after ${timeout} ms waiting for ${what}`);
+    if (Date.now() > end) throw new Error(`timed out after ${limit} ms waiting for ${what}`);
     await new Promise((r) => setTimeout(r, every));
   }
 };
 
 const IDLE = new Set(['idle', 'completed', 'failed', 'cancelled']);
 /** Waits until the session's agent has finished at least `minRuns` runs and is not running (agent.get, polled). */
-export const waitIdle = (sessionId, minRuns = 1, timeout = 60_000) =>
+export const waitIdle = (sessionId, minRuns = 1, timeout = 90_000) =>
   until(`the agent of ${sessionId} to finish run ${minRuns}`, async () => {
     const a = await rpc('agent.get', { sessionId });
     return a && a.runs >= minRuns && IDLE.has(a.status) ? a : null;
   }, timeout, 25);
 
 /** Sends `text` to a session (agent.send) and waits for that run to end. Returns the agent. */
-export async function send(sessionId, text, timeout = 60_000) {
+export async function send(sessionId, text, timeout = 90_000) {
   const before = (await rpc('agent.get', { sessionId }))?.runs ?? 0;
   await rpc('agent.send', { sessionId, text });
   return waitIdle(sessionId, before + 1, timeout);
@@ -127,68 +183,98 @@ export const gates = {
     return JSON.parse(res.text);
   },
   /** Waits until a call is held at the gate: the run is in flight and stays there. */
-  waiting: (name, timeout = 15_000) =>
+  waiting: (name, timeout = MODEL) =>
     until(`a model call at gate ${name}`, async () => {
       const list = JSON.parse((await request(`${MOCK}/_gates`)).text);
       return list.some((g) => g.name === name && g.waiting > 0);
     }, timeout),
 };
 
-/** Opens the app with the token and waits for it to be up. */
+/**
+ * How much slower than an idle machine this one is right now, from 1 to 4: the larger of NETPI_UI_SLOW (UiTests passes
+ * the runner's --timeout-scale) and a measurement, the slower of two short echo replies from MockLlm against the ~260 ms
+ * one takes on an idle machine (measured 2026-10-14; a busy machine or a slower --speed stretches them alike, and a mock that
+ * stalls right now stretches every wait of the script).
+ * expectEventually, until, waitIdle and gates.waiting multiply their timeouts by it.
+ */
+export const SLOW = await (async () => {
+  const given = Number(process.env.NETPI_UI_SLOW) || 1;
+  let slowest = 0;
+  if (MOCK) {
+    for (let i = 0; i < 2; i++) {
+      const t = Date.now();
+      try {
+        await request(`${MOCK}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'qwen3.8-27b', stream: true, messages: [{ role: 'user', content: 'timing probe [s:echo]' }] }),
+        });
+        slowest = Math.max(slowest, Date.now() - t);
+      } catch {}
+    }
+  }
+  const measured = slowest ? slowest / 260 : 1;
+  const slow = Math.round(Math.min(4, Math.max(1, given, measured)) * 10) / 10;
+  console.log(`  machine: x${slow} (the slower of two echo replies took ${slowest ? slowest + ' ms' : 'no time: no mock'}, NETPI_UI_SLOW=${process.env.NETPI_UI_SLOW ?? 'unset'})`);
+  return slow;
+})();
+
+/** Opens the app with the token; the journey stops when it never connects to the server. */
 export async function openApp(page) {
   await page.goto(`${BASE}/?token=${encodeURIComponent(TOKEN)}`);
-  await page.waitForSelector('.panel.left', { timeout: 15_000 });
+  await expectEventually('the app connects to the server', () => page.getByTestId('connection').getAttribute('data-status', PROBE),
+    { pass: (s) => s === 'open', timeout: 15_000, stop: true, quiet: true });
 }
 
-/** Selects a side panel's tab (left: Sessions, Projects, …; right: Work, Ideas, …) and opens the panel, without closing it
- * when that tab is already the one showing (a click on the active tab folds the panel). */
-export async function openStripTab(page, side, name) {
-  const t = page.locator(`.panel.${side} .strip-tab`, { hasText: name });
-  // Shortly after a load the app restores the panel's last tab from the server, which can undo a click made before it:
-  // the tab has to still be the one showing a moment later.
-  for (let i = 0; i < 4; i++) {
-    if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
-    if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
-    await page.waitForTimeout(250);
-    if ((await t.getAttribute('aria-selected')) === 'true' && (await page.locator(`.panel.${side}.open`).count())) return;
-  }
-}
-
-/** Opens a session from the sessions panel by (a part of) its title. A row that is not shown (a folded group, a long list)
- * is found through the session search, which shows matches inside folded groups; the search is cleared again. */
-export async function openSession(page, title) {
-  await openStripTab(page, 'left', 'Sessions');
-  const row = page.locator('.panel.left .srow', { hasText: title }).first();
-  await row.waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {});
-  const search = page.locator('.panel.left').getByPlaceholder('Search sessions');
-  const searched = !(await row.isVisible());
-  if (searched) await search.fill(title);
-  await row.waitFor({ timeout: 15_000 });
-  await row.click();
-  if (searched) await search.fill('');
-  await page.locator('.composer textarea').waitFor({ timeout: 10_000 });
-}
-
-// Wait until the chat shows `marker` (what the next check reads), not for a fixed pause: a pause is too long on an idle
-// machine and too short on a loaded one. A marker that never comes leaves the check after it to fail with the text it saw.
 /**
- * Open the folded step groups of the chat on screen: a finished run's steps fold (Settings → Steps, "Fold when done",
- * the default since 46cd063), and a folded group renders no tool rows, so a check on a row of a finished turn opens them
- * first, as a person would.
+ * Shows a side-panel tab by its key ('core/sessions', 'netpi.work/work', …) on whichever side the user put it, and opens
+ * its panel. A click on the tab that is already showing folds the panel, so it clicks only while the tab's pane is not
+ * shown; shortly after a load the app restores the panel's last tab from the server, which can undo an early click, and
+ * the next round clicks again. Returns the pane.
  */
-export async function unfoldSteps(page, max = 20) {
-  const closed = page.locator('.content:visible .group.collapsible .head[aria-expanded="false"]');
-  for (let n = 0; n < max && (await closed.count()); n++) await closed.first().click();
+export async function showTab(page, key) {
+  const pane = page.locator(`[data-pane="${key}"]`);
+  await expectEventually(`the ${key} tab shows`, async () => {
+    if (await pane.isVisible()) return true;
+    await page.locator(`[data-tab-key="${key}"]`).click({ timeout: 2_000 });
+    return pane.isVisible();
+  }, { every: 300, stop: true, quiet: true });
+  return pane;
 }
 
-export const chatShows = (page, marker, ms = 10_000) =>
-  page.waitForFunction((m) => (document.querySelector('.scroller > .content')?.innerText ?? '').includes(m), marker, { timeout: ms }).catch(() => {});
-// The same for the right panel's open tab: its own text, once it is more than the "Loading…" placeholder (and holds `includes`).
-export const paneShows = (page, includes = '', ms = 10_000) =>
-  page.waitForFunction((want) => {
-    const t = (document.querySelector('.panel.right > .body .pane:not([hidden])')?.innerText ?? '').trim();
-    return t.length > 20 && t.includes(want);
-  }, includes, { timeout: ms }).catch(() => {});
+/** Opens a chat from the sessions list by its id. A row that is not shown (a folded group, a long list) is found through
+ * the session search with `title`, which shows matches inside folded groups; the search is cleared again. Returns the
+ * chat's message list. */
+export async function openSession(page, id, title) {
+  const pane = await showTab(page, 'core/sessions');
+  const row = pane.locator(`[data-session="${id}"]`);
+  const search = pane.getByTestId('session-search');
+  await expectEventually(`the chat ${id} opens from the sessions list`, async () => {
+    if (await page.locator(`[data-testid="chat"][data-session="${id}"]`).isVisible()) return true;
+    if (!(await row.isVisible()) && title) await search.fill(title);
+    await row.click({ timeout: 2_000 });
+    return false;
+  }, { every: 300, stop: true, quiet: true });
+  if (await search.inputValue()) await search.fill('');
+  return chatOf(page, id);
+}
+
+/** A chat's message list (the one shown: other chats stay mounted, hidden). */
+export const chatOf = (page, id) => page.locator(`[data-testid="chat"][data-session="${id}"]`);
+/** The composer on screen and its message box. */
+export const composerOf = (page) => page.locator('[data-composer]:visible');
+export const messageBox = (page) => page.getByRole('textbox', { name: 'Message' });
+/** The text of a chat's last answer (its last assistant text item, finished or streaming). */
+export const lastAnswer = (chat) => chat.locator('[data-kind="text"]').last().innerText(PROBE);
+
+/**
+ * Opens the folded step groups of a chat: a finished run's steps fold (Settings → Steps, "Fold when done", the default),
+ * and a folded group renders no tool rows, so a check on a row of a finished turn opens them first, as a person would.
+ */
+export async function unfoldSteps(chat) {
+  const closed = chat.locator('[data-testid="steps-head"][aria-expanded="false"]');
+  for (let n = 0; n < 30 && (await closed.count()); n++) await closed.first().click();
+}
 
 /**
  * Routes the page's WebSocket (/ws) through the test. Every frame is recorded both ways; an answer from the server can be
@@ -207,6 +293,7 @@ export async function tapSocket(page) {
   const live = new Set();
   const methods = new Map(); // call id → method, so an answer frame names the call it answers
   let down = false;
+  let aborted = 0; // HTTP calls drop() failed on purpose: each logs "Failed to load resource" in the page
   const record = (dir, data) => {
     let msg = null;
     try { msg = JSON.parse(String(data)); } catch {}
@@ -250,6 +337,8 @@ export async function tapSocket(page) {
   const since = (n) => frames.slice(n);
   return {
     frames,
+    /** How many of the page's HTTP calls drop() failed (run() does not count their console lines as errors). */
+    get aborted() { return aborted; },
     /** A position in the frame list, for `since`. */
     mark: () => frames.length,
     /** The rpc calls of `method` the page sent (after a mark). */
@@ -306,7 +395,7 @@ export async function tapSocket(page) {
     /** Closes the page's connection and refuses new ones until restore(); with http (the default) the UI's HTTP fallback fails too. */
     async drop({ http = true } = {}) {
       down = true;
-      if (http) await page.route('**/api/rpc/**', (r) => r.abort('internetdisconnected'));
+      if (http) await page.route('**/api/rpc/**', (r) => { aborted++; return r.abort('internetdisconnected'); });
       for (const { ws, server } of [...live]) {
         live.clear();
         await ws.close({ code: 4000, reason: 'dropped by the test' }).catch(() => {});
@@ -371,6 +460,8 @@ export async function run(name, body, { viewport = { width: 1200, height: 900 },
   const errors = [];
   try {
     const context = await browser.newContext({ viewport, colorScheme: 'dark' });
+    // a click or a fill waits for its element: as long as the machine needs (Playwright's default is 30 s)
+    context.setDefaultTimeout(Math.round(30_000 * SLOW));
     const page = await context.newPage();
     page.on('console', (m) => { if (m.type() === 'error') errors.push(`[console] ${m.text()}`); });
     page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
@@ -383,11 +474,22 @@ export async function run(name, body, { viewport = { width: 1200, height: 900 },
     // chats to load, and closing them one by one took up to 15 s.
     if (freshTabs) await rpc('ui.state.set', { key: 'netpi.openTabs', value: null });
     await body({ page, context, browser, errors, socket });
+    // While the socket is down the page falls back to HTTP for its calls, and drop() fails those too: the longer a drop
+    // lasts (a busy machine), the more of them. Each logs one console line; those are the test's own, not the page's.
+    for (let n = socket?.aborted ?? 0; n > 0; n--) {
+      const i = errors.findIndex((e) => e.startsWith('[console] Failed to load resource') && e.includes('ERR_INTERNET_DISCONNECTED'));
+      if (i < 0) break;
+      errors.splice(i, 1);
+    }
     check('no console/page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
     await context.close();
   } catch (e) {
-    errors.push(`[exception] ${e?.stack ?? e}`);
-    check(`${name} script ran to the end`, false, e?.message ?? e);
+    // a Stop is a failed check that is already recorded: the journey ends there, and nothing more is reported for it
+    if (e instanceof Stop) console.log(`  stopped: the rest of ${name} needs "${e.message}"`);
+    else {
+      errors.push(`[exception] ${e?.stack ?? e}`);
+      check(`${name} script ran to the end`, false, e?.message ?? e);
+    }
   } finally {
     await browser.close();
   }
