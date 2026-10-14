@@ -98,7 +98,9 @@ try {
         $why = [ordered]@{}
         $full = $false
         foreach ($f in $files) {
-            $hit = @($rules | Where-Object { $f.StartsWith($_.path) })
+            # the most specific rule decides: plugins/X/ui/ sends a tab's change to the UI journeys alone, plugins/X/ the
+            # plugin's server side to its own tests
+            $hit = @($rules | Where-Object { $f.StartsWith($_.path) } | Sort-Object { $_.path.Length } -Descending | Select-Object -First 1)
             $real = @($hit | Where-Object { -not $_.ignore })
             if ($real.Count -eq 0 -and $hit.Count -gt 0) { continue }   # docs, scripts, unit tests: no E2E test can see them
             if ($real.Count -eq 0) { $real = @([pscustomobject]@{ path = $f; tags = @('smoke') }); $why[$f] = 'no rule for it: the smoke set' }

@@ -1,5 +1,5 @@
 {
- "about": "Which E2E tests a changed file can affect: scripts/e2e.ps1 -Changed reads this. A file gets the union of the tags (and ids) of every rule whose path is a prefix of it; 'ignore' rules are for files no E2E test can see. A file that matches nothing is treated as a risk and runs the smoke set. 'all' means a contract changed: run the full gate. RunnerSelfTests checks that every tag exists and that every plugin folder has a rule, so a new plugin has to say what covers it.",
+ "about": "Which E2E tests a changed file can affect: scripts/e2e.ps1 -Changed reads this. The most specific rule decides for a file: the one with the longest path that is a prefix of it. Server and plugin code maps to the C# tests, the UI (web/, plugins/X/ui/ and the bundles in plugins/X/wwwroot/) to the UI journeys (the ui tag, or the journeys a tab can reach), and a shared contract ('all') to the full gate, which runs both. 'ignore' rules are for files no E2E test can see. A file that matches nothing is treated as a risk and runs the smoke set. RunnerSelfTests checks that every tag, id and path exists and that every plugin folder has a rule, so a new plugin has to say what covers it.",
  "rules": [
   {
    "path": "src/NetPI.Abstractions/",
@@ -43,10 +43,20 @@
     "slots",
     "subagents",
     "scheduling"
-   ],
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Agents/ui/",
    "ids": [
-    "ui.work-tab",
-    "ui.usage-budget"
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Agents/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
    ]
   },
   {
@@ -63,8 +73,8 @@
   },
   {
    "path": "plugins/NetPI.Backup/",
-   "ids": [
-    "ui.smoke"
+   "tags": [
+    "smoke"
    ]
   },
   {
@@ -109,9 +119,20 @@
    "path": "plugins/NetPI.Diagnostics/",
    "tags": [
     "inspect"
-   ],
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Diagnostics/ui/",
    "ids": [
-    "ui.diagnostics-tab"
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Diagnostics/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
    ]
   },
   {
@@ -131,11 +152,20 @@
    "path": "plugins/NetPI.Ideas/",
    "tags": [
     "ideas"
-   ],
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Ideas/ui/",
    "ids": [
-    "ui.smoke",
-    "ui.idea-conflict",
-    "ui.ideas-tab"
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Ideas/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
    ]
   },
   {
@@ -147,8 +177,21 @@
   {
    "path": "plugins/NetPI.Mcp/",
    "tags": [
-    "mcp",
-    "ui"
+    "mcp"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Mcp/ui/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Mcp/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
    ]
   },
   {
@@ -189,9 +232,6 @@
    "path": "plugins/NetPI.Providers.ClaudeCli/",
    "tags": [
     "provider"
-   ],
-   "ids": [
-    "ui.tool-cards"
    ]
   },
   {
@@ -229,28 +269,46 @@
     "scheduling",
     "sessions",
     "codemode"
-   ],
-   "ids": [
-    "ui.chat-run",
-    "ui.connection"
    ]
   },
   {
    "path": "plugins/NetPI.Schedules/",
    "tags": [
     "smoke"
-   ],
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Schedules/ui/",
    "ids": [
-    "ui.schedules-tab"
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Schedules/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
    ]
   },
   {
    "path": "plugins/NetPI.Webhooks/",
    "tags": [
     "smoke"
-   ],
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Webhooks/ui/",
    "ids": [
-    "ui.webhooks-tab"
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Webhooks/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
    ]
   },
   {
@@ -263,9 +321,6 @@
    "path": "plugins/NetPI.Todo/",
    "tags": [
     "smoke"
-   ],
-   "ids": [
-    "ui.tool-cards"
    ]
   },
   {
@@ -285,17 +340,27 @@
   {
    "path": "plugins/NetPI.Tools.Files/",
    "tags": [
-    "tools",
-    "ui"
+    "tools"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Tools.Files/ui/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Tools.Files/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
    ]
   },
   {
    "path": "plugins/NetPI.Tools.Media/",
    "tags": [
     "provider"
-   ],
-   "ids": [
-    "ui.tool-cards"
    ]
   },
   {
@@ -321,18 +386,26 @@
    "path": "plugins/NetPI.Tools.Ssh/",
    "tags": [
     "smoke"
-   ],
-   "ids": [
-    "ui.tool-cards"
    ]
   },
   {
    "path": "plugins/NetPI.Tools.Web/",
    "tags": [
     "smoke"
-   ],
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Tools.Web/ui/",
    "ids": [
-    "ui.tool-cards"
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Tools.Web/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
    ]
   },
   {
@@ -345,10 +418,22 @@
    "path": "plugins/NetPI.Work/",
    "tags": [
     "scheduling"
-   ],
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Work/ui/",
    "ids": [
-    "ui.smoke",
-    "ui.work-tab"
+    "ui.chat",
+    "ui.rpc-contract",
+    "ui.work"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Work/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract",
+    "ui.work"
    ]
   },
   {
@@ -363,7 +448,23 @@
    "all": true
   },
   {
+   "path": "web/test/",
+   "ignore": true
+  },
+  {
    "path": "web/",
+   "tags": [
+    "ui"
+   ]
+  },
+  {
+   "path": "package.json",
+   "tags": [
+    "ui"
+   ]
+  },
+  {
+   "path": "package-lock.json",
    "tags": [
     "ui"
    ]
