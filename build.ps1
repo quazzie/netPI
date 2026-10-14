@@ -12,7 +12,9 @@
     .\build.ps1                build into artifacts\dev\app. The running app is untouched.
     .\build.ps1 -Publish       build, then install into artifacts\app. Installing a plugin only stages it: the running
                                NetPI keeps serving from its shadow copy and reloads the plugin itself when no agent run
-                               is active (its reload gate; at once when idle). A reload never ends or disturbs a run.
+                               is active (its reload gate; at once when idle). A reload never ends or disturbs a run;
+                               a chat that waits for your answer has no run, and the shell plugin also waits for the
+                               processes it started.
     .\build.ps1 -Publish -NextStart
                                the host files and plugins wait in artifacts\app\.pending for the next start; the web
                                UI is swapped in place (a window refresh picks it up — the server reads it from disk).
@@ -246,7 +248,7 @@ function Show-PublishCost([string[]] $pluginNames) {
         return
     }
     $who = @($live.Busy | ForEach-Object { $_.name }) -join ', '
-    Write-Host "Installing into the running app: $names$what. $($live.Busy.Count) chat(s) mid-turn ($who): the host reloads them when no agent run is active." -ForegroundColor Yellow
+    Write-Host "Installing into the running app: $names$what. $($live.Busy.Count) chat(s) mid-turn ($who): the host reloads them when no agent run is active (the shell plugin also when no process it started runs)." -ForegroundColor Yellow
 }
 
 # ---- .NET: always into the dev tree. Nothing below this point can fail halfway into artifacts\app.
@@ -423,7 +425,7 @@ if ($Publish) {
 
             Write-Host ''
             if ($pluginNames.Count -and -not $pluginsWait) {
-                $when = if ($live -and $live.Gated) { 'when no agent run is active (at once if idle; diag.overview .deferred lists what still waits)' }
+                $when = if ($live -and $live.Gated) { 'when no agent run is active, the shell plugin also when no process it started runs (at once if idle; diag.overview .deferred and .reloadGate.holds say what waits, and for what)' }
                         elseif ($live) { 'now (it has no reload gate yet; no chat is mid-turn)' }
                         else { 'when its reload gate allows (could not ask it: a host with the gate waits for active runs, an older one reloads at once)' }
                 Write-Host "Plugins staged in place: $($pluginNames -join ', '). The running NetPI reloads them $when." -ForegroundColor Green

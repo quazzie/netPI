@@ -19,7 +19,8 @@
 - Plain builds use `artifacts/dev/app`; they must never touch the installed app.
 - After merging, publish yourself with `.\build.ps1 -Publish` — never leave it to the user. The script decides: plugins
   are staged in place and the running host reloads them itself when no agent run is active (its reload gate: at once when
-  idle, else when the last run ends; a reload must never disturb a run — if one ever closes a run, that is a bug to
+  idle, else when the last run ends; a chat waiting for its user's answer has no run, and the shell's reload also waits
+  for the processes it started; a reload must never disturb a run — if one ever closes a run, that is a bug to
   report); the web UI swaps in place (a window refresh shows it); host files, or plugins built against changed contracts,
   wait in `.pending` for the next start. A host without the gate (started before it existed) gets its plugins in
   `.pending` while a chat is mid-turn. There is nothing else to choose. `-NextStart` (reload nothing, stage everything)

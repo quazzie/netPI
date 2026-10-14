@@ -136,8 +136,12 @@ one running app — a git worktree isolates the files, not the process. Two thin
 notice), and `plugins.quiet` holds reloads back entirely until you switch it off, so nothing at all moves under a
 running chat while you work. What a chat is told when something *does* change: `Your tools changed. No longer available:
 web_fetch (plugin reload netpi.tools.web).` — and the diagnostics plugin records the same reloads: `diag.overview` has
-`reloads` (which plugins, when, which chats were mid-turn, and what it cost) and `deferred` (what quiet is holding),
-`diag.problems` has a line for each, and the Diagnostics tab shows both. The full history of one chat is
+`reloads` (which plugins, when, which chats were mid-turn, and what it cost), `deferred` (the reloads still waiting: for
+the agent runs going on, for a plugin that holds its own reload, or for `plugins.quiet`) and `reloadGate.holds` (what
+they wait for: one line per run, `netpi.tools.shell (its own reload): …` while processes it started run), `diag.problems`
+has a line for each, and the Diagnostics tab shows both. A chat that waits for its user (a question, a guardrail's OK, a
+plan or schedule decision) holds no reload: it has no run, and `agent.waits` lists the calls that wait (they survive a
+reload and a restart; docs/PLUGINS.md, "Waiting for the user"). The full history of one chat is
 `diag.toolsets { sessionId }`: its tools now, the baseline of its first model call, and every change with its cause.
 A reload that leaks shows up in the log as `Plugin <id>: the previous load context is still alive after unload (something
 still references plugin objects); its memory is not reclaimed` (and as `plugins.unloaded { collected: false }` on the bus):

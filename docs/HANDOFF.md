@@ -18,6 +18,20 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 ## Current state (2026-09-28)
 
+### Reloads never disturb a run, and waits for the user survive them (2026-10-14)
+
+Every plugin reload goes through one gate in the host (`IReloadGate`, `src/NetPI.Host/Plugins/ReloadGate.cs`): each agent
+run holds it, so a reload asked for meanwhile (a publish, `/reload`) is deferred and applied when the last run ends, or at
+the next start; nothing ever waits for a deferred reload (the first version's `plugins.reloadDrainMinutes` went the same
+day). A plugin can hold its own reload (`HoldOwn`): the shell does while a process it started runs, since its stop kills
+them. The five calls that wait for the user — `ask_user`, a guardrail's `ask:` rule, `plan_submit`, `plan_enter` and a
+proposed schedule — are **durable waits** (`UserWait`): the run ends at the call holding no slot and no reload, the
+runtime keeps the wait in the agent's record (so it survives a reload of any plugin and a restart), and the answer goes
+on from it; the owners keep no state of their own (`agent.waits`, `agent.waiting`, `agent.waitEnded`). Browser tabs and
+MCP connections are still lost when their plugin reloads (the owner's choice). docs/PLUGINS.md ("the reload gate",
+"Waiting for the user"); record: [archive/2026-10-14-durable-waits.md](archive/2026-10-14-durable-waits.md). The contracts
+changed: a publish stages everything for the next start, and only after that restart does the running app have any of it.
+
 ### Schedule proposals: the card in the chat (2026-10-13)
 
 A `schedules` **add** is now a proposal that *waits*: stored paused with `proposedBy`, the tool call yields (like `ask_user`)
