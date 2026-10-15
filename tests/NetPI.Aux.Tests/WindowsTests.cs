@@ -40,11 +40,18 @@ public static class WindowsTests
             try
             {
                 // the helper opens the app, then waits for a window that never comes: the stop lands while it waits
-                using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                await Check.ThrowsAsync<OperationCanceledException>(() => agent.CallAsync(new System.Text.Json.Nodes.JsonObject
+                using var stop = new CancellationTokenSource();
+                var call = agent.CallAsync(new System.Text.Json.Nodes.JsonObject
                 {
                     ["cmd"] = "launch", ["exe"] = testExe, ["args"] = $"\"{title}\"", ["title"] = "never-" + Guid.NewGuid().ToString("N"), ["timeout"] = 20_000,
-                }, stop.Token, 30), "the call is stopped");
+                }, stop.Token, 30);
+                try
+                {
+                    await Wait.Until(() => Process.GetProcessesByName("netpi-wintest").Any(Ours), "the helper opened the app", 10_000);
+                    stop.Cancel();
+                    await Check.ThrowsAsync<OperationCanceledException>(() => call, "the call is stopped");
+                }
+                finally { stop.Cancel(); }
                 await Task.Delay(500);
                 var apps = Process.GetProcessesByName("netpi-wintest").Where(Ours).ToList();
                 Check.True(apps.Count > 0, "the helper had opened the app");
