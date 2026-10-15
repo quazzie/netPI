@@ -176,7 +176,7 @@ buttons beside the `+`, and took the space of the tab bar). The chevron appears 
 
 **New sessions and projects.** `newSession({ projectId? })` takes the explicit `projectId` (`null`/absent = no
 project): a new session never inherits one, so Ctrl+T, the + tab and the start screen's "New session" always start
-unattached. The start screen's project button is a split button: the name half starts a session in the project shown
+unattached. New manual sessions start at high priority; use the composer priority selector to change it. The start screen's project button is a split button: the name half starts a session in the project shown
 (its folder underneath is the hint), the chevron opens `ProjectPicker` in select mode (`{ select: true }`), which
 starts a session in the project picked and remembers it as `app.lastProjectId` (the project last worked in, read from
 `netpi.lastProject`) — the "No project" row is the attach mode's, so a pick always lands in a project. The project button in the composer bar (after the profile picker) and
@@ -376,7 +376,7 @@ Timings measured by the old mock walkthrough (headless Chromium):
 
 - The textarea grows with its content.
 - The bar under it collapses by the composer's own width (a container query: side panels squeeze it): at 760px
-  the profile, project and effort pickers drop their labels, at 520px the separator and the chat cost go, at 400px
+  the profile, project, effort and priority pickers drop their labels, at 520px the separator and the chat cost go, at 400px
   the `/` and `@` buttons (typing them opens the same popups), and at 340px the gaps close and the agent's label
   narrows to 52px. Nothing passes the edge and Send stays on screen down to the 286px both open side panels leave
   (idea-ziqr1i; no test checks the widths since `ui.composer` went on 2026-10-15).
@@ -402,6 +402,10 @@ Timings measured by the old mock walkthrough (headless Chromium):
   on it) and **Manage agents** (Settings → Agents & budget). Choosing one calls `agents.use` (the chat's `meta.agent` and
   model). New chats start on the agent chosen last while it is active, else the first active one. The effort picker offers "default" plus
   `model.reasoning.efforts` and calls `sessions.update { reasoning }`; `''` means the model default.
+- The priority selector in the composer offers low, normal, high and critical. It calls `sessions.update` with
+  `meta.priority`, immediately reorders a queued run, and can change an active run's priority for later queueing. New
+  manual chats begin at high priority. A critical run may pause eligible lower priority system-started work; manually
+  started chats remain protected. At narrow widths the selector keeps only its priority icon.
 - The profile picker (shown once there are profiles) sets the chat's profile (`profiles.apply`): free before the first
   message; in a started chat it says the system prompt and tools change and the chat is read again (with its size).
 - The project button (folder icon + name, dimmed “No project” while none is attached) sets the session's project

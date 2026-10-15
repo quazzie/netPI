@@ -25,7 +25,7 @@ public static class CoreRpcTests
         ("projects.list", "All projects → ProjectInfo[]", true),
         ("projects.update", "Update a project: { id, name?, path?, create?, meta? } → ProjectInfo (meta is merged key by key; a null value removes a key; create makes a path that does not exist)", false),
         ("rpc.list", "RPC methods → { method, description, pluginId }[]", true),
-        ("sessions.create", "Create a session: { title?, projectId?, model?, reasoning? } → SessionInfo", false),
+        ("sessions.create", "Create a session: { title?, projectId?, model?, reasoning?, meta? } → SessionInfo", false),
         ("sessions.delete", "Delete a session and its subagent sessions: { id } → true", false),
         ("sessions.fork", "Fork a chat: a new chat with its messages up to a message, the original unchanged: { id, upToSeq? (the last) } → SessionInfo (publishes session.forked)", false),
         ("sessions.get", "One session: { id } → SessionInfo", true),

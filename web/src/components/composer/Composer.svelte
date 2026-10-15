@@ -3,6 +3,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import AgentPicker from './AgentPicker.svelte';
   import EffortPicker from './EffortPicker.svelte';
+  import PriorityPicker from './PriorityPicker.svelte';
   import ProfilePicker from './ProfilePicker.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
   import ToolsPicker from './ToolsPicker.svelte';
@@ -30,6 +31,7 @@
   let dragOver = $state(false);
   let agentOpen = $state(false);
   let effortOpen = $state(false);
+  let priorityOpen = $state(false);
   let popup = $state(null); // { type: 'command'|'mention', items, index, start, query, loading }
 
   const running = $derived(isBusy(session.id));
@@ -459,6 +461,7 @@
         <ProjectPicker {session} />
         <AgentPicker {session} bind:open={agentOpen} />
         <EffortPicker {session} {model} bind:open={effortOpen} />
+        <PriorityPicker {session} bind:open={priorityOpen} />
         <ToolsPicker {session} />
         <PlanPill {session} />
         <span class="spacer"></span>
@@ -626,7 +629,8 @@
   @container (max-width: 760px) {
     .bar > :global(.pick[aria-label='Profile'] > span:not(.np-icon)),
     .bar > :global(.pick[aria-label='Project'] > span:not(.np-icon)),
-    .bar > :global(.pick[aria-label='Reasoning effort'] > span:not(.np-icon)) {
+    .bar > :global(.pick[aria-label='Reasoning effort'] > span:not(.np-icon)),
+    .bar > :global(.pick[aria-label='Priority'] > span:not(.np-icon)) {
       display: none;
     }
   }

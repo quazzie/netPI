@@ -478,6 +478,9 @@ export async function newSession(opts = {}) {
     if (projectId) params.projectId = projectId;
     if (opts.title) params.title = opts.title;
     if (opts.model) params.model = opts.model;
+    // Chats the user starts default to high priority. System-created chats use their own RPC paths and retain their
+    // caller-defined priority and preemption behavior.
+    params.meta = { priority: opts.priority ?? 'high', prioritySource: 'manual' };
     // a new chat runs on the agent chosen last (or the first active one) unless a model was asked for
     const agent = opts.model ? null : defaultAgent();
     if (agent) params.model = agent.model;

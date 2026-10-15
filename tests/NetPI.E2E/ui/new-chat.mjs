@@ -21,6 +21,19 @@ await run('new-chat', async ({ page }) => {
   await page.getByRole('dialog').locator(`[data-project="${project.id}"]`).click();
   const id = await expectEventually('picking the project starts a chat', activeTab, { pass: (t) => t?.startsWith('ses_'), stop: true });
   await expectEventually('the chat is in the project', composerProject, { pass: (p) => p === project.id });
+  const priorityButton = composerOf(page).getByRole('button', { name: 'Priority', exact: true });
+  const priority = async () => (await rpc('sessions.get', { id }))?.meta?.priority;
+  check('a new manual chat starts at high priority', await priority() === 'high');
+  await priorityButton.click();
+  const priorityMenu = page.getByRole('listbox', { name: 'Session priority' });
+  await priorityMenu.getByRole('option', { name: /Critical/ }).click();
+  await expectEventually('choosing critical updates the session', priority, { pass: (p) => p === 'critical' });
+  await priorityButton.click();
+  await priorityMenu.getByRole('option', { name: /High/ }).click();
+  await expectEventually('the priority can be changed back before sending', priority, { pass: (p) => p === 'high' });
+  await page.setViewportSize({ width: 500, height: 900 });
+  check('the priority selector compacts to its icon in a narrow composer', await priorityButton.locator('.priority-label').isHidden());
+  await page.setViewportSize({ width: 1400, height: 950 });
   await shot(page, 'ui-new-chat-01-started');
 
   // ---- the first answer makes it a chat in the list
@@ -38,6 +51,7 @@ await run('new-chat', async ({ page }) => {
   await expectEventually('closing the chat shows the start screen again', () => welcome.isVisible());
   await expectEventually('its main button now starts in that project', () => welcome.getByTestId('start-in-project').getAttribute('data-project', PROBE), { pass: (p) => p === project.id });
   await welcome.getByTestId('start-in-project').click();
-  await expectEventually('it starts a new chat', activeTab, { pass: (t) => t?.startsWith('ses_') && t !== id });
+  const nextId = await expectEventually('it starts a new chat', activeTab, { pass: (t) => t?.startsWith('ses_') && t !== id });
   await expectEventually('in the same project', composerProject, { pass: (p) => p === project.id });
+  check('the next manual chat also starts at high priority', (await rpc('sessions.get', { id: nextId }))?.meta?.priority === 'high');
 }, { freshTabs: true });

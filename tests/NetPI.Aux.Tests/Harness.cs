@@ -211,6 +211,7 @@ public sealed class FakeAgentScheduler : IAgentScheduler
     public int Released;
     public string Resolve(ModelInfo model) => model.Ref;
     public IReadOnlyList<AgentSlots> Snapshot() => [];
+    public bool UpdatePriority(string sessionId, int priority, bool pausable) => false;
     public ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct)
     {
         lock (Acquired) Acquired.Add(request);

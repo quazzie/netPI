@@ -15,6 +15,7 @@ public static class PriorityTests
     public static void Register(TestRunner t)
     {
         t.Add("priority: chats queue by their meta.priority; a subagent gets its parent's, never above it nor above high", QueueOrderAndChildren);
+        t.Add("priority: changing a queued chat reorders it immediately", ReprioritizeQueued);
         t.Add("priority: a critical chat takes the slot of a pausable run at its next model call, and that run goes on after it", PausedAtNextCall);
         t.Add("priority: the user's own chat is never paused, and a high chat only queues first", NotPaused);
         t.Add("priority: a tool that has run past LendSlotAfter lends the slot to a critical run; it keeps running and its result reaches the model", LentWhileToolsRun);
@@ -63,14 +64,15 @@ public static class PriorityTests
     }
 
     /// <summary>A chat on the one-slot model; <paramref name="priority"/> as a webhook, schedule or spawn stamps it (null: the user's own chat).</summary>
-    private static SessionInfo Chat(TestHost h, string? priority)
+    private static SessionInfo Chat(TestHost h, string? priority, bool manuallyPrioritized = false)
     {
         var s = h.NewSession(model: "fake/solo");
-        if (priority is not null)
+        if (priority is not null || manuallyPrioritized)
             h.Sessions.UpdateSession(s.Id, x =>
             {
                 x.Meta ??= new JsonObject();
-                x.Meta[RunPriority.MetaKey] = priority;
+                if (priority is not null) x.Meta[RunPriority.MetaKey] = priority;
+                if (manuallyPrioritized) x.Meta["prioritySource"] = "manual";
             });
         return s;
     }
@@ -125,10 +127,13 @@ public static class PriorityTests
         await h.SendAsync(victim.Id, "victim");
         await Wait.Until(() => script.Slow.Calls == 1, "the victim's tool runs");
 
-        var critical = Chat(h, "critical");
+        var critical = Chat(h, "normal", manuallyPrioritized: true);
         script.Hold("critical");
         await h.SendAsync(critical.Id, "critical");
         await Wait.Until(() => h.Runtime.GetBySession(critical.Id)!.Status == AgentStatus.Queued, "the critical chat queues behind the tool");
+        h.Sessions.UpdateSession(critical.Id, x => x.Meta![RunPriority.MetaKey] = "critical");
+        await Wait.Until(() => h.Scheduler!.Snapshot().Single(p => p.Key == "fake/solo").Waiters.Single().Priority == RunPriority.Critical,
+            "changing the queued chat updates its scheduler priority");
         Check.Equal("victim", script.Order, "the tool is not interrupted: it has not run for a minute");
 
         script.ToolGate.SetResult();
@@ -146,11 +151,34 @@ public static class PriorityTests
         Check.Contains(h.Messages(victim.Id).Last().Text, "victim done");
     }
 
+    private static async Task ReprioritizeQueued()
+    {
+        var (h, script) = await StartAsync();
+        await using var host = h;
+        var holder = Chat(h, "low");
+        await h.SendAsync(holder.Id, "victim");
+        await Wait.Until(() => script.Slow.Calls == 1, "the low priority chat holds the slot");
+        var normal = Chat(h, "normal");
+        var low = Chat(h, "low");
+        await h.SendAsync(normal.Id, "normal");
+        await h.SendAsync(low.Id, "low");
+        await Wait.Until(() => h.Scheduler!.Snapshot().Single(p => p.Key == "fake/solo").Queued == 2, "both chats queue");
+
+        h.Sessions.UpdateSession(low.Id, x => x.Meta![RunPriority.MetaKey] = "high");
+        await Wait.Until(() => h.Scheduler!.Snapshot().Single(p => p.Key == "fake/solo").Waiters is { Count: 2 } waiters
+            && waiters[0].SessionId == low.Id && waiters[0].Priority == RunPriority.High,
+            "the selected high priority moves ahead of the earlier normal waiter");
+
+        script.ToolGate.SetResult();
+        foreach (var s in new[] { holder, low, normal }) await h.IdleAsync(s.Id);
+        Check.Equal("victim,victim:after,low,normal", script.Order, "the promoted queued chat runs first");
+    }
+
     private static async Task NotPaused()
     {
         var (h, script) = await StartAsync();
         await using var host = h;
-        var mine = Chat(h, null);   // the user's own chat
+        var mine = Chat(h, "high", manuallyPrioritized: true);   // a manually prioritized chat keeps its slot
         await h.SendAsync(mine.Id, "victim");
         await Wait.Until(() => script.Slow.Calls == 1, "the user's tool runs");
         var critical = Chat(h, "critical");

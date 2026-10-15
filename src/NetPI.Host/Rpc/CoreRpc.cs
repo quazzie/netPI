@@ -78,7 +78,7 @@ internal static class CoreRpc
             Opt("includeArchived", RpcParamType.Boolean), Opt("archivedOnly", RpcParamType.Boolean), Opt("attachedKey"), Opt("attachedValue"),
             Opt("includeUnmaterialized", RpcParamType.Boolean), Opt("limit", RpcParamType.Integer), Opt("offset", RpcParamType.Integer),
         ],
-        ["sessions.create"] = [Opt("title"), Opt("projectId"), Opt("model"), Opt("reasoning")],
+        ["sessions.create"] = [Opt("title"), Opt("projectId"), Opt("model"), Opt("reasoning"), Opt("meta", RpcParamType.Object)],
         ["sessions.fork"] = [Req("id"), Opt("upToSeq", RpcParamType.Integer)],
         ["sessions.get"] = [Req("id")],
         ["sessions.update"] =
@@ -150,13 +150,14 @@ internal static class CoreRpc
         a.Add("sessions.list", "Sessions, pinned first then newest first: { projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, archivedOnly? (only archived; takes precedence over includeArchived), limit?, offset? } → SessionInfo[]",
             req => a.K.Sessions.ListSessions(req.Bind<SessionQuery>()), readOnly: true);
 
-        a.Add("sessions.create", "Create a session: { title?, projectId?, model?, reasoning? } → SessionInfo", req =>
+        a.Add("sessions.create", "Create a session: { title?, projectId?, model?, reasoning?, meta? } → SessionInfo", req =>
             a.K.Sessions.CreateSession(new SessionInfo
             {
                 Title = req.Str("title") ?? "",
                 ProjectId = req.Str("projectId"),
                 Model = req.Str("model"),
                 Reasoning = req.Str("reasoning"),
+                Meta = req.Prop("meta") is { ValueKind: JsonValueKind.Object } meta ? JsonNode.Parse(meta.GetRawText()) as JsonObject : null,
             }));
 
         a.Add("sessions.fork", "Fork a chat: a new chat with its messages up to a message, the original unchanged: { id, upToSeq? (the last) } → SessionInfo (publishes session.forked)", req =>

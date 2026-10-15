@@ -585,6 +585,7 @@ private static async Task BoundedScans()
     {
         public string Resolve(ModelInfo model) => model.Ref;
         public IReadOnlyList<AgentSlots> Snapshot() => slots;
+        public bool UpdatePriority(string sessionId, int priority, bool pausable) => false;
         public ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct) => throw new NotSupportedException();
         public bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease) { lease = null; return false; }
     }

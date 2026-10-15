@@ -38,6 +38,8 @@ public interface IAgentScheduler
     ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct);
     bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease);
     IReadOnlyList<ModelResourceSlots> Resources() => [];
+    /// <summary>Re-rank queued runs and refresh preemption eligibility for a session whose priority changed.</summary>
+    bool UpdatePriority(string sessionId, int priority, bool pausable);
 }
 
 public sealed class AgentSlotRequest
@@ -54,12 +56,12 @@ public sealed class AgentSlotRequest
     public string? SessionId { get; init; }
     public string? Label { get; init; }
     /// <summary>Higher runs first: the run's level (<see cref="RunPriority"/>), plus <see cref="RunPriority.Resume"/> when it queues again after giving its slot away.</summary>
-    public int Priority { get; init; }
+    public int Priority { get; set; }
     /// <summary>
-    /// The run may give its slot to a critical one (<see cref="RunPriority.Preempts"/>): a run of a chat that was started
-    /// for the user (<see cref="RunPriority.Stamped"/>), never one of the user's own chats.
+    /// The run may give its slot to a critical one (<see cref="RunPriority.Preempts"/>): system-started chats with a
+    /// priority stamp may yield; chats the user prioritized in the composer remain protected.
     /// </summary>
-    public bool Pausable { get; init; }
+    public bool Pausable { get; set; }
     public string? Provider { get; init; }
     public string? ExecutorGeneration { get; init; }
 }
@@ -145,8 +147,8 @@ public sealed class AgentSlots
 /// <summary>
 /// How urgent a chat's runs are: they queue for a slot by it, and a critical run takes the slot of a run below it that may
 /// be paused. A chat's level is <c>meta.priority</c> (<c>low</c>, <c>normal</c>, <c>high</c> or <c>critical</c>), set by
-/// whatever started the chat for the user: a webhook, a schedule, a subagent's spawn. That mark is also what makes its runs
-/// pausable: a chat the user started has none, runs at normal and is never paused.
+/// what started the chat or by the user in the composer. System-started chats with a priority stamp may be paused;
+/// manually started chats remain protected even though they now have a priority.
 /// </summary>
 public static class RunPriority
 {
@@ -180,7 +182,7 @@ public static class RunPriority
     /// <summary>The level of a chat's runs: its <c>meta.priority</c>, normal without one.</summary>
     public static int Of(SessionInfo? session) => Parse(Text(session)) ?? Normal;
 
-    /// <summary>The chat was started for the user and carries a level: only such a chat's runs are paused for a critical one.</summary>
+    /// <summary>A system-started chat carries a level and can be considered for pausing; manual chats are excluded by the runtime.</summary>
     public static bool Stamped(SessionInfo? session) => Parse(Text(session)) is not null;
 
     /// <summary>A run at this priority takes the slot of a pausable run below it when none is free.</summary>

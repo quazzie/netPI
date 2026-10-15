@@ -286,13 +286,15 @@ where a chat runs, the profile who it is.
   tab): the queue has no cap and no time limit (`agents.queueMax` and `agents.queueTimeoutSeconds` are gone; left in a
   settings file they do nothing). Queued calls across agents and unassigned runs are admitted by priority, then arrival
   order; a pool at its own instance limit does not hold up another eligible pool.
-- **Priority:** a chat's runs queue at its `meta.priority` — `low`, `normal`, `high` or `critical` (-100, 0, 100, 200) —
-  which whatever started the chat for the user sets: a webhook's and a schedule's `priority`, `agent_spawn`'s `priority`
-  (a subagent's default is its parent's, never above it nor above `high`). A chat the user started has none: normal.
+- **Priority:** a chat's runs queue at its `meta.priority` — `low`, `normal`, `high` or `critical` (-100, 0, 100, 200).
+  New chats started manually default to `high`; the composer selector can change a chat's priority, including while it is
+  queued. System-started chats use their caller's priority: a webhook's or schedule's `priority`, or `agent_spawn`'s
+  `priority` (a subagent's default is its parent's, never above it nor above `high`). Manual chats are marked with
+  `meta.prioritySource: "manual"` and are never paused, regardless of level.
   A run that queues again after giving its instance away (a wait for its subagents, a pause) gets +50: first among its
   own level, still behind the levels above. **Critical** goes further: when no instance it could use is free, it takes
-  one from a run below it that may be paused — a run of a chat started for the user (one with a `meta.priority`), never
-  the user's own chat, never another critical one. That run gives its instance up at its next model call (active
+  one from an eligible lower priority system-started run (one with a `meta.priority`), never a manual chat or another
+  critical one. That run gives its instance up at its next model call (active
   inference is never cut off), or as soon as a tool call of it has run for a minute: the tool keeps running, and its
   result reaches the model as usual once the run has an instance again. A paused run shows "paused for a critical run".
   On a local model the paused run will likely read its context in again when it goes on (its cache on the instance is

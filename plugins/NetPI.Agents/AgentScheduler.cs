@@ -142,8 +142,8 @@ internal sealed class AgentScheduler : IAgentScheduler
         public string AgentId { get; } = request.AgentId;
         public string? SessionId { get; } = request.SessionId;
         public string? Label { get; } = request.Label;
-        public int Priority { get; } = request.Priority;
-        public bool Pausable { get; } = request.Pausable;
+        public int Priority { get; set; } = request.Priority;
+        public bool Pausable { get; set; } = request.Pausable;
         public DateTimeOffset AcquiredAt { get; } = DateTimeOffset.UtcNow;
         public bool IsReleased => Volatile.Read(ref _released) != 0;
         // The admitted call stays on this resource even if its agent is rebound while it runs.
@@ -506,6 +506,52 @@ internal sealed class AgentScheduler : IAgentScheduler
                 };
             }).OrderBy(r => r.Key, StringComparer.OrdinalIgnoreCase).ToList();
         }
+    }
+
+    public bool UpdatePriority(string sessionId, int priority, bool pausable)
+    {
+        var changed = false;
+        lock (_gate)
+        {
+            foreach (var pool in _pools.Values)
+            {
+                foreach (var waiter in pool.Waiters.Where(w => string.Equals(w.Request.SessionId, sessionId, StringComparison.Ordinal)))
+                {
+                    var resume = Math.Abs(waiter.Request.Priority % 100) == RunPriority.Resume;
+                    waiter.Request.Priority = priority + (resume ? RunPriority.Resume : 0);
+                    waiter.Request.Pausable = pausable;
+                    changed = true;
+                }
+                if (pool.Waiters.Count > 1)
+                {
+                    var sorted = pool.Waiters.OrderByDescending(w => w.Request.Priority).ThenBy(w => w.Seq).ToList();
+                    pool.Waiters.Clear();
+                    pool.Waiters.AddRange(sorted);
+                }
+                foreach (var owner in pool.Owners.Where(o => string.Equals(o.SessionId, sessionId, StringComparison.Ordinal)))
+                {
+                    owner.Priority = priority;
+                    owner.Pausable = pausable;
+                    changed = true;
+                }
+            }
+            foreach (var waiter in _floating.Where(w => string.Equals(w.Request.SessionId, sessionId, StringComparison.Ordinal)))
+            {
+                var resume = Math.Abs(waiter.Request.Priority % 100) == RunPriority.Resume;
+                waiter.Request.Priority = priority + (resume ? RunPriority.Resume : 0);
+                waiter.Request.Pausable = pausable;
+                changed = true;
+            }
+            if (_floating.Count > 1)
+            {
+                var sorted = _floating.OrderByDescending(w => w.Request.Priority).ThenBy(w => w.Seq).ToList();
+                _floating.Clear();
+                _floating.AddRange(sorted);
+            }
+            if (changed) Pump();
+        }
+        if (changed) SchedulePublish();
+        return changed;
     }
 
     public IReadOnlyList<AgentSlots> Snapshot()

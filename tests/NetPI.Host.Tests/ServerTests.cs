@@ -458,9 +458,11 @@ public static class ServerTests
             var cleared = (await Call("projects.update", new { id = pid, meta = new Dictionary<string, object?> { ["profile"] = null } }))!;
             Check.True(cleared["meta"] is null, "no keys, no meta");
 
-            var session = (await Call("sessions.create", new { title = "Chat", projectId = pid, model = "aiproxy/x", reasoning = "low" }))!;
+            var session = (await Call("sessions.create", new { title = "Chat", projectId = pid, model = "aiproxy/x", reasoning = "low", meta = new { priority = "high", prioritySource = "manual" } }))!;
             var sid = session["id"]!.GetValue<string>();
             Check.Equal("chat", session["kind"]!.GetValue<string>());
+            Check.Equal("high", session["meta"]?["priority"]?.GetValue<string>(), "creation accepts initial session metadata");
+            Check.Equal("manual", session["meta"]?["prioritySource"]?.GetValue<string>());
             Check.Equal(sid, (await Call("sessions.get", new { id = sid }))!["id"]!.GetValue<string>());
             var upd = (await Call("sessions.update", new { id = sid, title = "Chat 2", model = (string?)null, archived = false }))!;
             Check.Equal("Chat 2", upd["title"]!.GetValue<string>());
