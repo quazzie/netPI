@@ -883,7 +883,9 @@ internal sealed class AgentRuntime : IAgentRuntime
           .Append("\" status=\"").Append(StatusName(final.Status)).Append("\">\n");
         if (final.Status == AgentStatus.Failed && !string.IsNullOrEmpty(final.Error)) sb.Append("Error: ").Append(final.Error).Append("\n\n");
         var report = string.IsNullOrWhiteSpace(final.Result) ? "(no final report)" : final.Result.Trim();
-        sb.Append(TextLimit.Head(report, ResultNoticeChars, $"Use agent with action result and id {final.Id} for the full report."));
+        // the cut names the call that reads on from it (agent result pages the whole report)
+        var cut = report.Length > ResultNoticeChars && char.IsHighSurrogate(report[ResultNoticeChars - 1]) ? ResultNoticeChars - 1 : ResultNoticeChars;
+        sb.Append(TextLimit.Head(report, ResultNoticeChars, $"agent with action result, id {final.Id}, offset {cut} reads on."));
         sb.Append("\n</agent-result>");
         return new UserInput
         {

@@ -207,10 +207,27 @@ internal abstract class AgentToolBase(IPluginContext plugin)
         }
         sb.Append(Status(a.Status)).Append(" [").Append(Stats(a)).Append(cost?.Text() is { } spent ? ", " + spent : "").Append("]\n");
         if (!string.IsNullOrEmpty(a.Error) && a.Status != AgentStatus.Completed) sb.Append("Error: ").Append(a.Error).Append('\n');
-        sb.Append(string.IsNullOrWhiteSpace(a.Result)
-            ? "(no final report)"
-            : TextLimit.Head(a.Result.Trim(), ReportChars, $"The full report is in session {a.SessionId}."));
+        sb.Append(string.IsNullOrWhiteSpace(a.Result) ? "(no final report)" : ReportPage(a, a.Result, 0));
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// <see cref="ReportChars"/> of a report from <paramref name="offset"/>, and when more follows, the exact call that reads
+    /// on (action result with the next offset): a parent can always get the whole report, page by page (idea-87etin).
+    /// </summary>
+    internal static string ReportPage(AgentInfo a, string report, int offset)
+    {
+        report = report.Trim();
+        if (offset >= report.Length) return $"(the report is {report.Length:N0} characters: nothing from offset {offset:N0})";
+        offset = Math.Max(0, offset);
+        if (offset > 0 && char.IsLowSurrogate(report[offset])) offset--;
+        var end = Math.Min(report.Length, offset + ReportChars);
+        if (end < report.Length && char.IsHighSurrogate(report[end - 1])) end--;
+        var page = report[offset..end];
+        if (offset > 0) page = $"[report from character {offset:N0} of {report.Length:N0}]\n" + page;
+        if (end < report.Length)
+            page += $"\n[... {report.Length - end:N0} more characters: agent with action result, id {a.Id}, offset {end} reads on.]";
+        return page;
     }
 
     protected AgentSlots? PoolOf(ToolContext context, AgentInfo a)
@@ -608,7 +625,7 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
             Label = "Agents",
             Category = "agents",
             SummaryArg = "action",
-            Description = "Your already-started subagents (not the agents available to start: that is agent_choices, then agent_spawn): wait {ids?, all?} for their reports (returns when one is done; all: when every one is), send {to, message} (to=\"parent\" for your parent), list, result {id} or cancel {id}.",
+            Description = "Your already-started subagents (not the agents available to start: that is agent_choices, then agent_spawn): wait {ids?, all?} for their reports (returns when one is done; all: when every one is), send {to, message} (to=\"parent\" for your parent), list, result {id, offset?} or cancel {id}.",
             Help = string.Join("\n", actions.Select(t => $"- {t.Name}: {t.Summary}")),
             Parameters = new JsonObject
             {
@@ -622,6 +639,7 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
                     ["message"] = new JsonObject { ["type"] = "string" },
                     ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("steer", "queue") },
                     ["all"] = new JsonObject { ["type"] = "boolean" },
+                    ["offset"] = new JsonObject { ["type"] = "integer", ["description"] = "result: read a long report on from this character (the cut says where)" },
                 },
                 ["required"] = new JsonArray("action"),
             },
@@ -816,20 +834,28 @@ internal sealed class AgentResultTool(IPluginContext plugin) : AgentToolBase(plu
 {
     internal override string Name => "result";
     internal override bool ReadOnly => true;
-    internal override string Summary => "Get a subagent's status and final report (its last message) without waiting.";
+    internal override string Summary => "Get a subagent's status and final report (its last message) without waiting; a long report comes in pages: offset reads on from a character.";
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var id = new ToolArgs(args).Str("id", "agentId", "agent", "name");
+        var targs = new ToolArgs(args);
+        var id = targs.Str("id", "agentId", "agent", "name");
         if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("Missing 'id'.");
         var a = Resolve(runtime, context.AgentId, id, out var refusal);
         if (a is null) return ToolResult.Error(refusal is null
             ? $"Unknown agent '{id}'. Use agent with action list to see agents."
             : $"Agent '{id}': {refusal}");
+        var offset = Math.Max(0, targs.Int("offset", "from") ?? 0);
+        if (offset > 0)
+        {
+            // reading on in a long report: the page alone, without the header the first page already gave
+            if (string.IsNullOrWhiteSpace(a.Result)) return ToolResult.Error($"'{a.Name}' ({a.Id}) has no report to page through.");
+            return ToolResult.Ok($"## {a.Name} ({a.Id}), report continued\n" + ReportPage(a, a.Result, offset), Details(a));
+        }
         var cost = await CostOfAsync(a, ct).ConfigureAwait(false);
         var text = Report(a, cost);
         if (IsBusy(a.Status) && !string.IsNullOrWhiteSpace(a.Result))
-            text += "\n\nLast report of a previous run:\n" + TextLimit.Head(a.Result.Trim(), ReportChars, $"See session {a.SessionId}.");
+            text += "\n\nLast report of a previous run:\n" + ReportPage(a, a.Result, 0);
         var details = Details(a);
         cost?.AddTo(details);
         return ToolResult.Ok(text, details);

@@ -945,6 +945,10 @@ dropped, so it arrives once). A new user message interrupts the wait. When agent
 returned (the first report arrived / the user wrote / the hour passed: `details.reason` is `report`, `user`, `timeout`; `cancelled` if the
 wait's token was cancelled). The runtime says it: `IAgentRuntime.WaitAsync` returns an `AgentWaitResult` (`Agents`, `End`: `Report`, `UserMessage`, `Timeout`, `Cancelled`). `details`: `{ agents: [{ agentId, sessionId, name, status, costUsd?, withSubagentsUsd? }], reason }`.
 
+A report longer than a page (12,000 characters in `wait`/`result`, 8,000 in the `agent-result` notice) ends in a cut that
+names the call reading on: `agent` `result { id, offset }` returns the next page from that character, so a parent always
+gets the whole report.
+
 `agent` `list`, `result` and `wait` show each subagent's spend (`$0.42`, with `($1.10 with its subagents)` when it has some, `free`
 when its calls cost nothing; left out before its first call) from the Agents plugin's `usage.session`, and put `costUsd` and
 `withSubagentsUsd` in `details`; without that RPC nothing is shown.

@@ -24,6 +24,7 @@ public static class SubagentTests
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / agent_choices", ToolsMisc);
         t.Add("subagents: the agent dispatcher's schema covers every action's arguments", DispatcherSchema);
+        t.Add("subagents: a long report comes in pages that read on exactly where the last one stopped", ReportPages);
         t.Add("subagents: a chat on a local agent spawns onto an agent on another provider; the subagent keeps that agent", SpawnOntoConfiguredPool);
         t.Add("subagents: agent_spawn { agent: \"any\" } runs on whichever agent is free, and its model follows", SpawnOnAnyAgent);
         t.Add("subagents: inherit the parent's effective named-agent model and reasoning", InheritEffectiveModel);
@@ -1365,8 +1366,33 @@ public static class SubagentTests
         Covers("wait", "id", "ids", "all");
         Covers("send", "to", "message", "mode");
         Covers("list", "all");
-        Covers("result", "id");
+        Covers("result", "id", "offset");
         Covers("cancel", "id");
+    }
+
+    /// <summary>
+    /// idea-87etin: a parent could not get a long report whole - result cut it at 12k and pointed at a session the parent
+    /// has no tool to read. The cut now names the call that reads on, and those pages put the report back together exactly.
+    /// </summary>
+    private static Task ReportPages()
+    {
+        var a = new AgentInfo { Id = "agt_x", Name = "long" };
+        var report = string.Concat(Enumerable.Range(0, 3000).Select(i => $"line {i:D5}\n")).TrimEnd(); // ~33k characters
+        var sb = new System.Text.StringBuilder();
+        var offset = 0;
+        for (var pages = 0; pages < 10; pages++)
+        {
+            var page = NetPI.Tools.Agents.AgentToolBase.ReportPage(a, report, offset);
+            var body = offset > 0 ? page[(page.IndexOf('\n') + 1)..] : page;
+            var m = System.Text.RegularExpressions.Regex.Match(body, @"\n\[\.\.\. [\d,. \u00a0]+ more characters: agent with action result, id agt_x, offset (\d+) reads on\.\]$");
+            if (!m.Success) { sb.Append(body); break; }
+            sb.Append(body[..m.Index]);
+            offset = int.Parse(m.Groups[1].Value);
+        }
+        Check.Equal(report, sb.ToString(), "the pages put the whole report back together");
+        Check.True(NetPI.Tools.Agents.AgentToolBase.ReportPage(a, "short", 0) == "short", "a short report is itself");
+        Check.True(NetPI.Tools.Agents.AgentToolBase.ReportPage(a, "short", 99).Contains("nothing from offset"), "past the end: says so");
+        return Task.CompletedTask;
     }
 
     /// <summary>
