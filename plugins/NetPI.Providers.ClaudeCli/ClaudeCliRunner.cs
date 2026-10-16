@@ -98,7 +98,11 @@ internal static class ProcessRunner
             // what the CLI said on stderr goes to the stream as a last line: the provider adds it when the run ended without a result
             if (err.Length > 0) yield return new System.Text.Json.Nodes.JsonObject { ["type"] = StderrLine, ["text"] = J.Truncate(err, 1500) }.ToJsonString();
         }
-        finally { try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { /* already gone */ } }
+        finally
+        {
+            // waited for, so the chat's next call (ChatLocks) never starts beside a CLI that is still going down
+            try { if (!proc.HasExited) { proc.Kill(entireProcessTree: true); proc.WaitForExit(5000); } } catch { /* already gone */ }
+        }
     }
 
     /// <summary>The <c>type</c> of the synthetic last line that carries the CLI's stderr.</summary>

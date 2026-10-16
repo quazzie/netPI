@@ -20,12 +20,12 @@ internal static class ClaudeCliProductionTests
         foreach (var l in lines) { ct.ThrowIfCancellationRequested(); yield return l; await Task.Yield(); }
     }
 
-    private static ModelRequest Req(string purpose = "agent") => new()
+    private static ModelRequest Req(string purpose = "agent", string sessionId = "ses_1") => new()
     {
         Model = new ModelInfo { Provider = "claude-cli", Id = "claude-sonnet-5-5" },
         SystemPrompt = "You are a planner.",
         Messages = [ChatMessage.UserText("Plan a thing.")],
-        SessionId = "ses_1",
+        SessionId = sessionId,
         Purpose = purpose,
     };
 
@@ -345,6 +345,39 @@ internal static class ClaudeCliProductionTests
                 t.Check(!File.Exists(marker), "the CLI was killed when the consumer stopped, not left to finish");
             }
             finally { try { Directory.Delete(dir, true); } catch { /* temp */ } }
+        });
+
+        // idea-j3bh1b: one "continue" ran two CLI processes resuming the same session. A chat's calls now run one after
+        // another (its next call starts when the previous process is gone); other chats are not held up by it.
+        await t.Run("claude-cli: one CLI process per chat at a time; another chat runs beside it", async () =>
+        {
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var running = 0; var most = 0; var calls = 0;
+            async IAsyncEnumerable<string> Slow(CL.CliCall _, [EnumeratorCancellation] CancellationToken ct)
+            {
+                var n = Interlocked.Increment(ref running);
+                lock (release) most = Math.Max(most, n);
+                try
+                {
+                    yield return Init;
+                    if (Interlocked.Increment(ref calls) == 1) await release.Task.WaitAsync(ct);
+                    yield return Result;
+                }
+                finally { Interlocked.Decrement(ref running); }
+            }
+            var p = new CL.ClaudeCliProvider(() => Cfg(o => o["maxConcurrent"] = 4), null, Slow);
+            var first = Collect(p, Req());
+            await Task.Delay(100);
+            var second = Collect(p, Req());
+            await Task.Delay(200);
+            t.Check(!second.IsCompleted && Volatile.Read(ref running) <= 1, "the chat's second call waits while its first CLI runs");
+            var otherDone = await Collect(p, Req(sessionId: "ses_other")).WaitAsync(TimeSpan.FromSeconds(5));
+            t.Check(otherDone[^1] is StreamCompleted, "another chat is not held up");
+            release.SetResult();
+            await first;
+            var events = await second.WaitAsync(TimeSpan.FromSeconds(5));
+            t.Check(events.OfType<StreamNotice>().Any(n => n.Text.Contains("one runs per chat")), "the waiting call says why it waited");
+            t.Check(most <= 2, $"never two CLIs of one chat at once (most at once: {most}, one of them the other chat's)");
         });
 
         await t.Run("claude-cli: a refusal for the subscription's limit says when it opens and is not retried; stderr explains an early exit", async () =>

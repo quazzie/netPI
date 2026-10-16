@@ -23,6 +23,7 @@ public sealed class ClaudeCliProvider : IModelProvider
     private readonly ClaudeUsageTracker? _usage;
     private readonly ICliSessions _sessions;
     private readonly CallGate _gate = new();
+    private readonly ChatLocks _chats = new();
     /// <summary>The names of NetPI's registered tools (null: every counterpart counts as registered).</summary>
     private readonly Func<IReadOnlyCollection<string>>? _knownTools;
     /// <summary>
@@ -145,6 +146,13 @@ public sealed class ClaudeCliProvider : IModelProvider
         var o = Options();
         if (!o.Enabled) throw new ModelException("Claude CLI: provider is disabled in settings (its `enabled` setting).", false, null, "provider_disabled");
         var agentTurn = request.Purpose == "agent";
+        // One CLI process per chat at a time: two would resume the same CLI session, both append to its transcript and both
+        // pick up the same unfinished work (idea-j3bh1b: an empty answer after a timed-out turn drew a nudge, whose call
+        // started a second CLI while the first still lived). The next call of a chat waits until the previous process is
+        // gone, and only then plans what is new to the session (the previous call moves that point).
+        using var chatLease = agentTurn && !string.IsNullOrEmpty(request.SessionId) ? await _chats.EnterAsync(request.SessionId, ct).ConfigureAwait(false) : null;
+        if (chatLease is { Waited: true })
+            yield return new StreamNotice("Claude CLI waited for this chat's previous CLI process to end (one runs per chat at a time).", "info");
         var attempt = Plan(request, agentTurn);
         while (true)
         {
@@ -482,6 +490,56 @@ public sealed class ClaudeCliProvider : IModelProvider
         foreach (var (role, text) in turns) sb.Append(role).Append(":\n").Append(text).Append("\n\n");
         sb.Append("Reply to the last user message.");
         return sb.ToString();
+    }
+}
+
+/// <summary>One holder per chat: a chat's next CLI call waits until the previous one (and its process) is done.</summary>
+internal sealed class ChatLocks
+{
+    private readonly object _lock = new();
+    private readonly Dictionary<string, (SemaphoreSlim Gate, int Users)> _chats = new(StringComparer.Ordinal);
+
+    public async Task<Lease> EnterAsync(string sessionId, CancellationToken ct)
+    {
+        SemaphoreSlim gate;
+        lock (_lock)
+        {
+            var e = _chats.TryGetValue(sessionId, out var found) ? found : (new SemaphoreSlim(1, 1), 0);
+            _chats[sessionId] = (e.Item1, e.Item2 + 1);
+            gate = e.Item1;
+        }
+        try
+        {
+            var waited = !gate.Wait(0);
+            if (waited) await gate.WaitAsync(ct).ConfigureAwait(false);
+            return new Lease(this, sessionId, gate, waited);
+        }
+        catch { Leave(sessionId); throw; }
+    }
+
+    /// <summary>How many chats hold or wait for a lock (tests: an entry goes when its last user leaves).</summary>
+    internal int Count { get { lock (_lock) return _chats.Count; } }
+
+    private void Leave(string sessionId)
+    {
+        lock (_lock)
+        {
+            var e = _chats[sessionId];
+            if (e.Users <= 1) _chats.Remove(sessionId);
+            else _chats[sessionId] = (e.Gate, e.Users - 1);
+        }
+    }
+
+    public sealed class Lease(ChatLocks owner, string sessionId, SemaphoreSlim gate, bool waited) : IDisposable
+    {
+        private int _done;
+        public bool Waited => waited;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _done, 1) != 0) return;
+            gate.Release();
+            owner.Leave(sessionId);
+        }
     }
 }
 
