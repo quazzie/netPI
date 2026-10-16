@@ -91,8 +91,9 @@ internal sealed class ContextCache
         }
     }
 
-    /// <summary>The read is complete (filled or refused): it no longer poisons a drop, so the in-flight count goes down.</summary>
-    private void DecrementInflight(string sessionId)
+    /// <summary>The read is complete (filled, refused, or failed: <see cref="BeginRead"/>'s caller calls this when the storage
+    /// read throws): it no longer poisons a drop, so the in-flight count goes down.</summary>
+    public void DecrementInflight(string sessionId)
     {
         lock (_lock) DecrementInflightLocked(sessionId);
     }

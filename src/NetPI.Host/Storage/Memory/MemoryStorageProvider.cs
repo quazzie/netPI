@@ -231,7 +231,12 @@ internal sealed class MemoryStorage : IStorage
             rows.Add(row);
             if (!inOrder) rows.Sort(static (a, b) => a.Seq.CompareTo(b.Seq));
         }
-        else rows[at] = row;
+        else
+        {
+            var moved = rows[at].Seq != row.Seq; // a replacement with another seq (a renumbering) puts the order back too
+            rows[at] = row;
+            if (moved) rows.Sort(static (a, b) => a.Seq.CompareTo(b.Seq));
+        }
         MessageById[row.Id] = row;
     }
 

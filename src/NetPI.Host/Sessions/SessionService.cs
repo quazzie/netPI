@@ -473,8 +473,18 @@ internal sealed class SessionService : ISessionStore
     private List<ChatMessage> ContextRows(string sessionId)
     {
         var generation = _context.BeginRead(sessionId);
-        var (read, newest) = _repo.ReadContext(sessionId);
-        var rows = read.ToList();
+        List<ChatMessage> rows;
+        long newest;
+        try
+        {
+            (var read, newest) = _repo.ReadContext(sessionId);
+            rows = read.ToList();
+        }
+        catch
+        {
+            _context.DecrementInflight(sessionId); // a failed read must not stay in flight: it would poison every later drop
+            throw;
+        }
         _context.Fill(sessionId, rows, newest, generation);
         return rows;
     }

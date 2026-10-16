@@ -298,7 +298,8 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
     {
         // A role that no longer parses is a data problem, like a corrupt parts or meta column: name the row, never
         // silently turn it into a notice (the next update would write the notice back and the corruption would be gone).
-        if (Enum.TryParse<MessageRole>(s, ignoreCase: true, out var r)) return r;
+        // A name only: Enum.TryParse also takes a number ("7") and returns a value no role has.
+        if (!s.Any(char.IsDigit) && Enum.TryParse<MessageRole>(s, ignoreCase: true, out var r) && Enum.IsDefined(r)) return r;
         throw new InvalidDataException($"Stored {row} is corrupted and cannot be read: unknown role '{s}'");
     }
 
