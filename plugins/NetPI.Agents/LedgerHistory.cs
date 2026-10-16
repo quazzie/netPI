@@ -144,12 +144,18 @@ internal sealed partial class Ledger
                 if (!tokens.TryGetValue(day, out var t)) tokens[day] = t = new Sum();
                 t.Add(d.Doc);
             }
+        // one range read of the window's calls, added up per day as the pages come (not two queries per day)
+        var perDay = new Dictionary<string, (double Cost, long Calls)>(StringComparer.Ordinal);
+        ScanCalls(new DataQuery().Ge("day", first), int.MaxValue, doc =>
+        {
+            if (doc["day"]?.GetValue<string>() is not { } d) return;
+            var (c, n) = perDay.GetValueOrDefault(d);
+            perDay[d] = (c + D(doc["costUsd"]), n + 1);
+        });
         for (var i = count - 1; i >= 0; i--)
         {
             var day = today.AddDays(-i).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var q = new DataQuery().Eq("day", day);
-            var cost = _calls.Sum("costUsd", q);
-            var calls = _calls.Count(new DataQuery().Eq("day", day));
+            var (cost, calls) = perDay.GetValueOrDefault(day);
             var t = tokens.GetValueOrDefault(day);
             arr.Add(new JsonObject
             {
@@ -163,6 +169,31 @@ internal sealed partial class Ledger
             });
         }
         return arr;
+    }
+
+    private const int ScanPage = 5_000;
+
+    /// <summary>
+    /// Visit the calls matching <paramref name="filter"/> (oldest first) in pages, so a long window is never held in memory as a
+    /// whole: at most <paramref name="max"/> are visited. True when there were more than that.
+    /// </summary>
+    private bool ScanCalls(DataQuery filter, int max, Action<JsonObject> visit)
+    {
+        var seen = 0;
+        for (var offset = 0; ; offset += ScanPage)
+        {
+            var q = new DataQuery { Limit = (int)Math.Min(ScanPage, (long)max + 1 - seen), Offset = offset };
+            q.Where.AddRange(filter.Where);
+            q.Order("ts");
+            var page = _calls!.Find(q);
+            foreach (var d in page)
+            {
+                if (seen == max) return true;
+                visit(d.Doc);
+                seen++;
+            }
+            if (page.Count < q.Limit) return false;
+        }
     }
 
     /// <summary>
@@ -182,11 +213,8 @@ internal sealed partial class Ledger
         var truncated = false;
         if (_calls is not null)
         {
-            var rows = _calls.Find(new DataQuery().Ge("ts", from).Lt("ts", to).Take(MaxRankedCalls + 1));
-            truncated = rows.Count > MaxRankedCalls;
-            foreach (var d in rows.Take(MaxRankedCalls))
+            truncated = ScanCalls(new DataQuery().Ge("ts", from).Lt("ts", to), MaxRankedCalls, doc =>
             {
-                var doc = d.Doc;
                 var one = new JsonObject
                 {
                     ["calls"] = 1L, ["inputTokens"] = doc["inputTokens"]?.DeepClone(), ["outputTokens"] = doc["outputTokens"]?.DeepClone(),
@@ -195,10 +223,10 @@ internal sealed partial class Ledger
                 };
                 total.Add(one);
                 var chat = doc["rootSessionId"]?.GetValue<string>() ?? doc["sessionId"]?.GetValue<string>();
-                if (chat is null) { rest.Add(one); continue; }
+                if (chat is null) { rest.Add(one); return; }
                 if (!perChat.TryGetValue(chat, out var sum)) perChat[chat] = sum = new Sum { Name = chat };
                 sum.Add(one);
-            }
+            });
         }
         var chats = new JsonArray();
         foreach (var sum in perChat.Values.OrderByDescending(s => s.Cost).ThenByDescending(s => s.Input + s.Output).Take(Math.Clamp(limit, 1, 50)))

@@ -88,6 +88,35 @@ export function toolMeta(name, label) {
 
 const argCache = new WeakMap();
 
+const effectiveCache = new WeakMap();
+
+/**
+ * The call a tool_call part really is. A deferred tool is called as `call_tool { name, arguments }` and stored that way
+ * (the provider must see the call it made); everything that decides by tool name (cards, views, artifact chips, step
+ * counts) wants the tool it ran. Returns `{ ...call, name: inner, arguments: innerArguments, via: 'call_tool' }` (the id
+ * is kept), or the call itself when it is not a usable call_tool. Memoized per part, so item identity stays stable.
+ * Mirrors ToolCalls.Effective on the server.
+ */
+export function effectiveCall(call) {
+  if (!call || String(call.name).toLowerCase() !== 'call_tool') return call;
+  let v = effectiveCache.get(call);
+  if (v) return v;
+  const outer = parseArgs(call);
+  const name = typeof outer?.name === 'string' ? outer.name.trim() : '';
+  if (name) {
+    const inner = outer.arguments;
+    v = { ...call, name, arguments: inner == null ? '{}' : inner, via: 'call_tool' };
+  } else v = call;
+  effectiveCache.set(call, v);
+  return v;
+}
+
+/** A streaming call_tool call becomes the tool it runs once tool.start named it (`live`: callId → live tool). */
+export function liveEffectiveCall(call, lt) {
+  if (!lt?.name || lt.name === call.name) return call;
+  return { ...call, name: lt.name, ...(lt.arguments != null ? { arguments: lt.arguments } : {}), via: 'call_tool' };
+}
+
 /** Parse raw JSON arguments of a tool_call part (memoized per part object). */
 export function parseArgs(call) {
   if (!call) return {};

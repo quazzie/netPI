@@ -58,7 +58,7 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
         List<Step> history;
         var trace = Trace(run);
         lock (trace) history = [.. trace];
-        var pending = calls.Select(c => (c.Name, Step.NormalizeArgs(c.Arguments))).ToList();
+        var pending = calls.Select(ToolCalls.Effective).Select(c => (c.Name, Step.NormalizeArgs(c.Arguments))).ToList();
 
         var finding = LoopDetector.Check(history, pending, Math.Clamp(ctx.Settings.GetOr("loops.repeats", 3), 2, 10));
         if (finding is null || !hinted.Add(finding.Signature)) return ValueTask.FromResult<TurnDecision?>(null);

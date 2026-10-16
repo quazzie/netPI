@@ -59,9 +59,10 @@ internal static class GoalReview
                 lines.Add("- a subagent reported\n  → " + HeadTail(report.Trim(), ReportChars).Replace("\n", "\n    "));
             foreach (var call in m.Parts.OfType<ToolCallPart>())
             {
-                if (call.Name is "goal_update" or "goal_set") continue;
+                var effective = ToolCalls.Unwrap(call) ?? call;   // a call made through call_tool is the tool it ran
+                if (effective.Name is "goal_update" or "goal_set") continue;
                 results.TryGetValue(call.Id, out var result);
-                lines.Add(Line(call, result));
+                lines.Add(Line(effective, result));
             }
         }
         var picked = new List<string>();
