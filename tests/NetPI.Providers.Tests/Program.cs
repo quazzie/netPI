@@ -277,6 +277,35 @@ await t.Run("model list cache: backend restart metadata changes publish once eve
     t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "unchanged metadata is quiet");
 });
 
+// The change signature is the host catalog's (ModelCatalog.Signature): the same fields, so a change the catalog
+// sees is a change the provider's models.changed sees too, and nothing else.
+await t.Run("model list cache: the change signature is the host catalog's fields", async () =>
+{
+    using var ctx = new FakePluginContext(new JsonObject());
+    var cache = new Kit.ModelListCache("test", ctx.Log, ctx.Bus);
+    var model = M("test", "m");
+    var policy = new Kit.ModelListCache.Policy { Fingerprint = "k", CanFetch = true, Ttl = TimeSpan.Zero };
+    Task<IReadOnlyList<ModelInfo>> Fetch(CancellationToken _) => Task.FromResult<IReadOnlyList<ModelInfo>>([model]);
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(1, ctx.Bus.Count(EventTypes.ModelsChanged), "first listing");
+
+    model.DisplayName = "M";
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "a display name change is a change");
+
+    model.Reasoning = new ReasoningInfo { Supported = true, Efforts = ["low", "high"], Default = "low" };
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(3, ctx.Bus.Count(EventTypes.ModelsChanged), "reasoning info is a change");
+
+    model.Reasoning = new ReasoningInfo { Supported = true, Efforts = ["low", "high"], Default = "low" };
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(3, ctx.Bus.Count(EventTypes.ModelsChanged), "an equal value is quiet");
+
+    model.ContextWindow = 4096;
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(4, ctx.Bus.Count(EventTypes.ModelsChanged), "a window change is a change");
+});
+
 await t.Run("Effort mapping to catalog efforts", () =>
 {
     var r = new ReasoningInfo { Supported = true, Efforts = ["none", "low", "medium", "xhigh"], Default = "medium" };
