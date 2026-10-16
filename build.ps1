@@ -360,7 +360,8 @@ if ($Publish) {
             # host: each changed file is moved into .old (the running NetPI keeps using it) and the new one copied in. All or
             # nothing: if a file can't be moved, the ones already moved go back. Symbols in use stay (they only give line numbers).
             $hostFiles = @(Get-Changed $dev $app 'plugins', 'wwwroot')
-            $aside = Join-Path $oldDir (Get-Date -Format 'yyyyMMdd-HHmmss')
+            # The ticks keep two publishes in the same second from colliding on the aside folder name.
+            $aside = Join-Path $oldDir ("{0}-{1}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'), [DateTimeOffset]::Now.Ticks)
             $moved = @()
             $keptSymbols = @()
             foreach ($rel in $hostFiles) {
@@ -374,8 +375,18 @@ if ($Publish) {
                 }
                 catch {
                     if ($rel -like '*.pdb') { $keptSymbols += $rel; continue }
-                    foreach ($m in $moved) { Move-Item -LiteralPath (Join-Path $aside $m) -Destination (Join-Path $app $m) }
-                    throw "Could not replace $rel while NetPI runs ($($_.Exception.Message)): artifacts\app is unchanged. Close NetPI and publish again."
+                    # restore the ones already moved; a restore that fails (a locked file) is reported, not swallowed -
+                    # the files that cannot come back stay in .old and are named, so the state is not claimed "unchanged".
+                    $left = @()
+                    foreach ($m in $moved) {
+                        try { Move-Item -LiteralPath (Join-Path $aside $m) -Destination (Join-Path $app $m) }
+                        catch { $left += $m }
+                    }
+                    if ($left.Count) {
+                        Write-Host "WARNING: $($left.Count) file(s) could not be restored and remain in $aside : $($left -join ', ')" -ForegroundColor Red
+                    }
+                    $state = if ($left.Count) { "$($left.Count) file(s) remain in $aside" } else { 'artifacts\app is unchanged' }
+                    throw "Could not replace $rel while NetPI runs ($($_.Exception.Message)): $state. Close NetPI and publish again."
                 }
             }
             foreach ($rel in $hostFiles) { if ($keptSymbols -notcontains $rel) { Copy-Rel $dev $app $rel } }
