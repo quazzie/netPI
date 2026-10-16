@@ -365,7 +365,9 @@ private static async Task ReloadBackground()
     var answer = (string?)await service.ReloadAsync(null, CancellationToken.None);
     Check.Contains(answer!, "2 plugins");
     await Wait.Until(() => pm.Reloaded.Contains("netpi.b"), "the background reload reached the second plugin");
-    Check.True(ctx.Log.Lines.Any(l => l.Contains("netpi.b") && l.Contains("failed")), "the failed plugin is logged");
+    // The fault is logged by the observation of the failed task, a step after the reload itself ran: wait for the line,
+    // not for the reload, so the check cannot beat the log.
+    await Wait.Until(() => ctx.Log.Lines.Any(l => l.Contains("netpi.b") && l.Contains("failed")), "the failed plugin is logged");
 
     // the self-reload path: the same observation, the same token
     var self = (string?)await service.ReloadAsync("netpi.a", CancellationToken.None);
