@@ -40,5 +40,34 @@ public static class McpLifecycleTests
             await manager.ReconcileAsync(CancellationToken.None);Check.Equal(0,manager.Catalog().Count);
             ctx.Unload();
         });
+        r.Add("mcp: a command for a stopped server fails at once, not on the caller's timeout",async ()=>{
+            var ctx=new FakePluginContext();
+            ctx.Settings.Set("mcp.servers",new JsonObject { ["fixture"] = McpTests.Config().Json() });
+            var manager=new ServerManager(ctx);
+            await manager.StartAsync([],CancellationToken.None);
+            await McpTests.Connected(manager,"fixture");
+            await manager.DisposeAsync();   // every server is retired: its worker will never answer a command
+            var sw=System.Diagnostics.Stopwatch.StartNew();
+            var ex=await Check.ThrowsAsync<Exception>(()=>manager.CommandAsync("fixture",true,CancellationToken.None));
+            Check.True(sw.Elapsed<TimeSpan.FromSeconds(2),"fails at once, not on the caller's timeout: "+sw.Elapsed);
+            Check.True(ex is McpException or RpcException,ex.GetType().Name);
+            ctx.Unload();
+        });
+        r.Add("mcp: an unreadable catalog entry is named in the rejected list and its failure is logged, not swallowed",async ()=>{
+            var ctx=new FakePluginContext();
+            ctx.Settings.Set("mcp.servers",new JsonObject { ["fixture"] = McpTests.Config("ui").Json() });
+            await using var manager=new ServerManager(ctx);
+            await manager.StartAsync([],CancellationToken.None);
+            await McpTests.Connected(manager,"fixture");
+            var tools=manager.Inventory("fixture");
+            Check.Equal(3,tools.Count,"the readable tools still come back");
+            Check.True(tools.All(t=>t.RemoteName!="broken"),"the unreadable one is out");
+            Check.True(ctx.Log.Lines.Any(l=>l.Contains("a catalog entry could not be read")),"its failure is logged, not swallowed");
+            var rejected=(JsonArray)manager.Snapshot()["servers"]![0]!["rejected"]!;
+            Check.Equal(1,rejected.Count(j=>j?["name"]?.GetValue<string>()=="broken"),"named in the rejected list");
+            manager.Inventory("fixture");
+            Check.Equal(1,((JsonArray)manager.Snapshot()["servers"]![0]!["rejected"]!).Count(j=>j?["name"]?.GetValue<string>()=="broken"),"asking again adds no duplicate");
+            ctx.Unload();
+        });
     }
 }

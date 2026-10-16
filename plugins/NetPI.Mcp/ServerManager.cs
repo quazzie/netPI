@@ -16,6 +16,9 @@ internal sealed partial class ServerManager : IAsyncDisposable
         public string? Error;
         public long Generation;
         public bool Disconnected;
+        /// <summary>Set under <c>_gate</c> when the state is retired (its worker is ending or has ended): a command that
+        /// reaches it fails at once instead of waiting on a worker that will never answer.</summary>
+        public bool Closed;
         public bool Retiring;
         public List<JsonObject> RawCatalog = [];
         public List<JsonObject> RawResources = [];
@@ -341,10 +344,15 @@ internal sealed partial class ServerManager : IAsyncDisposable
     }
     public async Task CommandAsync(string id, bool reconnect, CancellationToken ct)
     {
-        State state; lock (_gate) state = _states.GetValueOrDefault(id) ?? throw new RpcException("not_found", "No MCP server " + id);
+        State state; lock (_gate)
+        {
+            state = _states.GetValueOrDefault(id) ?? throw new RpcException("not_found", "No MCP server " + id);
+            if (state.Closed) throw new McpException("MCP server " + id + " is stopped.");
+        }
         if (!state.Config.Enabled) throw new RpcException("bad_request", "Enable this MCP server first.");
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await state.Commands.Writer.WriteAsync(new Command(reconnect ? "reconnect" : "catalog-refresh", reconnect, done), ct).ConfigureAwait(false);
+        try { await state.Commands.Writer.WriteAsync(new Command(reconnect ? "reconnect" : "catalog-refresh", reconnect, done), ct).ConfigureAwait(false); }
+        catch (ChannelClosedException) { throw new McpException("MCP server " + id + " is stopped."); }
         await done.Task.WaitAsync(ct).ConfigureAwait(false);
     }
     public IReadOnlyList<RemoteTool> Catalog()
@@ -363,7 +371,19 @@ internal sealed partial class ServerManager : IAsyncDisposable
             var tools = new List<RemoteTool>();
             foreach (var state in _states.Values.Where(s => server is null || s.Config.Id == server))
                 foreach (var raw in state.RawCatalog)
-                    try { tools.Add(new RemoteTool(this, state.Config, raw)); } catch { }
+                {
+                    try { tools.Add(new RemoteTool(this, state.Config, raw)); }
+                    catch (Exception ex)
+                    {
+                        // the entry stays out of the model's catalog, but the failure is named: the rejected list of the
+                        // snapshot says which entry and why, and the log says so too (one line per entry, whatever the
+                        // inventory is asked for again)
+                        var name = raw["name"]?.GetValue<string>() ?? "?";
+                        if (!state.Rejected.Any(j => j?["name"]?.GetValue<string>() == name))
+                            state.Rejected.Add(new JsonObject { ["name"] = name, ["error"] = "the catalog entry could not be read: " + state.Config.Redact(ex.Message) });
+                        _ctx.Logger.LogWarning("MCP {Server}: a catalog entry could not be read: {Error}", state.Config.Id, state.Config.Redact(ex.Message));
+                    }
+                }
             return tools;
         }
     }
@@ -509,6 +529,7 @@ internal sealed partial class ServerManager : IAsyncDisposable
     }
     private async Task RetireAsync(State state)
     {
+        lock (_gate) state.Closed = true;
         try { await state.Idle.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); } catch { }
         state.Stop.Cancel(); state.Commands.Writer.TryComplete();
         if (state.Connection is not null) await state.Connection.DisposeAsync().ConfigureAwait(false);
