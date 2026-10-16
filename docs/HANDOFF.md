@@ -18,6 +18,20 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 ## Current state (2026-09-28)
 
+### Whole-repo review, fixed in one pass (2026-10-16)
+
+A sharded review of the whole repository (about 120 findings) and its fixes, merged as nine workstreams; the record,
+with what was skipped and why, is `docs/archive/2026-10-16-review-oneshot.md`. What changes how you work here:
+- A tool called through `call_tool` is stored under that name; every reader uses `ToolCalls.Effective`
+  (`src/NetPI.Contracts/ToolCalls.cs`) or, in the UI, `effectiveCall` (`web/src/lib/tools.js`). Plan, ask, schedule and
+  image cards depended on it.
+- Job objects are shared source in `shared/ProcessKit` (`ChildJob`: dies with NetPI; `ProcessJob`: one tree, killable).
+- New tools/actions: `test` (a project's `.netpi/tests.json`), `lsp references|rename` (applied through
+  `files.applyEdits`), `ssh run {background}` + `job`, `ssh grep|find`, `ssh.hostNotes`; `agent_spawn maxUsd|maxTurns`;
+  `agent wait` says why it returned and what each subagent cost.
+- grep/find/ls skip nested repositories and worktrees and read `.git/info/exclude`.
+- `scripts/checkout.ps1`'s stale-index warning works now (it never fired before).
+
 ### Run priorities: critical chats take an instance (2026-10-14)
 
 A chat's runs queue for an instance by its `meta.priority` (`RunPriority` in `src/NetPI.Contracts/AgentSlots.cs`: low,

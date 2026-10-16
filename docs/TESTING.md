@@ -78,6 +78,8 @@ for the broad scope above.
 .\scripts\test.ps1 -Suite Aux -SkipBuild             # one suite, reusing the build (nothing changed)
 .\scripts\test.ps1 -Suite Aux,Host -SkipBuild        # two: a [string[]] takes a comma, not a second -Suite
 .\scripts\test.ps1 -Serial                           # one suite at a time, when a run misbehaves
+# From bash, `pwsh -File scripts/test.ps1 -Suite Aux,Host` passes "Aux,Host" as ONE string (no such suite): use
+# `pwsh -Command "./scripts/test.ps1 -Suite Aux,Host"` (the same goes for -Only lists).
 ```
 
 A test that cannot run here (no git on PATH, no Edge/Chrome/Chromium, the plugins not built) calls `Check.Skip(reason)`
