@@ -654,6 +654,33 @@ public static class ShellTests
             Check.Equal(0, Directory.GetFiles(svc.TempDir, "cmd-*").Length, "temp script deleted");
         });
 
+        r.Add("bash: a 25 K command with a big inherited environment goes through a temp script (the Windows environment block is capped)", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var dir = T.TempDir("bash-env");
+            var sb = new StringBuilder("total=0\n");
+            while (sb.Length < 25_000) sb.Append("total=$((total + 1)) # padding padding\n");
+            sb.Append("echo ok");
+            var big = new string('x', 8_000);
+            Environment.SetEnvironmentVariable("NETPI_TEST_BIG1", big);
+            Environment.SetEnvironmentVariable("NETPI_TEST_BIG2", big);
+            try
+            {
+                var bash = ShellLocator.FindBash(null)!;
+                Check.True(ShellLaunch.EnvironmentChars(ShellLaunch.BaseEnvironment()) > 16_000, "the environment is counted");
+                Check.True(ShellLaunch.Bash(bash, sb.ToString(), dir, windowsStyle: true).TempScript is not null, "command + environment over the cap: a script");
+                Check.True(ShellLaunch.Bash(bash, "echo hi", dir, windowsStyle: true).TempScript is null, "a short command stays inline");
+                var res = await T.Run(Bash(svc), dir, new { command = sb.ToString() });
+                ToolCheck.Ok(res);
+                Check.Equal("ok", res.Content);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("NETPI_TEST_BIG1", null);
+                Environment.SetEnvironmentVariable("NETPI_TEST_BIG2", null);
+            }
+        });
+
         r.Add("background: lifecycle (start, list, output, kill, events)", async () =>
         {
             var (svc, registry, bus) = NewService();
