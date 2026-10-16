@@ -199,8 +199,10 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
     }
 
     /// <summary>
-    /// max(last usage + estimate of messages added since, full chars/4 estimate). Usage recorded before the latest
-    /// compaction summary is stale and ignored.
+    /// The last usage the model reported plus the estimate of the messages added since. Usage recorded before the
+    /// latest compaction summary is stale and ignored. The full chars/4 estimate is only the answer when there is no
+    /// usable usage: a usage number is the model's own count, and forcing the expensive full walk to stand as a floor
+    /// for it would defeat the laziness the walk is written for.
     /// </summary>
     public static long EstimateContext(AgentTurnContext turn, long overheadTokens)
     {
@@ -222,6 +224,6 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
         if (summarySeq > 0 && msgs[last].Seq > 0 && msgs[last].Seq < summarySeq) return Full();
 
         var fromUsage = turn.LastContextTokens + CompactionPlanner.Estimate(msgs.Skip(last + 1));
-        return Math.Max(Full(), fromUsage);
+        return fromUsage;
     }
 }
