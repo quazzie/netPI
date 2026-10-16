@@ -335,7 +335,8 @@ public sealed class CompactionService(IPluginContext ctx)
         var budgetTokens = (long)Math.Max(0, room * HeadroomShare);
         var budgetChars = (int)Math.Clamp(budgetTokens * 4, MinChunkTokens * 4, MaxChunkChars);
 
-        var chunks = TranscriptSerializer.Chunk(messages.Select(TranscriptSerializer.Serialize), budgetChars);
+        var callIndex = ToolCalls.Index(messages);
+        var chunks = TranscriptSerializer.Chunk(messages.Select(m => TranscriptSerializer.Serialize(m, callIndex)), budgetChars);
         if (chunks.Count == 0) throw new InvalidOperationException("Nothing to summarize.");
 
         var retries = 0;

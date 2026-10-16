@@ -1,5 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Providers.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- The provider kit is shared SOURCE, not a shared assembly (docs/PLUGINS.md). -->
     <Compile Include="$(RepoRoot)shared/ProviderKit/*.cs" LinkBase="Kit" />
   </ItemGroup>

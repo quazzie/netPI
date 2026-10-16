@@ -86,6 +86,26 @@ public static class TodoTests
             env.Ctx.Unload();
         });
 
+        r.Add("todo: a todo_write made through call_tool is the fork's checklist and counts as visible", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var fork = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "fork" });
+            var call = CallToolReadersTests.Wrapped("c1", "todo_write", "{}");
+            var result = new ToolResultPart
+            {
+                CallId = "c1", Name = "call_tool", Content = "…",
+                Details = new JsonObject { ["items"] = new JsonArray(new JsonObject { ["text"] = "Fix", ["status"] = "pending" }) },
+            };
+            env.Ctx.SessionsFake.AppendMessage(fork.Id, T.Assistant("", call));
+            env.Ctx.SessionsFake.AppendMessage(fork.Id, new ChatMessage { Role = MessageRole.Tool, Parts = [result] });
+            TodoPlugin.Forked(env.Ctx, fork.Id);
+            Check.Equal("pending", Statuses(env.Ctx.SessionsFake.GetSession(fork.Id)?.Meta?["todo"] as JsonArray));
+            Check.True(TodoNotices.Visible([T.Assistant("", call)]), "the model's own call_tool todo_write is in context");
+            Check.False(TodoNotices.Visible([T.Assistant("", CallToolReadersTests.Wrapped("c2", "read", "{}"))]));
+            env.Ctx.Unload();
+        });
+
         r.Add("todo: lenient input (strings, synonyms, other field names, a JSON string, a bare array)", async () =>
         {
             var env = new Env();

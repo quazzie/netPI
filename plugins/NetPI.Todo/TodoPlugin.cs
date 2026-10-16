@@ -30,8 +30,10 @@ public sealed class TodoPlugin : INetPiPlugin
     {
         try
         {
-            var result = context.Sessions.GetMessages(sessionId).SelectMany(m => m.ToolResults)
-                .LastOrDefault(r => r.Name == "todo_write" && !r.IsError);
+            var messages = context.Sessions.GetMessages(sessionId);
+            var calls = ToolCalls.Index(messages);
+            var result = messages.SelectMany(m => m.ToolResults)
+                .LastOrDefault(r => ToolCalls.IsResultOf(r, "todo_write", calls) && !r.IsError);
             if (result?.Details?["items"] is not JsonArray items) return;
             context.Sessions.UpdateSession(sessionId, s =>
             {
@@ -68,7 +70,8 @@ internal sealed class TodoNotices(IPluginContext ctx) : IAgentHook
 
     internal static bool Visible(IReadOnlyList<ChatMessage> context) => context.Any(m =>
         (m.Role == MessageRole.Notice && m.MetaString("kind") == Kind)
-        || m.Parts.Any(p => p is ToolResultPart { Name: "todo_write" } or ToolCallPart { Name: "todo_write" }));
+        || m.Parts.Any(p => p is ToolResultPart { Name: "todo_write" } or ToolCallPart { Name: "todo_write" }
+            || p is ToolCallPart c && ToolCalls.EffectiveName(c) == "todo_write"));
 }
 
 internal sealed record TodoItem(string Text, string Status);

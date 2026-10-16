@@ -1294,7 +1294,12 @@ match's description and JSON schema (what does not fit ~15 000 characters is onl
 manual). `call_tool` is deferred-tool infrastructure like `tool_search`, declared exactly when something is deferred, and
 never deferred by a list such as `["*"]`. The batch runner unwraps the call before any hook sees it: the policy hooks, the
 workspace guard, parallelism, the events and the after-call hooks all work on the inner tool, and the result is stored under
-the outer call's id. A call to an unknown tool, to `call_tool` or to `tool_search` is an error result that says what to do.
+the outer call's id. The transcript keeps the call the model made: the stored `ToolCallPart` is `call_tool` (its
+arguments hold the inner name and arguments) and so is the stored `ToolResultPart.Name`. Readers that care which tool ran
+never compare that name: C# uses `ToolCalls` (`src/NetPI.Contracts/ToolCalls.cs`: `Effective(call)` → inner name and
+arguments, `Index`/`EffectiveName(result, calls)` to name a result by its call), `CallTool.TryUnwrap` uses the same
+parsing; the web UI applies `effectiveCall` (`web/src/lib/tools.js`) once where chat items are built, so cards, views,
+artifact chips and step counts all see the inner tool (`via: 'call_tool'` marks it). A call to an unknown tool, to `call_tool` or to `tool_search` is an error result that says what to do.
 A deferred tool called directly by name still runs where the backend produces such a call (a local backend may refuse a name
 it was not sent, or force it into another tool: the prompt therefore names `call_tool`). Nothing is stored in the chat, no
 `tools` notice is written and there is no cap on how many tools a chat can use.

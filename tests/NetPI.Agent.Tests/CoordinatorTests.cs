@@ -159,6 +159,13 @@ public static class CoordinatorTests
         Check.Equal(false, (bool?)Summary("test result: ok. 12 passed; 0 failed; 0 ignored")!["failed"]);
         Check.Equal("=== 10 passed in 1.20s ===", (string?)Summary("=== 3 failed, 10 passed in 1.20s ===", "=== 10 passed in 1.20s ===")!["line"], "the newest tally wins");
 
+        // a test run made through call_tool names the tool that ran
+        var wrappedCall = new ToolCallPart { Id = "w1", Name = "call_tool", Arguments = """{"name":"deferred_runner","arguments":{}}""" };
+        var wrappedResult = new ToolResultPart { Name = "call_tool", CallId = "w1", Content = "Tests: 2 failed, 10 passed, 12 total" };
+        var viaCallTool = NetPiJson.ToNode(NetPI.Coordinator.Coordinator.TestSummary([
+            new ChatMessage { Role = MessageRole.Assistant, Parts = [wrappedCall] }, new ChatMessage { Role = MessageRole.Tool, Parts = [wrappedResult] }]));
+        Check.Equal("deferred_runner", (string?)viaCallTool!["tool"], "the tool, not call_tool");
+
         var byRun = (await h.Rpc.CallAsync("runs.result", new { runId = (string)res["runId"]! }))!;
         Check.Equal(sid, (string?)byRun["sessionId"]);
         try { await h.Rpc.CallAsync("runs.result", new { }); throw new AssertException("expected bad_request"); }

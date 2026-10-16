@@ -395,8 +395,10 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         var o = record?.ToJson() ?? new JsonObject { ["callId"] = callId, ["sessionId"] = sessionId };
         if (found.Call is { } call)
         {
-            o["name"] = call.Name;
-            try { o["arguments"] = JsonNode.Parse(call.Arguments); } catch (JsonException) { o["arguments"] = call.Arguments; }
+            var (callName, callArgs) = ToolCalls.Effective(call);
+            o["name"] = callName;
+            if (callName != call.Name) o["via"] = call.Name;
+            try { o["arguments"] = JsonNode.Parse(callArgs); } catch (JsonException) { o["arguments"] = callArgs; }
         }
         if (found.Result is { } res)
         {
@@ -467,6 +469,8 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
                  : throw new RpcException("bad_request", "Pass sessionId or agentId.");
         var sessionId = info?.SessionId ?? r.Str("sessionId") ?? throw new RpcException("not_found", "No such run.");
         var session = ctx.Sessions.Require(sessionId);
+        var recent = ctx.Sessions.GetMessages(sessionId, null, 12);
+        var recentCalls = ToolCalls.Index(recent);
         var slots = ctx.Services.Get<IAgentScheduler>()?.Snapshot() ?? [];
         var o = new JsonObject
         {
@@ -490,13 +494,13 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             ["calls"] = new JsonArray([.. recorder.Calls().Where(c => c.SessionId == sessionId).Take(10).Select(c => (JsonNode?)c.ToJson())]),
             ["tools"] = new JsonArray([.. recorder.Tools().Where(x => x.SessionId == sessionId).Take(20).Select(x => (JsonNode?)x.ToJson())]),
             ["journal"] = new JsonArray([.. recorder.Journal().Where(e => e.SessionId == sessionId).Take(40).Reverse().Select(e => (JsonNode?)e.ToJson())]),
-            ["messages"] = new JsonArray([.. ctx.Sessions.GetMessages(sessionId, null, 12).Select(m => (JsonNode?)new JsonObject
+            ["messages"] = new JsonArray([.. recent.Select(m => (JsonNode?)new JsonObject
             {
                 ["seq"] = m.Seq, ["time"] = m.CreatedAt.ToString("O"), ["role"] = JsonNamingPolicy.CamelCase.ConvertName(m.Role.ToString()),
                 ["kind"] = (string?)m.Meta?["kind"], ["stopReason"] = m.StopReason, ["compacted"] = m.Compacted,
                 ["text"] = Recorder.Preview(string.Join(" ", m.Parts.OfType<TextPart>().Select(p => p.Text)), 200),
-                ["toolCalls"] = m.ToolCalls.Any() ? string.Join("; ", m.ToolCalls.Select(c => $"{c.Name} {Recorder.Preview(c.Arguments, 150)} ({c.Id})")) : null,
-                ["toolResults"] = m.ToolResults.Any() ? string.Join("; ", m.ToolResults.Select(x => $"{x.Name}{(x.IsError ? " (error)" : "")}: {Recorder.Preview(x.Content, 300)}")) : null,
+                ["toolCalls"] = m.ToolCalls.Any() ? string.Join("; ", m.ToolCalls.Select(ToolCalls.Effective).Zip(m.ToolCalls, (e, c) => $"{e.Name} {Recorder.Preview(e.Arguments, 150)} ({c.Id})")) : null,
+                ["toolResults"] = m.ToolResults.Any() ? string.Join("; ", m.ToolResults.Select(x => $"{ToolCalls.EffectiveName(x, recentCalls)}{(x.IsError ? " (error)" : "")}: {Recorder.Preview(x.Content, 300)}")) : null,
             })]),
         };
         return await Task.FromResult(o).ConfigureAwait(false);
