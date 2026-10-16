@@ -935,6 +935,26 @@ await t.Run("chat: a tool name split across chunks is not truncated to its first
     t.Eq("tool_use", msg.StopReason, "stop reason");
 });
 
+// A server that resends the full name in every chunk used to double it ("readread"); the parser now appends a
+// fragment only when it is not the name the call already has (idea: the shape a resending gateway produces).
+await t.Run("chat: a tool name is the sum of its fragments; a server that resends the full name does not double it", () =>
+{
+    static Kit.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
+    static string Name(params string[] chunks)
+    {
+        var asm = new Kit.MessageAssembler();
+        var p = new AP.ChatStreamParser(asm, "P", false);
+        foreach (var c in chunks)
+            p.Handle(Ev(new { id = "c1", choices = new[] { new { index = 0, delta = new { tool_calls = new[] { new { index = 0, type = "function", function = new { name = c } } } } } } }));
+        p.Handle(Ev(new { id = "c1", choices = new[] { new { index = 0, delta = new { tool_calls = new[] { new { index = 0, function = new { arguments = "{}" } } } }, finish_reason = "tool_calls" } } }));
+        p.Finish();
+        return asm.Build("p", "m", null, 0).ToolCalls.Single().Name;
+    }
+    t.Eq("write", Name("wri", "te"), "fragments accumulate");
+    t.Eq("read", Name("read", "read", "read"), "the full name in every chunk is not appended to itself");
+    return Task.CompletedTask;
+});
+
 await t.Run("chat: request body (system, tool_calls, tool results, images, stream_options, auth headers)", async () =>
 {
     var model = M("vllm", "ornith15-9b-mtp-128k");
