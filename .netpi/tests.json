@@ -6,6 +6,8 @@
     "aux": "pwsh -NoProfile -File scripts/test.ps1 -Suite Aux",
     "host": "pwsh -NoProfile -File scripts/test.ps1 -Suite Host",
     "agent": "pwsh -NoProfile -File scripts/test.ps1 -Suite Agent",
+    "providers": "pwsh -NoProfile -File scripts/test.ps1 -Suite Providers",
+    "storage": "pwsh -NoProfile -File scripts/test.ps1 -Suite Storage",
     "e2e": "pwsh -NoProfile -File scripts/e2e.ps1"
   },
   "changed": "pwsh -NoProfile -File scripts/e2e.ps1 -Changed",

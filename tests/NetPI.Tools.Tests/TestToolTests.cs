@@ -109,6 +109,13 @@ public static class TestToolTests
         // one suite and no name: that one
         var single = Project("""{ "suites": { "only-one": "node fake.mjs pass" }, "results": "r.json" }""");
         Check.Contains((await Run(single, new { })).Content, "only-one: 12 passed");
+
+        // cwd: another checkout (an agent's own worktree) is tested by its own config, from a chat whose folder is elsewhere
+        var elsewhere = T.TempDir("test-tool-chat");
+        var viaCwd = await Run(elsewhere, new { suite = "unit", cwd = dir });
+        Check.Contains(viaCwd.Content, "unit: 12 passed", "the worktree's suite ran");
+        Check.True(File.Exists(Path.Combine(dir, "out", "results.json")), "its results are the worktree's");
+        Check.Contains((await Run(elsewhere, new { cwd = "no-such-dir" })).Content, "does not exist");
     }
 
     private static async Task OnlyAndSuites()

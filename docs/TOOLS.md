@@ -333,8 +333,9 @@ The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.
     variable a secret setting reads (`env:NAME` / `$NAME` under `providers` and `mcp`, and the variables an MCP server's
     `env`/`headerEnv` name) and the names in `shell.hideEnv`. Nothing else is hidden: the rest of the environment is the user's.
 - **pwsh**
-  - Runs `pwsh -NoLogo -NoProfile -NonInteractive [-ExecutionPolicy Bypass] -EncodedCommand <base64 UTF-16LE>`. Long
-    scripts go through a temp `.ps1` file.
+  - Runs `pwsh -NoLogo -NoProfile -NonInteractive -OutputFormat Text [-ExecutionPolicy Bypass] -EncodedCommand <base64 UTF-16LE>`.
+    Long scripts go through a temp `.ps1` file. `-OutputFormat Text` keeps `Write-Host`, information and warning lines plain
+    text: without it a redirected pwsh writes them to stderr as CLIXML (`#< CLIXML <Objs …>`).
   - The script is prefixed with `$ProgressPreference='SilentlyContinue'`, UTF-8 input/output encoding and
     `$PSStyle.OutputRendering='PlainText'`. A suffix turns a failing last statement into a non-zero exit code (the native
     `$LASTEXITCODE`, or 1).
@@ -528,7 +529,7 @@ other workers of the project see, and `workspace info` says so.
 
 ## Tests (`test`, `category: "code"`)
 
-`test { suite?, only?, changed? }` runs a project's tests the way the project says and answers with the counts and the failures,
+`test { suite?, only?, changed?, cwd? }` runs a project's tests the way the project says and answers with the counts and the failures,
 so no chat parses a console log. The project describes it in `.netpi/tests.json` in the workspace root:
 
 ```json
@@ -537,6 +538,8 @@ so no chat parses a console log. The project describes it in `.netpi/tests.json`
 
 - `suite` picks a command (the only one when there is just one suite); `changed: true` runs the `changed` command (the tests the
   changed files can affect). Without a config the tool's error says how to add one.
+- `cwd` is the checkout to test (relative to the chat's folder; default that folder): an agent working in its own worktree
+  (`.worktrees/<agent>`) tests that tree, with the tree's own `.netpi/tests.json` and results file.
 - The command runs through the platform shell (`cmd /c` on Windows, `sh -c` elsewhere) in the workspace root under a deadline
   (`timeoutSeconds`, default 1800: the process tree is killed at it, and the Windows job object ends it with NetPI). Its output
   streams to the call; the last lines come back only when the run produced no results.
@@ -548,7 +551,8 @@ so no chat parses a console log. The project describes it in `.netpi/tests.json`
   The answer is `<suite>: P passed, F failed, S skipped in T s.` and each failure (at most 20: name, the message on one line cut
   at 600 characters, the evidence path), then the log path; `Details` carries the same as data. A command that writes no results
   file (or invalid JSON), or runs out of time, is an error with the exit code and its last 15 lines of output.
-- NetPI's own `.netpi/tests.json` maps `scripts/test.ps1` and `scripts/e2e.ps1`, which write
+- NetPI's own `.netpi/tests.json` maps `scripts/test.ps1` (suites `unit` = all, `ui`, `tools`, `aux`, `host`, `agent`,
+  `providers`, `storage`) and `scripts/e2e.ps1` (`e2e`, and `changed`), which write
   `artifacts/testlogs/last-results.json` at the end of every run (and read `NETPI_TEST_ONLY` as their `-Only`).
 - The tool is not read-only (the command may write anything). It belongs in `ToolExposure.DefaultDeferred` (Contracts).
 
@@ -1322,6 +1326,7 @@ read-only ones and who may write instead. The single exception is the `rpc` acti
 |---|---|---|
 | `overview` | `diag.overview` | start here: app, process, plugins, models, agents (holders, waiters), runs, calls, running tools, `reloads`, problems |
 | `problems` | `diag.problems` | what looks wrong now, worst first |
+| `errors` | `diag.errors` | what went wrong in one session (the calling one by default): its error notices, the failed requests saved for it (`failure { name }` reads one), its failed tool calls, newest first |
 | `calls` | `diag.calls` | model calls, newest first (running ones too) |
 | `call` | `diag.call` | one model call in detail (`id`) |
 | `tools` | `diag.tools` | tool calls, newest first |

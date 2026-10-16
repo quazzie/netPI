@@ -23,7 +23,7 @@ internal sealed class TestTool : IAgentTool
         SummaryArg = "suite",
         Description = "Run the project's tests (configured in .netpi/tests.json): a suite, only some tests, or the tests the changed files can affect; " +
                       "answers with the counts and the failures.",
-        Help = "test { suite?: string, only?: string, changed?: boolean }. The project's .netpi/tests.json: " +
+        Help = "test { suite?: string, only?: string, changed?: boolean, cwd?: string }. cwd: the checkout to test (a worktree of yours; relative to the chat's folder; default the chat's folder). The project's .netpi/tests.json: " +
                "{ \"suites\": { \"<name>\": \"<command>\" }, \"changed\": \"<command>\", \"results\": \"<path>\", \"timeoutSeconds\"?: 1800 }. " +
                "changed: true runs the changed command; suite picks a suite (the only one when there is just one). only is a name filter: it is in the NETPI_TEST_ONLY environment variable of the command, " +
                "and replaces {only} in it (quoted) when the command has one; it may not contain quotes, backslashes, $, % or backticks. The command writes the results file " +
@@ -31,14 +31,18 @@ internal sealed class TestTool : IAgentTool
                "and the path of its evidence. Without .netpi/tests.json the answer says how to add one.",
         Parameters = JsonNode.Parse("""
             {"type":"object","properties":{
-              "suite":{"type":"string"},"only":{"type":"string"},"changed":{"type":"boolean"}}}
+              "suite":{"type":"string"},"only":{"type":"string"},"changed":{"type":"boolean"},
+              "cwd":{"type":"string","description":"the checkout to test, e.g. your worktree (default: the chat's folder)"}}}
             """)!.AsObject(),
     };
 
     public async Task<ToolResult> ExecuteAsync(ToolContext tool, JsonElement args, CancellationToken ct)
     {
         var a = new ToolArgs(args);
-        var root = Path.GetFullPath(tool.Cwd);
+        // A worktree of the agent's own is a checkout of its own: its tests are the ones its changes need (the bash and pwsh
+        // tools take a cwd for the same reason)
+        var root = Path.GetFullPath(a.Str("cwd") is { Length: > 0 } cwd ? Path.Combine(tool.Cwd, cwd) : tool.Cwd);
+        if (!Directory.Exists(root)) return ToolResult.Error($"cwd {root} does not exist.");
         var (config, error) = TestConfig.Load(root);
         if (config is null) return ToolResult.Error(error!);
 
