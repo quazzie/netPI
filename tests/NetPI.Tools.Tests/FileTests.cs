@@ -984,6 +984,104 @@ public static class FileTests
             finally { FileIndex.MaxListedEntries = old; }
         });
 
+        r.Add("walker: a capped listing is the first N by name, and a zero cap lists nothing", () =>
+        {
+            var dir = T.TempDir("cap");
+            // mixed-case names: the filesystem's enumeration order is not the name order
+            foreach (var n in new[] { "Zebra.txt", "apple.txt", "Mmm.txt", "banana.txt", "Cherry.txt" })
+                File.WriteAllText(Path.Combine(dir, n), "x\n");
+
+            var zero = FileWalker.ListDirectory(dir, maxEntries: 0);
+            Check.Equal(0, zero.Entries.Count, "a zero cap lists nothing");
+            Check.Equal(5, zero.Visible, "the totals are the directory's, not the cap's");
+
+            var (entries, visible, ignored) = FileWalker.ListDirectory(dir, maxEntries: 2);
+            Check.Equal(2, entries.Count);
+            Check.Equal("apple.txt,banana.txt", string.Join(",", entries.Select(e => e.Name)),
+                "the cap keeps the first N by name, not in enumeration order");
+            Check.Equal(5, visible);
+            Check.Equal(0, ignored);
+        });
+
+        r.Add("ignore: nested repositories (a .git file, a .git directory) are skipped; info/exclude is honoured", () =>
+        {
+            var dir = T.TempDir("nestedrepo");
+            Directory.CreateDirectory(Path.Combine(dir, ".git"));
+            T.WriteText(dir, ".git/config", "[core]\n");
+            T.WriteText(dir, ".git/info/exclude", "secret.txt\n");
+            T.WriteText(dir, "main.cs", "TODO main\n");
+            T.WriteText(dir, "secret.txt", "TODO secret\n");
+            // a linked worktree: a .git FILE pointing at a git dir whose commondir points at the main .git
+            var wt = Path.Combine(dir, "wt");
+            Directory.CreateDirectory(Path.Combine(wt, "src"));
+            File.WriteAllText(Path.Combine(wt, ".git"), "gitdir: ../.git/worktrees/wt\n");
+            Directory.CreateDirectory(Path.Combine(dir, ".git", "worktrees", "wt"));
+            File.WriteAllText(Path.Combine(dir, ".git", "worktrees", "wt", "commondir"), "..\n");
+            T.WriteText(dir, "wt/src/stale.cs", "TODO stale\n");
+            // a sub-clone: a .git DIRECTORY of its own
+            Directory.CreateDirectory(Path.Combine(dir, "sub", ".git"));
+            T.WriteText(dir, "sub/stale.cs", "TODO stale\n");
+
+            var files = FileWalker.Walk(dir, new WalkOptions { IncludeDirs = false }).Select(e => e.RelPath).ToList();
+            var joined = string.Join(",", files);
+            Check.True(files.Contains("main.cs"), joined);
+            Check.False(files.Any(f => f.StartsWith("wt/") || f.StartsWith("sub/")), "nested repositories are skipped: " + joined);
+            Check.False(files.Contains("secret.txt"), "an info/exclude rule hides it: " + joined);
+
+            // a walk rooted inside a nested repository searches it normally
+            var inWt = FileWalker.Walk(wt, new WalkOptions { IncludeDirs = false }).Select(e => e.RelPath).ToList();
+            Check.True(inWt.Contains("src/stale.cs"), "rooted inside the worktree: " + string.Join(",", inWt));
+            var inSub = FileWalker.Walk(Path.Combine(dir, "sub"), new WalkOptions { IncludeDirs = false }).Select(e => e.RelPath).ToList();
+            Check.True(inSub.Contains("stale.cs"), "rooted inside the sub-clone: " + string.Join(",", inSub));
+
+            // the worktree's exclude file is the main repository's (commondir), so its rules apply there too
+            var wtExcluded = FileWalker.Walk(wt, new WalkOptions { IncludeDirs = false }).Select(e => e.RelPath).ToList();
+            Check.True(wtExcluded.All(f => f != "secret.txt"), "the common info/exclude reaches the worktree");
+        });
+
+        r.Add("grep/find/ls: nested repositories and worktrees are skipped, info/exclude hides paths", async () =>
+        {
+            var dir = T.TempDir("nestedrepo-tools");
+            Directory.CreateDirectory(Path.Combine(dir, ".git"));
+            T.WriteText(dir, ".git/info/exclude", "scratch.log\n");
+            T.WriteText(dir, "main.cs", "TODO main\n");
+            T.WriteText(dir, "scratch.log", "TODO scratch\n");
+            var wt = Path.Combine(dir, ".claude", "worktrees", "x");
+            Directory.CreateDirectory(Path.Combine(wt, "src"));
+            File.WriteAllText(Path.Combine(wt, ".git"), "gitdir: ../../../.git/worktrees/x\n");
+            Directory.CreateDirectory(Path.Combine(dir, ".git", "worktrees", "x"));
+            File.WriteAllText(Path.Combine(dir, ".git", "worktrees", "x", "commondir"), "..\n");
+            T.WriteText(dir, ".claude/worktrees/x/src/stale.cs", "TODO stale\n");
+            Directory.CreateDirectory(Path.Combine(dir, "sub", ".git"));
+            T.WriteText(dir, "sub/stale.cs", "TODO stale\n");
+
+            // grep: the stale copies in the nested repositories never come back (no doubled hits)
+            var grep = new GrepTool();
+            var res = await T.Run(grep, dir, new { pattern = "TODO" });
+            ToolCheck.Ok(res);
+            Check.Contains(res.Content, "main.cs:1: TODO main");
+            Check.NotContains(res.Content, "stale", "the nested repositories are skipped");
+            Check.NotContains(res.Content, "scratch.log", "the info/exclude rule hides the file");
+
+            // find: same
+            var find = new FindTool();
+            var f = await T.Run(find, dir, new { pattern = "**/*.cs" });
+            ToolCheck.Ok(f);
+            Check.Equal("main.cs", f.Content);
+
+            // ls: the nested repositories are hidden counted entries (.claude/ itself is an ordinary directory and stays
+            // visible), all=true shows them
+            var ls = new LsTool();
+            var l = await T.Run(ls, dir, new { });
+            ToolCheck.Ok(l);
+            Check.Contains(l.Content, ".claude/", "an ordinary directory is not hidden by its hidden contents");
+            Check.NotContains(l.Content, "sub/");
+            var dl = T.D(l);
+            Check.True(dl.Int("hidden") >= 3, $"the nested repositories are counted hidden: hidden={dl.Int("hidden")}");
+            var lall = await T.Run(ls, dir, new { all = true });
+            Check.Contains(lall.Content, "sub/");
+        });
+
         // ------------------------------------------------ RPC
         r.Add("rpc: files.search fuzzy ranking and files.list", async () =>
         {
