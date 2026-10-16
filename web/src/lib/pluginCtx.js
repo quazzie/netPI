@@ -114,9 +114,12 @@ export function createPluginCtx(tab, sessionId = null) {
       openIdea: (opts) => {
         openIdeaDialog(opts ?? {});
       },
-      openSettings: (page, target) => {
-        // target (an agent id, say) rides along in the page string: 'agents:<id>' opens that agent's dialog
-        modals.settings = page ? (target ? `${page}:${target}` : page) : true;
+      openSettings: (page) => {
+        modals.settings = page || true;
+      },
+      // An agent's own dialog (name, model, instances, usage), without the Settings dialog behind it.
+      openAgent: (id) => {
+        modals.agent = id;
       },
       toast: (text, level = 'info') => {
         toast(text, level);

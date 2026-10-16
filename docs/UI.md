@@ -608,35 +608,43 @@ webhook: pause/resume, edit (an inline form), a two-step new token and delete, a
 shown once, with a ready `curl` line. The form is deliberately small: name, URL name, prompt, project, profile, agent, priority (low, normal, high, critical: its chats' place in the queue, and a critical one takes an instance from lower work started for the user — SETTINGS.md "Priority"; the row's meta line names it when it is not normal), a program with its arguments (one per line) for the Before and the After command, a timeout in minutes and the fuse. Filtering, grouping and wording belong to the Before command. Reads `webhooks.*` plus `projects.list`, `profiles.list` and `agents.list` (absent ones degrade their own feature); refreshes on
 `webhooks.changed`, `settings.changed` and a 30 s poll.
 
-**Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and two collapsible sections (Background,
-Finished), each with a count. The open or closed state of each section is remembered (`storageKey`,
-versioned `work.v2.*` so the defaults of this layout apply).
+**Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and the collapsible sections (Off, Queued,
+Background, Finished). The open or closed state of each section is remembered (`storageKey`, versioned `work.v2.*` so the
+defaults of this layout apply). Top to bottom: summary, budget, Off, agents, Queued, Background, Finished.
 
 - A summary line shows what is **working**, **queued** and **free** across the agents that can take work (and `+N other`
   for model calls without an agent, which opens a menu of them). Under it, only when a budget is set (or something was
   spent): **This month** against the budget (`usage.summary.budget`: a bar, today's spend, "spent" when it is).
-- **Agents** (`AgentPool`, the block under that, no section title): every agent the user set up, always. One list
-  answers "who is working and what is free" — there is no separate Runs list. Each agent shows its name (a button that
-  opens Settings → Agents on its dialog, `ctx.app.openSettings('agents', <id>)`), busy/free pips (a bar over 8), an
-  on/off switch (`agents.setEnabled`), the model and a state chip. **Every instance is a row of the same height, busy or
-  free**, and a running job keeps the row it first got (`placeSlots`): a job that ends leaves its own row as "free" in
-  place and a new one takes the first free row, so nothing in the tab moves when work starts or ends. Above 4 instances the
-  rows are one line each. A busy row is the run holding the instance (the `owners` of `agents.list` joined to the runs by
-  run id): chat title, then the activity — or, while the chat runs a foreground shell command, the command (`$ dotnet
-  build …`), so a command starting or ending never changes the tab's size — and the elapsed time; subagents hold their
-  own instance, so they are rows too, marked `sub` with the chat they work for; clicking opens the session, the hover
-  button stops that run alone (`agent.abort { sessionId, subagents: false }`; Shift+click stops its subagents too). A busy row whose run is not at normal priority has a chip (`low`, `high`, `critical`; `Priority.svelte`, from the holder's `priority`). Under the rows one line, always there, says `nothing queued` or `N
-  queued, longest 14m` (with a `critical` chip when a critical run is among them); clicking it opens who is queued in a floating list (`WaitList`, `position: fixed`, so it never
-  pushes the tab down), in the order they get an instance (priority, then arrival): each row opens its chat, shows its priority chip, and has an **x** that cancels that run (`agent.abort { subagents: false }`: a run
-  still queued for an instance is cancelled before it starts, and the subagents the chat's earlier runs started keep working). "Queued" is a run waiting for an instance; "waiting" is kept for chats waiting on their subagents or on the user. The last line of the agent is what it has done this period
-  (`usage.summary.models`: `412 calls · 1.2M↑ 86k↓`, a cost when it has one; the tooltip adds cache reads). An agent that cannot take work (off, or its model is not loaded)
-  has a header and its reason only. Model calls without an agent show only in the summary chip.
+- **Off** (collapsed by default; the count): agents that are switched off or cannot take work (their model is not loaded)
+  and have nothing running or queued, each a dimmed one-line header with `off` or `unavailable` and the switch. An agent
+  that is off but still finishing runs stays among the active ones until it drains.
+- **Agents** (`AgentPool`, the block under that, no section title): every other agent the user set up. One list answers
+  "who is working and what is free" — there is no separate Runs list. Each agent shows its name and an on/off switch
+  (`agents.setEnabled`); the name opens the agent's own dialog (`ctx.app.openAgent(id)`: `AgentModal`, the dialog of
+  Settings → Agents without Settings behind it), which holds the model, instances and the **Usage** row (this period and in
+  total, `usage.history` agents and allTimeAgents). The model is not repeated in the tab. An agent shows one row per
+  **running job** and, after them, **one free box** (`N free`, absent when none is free), so an idle agent is a header
+  and `3 free`. A job keeps its place in the order (`placeSlots`); a finished one leaves and the rows below move up.
+  Above 4 instances the rows are one line each. A busy row is the run holding the instance (the `owners` of `agents.list`
+  joined to the runs by run id): line 1 the chat title (never squeezed below 8 characters) and the elapsed time, line 2
+  `↳` for a subagent, `for <chat>` for the chat it works for, then the activity — or, while the chat runs a foreground
+  shell command, the command (`$ dotnet build …`). Priority is the row's left edge (amber high, red critical, dotted low),
+  the tooltip names it. Clicking opens the session, the hover button stops that run alone (`agent.abort { sessionId,
+  subagents: false }`; Shift+click stops its subagents too). Under the rows, only when something is queued for the agent,
+  one line `N queued, longest 14m` (with a `critical` chip when a critical run is among them); clicking it opens who is
+  queued in a floating list (`WaitList`, `position: fixed`), in the order they get an instance (priority, then arrival):
+  each row opens its chat, shows its priority chip, and has an **x** that cancels that run (`agent.abort { subagents:
+  false }`: a run still queued for an instance is cancelled before it starts, and the subagents the chat's earlier runs
+  started keep working). "Queued" is a run waiting for an instance; "waiting" is kept for chats waiting on their subagents
+  or on the user. Model calls without an agent show only in the summary chip.
+- **Queued** (open by default): runs that may go to any of several agents and wait in nobody's own queue
+  (`agents.unassigned`), as the same list; "Nothing waiting for any agent" when there are none.
 - **Background** (collapsed by default; `<n> running`): the commands that outlive a tool call (dev servers, watchers) and any
   foreground command with no row to show on. Expanding a row fetches `processes.output` (tail 300 lines) and appends live
   `process.output` chunks. It falls back to polling every 2s when no chunk has arrived for 3s, and fetches once more on
   `process.exited`. The kill button is a two-step `ConfirmButton` that calls `processes.kill`.
-- **Finished** (collapsed by default; `<n> runs · <m> failed · <k> commands`): the runs that ended (result or error, time ago)
-  and the commands that ended (the same rows as Background, output on demand), newest first, **Show all** past 6 each.
+- **Finished** (collapsed by default; `<k> commands`): the commands that ended (the same rows as Background, output on
+  demand), newest first, **Show all** past 6. A finished run is not listed: it is a chat, and the session list has it.
 - Updates: `agent.status`, `agents.changed` and `process.started/exited` are applied in place, and a debounced
   `work.snapshot` (250ms; 400ms after `usage.recorded` and `usage.changed`) reconciles them. A 30s timer refreshes the snapshot
   while the tab is visible; while it is hidden, events only mark it dirty and it refreshes on show. The chat titles the

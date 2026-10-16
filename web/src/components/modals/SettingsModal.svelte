@@ -16,13 +16,10 @@
   import { bus } from '../../lib/bus.js';
   import { pagesOf, getAt, settingDefault, sectionState } from '../../lib/settings.js';
 
-  /** page: the page to open on (a page id such as 'agents'; modals.settings may hold one).
-   *  It may carry a target for an item on the page: 'agents:<id>' opens that agent's dialog. */
+  /** page: the page to open on (a page id such as 'agents'; modals.settings may hold one). */
   let { onclose, page: startPage = 'general' } = $props();
 
-  let section = $state(untrack(() => String(startPage).split(':')[0]));
-  // the item to open on the agents page (an agent id), consumed by the AgentsEditor
-  const openAgent = untrack(() => String(startPage).split(':')[1] ?? null);
+  let section = $state(untrack(() => String(startPage)));
 
   // host settings as controls: the schema (host + plugins) and the document; the agents' states are app.slots
   let schema = $state([]);
@@ -190,7 +187,7 @@
               An agent is a model with a number of instances (runs at once) and a note on when to use it. Chats and subagents
               run on agents; an agent is active while its model is loaded (local) or reachable (cloud), unless you switch it off.
             </div>
-            <AgentsEditor {doc} open={openAgent} />
+            <AgentsEditor {doc} />
           </section>
           {#each page.sections.filter((s) => s.id === 'budget') as s (s.id)}
             <section class="sec" data-section="budget">

@@ -8,15 +8,6 @@ export function priorityLevel(p) {
   const n = Number(p) || 0;
   return n >= 200 ? 'critical' : n >= 100 ? 'high' : n >= 0 ? 'normal' : 'low';
 }
-export const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
-
-/** StatusDot status for an agent status. */
-export function agentDot(s) {
-  if (s === 'failed') return 'error';
-  if (s === 'cancelled') return 'cancelled';
-  return s;
-}
-
 export function upsert(list, item, key = 'id') {
   if (!item) return list;
   const arr = list ?? [];

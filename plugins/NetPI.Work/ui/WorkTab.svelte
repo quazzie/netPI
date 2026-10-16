@@ -3,9 +3,8 @@
   import { Section, Empty, IconButton, Menu, tokens, usd, useRefresh } from '@netpi/kit';
   import AgentPool from './AgentPool.svelte';
   import WaitList from './WaitList.svelte';
-  import RecentAgent from './RecentAgent.svelte';
   import ProcessRow from './ProcessRow.svelte';
-  import { ACTIVE, TERMINAL, upsert } from './util.js';
+  import { ACTIVE, upsert } from './util.js';
 
   /** ctx: host plugin API (docs/PROTOCOL.md → Plugin UI tabs) */
   let { ctx } = $props();
@@ -22,7 +21,6 @@
   // sessionId -> title, from the host's own session list (ctx.app.sessionTitle is reactive, so the rows follow a
   // session.updated): no copy of sessions.list here and no session.* handlers to keep one current
   const titles = { get: (id) => (id ? ctx.app.sessionTitle(id) : null) };
-  let showAllRecent = $state(false);
   let showAllProcs = $state(false);
 
   // ------------------------------------------------------------------ data
@@ -86,12 +84,6 @@
   // ------------------------------------------------------------------ derived views
   // `agents` here are the runs (what each chat or subagent is doing); the agent rows join them to the instances by run id
   const agentById = $derived(new Map((agents ?? []).map((a) => [a.id, a])));
-  const recent = $derived(
-    (agents ?? [])
-      .filter((a) => TERMINAL.has(a.status))
-      .sort((a, b) => (Date.parse(b.finishedAt ?? b.createdAt) || 0) - (Date.parse(a.finishedAt ?? a.createdAt) || 0)),
-  );
-  const failedCount = $derived(recent.filter((a) => a.status === 'failed').length);
   // Chats whose turn ended while their subagents work: no instance of their own, so no row above, yet not done — the
   // subagents' reports start their next run. Without this line such a chat looks finished.
   const waitingChats = $derived.by(() => {
@@ -133,28 +125,18 @@
   const rowSessions = $derived(new Set((slots ?? []).flatMap((p) => (p.owners ?? []).map((o) => o.sessionId ?? agentById.get(o.agentId)?.sessionId))));
   const listedProcs = $derived([...bgRunning, ...fgRunning.filter((p) => !rowSessions.has(p.sessionId))]);
 
-  // what each agent has done this period (usage.summary.models), and the token budget its provider has today
-  const usageByAgent = $derived.by(() => {
-    const m = new Map();
-    for (const u of usage?.models ?? []) {
-      if (!u.agent) continue;
-      const t = m.get(u.agent) ?? { calls: 0, input: 0, output: 0, cacheRead: 0, cost: 0 };
-      t.calls += u.calls ?? 0;
-      t.input += u.inputTokens ?? 0;
-      t.output += u.outputTokens ?? 0;
-      t.cacheRead += u.cacheReadTokens ?? 0;
-      t.cost += u.costUsd ?? 0;
-      m.set(u.agent, t);
-    }
-    return m;
-  });
+  // the token budget its provider has today
   const budget = $derived(usage?.budget && (usage.budget.monthlyUsd || usage.budget.dailyUsd || usage.budget.spentUsd > 0) ? usage.budget : null);
 
   // the agents the user set up (always listed) and model calls without an agent (a chip in the summary while they run). With no
   // agents set up the model calls are all there is: they are listed like agents (a slot per model), while they run.
   const setUp = $derived((slots ?? []).filter((p) => p.configured));
   const others = $derived((slots ?? []).filter((p) => !p.configured));
-  const shown = $derived(setUp.length ? setUp : others);
+  // usable agents (or ones still finishing runs) first, in their own order; switched-off and unavailable ones last
+  const isOff = (p) => (p.disabled || p.available === false) && !(p.owners?.length || p.waiters?.length);
+  const shownAll = $derived(setUp.length ? setUp : others);
+  const shown = $derived(shownAll.filter((p) => !isOff(p)));
+  const offAgents = $derived(shownAll.filter(isOff));
   const usableAgents = $derived(shown.filter((p) => p.available !== false && !p.disabled));
   const working = $derived(usableAgents.reduce((n, p) => n + (p.owners?.length ?? 0), 0));
   const waiting = $derived(usableAgents.reduce((n, p) => n + (p.waiters?.length ?? 0), 0) + unassigned.length);
@@ -216,29 +198,26 @@
       </div>
     {/if}
 
+    {#if offAgents.length}
+      <Section title="Off" count={String(offAgents.length)} collapsible open={false} storageKey="work.v2.off">
+        {#each offAgents as pool (pool.key)}
+          <AgentPool {pool} {agentById} {titles} {ctx} cmds={cmdsBySession} />
+        {/each}
+      </Section>
+    {/if}
     <!-- ---------------------------------------------------------------- agents: who works on what, what is free, what each has done -->
     <div class="work-agents">
       {#if !slots}
         <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
       {:else}
         {#each shown as pool (pool.key)}
-          <AgentPool {pool} {agentById} {titles} {ctx} cmds={cmdsBySession} use={usageByAgent.get(pool.key) ?? null} period={usage?.budget?.periodStart ?? ''} />
+          <AgentPool {pool} {agentById} {titles} {ctx} cmds={cmdsBySession} />
         {:else}
-          <div class="na">
+          {#if !offAgents.length}<div class="na">
             No agents set up: chats run on their model.
             {#if ctx.app.openSettings}<button class="link" onclick={() => ctx.app.openSettings('agents')}>Set up agents</button>{/if}
-          </div>
+          </div>{/if}
         {/each}
-      {/if}
-      {#if setUp.length}
-        <!-- runs that may go to any of several agents queue here, in nobody's own queue; the line is always there, so it moves nothing -->
-        <div class="unassigned">
-          {#if unassigned.length}
-            <WaitList waiters={unassigned} label={unassignedLabel} {ctx} what="for any agent" />
-          {:else}
-            <span class="nobody np-line">nothing queued for any agent</span>
-          {/if}
-        </div>
       {/if}
       {#each waitingChats as w (w.parent.id)}
         <button
@@ -255,6 +234,17 @@
       {#if errors.usage}<div class="na">Usage not available — {errors.usage}</div>{/if}
     </div>
 
+    {#if setUp.length}
+      <!-- runs that may go to any of several agents wait here, in nobody's own queue -->
+      <Section title="Queued" count={unassigned.length ? `${unassigned.length} for any agent` : null} collapsible open storageKey="work.v2.queued">
+        {#if unassigned.length}
+          <WaitList waiters={unassigned} label={unassignedLabel} {ctx} what="for any agent" />
+        {:else}
+          <div class="na">Nothing waiting for any agent</div>
+        {/if}
+      </Section>
+    {/if}
+
     <!-- ---------------------------------------------------------------- background commands (the ones that outlive a tool call) -->
     <Section title="Background" count={processes ? (listedProcs.length ? `${listedProcs.length} running` : null) : null} collapsible open={false} storageKey="work.v2.background">
       {#if !processes}
@@ -268,34 +258,20 @@
       {/if}
     </Section>
 
-    <!-- ---------------------------------------------------------------- finished work: runs and commands -->
-    <Section title="Finished" count={recent.length || finishedProcs.length ? `${recent.length} runs${failedCount ? ` · ${failedCount} failed` : ''} · ${finishedProcs.length} commands` : null} collapsible open={false} storageKey="work.v2.finished">
-      {#if !agents && !processes}
-        <div class="na">Nothing available{errors.runs ? ` — ${errors.runs}` : ''}</div>
-      {:else if !recent.length && !finishedProcs.length}
-        <div class="na">Nothing has finished yet</div>
+    <!-- ---------------------------------------------------------------- finished commands (a finished run is a chat: the session list has it) -->
+    <Section title="Finished" count={finishedProcs.length ? `${finishedProcs.length} commands` : null} collapsible open={false} storageKey="work.v2.finished">
+      {#if !processes}
+        <div class="na">Nothing available{errors.processes ? ` — ${errors.processes}` : ''}</div>
+      {:else if !finishedProcs.length}
+        <div class="na">No command has finished yet</div>
       {:else}
-        {#if recent.length}
-          <div class="sub first">Runs</div>
-          {#each showAllRecent ? recent : recent.slice(0, 6) as a (a.id)}
-            <RecentAgent agent={a} {titles} {ctx} />
-          {/each}
-          {#if recent.length > 6}
-            <button class="more" onclick={() => (showAllRecent = !showAllRecent)}>
-              {showAllRecent ? 'Show less' : `Show all ${recent.length}`}
-            </button>
-          {/if}
-        {/if}
-        {#if finishedProcs.length}
-          <div class="sub" class:first={!recent.length}>Commands</div>
-          {#each showAllProcs ? finishedProcs : finishedProcs.slice(0, 6) as p (p.id)}
-            <ProcessRow proc={p} {ctx} />
-          {/each}
-          {#if finishedProcs.length > 6}
-            <button class="more" onclick={() => (showAllProcs = !showAllProcs)}>
-              {showAllProcs ? 'Show less' : `Show all ${finishedProcs.length}`}
-            </button>
-          {/if}
+        {#each showAllProcs ? finishedProcs : finishedProcs.slice(0, 6) as p (p.id)}
+          <ProcessRow proc={p} {ctx} />
+        {/each}
+        {#if finishedProcs.length > 6}
+          <button class="more" onclick={() => (showAllProcs = !showAllProcs)}>
+            {showAllProcs ? 'Show less' : `Show all ${finishedProcs.length}`}
+          </button>
         {/if}
       {/if}
     </Section>
@@ -380,16 +356,6 @@
     color: var(--info);
     font-size: var(--fs-xs);
   }
-  .unassigned {
-    /* a fixed height, whether the line says "no one waiting" or holds the button: it moves nothing when a run arrives */
-    box-sizing: border-box;
-    height: 30px;
-    margin-top: 2px;
-    padding-top: 5px;
-    border-top: 1px dashed var(--border);
-    display: flex;
-    align-items: center;
-  }
   .nobody {
     padding: 0 4px;
     font-size: var(--fs-xs);
@@ -417,16 +383,6 @@
   }
   .link:hover {
     text-decoration: underline;
-  }
-  .sub.first {
-    margin-top: 2px;
-  }
-  .sub {
-    margin: 10px 0 2px;
-    font-size: var(--fs-xs);
-    color: var(--fg-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
   .more {
     margin-top: 4px;

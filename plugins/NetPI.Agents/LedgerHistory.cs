@@ -54,6 +54,7 @@ internal sealed partial class Ledger
         var options = Options();
         var current = PeriodKey(DateTime.Now, options.ResetDay);
         var byPeriod = new SortedDictionary<string, Sum>(StringComparer.Ordinal);
+        var allAgents = new Dictionary<string, Sum>(StringComparer.OrdinalIgnoreCase);
         var chosen = new List<JsonObject>();
         if (_periodUsage is not null)
         {
@@ -63,6 +64,9 @@ internal sealed partial class Ledger
                 if (key is null) continue;
                 if (!byPeriod.TryGetValue(key, out var sum)) byPeriod[key] = sum = new Sum();
                 sum.Add(d.Doc);
+                var laneKey = d.Doc["lane"]?.GetValue<string>() ?? "";
+                if (!allAgents.TryGetValue(laneKey, out var lane)) allAgents[laneKey] = lane = new Sum { Name = laneKey.Length > 0 ? laneKey : null };
+                lane.Add(d.Doc);
             }
         }
         if (period is null) period = current;
@@ -114,6 +118,7 @@ internal sealed partial class Ledger
             ["totals"] = total.ToJson(),
             ["allTime"] = all.ToJson(new JsonObject { ["since"] = byPeriod.Count > 0 ? byPeriod.Keys.First() : null }),
             ["periods"] = periods,
+            ["allTimeAgents"] = Ranked(allAgents.Values.Select(s => (s, (Action<JsonObject>)(o => o["agent"] = s.Name)))),
             ["agents"] = Ranked(agents.Values.Select(s => (s, (Action<JsonObject>)(o => o["agent"] = s.Name)))),
             ["models"] = Ranked(models.Select(kv => (kv.Value, (Action<JsonObject>)(o => { o["provider"] = modelNames[kv.Key].Provider; o["model"] = modelNames[kv.Key].Model; })))),
             ["days"] = Days(Math.Clamp(days, 1, 366)),

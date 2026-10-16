@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Journey: a person watches their agent's instances in the Work tab. An agent on qwen has two instances: two chats hold
 // them (busy rows), a third waits for one (queued), and the person cancels it from the tab, so it never starts. When the
-// first run ends its row is free and the other run stays in the row it had. Each run waits at a MockLlm gate, so the
+// first run ends the other run stays first and one box says an instance is free. Each run waits at a MockLlm gate, so the
 // rows stay as they are until the journey lets them go. The agent is the journey's own and is removed again.
 //
 //   node tests/NetPI.E2E/ui/work.mjs --url http://127.0.0.1:7470 --token e2e-token --mock <url>
@@ -47,13 +47,23 @@ await run('work', async ({ page }) => {
     await waiting.getByTestId('cancel-run').click();
     await expectEventually('cancelled, it leaves the queue', () => pool.getByTestId('queued').count(), { pass: (n) => n === 0 });
 
+    // the agent's name opens its own dialog (with the usage), not Settings
+    await pool.locator('button.key').click();
+    const dialog = page.locator('.agent-dialog');
+    await expectEventually('the name opens the agent dialog', () => dialog.count(), { pass: (n) => n === 1 });
+    check('the dialog shows what the agent has used', (await dialog.innerText()).includes('In total'));
+    check('Settings did not open behind it', (await page.getByText('Add agent').count()) === 0);
+    await page.keyboard.press('Escape');
+    await expectEventually('Escape closes it', () => dialog.count(), { pass: (n) => n === 0 });
+
     // the first run ends: its row is free, the other run keeps its row
     await gates.release(gate(1));
-    await expectEventually('the first run\'s row is free and the other stays in its row', rows,
-      { pass: (r) => r.length === 2 && r[before.indexOf(one)] === 'free' && r[before.indexOf(two)] === two, timeout: MODEL });
+    await expectEventually('the other run keeps its row and one free box follows', rows,
+      { pass: (r) => r.length === 2 && r[0] === two && r[1] === 'free', timeout: MODEL });
     await shot(page, 'ui-work-03-one-free');
     await gates.release(gate(2));
-    await expectEventually('both instances are free again', rows, { pass: (r) => r.length === 2 && r.every((x) => x === 'free'), timeout: MODEL });
+    await expectEventually('both instances are free: a single box says so', rows, { pass: (r) => r.length === 1 && r[0] === 'free', timeout: MODEL });
+    check('the free box counts the free instances', (await pool.getByTestId('slot').innerText()).includes('2 free'));
     // with both instances free, a run still waiting would have started by now
     const after = await rpc('agent.get', { sessionId: three });
     const answered = (await rpc('sessions.messages', { id: three })).messages.some((m) => m.role === 'assistant');

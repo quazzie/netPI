@@ -2,7 +2,7 @@
 // the short forms of a model and a command.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { placeSlots, priorityLevel, shortModel, shortCommand, firstLine, upsert, agentDot } from '../../plugins/NetPI.Work/ui/util.js';
+import { placeSlots, priorityLevel, shortModel, shortCommand, firstLine, upsert } from '../../plugins/NetPI.Work/ui/util.js';
 
 const job = (leaseId, extra = {}) => ({ leaseId, agentId: `a-${leaseId}`, since: '2026-10-14T10:00:00Z', ...extra });
 const ids = (rows) => rows.map((r) => r?.leaseId ?? null);
@@ -83,12 +83,6 @@ test('upsert replaces by key, else puts the item first', () => {
   assert.deepEqual(upsert(list, { id: 3, v: 'c' }).map((x) => x.id), [3, 1, 2]);
   assert.equal(upsert(list, null), list);
   assert.deepEqual(upsert(null, { id: 1 }), [{ id: 1 }]);
-});
-
-test('agentDot maps a failed agent to the error dot', () => {
-  assert.equal(agentDot('failed'), 'error');
-  assert.equal(agentDot('cancelled'), 'cancelled');
-  assert.equal(agentDot('running'), 'running');
 });
 
 test('ACTIVE: the Work tab\'s copy of the host\'s busy run statuses', async () => {

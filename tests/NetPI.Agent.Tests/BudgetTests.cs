@@ -163,6 +163,9 @@ public static class BudgetTests
         Check.Equal(49L, (long)all["allTime"]!["calls"]!);
         Check.Equal(1.85, Math.Round(Num(all["allTime"]!["costUsd"]), 6));
         Check.Equal(prev, (string?)all["allTime"]!["since"]);
+        var everyone = all["allTimeAgents"]!.AsArray();
+        Check.Equal("Alpha,,Beta", string.Join(",", everyone.Select(x => (string?)x!["agent"])), "every period together, per agent");
+        Check.Equal(17L, (long)everyone[0]!["calls"]!, "Alpha's two periods add up");
         var agents = all["agents"]!.AsArray();
         Check.Equal("Alpha,,Beta", string.Join(",", agents.Select(x => (string?)x!["agent"])), "by cost, then tokens; a call without an agent is its own row");
         Check.Equal(10L, (long)agents[0]!["calls"]!);

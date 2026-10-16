@@ -9,6 +9,8 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import ModelSelect from '../ModelSelect.svelte';
   import { setSetting } from '../../lib/settings.js';
+  import { rpc } from '../../lib/rpc.svelte.js';
+  import { bus } from '../../lib/bus.js';
   import { app } from '../../lib/state/app.svelte.js';
   import { confirmDialog, toast } from '../../lib/state/ui.svelte.js';
   import { agentState, cleanAgentId } from '../../lib/agents.js';
@@ -28,6 +30,23 @@
     const total = on.reduce((n, p) => n + (p.key === id ? (agent?.instances ?? p.capacity) : p.capacity), 0);
     return total > modelCapacity ? { total, slots: modelCapacity, names: on.map((p) => p.key) } : null;
   });
+
+  // what this agent has done: this budget period and all together (usage.history, per agent)
+  let usage = $state.raw(null);
+  async function loadUsage() {
+    try {
+      usage = await rpc('usage.history', { days: 1 });
+    } catch {
+      usage = null;
+    }
+  }
+  $effect(() => {
+    loadUsage();
+    return bus.on('usage.changed', loadUsage);
+  });
+  const figures = (r) => (r ? { calls: r.calls ?? 0, input: r.inputTokens ?? 0, output: r.outputTokens ?? 0, cost: r.costUsd ?? 0 } : null);
+  const period = $derived(figures((usage?.agents ?? []).find((r) => r.agent === id)));
+  const total = $derived(figures((usage?.allTimeAgents ?? []).find((r) => r.agent === id)));
 
   const num = (text) => {
     const t = String(text ?? '').trim();
@@ -142,6 +161,24 @@
         {#if info && !info.free}<span>{usd(info.spentTodayUsd ?? 0)} today</span>{/if}
       </div>
 
+      <span class="lbl">Usage</span>
+      <div class="usage np-dim">
+        {#each [['This period', period, usage?.period], ['In total', total, usage?.allTime?.since]] as [label, u, since] (label)}
+          <span class="when">{label}</span>
+          <span class="figs">
+            {#if u}
+              <span>{u.calls.toLocaleString()} calls</span>
+              <span>{tokens(u.input) || 0} in</span>
+              <span>{tokens(u.output) || 0} out</span>
+              {#if u.cost > 0}<span>{usd(u.cost)}</span>{/if}
+              {#if since}<span>since {since}</span>{/if}
+            {:else}
+              <span>no calls</span>
+            {/if}
+          </span>
+        {/each}
+      </div>
+
       {#if !m?.isLocal}
         <span class="lbl">Price</span>
         <div class="row">
@@ -244,6 +281,17 @@
     flex-wrap: wrap;
     gap: 4px 12px;
     font-size: var(--fs-xs);
+  }
+  .usage {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 4px 12px;
+    font-size: var(--fs-xs);
+  }
+  .figs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
   }
   .warn-line {
     display: flex;

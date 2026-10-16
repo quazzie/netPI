@@ -126,6 +126,7 @@ export function togglePanel(side) {
 
 export const modals = $state({
   settings: false, // true, or the page to open on (e.g. 'agents')
+  agent: null, // an agent's id: its dialog on its own (the Work tab opens it), without Settings behind it
   palette: false,
   help: false,
   folder: null, // { initial, title, resolve }

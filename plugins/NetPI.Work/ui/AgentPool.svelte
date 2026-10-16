@@ -7,14 +7,12 @@
    * the rest down). Model calls without an
    * agent (a summarizer on another model) show the same way but without the switch.
    */
-  import { Elapsed, IconButton, tokens, usd } from '@netpi/kit';
-  import { shortModel, shortCommand, placeSlots } from './util.js';
+  import { Elapsed, IconButton } from '@netpi/kit';
+  import { shortModel, shortCommand, placeSlots, priorityLevel } from './util.js';
   import WaitList from './WaitList.svelte';
-  import Priority from './Priority.svelte';
 
-  // cmds: the foreground commands running now, by chat (a busy row shows its chat's command); use: what this agent has done
-  // this period (usage.summary)
-  let { pool, agentById, titles, ctx, cmds = new Map(), use = null, period = '' } = $props();
+  // cmds: the foreground commands running now, by chat (a busy row shows its chat's command)
+  let { pool, agentById, titles, ctx, cmds = new Map() } = $props();
 
   const agent = $derived(!!pool.configured);
   const usable = $derived(pool.available !== false && !pool.disabled);
@@ -24,18 +22,19 @@
   const busyCount = $derived(owners.length);
   // one-line rows once an agent has many instances (the tab would be all slots otherwise)
   const compact = $derived(capacity > 4);
+  // only an agent that is off (and not finishing runs) collapses to one line; the others show their work and one free box
+  const off = $derived(!usable && busyCount === 0 && waiters.length === 0);
+  const freeCount = $derived(Math.max(0, capacity - busyCount));
 
-  // a job keeps its row: a plain (non-reactive) memory of the last placement, recomputed from the owners each time
+  // a job keeps its place in the order (placeSlots); a finished one just leaves, and the free box stands for all free instances
   let placed = [];
   const rows = $derived.by(() => (placed = placeSlots(placed, owners, capacity)));
+  const busyRows = $derived(rows.filter(Boolean));
 
   const slash = $derived(pool.key.indexOf('/'));
   const name = $derived(agent ? pool.key : slash > 0 ? pool.key.slice(slash + 1) : pool.key);
-  // the second line: the model (the provider, for another model call); why it cannot take work when it cannot
-  const second = $derived.by(() => {
-    if (!usable && !pool.disabled && pool.unavailable && pool.unavailable !== 'removed') return pool.unavailable;
-    return agent ? shortModel(pool.model) : slash > 0 ? pool.key.slice(0, slash) : '';
-  });
+  // the second line: why it cannot take work, when it cannot (the model is in the agent's dialog)
+  const second = $derived(!usable && !pool.disabled && pool.unavailable && pool.unavailable !== 'removed' ? pool.unavailable : agent ? '' : slash > 0 ? pool.key.slice(0, slash) : '');
 
   const runOf = (o) => agentById.get(o.agentId);
   const titleOf = (o) => titles?.get(o.sessionId ?? runOf(o)?.sessionId);
@@ -50,21 +49,14 @@
     if (!run?.isSubagent || !run.parentAgentId) return '';
     return titles?.get(agentById.get(run.parentAgentId)?.sessionId) ?? '';
   };
+  const prio = (o) => priorityLevel(o.priority);
   const doing = (o) => runOf(o)?.activity || runOf(o)?.status || o.label || 'running';
   // a running shell command says more than "tool: bash": the row shows it where the agent is
   const cmdsOf = (o) => cmds.get(o.sessionId ?? runOf(o)?.sessionId) ?? [];
 
-  const useText = $derived(
-    use ? `${use.calls.toLocaleString()} calls · ${tokens(use.input) || 0}↑ ${tokens(use.output) || 0}↓${use.cost > 0 ? ` · ${usd(use.cost)}` : ''}` : 'no calls yet',
-  );
-  const useTip = $derived(
-    use
-      ? `${period ? `Since ${period}` : 'This period'}: ${use.calls.toLocaleString()} calls, ${use.input.toLocaleString()} input, ${use.output.toLocaleString()} output and ${use.cacheRead.toLocaleString()} cache read tokens${use.cost > 0 ? `, ${usd(use.cost)}` : ''}`
-      : 'No calls on this agent in the current period',
-  );
   const tip = (o) => {
     const run = runOf(o);
-    const bits = [who(o), forWhom(o) && `for ${forWhom(o)}`, run?.task, run && `${shortModel(run.model)} · ${run.turns ?? 0} turns · ${run.toolCalls ?? 0} tools`];
+    const bits = [who(o), runOf(o)?.isSubagent && 'subagent', prio(o) !== 'normal' && `priority ${prio(o)}`, forWhom(o) && `for ${forWhom(o)}`, run?.task, run && `${shortModel(run.model)} · ${run.turns ?? 0} turns · ${run.toolCalls ?? 0} tools`];
     return bits.filter(Boolean).join('\n') + '\n(open session)';
   };
 
@@ -102,15 +94,18 @@
   }
 </script>
 
-<div class="pool" class:inactive={!usable} data-agent={agent ? pool.key : null}>
+<div class="pool" class:inactive={!usable} class:off data-agent={agent ? pool.key : null}>
   <div
     class="head np-line"
-    title="{agent ? `Agent ${pool.key} on ${pool.model}` : pool.key} — {busyCount}/{pool.capacity} busy{waiters.length ? `, ${waiters.length} queued` : ''}{pool.use ? `\n${pool.use}` : ''}"
+    title="{pool.key} — {busyCount}/{pool.capacity} busy{waiters.length ? `, ${waiters.length} queued` : ''}"
   >
     {#if agent}
-      <button class="key np-mono np-grow" title="Open in Settings → Agents" onclick={() => ctx.app.openSettings?.('agents', pool.key)}><b>{name}</b></button>
+      <button class="key np-mono np-grow" title="Open agent {pool.key}" onclick={() => ctx.app.openAgent?.(pool.key)}><b>{name}</b></button>
     {:else}
       <span class="key np-mono np-grow"><b>{name}</b></span>
+    {/if}
+    {#if off}
+      <span class="state np-mono">{pool.disabled ? 'off' : 'unavailable'}</span>
     {/if}
     {#if agent}
       <input
@@ -124,16 +119,18 @@
       />
     {/if}
   </div>
-  <div class="cap np-line">
+  {#if !off}
+  {#if second}<div class="cap np-line">
     <span class="second np-mono np-grow" title={second}>{second}</span>
-  </div>
+  </div>{/if}
 
-  {#each rows as o, i (i)}
+  {#each busyRows as o (o.leaseId ?? `${o.agentId}@${o.since}`)}
     {#if o}
       <div
         class="slot busy np-hover-row"
         data-testid="slot"
         data-state="busy"
+        data-prio={prio(o)}
         data-session={o.sessionId ?? runOf(o)?.sessionId}
         class:compact
         role="button"
@@ -145,21 +142,20 @@
         <span class="dot"></span>
         <span class="t">
           <span class="l1 np-line np-baseline">
-            <span class="name">{who(o)}</span>
-            {#if runOf(o)?.isSubagent}<span class="sub">sub</span>{/if}
-            <Priority priority={o.priority} />
-            {#if compact && forWhom(o)}<span class="for np-grow">for {forWhom(o)}</span>{/if}
-            {#if compact}<Elapsed since={o.since} class="np-mono el" />{/if}
+            <span class="name np-grow">{who(o)}</span>
+            {#if compact && runOf(o)?.isSubagent}<span class="arrow" title="subagent">↳</span>{/if}
+            {#if compact && forWhom(o)}<span class="for">for {forWhom(o)}</span>{/if}
+            <Elapsed since={o.since} class="np-mono el" />
           </span>
           {#if !compact}
-            {#if forWhom(o)}<span class="l2 for np-ellipsis" title="for {forWhom(o)}">for {forWhom(o)}</span>{/if}
             <span class="l2 np-line np-baseline">
+              {#if runOf(o)?.isSubagent}<span class="arrow" title="subagent">↳</span>{/if}
+              {#if forWhom(o)}<span class="for" title="for {forWhom(o)}">for {forWhom(o)} ·</span>{/if}
               {#if cmdsOf(o).length}
                 <span class="act cmd np-mono np-grow" title={cmdsOf(o)[0].command}>$ {shortCommand(cmdsOf(o)[0].command)}{#if cmdsOf(o).length > 1}<span class="np-dim"> +{cmdsOf(o).length - 1}</span>{/if}</span>
               {:else}
                 <span class="act np-grow">{doing(o)}</span>
               {/if}
-              <Elapsed since={o.since} class="np-mono el" />
             </span>
           {/if}
         </span>
@@ -167,37 +163,37 @@
           ><IconButton icon="stop" title="Stop ({who(o)}); its subagents keep working. Shift: stop them too" size="sm" disabled={stopping === o.agentId || ctx.hasRpc?.('agent.abort') === false} onclick={(e) => stop(e, o)} /></span
         >
       </div>
-    {:else}
-      <div class="slot free" data-testid="slot" data-state="free" class:compact>
-        <span class="dot"></span>
-        <span class="t">
-          <span class="l1">free</span>
-          {#if !compact}<span class="l2">ready for work</span>{/if}
-        </span>
-      </div>
     {/if}
   {/each}
-
-  {#if usable}
-    <div class="wait">
-      {#if waiters.length}
-        <WaitList {waiters} label={waiterLabel} {ctx} />
-      {:else}
-        <span class="nobody np-line">nothing queued</span>
-      {/if}
+  {#if freeCount > 0}
+    <div class="slot free" data-testid="slot" data-state="free" title="{freeCount} of {capacity} instances free">
+      <span class="dot"></span>
+      <span class="l1">{freeCount} free</span>
     </div>
   {/if}
 
-  {#if agent}
-    <div class="use np-line np-mono" title={useTip}>
-      <span class="np-grow np-ellipsis">{useText}</span>
+  {#if usable && waiters.length}
+    <div class="wait">
+      <WaitList {waiters} label={waiterLabel} {ctx} />
     </div>
+  {/if}
   {/if}
 </div>
 
 <style>
   .pool {
     padding: 6px 0 6px;
+  }
+  .pool.off {
+    opacity: 0.6;
+  }
+  .state {
+    flex: none;
+    font-size: 11px;
+    color: var(--fg-dim);
+  }
+  .state.ok {
+    color: var(--ok);
   }
   .pool + :global(.pool) {
     border-top: 1px dashed var(--border);
@@ -255,7 +251,7 @@
     align-items: center;
     gap: 8px;
     box-sizing: border-box;
-    height: 58px; /* three lines: name, what it is for, what it is doing */
+    height: 38px; /* two lines: the title, what it is doing */
     margin: 3px 0 0 6px;
     padding: 0 6px 0 8px;
     border: 1px solid var(--border);
@@ -266,6 +262,19 @@
   }
   .slot.compact {
     height: 24px;
+  }
+  .slot.free {
+    height: 26px;
+  }
+  /* priority is the row's left edge, not a chip that takes the title's room */
+  .slot[data-prio='high'] {
+    border-left: 3px solid var(--warn);
+  }
+  .slot[data-prio='critical'] {
+    border-left: 3px solid var(--err);
+  }
+  .slot[data-prio='low'] {
+    border-left: 3px dotted var(--fg-dim);
   }
   .slot.busy {
     cursor: pointer;
@@ -306,7 +315,7 @@
   .l2 {
     gap: 6px;
     min-width: 0;
-    line-height: 1.3;
+    line-height: 1.25;
   }
   .l1 {
     font-size: var(--fs-sm);
@@ -316,22 +325,23 @@
     color: var(--fg-muted);
   }
   .name {
-    flex: 0 1 auto;
+    flex: 1 0 8ch; /* the title never gives way to the chips */
     min-width: 0;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     font-weight: 500;
   }
-  .sub {
+  .arrow {
     flex: none;
-    font-size: 10px;
-    padding: 0 4px;
-    border-radius: 3px;
-    background: var(--bg-3);
     color: var(--fg-dim);
   }
   .for {
+    flex: 0 1 auto;
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--fg-dim);
     font-size: var(--fs-xs);
   }
@@ -368,14 +378,6 @@
     color: var(--fg-dim);
   }
   .cmd {
-    font-size: 11px;
-    color: var(--fg-dim);
-  }
-  /* what the agent has done, one line, always there (the figures change, the height does not) */
-  .use {
-    margin: 4px 0 0 6px;
-    padding: 0 4px;
-    min-height: 16px;
     font-size: 11px;
     color: var(--fg-dim);
   }
