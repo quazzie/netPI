@@ -40,6 +40,8 @@ public sealed class GuardrailsPlugin : INetPiPlugin
                     "Files and folders the agent may not change: write and edit refuse them, and so do bash and pwsh commands that name them (the read tool still reads them). ~ is your home. Start a line with ask: to ask you first."),
                 SettingInfo.Number("guardrails.maxSleepSeconds", "Longest deliberate wait", Sleeps.DefaultMaxSeconds,
                     "A bash, pwsh or ssh run command that waits longer than this (sleep, Start-Sleep, ping -n/-c, the script a shell runs with -c) is refused or asks, so the agent waits for a command instead of sleeping through the wait. 0 switches it off.", 0, 3600, "s"),
+                SettingInfo.Bool("guardrails.askReflect", "Agent reconsiders before asking", true,
+                    "The first time a call meets an ask: rule the agent is told why and may take another way (pwsh instead of powershell, diag instead of reading ~/.netpi by shell). Only the same call again asks you, with the agent's reason on the question."),
                 SettingInfo.Choice("guardrails.maxSleepAction", "On a long wait", "block", ["block", "ask"],
                     "block: the call does not run and the model reads why (a shell call with a matching timeout is the wait). ask: you are asked on the tool's row in the chat, and can allow it for the rest of that chat."),
                 SettingInfo.Bool("guardrails.secondOpinion", "Second opinion before asking", false,
@@ -52,7 +54,7 @@ public sealed class GuardrailsPlugin : INetPiPlugin
         });
         var outcomes = new GuardOutcomes(context.Data, context.Logger);
         var approvals = new Approvals(context, outcomes);
-        context.Rpc.Register(new RpcMethod("guard.outcomes", "What became of the guard questions: { result? (cleared|session|allowed|allowed-session|denied|steered|cancelled|stopped|subagent), limit? (50) } → { summary: { result: count }, rows: [{ at, result, sessionId, tool, kind, rule, subject, opinion? }] } (newest first)", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("result")]),
+        context.Rpc.Register(new RpcMethod("guard.outcomes", "What became of the guard questions: { result? (cleared|session|allowed|allowed-session|denied|steered|cancelled|stopped|subagent|reflect), limit? (50) } → { summary: { result: count }, rows: [{ at, result, sessionId, tool, kind, rule, subject, opinion? }] } (newest first)", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("result")]),
             (req, _) => Task.FromResult<object?>(outcomes.Read(req.Str("result"), req.Int("limit") ?? 50)));
         context.Services.Register<IAgentHook>(new GuardHook(context, approvals, new SecondOpinion(context)));
         context.Rpc.Register(new RpcMethod("guard.pending", "Tool calls waiting for the user's OK (guardrails ask rules): { sessionId? } → { approvalId, sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }[]", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
@@ -89,7 +91,7 @@ internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = nu
     public GuardOutcomes? Outcomes => outcomes;
 
     /// <summary>The wait a call makes to ask before it runs: its card's data, and what the call reads when it does not run.</summary>
-    public static UserWait Wait(ToolCallPart call, Verdict verdict, Opinion? opinion) => new()
+    public static UserWait Wait(ToolCallPart call, Verdict verdict, Opinion? opinion, string? reason = null) => new()
     {
         Id = Guid.NewGuid().ToString("N"),
         Kind = Kind,
@@ -97,6 +99,7 @@ internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = nu
         Data = new JsonObject
         {
             ["tool"] = call.Name, ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["opinion"] = opinion?.ToJson(),
+            ["reason"] = reason,
         },
         IfSteered = ToolResult.Error("Blocked: the user wrote a new message instead of answering whether it may run; the message follows. Nothing ran."),
         IfCancelled = ToolResult.Error("Blocked: the chat was stopped before the user answered whether it may run. Nothing ran."),
@@ -175,6 +178,7 @@ internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = nu
         ["rule"] = wait["data"]?["rule"]?.DeepClone(),
         ["askedAt"] = wait["since"]?.DeepClone(),
         ["opinion"] = wait["data"]?["opinion"]?.DeepClone(),
+        ["reason"] = wait["data"]?["reason"]?.DeepClone(),
     };
 
     internal static string Subject(string? kind, string? subject) => kind == "path" ? $"changing {subject}" : $"`{subject}`";
@@ -228,7 +232,7 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             foreach (var verdict in Ordered(rule, sleep))
             {
                 if (verdict.Action != GuardAction.Block && allowed is not null && verdict.Rule == allowed) continue;
-                if (await JudgeAsync(run, call, args, verdict, ct).ConfigureAwait(false) is { } decision) return decision;
+                if (await JudgeAsync(turn, call, args, verdict, ct).ConfigureAwait(false) is { } decision) return decision;
             }
             return null;
         }
@@ -248,8 +252,9 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
     }
 
     /// <summary>One verdict: a block, a clearance (allowed for the chat, or a harmless second opinion), or the user's answer. Null: the call may go on.</summary>
-    private async ValueTask<ToolCallDecision?> JudgeAsync(AgentRunContext run, ToolCallPart call, ToolArgs args, Verdict verdict, CancellationToken ct)
+    private async ValueTask<ToolCallDecision?> JudgeAsync(AgentTurnContext turn, ToolCallPart call, ToolArgs args, Verdict verdict, CancellationToken ct)
     {
+        var run = turn.Run;
         if (verdict.Action == GuardAction.Block) return Block(Why(verdict) + " Nothing ran. If it is really needed, tell the user what and why: they can do it themselves or change the rule.");
         // The user allowed this ask rule for the rest of the chat (guard.answer scope "session").
         if (approvals.AllowedInSession(run.Session.Id, verdict.Rule))
@@ -285,8 +290,57 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             approvals.Outcomes?.Record("subagent", run.Session.Id, call.Name, verdict, opinion);
             return Block(Why(verdict) + " It asks the user first, and a subagent can't ask: nobody watches its chat. Nothing ran; say in your report what you needed.");
         }
+        // Reflect first (guardrails.askReflect): the first time a call meets an ask rule the agent hears why and gets the
+        // chance to take another way - most asks were a call that had one (powershell for pwsh, ~/.netpi for diag). Only
+        // the same call again (same rule, same subject, this chat) asks the user, with the agent's reason on the card.
+        string? reason = null;
+        if (AskReflect())
+        {
+            if (!_reflected.Seen(run.Session.Id, verdict))
+            {
+                _reflected.Note(run.Session.Id, verdict);
+                approvals.Outcomes?.Record("reflect", run.Session.Id, call.Name, verdict, opinion);
+                ctx.Events.Publish("guard.reflect", new JsonObject
+                {
+                    ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
+                    ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule,
+                });
+                return Block(Reflect(verdict));
+            }
+            reason = ReasonOf(turn.LatestAssistant);
+        }
         // ask: the call waits for the user's OK (the run ends at it; guard.answer goes on with it, allowed or blocked)
-        return new ToolCallDecision { Wait = Approvals.Wait(call, verdict, opinion) };
+        return new ToolCallDecision { Wait = Approvals.Wait(call, verdict, opinion, reason) };
+    }
+
+    private readonly Reflections _reflected = new();
+
+    /// <summary>What the agent reads the first time: why, the way around it this rule usually has, and how to insist.</summary>
+    internal static string Reflect(Verdict v) =>
+        "Not run yet: " + Why(v) + " This needs the user's OK. " + Alternative(v) +
+        "If there is another way to get what you need, take it. If this exact call is really needed, say in one sentence in " +
+        "your message why (the user reads it on the question), then make the same call again: then the user is asked.";
+
+    /// <summary>The usual way around the default ask rules.</summary>
+    private static string Alternative(Verdict v) =>
+        // (a powershell command already hears "use pwsh" in Why)
+        v.Kind == "path" && v.Rule.Contains(".netpi", StringComparison.OrdinalIgnoreCase)
+            ? "This is NetPI's own data: read its state with the diag tool (overview, settings, errors, logs, messages) or the read " +
+              "tool, which may read here; change a setting only when the user asked for that change. "
+            : "";
+
+    /// <summary>The agent's words around the call, for the user's question card: the text of the message that made it.</summary>
+    internal static string? ReasonOf(ChatMessage? latest)
+    {
+        var text = latest?.Text?.Trim();
+        if (string.IsNullOrEmpty(text)) return null;
+        return text.Length <= 400 ? text : text[..400] + "…";
+    }
+
+    private bool AskReflect()
+    {
+        try { return ctx.Settings.Get("guardrails.askReflect", true); }
+        catch { return true; }
     }
 
     private static ToolCallDecision Block(string reason) => new() { Block = true, Reason = reason };

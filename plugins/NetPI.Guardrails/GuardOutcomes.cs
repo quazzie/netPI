@@ -8,7 +8,8 @@ namespace NetPI.Guardrails;
 /// path), the rule, the second opinion's probabilities when one was asked, and the result — <c>cleared</c> (the second
 /// opinion let it run), <c>session</c> (allowed earlier for the chat), <c>allowed</c> / <c>allowed-session</c> /
 /// <c>denied</c> / <c>steered</c> / <c>cancelled</c> (the user's answer or what ended the wait), <c>subagent</c> (refused:
-/// nobody to ask). The user's answers to commands the model did not clear are the labels the second opinion was never
+/// nobody to ask), <c>reflect</c> (the agent was told why first, <c>guardrails.askReflect</c>: one with no later question
+/// for the same subject is an ask the agent avoided). The user's answers to commands the model did not clear are the labels the second opinion was never
 /// measured on; until now they were gone when the card closed. Kept to the newest <see cref="Keep"/> rows.
 /// </summary>
 internal sealed class GuardOutcomes(IPluginData data, ILogger log)

@@ -13,6 +13,7 @@ public static class GuardrailsTests
         t.Add("guardrails: a blocked command never runs, and the model reads why", BlockedCommand);
         t.Add("guardrails: protected paths: write and edit refuse them, shell commands that name them too", ProtectedPaths);
         t.Add("guardrails: ask rules wait for the user's OK with the instance given back (allow, no, a message instead)", AskRules);
+        t.Add("guardrails: reflect first: the first call is told why and may take another way; the same call again asks, with the agent's reason", Reflect);
         t.Add("guardrails: a pending ask survives a reload of the guardrails plugin; the OK then lets the call run", SurvivesReload);
         t.Add("guardrails: an approval given while the chat's agent is switched off lets the call run - the failure lands on the next turn", ApprovalSurvivesSlotFailure);
         t.Add("guardrails: allowed for this chat, the rule stops asking there (not in other chats, never for a no)", AllowForSession);
@@ -328,11 +329,68 @@ public static class GuardrailsTests
         Check.Equal(0, (await h.Rpc.CallAsync("guard.pending", new { }))!.AsArray().Count);
     }
 
-    private static async Task<TestHost> StartAsync(Action<TestHost>? setup = null)
+    /// <summary>A host with the guardrails. These tests are about the question itself, so the reflect step
+    /// (guardrails.askReflect, its own test) is off unless asked for.</summary>
+    private static async Task<TestHost> StartAsync(Action<TestHost>? setup = null, bool reflect = false)
     {
         var h = await TestHost.StartAsync(setup);
+        h.Settings.Set("guardrails.askReflect", JsonValue.Create(reflect));
         await h.StartPluginAsync(new GuardrailsPlugin());
         return h;
+    }
+
+    /// <summary>
+    /// guardrails.askReflect: the first call that meets an ask rule is refused with why (and the way around it), so the agent
+    /// can take another way; only the same call again asks the user, with the agent's words on the question. Most asks were
+    /// a call that had another way (powershell for pwsh, a shell read of ~/.netpi for diag).
+    /// </summary>
+    private static async Task Reflect()
+    {
+        await using var h = await StartAsync(reflect: true);
+        h.Settings.Set("guardrails.commands", new JsonArray("ask: ^git push"));
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        h.AddTool(Recorder("ls", ran));
+        var s = h.NewSession(model: "fake/solo");
+        const string Why = "The release needs the tag on the remote, so I push it.";
+        // what the model last read: the tool result after the user's message, if any
+        static string? LastResult(ModelRequest r) => r.Messages.Count > 0 && r.Messages[^1].Role == MessageRole.Tool ? r.Messages[^1].ToolResults.LastOrDefault()?.Content : null;
+        // push (refused with why); then it says why and pushes again (asked); after the answer: done
+        h.Catalog.Handler = (r, ct) => LastResult(r) switch
+        {
+            null => Reply.Tool("bash", new { command = "git push origin main" }),
+            var res when res.Contains("Not run yet") => Reply.Stream(Reply.Message(new TextPart { Text = Why }, Reply.Call("bash", new { command = "git push origin main" }))),
+            _ => Reply.Text("done"),
+        };
+        await h.SendAsync(s.Id, "push");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count >= 1, "the second call asks");
+        var first = Results(h, s.Id).First().Content;
+        Check.Contains(first, "Not run yet");
+        Check.Contains(first, "ask: ^git push");
+        Check.Contains(first, "make the same call again");
+        Check.Equal(1, h.Bus.OfType("guard.reflect").Count, "one reflect, then the question");
+        var asked = FakeBus.Data(h.Bus.OfType("guard.asked").Single());
+        Check.Equal(Why, (string?)asked["reason"], "the agent's reason is on the question");
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)asked["approvalId"]!, allow = true });
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, ran.Count, "allowed: it ran once");
+
+        // an agent that takes the other way never asks
+        h.Catalog.Handler = (r, ct) => LastResult(r) switch
+        {
+            null => Reply.Tool("bash", new { command = "git push --force origin main" }),
+            var res when res.Contains("Not run yet") => Reply.Tool("ls", new { path = "." }),
+            _ => Reply.Text("did it another way"),
+        };
+        await h.SendAsync(s.Id, "push hard");
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, h.Bus.OfType("guard.asked").Count, "no new question");
+        Check.Equal(2, h.Bus.OfType("guard.reflect").Count, "another subject: told again");
+        Check.Equal(2, ran.Count, "the other way ran");
+
+        // the hints for the default ask rules: diag for ~/.netpi, pwsh for powershell
+        Check.Contains(GuardHook.Reflect(new Verdict(GuardAction.Ask, "ask: ~/.netpi", "path", "C:/Users/me/.netpi/settings.json")), "diag tool");
+        Check.Contains(GuardHook.Reflect(new Verdict(GuardAction.Ask, @"ask: ^(&\s*)?(\S*[\\/])?powershell(\.exe)?(\s|$)", "command", "powershell -File x.ps1")), "pwsh");
     }
 
     /// <summary>A tool that records what it was asked to run.</summary>

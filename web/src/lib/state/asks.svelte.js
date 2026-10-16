@@ -8,7 +8,7 @@ export const asks = {
   pending: new SvelteMap(), // question id -> { id, sessionId, callId, agentId, agentName, questions, askedAt }
   drafts: new SvelteMap(), // question id -> string[][]: the options picked, per question
   closed: new SvelteMap(), // question id -> { status: answered|steered|withdrawn|cancelled, answers, text }
-  approvals: new SvelteMap(), // approvalId -> { sessionId, callId, agentId, tool, kind: command|path, subject, rule, askedAt, opinion? }
+  approvals: new SvelteMap(), // approvalId -> { sessionId, callId, agentId, tool, kind: command|path, subject, rule, askedAt, opinion?, reason? (the agent's words when it asked again after guardrails.askReflect) }
   cleared: new SvelteMap(), // [sessionId, callId] -> guard.cleared: an ask rule matched, and the second opinion let it run without asking
   budget: new SvelteMap(), // sessionId -> { sessionId, askedAt }: the budget stopped the chat and asks whether it may go over (budget.onLimit "ask")
 };

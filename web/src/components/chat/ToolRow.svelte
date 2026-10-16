@@ -178,6 +178,7 @@
           guardrail asks you first{/if}
         (<span class="np-mono rule">{approval.rule}</span>)
         {#if approval.opinion}<span class="opinion">{opinionText(approval.opinion)}</span>{/if}
+        {#if approval.reason}<span class="reason" data-testid="guard-reason">The agent: “{approval.reason}”</span>{/if}
       </span>
       <span class="btns">
         <button class="np-btn np-btn-sm" disabled={deciding} onclick={() => decide(false)}>No</button>
@@ -329,8 +330,10 @@
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  /* the second opinion (guardrails.secondOpinion): the decision model's view, on its own line */
-  .opinion {
+  /* the second opinion (guardrails.secondOpinion): the decision model's view, and the agent's own reason
+     (guardrails.askReflect: it was told why first and asked again), each on its own line */
+  .opinion,
+  .reason {
     display: block;
     margin-top: 2px;
     color: var(--fg-dim);
