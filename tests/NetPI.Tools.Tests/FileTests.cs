@@ -26,6 +26,65 @@ public static class FileTests
             Check.True(flags.TryGetValue("files.open", out var open) && !open, "files.open opens the file or folder, so it stays unmarked");
         });
 
+        // ------------------------------------------------ files.applyEdits
+        r.Add("files.applyEdits: edits by position keep each file's EOL, BOM and encoding; positions clamp; overlaps are refused", async () =>
+        {
+            var dir = T.TempDir("apply-edits");
+            var crlf = T.WriteBytes(dir, "crlf.txt", Encoding.UTF8.GetBytes("one\r\ntwo\r\nthree\r\n"));
+            var bom = T.WriteBytes(dir, "bom.txt", [0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes("alpha\nbeta\n")]);
+            var lf = T.WriteBytes(dir, "lf.txt", Encoding.UTF8.GetBytes("a\nb\n"));
+            using var ctx = new FakePluginContext(dir);
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+            object One(int sl, int sc, int el, int ec, string text) => new { startLine = sl, startCol = sc, endLine = el, endCol = ec, newText = text };
+
+            var answer = NetPiJson.ToElement(await ctx.RpcFake.InvokeAsync("files.applyEdits", new
+            {
+                cwd = dir,
+                edits = new object[]
+                {
+                    new { path = "crlf.txt", edits = new[] { One(0, 0, 0, 3, "ONE"), One(2, 0, 2, 99, "3\nlines") } },
+                    new { path = "bom.txt", edits = new[] { One(1, 0, 1, 4, "BETA") } },
+                    new { path = lf, edits = new[] { One(0, 1, 0, 1, "!"), One(5, 0, 5, 0, "end\n") } },
+                },
+            }));
+            Check.Equal(5, answer.GetProperty("edits").GetInt32());
+            Check.Equal("ONE\r\ntwo\r\n3\r\nlines\r\n", Encoding.UTF8.GetString(File.ReadAllBytes(crlf)), "CRLF kept, also in the inserted newline");
+            var bomBytes = File.ReadAllBytes(bom);
+            Check.True(bomBytes.Take(3).SequenceEqual(new byte[] { 0xEF, 0xBB, 0xBF }), "BOM kept");
+            Check.Equal("alpha\nBETA\n", Encoding.UTF8.GetString(bomBytes, 3, bomBytes.Length - 3));
+            Check.Equal("a!\nb\nend\n", File.ReadAllText(lf), "an insertion; a position past the end is the end");
+
+            var overlap = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.InvokeAsync("files.applyEdits", new
+            {
+                cwd = dir, edits = new[] { new { path = "lf.txt", edits = new[] { One(0, 0, 0, 2, "x"), One(0, 1, 0, 2, "y") } } },
+            }));
+            Check.Contains(overlap.Message, "overlap");
+        });
+
+        r.Add("files.applyEdits: all files or none (a missing file, a binary one, a bad edit stop everything)", async () =>
+        {
+            var dir = T.TempDir("apply-edits-all");
+            var good = T.WriteText(dir, "good.txt", "keep\n");
+            T.WriteBytes(dir, "bin.dat", [1, 0, 2, 0]);
+            using var ctx = new FakePluginContext(dir);
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+            var edit = new[] { new { startLine = 0, startCol = 0, endLine = 0, endCol = 4, newText = "lost" } };
+            foreach (var bad in new[] { "missing.txt", "bin.dat" })
+            {
+                var ex = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.InvokeAsync("files.applyEdits",
+                    new { cwd = dir, edits = new[] { new { path = "good.txt", edits = edit }, new { path = bad, edits = edit } } }));
+                Check.Contains(ex.Message, "Nothing was changed");
+                Check.Equal("keep\n", File.ReadAllText(good), $"good.txt untouched after {bad} failed");
+            }
+            var twice = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.InvokeAsync("files.applyEdits",
+                new { cwd = dir, edits = new[] { new { path = "good.txt", edits = edit }, new { path = good, edits = edit } } }));
+            Check.Contains(twice.Message, "twice");
+            var shape = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.InvokeAsync("files.applyEdits",
+                new { cwd = dir, edits = new[] { new { path = "good.txt", edits = new[] { new { startLine = 0, startCol = 0 } } } } }));
+            Check.Equal("bad_request", shape.Code);
+            Check.Equal("keep\n", File.ReadAllText(good));
+        });
+
         // ------------------------------------------------ codec
         r.Add("codec: EOL detection (majority, tie, none, CR-only)", () =>
         {

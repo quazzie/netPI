@@ -75,6 +75,33 @@ public static class WorkspaceToolTests
             Check.False(allowed.IsError, allowed.Content);
         });
 
+        r.Add("workspace: files.applyEdits refuses a path in another checkout of the same repository, and changes nothing", async () =>
+        {
+            using var env = new Env();
+            var ctx = env.Fake;
+            ctx.Services.Register(env.Resolver);
+            ctx.Services.Register<IWorkspaceRepoProbe>(new SameRepoProbe(Path.Combine(env.Project, ".git")));
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+            var workspace = env.Workspace("wt", Path.Combine(env.Project, "wt"));
+            workspace.RepoCommonDir = Path.Combine(env.Project, ".git");
+            var session = env.Session();
+            env.Bind(session, workspace.Id);
+            File.WriteAllText(Path.Combine(workspace.Path, "mine.txt"), "abc\n");
+            var victim = Path.Combine(env.Project, "victim.txt");
+            File.WriteAllText(victim, "abc\n");
+            object Edit(string path) => new { path, edits = new[] { new { startLine = 0, startCol = 0, endLine = 0, endCol = 3, newText = "xyz" } } };
+
+            var refused = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.InvokeAsync("files.applyEdits",
+                new { sessionId = session.Id, edits = new[] { Edit("mine.txt"), Edit(victim) } }));
+            Check.Equal("refused", refused.Code);
+            Check.Contains(refused.Message, "Refused");
+            Check.Equal("abc\n", File.ReadAllText(Path.Combine(workspace.Path, "mine.txt")), "the allowed file was not touched either (all or none)");
+            Check.Equal("abc\n", File.ReadAllText(victim));
+
+            await ctx.RpcFake.InvokeAsync("files.applyEdits", new { sessionId = session.Id, edits = new[] { Edit("mine.txt") } });
+            Check.Equal("xyz\n", File.ReadAllText(Path.Combine(workspace.Path, "mine.txt")), "inside the workspace it applies, relative to it");
+        });
+
         r.Add("workspace: the shell reports the directory it actually ran in, and says so when it is not the workspace", async () =>
         {
             using var env = new Env();

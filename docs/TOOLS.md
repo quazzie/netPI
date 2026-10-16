@@ -527,9 +527,14 @@ other workers of the project see, and `workspace info` says so.
 
 ## Code intelligence (`lsp`, `category: "code"`)
 
-`lsp` asks a language server about code (idea-fe26oh), read-only: `diagnostics { files? }` (errors and warnings, default: the
+`lsp` asks a language server about code (idea-fe26oh), read-only except `rename`: `diagnostics { files? }` (errors and warnings, default: the
 files `git status` reports changed under the chat's folder, at most 20 files and 200 lines), `definition { file, line, column }`
-(1-based) and `symbols { file }` (an outline) or `symbols { query, language?, file? }` (a workspace search; the language
+(1-based), `references { file, line, column }` (`textDocument/references` with the declaration: `path:line:column: <line's text>`
+rows, at most 200, with the file count) and `rename { file, line, column, newName }` (`prepareRename` when the server offers
+it, then `rename`; the WorkspaceEdit is applied by the Files plugin's `files.applyEdits` RPC — all files or none, each keeping
+its encoding, BOM and line endings, refused for a path the workspace rule refuses — and the answer lists the changed files with
+their edit counts; a server that also wants to create, rename or delete files gets the whole rename refused, nothing is
+changed). The tool reports `rename` as a writing call and the others as read-only per call (`IReadOnlyCalls`). `symbols { file }` (an outline) or `symbols { query, language?, file? }` (a workspace search; the language
 defaults to C# when the folder has a project or solution). C# runs on csharp-ls 0.28.0, `.svelte` on svelte-language-server
 0.18.4, JavaScript/TypeScript on typescript-language-server 6.0.1 with TypeScript 5.9.3. Each is installed on its first use
 into `<home>/lsp/servers`, pinned and checked before anything runs: the csharp-ls nupkg against its SHA-256, the JS servers

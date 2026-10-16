@@ -21,6 +21,8 @@ public static class LspTests
         t.Add("lsp: server URIs in any spelling are one path; tsserver's diagnostics read as LSP ones", Uris);
         t.Add("lsp: the changed files are git's under the chat's folder (a subfolder of the repository too), renamed ones by their new name, deleted ones not", ChangedFiles);
         t.Add("lsp: the pool starts servers outside its lock and shares a start, stops the least recently used and the idle, starts a dead one again, forgets a failed start; diagnostics pulled and published", Pool);
+        t.Add("lsp: references list every use with its line; rename asks the server, applies its edit to all files through files.applyEdits (EOL kept), and refuses file operations; rename is not read-only", ReferencesAndRename);
+        t.Add("lsp: live: csharp-ls finds the uses of a method in two files and renames it in both (set NETPI_LSP_LIVE=1; downloads)", LiveRename);
         t.Add("lsp: live: csharp-ls, svelte-language-server and typescript-language-server installed: diagnostics, a definition, an outline and a workspace search (set NETPI_LSP_LIVE=1; downloads)", Live);
     }
 
@@ -193,7 +195,7 @@ public static class LspTests
         function handle(message) {
           const { id, method, params } = message;
           if (method === 'initialize') {
-            const capabilities = { textDocumentSync: 1, definitionProvider: true, workspaceSymbolProvider: true };
+            const capabilities = { textDocumentSync: 1, definitionProvider: true, workspaceSymbolProvider: true, referencesProvider: true, renameProvider: { prepareProvider: true } };
             if (mode === 'pull') capabilities.diagnosticProvider = { interFileDependencies: false, workspaceDiagnostics: false };
             setTimeout(() => send({ jsonrpc: '2.0', id, result: { capabilities } }), delay);
           } else if (method === 'textDocument/diagnostic') {
@@ -203,6 +205,25 @@ public static class LspTests
               const doc = params.textDocument;
               setTimeout(() => send({ jsonrpc: '2.0', method: 'textDocument/publishDiagnostics',
                 params: { uri: doc.uri, version: doc.version, diagnostics: problems(doc.uri, doc.version) } }), 50);
+            }
+          } else if (method === 'textDocument/references') {
+            const uri = params.textDocument.uri;
+            const sibling = uri.replace(/[^/]*$/, 'b.fake');
+            send({ jsonrpc: '2.0', id, result: [
+              { uri, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } },
+              { uri: sibling, range: { start: { line: 1, character: 4 }, end: { line: 1, character: 7 } } }] });
+          } else if (method === 'textDocument/prepareRename') {
+            send({ jsonrpc: '2.0', id, result: params.position.character === 99 ? null
+              : { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, placeholder: 'foo' } });
+          } else if (method === 'textDocument/rename') {
+            const uri = params.textDocument.uri;
+            const sibling = uri.replace(/[^/]*$/, 'b.fake');
+            const edit = (line, from, to) => ({ range: { start: { line, character: from }, end: { line, character: to } }, newText: params.newName });
+            if (params.newName === 'fileop') {
+              send({ jsonrpc: '2.0', id, result: { documentChanges: [
+                { textDocument: { uri, version: 1 }, edits: [edit(0, 0, 3)] }, { kind: 'rename', oldUri: sibling, newUri: sibling + '2' }] } });
+            } else {
+              send({ jsonrpc: '2.0', id, result: { changes: { [uri]: [edit(0, 0, 3)], [sibling]: [edit(1, 4, 7)] } } });
             }
           } else if (method === 'workspace/symbol') {
             if (params.query === 'die') process.exit(3);
@@ -321,6 +342,85 @@ public static class LspTests
         await pool.SweepAsync();
         Check.Equal(0, pool.Count);
         await Wait.Until(() => !again.Alive && !fastSession.Alive, "the idle servers stopped");
+    }
+
+    private static async Task ReferencesAndRename()
+    {
+        if (!NodeAvailable()) Check.Skip("node is not on PATH");
+        var dir = T.TempDir("lsp-rename");
+        var script = Path.Combine(dir, "fake-server.mjs");
+        File.WriteAllText(script, FakeServer);
+        var servers = Path.Combine(dir, "servers");
+        Directory.CreateDirectory(Path.Combine(servers, "fake"));
+        File.WriteAllText(Path.Combine(servers, "fake", ".installed"), "a test's fake servers: nothing to install");
+        var fake = new LspServer
+        {
+            Id = "fake", Install = "fake", Extensions = [".fake"], LanguageIdOf = _ => "fake",
+            CommandOf = _ => ("node", [script, "0", "pull"]),
+            Needs = "(a test's fake server)", StartTimeout = TimeSpan.FromSeconds(30), RequestTimeout = TimeSpan.FromSeconds(10),
+        };
+        using var http = new HttpClient(new Bytes([]));
+        await using var pool = new LspPool(new LspInstaller(servers, dir, http, NullLogger.Instance), NullLogger.Instance, () => 2, () => TimeSpan.FromMinutes(15));
+        var root = T.TempDir("lsp-rename-root");
+        var a = Path.Combine(root, "a.fake");
+        var b = Path.Combine(root, "b.fake");
+        File.WriteAllBytes(a, Encoding.UTF8.GetBytes("old = 1\r\nx\r\n"));
+        File.WriteAllBytes(b, Encoding.UTF8.GetBytes("first\nuse old here\n"));
+        using var ctx = new FakePluginContext(root);
+        await new NetPI.Tools.Files.FilesPlugin().StartAsync(ctx, CancellationToken.None);
+        var tool = new LspTool(pool, ctx.Rpc) { ServerFor = f => f.EndsWith(".fake", StringComparison.Ordinal) ? fake : null };
+        Check.False(tool.Definition.ReadOnly, "the tool as a whole may write");
+        Check.True(tool.IsReadOnly(T.Args(new { action = "references", file = "a.fake", line = 1, column = 1 })), "references only reads");
+        Check.False(tool.IsReadOnly(T.Args(new { action = "rename", file = "a.fake", line = 1, column = 1, newName = "n" })), "rename writes");
+        async Task<ToolResult> Run(object args) => await tool.ExecuteAsync(T.Ctx(root, (ModelInfo?)null), T.Args(args), CancellationToken.None);
+
+        var refs = await Run(new { action = "references", file = "a.fake", line = 1, column = 1 });
+        Check.False(refs.IsError, refs.Content);
+        Check.Contains(refs.Content, "2 reference(s) in 2 file(s)");
+        Check.Contains(refs.Content, "a.fake:1:1: old = 1");
+        Check.Contains(refs.Content, "b.fake:2:5: use old here");
+
+        var nothing = await Run(new { action = "rename", file = "a.fake", line = 1, column = 100, newName = "n" });
+        Check.True(nothing.IsError && nothing.Content.Contains("nothing to rename"), nothing.Content);
+
+        var fileOp = await Run(new { action = "rename", file = "a.fake", line = 1, column = 1, newName = "fileop" });
+        Check.True(fileOp.IsError && fileOp.Content.Contains("rename a file") && fileOp.Content.Contains("Nothing was changed"), fileOp.Content);
+        Check.Equal("old = 1\r\nx\r\n", File.ReadAllText(a));
+
+        var renamed = await Run(new { action = "rename", file = "a.fake", line = 1, column = 1, newName = "fresh" });
+        Check.False(renamed.IsError, renamed.Content);
+        Check.Contains(renamed.Content, "2 edit(s) in 2 file(s)");
+        Check.Equal("fresh = 1\r\nx\r\n", File.ReadAllText(a), "CRLF kept");
+        Check.Equal("first\nuse fresh here\n", File.ReadAllText(b));
+
+        // a protocol-level look at the edit parsing
+        var (edits, problem) = LspTool.ParseWorkspaceEdit(JsonNode.Parse("""{"documentChanges":[{"kind":"delete","uri":"file:///x/y.cs"}]}"""));
+        Check.True(problem is not null && problem.Contains("delete"), problem ?? "");
+        Check.Equal(0, edits.Count);
+    }
+
+    private static async Task LiveRename()
+    {
+        if (Environment.GetEnvironmentVariable("NETPI_LSP_LIVE") != "1") Check.Skip("set NETPI_LSP_LIVE=1 to download and run csharp-ls");
+        var servers = T.TempDir("lsp-servers-rename");
+        var pluginDir = Path.GetDirectoryName(typeof(LspPlugin).Assembly.Location)!;
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        await using var pool = new LspPool(new LspInstaller(servers, pluginDir, http, NullLogger.Instance), NullLogger.Instance, () => 2, () => TimeSpan.FromMinutes(15));
+        var root = T.TempDir("lsp-rename-project");
+        File.WriteAllText(Path.Combine(root, "probe.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
+        File.WriteAllText(Path.Combine(root, "Greeter.cs"), "class Greeter\n{\n    public static string Hello() => \"hi\";\n}\n");
+        File.WriteAllText(Path.Combine(root, "Program.cs"), "class Program\n{\n    static void Main() { System.Console.WriteLine(Greeter.Hello()); }\n}\n");
+        using var ctx = new FakePluginContext(root);
+        await new NetPI.Tools.Files.FilesPlugin().StartAsync(ctx, CancellationToken.None);
+        var tool = new LspTool(pool, ctx.Rpc);
+        async Task<ToolResult> Run(object args) => await tool.ExecuteAsync(T.Ctx(root, (ModelInfo?)null), T.Args(args), CancellationToken.None);
+        var refs = await Run(new { action = "references", file = "Greeter.cs", line = 3, column = 26 });
+        Check.Contains(refs.Content, "Program.cs:3:", refs.Content);
+        Check.Contains(refs.Content, "Greeter.cs:3:", refs.Content);
+        var renamed = await Run(new { action = "rename", file = "Greeter.cs", line = 3, column = 26, newName = "Greet" });
+        Check.False(renamed.IsError, renamed.Content);
+        Check.Contains(File.ReadAllText(Path.Combine(root, "Program.cs")), "Greeter.Greet()");
+        Check.Contains(File.ReadAllText(Path.Combine(root, "Greeter.cs")), "string Greet()");
     }
 
     /// <summary>The real thing, into a temporary servers folder: a C# project with an error, JS and TS files with a syntax

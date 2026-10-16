@@ -101,6 +101,8 @@ internal sealed class LspSession : IAsyncDisposable
                     // csharp-ls and svelte-language-server answer diagnostics when asked (pull) to a client that says it can ask
                     ["diagnostic"] = new JsonObject { ["dynamicRegistration"] = false },
                     ["definition"] = new JsonObject { ["linkSupport"] = false },
+                    ["references"] = new JsonObject(),
+                    ["rename"] = new JsonObject { ["prepareSupport"] = true },
                     ["documentSymbol"] = new JsonObject { ["hierarchicalDocumentSymbolSupport"] = true },
                 },
                 ["workspace"] = new JsonObject { ["symbol"] = new JsonObject(), ["workspaceFolders"] = true, ["configuration"] = true },
@@ -232,6 +234,57 @@ internal sealed class LspSession : IAsyncDisposable
             ["textDocument"] = new JsonObject { ["uri"] = uri },
             ["position"] = new JsonObject { ["line"] = line, ["character"] = column },
         }, Server.RequestTimeout, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Whether the server offers a capability (<c>referencesProvider</c>, <c>renameProvider</c>): true or an options object.</summary>
+    public bool Offers(string provider, out JsonObject? options)
+    {
+        options = null;
+        var node = _capabilities?[provider];
+        if (node is JsonObject o) { options = o; return true; }
+        return node is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+    }
+
+    public async Task<JsonNode?> ReferencesAsync(string path, int line, int column, CancellationToken ct)
+    {
+        var (uri, _) = await SyncAsync(path, ct).ConfigureAwait(false);
+        return await _client.RequestAsync("textDocument/references", new JsonObject
+        {
+            ["textDocument"] = new JsonObject { ["uri"] = uri },
+            ["position"] = new JsonObject { ["line"] = line, ["character"] = column },
+            ["context"] = new JsonObject { ["includeDeclaration"] = true },
+        }, Server.RequestTimeout, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>textDocument/prepareRename: null when there is nothing renameable at the position.</summary>
+    public async Task<JsonNode?> PrepareRenameAsync(string path, int line, int column, CancellationToken ct)
+    {
+        var (uri, _) = await SyncAsync(path, ct).ConfigureAwait(false);
+        return await _client.RequestAsync("textDocument/prepareRename", new JsonObject
+        {
+            ["textDocument"] = new JsonObject { ["uri"] = uri },
+            ["position"] = new JsonObject { ["line"] = line, ["character"] = column },
+        }, Server.RequestTimeout, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>textDocument/rename: the WorkspaceEdit the server proposes (nothing is applied here).</summary>
+    public async Task<JsonNode?> RenameAsync(string path, int line, int column, string newName, CancellationToken ct)
+    {
+        var (uri, _) = await SyncAsync(path, ct).ConfigureAwait(false);
+        return await _client.RequestAsync("textDocument/rename", new JsonObject
+        {
+            ["textDocument"] = new JsonObject { ["uri"] = uri },
+            ["position"] = new JsonObject { ["line"] = line, ["character"] = column },
+            ["newName"] = newName,
+        }, Server.RequestTimeout, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Send the documents of these files that the server has open again, after something else changed them on disk.</summary>
+    public async Task RefreshOpenAsync(IEnumerable<string> paths, CancellationToken ct)
+    {
+        foreach (var path in paths)
+            if (File.Exists(path) && _versions.ContainsKey(Uri(path)))
+                await SyncAsync(path, ct).ConfigureAwait(false);
     }
 
     public async Task<JsonNode?> DocumentSymbolsAsync(string path, CancellationToken ct)

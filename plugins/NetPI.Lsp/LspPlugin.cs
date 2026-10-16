@@ -33,7 +33,7 @@ public sealed class LspPlugin : INetPiPlugin
             () => Math.Clamp(context.Settings.Get("lsp.maxServers", 3), 1, 8),
             () => TimeSpan.FromMinutes(Math.Clamp(context.Settings.Get("lsp.idleMinutes", 15), 1, 240)));
         _pool = pool;
-        context.Tools.Register(new LspTool(pool));
+        context.Tools.Register(new LspTool(pool, context.Rpc));
         _sweep = CancellationTokenSource.CreateLinkedTokenSource(context.Stopping);
         var token = _sweep.Token;
         _ = Task.Run(async () =>
