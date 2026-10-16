@@ -545,6 +545,36 @@ public static class ShellTests
             }
         });
 
+        r.Add("bash: a finished shell whose descendant is alive is not evicted past KeepFinished; it goes once the tree is done", async () =>
+        {
+            var (svc, registry, _) = NewService();
+            var dir = T.TempDir("keepfinished");
+            var old = ProcessRegistry.KeepFinished;
+            using var child = ShellChild.For(svc, dir, "keepalive");
+            try
+            {
+                ProcessRegistry.KeepFinished = 1;
+                var res = await T.Run(Bash(svc), dir, new { command = child.Preamble + "echo quick" });
+                var p = registry.Get(T.D(res).Str("processId"))!;
+                Check.True(p.TreeMayBeAlive, "the descendant holds the pipes");
+                await child.RememberNativePid();
+                for (var i = 0; i < 3; i++) ToolCheck.Ok(await T.Run(Bash(svc), dir, new { command = "echo n" + i }));
+                Check.True(registry.Get(p.Id) is not null, "still listed: past the limit, but its tree may be alive");
+                Check.True(registry.List().Contains(p), "and in the list the kill-all and the reload hold work from");
+                p.Kill();
+                await Wait.Until(() => !p.TreeMayBeAlive, "the tree is done", 8000);
+                ToolCheck.Ok(await T.Run(Bash(svc), dir, new { command = "echo last" }));
+                Check.True(registry.Get(p.Id) is null, "the oldest finished entry goes when the tree is done and the limit is passed");
+                Check.True(registry.List().Count <= 1, "back to the limit");
+            }
+            finally
+            {
+                ProcessRegistry.KeepFinished = old;
+                child.Kill();
+                await registry.KillAllAsync(TimeSpan.FromSeconds(5));
+            }
+        });
+
         r.Add("bash: output truncation keeps the tail and spills the full output", async () =>
         {
             var (svc, _, _) = NewService();

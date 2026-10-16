@@ -313,12 +313,13 @@ public sealed class ManagedProcess : IDisposable
 /// </summary>
 public sealed class ProcessRegistry(IEventBus? events = null, Func<IDisposable?>? holdReload = null)
 {
-    public const int KeepFinished = 50;
+    /// <summary>How many finished processes stay listed (settable for tests).</summary>
+    public static int KeepFinished { get; set; } = 50;
     /// <summary>In-memory output kept for finished foreground commands (trimmed after the result was formatted).</summary>
     public const int FinishedTailChars = 256 * 1024;
 
     private readonly ConcurrentDictionary<string, ManagedProcess> _all = new(StringComparer.Ordinal);
-    private readonly ConcurrentQueue<string> _finished = new();
+    private readonly List<string> _finished = []; // in order of exit; guarded by itself
 
     public IEventBus? Events { get; } = events;
 
@@ -343,7 +344,7 @@ public sealed class ProcessRegistry(IEventBus? events = null, Func<IDisposable?>
     internal void Add(ManagedProcess p)
     {
         _all[p.Id] = p;
-        p.OnTreeDone = _ => Recount();
+        p.OnTreeDone = _ => { Evict(); Recount(); };
         Recount();
         Publish(ProcessEvents.Started, p);
     }
@@ -351,12 +352,25 @@ public sealed class ProcessRegistry(IEventBus? events = null, Func<IDisposable?>
     internal void OnExited(ManagedProcess p)
     {
         Publish(ProcessEvents.Exited, p);
-        _finished.Enqueue(p.Id);
-        while (_finished.Count > KeepFinished && _finished.TryDequeue(out var old))
-        {
-            if (_all.TryRemove(old, out var removed)) removed.Dispose();
-        }
+        lock (_finished) _finished.Add(p.Id);
+        Evict();
         Recount();
+    }
+
+    /// <summary>Drop the oldest finished entries past <see cref="KeepFinished"/>, but never one whose tree may still be alive: it must stay in kill-all, the list and the reload hold until <see cref="ManagedProcess.OnTreeDone"/> brings it back here.</summary>
+    private void Evict()
+    {
+        List<ManagedProcess> drop = [];
+        lock (_finished)
+        {
+            for (var i = 0; _finished.Count > KeepFinished && i < _finished.Count;)
+            {
+                if (_all.TryGetValue(_finished[i], out var p) && p.TreeMayBeAlive) { i++; continue; }
+                _finished.RemoveAt(i);
+                if (p is not null && _all.TryRemove(p.Id, out var removed)) drop.Add(removed);
+            }
+        }
+        foreach (var d in drop) d.Dispose();
     }
 
     private readonly Lock _holdLock = new();
