@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -16,7 +17,7 @@ internal static class SessionToolSwitches
         var session = ctx.Sessions.Require(sessionId);
         var off = SessionTools.Off(session);
         var plugins = new Dictionary<IAgentTool, string>(ReferenceEqualityComparer.Instance);
-        try { foreach (var r in ctx.Tools.Registrations) plugins.TryAdd(r.Tool, r.PluginId); } catch { }
+        try { foreach (var r in ctx.Tools.Registrations) plugins.TryAdd(r.Tool, r.PluginId); } catch (Exception ex) { ctx.Logger.LogDebug(ex, "Could not read the tool registrations"); }
 
         var tools = new JsonArray();
         var available = runtime.ToolsFor(runtime.GetBySession(sessionId), session, includeOff: true);

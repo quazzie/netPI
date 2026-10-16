@@ -65,6 +65,9 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     private async Task LoopAsync(CancellationToken ct)
     {
         var maxTurns = Math.Max(1, rt.Ctx.Settings.GetInt("agent.maxTurns", 200));
+        // a spawn's own cap (agent_spawn maxTurns, on the child's session meta) can only lower it
+        var ownCap = Ctx.Sessions.GetSession(SessionId)?.Meta?[SpawnLimits.MaxTurns] is JsonValue cv && cv.TryGetValue<int>(out var cap) && cap > 0 ? cap : (int?)null;
+        if (ownCap is { } oc && oc < maxTurns) maxTurns = oc;
         var turnIndex = 0;
         var retries = 0;
 
@@ -73,7 +76,9 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             ct.ThrowIfCancellationRequested();
             if (turnIndex >= maxTurns)
             {
-                var msg = $"Stopped: this run reached the limit of {maxTurns} model calls (setting agent.maxTurns).";
+                var msg = ownCap == maxTurns
+                    ? $"Stopped: this run reached its maxTurns of {maxTurns} model calls (set when it was spawned)."
+                    : $"Stopped: this run reached the limit of {maxTurns} model calls (setting agent.maxTurns).";
                 rt.AppendNotice(state, msg, "error");
                 throw new RunFailedException(msg);
             }

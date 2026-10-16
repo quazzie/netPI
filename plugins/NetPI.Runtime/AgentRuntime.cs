@@ -368,15 +368,17 @@ internal sealed class AgentRuntime : IAgentRuntime
         bool notify;
         List<QueuedRecord> queue;
         JsonObject? pending;
+        long version;
         lock (s.Gate)
         {
+            version = ++s.SaveVersion;
             snap = s.Info.Clone();
             instructions = s.Instructions;
             notify = s.NotifyParent;
             queue = s.QueueRecords();
             pending = s.Pending is { } p ? AgentStore.PendingJson(p) : null;
         }
-        _store.Save(snap, instructions, notify, queue, pending);
+        _store.Save(snap, instructions, notify, queue, pending, version);
     }
 
     // ---------------------------------------------------------------- events
@@ -757,6 +759,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         UserInput? notice = null;
         RunState? next = null;
         List<QueuedRecord> queue = [];
+        long saveVersion;
         JsonObject? pendingJson;
         TaskCompletionSource done;
         // what has to be written for calls that waited: a batch the run never got to go on with (it failed or was stopped
@@ -849,11 +852,12 @@ internal sealed class AgentRuntime : IAgentRuntime
             if (continues) next = BeginRunLocked(s, resume);
             queue = s.QueueRecords();
             pendingJson = s.Pending is { } p ? AgentStore.PendingJson(p) : null;
+            saveVersion = ++s.SaveVersion;
         }
 
         foreach (var (batch, reason) in closing) CloseBatch(s, batch, reason);
         if (!park) done.TrySetResult();
-        _store.Save(final, s.Instructions, s.NotifyParent, queue, pendingJson);
+        _store.Save(final, s.Instructions, s.NotifyParent, queue, pendingJson, saveVersion);
         try
         {
             Ctx.Events.Publish(new BusEvent { Type = EventTypes.AgentStatus, Data = new JsonObject { ["agent"] = NetPiJson.ToNode(final) } });
@@ -1173,6 +1177,12 @@ internal sealed class AgentRuntime : IAgentRuntime
         var plan = await _planner.PlanAsync(request, parentInfo, parentSession, id, name, ct).ConfigureAwait(false);
         var meta = plan.Meta;
         meta[RunPriority.MetaKey] = ChildPriority(request.Priority, parentSession);
+        // the caps the spawner gave it (agent_spawn maxUsd / maxTurns, passed as a JsonObject feature): kept on the child's session
+        if (request.Features.Get<JsonObject>() is { } limits)
+        {
+            if (limits[SpawnLimits.MaxUsd] is JsonValue u && u.TryGetValue<double>(out var usd) && usd > 0) meta[SpawnLimits.MaxUsd] = usd;
+            if (limits[SpawnLimits.MaxTurns] is JsonValue m && m.TryGetValue<int>(out var turns) && turns > 0) meta[SpawnLimits.MaxTurns] = turns;
+        }
         var session = Ctx.Sessions.CreateSession(new SessionInfo
         {
             Title = name,
@@ -1474,6 +1484,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         UserInput? notice = null;
         TaskCompletionSource done;
         List<QueuedRecord> queue;
+        long saveVersion;
         lock (s.Gate)
         {
             if (!s.Parked || s.Run is not null) return false;
@@ -1493,9 +1504,10 @@ internal sealed class AgentRuntime : IAgentRuntime
                 s.PendingNotificationId = notice.Id;
             }
             queue = s.QueueRecords();
+            saveVersion = ++s.SaveVersion;
         }
         done.TrySetResult();
-        _store.Save(final, s.Instructions, s.NotifyParent, queue);
+        _store.Save(final, s.Instructions, s.NotifyParent, queue, null, saveVersion);
         try { Ctx.Events.Publish(new BusEvent { Type = EventTypes.AgentStatus, Data = new JsonObject { ["agent"] = NetPiJson.ToNode(final) } }); }
         catch { }
         if (notice is not null) NotifyParent(s, final, notice);
@@ -1741,6 +1753,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     {
         var s = FindState(sessionId);
         if (s is null) return false;
+        if (_stopping) return false;   // nothing is delivered while stopping: the follow-up stays queued (and persisted)
         CancellationTokenSource? sig = null;
         UserInput? writes = null;
         lock (s.Gate)
@@ -1758,7 +1771,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
         if (writes is not null)
         {
-            _ = DeliverAsync(s, writes, DeliveryMode.Steer);
+            ObserveDelivery(s, writes);
             return true;
         }
         if (sig is not null)
@@ -1768,6 +1781,20 @@ internal sealed class AgentRuntime : IAgentRuntime
         PublishQueue(s);
         PublishStatus(s);
         return true;
+    }
+
+    private void ObserveDelivery(AgentState s, UserInput input)
+    {
+        try
+        {
+            DeliverAsync(s, input, DeliveryMode.Steer).ContinueWith(
+                t => Ctx.Logger.LogWarning(t.Exception, "Promoting a queued input for agent {Agent} failed", s.Info.Id),
+                TaskContinuationOptions.OnlyOnFaulted);
+        }
+        catch (Exception ex)
+        {
+            Ctx.Logger.LogWarning(ex, "Promoting a queued input for agent {Agent} failed", s.Info.Id);
+        }
     }
 
     private bool RemoveQueuedInput(AgentState s, string inputId)
