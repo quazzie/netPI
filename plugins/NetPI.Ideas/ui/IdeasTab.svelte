@@ -35,8 +35,8 @@
     const text = q.trim();
     const on = byMeaning;
     clearTimeout(meaningTimer);
+    const seq = ++meaningSeq; // also when there is nothing to ask: an answer still in flight must not land
     if (!on || !text) { meaning = null; return; }
-    const seq = ++meaningSeq;
     meaningTimer = setTimeout(async () => {
       try {
         const r = await ctx.rpc('ideas.similar', { text, limit: 30, status: 'all' });
