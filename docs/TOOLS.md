@@ -16,6 +16,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image`, `artifact` | – |
 | `plugins/NetPI.Lsp` | `netpi.lsp` | `lsp` | – |
+| `plugins/NetPI.Tools.Test` | `netpi.tools.test` | `test` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
 | `plugins/NetPI.Memory` | `netpi.memory` | `memory_search` | `memory.search`, `memory.reindex` |
 | `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
@@ -524,6 +525,32 @@ A session that is bound but not isolated (an attached or shared checkout) is not
 other workers of the project see, and `workspace info` says so.
 
 ---
+
+## Tests (`test`, `category: "code"`)
+
+`test { suite?, only?, changed? }` runs a project's tests the way the project says and answers with the counts and the failures,
+so no chat parses a console log. The project describes it in `.netpi/tests.json` in the workspace root:
+
+```json
+{ "suites": { "<name>": "<command>" }, "changed": "<command>", "results": "<path of the results file>", "timeoutSeconds": 1800 }
+```
+
+- `suite` picks a command (the only one when there is just one suite); `changed: true` runs the `changed` command (the tests the
+  changed files can affect). Without a config the tool's error says how to add one.
+- The command runs through the platform shell (`cmd /c` on Windows, `sh -c` elsewhere) in the workspace root under a deadline
+  (`timeoutSeconds`, default 1800: the process tree is killed at it, and the Windows job object ends it with NetPI). Its output
+  streams to the call; the last lines come back only when the run produced no results.
+- `only` (a name filter) reaches the command in the `NETPI_TEST_ONLY` environment variable, and replaces `{only}` (quoted) where
+  the command has that placeholder; quotes, backslashes, `$`, `%` and backticks are refused, because it goes into a command
+  line. `NETPI_TEST_RESULTS` holds the full results path. The tool deletes the old results file first, so a file that is there
+  afterwards is this run's.
+- The results file is JSON: `{ "passed": n, "failed": n, "skipped": n, "failures": [{ "name", "message", "evidence"? }], "log"?: path }`.
+  The answer is `<suite>: P passed, F failed, S skipped in T s.` and each failure (at most 20: name, the message on one line cut
+  at 600 characters, the evidence path), then the log path; `Details` carries the same as data. A command that writes no results
+  file (or invalid JSON), or runs out of time, is an error with the exit code and its last 15 lines of output.
+- NetPI's own `.netpi/tests.json` maps `scripts/test.ps1` and `scripts/e2e.ps1`, which write
+  `artifacts/testlogs/last-results.json` at the end of every run (and read `NETPI_TEST_ONLY` as their `-Only`).
+- The tool is not read-only (the command may write anything). It belongs in `ToolExposure.DefaultDeferred` (Contracts).
 
 ## Code intelligence (`lsp`, `category: "code"`)
 

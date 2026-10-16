@@ -36,6 +36,7 @@
     <Project Path="plugins/NetPI.Memory/NetPI.Memory.csproj" />
     <Project Path="plugins/NetPI.Tools.Media/NetPI.Tools.Media.csproj" />
     <Project Path="plugins/NetPI.Tools.Shell/NetPI.Tools.Shell.csproj" />
+    <Project Path="plugins/NetPI.Tools.Test/NetPI.Tools.Test.csproj" />
     <Project Path="plugins/NetPI.Tools.Ssh/NetPI.Tools.Ssh.csproj" />
     <Project Path="plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj" />
     <Project Path="plugins/NetPI.Tools.Windows/NetPI.Tools.Windows.csproj" />

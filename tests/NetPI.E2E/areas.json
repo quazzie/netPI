@@ -383,6 +383,12 @@
    ]
   },
   {
+   "path": "plugins/NetPI.Tools.Test/",
+   "tags": [
+    "smoke"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Tools.Ssh/",
    "tags": [
     "smoke"

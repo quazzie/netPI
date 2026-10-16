@@ -52,6 +52,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# the `test` tool hands its filter over in the environment (.netpi/tests.json)
+if (-not $Only -and $env:NETPI_TEST_ONLY) { $Only = @($env:NETPI_TEST_ONLY) }
 $suites = if ($Suite) { $Suite } else { @('UI', 'Providers', 'Tools', 'Agent', 'Aux', 'Host', 'Storage') }
 # 'UI' is not a .NET project: it is `node --test` over web/test (the UI's pure modules), with nothing to build. It runs
 # first, here in this process, and the .NET suites after it.
@@ -81,6 +83,36 @@ try {
     $suiteOutput = @{}   # each suite's console lines, for the evidence printed per failure at the end
 
     "NetPI unit tests, $(Get-Date -Format s) ($Config$scope, run $runId)" | Set-Content $log
+
+    # The run in the shape the `test` tool reads (.netpi/tests.json: "results"): counts and the failures, each with the
+    # message the runner printed and the log that holds its evidence. Written before every exit, so a run that failed
+    # to build or crashed still leaves a file, with what is known.
+    function Write-LastResults([int]$ExitCode, [string]$Note) {
+        $passed = 0; $failed = 0; $skippedCount = 0
+        foreach ($r in $results) {
+            if ($r.summary -match '^(\d+) passed, (\d+) failed(?:, (\d+) skipped)?') {
+                $passed += [int]$Matches[1]; $failed += [int]$Matches[2]; if ($Matches[3]) { $skippedCount += [int]$Matches[3] }
+            }
+        }
+        $items = @($failures | ForEach-Object {
+                $lines = @($suiteOutput[$_.Suite]); $message = ''
+                $at = -1
+                for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*FAIL\s+' -and $lines[$i].Contains($_.Name)) { $at = $i; break } }
+                if ($at -ge 0) {
+                    $to = $at
+                    while ($to + 1 -lt $lines.Count -and $to - $at -lt 8 -and $lines[$to + 1] -match '^\s{8}' -and $lines[$to + 1] -notmatch '^\s*(PASS|FAIL|SKIP)\s+') { $to++ }
+                    $message = ((@($lines[$at..$to]) | ForEach-Object { $_.Trim() }) -join ' ')
+                    if ($message.Length -gt 1500) { $message = $message.Substring(0, 1500) + '…' }
+                }
+                [ordered]@{ name = "[$($_.Suite)] $($_.Name)"; message = $message; evidence = $log }
+            })
+        if ($Note) { $items = @([ordered]@{ name = '(run)'; message = $Note; evidence = $log }) + $items }
+        $dir = 'artifacts\testlogs'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        [ordered]@{ passed = $passed; failed = [math]::Max($failed, $items.Count); skipped = $skippedCount; failures = $items; log = $log; exitCode = $ExitCode } |
+            ConvertTo-Json -Depth 5 | Set-Content (Join-Path $dir 'last-results.json')
+    }
+
 
     # ---------------------------------------------------------------- the UI suite (node --test)
     if ($runUi) {
@@ -157,6 +189,7 @@ try {
         if ($code) {
             Write-Host "the test build failed (exit $code) - the last of its output:" -ForegroundColor Red
             $buildOut | Select-Object -Last 25 | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+            Write-LastResults 1 "build of the test graph failed (exit $code): $(@($buildOut | Select-Object -Last 3) -join ' | ')"
             throw "build of the test graph failed (exit $code)"
         }
         Remove-Item $sln -Force -ErrorAction SilentlyContinue
@@ -177,7 +210,7 @@ try {
     # took long; when there is no log yet (or a suite is new), fall back to the known relative costs.
     $prevWall = @{}
     $runJson = Get-ChildItem -Path $logDir -Filter '*.json' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -notlike '*.result.json' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        Where-Object { $_.Name -notlike '*.result.json' -and $_.Name -ne 'last-results.json' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($runJson) {
         try {
             $prev = Get-Content -LiteralPath $runJson.FullName -Raw | ConvertFrom-Json
@@ -327,6 +360,7 @@ try {
         failures = @($failures | ForEach-Object { [ordered]@{ suite = $_.Suite; name = $_.Name } })
     } | ConvertTo-Json -Depth 6 | Set-Content $json
 
+    Write-LastResults $(if ($failures.Count) { 1 } else { 0 }) ''
     if (-not $failures.Count) {
         Write-Host "`nAll green. Log: $log`nTimings: $json" -ForegroundColor Green
         exit 0

@@ -1,0 +1,5 @@
+{
+  "id": "netpi.tools.test",
+  "name": "Test tool",
+  "description": "test: runs the project's tests from .netpi/tests.json and reports the counts and failures from the results file the command writes."
+}

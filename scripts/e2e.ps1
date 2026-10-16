@@ -72,6 +72,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# the `test` tool hands its filter over in the environment (.netpi/tests.json)
+if (-not $Only -and $env:NETPI_TEST_ONLY) { $Only = @($env:NETPI_TEST_ONLY) }
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $repo = Split-Path -Parent $PSScriptRoot
 Push-Location $repo
@@ -279,6 +281,30 @@ try {
     if ($List) { exit $code }
 
     Write-Host ("`nwall {0:0.0}s (builds included above)  ·  results: {1}" -f $wall.Elapsed.TotalSeconds, $out) -ForegroundColor DarkGray
+
+    # The run in the shape the `test` tool reads (.netpi/tests.json: "results"): the counts and the failures, each with
+    # its message and the file that holds the evidence (the server log, the mock model's requests, the client events).
+    try {
+        $reportFile = Join-Path $out 'report.json'
+        $items = @(); $passed = 0; $failedCount = 0; $skippedCount = 0
+        if (Test-Path $reportFile) {
+            $report = Get-Content -LiteralPath $reportFile -Raw | ConvertFrom-Json
+            $passed = [int]$report.counts.passed
+            $skippedCount = [int]$report.counts.notRun
+            $bad = @($report.tests | Where-Object { $_.outcome -in @('Failed', 'TimedOut') })
+            $failedCount = $bad.Count
+            $items = @($bad | ForEach-Object {
+                    $evidence = Join-Path $out "failures\$($_.id).txt"
+                    [ordered]@{ name = "$($_.id) ($($_.outcome))"; message = "$($_.message)"; evidence = $(if (Test-Path $evidence) { $evidence } else { $out }) }
+                })
+        }
+        elseif ($code) { $items = @([ordered]@{ name = '(run)'; message = "the runner exited $code without writing report.json"; evidence = (Join-Path $out 'console.txt') }); $failedCount = 1 }
+        $dir = Join-Path $repo 'artifacts\testlogs'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        [ordered]@{ passed = $passed; failed = $failedCount; skipped = $skippedCount; failures = $items; log = (Join-Path $out 'console.txt'); exitCode = $code } |
+            ConvertTo-Json -Depth 5 | Set-Content (Join-Path $dir 'last-results.json')
+    }
+    catch { Write-Host "could not write artifacts\testlogs\last-results.json: $_" -ForegroundColor Yellow }
     exit $code
 }
 finally { Pop-Location }

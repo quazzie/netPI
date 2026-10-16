@@ -1,0 +1,14 @@
+{
+  "suites": {
+    "unit": "pwsh -NoProfile -File scripts/test.ps1",
+    "ui": "pwsh -NoProfile -File scripts/test.ps1 -Suite UI",
+    "tools": "pwsh -NoProfile -File scripts/test.ps1 -Suite Tools",
+    "aux": "pwsh -NoProfile -File scripts/test.ps1 -Suite Aux",
+    "host": "pwsh -NoProfile -File scripts/test.ps1 -Suite Host",
+    "agent": "pwsh -NoProfile -File scripts/test.ps1 -Suite Agent",
+    "e2e": "pwsh -NoProfile -File scripts/e2e.ps1"
+  },
+  "changed": "pwsh -NoProfile -File scripts/e2e.ps1 -Changed",
+  "results": "artifacts/testlogs/last-results.json",
+  "timeoutSeconds": 1800
+}
