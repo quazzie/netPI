@@ -140,6 +140,16 @@ public static class GuardrailsTests
         // the & of a redirection is not a separator; a backslash at the end of a line continues it
         Check.Equal("a &> out|b >&2|c|d", string.Join("|", RuleSet.Parts("a &> out; b >&2 && c & d")));
         Check.Equal("rm -rf  /", string.Join("|", RuleSet.Parts("rm -rf \\\n/")));
+        // quoted data is not split, but the scanner errs toward splitting
+        string P(string c) => string.Join("#", RuleSet.Parts(c));
+        Check.Equal("x = @'\na |reboot| b\n'@", P("x = @'\na |reboot| b\n'@"));
+        Check.Equal("echo 'rm -rf /; reboot'", P("echo 'rm -rf /; reboot'"));
+        Check.Equal("x=\"a\"#reboot", P("x=\"a\"; reboot"));
+        Check.Equal("echo it's#reboot#echo x", P("echo it's; reboot; echo x"));
+        Check.Equal("echo 'a#reboot", P("echo 'a; reboot"));
+        Check.Equal("echo \"$(a#reboot)\"", P("echo \"$(a; reboot)\""));
+        Check.Equal("bash -c 'a#reboot'", P("bash -c 'a; reboot'"));
+        Check.Equal("x = @'\npwsh | b\n'@", P("x = @'\npwsh | b\n'@"));
         // the part as written is always one of the forms
         Check.True(RuleSet.Forms("sudo rm -rf / # x").Contains("sudo rm -rf / # x"), "as written");
         Check.True(RuleSet.Forms("sudo -n rm -rf / 2>&1").Contains("rm -rf /"), "decoration off");

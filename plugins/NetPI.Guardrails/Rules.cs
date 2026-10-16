@@ -174,11 +174,87 @@ internal sealed partial class RuleSet
     }
 
     /// <summary>
-    /// The parts of a command line, split where a shell starts another command (quotes are not understood). A backslash at
-    /// the end of a line continues it, and the <c>&amp;</c> of a redirection (<c>2&gt;&amp;1</c>, <c>&amp;&gt;file</c>) is not a separator.
+    /// The parts of a command line, split where a shell starts another command. A backslash at the end of a line continues
+    /// it, and the <c>&amp;</c> of a redirection (<c>2&gt;&amp;1</c>, <c>&amp;&gt;file</c>) is not a separator. Text that is only
+    /// data is not split: a closed single-quoted or plain double-quoted string on one line, and a here-string. The scanner
+    /// errs toward splitting: an apostrophe after a letter, an unclosed quote, a double-quoted string with <c>$(</c>, a
+    /// backtick or a backslash all split as before, and so does a part that hands its quoted text to an interpreter
+    /// (<see cref="Interpreter"/>: <c>bash -c 'a; b'</c>).
     /// </summary>
-    internal static IEnumerable<string> Parts(string command) =>
-        Regex.Split(LineContinuation().Replace(command, " "), @"\r?\n|&&|\|\||;|\||(?<![<>])&(?!>)").Select(p => p.Trim()).Where(p => p.Length > 0);
+    internal static IEnumerable<string> Parts(string command)
+    {
+        var (masked, outside) = Mask(LineContinuation().Replace(command, " "));
+        var raws = Regex.Split(masked, Delimiters);
+        var outs = Regex.Split(outside, Delimiters);
+        for (var n = 0; n < raws.Length; n++)
+        {
+            var raw = raws[n].Trim();
+            if (raw.Length == 0) continue;
+            if (raw.IndexOfAny(MaskChars) < 0) { yield return raw; continue; }
+            var part = Unmask(raw);
+            if (Interpreter().IsMatch(outs[n]))
+                foreach (var sub in Regex.Split(part, Delimiters).Select(p => p.Trim()).Where(p => p.Length > 0)) yield return sub;
+            else yield return part;
+        }
+    }
+
+    private const string Delimiters = @"\r?\n|&&|\|\||;|\||(?<![<>])&(?!>)";
+    private static readonly char[] MaskChars = ['\u0001', '\u0002', '\u0003', '\u0004'];
+
+    /// <summary>The text with the delimiters inside quoted data replaced by placeholders (see <see cref="Parts"/>).</summary>
+    private static (string Masked, string Outside) Mask(string t)
+    {
+        char[]? c = null, o = null;   // the text with hidden delimiters marked, and with all hidden text blanked
+        void Hide(int from, int to)
+        {
+            for (var k = from; k < to; k++)
+            {
+                var m = t[k] switch { '\n' => '\u0001', ';' => '\u0002', '|' => '\u0003', '&' => '\u0004', _ => '\0' };
+                if (m != '\0') (c ??= t.ToCharArray())[k] = m;
+                (o ??= t.ToCharArray())[k] = m != '\0' ? m : '\u0005';
+            }
+        }
+        for (var i = 0; i < t.Length; i++)
+        {
+            var ch = t[i];
+            if (ch == '@' && i + 1 < t.Length && (t[i + 1] == '\'' || t[i + 1] == '"'))
+            {
+                var q = t[i + 1];
+                var j = i + 2;
+                while (j < t.Length && (t[j] == ' ' || t[j] == '\t')) j++;
+                if (j < t.Length && t[j] == '\r') j++;
+                if (j < t.Length && t[j] == '\n')
+                {
+                    var end = t.IndexOf("\n" + q + "@", j, StringComparison.Ordinal);
+                    // an expandable here-string runs code in $( ) and a backtick escapes: leave it split
+                    if (end >= 0 && (q == '\'' || (t.IndexOf('`', j, end - j) < 0 && t.IndexOf("$(", j, end - j, StringComparison.Ordinal) < 0)))
+                    {
+                        Hide(j, end + 1);
+                        i = end + 2;
+                    }
+                }
+            }
+            else if ((ch == '\'' || ch == '"') && (i == 0 || !char.IsLetterOrDigit(t[i - 1])))
+            {
+                var end = -1;
+                for (var j = i + 1; j < t.Length && t[j] != '\n' && t[j] != '\r'; j++)
+                {
+                    if (t[j] == ch) { end = j; break; }
+                    if (ch == '"' && (t[j] == '\\' || t[j] == '`')) break;
+                    if (ch == '"' && t[j] == '$' && j + 1 < t.Length && (t[j + 1] == '(' || t[j + 1] == '{')) break;
+                }
+                if (end >= 0) { Hide(i + 1, end); i = end; }
+            }
+        }
+        return c is null ? (t, t) : (new string(c), new string(o!));
+    }
+
+    private static string Unmask(string s) =>
+        s.Replace('\u0001', '\n').Replace('\u0002', ';').Replace('\u0003', '|').Replace('\u0004', '&');
+
+    /// <summary>A part that names one of these may run its quoted text as commands, so the quotes do not protect it.</summary>
+    [GeneratedRegex(@"(?<![\w-])(?:bash|sh|zsh|dash|fish|pwsh|powershell|cmd|ssh|eval|xargs|su|sudo|doas|watch|timeout|nohup|iex|invoke-expression|invoke-command|start-process|start-job|source|python3?|node|perl|ruby)(?![\w-])", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, 250)]
+    private static partial Regex Interpreter();
 
     /// <summary>
     /// A part with what a shell ignores taken off, quotes kept: a trailing comment, redirections and the wrappers
