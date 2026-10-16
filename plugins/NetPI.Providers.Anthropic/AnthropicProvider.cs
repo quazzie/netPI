@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
-using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -97,27 +96,8 @@ public sealed class AnthropicProvider : IModelProvider
 
     // ================================================================ streaming
 
-    public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
-    {
-        // Errors are reported as they are (no retries or workarounds here): the message is only extended with the
-        // server's request id, and the request body is saved so the failure can be reproduced.
-        var call = new CallInfo { Transport = "messages" };
-        await using var e = StreamCoreAsync(request, call, ct).GetAsyncEnumerator(ct);
-        while (true)
-        {
-            ModelStreamEvent current;
-            try
-            {
-                if (!await e.MoveNextAsync().ConfigureAwait(false)) yield break;
-                current = e.Current;
-            }
-            catch (ModelException ex) when (!ct.IsCancellationRequested)
-            {
-                throw await FailedRequests.DescribeAsync(ex, request, call, Id, _dumpDir, _log, ct).ConfigureAwait(false);
-            }
-            yield return current;
-        }
-    }
+    public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken ct) =>
+        HttpTransport.StreamAsync(StreamCoreAsync, request, new CallInfo { Transport = "messages" }, Id, _dumpDir, _log, ct);
 
     private async IAsyncEnumerable<ModelStreamEvent> StreamCoreAsync(ModelRequest request, CallInfo call, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -138,7 +118,7 @@ public sealed class AnthropicProvider : IModelProvider
 
         HttpResponseMessage resp;
         try { resp = await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not ModelException) { throw Rethrow(ex, ct); }
+        catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "Anthropic", ct); }
 
         using (resp)
         {
@@ -154,11 +134,11 @@ public sealed class AnthropicProvider : IModelProvider
 
             Stream stream;
             try { stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is not ModelException) { throw Rethrow(ex, ct); }
+            catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "Anthropic", ct); }
 
             var asm = new MessageAssembler();
             var parser = new AnthropicStreamParser(asm, "Anthropic");
-            await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct), "Anthropic", ct).ConfigureAwait(false))
+            await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct, "Anthropic"), "Anthropic", ct).ConfigureAwait(false))
             {
                 // An error frame carries its own request id, for a gateway that sends no header.
                 try { parser.Handle(sse); }
@@ -173,18 +153,11 @@ public sealed class AnthropicProvider : IModelProvider
         }
     }
 
-    private static Exception Rethrow(Exception ex, CancellationToken ct)
-    {
-        var t = ProviderErrors.Translate(ex, "Anthropic", ct);
-        if (ReferenceEquals(t, ex)) ExceptionDispatchInfo.Capture(ex).Throw();
-        return t;
-    }
-
     private static void ApplyHeaders(HttpRequestMessage req, AnthropicOptions o)
     {
         if (o.ApiKey is not null) req.Headers.TryAddWithoutValidation("x-api-key", o.ApiKey);
         req.Headers.TryAddWithoutValidation("anthropic-version", ApiVersion);
         if (o.Betas.Count > 0) req.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", o.Betas));
-        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, SettingsExtensions.ResolveSecret(v) ?? v);
+        HttpTransport.ApplyCustomHeaders(req, o.Headers);
     }
 }

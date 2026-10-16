@@ -76,19 +76,22 @@ public static class SchedulesTests
         public List<AgentInfo> Agents { get; } = [];
         public bool Fail { get; set; }
         public bool Steer { get; set; }
+        /// <summary>When set, the next send throws its cancellation: a start the caller gave up on.</summary>
+        public CancellationTokenSource? Cancel { get; set; }
         public IReadOnlyList<AgentInfo> List(bool includeFinished = true) => Agents;
         public AgentInfo? Get(string agentId) => Agents.FirstOrDefault(a => a.Id == agentId);
         public AgentInfo? GetBySession(string sessionId) => Agents.LastOrDefault(a => a.SessionId == sessionId);
         public Task<AgentInfo> SendAsync(string sessionId, UserInput input, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default)
         {
             if (Fail) throw new InvalidOperationException("the model is not loaded");
+            if (Cancel is not null) Cancel.Token.ThrowIfCancellationRequested();
             lock (Sent) Sent.Add((sessionId, input));
             var agent = new AgentInfo { Id = Ids.New("agt"), SessionId = sessionId, Status = AgentStatus.Running };
             lock (Agents) Agents.Add(agent);
             return Task.FromResult(agent);
         }
         public Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true, TimeSpan? timeout = null, CancellationToken ct = default, bool any = false) => throw new NotSupportedException();
+        public Task<AgentWaitResult> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true, TimeSpan? timeout = null, CancellationToken ct = default, bool any = false) => throw new NotSupportedException();
         public Task<bool> AbortAsync(string agentOrSessionId) => Task.FromResult(false);
         public Task<bool> MessageAsync(string fromAgentId, string toAgentId, string text, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => Task.FromResult(false);
         public IReadOnlyList<QueuedInput> GetQueue(string sessionId) => [];
@@ -340,6 +343,22 @@ public static class SchedulesTests
             Check.Contains(S(capped["reason"]), "maxRunsPerDay");
             env.Time.Advance(TimeSpan.FromHours(25));
             Check.Equal("ran", S((await env.Ctx.RpcFake.CallAsync("schedules.run", new { id }))!["status"]), "a day later the cap has room again");
+        });
+
+        r.Add("schedules: a start cancelled before the run begins deletes its chat and records the run as cancelled", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var id = S((await env.Add(new { kind = "every", minutes = 60 }))!["id"])!;
+            var cts = new CancellationTokenSource();
+            env.Runtime.Cancel = cts;
+            cts.Cancel();
+            await Check.ThrowsAsync<OperationCanceledException>(() => env.Plugin.Runner!.StartAsync(env.Plugin.Store!.Get(id)!, cts.Token));
+            Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count, "the chat the cancelled start made is gone");
+            var history = await env.History(id);
+            Check.Equal(1, history.Count, "the run is recorded");
+            Check.Equal("failed", S(history[0]!["status"]));
+            Check.Equal("cancelled", S(history[0]!["reason"]));
+            Check.True((await env.Get(id))["starting"] is null, "and the claim is let go");
         });
 
         r.Add("schedules: the schedules survive a restart, pausing keeps them, and two generations ticking at once start a run once", async () =>

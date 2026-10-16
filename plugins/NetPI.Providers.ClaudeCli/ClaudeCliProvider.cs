@@ -210,6 +210,7 @@ public sealed class ClaudeCliProvider : IModelProvider
         if (waited) yield return new StreamNotice($"Claude CLI had to wait for a free slot ({o.MaxConcurrent} run at once: the provider's maxConcurrent).", "info");
 
         // The system prompt goes through a file: NetPI's can outgrow the 32k command line of Windows.
+        var executable = ResolveExecutable(o.Executable); // before the file: nothing between writing it and the try that deletes it may throw
         Directory.CreateDirectory(_workDir);
         var promptFile = Path.Combine(_workDir, $"system-{Guid.NewGuid():N}.md");
         await File.WriteAllTextAsync(promptFile,
@@ -217,7 +218,6 @@ public sealed class ClaudeCliProvider : IModelProvider
         var asm = new MessageAssembler();
         var stream = new ClaudeCliStream(asm) { ModelId = request.Model.Id };
         if (_usage is not null && o.Usage) stream.OnRateLimit = _usage.Observe;
-        var executable = ResolveExecutable(o.Executable);
         var recorded = false;
         try
         {

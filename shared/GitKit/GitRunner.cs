@@ -20,6 +20,9 @@ internal static class GitRunner
     /// <summary>How long a git call may take before its tree is ended (tests shorten it).</summary>
     public static TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>How long the pipes get to close after git itself exited: a helper it started (fsmonitor, gc) may hold them open (tests shorten it).</summary>
+    public static TimeSpan DrainGrace { get; set; } = TimeSpan.FromSeconds(2);
+
     /// <summary>
     /// What one git call produced. When <see cref="StartError"/> is set git did not start (no git on PATH, an
     /// unreadable directory); <see cref="TimedOut"/> and <see cref="Aborted"/> are the two endings that are not
@@ -57,19 +60,24 @@ internal static class GitRunner
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(Timeout);
-            var stdout = ReadAsync(process.StandardOutput, maxStdoutChars, timeout.Token);
-            var stderr = ReadAsync(process.StandardError, 0, timeout.Token);
+            // the reads have a token of their own: after git exited they are cancelled (keeping what they read) when a helper holds the pipes
+            using var drain = new CancellationTokenSource();
+            var stdout = ReadAsync(process.StandardOutput, maxStdoutChars, drain.Token);
+            var stderr = ReadAsync(process.StandardError, 0, drain.Token);
             try
             {
                 try { process.StandardInput.Close(); } catch { } // git is never given a terminal to read from
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                try { await Task.WhenAll(stdout, stderr).WaitAsync(DrainGrace, timeout.Token).ConfigureAwait(false); }
+                catch (TimeoutException) { drain.Cancel(); }
                 var (outp, cut) = await stdout.ConfigureAwait(false);
                 return new Result(process.ExitCode, outp, (await stderr.ConfigureAwait(false)).Text, false, false, cut, null);
             }
             catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
-                try { await Task.WhenAll(stdout, stderr).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch { }
+                drain.CancelAfter(TimeSpan.FromSeconds(5));
+                try { await Task.WhenAll(stdout, stderr).ConfigureAwait(false); } catch { }
                 return ct.IsCancellationRequested
                     ? new Result(0, "", "", false, true, false, null)
                     : new Result(0, "", "", true, false, false, null);
@@ -80,21 +88,25 @@ internal static class GitRunner
     /// <summary>The stream, at most <paramref name="limit"/> characters kept (0: all), reading to the end either way (a pipe that is only read slowly blocks the process).</summary>
     private static async Task<(string Text, bool Cut)> ReadAsync(StreamReader reader, int limit, CancellationToken ct)
     {
-        if (limit <= 0) return (await reader.ReadToEndAsync(ct).ConfigureAwait(false), false);
+        if (limit <= 0) limit = int.MaxValue;
         var text = new StringBuilder();
         var buffer = new char[4096];
         var cut = false;
-        int count;
-        while ((count = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false)) > 0)
+        try
         {
-            if (text.Length < limit)
+            int count;
+            while ((count = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false)) > 0)
             {
-                var room = limit - text.Length;
-                text.Append(buffer, 0, Math.Min(count, room));
-                cut |= count > room;
+                if (text.Length < limit)
+                {
+                    var room = limit - text.Length;
+                    text.Append(buffer, 0, Math.Min(count, room));
+                    cut |= count > room;
+                }
+                else cut = true;
             }
-            else cut = true;
         }
+        catch (OperationCanceledException) { /* the pipe was held open by a helper: what came before is the answer */ }
         return (text.ToString(), cut);
     }
 }

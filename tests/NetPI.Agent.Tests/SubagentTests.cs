@@ -365,7 +365,7 @@ public static class SubagentTests
             {
                 try
                 {
-                    var r = h.Runtime.WaitAsync(parentId, [childId], yieldSlot: false, null, CancellationToken.None).GetAwaiter().GetResult();
+                    var r = h.Runtime.WaitAsync(parentId, [childId], yieldSlot: false, null, CancellationToken.None).GetAwaiter().GetResult().Agents;
                     if (r[0].Status == AgentStatus.Completed && r[0].Result == report)
                         lock (h) gotReport = true;
                 }
@@ -457,7 +457,7 @@ public static class SubagentTests
 
         var foreign = h.Runtime.WaitAsync(null, [childId], yieldSlot: false, null, CancellationToken.None);
         childGate.SetResult();
-        var got = await foreign;
+        var got = (await foreign).Agents;
         Check.Equal("FOREIGN REPORT", got[0].Result, "the foreign waiter got the report");
         await Wait.Until(() => h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"), "the parent still got its notice", 15_000);
     }

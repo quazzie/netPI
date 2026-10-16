@@ -27,6 +27,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
     private readonly SemaphoreSlim _reconcile = new(1, 1);
     private FailureThrottle? _throttle;
     private CancellationTokenSource? _life;
+    private readonly List<Task> _reconciles = [];   // the reconciles in flight; a stop waits for them, bounded
     private readonly bool _loop;
     private readonly SemaphoreSlim _wake = new(0);
     private CancellationTokenSource? _stop;
@@ -74,16 +75,36 @@ public sealed class WebhooksPlugin : INetPiPlugin
         // a sync handler that only schedules the work: the bus keeps no task of ours in its worker between events (a plugin's async handler
         // left its last task, and with it the plugin's load context, rooted until the subscription ended)
         var life = _life = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
-        ctx.Events.Subscribe("settings.changed", e => { _ = Task.Run(() => ReconcileAsync(life.Token), life.Token); });
+        var lifeToken = life.Token;
+        ctx.Events.Subscribe("settings.changed", e => Reconcile(lifeToken));
         // The receiver binds in the background. On a hot reload the host starts this generation BEFORE it stops the previous one, which
         // still holds the port: waiting for the bind here would wait for a stop that only comes after StartAsync returns (the port stayed
         // down until someone toggled the setting). The allow list is read first, so a request never meets an empty one.
         ApplyAllowList();
-        _ = Task.Run(() => ReconcileAsync(life.Token), life.Token);
+        Reconcile(lifeToken);
         if (_loop)
         {
             _stop = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
             _worker = LoopAsync(ctx, store, runner, _stop.Token);
+        }
+    }
+
+    /// <summary>
+    /// A reconcile in the background, observed: a failure is logged (a bind the previous generation still holds, a setting that does
+    /// not parse), and <see cref="StopAsync"/> waits for the ones it has started, so none of them outlives the plugin's stopping token.
+    /// </summary>
+    private void Reconcile(CancellationToken ct)
+    {
+        var task = Task.Run(async () =>
+        {
+            try { await ReconcileAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { _ctx?.Logger.LogWarning(ex, "Webhooks: the receiver did not come up"); }
+        });
+        lock (_reconciles)
+        {
+            _reconciles.RemoveAll(t => t.IsCompleted);
+            _reconciles.Add(task);
         }
     }
 
@@ -109,10 +130,18 @@ public sealed class WebhooksPlugin : INetPiPlugin
     {
         _life?.Cancel();   // ends a bind that is still waiting for the previous generation's port, which would otherwise hold _reconcile
         _stop?.Cancel();
+        // the reconciles started by a settings change: wait for them, bounded — a bind held up by the previous generation's port ends
+        // with the cancellation above, and a stuck one must not hold the stop (and the port) forever
+        Task[] reconciles;
+        lock (_reconciles) { reconciles = _reconciles.ToArray(); _reconciles.Clear(); }
+        try { await Task.WhenAll(reconciles).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false); }
+        catch (TimeoutException) { _ctx?.Logger.LogWarning("Webhooks: a receiver reconcile was still running when the plugin stopped; it is left to end on its own"); }
         if (_worker is { } w) { try { await w.ConfigureAwait(false); } catch (OperationCanceledException) { } }
         await _reconcile.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try { await CloseListenerAsync().ConfigureAwait(false); }
         finally { _reconcile.Release(); }
+        _life?.Dispose();
+        _stop?.Dispose();
     }
 
     // ---------------------------------------------------------------- the receiver

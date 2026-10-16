@@ -109,6 +109,29 @@ await t.Run("SSE reader: event names, multi-line data, comments, CRLF, missing s
     t.Eq("last", events[4].Data, "trailing event without blank line");
 });
 
+// A line the server never ends used to be read without limit (the process's memory is the only cap); past the
+// reader's cap the stream is a provider error, like every other unreadable stream.
+await t.Run("SSE reader: a line over the cap is a provider error, not an unbounded read", async () =>
+{
+    ModelException? caught = null;
+    try
+    {
+        await foreach (var _ in Kit.SseReader.ReadAsync(new MemoryStream(Encoding.UTF8.GetBytes("data: " + new string('x', Kit.SseReader.MaxLineLength + 1))), default, "P"))
+        {
+        }
+    }
+    catch (ModelException ex) { caught = ex; }
+    t.Check(caught is { Transient: true, ErrorType: "stream_truncated" }, "over the cap: " + caught?.Message);
+    t.Check(caught!.Message.Contains("16 MB") && caught.Message.StartsWith("P:"), "the cap and the provider are named");
+
+    var payload = new string('x', Kit.SseReader.MaxLineLength - 6); // "data: " is the 6 chars the line adds
+    var atCap = "data: " + payload + "\n\n";
+    var events = new List<Kit.SseEvent>();
+    await foreach (var e in Kit.SseReader.ReadAsync(new MemoryStream(Encoding.UTF8.GetBytes(atCap)))) events.Add(e);
+    t.Eq(1, events.Count, "a line at the cap is read");
+    t.Eq(payload.Length, events[0].Data.Length, "the data field, without the 'data: ' prefix");
+});
+
 await t.Run("Think-tag splitter: tags split at every chunk boundary", () =>
 {
     const string s = "  <think>abc</think>\n\nhello <b>x</b> <thin end";
@@ -179,8 +202,8 @@ await t.Run("provider kit: one shared source set, compiled into all three provid
         var compiles = System.Xml.Linq.XDocument.Load(csproj).Descendants().Where(n => n.Name.LocalName == "Compile").ToArray();
         t.Check(compiles.Length > 0, $"{provider}: compiles the kit");
         foreach (var node in compiles)
-            t.Check(((string?)node.Attribute("Include"))?.Replace('\\', '/').Contains("shared/ProviderKit") == true,
-                $"{provider}: the only compiled-in shared source is the kit: {node.Attribute("Include")?.Value}");
+            t.Check(((string?)node.Attribute("Include"))?.Replace('\\', '/') is { } inc && (inc.Contains("shared/ProviderKit") || inc.Contains("shared/ProcessKit")),
+                $"{provider}: the only compiled-in shared sources are the kits: {node.Attribute("Include")?.Value}");
     }
 
     var kit = typeof(Kit.ThinkTagSplitter).Assembly.GetTypes().Where(t => t.Namespace == "NetPI.Providers.Kit").Select(t => t.FullName!).ToArray();
@@ -252,6 +275,35 @@ await t.Run("model list cache: backend restart metadata changes publish once eve
     t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "backend replacement under the same public model ID");
     await cache.ListAsync(true, policy, Fetch, default);
     t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "unchanged metadata is quiet");
+});
+
+// The change signature is the host catalog's (ModelCatalog.Signature): the same fields, so a change the catalog
+// sees is a change the provider's models.changed sees too, and nothing else.
+await t.Run("model list cache: the change signature is the host catalog's fields", async () =>
+{
+    using var ctx = new FakePluginContext(new JsonObject());
+    var cache = new Kit.ModelListCache("test", ctx.Log, ctx.Bus);
+    var model = M("test", "m");
+    var policy = new Kit.ModelListCache.Policy { Fingerprint = "k", CanFetch = true, Ttl = TimeSpan.Zero };
+    Task<IReadOnlyList<ModelInfo>> Fetch(CancellationToken _) => Task.FromResult<IReadOnlyList<ModelInfo>>([model]);
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(1, ctx.Bus.Count(EventTypes.ModelsChanged), "first listing");
+
+    model.DisplayName = "M";
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "a display name change is a change");
+
+    model.Reasoning = new ReasoningInfo { Supported = true, Efforts = ["low", "high"], Default = "low" };
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(3, ctx.Bus.Count(EventTypes.ModelsChanged), "reasoning info is a change");
+
+    model.Reasoning = new ReasoningInfo { Supported = true, Efforts = ["low", "high"], Default = "low" };
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(3, ctx.Bus.Count(EventTypes.ModelsChanged), "an equal value is quiet");
+
+    model.ContextWindow = 4096;
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(4, ctx.Bus.Count(EventTypes.ModelsChanged), "a window change is a change");
 });
 
 await t.Run("Effort mapping to catalog efforts", () =>
@@ -794,6 +846,52 @@ await t.Run("responses: only response.completed with output list; generated call
     t.Eq("tool_use", msg.StopReason, "stop");
 });
 
+// An args delta that arrives before the item's added/done events used to start the call with a generated id, and
+// the item's own call_id never reached the part: the function_call_output that follows the call (and the next
+// turn's replay) referenced an id the part did not have.
+await t.Run("responses: an args delta before the item's events keeps the call_id the item names", () =>
+{
+    static Kit.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
+    var asm = new Kit.MessageAssembler();
+    var p = new AP.ResponsesStreamParser(asm, "P");
+    p.Handle(Ev(new { type = "response.function_call_arguments.delta", item_id = "fc_1", output_index = 0, delta = "{\"a\":" }));
+    p.Handle(Ev(new { type = "response.function_call_arguments.done", item_id = "fc_1", output_index = 0, name = "read", arguments = "{\"a\":1}" }));
+    p.Handle(Ev(new { type = "response.output_item.added", output_index = 0, item = new { id = "fc_1", type = "function_call", call_id = "call_9", name = "read", arguments = "" } }));
+    p.Handle(Ev(new { type = "response.output_item.done", output_index = 0, item = new { id = "fc_1", type = "function_call", call_id = "call_9", name = "read", arguments = "{\"a\":1}" } }));
+    p.Handle(Ev(new { type = "response.completed", response = new { status = "completed" } }));
+    p.Finish();
+    var call = asm.Build("p", "m", null, 0).ToolCalls.Single();
+    t.Eq("call_9", call.Id, "the item's call_id, not the generated id");
+    t.Eq("read", call.Name, "name");
+    t.Eq("{\"a\":1}", call.Arguments, "arguments");
+    return Task.CompletedTask;
+});
+
+// The final output list re-announces what streamed; an id-less item that never streamed used to be dropped
+// whenever any earlier item had streamed ("any item + no id = a re-announcement"), and the call was lost.
+await t.Run("responses: an id-less output item that never streamed is not dropped by the completed event", () =>
+{
+    static Kit.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
+    var asm = new Kit.MessageAssembler();
+    var p = new AP.ResponsesStreamParser(asm, "P");
+    p.Handle(Ev(new { type = "response.output_item.added", output_index = 0, item = new { id = "msg_1", type = "message", content = Array.Empty<object>() } }));
+    p.Handle(Ev(new { type = "response.output_text.delta", item_id = "msg_1", output_index = 0, content_index = 0, delta = "Hello" }));
+    p.Handle(Ev(new { type = "response.output_item.done", output_index = 0, item = new { id = "msg_1", type = "message", content = new[] { new { type = "output_text", text = "Hello" } } } }));
+    // The final list adds an id-less function call at index 1 that never streamed: it is not a re-announcement.
+    p.Handle(Ev(new { type = "response.completed", response = new { status = "completed",
+        output = new object[]
+        {
+            new { id = "msg_1", type = "message", content = new[] { new { type = "output_text", text = "Hello" } } },
+            new { type = "function_call", call_id = "call_x", name = "read", arguments = "{}" },
+        } } }));
+    p.Finish();
+    var msg = asm.Build("p", "m", null, 0);
+    t.Eq("Hello", msg.Text, "the streamed text, once");
+    var call = msg.ToolCalls.Single();
+    t.Check(call is { Id: "call_x", Name: "read", Arguments: "{}" }, "the id-less item from the final list");
+    return Task.CompletedTask;
+});
+
 // A Responses stream that ends in OpenAI's [DONE] sentinel with no terminal event (response.completed, .incomplete,
 // .failed) is a cut stream: nothing said how it ended and no usage arrived. It used to pass as a clean completion
 // once anything had streamed, so the ledger recorded no usage and the retry plugin saw nothing to retry (D3).
@@ -933,6 +1031,26 @@ await t.Run("chat: a tool name split across chunks is not truncated to its first
     t.Eq(started.Id, call.Id, "the part keeps the id the events were emitted with");
     t.Check(events.OfType<ToolCallArgsDelta>().All(d => d.Id == started.Id), "every args delta carries the same id");
     t.Eq("tool_use", msg.StopReason, "stop reason");
+});
+
+// A server that resends the full name in every chunk used to double it ("readread"); the parser now appends a
+// fragment only when it is not the name the call already has (idea: the shape a resending gateway produces).
+await t.Run("chat: a tool name is the sum of its fragments; a server that resends the full name does not double it", () =>
+{
+    static Kit.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
+    static string Name(params string[] chunks)
+    {
+        var asm = new Kit.MessageAssembler();
+        var p = new AP.ChatStreamParser(asm, "P", false);
+        foreach (var c in chunks)
+            p.Handle(Ev(new { id = "c1", choices = new[] { new { index = 0, delta = new { tool_calls = new[] { new { index = 0, type = "function", function = new { name = c } } } } } } }));
+        p.Handle(Ev(new { id = "c1", choices = new[] { new { index = 0, delta = new { tool_calls = new[] { new { index = 0, function = new { arguments = "{}" } } } }, finish_reason = "tool_calls" } } }));
+        p.Finish();
+        return asm.Build("p", "m", null, 0).ToolCalls.Single().Name;
+    }
+    t.Eq("write", Name("wri", "te"), "fragments accumulate");
+    t.Eq("read", Name("read", "read", "read"), "the full name in every chunk is not appended to itself");
+    return Task.CompletedTask;
 });
 
 await t.Run("chat: request body (system, tool_calls, tool results, images, stream_options, auth headers)", async () =>
@@ -1092,6 +1210,17 @@ await t.Run("chat: finish length, EOF, cut-off, error chunk, 400 overflow, non-s
     var msg = ((StreamCompleted)events[^1]).Message;
     t.Check(msg.Text == "Plain JSON" && ((ThinkingPart)msg.Parts[0]).Text == "t" && msg.ToolCalls.Single().Id == "call_j", "JSON body parsed");
     t.Check(msg.Usage is { InputTokens: 10, CacheReadTokens: 2, OutputTokens: 4 }, "DeepSeek-style cache hit tokens");
+});
+
+// The AiProxy parser used to override the shared usage read and drop cache_write_tokens (the base handles them);
+// it keeps the DeepSeek prompt_cache_hit_tokens fallback, which the base read now carries too.
+await t.Run("chat: usage keeps the DeepSeek cache-hit fallback and also honors cache writes", () =>
+{
+    var asm = new Kit.MessageAssembler();
+    var p = new AP.ChatStreamParser(asm, "P", false);
+    p.HandleJsonBody("""{"choices":[{"message":{"content":"x"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"prompt_cache_hit_tokens":2,"prompt_tokens_details":{"cache_write_tokens":3}}}""");
+    t.Check(asm.Usage is { InputTokens: 7, CacheReadTokens: 2, CacheWriteTokens: 3, OutputTokens: 4 }, "hits and writes are not input");
+    return Task.CompletedTask;
 });
 
 await t.Run("disabled provider: empty list + non-transient error", async () =>
@@ -1606,6 +1735,21 @@ await t.Run("providers: none exist until added; each entry of a type is its own 
     await plugin.StopAsync(CancellationToken.None);
     t.Eq(0, ctx.ServicesImpl.GetAll<IModelProvider>().Count, "and stopping removes the rest");
     t.Check(!ProviderInstances.ValidId("a/b") && !ProviderInstances.ValidId("a.b") && ProviderInstances.ValidId("claude-cli_2"), "ids are letters, digits, - and _");
+    // A "type" that is not a string is not this type: Of skips it rather than throw (GetValue<string> used to throw on a number).
+    var ofSettings = new FakeSettings(root: new JsonObject
+    {
+        ["providers"] = new JsonObject
+        {
+            ["instances"] = new JsonObject
+            {
+                ["good"] = new JsonObject { ["type"] = "anthropic" },
+                ["weird"] = new JsonObject { ["type"] = 42 },
+                ["obj"] = new JsonObject { ["type"] = new JsonObject { ["x"] = 1 } },
+            },
+        },
+    });
+    var of = ProviderInstances.Of(ofSettings, "anthropic");
+    t.Eq("good", string.Join(",", of.Select(x => x.Id)), "a non-string type is not this type, and does not throw");
 });
 
 // ================================================================== OpenRouter

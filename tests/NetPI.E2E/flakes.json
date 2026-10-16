@@ -3,9 +3,9 @@
   "flakes": [
     {
       "id": "mcp.deferred",
-      "runs": 11,
+      "runs": 12,
       "failures": 2,
-      "rate": 0.1818,
+      "rate": 0.1667,
       "firstSeen": "20261014-184206-a1da",
       "lastFailure": "20261014-185528-ece3",
       "cause": "substring not found: mcp_fixture_weather_cee736733870baa5 \u2014 responsive",

@@ -348,6 +348,18 @@ public static class CompactionTests
             Check.True(CompactionHook.EstimateContext(stale, 0) < 20_000, "stale usage ignored");
         });
 
+        r.Add("compaction: a trustworthy usage estimate stands on its own — the full chars/4 walk is not forced as a floor", () =>
+        {
+            var env = new Env();
+            env.Conversation(10);   // a long history: the full chars/4 estimate is well above a modest usage number
+            var turn = env.Turn(lastContextTokens: 12_000);
+            var lastAssistant = turn.Messages.Last(m => m.Role == MessageRole.Assistant);
+            lastAssistant.Usage = new Usage { InputTokens = 11_000, OutputTokens = 200 };
+            Check.True(CompactionPlanner.Estimate(turn.Messages) > 12_000, "the full estimate is the bigger number");
+            Check.Equal(12_000, CompactionHook.EstimateContext(turn, 0), "the usage estimate stands, unraised by the full walk");
+            return Task.CompletedTask;
+        });
+
         r.Add("compaction: a model that keeps its own context is left alone, by the hook and by /compact", async () =>
         {
             var env = new Env();

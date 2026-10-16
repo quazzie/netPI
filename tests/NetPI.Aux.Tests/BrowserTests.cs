@@ -354,6 +354,55 @@ public static class BrowserTests
             }
         });
 
+        r.Add("browser: the extension relay caps a message at 16 MB and closes the socket past it", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var key = File.ReadAllText(Path.Combine(env.Ctx.Paths.Home, "browser", "extension-key")).Trim();
+            var http = (FakeHttp)env.Ctx.Http;
+            await using var web = await LocalWeb.StartAsync(app =>
+            {
+                app.UseWebSockets();
+                app.Map("/api/p/netpi.tools.web/{**rest}", (HttpContext ctx) => http.Routes[ctx.Request.RouteValues["rest"]!.ToString()!].Handler(ctx));
+            });
+            try
+            {
+                using var ws = new ClientWebSocket();
+                await ws.ConnectAsync(new Uri(web.Url.Replace("http://", "ws://") + "/api/p/netpi.tools.web/extension?key=" + key), CancellationToken.None);
+                var big = new byte[17 * 1024 * 1024];
+                Array.Fill(big, (byte)'x');   // a text frame has to be valid UTF-8, whatever the relay does with it
+                await ws.SendAsync(big, WebSocketMessageType.Text, endOfMessage: true, CancellationToken.None);
+                var r = await ws.ReceiveAsync(new byte[64 * 1024], CancellationToken.None);
+                Check.Equal(WebSocketMessageType.Close, r.MessageType, "the relay closed the socket");
+                Check.Equal(WebSocketCloseStatus.MessageTooBig, r.CloseStatus);
+                Check.Contains(r.CloseStatusDescription ?? "", "too large");
+            }
+            finally { env.Ctx.Unload(); }
+        });
+
+        r.Add("browser: a follow of a new tab that fails after the attach puts the tab back and tells the model", async () =>
+        {
+            var cdp = new FollowFakeCdp();
+            var tab = await BrowserTab.AttachAsync(cdp, "tab-1", CancellationToken.None);
+            Check.Equal("ses-1", tab.SessionId);
+
+            await tab.FollowAsync("tab-2");   // the new tab's attach answers its session, then the first command to it fails
+            Check.Equal("tab-1", tab.TargetId, "the failed follow left the tab where it was");
+            Check.Equal("ses-1", tab.SessionId);
+
+            var options = new WebOptions(20_000, 30, 5_000_000, null, "auto", null, null, "https://api.search.brave.com/api/web/search", 8, null, true, "temp", 10, 200, "own", null);
+            var result = await tab.RunAsync("snapshot", T.Args(new { }), options, null, CancellationToken.None);
+            Check.Contains(result.Content, "Could not follow the new tab", "the model is told with the next result");
+            Check.Contains(result.Content, "This chat's tab is the one it had before");
+
+            // a follow that succeeds says the plain thing
+            await tab.FollowAsync("tab-3");
+            Check.Equal("tab-3", tab.TargetId);
+            Check.Equal("ses-3", tab.SessionId);
+            var again = await tab.RunAsync("snapshot", T.Args(new { }), options, null, CancellationToken.None);
+            Check.Contains(again.Content, "this chat's tab is that one now");
+        });
+
         r.Add("browser: the extension relay: a shared tab becomes a chat's, the pool, agent tabs in the user's Chrome, unshare, a wrong key refused", async () =>
         {
             var env = new Env();
@@ -684,5 +733,58 @@ public static class BrowserTests
             await _cdp.DisposeAsync();
             await _browser.DisposeAsync();
         }
+    }
+
+    /// <summary>
+    /// A DevTools connection with no browser behind it: it answers the attach, settle and snapshot commands a tab needs,
+    /// and the second attach (a follow of a new tab) answers its session and then fails the first command to it — the
+    /// case a failed follow must put back.
+    /// </summary>
+    private sealed class FollowFakeCdp : ICdp
+    {
+        private int _attaches;
+        private string? _fail;
+        private Action<string, JsonElement, string?>? _event;
+
+        public string Kind => "own";
+        public bool IsOpen => true;
+        public event Action<string, JsonElement, string?>? Event
+        {
+            add { _event += value; }
+            remove { _event -= value; }
+        }
+
+        public Task<JsonElement> SendAsync(string method, object? parameters, string? sessionId, CancellationToken ct, int timeoutSeconds = 30)
+        {
+            JsonElement Answer()
+            {
+                if (_fail == method) { _fail = null; throw new InvalidOperationException("the new tab's session is gone"); }
+                if (method == "Target.attachToTarget")
+                {
+                    _attaches++;
+                    if (_attaches == 2) _fail = "Page.enable";   // the follow's attach answers, then the first command to it fails
+                    return JsonDocument.Parse(_attaches == 1 ? """{ "sessionId": "ses-1" }""" : $"{{ \"sessionId\": \"ses-{_attaches}\" }}").RootElement.Clone();
+                }
+                return method switch
+                {
+                    "Page.enable" or "Accessibility.enable" or "Emulation.setFocusEmulationEnabled" or "Target.setAutoAttach"
+                        or "Target.activateTarget" or "Target.detachFromTarget"
+                        => JsonDocument.Parse("{}").RootElement,
+                    "DOMSnapshot.captureSnapshot" => JsonDocument.Parse("""{ "documents": [], "strings": [] }""").RootElement,
+                    "Page.getFrameTree" => JsonDocument.Parse("""{ "frameTree": { "frame": { "id": "f1" } } }""").RootElement,
+                    "Runtime.evaluate" => parameters is { } p && System.Text.Json.JsonSerializer.Serialize(p).Contains("__netpiMutations")
+                        ? JsonDocument.Parse("""{ "result": { "value": 0 } }""").RootElement
+                        : JsonDocument.Parse("""{ "result": { "value": "yes" } }""").RootElement,
+                    "Accessibility.getFullAXTree" => JsonDocument.Parse("""{ "nodes": [] }""").RootElement,
+                    "Page.getLayoutMetrics" => JsonDocument.Parse("""{ "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 800, "clientHeight": 600 } }""").RootElement,
+                    "Target.getTargetInfo" => JsonDocument.Parse("""{ "targetInfo": { "url": "about:blank", "title": "" } }""").RootElement,
+                    _ => throw new InvalidOperationException($"{method} is not available in the fake"),
+                };
+            }
+            try { return Task.FromResult(Answer()); }
+            catch (InvalidOperationException ex) { return Task.FromException<JsonElement>(ex); }
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

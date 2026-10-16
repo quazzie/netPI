@@ -290,9 +290,18 @@ internal sealed class AskUserTool : IAgentTool
         }
         else if (a.Has("question"))
             items.Add(a.Raw); // one question at the top level
-        foreach (var q in items)
+        var unusable = new List<string>();
+        for (var i = 0; i < items.Count; i++)
         {
-            if (Question(q) is { } parsed) questions.Add(parsed);
+            if (Question(items[i]) is { } parsed) questions.Add(parsed);
+            else unusable.Add($"#{i + 1} ({(items[i].ValueKind is JsonValueKind.String or JsonValueKind.Object ? "no question text" : "a " + items[i].ValueKind.ToString().ToLowerInvariant() + " instead of a string or an object")})");
+        }
+        if (unusable.Count > 0)
+        {
+            // never ask a shorter set than the model meant: the answers are read by position
+            error = $"These questions are unusable: {string.Join(", ", unusable)}. Each needs a non-empty \"question\" (or be a plain string); fix or drop them and call ask_user again.";
+            questions.Clear();
+            return false;
         }
         if (questions.Count == 0)
         {

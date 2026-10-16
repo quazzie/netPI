@@ -190,6 +190,13 @@ internal sealed class Goals(IPluginContext ctx)
             if (byModel) (g.ToldVersion, g.ToldStatus) = (g.Version, Goal.Active); // the tool result tells the model
             return g;
         })!;
+        // the run in flight (the model's own goal_set, or a goal the user sets mid-run) pays for the new goal from now on: its
+        // track took the goal id when the run started, which was none, or the one this replaced
+        if (_runs.TryGetValue(sessionId, out var track))
+        {
+            FlushUsage(sessionId, track);
+            track.GoalId = goal.Id;
+        }
         TitleFrom(sessionId, text);
         if (!byModel) Kick(sessionId, goal, "set");
         return goal;

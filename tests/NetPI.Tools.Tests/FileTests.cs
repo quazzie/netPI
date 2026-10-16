@@ -1556,6 +1556,26 @@ public static class FileTests
             ToolCheck.Error(await T.Run(git, dir, new { action = "blame", path = "x.txt", start = 10, end = 5 }), "is before start");
         });
 
+        r.Add("git: a helper that holds the pipe after git exited does not turn the result into a timeout", async () =>
+        {
+            if (!OperatingSystem.IsWindows()) return; // the fake git is a batch file
+            var fake = T.TempDir("githelper");
+            var exe = Path.Combine(fake, "git.cmd");
+            File.WriteAllText(exe, "@echo off\r\nstart /b ping -n 5 127.0.0.1 > nul\r\necho from-git\r\nexit /b 0\r\n");
+            var (oldExe, oldTimeout, oldGrace) = (GitRunner.Executable, GitRunner.Timeout, GitRunner.DrainGrace);
+            try
+            {
+                GitRunner.Executable = exe; GitRunner.Timeout = TimeSpan.FromSeconds(3); GitRunner.DrainGrace = TimeSpan.FromMilliseconds(300);
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var res = await GitRunner.RunAsync(fake, CancellationToken.None, 0, "status");
+                Check.True(!res.TimedOut && !res.Aborted, "git exited 0: not a timeout");
+                Check.Equal(0, res.ExitCode);
+                Check.Contains(res.Stdout, "from-git");
+                Check.True(watch.Elapsed < TimeSpan.FromSeconds(2.6), "answered after the grace, not at the deadline: " + watch.Elapsed);
+            }
+            finally { (GitRunner.Executable, GitRunner.Timeout, GitRunner.DrainGrace) = (oldExe, oldTimeout, oldGrace); }
+        });
+
         r.Add("git: an answer over the tool result limit is cut, with the note that says what to narrow", async () =>
         {
             var settings = new FakeSettings();

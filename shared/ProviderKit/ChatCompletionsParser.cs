@@ -56,10 +56,13 @@ internal class ChatCompletionsParser(MessageAssembler asm, string provider, bool
     /// <summary>The usage one chunk reports.</summary>
     protected virtual Usage? ReadUsage(JsonElement usage)
     {
-        // prompt_tokens includes cache reads and writes, completion_tokens includes reasoning.
+        // prompt_tokens includes cache reads and writes, completion_tokens includes reasoning. DeepSeek reports its
+        // cache hits as prompt_cache_hit_tokens, not under prompt_tokens_details: without the details field the
+        // hits would count as fresh input.
         var prompt = usage.Long("prompt_tokens");
         var details = usage.Prop("prompt_tokens_details");
         var cached = details.Long("cached_tokens");
+        if (cached == 0) cached = usage.Long("prompt_cache_hit_tokens");
         var written = details.Long("cache_write_tokens");
         return new Usage
         {
@@ -201,8 +204,10 @@ internal class ChatCompletionsParser(MessageAssembler asm, string provider, bool
         if (call.Id is null && !string.IsNullOrEmpty(id)) call.Id = id;
         // A name can arrive in fragments ("wr" then "ite"): keep accumulating after the part exists, or the call is
         // dispatched under its first fragment. The part keeps the id it was started with, so the events already
-        // emitted for it (ToolCallStarted, ToolCallArgsDelta) and the persisted part still agree.
-        if (!string.IsNullOrEmpty(name)) call.Name += name;
+        // emitted for it (ToolCallStarted, ToolCallArgsDelta) and the persisted part still agree. A server that
+        // resends the full name in every chunk ("read" then "read") would double it: a fragment equal to the name
+        // already accumulated is not a fragment.
+        if (!string.IsNullOrEmpty(name) && (call.Name.Length == 0 || call.Name != name)) call.Name += name;
 
         if (call.Part is null && call.Name.Length > 0)
         {

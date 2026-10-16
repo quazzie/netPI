@@ -112,8 +112,8 @@ export function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-export function firstLine(s) {
-  if (!s) return '';
-  const i = s.indexOf('\n');
-  return i < 0 ? s : s.slice(0, i);
+/** The first non-empty line of a text, trimmed; with `max`, cut there with an ellipsis. */
+export function firstLine(s, max = Infinity) {
+  const line = String(s ?? '').split(/\r?\n/).find((x) => x.trim())?.trim() ?? '';
+  return line.length > max ? line.slice(0, max - 1) + '…' : line;
 }

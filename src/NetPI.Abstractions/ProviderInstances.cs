@@ -25,8 +25,13 @@ public static class ProviderInstances
         var list = new List<(string, JsonObject)>();
         if (settings.GetNode(Path) is JsonObject all)
             foreach (var (id, node) in all)
-                if (node is JsonObject o && (includeInvalidIds || ValidId(id)) && string.Equals((o["type"] as JsonValue)?.GetValue<string>(), type, StringComparison.OrdinalIgnoreCase))
+            {
+                if (node is not JsonObject o) continue;
+                if (!includeInvalidIds && !ValidId(id)) continue;
+                // A "type" that is not a string is not this type (GetValue<string> would throw on a number or object).
+                if (o["type"] is JsonValue v && v.TryGetValue<string>(out var t) && string.Equals(t, type, StringComparison.OrdinalIgnoreCase))
                     list.Add((id, o));
+            }
         return list;
     }
 

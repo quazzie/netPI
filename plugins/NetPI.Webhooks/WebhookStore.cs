@@ -27,7 +27,7 @@ internal sealed class WebhookStore(IPluginData data)
 
     private readonly IDataCollection _hooks = data.Collection("webhooks", new CollectionSpec().Text("projectId"));
     private readonly IDataCollection _runs = data.Collection("runs", new CollectionSpec().Text("webhookId").Integer("atMs").Text("key"));
-    private readonly IDataCollection _incidents = data.Collection("incidents", new CollectionSpec().Text("webhookId").Text("state").Integer("startAtMs").Integer("lastAtMs"));
+    private readonly IDataCollection _incidents = data.Collection("incidents", new CollectionSpec().Text("webhookId").Text("state").Integer("startAtMs").Integer("lastAtMs").Integer("awaiting"));
 
     public JsonObject? Get(string id) => _hooks.Get(id);
 
@@ -125,9 +125,11 @@ internal sealed class WebhookStore(IPluginData data)
         return [.. _incidents.Find(q).Select(d => d.Doc)];
     }
 
-    /// <summary>Open incidents whose chat is running or has not been judged finished yet: the loop watches these for the finished / asking / stalled hooks.</summary>
+    /// <summary>Open incidents whose chat is running or has not been judged finished yet: the loop watches these for the finished / asking / stalled hooks.
+    /// The awaiting flag is asked of the store (an index field), not filtered in memory: a backlog of open, unwatched incidents must not
+    /// push the watched ones out of the window.</summary>
     public IReadOnlyList<JsonObject> AwaitingIncidents() =>
-        [.. _incidents.Find(new DataQuery().Eq("state", Open).Take(500)).Select(d => d.Doc).Where(d => d["awaiting"] is JsonValue v && v.TryGetValue<bool>(out var b) && b)];
+        [.. _incidents.Find(new DataQuery().Eq("state", Open).Eq("awaiting", true).Take(500)).Select(d => d.Doc)];
 
     public bool AnyAwaiting() => AwaitingIncidents().Count > 0;
 

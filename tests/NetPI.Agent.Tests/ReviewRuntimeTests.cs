@@ -18,6 +18,7 @@ public static class ReviewRuntimeTests
         t.Add("review: agent_spawn batch with an unknown model starts none", SpawnBatchUnknownModel);
         t.Add("review: agent_spawn batch whose second spawn fails stops the first child", SpawnBatchRollback);
         t.Add("review: agent wait says why it returned (the user wrote)", WaitReasonUser);
+        t.Add("review: WaitAsync reports a timeout as its end", WaitEndTimeout);
         t.Add("review: agent list/result/wait show a subagent's cost", SubagentCost);
         t.Add("review: agent_spawn maxTurns ends the child's run at its cap", MaxTurns);
         t.Add("review: agent_spawn maxUsd refuses the call that would go over", MaxUsd);
@@ -131,7 +132,7 @@ public static class ReviewRuntimeTests
         public Task<AgentInfo> SendAsync(string sessionId, UserInput input, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => inner.SendAsync(sessionId, input, mode, ct);
         public Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default) =>
             Interlocked.Increment(ref _spawns) == 2 ? throw new InvalidOperationException("no room for a second one") : inner.SpawnAsync(request, ct);
-        public Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true, TimeSpan? timeout = null, CancellationToken ct = default, bool any = false) =>
+        public Task<AgentWaitResult> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true, TimeSpan? timeout = null, CancellationToken ct = default, bool any = false) =>
             inner.WaitAsync(callerAgentId, agentIds, yieldSlot, timeout, ct, any);
         public Task<bool> AbortAsync(string agentOrSessionId) => inner.AbortAsync(agentOrSessionId);
         public Task<bool> MessageAsync(string fromAgentId, string toAgentId, string text, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => inner.MessageAsync(fromAgentId, toAgentId, text, mode, ct);
@@ -206,6 +207,22 @@ public static class ReviewRuntimeTests
         Check.Contains(wait.Content, "the user wrote a message");
         Check.False(wait.Content.Contains("you asked for the first report"), "not the first-report text");
         Check.Equal("user", (string?)wait.Details!["reason"]);
+    }
+
+    private static async Task WaitEndTimeout()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Catalog.Handler = (r, ct) => IsChild(r) ? Reply.Text("slow", c => gate.Task.WaitAsync(c)) : Reply.Tool("agent_spawn", new { task = "slow", name = "slowpoke" });
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Runtime.List(true).Any(a => a.ParentAgentId != null), "the child started");
+        var child = h.Runtime.List(true).First(a => a.ParentAgentId != null);
+        var timedOut = await h.Runtime.WaitAsync(null, [child.Id], yieldSlot: false, TimeSpan.FromMilliseconds(200), CancellationToken.None);
+        Check.Equal(AgentWaitEnd.Timeout, timedOut.End, "the timeout ended it");
+        gate.TrySetResult();
+        var done = await h.Runtime.WaitAsync(null, [child.Id], yieldSlot: false, null, CancellationToken.None);
+        Check.Equal(AgentWaitEnd.Report, done.End, "the finished run ended it");
     }
 
     private static void Priced(TestHost h) =>

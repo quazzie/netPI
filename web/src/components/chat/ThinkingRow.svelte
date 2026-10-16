@@ -4,6 +4,7 @@
   import { renderMarkdown } from '../../lib/markdown.js';
   import { prefs } from '../../lib/state/ui.svelte.js';
   import { duration } from '../../lib/format.js';
+  import { splitLive } from '../../lib/live.js';
 
   /**
    * A thinking step. step.stream is set while the answer streams: the line then shows a spinner, the time so far and the
@@ -41,13 +42,30 @@
   const live = $derived(!!s && !s.thinkingEndedAt);
   const liveMs = $derived(s?.thinkingStartedAt ? (s.thinkingEndedAt || now) - s.thinkingStartedAt : 0);
 
-  let liveHtml = $state('');
+  // like AssistantText: the finished blocks are rendered once, only the block being written again (splitLive)
+  let blocks = $state.raw([]);
+  let tail = $state('');
+  let cut = 0;
+  let done = ''; // the text the finished blocks were rendered from (a stream that restarts invalidates them)
+  const liveHtml = $derived(blocks.join('') + tail);
   let timer = 0;
   let last = 0;
   function render() {
     timer = 0;
     last = performance.now();
-    liveHtml = renderMarkdown(p.text, { cache: false });
+    const text = p.text;
+    if (cut && !text.startsWith(done)) {
+      blocks = [];
+      cut = 0;
+      done = '';
+    }
+    const at = splitLive(text);
+    if (at > cut) {
+      blocks = [...blocks, renderMarkdown(text.slice(cut, at), { cache: false })];
+      cut = at;
+      done = text.slice(0, at);
+    }
+    tail = renderMarkdown(text.slice(cut), { cache: false });
   }
   $effect(() => {
     const t = p.text;

@@ -197,30 +197,40 @@ public sealed class DiagnosticsService(IPluginContext ctx)
             var plugins = pm.List().Where(p => p.Enabled && p.State != "disabled").OrderBy(p => p.Order).ThenBy(p => p.Id).ToList();
             var self = plugins.FirstOrDefault(p => p.Id == ctx.PluginId);
             var logger = ctx.Logger;
-            // Background: reloading ourselves disposes this RPC handler; do it last.
-            _ = Task.Run(async () =>
+            // Background: reloading ourselves disposes this RPC handler; do it last. The plugin's stopping token ends the work
+            // when the plugin goes away, and a fault of the task itself is observed and logged.
+            Observe(Task.Run(async () =>
             {
-                try { await pm.RescanAsync(CancellationToken.None).ConfigureAwait(false); }
+                try { await pm.RescanAsync(ctx.Stopping).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
                 catch (Exception ex) { logger.LogWarning(ex, "Plugin rescan failed"); }
                 foreach (var p in plugins)
                 {
                     if (p == self) continue;
-                    try { await pm.ReloadAsync(p.Id, CancellationToken.None).ConfigureAwait(false); }
+                    try { await pm.ReloadAsync(p.Id, ctx.Stopping).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { }
                     catch (Exception ex) { logger.LogWarning(ex, "Reloading {Plugin} failed", p.Id); }
                 }
                 if (self is not null)
                 {
-                    try { await pm.ReloadAsync(self.Id, CancellationToken.None).ConfigureAwait(false); }
+                    try { await pm.ReloadAsync(self.Id, ctx.Stopping).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { }
                     catch (Exception ex) { logger.LogWarning(ex, "Reloading {Plugin} failed", self.Id); }
                 }
-            }, CancellationToken.None);
+            }, ctx.Stopping), logger);
             return $"Reloading {plugins.Count} plugins…";
         }
 
         var target = FindPlugin(pm.List(), arg);
         if (target.Id == ctx.PluginId)
         {
-            _ = Task.Run(() => pm.ReloadAsync(target.Id, CancellationToken.None), CancellationToken.None);
+            // The same, for a single plugin: the stopping token ends it with the plugin, and a fault is observed and logged.
+            Observe(Task.Run(async () =>
+            {
+                try { await pm.ReloadAsync(target.Id, ctx.Stopping).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { ctx.Logger.LogWarning(ex, "Reloading {Plugin} failed", target.Id); }
+            }, ctx.Stopping), ctx.Logger);
             return $"Reloading {target.Name} ({target.Id})…";
         }
         await pm.ReloadAsync(target.Id, ct).ConfigureAwait(false);
@@ -228,6 +238,16 @@ public sealed class DiagnosticsService(IPluginContext ctx)
         return after is { State: "failed" }
             ? $"Reloaded {target.Id}, but it failed to start: {after.Error}"
             : $"Reloaded {target.Name} ({target.Id})";
+    }
+
+    /// <summary>A background reload task the RPC has already answered: a fault of the task itself (not of one reload inside it) is
+    /// logged, not lost.</summary>
+    private static void Observe(Task task, ILogger logger)
+    {
+        _ = task.ContinueWith(t =>
+        {
+            if (t.Exception is not null) logger.LogWarning(t.Exception, "The plugin reload failed");
+        }, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
     }
 
     /// <summary>Exact id, case-insensitive id or name, id suffix ("retry" → "netpi.retry"), or a unique substring.</summary>

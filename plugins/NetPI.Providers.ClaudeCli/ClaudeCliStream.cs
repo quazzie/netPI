@@ -25,6 +25,9 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
     private readonly Usage _usage = new();
     private bool _streamed;
     private bool _sawUsage;
+    /// <summary>The sum of the turns' <c>message_delta</c> output readings: the whole-call output when the result
+    /// line does not carry its own total.</summary>
+    private long _turnOutput;
     public bool Finished { get; private set; }
     /// <summary>The init line's apiKeySource: anything but "none" means the CLI would bill an API key.</summary>
     public string? ApiKeySource { get; private set; }
@@ -133,6 +136,7 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
             }
             case "message_delta":
                 ApplyUsage(e.Obj("usage"));
+                if (e.Obj("usage")?.Int("output_tokens") is { } o && o > 0) _turnOutput += o;
                 if (e.Obj("delta").Str("stop_reason") == "max_tokens") asm.StopReason = "length";
                 break;
         }
@@ -224,8 +228,17 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
             throw new ModelException($"Claude CLI: {msg}", status is >= 500 && !RanTools && !limited, status, limited ? "rate_limit" : AssistantError ?? o.Str("terminal_reason") ?? o.Str("subtype"));
         }
         if (!asm.HasContent && !string.IsNullOrEmpty(text)) asm.AddText(text);
-        // The result's usage adds up every turn of the CLI's own tool loop; the last turn's, from the stream, is the size of the context.
-        if (!_sawUsage) ApplyUsage(o.Obj("usage"));
+        // The stream's per-turn readings are the size of the context (input and cache from the last turn); the
+        // output is the total over the CLI's own tool loop: the result line's own number when it has one, else the
+        // sum of the turns' message_delta readings.
+        var resultUsage = o.Obj("usage");
+        if (_sawUsage)
+        {
+            if (resultUsage?.Int("output_tokens") is { } total && total > 0) _usage.OutputTokens = total;
+            else _usage.OutputTokens = _turnOutput;
+            asm.SetUsage(_usage);
+        }
+        else ApplyUsage(resultUsage);
         // the calls were run by the CLI: this message is the answer, not a request for tools
         asm.StopReason ??= "stop";
     }

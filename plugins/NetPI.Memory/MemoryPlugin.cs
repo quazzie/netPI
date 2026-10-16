@@ -38,7 +38,7 @@ public sealed class MemoryPlugin : INetPiPlugin
             var hits = await index.SearchAsync(query, r.Int("limit") ?? 5, r.Str("projectId"), r.Str("excludeSessionId"), rct).ConfigureAwait(false);
             return new JsonObject { ["available"] = hits is not null, ["chats"] = MemoryIndex.Json(hits ?? []) };
         });
-        context.Rpc.Register(new RpcMethod("memory.reindex", "Embed the chats that changed since they were last embedded, now: { } → { enabled, indexed?, unchanged?, removed? }", ReadOnly: false, Params: []),
+        context.Rpc.Register(new RpcMethod("memory.reindex", "Embed the chats that changed since they were last embedded, now: { } → { enabled, indexed?, unchanged?, removed?, skipped? }", ReadOnly: false, Params: []),
             async (_, rct) => await index.SweepAsync(rct).ConfigureAwait(false));
         // the host publishes { id } as the payload (no session on the envelope), like sessions.delete does
         context.Track(context.Events.Subscribe(EventTypes.SessionDeleted, e => index.Forget(e.As<JsonObject>()?["id"]?.GetValue<string>() ?? e.SessionId)));
@@ -101,25 +101,36 @@ internal sealed class MemoryIndex : IDisposable
             var cache = Load();
             var sessions = AllChats();
             var maxChunks = Math.Clamp(_ctx.Settings.GetOr("memory.maxChunksPerChat", DefaultMaxChunks), 4, 200);
-            int indexed = 0, unchanged = 0, removed = 0;
+            int indexed = 0, unchanged = 0, removed = 0, skipped = 0;
             foreach (var session in sessions)
             {
                 ct.ThrowIfCancellationRequested();
-                var rev = $"{session.MessageCount}:{session.UpdatedAt.ToUnixTimeSeconds()}:{maxChunks}";
-                if (cache.TryGetValue(session.Id, out var have) && have.Model == model && have.Rev == rev) { unchanged++; continue; }
-                var chunks = Chunks(session, _ctx.Sessions.GetMessages(session.Id), maxChunks);
-                if (chunks.Count == 0) { unchanged++; continue; }
-                var result = await service.EmbedAsync(new EmbeddingRequest { Texts = chunks, Background = true }, ct).ConfigureAwait(false);
-                var entry = new Entry(result.Model, rev, session.Title, session.ProjectId, session.UpdatedAt.ToString("O"),
-                    chunks.Select(c => c.Length > 400 ? c[..400] + "…" : c).ToArray(), result.Vectors.ToArray());
-                _store.Put(session.Id, new JsonObject
+                try
                 {
-                    ["model"] = entry.Model, ["rev"] = rev, ["title"] = entry.Title, ["projectId"] = entry.ProjectId, ["updatedAt"] = entry.UpdatedAt,
-                    ["snippets"] = new JsonArray(entry.Snippets.Select(s => (JsonNode)s).ToArray()),
-                    ["vectors"] = new JsonArray(entry.Vectors.Select(v => (JsonNode)VectorMath.Pack(v)).ToArray()),
-                });
-                lock (_gate) if (_cache is not null) _cache[session.Id] = entry;
-                indexed++;
+                    var rev = $"{session.MessageCount}:{session.UpdatedAt.ToUnixTimeSeconds()}:{maxChunks}";
+                    if (cache.TryGetValue(session.Id, out var have) && have.Model == model && have.Rev == rev) { unchanged++; continue; }
+                    var chunks = Chunks(session, _ctx.Sessions.GetMessages(session.Id), maxChunks);
+                    if (chunks.Count == 0) { unchanged++; continue; }
+                    var result = await service.EmbedAsync(new EmbeddingRequest { Texts = chunks, Background = true }, ct).ConfigureAwait(false);
+                    var entry = new Entry(result.Model, rev, session.Title, session.ProjectId, session.UpdatedAt.ToString("O"),
+                        chunks.Select(c => c.Length > 400 ? c[..400] + "…" : c).ToArray(), result.Vectors.ToArray());
+                    _store.Put(session.Id, new JsonObject
+                    {
+                        ["model"] = entry.Model, ["rev"] = rev, ["title"] = entry.Title, ["projectId"] = entry.ProjectId, ["updatedAt"] = entry.UpdatedAt,
+                        ["snippets"] = new JsonArray(entry.Snippets.Select(s => (JsonNode)s).ToArray()),
+                        ["vectors"] = new JsonArray(entry.Vectors.Select(v => (JsonNode)VectorMath.Pack(v)).ToArray()),
+                    });
+                    lock (_gate) if (_cache is not null) _cache[session.Id] = entry;
+                    indexed++;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    // A chat that cannot be embedded (unreadable messages, a model that refuses it) is skipped and named:
+                    // the sweep keeps going, and the answer says how many were left out.
+                    skipped++;
+                    _ctx.Logger.LogWarning("Memory: the chat {Session} \"{Title}\" was not indexed: {Message}", session.Id, session.Title, ex.Message);
+                }
             }
             var live = sessions.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
             foreach (var gone in cache.Keys.Where(k => !live.Contains(k) && _ctx.Sessions.GetSession(k) is null).ToList())
@@ -128,7 +139,7 @@ internal sealed class MemoryIndex : IDisposable
                 removed++;
             }
             if (indexed + removed > 0) _ctx.Logger.LogInformation("Memory: embedded {Indexed} chats, removed {Removed} ({Model})", indexed, removed, model);
-            return new JsonObject { ["enabled"] = true, ["model"] = model, ["indexed"] = indexed, ["unchanged"] = unchanged, ["removed"] = removed };
+            return new JsonObject { ["enabled"] = true, ["model"] = model, ["indexed"] = indexed, ["unchanged"] = unchanged, ["removed"] = removed, ["skipped"] = skipped };
         }
         finally { _sweeping.Release(); }
     }

@@ -14,17 +14,27 @@ internal readonly record struct SseEvent(string? Event, string Data, string? Id 
 /// <summary>Minimal, allocation-light SSE reader (spec-compliant plus a few tolerances for sloppy servers).</summary>
 internal static class SseReader
 {
-    public static async IAsyncEnumerable<SseEvent> ReadAsync(Stream stream, [EnumeratorCancellation] CancellationToken ct = default)
+    /// <summary>The longest one SSE line may be (in chars). A server that does not end its line is not streaming,
+    /// and reading it unbounded would fill the process's memory: past the cap the stream is a provider error.</summary>
+    public const int MaxLineLength = 16 * 1024 * 1024;
+
+    public static async IAsyncEnumerable<SseEvent> ReadAsync(Stream stream, [EnumeratorCancellation] CancellationToken ct = default,
+        string? provider = null)
     {
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 16 * 1024, leaveOpen: true);
         string? evt = null, id = null;
         var data = new StringBuilder();
         var hasData = false;
+        var buf = new char[16 * 1024];
+        int pos = 0, len = 0;
+        var skipLf = false;   // the last line ended in \r: a \n that follows is part of that ending
+        var lineBuf = new StringBuilder();
 
         while (true)
         {
-            var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
-            if (line is null) break;
+            var next = await NextLine();
+            if (next is null) break;
+            var line = next;
 
             if (line.Length == 0)
             {
@@ -65,6 +75,43 @@ internal static class SseReader
             }
         }
         if (hasData) yield return new SseEvent(evt, data.ToString(), id);
+
+        // A line reader over our own buffer (ReadLineAsync would grow a line without limit): \n, \r and \r\n end a line,
+        // a line ending in \r is returned at once (no read-ahead that would hold an event until the next byte), and a
+        // line past the cap is the provider's problem, not the process's memory.
+        async Task<string?> NextLine()
+        {
+            lineBuf.Clear();
+            while (true)
+            {
+                if (pos == len)
+                {
+                    len = await reader.ReadAsync(buf.AsMemory(), ct).ConfigureAwait(false);
+                    pos = 0;
+                    if (len == 0) return lineBuf.Length == 0 ? null : lineBuf.ToString();
+                }
+                if (skipLf)
+                {
+                    skipLf = false;
+                    if (buf[pos] == '\n') { pos++; continue; }
+                }
+                var span = buf.AsSpan(pos, len - pos);
+                var end = span.IndexOfAny('\r', '\n');
+                if (end < 0)
+                {
+                    lineBuf.Append(span);
+                    pos = len;
+                }
+                else
+                {
+                    lineBuf.Append(span[..end]);
+                    skipLf = span[end] == '\r';
+                    pos += end + 1;
+                }
+                if (lineBuf.Length > MaxLineLength) throw ProviderErrors.SseLineTooLong(provider, MaxLineLength);
+                if (end >= 0) return lineBuf.ToString();
+            }
+        }
     }
 
     private static bool LooksComplete(StringBuilder sb)

@@ -785,7 +785,7 @@ details: { items: { text, status }[], done, total }
 
 `plugins/NetPI.Ask`. `{ questions: { question, options?: { label, description? }[], multiple? }[] }` (1 to 4 questions,
 at most 8 options each; a question up to 1000 characters, an option label up to 400 and its description up to 600,
-longer text cut with a `…`) asks the user and waits for the answers. The label is what the user picks, so it carries the
+longer text cut with a `…`; a question without text or an entry that is no string or object is an error naming it, never dropped) asks the user and waits for the answers. The label is what the user picks, so it carries the
 choice itself and the description what it means — the card wraps both. The questions appear in the chat below the agent's
 message, and the run ends at the call (a wait for the user, `UserWait` kind `ask`, docs/PLUGINS.md "Waiting for the
 user"): the agent shows as yielded, "waiting for your answer", holding no instance and no reload, and the chat goes on
@@ -834,7 +834,7 @@ that started a research subagent) is in plan mode, and the provider then gives t
 ### `plan_submit`
 
 `{ title, summary?, steps: (string | { text, detail? })[], files?: (string | { path, note? })[], risks?, tests?, openQuestions?: string[] }`
-(lenient: `step`/`task`, `file`/`what`, a JSON string; at most 40 steps, 60 files, 20 of each list). Stores the plan as the chat's
+(lenient: `step`/`task`, `file`/`what`, a JSON string; at most 40 steps, 60 files, 20 of each list; more steps or files is an error naming the limit, not a cut). Stores the plan as the chat's
 next revision (the same plan again, as after a stop, is not a new revision) and waits for the user's decision: a wait for the user
 (`UserWait` kind `plan`, "waiting for your decision on the plan"), so the run ends at the call holding nothing, the decision is its
 result in the run that goes on, and it survives a reload of the plugin or the runtime and a restart. Only in plan mode, only the main
@@ -906,8 +906,7 @@ that agent: at the cap the run fails with "Stopped: this run reached its maxTurn
 Agents ledger where a call is reserved: the child's own calls so far (calls in flight at their reservation) plus this call's
 reservation may not exceed it; a paid call that would is refused, the child ends `failed` with "Stopped: its maxUsd of $X is spent
 …" (a model with an unknown price cannot be capped and is refused too; free and local models are never stopped by it).
-Subagents of the child have their own caps. The runtime takes both from a `JsonObject` feature of `SpawnRequest.Features`
-(`maxUsd`, `maxTurns`): `SpawnRequest` has no field for them.
+Subagents of the child have their own caps. They are `SpawnRequest.MaxUsd` and `SpawnRequest.MaxTurns`.
 
 Where the caller's model is inherited, it means the effective model: the session's explicit model, otherwise its
 named agent's model, otherwise the catalog default. Turns, delegation and manual compaction use the same
@@ -943,9 +942,8 @@ tool through subagents, and `agent_choices` belongs to another plugin.
 instance is free for them meanwhile and it queues for one again first among the runs of its own priority. Without ids: all of the caller's running subagents, plus
 finished ones whose `agent-result` notice is still queued unseen (the report comes back here and the queued notice is
 dropped, so it arrives once). A new user message interrupts the wait. When agents are still running the text says why it
-returned (the first report arrived / the user wrote / the hour passed / interrupted: `details.reason` is `report`, `user`,
-`timeout` or `interrupted`; the runtime's `WaitAsync` does not report it, the tool reads it from what the wait left: a finished agent,
-else a user message queued for the chat, else the elapsed time). `details`: `{ agents: [{ agentId, sessionId, name, status, costUsd?, withSubagentsUsd? }], reason }`.
+returned (the first report arrived / the user wrote / the hour passed: `details.reason` is `report`, `user`, `timeout`; `cancelled` if the
+wait's token was cancelled). The runtime says it: `IAgentRuntime.WaitAsync` returns an `AgentWaitResult` (`Agents`, `End`: `Report`, `UserMessage`, `Timeout`, `Cancelled`). `details`: `{ agents: [{ agentId, sessionId, name, status, costUsd?, withSubagentsUsd? }], reason }`.
 
 `agent` `list`, `result` and `wait` show each subagent's spend (`$0.42`, with `($1.10 with its subagents)` when it has some, `free`
 when its calls cost nothing; left out before its first call) from the Agents plugin's `usage.session`, and put `costUsd` and
@@ -996,7 +994,7 @@ so it would pass, a warning the summary does not deal with (`OVER BUDGET`), a cl
 goal that cannot be finished by its nature. Gaps refuse the completion (an error result listing them; the goal stays
 active and the agent goes on); a second refusal in a row blocks the goal for the user with the gaps as its reason
 (`refusals` in the goal counts them; resume resets it), so the two never loop. A pass closes the goal and says so in
-the result; a review that cannot run (no model, an error) never holds a completion back and says that instead.
+the result; a review that cannot run (no model, an error) or answers without an explicit `PASS`/`GAPS` (empty, no verdict) never holds a completion back: the result says it was not reviewed.
 
 ### `goal_set` (summary arg `objective`)
 

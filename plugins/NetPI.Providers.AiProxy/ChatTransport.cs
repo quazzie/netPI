@@ -67,6 +67,4 @@ internal sealed class ChatStreamParser(MessageAssembler asm, string provider, bo
             ? reasoning
             : delta.Str("reasoning");
     }
-
-    protected override Usage? ReadUsage(JsonElement usage) => OpenAiCommon.ChatUsage(usage);
 }

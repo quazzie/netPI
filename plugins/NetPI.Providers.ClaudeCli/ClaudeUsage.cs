@@ -160,7 +160,7 @@ public sealed class ClaudeUsageTracker(Action<JsonObject>? persist = null, ILogg
             {
                 "five_hour" => ("session", "Session (5-hour window)"),
                 "seven_day" => ("weekly_all", "Week (all models)"),
-                _ when name.StartsWith("seven_day_", StringComparison.Ordinal) =>
+                _ when name.StartsWith("seven_day_", StringComparison.Ordinal) && name.Length > 10 =>
                     ($"weekly_{name[10..]}", $"Week ({char.ToUpperInvariant(name[10])}{name[11..]})"),
                 _ => (null, null),
             };

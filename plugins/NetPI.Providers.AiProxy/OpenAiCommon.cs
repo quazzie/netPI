@@ -41,19 +41,4 @@ internal static class OpenAiCommon
             ReasoningTokens = u.Prop("output_tokens_details").Long("reasoning_tokens"),
         };
     }
-
-    /// <summary>Chat usage: prompt_tokens includes cached tokens (prompt_tokens_details.cached_tokens or DeepSeek's prompt_cache_hit_tokens).</summary>
-    public static Usage ChatUsage(JsonElement u)
-    {
-        var prompt = u.Long("prompt_tokens");
-        var cached = u.Prop("prompt_tokens_details").Long("cached_tokens");
-        if (cached == 0) cached = u.Long("prompt_cache_hit_tokens");
-        return new Usage
-        {
-            InputTokens = Math.Max(0, prompt - cached),
-            CacheReadTokens = cached,
-            OutputTokens = u.Long("completion_tokens"),
-            ReasoningTokens = u.Prop("completion_tokens_details").Long("reasoning_tokens"),
-        };
-    }
 }

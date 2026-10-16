@@ -115,7 +115,6 @@ public interface IWorkspaceResolver
 {
     /// <summary>The session's workspace, or null when it is not bound to one (legacy behavior: its project path).</summary>
     WorkspaceBinding? Resolve(SessionInfo? session);
-    WorkspaceBinding? ResolveById(string workspaceId);
     /// <summary>The session's workspace, or a clear failure when it is bound to one that is missing or invalid.</summary>
     WorkspaceBinding Require(SessionInfo session);
     /// <summary>

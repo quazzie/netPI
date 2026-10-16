@@ -55,16 +55,28 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
                 return ValueTask.FromResult<IDisposable>(h);
             }
             w = new Waiter(owner, reason);
-            _waiters.Add(w);
         }
+        // Register BEFORE the waiter is published: the admit path (EndApply) disposes the registration of every waiter it
+        // admits, so it must already be set - a registration assigned after the admit would stay on ct until it is disposed.
         if (ct.CanBeCanceled)
         {
             w.Registration = ct.Register(() =>
             {
-                bool removed;
-                lock (_lock) removed = _waiters.Remove(w);
-                if (removed) w.Done.TrySetCanceled(ct);
+                lock (_lock)
+                    if (_waiters.Remove(w)) w.Done.TrySetCanceled(ct);
             });
+        }
+        lock (_lock)
+        {
+            // Cancelled in the meantime (between the registration and the publish): the callback found no waiter to remove,
+            // so complete the task here and do not publish it.
+            if (ct.IsCancellationRequested)
+            {
+                w.Registration.Dispose();
+                w.Done.TrySetCanceled(ct);
+                return new ValueTask<IDisposable>(w.Done.Task);
+            }
+            _waiters.Add(w);
         }
         return new ValueTask<IDisposable>(w.Done.Task);
     }

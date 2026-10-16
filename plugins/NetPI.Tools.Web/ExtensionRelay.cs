@@ -30,6 +30,10 @@ internal sealed class ExtensionRelay : ICdp
     private WebSocket? _socket;
     private int _id;
 
+    /// <summary>The cap on one message the extension may send: a runaway (or malicious) tab must not stream unbounded
+    /// data into the relay's buffer; past it the socket is closed with the standard 1009.</summary>
+    private const long MaxMessageBytes = 16 * 1024 * 1024;
+
     public ExtensionRelay(IPluginContext ctx, BrowserHost host)
     {
         _ctx = ctx;
@@ -139,6 +143,13 @@ internal sealed class ExtensionRelay : ICdp
             var r = await ws.ReceiveAsync(buffer, ct).ConfigureAwait(false);
             if (r.MessageType == WebSocketMessageType.Close) break;
             message.Write(buffer, 0, r.Count);
+            if (message.Length > MaxMessageBytes)
+            {
+                _ctx.Logger.LogWarning("browser: the extension sent a message larger than {Bytes} bytes; the relay closed it", MaxMessageBytes);
+                try { await ws.CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too large", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+                catch (Exception) { }
+                return;
+            }
             if (!r.EndOfMessage) continue;
             var bytes = message.ToArray();
             message.SetLength(0);

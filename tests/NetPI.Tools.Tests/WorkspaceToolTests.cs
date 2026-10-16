@@ -234,8 +234,6 @@ public static class WorkspaceToolTests
             catch (WorkspaceUnavailableException) { return null; }
         }
 
-        public WorkspaceBinding? ResolveById(string workspaceId) => Get(workspaceId) is { } w ? Bind(w) : null;
-
         public WorkspaceBinding Require(SessionInfo session) => Resolve(session)
             ?? throw new WorkspaceUnavailableException("this session has no workspace");
 

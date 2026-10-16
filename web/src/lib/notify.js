@@ -17,9 +17,3 @@ export function onNotificationClick(open) {
     if (e.data?.type === 'openSession' && typeof e.data.sessionId === 'string') open(e.data.sessionId);
   });
 }
-
-/** The first line of a text, shortened for a notification. */
-export function firstLine(text, max = 160) {
-  const line = String(text ?? '').trim().split(/\r?\n/)[0] ?? '';
-  return line.length > max ? line.slice(0, max - 1) + '…' : line;
-}
