@@ -96,3 +96,10 @@ test('turnStats: the prompt with its cache, and the speed after the first token'
   assert.equal(cachedText({ cachedPct: 0.999 }), '99%', 'a prompt not all reused never reads 100%');
   assert.equal(turnStats({ usage: { outputTokens: 5 }, meta: { ttftMs: 100 }, durationMs: 1000 }).tps, null, 'too few tokens for a speed');
 });
+
+test('firstLine: the first non-empty line, trimmed, cut with an ellipsis when asked', async () => {
+  const { firstLine } = await import('../src/lib/format.js');
+  assert.equal(firstLine('\n  \n  hello \nworld'), 'hello');
+  assert.equal(firstLine('x'.repeat(10), 5), 'xxxx…');
+  assert.equal(firstLine(null), '');
+});

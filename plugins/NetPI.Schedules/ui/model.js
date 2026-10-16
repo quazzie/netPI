@@ -25,10 +25,13 @@ export function formToCadence(f) {
   return c;
 }
 
-/** Two cadence objects, the same schedule? (The form sends a cadence only when it changed.) */
+/**
+ * Two cadence objects in the RPC shape (`at`), the same schedule? (The form sends a cadence only when it changed.) A
+ * once is compared as the form shows it, to the minute: the form cannot send back the seconds a stored time has.
+ */
 export function cadenceChanged(a, b) {
   if (a.kind !== b.kind) return true;
-  if (a.kind === 'once') return new Date(a.at).getTime() !== new Date(b.at).getTime();
+  if (a.kind === 'once') return cadenceToForm(a).atLocal !== cadenceToForm(b).atLocal;
   if (a.kind === 'every') return Number(a.minutes) !== Number(b.minutes);
   return (a.time || '09:00') !== (b.time || '09:00') || (a.tz || '') !== (b.tz || '');
 }
@@ -122,7 +125,7 @@ function short(r) {
 }
 
 /** "2026-10-07T07:30:00.000Z" → "2026-10-07T07:30" in the browser's zone, for <input type="datetime-local">. */
-function toLocalInput(d) {
+export function toLocalInput(d) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }

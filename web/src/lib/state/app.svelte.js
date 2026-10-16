@@ -4,11 +4,15 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { rpc, subscribe, onOpen, connect } from '../rpc.svelte.js';
 import { bus } from '../bus.js';
 import { load, save, persist, fetchRemote } from '../persist.js';
-import { getChat, peekChat, dropChat, allChats } from './chat.svelte.js';
+import { getChat, peekChat, pinChat, dropChat, allChats } from './chat.svelte.js';
 import { toast, syncUiStateFromHost, composer, openView } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
-import { notify, onNotificationClick, firstLine } from '../notify.js';
+import { notify, onNotificationClick } from '../notify.js';
+import { firstLine as firstLineOf } from '../format.js';
+import { BUSY } from '../runStatus.js';
+
+const firstLine = (text) => firstLineOf(text, 160); // notification bodies
 import { loadAsks, askEvent, pendingIn, approvalIn, budgetIn, budgetStop, pruneSession } from './asks.svelte.js';
 import { loadPlans, planEvent, planWaiting, offerWaiting, prunePlans } from './plans.svelte.js';
 import { loadScheduleProposals, scheduleEvent, pruneScheduleProposals, proposalIn } from './schedules.svelte.js';
@@ -41,6 +45,19 @@ class AppState {
   sessionsById = $derived(new Map(this.sessions.map((s) => [s.id, s])));
   projectsById = $derived(new Map(this.projects.map((p) => [p.id, p])));
   modelsByRef = $derived(new Map(this.models.map((m) => [m.ref ?? `${m.provider}/${m.id}`, m])));
+  // parent session id -> its subagents still at work (one pass over the agents, not one per asking row)
+  busyKids = $derived.by(() => {
+    const m = new Map();
+    for (const x of this.agents.values()) {
+      if (!x.parentSessionId || !BUSY.has(x.status)) continue;
+      const l = m.get(x.parentSessionId);
+      if (l) l.push(x);
+      else m.set(x.parentSessionId, [x]);
+    }
+    return m;
+  });
+  // session id -> tab-dot status, for the lists that show many sessions (see sessionStatus)
+  statusById = $derived(new Map(this.sessions.map((s) => [s.id, computeStatus(s.id)])));
   activeSession = $derived(this.activeId ? (this.sessionsById.get(this.activeId) ?? null) : null);
   // the project the user last worked in (the active session's, kept while no session is active)
   lastProjectId = $state(load('netpi.lastProject', null));
@@ -104,7 +121,6 @@ export async function loadWorkspace(sessionId) {
   }
 }
 
-const BUSY = new Set(['running', 'queued', 'yielded']);
 export function isBusy(sessionId) {
   const a = app.agents.get(sessionId);
   return !!a && BUSY.has(a.status);
@@ -117,13 +133,15 @@ export function isBusy(sessionId) {
 export function waitingOn(sessionId) {
   const a = app.agents.get(sessionId);
   if (a && BUSY.has(a.status)) return [];
-  const kids = [];
-  for (const x of app.agents.values()) if (x.parentSessionId === sessionId && BUSY.has(x.status)) kids.push(x);
-  return kids;
+  return app.busyKids.get(sessionId) ?? [];
 }
 
 /** Status for tab dots: asking (a question, or a tool call, waits for the user) | running | queued | yielded | waiting (on its subagents) | error | unread | idle */
 export function sessionStatus(sessionId) {
+  return app.statusById.get(sessionId) ?? computeStatus(sessionId);
+}
+
+function computeStatus(sessionId) {
   if (pendingIn(sessionId) || approvalIn(sessionId) || planWaiting(sessionId) || offerWaiting(sessionId) || proposalIn(sessionId) || budgetIn(sessionId)) return 'asking';
   const a = app.agents.get(sessionId);
   if (a) {
@@ -262,9 +280,9 @@ async function loadAgents() {
     app.agents.clear();
     for (const a of list ?? []) setAgentNow(a);
     return new Map((list ?? []).map((a) => [a.sessionId, a]));
-  } catch {
-    /* agent plugin missing */
-    app.agents.clear();
+  } catch (e) {
+    // agent plugin missing: nothing runs. A timeout or a lost connection says nothing of the runs: keep what is known.
+    if (e?.code === 'not_found') app.agents.clear();
     return null;
   } finally {
     // a load that started after this one holds the buffer now, and replays it over its own answer
@@ -357,6 +375,7 @@ async function loadAll({ reconnect }) {
 // after a reconnect): its messages, and while its run is busy what its answer has streamed so far, which an unsubscribed
 // page has missed. It is subscribed before this (resubscribe), so the copy and the live events meet.
 function showChat(c) {
+  pinChat(c.id);
   if (c.loaded && !c.stale) {
     // a loaded chat whose run is busy but whose stream is not active has missed the answer in flight (its store was
     // evicted and re-created, or reloaded stale): catch it up so the live answer is not invisible until it ends

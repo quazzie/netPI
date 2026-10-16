@@ -1,4 +1,6 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging.Abstractions;
+using NetPI.Host.Storage.Sqlite;
 
 namespace NetPI.Storage.Tests;
 
@@ -241,6 +243,22 @@ public static class MessageTests
             Check.Equal(null, store.Sessions.GetMessage(store.Sessions.GetMessages("s1")[0].Id)!.Meta, "the other message is not touched");
             store.Sessions.UpdateMessageMeta(second.Id, null);
             Check.Equal(null, store.Sessions.GetMessage(second.Id)!.Meta);
+        });
+
+        r.Add("[sqlite] messages: a role that no longer parses is a data error naming the row", () =>
+        {
+            var home = T.TempDir("corrupt-role-sqlite");
+            using var store = new SqliteStorageProvider().Open(new StorageOpenOptions
+            {
+                Home = home, Logger = NullLogger.Instance, Settings = new EmptySettings(),
+            });
+            store.Sessions.InsertSession(Build.Session("s1"));
+            Build.Append(store, "s1", "hi");
+            using var raw = new Database(Path.Combine(home, "netpi.db"));
+            raw.Execute("UPDATE messages SET role = 'warp' WHERE session_id = @id", new { id = "s1" });
+            var failure = Check.Throws<InvalidDataException>(() => store.Sessions.GetMessages("s1"));
+            Check.Contains(failure.Message, "message", "the error names the row: " + failure.Message);
+            Check.Contains(failure.Message, "'warp'", "and the role it found: " + failure.Message);
         });
     }
 

@@ -317,11 +317,19 @@ internal sealed class LspTool(LspPool pool) : IAgentTool
         {
             using var git = Process.Start(psi);
             if (git is null) return null;
-            var output = git.StandardOutput.ReadToEndAsync(ct);
-            var errors = git.StandardError.ReadToEndAsync(ct); // read as well, so a chatty git never blocks on a full pipe
-            await git.WaitForExitAsync(ct).ConfigureAwait(false);
-            await errors.ConfigureAwait(false);
-            return git.ExitCode == 0 ? await output.ConfigureAwait(false) : null;
+            try
+            {
+                var output = git.StandardOutput.ReadToEndAsync(ct);
+                var errors = git.StandardError.ReadToEndAsync(ct); // read as well, so a chatty git never blocks on a full pipe
+                await git.WaitForExitAsync(ct).ConfigureAwait(false);
+                await errors.ConfigureAwait(false);
+                return git.ExitCode == 0 ? await output.ConfigureAwait(false) : null;
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!git.HasExited) git.Kill(entireProcessTree: true); } catch { /* gone */ }
+                throw;
+            }
         }
         catch (System.ComponentModel.Win32Exception) { return null; }
     }

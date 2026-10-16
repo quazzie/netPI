@@ -72,6 +72,13 @@ test('cadenceChanged sees a real change only', () => {
   assert.equal(cadenceChanged({ kind: 'once', at: '2026-10-20T07:30:00Z' }, { kind: 'once', at: '2026-10-20T07:30:00.000Z' }), false);
 });
 
+test('cadenceChanged: an unedited once schedule is unchanged, whatever its seconds', () => {
+  // the form holds the time to the minute: the stored 07:30:45 comes back from it as 07:30:00
+  const stored = { kind: 'once', at: '2026-10-20T07:30:45.000Z' };
+  assert.equal(cadenceChanged(formToCadence(cadenceToForm(stored)), stored), false);
+  assert.equal(cadenceChanged({ kind: 'once', at: '2026-10-20T07:31:00.000Z' }, stored), true);
+});
+
 test('summarise: one line of at most 80 characters', () => {
   assert.equal(summarise({ prompt: 'a\n  b' }), 'a b');
   assert.equal(summarise({ prompt: 'x'.repeat(100) }).length, 80);

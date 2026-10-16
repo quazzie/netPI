@@ -3,6 +3,7 @@
   import { proposalForCall, closedProposalForCall, decideProposal } from '../../lib/state/schedules.svelte.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import { parseArgs, cadenceWords } from '../../lib/tools.js';
+  import { firstLine } from '../../lib/format.js';
 
   /**
    * A schedule the agent proposed (a schedules add, plugins/NetPI.Schedules): the proposal, and Allow (it runs from
@@ -23,7 +24,7 @@
   const d = $derived(r && !r.isError ? r.details : null);
   const a = $derived(parseArgs(item.call));
   const schedule = $derived(pending?.schedule ?? d?.schedule ?? null);
-  const name = $derived(schedule?.name ?? a?.name ?? firstLine(a?.prompt) ?? 'New schedule');
+  const name = $derived(schedule?.name ?? a?.name ?? (firstLine(a?.prompt) || 'New schedule'));
   const when = $derived(schedule?.when ?? cadenceWords(a?.cadence));
   const prompt = $derived(schedule?.prompt ?? a?.prompt ?? '');
   const project = $derived(d?.project ?? schedule?.projectId ?? a?.projectId ?? '');
@@ -57,10 +58,6 @@
     } finally {
       busy = false;
     }
-  }
-
-  function firstLine(s) {
-    return String(s ?? '').trim().split('\n')[0];
   }
 </script>
 

@@ -442,7 +442,7 @@ internal sealed class MainForm : Form
         if (uri.Scheme is not ("http" or "https" or "mailto")) return;
         try
         {
-            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+            using var started = Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
         }
         catch
         {

@@ -46,23 +46,35 @@ public sealed class NetPiServer : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         var sw = Stopwatch.StartNew();
-        var kernel = await Task.Run(() => HostKernel.Create(options), ct).ConfigureAwait(false);
-        WebServer? web = null;
+        // Created without ct: a cancellation must not leave a half-created kernel behind. The create runs to completion,
+        // and a token that cancelled in the meantime is honoured once the kernel exists (the start stops, the kernel is
+        // disposed by the finally below, and the OperationCanceledException is what the caller sees).
+        var kernel = await Task.Run(() => HostKernel.Create(options)).ConfigureAwait(false);
+        var started = false;
         try
         {
-            web = await WebServer.StartAsync(kernel, ct).ConfigureAwait(false);
-            await kernel.Plugins.StartAsync(ct).ConfigureAwait(false);
-            kernel.Models.Invalidate();
-            kernel.Log.LogInformation("NetPI {Version} ready at {Url} in {Ms} ms (home: {Home})", HostInfo.Version, web.BaseUrl, sw.ElapsedMilliseconds, kernel.Paths.Home);
-            // how tools outside find this run (url and token): docs/DEBUGGING.md
-            ServerFile.Write(kernel.Paths, web.BaseUrl, kernel.Token, options.Desktop, kernel.Log);
-            return new NetPiServer(kernel, web);
+            ct.ThrowIfCancellationRequested();
+            WebServer? web = null;
+            try
+            {
+                web = await WebServer.StartAsync(kernel, ct).ConfigureAwait(false);
+                await kernel.Plugins.StartAsync(ct).ConfigureAwait(false);
+                kernel.Models.Invalidate();
+                kernel.Log.LogInformation("NetPI {Version} ready at {Url} in {Ms} ms (home: {Home})", HostInfo.Version, web.BaseUrl, sw.ElapsedMilliseconds, kernel.Paths.Home);
+                // how tools outside find this run (url and token): docs/DEBUGGING.md
+                ServerFile.Write(kernel.Paths, web.BaseUrl, kernel.Token, options.Desktop, kernel.Log);
+                started = true;
+                return new NetPiServer(kernel, web);
+            }
+            catch
+            {
+                if (web is not null) await web.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
         }
-        catch
+        finally
         {
-            if (web is not null) await web.DisposeAsync().ConfigureAwait(false);
-            await kernel.DisposeAsync().ConfigureAwait(false);
-            throw;
+            if (!started) await kernel.DisposeAsync().ConfigureAwait(false);
         }
     }
 

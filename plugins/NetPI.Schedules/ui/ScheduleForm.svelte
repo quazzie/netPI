@@ -3,7 +3,7 @@
   // Edit mode always sends `enabled` explicitly (a cadence change alone would silently resume a paused
   // schedule), and a cadence only when it changed (a new cadence counts the next run from now).
   import { Button, Segmented } from '@netpi/kit';
-  import { cadenceToForm, formToCadence, cadenceChanged } from './model.js';
+  import { cadenceToForm, formToCadence, cadenceChanged, toLocalInput } from './model.js';
 
   let { ctx, schedule = null, projects = [], agents = null, ondone, oncancel } = $props();
 
@@ -58,11 +58,7 @@
     })),
   );
 
-  function minNow() {
-    const p = (n) => String(n).padStart(2, '0');
-    const d = new Date();
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-  }
+  const minNow = () => toLocalInput(new Date());
 
   async function save() {
     if (busy) return;
@@ -94,7 +90,7 @@
         if (f.projectId !== (schedule.projectId ?? '')) p.projectId = f.projectId;
         if (f.agent !== (schedule.agent ?? '')) p.agent = f.agent;
         if (f.priority !== (schedule.priority ?? 'normal')) p.priority = f.priority;
-        if (cadenceChanged(formToCadence(f), cadenceToForm(schedule.cadence))) p.cadence = formToCadence(f);
+        if (cadenceChanged(formToCadence(f), schedule.cadence)) p.cadence = formToCadence(f);
         // a cadence change alone would resume a paused schedule; `enabled` is what the user sees, so it wins
         await ctx.rpc('schedules.update', p);
       } else {

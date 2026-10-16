@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Text.Json.Nodes;
 
 namespace NetPI.Plan;
@@ -93,7 +94,12 @@ public sealed class PlanPlugin : INetPiPlugin
             else if ((string?)d["kind"] == PlanService.PlanKind && (string?)d["data"]?["planId"] is { } planId)
             {
                 // the user wrote instead of deciding: the plan is talked about until the next plan_submit; a stop leaves it on its card
-                if ((string?)d["reason"] == "steered") _ = Task.Run(() => service.ReopenAsync(planId, CancellationToken.None));
+                if ((string?)d["reason"] == "steered") _ = Task.Run(async () =>
+                {
+                    try { await service.ReopenAsync(planId, context.Stopping).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex) { context.Logger.LogWarning(ex, "Plan: reopening plan {Plan} after the user's message failed", planId); }
+                });
                 else if (store.Get(planId) is { } doc) service.Changed(sessionId, doc, PlanMode.State(context.Sessions.GetSession(sessionId)) ?? "off");
             }
         });

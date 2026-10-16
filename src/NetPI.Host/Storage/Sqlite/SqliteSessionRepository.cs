@@ -244,7 +244,9 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
 
     public IReadOnlyList<MessageStub> MessageStubs(string sessionId) =>
         db.Query("SELECT id, seq, role, compacted, meta FROM messages WHERE session_id = @sessionId ORDER BY seq", new { sessionId },
-            r => new MessageStub(r.GetInt64("id"), r.GetInt64("seq"), ParseRole(r.GetString("role")), r.GetInt64("compacted") != 0,
+            r => new MessageStub(r.GetInt64("id"), r.GetInt64("seq"),
+                ParseRole(r.GetString("role"), "message " + r.GetInt64("id").ToString(CultureInfo.InvariantCulture)),
+                r.GetInt64("compacted") != 0,
                 ParseMeta(r.GetStringOrNull("meta"), "message " + r.GetInt64("id").ToString(CultureInfo.InvariantCulture))));
 
     public void SetCompacted(string sessionId, IReadOnlySet<long> compactedSeqs) =>
@@ -292,8 +294,13 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
         _ => role.ToString().ToLowerInvariant(),
     };
 
-    private static MessageRole ParseRole(string s) =>
-        Enum.TryParse<MessageRole>(s, ignoreCase: true, out var r) ? r : MessageRole.Notice;
+    private static MessageRole ParseRole(string s, string row)
+    {
+        // A role that no longer parses is a data problem, like a corrupt parts or meta column: name the row, never
+        // silently turn it into a notice (the next update would write the notice back and the corruption would be gone).
+        if (Enum.TryParse<MessageRole>(s, ignoreCase: true, out var r)) return r;
+        throw new InvalidDataException($"Stored {row} is corrupted and cannot be read: unknown role '{s}'");
+    }
 
     private static ChatMessage ReadMessage(ISqlRow r)
     {
@@ -303,7 +310,7 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
             Id = id,
             SessionId = r.GetString("session_id"),
             Seq = r.GetInt64("seq"),
-            Role = ParseRole(r.GetString("role")),
+            Role = ParseRole(r.GetString("role"), "message " + id.ToString(CultureInfo.InvariantCulture)),
             Parts = ReadStored<List<MessagePart>>(r.GetString("parts"), id) ?? [],
             CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("created_at")),
             Provider = r.GetStringOrNull("provider"),

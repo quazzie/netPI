@@ -207,8 +207,12 @@ public static class ServerTests
             Check.Equal(server.Paths.Home, infoJson["home"]!.GetValue<string>());
             Check.False(infoJson["desktop"]!.GetValue<bool>());
 
+            // The token in the query string is not a credential on an /api route (it is logged in proxies and history):
+            // the header (or a cookie) authenticates it. A query token on the login ("/") and the /ws upgrade still works.
+            var byHeader = await SendAsync(http, HttpMethod.Post, url + "/api/rpc/rpc.list", "{}", q => q.Headers.Add(WebServer.TokenHeader, server.Token));
+            Check.Equal(HttpStatusCode.OK, byHeader.Status);
             var byQuery = await SendAsync(http, HttpMethod.Post, url + "/api/rpc/rpc.list?token=" + Uri.EscapeDataString(server.Token), "{}");
-            Check.Equal(HttpStatusCode.OK, byQuery.Status);
+            Check.Equal(HttpStatusCode.Unauthorized, byQuery.Status, "a query token on an /api route is not a credential");
 
             var badLogin = await SendAsync(http, HttpMethod.Get, url + "/?token=wrong");
             Check.Equal(HttpStatusCode.Unauthorized, badLogin.Status);
@@ -296,7 +300,7 @@ public static class ServerTests
             var svg = await SendAsync(http, HttpMethod.Get, url + "/favicon.svg");
             Check.Equal("image/svg+xml", svg.Response.Content.Headers.ContentType!.MediaType);
             Check.Equal(HttpStatusCode.NotFound, (await SendAsync(http, HttpMethod.Get, url + "/missing.js")).Status);
-            Check.Equal(HttpStatusCode.NotFound, (await SendAsync(http, HttpMethod.Get, url + "/api/nothing?token=" + server.Token)).Status);
+            Check.Equal(HttpStatusCode.NotFound, (await SendAsync(http, HttpMethod.Get, url + "/api/nothing", null, q => q.Headers.Add(WebServer.TokenHeader, server.Token))).Status);
             Check.Equal(HttpStatusCode.NotFound, (await SendAsync(http, HttpMethod.Get, url + "/plugins/none/ui.js")).Status);
             var traversal = await SendAsync(http, HttpMethod.Get, url + "/assets/..%2F..%2Fsettings.json");
             Check.NotContains(traversal.Body, "defaultModel");
