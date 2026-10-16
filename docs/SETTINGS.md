@@ -389,6 +389,7 @@ minutes lock that address out (429) for the rest of the window.
 | `agentsMd.fileNames` | `["AGENTS.md", "CLAUDE.md"]` | first match per directory, from the file system root down to the working directory |
 | `agentsMd.extraFiles` | `[]` | always included |
 | `skills.paths` | `[]` | more skill folders, or one skill's folder (`~` is your home; relative to the working directory). See [PLUGIN-SKILLS.md](PLUGIN-SKILLS.md) |
+| `skills.userFolder` | `true` | the skills in your home folder (`~/.agents/skills`, and `~/.claude/skills` with `skills.claudeCode`); off leaves the project's, the NetPI home's and `skills.paths` (the E2E suite turns it off) |
 | `skills.claudeCode` | `false` | also Claude Code's skills: `.claude/skills` in the project and `~/.claude/skills` |
 | `skills.disabled` | `[]` | skill names switched off: agents don't see them, the `skill` tool and `/skill:` refuse them |
 | `agentsMd.guidance` | built in | the "# Instruction files" prompt section: how agents use and keep AGENTS.md (lean, pointers to deeper docs, durable learnings as one line). Replaces the text; `""` drops the section |

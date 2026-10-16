@@ -200,6 +200,8 @@ public sealed class Env : IAsyncDisposable
                 },
             },
             ["retry"] = new JsonObject { ["baseDelayMs"] = 200, ["maxDelayMs"] = 1000 },
+            // the developer's own ~/.agents/skills would add a skills notice to every chat: the suite sees only its own
+            ["skills"] = new JsonObject { ["userFolder"] = false },
             ["logging"] = new JsonObject { ["level"] = "debug" },
         };
         await File.WriteAllTextAsync(Path.Combine(Home, "settings.json"), settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));

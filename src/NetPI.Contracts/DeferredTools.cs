@@ -85,7 +85,7 @@ public sealed class ToolExposure
     [
         "agent", "agent_choices", "agent_spawn", "browser", "decide", "diag", "goal_set", "goal_update", "ideas", "lsp",
         "mcp_resource", "memory_search", "plan_enter", "plan_submit", "schedules", "show_image", "skill", "ssh",
-        "todo_write", "web_fetch", "web_search", "windows", "workspace",
+        "test", "todo_write", "web_fetch", "web_search", "windows", "workspace",
     ];
 
     private readonly DeferredList _list;

@@ -28,6 +28,7 @@ public sealed class SkillsPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.List("skills.paths", "More skill folders", [], "Folders of skills, or one skill's folder. ~ is your home; a relative path resolves against the working folder.", "~/my-skills"),
+                SettingInfo.Bool("skills.userFolder", "Skills in your home folder", true, "~/.agents/skills (and ~/.claude/skills with the option below). Off: only the project's, the NetPI home's and the extra folders."),
                 SettingInfo.Bool("skills.claudeCode", "Claude Code's skills too", false, "Also .claude/skills in the project and ~/.claude/skills. They may refer to Claude Code's own tools."),
                 SettingInfo.List("skills.disabled", "Switched off", [], "Skill names agents don't see and /skill: refuses."),
             ],

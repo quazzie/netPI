@@ -105,8 +105,11 @@ internal sealed partial class SkillLoader(IPluginContext ctx, string? userHome =
         }
 
         Add(System.IO.Path.Combine(ctx.Paths.Home, "skills"), "global");
-        Add(System.IO.Path.Combine(home, ".agents", "skills"), "global");
-        if (claude) Add(System.IO.Path.Combine(home, ".claude", "skills"), "global");
+        if (ctx.Settings.Get("skills.userFolder", true))
+        {
+            Add(System.IO.Path.Combine(home, ".agents", "skills"), "global");
+            if (claude) Add(System.IO.Path.Combine(home, ".claude", "skills"), "global");
+        }
         return roots;
     }
 
