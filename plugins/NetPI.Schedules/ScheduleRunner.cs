@@ -90,6 +90,14 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
                 Meta = new JsonObject { ["schedule"] = id, ["scheduleName"] = name },
             }, DeliveryMode.Auto, ct).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // the start was cancelled before the run began (the host stopping, the caller giving up): the chat is not left
+            // behind, and the run is recorded like any other, so the claim is let go and the history says why it did not run
+            try { ctx.Sessions.DeleteSession(session.Id); } catch { /* already gone */ }
+            Finish(schedule, now, Failed, "cancelled", null, claim);
+            throw;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             // nothing started: the chat is not left behind
