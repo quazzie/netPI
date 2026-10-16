@@ -41,16 +41,27 @@ export function offerForCall(sessionId, callId) {
 }
 
 let loadSeq = 0;
+let inFlight = null; // { seq, events }: the plan.enter.* events that land while loadPlans is reading (its answer cannot have them)
 
 /** On (re)connect: the plans that wait, and the offers. Without the plan plugin nothing does. */
 export async function loadPlans() {
   const seq = ++loadSeq;
-  const [list, offers] = await Promise.all([rpc('plan.list', {}).catch(() => []), rpc('plan.offers', {}).catch(() => [])]);
-  if (seq !== loadSeq) return;
-  plans.byId.clear();
-  for (const p of list ?? []) plans.byId.set(p.id, p);
-  plans.offers.clear();
-  for (const o of offers ?? []) plans.offers.set(o.id, o);
+  const events = [];
+  inFlight = { seq, events };
+  try {
+    const [list, offers] = await Promise.all([rpc('plan.list', {}).catch(() => []), rpc('plan.offers', {}).catch(() => [])]);
+    if (seq !== loadSeq) return;
+    plans.byId.clear();
+    for (const p of list ?? []) plans.byId.set(p.id, p);
+    plans.offers.clear();
+    for (const o of offers ?? []) plans.offers.set(o.id, o);
+  } finally {
+    // a load that started after this one holds the buffer now, and replays it over its own answer
+    if (inFlight?.seq === seq) {
+      inFlight = null;
+      for (const [type, d] of events) planEvent(type, d);
+    }
+  }
 }
 
 const pending = new Map(); // session id -> timer: a burst of plan.changed is one read
@@ -73,6 +84,10 @@ function refresh(sessionId) {
 
 /** plan.changed, plan.enter.asked and plan.enter.closed (unscoped: every window hears of every chat's). */
 export function planEvent(type, d) {
+  if (inFlight && type.startsWith('plan.enter.')) {
+    inFlight.events.push([type, d]);
+    return;
+  }
   if (type === 'plan.changed') {
     if (d?.sessionId) refresh(d.sessionId);
   } else if (type === 'plan.enter.asked') {

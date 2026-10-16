@@ -84,11 +84,17 @@
     // A scroll moves no part of the menu but the anchor, so the menu follows it instead of closing. Closing on every
     // scroll in the window (what this did) meant any scroll anywhere took it down: the chat re-pinning to the bottom
     // as a reply arrives, a file tree scrolling under a right-click menu, a shell row growing.
-    const onScroll = (e) => {
-      if (menuEl?.contains(e.target)) return;
+    // At most once per animation frame: scroll events come in bursts, and each place() measures the layout.
+    let frame = 0;
+    const follow = () => {
+      frame = 0;
       if (!refEl) return;
       if (outOfView(refEl)) open = false;
       else place();
+    };
+    const onScroll = (e) => {
+      if (menuEl?.contains(e.target) || !refEl || frame) return;
+      frame = requestAnimationFrame(follow);
     };
     window.addEventListener('pointerdown', onDown, true);
     window.addEventListener('keydown', onKey, true);
@@ -96,6 +102,7 @@
     window.addEventListener('resize', onScroll);
     window.addEventListener('blur', close);
     return () => {
+      cancelAnimationFrame(frame);
       window.removeEventListener('pointerdown', onDown, true);
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('scroll', onScroll, true);
