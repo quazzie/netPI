@@ -72,13 +72,14 @@ internal sealed class SkillTool(SkillLoader loader, IPluginContext ctx) : IAgent
         IReadOnlyList<ChatMessage> context;
         try { context = ctx.Sessions.GetContextMessages(sessionId); }
         catch { return false; }
+        var calls = ToolCalls.Index(context);
         foreach (var m in context)
         {
             if (m.Role == MessageRole.Notice && m.MetaString("kind") == SkillNotices.SkillKind
                 && string.Equals(m.MetaString("skill"), name, StringComparison.OrdinalIgnoreCase) && m.MetaString("hash") == hash) return true;
             if (m.Role != MessageRole.Tool) continue;
             foreach (var r in m.ToolResults)
-                if (r.Name == Name && !r.IsError && r.Details is JsonObject d && d["already"] is null
+                if (ToolCalls.IsResultOf(r, Name, calls) && !r.IsError && r.Details is JsonObject d && d["already"] is null
                     && string.Equals(d["name"]?.ToString(), name, StringComparison.OrdinalIgnoreCase) && d["hash"]?.ToString() == hash) return true;
         }
         return false;

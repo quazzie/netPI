@@ -232,7 +232,7 @@ internal sealed partial class Coordinator(IPluginContext ctx)
         var messages = ctx.Sessions.GetMessages(sessionId, null, MessagesRead)
             .Where(m => start is null || m.CreatedAt >= start.Value - TimeSpan.FromSeconds(2)).OrderBy(m => m.Seq).ToList();
         var report = messages.LastOrDefault(m => m.Role == MessageRole.Assistant && !string.IsNullOrWhiteSpace(m.Text))?.Text;
-        var lastCall = messages.SelectMany(m => m.ToolCalls).LastOrDefault();
+        var lastCall = messages.SelectMany(m => m.ToolCalls).Select(c => ToolCalls.Unwrap(c) ?? c).LastOrDefault();
 
         var todoItems = (session.Meta?["todo"] as JsonArray ?? []).OfType<JsonObject>()
             .Select(t => new { text = Str(t, "text") ?? "", status = Str(t, "status") ?? "pending" }).ToList();
@@ -309,6 +309,7 @@ internal sealed partial class Coordinator(IPluginContext ctx)
     /// </summary>
     internal static object? TestSummary(IReadOnlyList<ChatMessage> messages)
     {
+        var calls = ToolCalls.Index(messages);
         for (var i = messages.Count - 1; i >= 0; i--)
             foreach (var result in messages[i].ToolResults.Reverse())
             {
@@ -321,7 +322,7 @@ internal sealed partial class Coordinator(IPluginContext ctx)
                 if (line.Length > 240) line = line[..240] + "…";
                 var failed = FailedCount().Matches(line).Any(m => int.TryParse(m.Groups["n"].Value, out var n) && n > 0)
                     || line.Contains("test result: FAILED", StringComparison.OrdinalIgnoreCase) || line.Contains("Failed!", StringComparison.Ordinal);
-                return new { line, tool = result.Name, at = messages[i].CreatedAt, failed };
+                return new { line, tool = ToolCalls.EffectiveName(result, calls), at = messages[i].CreatedAt, failed };
             }
         return null;
     }

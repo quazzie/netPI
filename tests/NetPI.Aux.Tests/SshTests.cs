@@ -707,6 +707,33 @@ public static class SshTests
             Check.Equal("--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-alpha beta\n+omega gamma\n", seq.Diff);
         });
 
+        r.Add("ssh: TextEdits in a mixed file keep the untouched lines' exact endings", () =>
+        {
+            // CRLF-majority (2 CRLF, 1 LF): the lines the edit produces get CRLF, the untouched LF line keeps its LF
+            var crlfMajority = TextEdits.Apply("a\r\nb\r\nc\n", [new TextEdit("c\n", "C\nD\nE\n", false)], "f");
+            Check.Equal("a\r\nb\r\nC\r\nD\r\nE\r\n", crlfMajority.Text, "untouched lines byte for byte");
+            Check.Contains(crlfMajority.Diff, "-c\n+C\n+D\n+E\n");
+
+            // LF-majority (2 LF, 1 CRLF, a tie goes to LF… this one is 2 vs 1): the edit's lines get LF, the CRLF lines stay CRLF
+            var lfMajority = TextEdits.Apply("a\nb\nc\r\n", [new TextEdit("c\r\n", "C\nD\n", false)], "f");
+            Check.Equal("a\nb\nC\nD\n", lfMajority.Text);
+
+            // a tie (2 CRLF, 2 LF) goes to LF, like the local codec
+            var tie = TextEdits.Apply("a\nb\nc\r\nd\r\n", [new TextEdit("d\r\n", "D\n", false)], "f");
+            Check.Equal("a\nb\nc\r\nD\n", tie.Text);
+
+            // a second edit matches what the first wrote, in the mixed text (the LF-majority file keeps LF for new lines)
+            var chained = TextEdits.Apply("a\r\nb\nc\n", [new TextEdit("b\r\n", "B\n", false), new TextEdit("B\n", "B2\r\n", false)], "f");
+            Check.Equal("a\r\nB2\nc\n", chained.Text);
+            Check.Equal(2, chained.Replacements);
+
+            // uniform files are unchanged by the new path: CRLF stays CRLF, LF stays LF
+            var uniCrlf = TextEdits.Apply("one\r\ntwo\r\n", [new TextEdit("two", "TWO", false)], "f");
+            Check.Equal("one\r\nTWO\r\n", uniCrlf.Text);
+            var uniLf = TextEdits.Apply("one\ntwo\n", [new TextEdit("two", "TWO", false)], "f");
+            Check.Equal("one\nTWO\n", uniLf.Text);
+        });
+
         r.Add("ssh: ssh_edit and edit agree on one edit list (each edit sees what the earlier ones wrote)", async () =>
         {
             var dir = T.TempDir("parity");

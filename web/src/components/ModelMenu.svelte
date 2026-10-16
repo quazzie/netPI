@@ -8,6 +8,7 @@
   import Popover from './Popover.svelte';
   import { app, loadModels } from '../lib/state/app.svelte.js';
   import { tokens } from '../lib/format.js';
+  import { scrollIntoView } from '../lib/actions.js';
 
   let { anchor, current = null, onchoose, onclose, placement = 'bottom-start', width = 380, none = null, footer = null } = $props();
 
@@ -64,10 +65,6 @@
 
   function focus(node) {
     node.focus();
-  }
-  function scrollIntoView(node, active) {
-    if (active) node.scrollIntoView({ block: 'nearest' });
-    return { update: (a) => a && node.scrollIntoView({ block: 'nearest' }) };
   }
 </script>
 

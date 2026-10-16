@@ -58,6 +58,22 @@ internal static class ClaudeCliResumeTests
 
     public static async Task RunAsync(TestRunner t)
     {
+        await t.Run("claude-cli prompt: a result of a call made through call_tool is labelled with the tool that ran", () =>
+        {
+            var call = new ToolCallPart { Id = "c1", Name = "call_tool", Arguments = """{"name":"deferred_probe","arguments":{}}""" };
+            var msgs = new List<ChatMessage>
+            {
+                Msg(1, MessageRole.User, "go"),
+                new() { Id = 2, Seq = 2, Role = MessageRole.Assistant, Provider = "claude-cli", Parts = [call] },
+                new() { Id = 3, Seq = 3, Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c1", Name = "call_tool", Content = "probe ok" }] },
+            };
+            var prompt = CL.ClaudeCliProvider.RenderPrompt(Req(msgs));
+            t.Check(prompt.Contains("[deferred_probe result]") && !prompt.Contains("[call_tool result]"), prompt);
+            var delta = CL.ClaudeCliProvider.RenderDelta(Req(msgs), 1);
+            t.Check(delta.Contains("[deferred_probe result]") && !delta.Contains("[call_tool result]"), delta);
+            return Task.CompletedTask;
+        });
+
         await t.Run("claude-cli resume: the first turn starts the chat's CLI session, the next resumes it and sends only the new message", async () =>
         {
             var (p, calls, store) = Make();

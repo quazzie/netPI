@@ -16,11 +16,14 @@
   let error = $state('');
   let selected = $state(null);
 
+  let seq = 0; // a slower, older listing must not replace the one asked for last
   async function go(p) {
+    const mine = ++seq;
     loading = true;
     error = '';
     try {
       const res = await rpc('fs.dirs', p ? { path: p } : {});
+      if (mine !== seq) return;
       path = res.path ?? '';
       input = path;
       parent = res.parent ?? null;
@@ -28,9 +31,9 @@
       roots = res.roots ?? [];
       selected = null;
     } catch (e) {
-      error = e.message;
+      if (mine === seq) error = e.message;
     } finally {
-      loading = false;
+      if (mine === seq) loading = false;
     }
   }
   onMount(() => go(data.initial));
@@ -80,7 +83,7 @@
   {#snippet footer()}
     <span class="np-mono np-dim np-small np-ellipsis chosen">{selected ?? path}</span>
     <button class="np-btn np-btn-ghost" onclick={() => done(null)}>Cancel</button>
-    <button class="np-btn np-btn-primary" disabled={!path} onclick={() => done(selected ?? path)}>Select folder</button>
+    <button class="np-btn np-btn-primary" disabled={!path || loading} onclick={() => done(selected ?? path)}>Select folder</button>
   {/snippet}
 </Modal>
 

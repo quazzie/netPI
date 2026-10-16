@@ -433,6 +433,7 @@ public sealed class ClaudeCliProvider : IModelProvider
     internal static string RenderDelta(ModelRequest request, long lastSeenId)
     {
         var ranByCli = request.Messages.SelectMany(m => m.ToolCalls).Where(c => c.ProviderExecuted).Select(c => c.Id).ToHashSet();
+        var callIndex = ToolCalls.Index(request.Messages);
         var blocks = new List<(string Label, string Text)>();
         foreach (var m in request.Messages)
         {
@@ -447,7 +448,7 @@ public sealed class ClaudeCliProvider : IModelProvider
                     break;
                 case MessageRole.Tool:
                     foreach (var r in m.ToolResults.Where(r => !ranByCli.Contains(r.CallId)))
-                        blocks.Add(($"[{r.Name} result]", r.Content));
+                        blocks.Add(($"[{ToolCalls.EffectiveName(r, callIndex)} result]", r.Content));
                     break;
             }
         }
@@ -465,11 +466,12 @@ public sealed class ClaudeCliProvider : IModelProvider
         var turns = new List<(string Role, string Text)>();
         // what the CLI's own tools returned stays out: the next call has its own tools to look again
         var ranByCli = request.Messages.SelectMany(m => m.ToolCalls).Where(c => c.ProviderExecuted).Select(c => c.Id).ToHashSet();
+        var callIndex = ToolCalls.Index(request.Messages);
         foreach (var m in request.Messages)
         {
             if (m.Compacted) continue;
             var text = m.Role == MessageRole.Tool
-                ? string.Join("\n", m.ToolResults.Where(r => !ranByCli.Contains(r.CallId)).Select(r => $"[{r.Name} result]\n{r.Content}"))
+                ? string.Join("\n", m.ToolResults.Where(r => !ranByCli.Contains(r.CallId)).Select(r => $"[{ToolCalls.EffectiveName(r, callIndex)} result]\n{r.Content}"))
                 : m.Text;
             if (string.IsNullOrWhiteSpace(text)) continue;
             turns.Add((m.Role == MessageRole.Assistant ? "Assistant" : "User", text));

@@ -21,7 +21,7 @@ public sealed class GrepOptions
     public long MaxFileSize { get; init; } = 32L * 1024 * 1024;
     public int MaxOutputChars { get; init; } = 50_000;
     public TimeSpan RegexTimeout { get; init; } = TimeSpan.FromSeconds(2);
-    /// <summary>Walk ignore rules (.gitignore + built-in skip list).</summary>
+    /// <summary>Walk ignore rules (.gitignore, .git/info/exclude + built-in skip list; nested repositories are skipped).</summary>
     public bool RespectIgnore { get; init; } = true;
 }
 

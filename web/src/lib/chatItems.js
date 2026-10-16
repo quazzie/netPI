@@ -19,7 +19,7 @@
 // Items keep their identity across rebuilds while their inputs are unchanged (messages are immutable
 // objects: `message.updated` replaces the object), so keyed {#each} blocks only touch what changed.
 import { toMs } from './format.js';
-import { parseArgs, pathArg, scheduleProposal } from './tools.js';
+import { effectiveCall, liveEffectiveCall, parseArgs, pathArg, scheduleProposal } from './tools.js';
 
 function same(a, b) {
   if (a === b) return true;
@@ -156,11 +156,13 @@ export function createItemBuilder() {
             }
           let imgs = null;
           for (let i = 0; i < parts.length; i++) {
-            const p = parts[i];
+            let p = parts[i];
             if (p.type === 'thinking') {
               if (!p.text && !p.redacted) continue;
               addStep({ kind: 'thinking', key: `k${m.id}.${i}`, part: p, msg: m }, [p], m, i);
             } else if (p.type === 'tool_call') {
+              // a call_tool call is the tool it ran: every card, view and count below goes by the inner name and arguments
+              p = effectiveCall(p);
               const r = results.get(p.id);
               if (p.name === 'ask_user') {
                 flush();
@@ -238,7 +240,7 @@ export function createItemBuilder() {
  *   stream text  { kind:'text', key:'t.stream.<i>', text, msg:null, last, stream, done } (done: a later segment follows it)
  *   stream ask   { kind:'ask', key:'a<callId>', call, result:null, msg:null, preparing:true }  (ask_user: its card, not a step)
  */
-export function withStream(items, stream) {
+export function withStream(items, stream, live = null) {
   if (!stream?.active || (!stream.thinking && !stream.text.trim() && !stream.tools.length)) return items;
   const out = items.slice();
   let group = out.at(-1)?.kind === 'steps' ? out.pop() : null;
@@ -266,13 +268,14 @@ export function withStream(items, stream) {
       return;
     }
     const t = s;
-    const call = { type: 'tool_call', id: t.callId, name: t.name };
-    if (t.name === 'ask_user') {
+    // a call_tool call is named by the tool it runs once tool.start has said which (the stream only knows call_tool)
+    const call = liveEffectiveCall({ type: 'tool_call', id: t.callId, name: t.name }, t.name === 'call_tool' ? live?.get(t.callId) : null);
+    if (call.name === 'ask_user') {
       flush();
       out.push({ kind: 'ask', key: `a${t.callId}`, call, result: null, msg: null, preparing: true });
-    } else if (t.name === 'plan_submit' || t.name === 'plan_enter') {
+    } else if (call.name === 'plan_submit' || call.name === 'plan_enter') {
       flush();
-      out.push({ kind: t.name === 'plan_submit' ? 'plan' : 'planenter', key: `p${t.callId}`, call, result: null, msg: null, preparing: true });
+      out.push({ kind: call.name === 'plan_submit' ? 'plan' : 'planenter', key: `p${t.callId}`, call, result: null, msg: null, preparing: true });
     } else push({ kind: 'tool', key: `c${t.callId}`, call, result: null, resultMsg: null, msg: null, preparing: true });
   });
   flush();

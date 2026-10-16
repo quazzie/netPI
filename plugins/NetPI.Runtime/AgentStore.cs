@@ -32,6 +32,9 @@ internal sealed record QueuedRecord(string Mode, UserInput Input);
 internal sealed class AgentStore(IPluginContext ctx)
 {
     private IDataCollection _records = null!;
+    /// <summary>Per record: the version of the last write and the lock that writes in version order (saves are snapshotted under the agent's gate, written outside it).</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, WriteSlot> _written = new();
+    private sealed class WriteSlot { public readonly object Lock = new(); public long Version; }
 
     public void Initialize() =>
         _records = ctx.Data.Collection("agent_records", new CollectionSpec().Text("sessionId").Text("createdAt").Text("status"));
@@ -83,9 +86,30 @@ internal sealed class AgentStore(IPluginContext ctx)
     }
 
     /// <param name="pending">The batch that waits for the user (<see cref="PendingJson"/>, made under the agent's gate), or null.</param>
-    public void Save(AgentInfo info, string? instructions, bool notifyParent, IReadOnlyList<QueuedRecord> queue, JsonObject? pending = null)
+    /// <param name="version">The agent's save counter when the snapshot was taken (0: unversioned, always written). A write older than the last one made for the record is dropped.</param>
+    public void Save(AgentInfo info, string? instructions, bool notifyParent, IReadOnlyList<QueuedRecord> queue, JsonObject? pending = null, long version = 0)
     {
         try
+        {
+            var slot = _written.GetOrAdd(info.Id, _ => new WriteSlot());
+            lock (slot.Lock)
+            {
+                if (version != 0)
+                {
+                    if (version < slot.Version) return;
+                    slot.Version = version;
+                }
+                Write(info, instructions, notifyParent, queue, pending);
+            }
+        }
+        catch (Exception ex)
+        {
+            ctx.Logger.LogWarning(ex, "Failed to persist agent {Agent}", info.Id);
+        }
+    }
+
+    private void Write(AgentInfo info, string? instructions, bool notifyParent, IReadOnlyList<QueuedRecord> queue, JsonObject? pending)
+    {
         {
             _records.Put(info.Id, new JsonObject
             {
@@ -113,10 +137,6 @@ internal sealed class AgentStore(IPluginContext ctx)
                 },
                 ["pending"] = pending,
             });
-        }
-        catch (Exception ex)
-        {
-            ctx.Logger.LogWarning(ex, "Failed to persist agent {Agent}", info.Id);
         }
     }
 
@@ -161,7 +181,7 @@ internal sealed class AgentStore(IPluginContext ctx)
         }
     }
 
-    private static AgentRecord Map(JsonObject doc)
+    private AgentRecord Map(JsonObject doc)
     {
         AgentInfo? info = null;
         string? instructions = null;
@@ -202,7 +222,12 @@ internal sealed class AgentStore(IPluginContext ctx)
         if (doc["pending"] is JsonObject po)
         {
             try { pending = ReadPending(po); }
-            catch { /* corrupt: the agent no longer waits, and its open calls are closed as not executed at the next model call */ }
+            catch (Exception ex)
+            {
+                // the agent no longer waits, and its open calls are closed as not executed at the next model call
+                ctx.Logger.LogWarning(ex, "The batch that agent {Agent} waits on could not be read", info.Id);
+                info.Error = "Its waiting tool batch could not be read from storage, so it no longer waits for your answer.";
+            }
         }
         return new AgentRecord(info, instructions, notify, queue, pending);
     }

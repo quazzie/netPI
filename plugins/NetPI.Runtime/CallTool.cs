@@ -43,31 +43,24 @@ internal sealed class CallTool : IAgentTool, IDeferredToolInfrastructure
     /// <c>call_tool</c> (the tool then runs and explains).</summary>
     public static ToolCallPart? TryUnwrap(ToolCallPart call, IReadOnlyList<IAgentTool> tools)
     {
-        if (!string.Equals(call.Name, ToolName, StringComparison.OrdinalIgnoreCase)) return null;
-        try
-        {
-            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(call.Arguments) ? "{}" : call.Arguments);
-            var (inner, _) = Resolve(ToolArgs.Unwrap(doc.RootElement.Clone()), tools);
-            return inner is null ? null : new ToolCallPart { Id = call.Id, Name = inner.Name, Arguments = inner.Arguments };
-        }
-        catch (JsonException) { return null; }
+        if (ToolCalls.Unwrap(call) is not { } wrapped) return null;
+        var (inner, _) = Resolve(wrapped.Name, wrapped.Arguments, tools);
+        return inner is null ? null : new ToolCallPart { Id = call.Id, Name = inner.Name, Arguments = inner.Arguments };
     }
 
-    private static (ToolCallPart? Inner, string? Error) Resolve(JsonElement args, IReadOnlyList<IAgentTool> tools)
+    private static (ToolCallPart? Inner, string? Error) Resolve(JsonElement args, IReadOnlyList<IAgentTool> tools) =>
+        ToolCalls.TryResolve(ToolArgs.Unwrap(args), out var name, out var raw)
+            ? Resolve(name, raw, tools)
+            : (null, "call_tool needs {\"name\": \"<tool>\", \"arguments\": {...}}.");
+
+    private static (ToolCallPart? Inner, string? Error) Resolve(string name, string raw, IReadOnlyList<IAgentTool> tools)
     {
-        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty("name", out var n) || n.ValueKind != JsonValueKind.String
-            || string.IsNullOrWhiteSpace(n.GetString()))
-            return (null, "call_tool needs {\"name\": \"<tool>\", \"arguments\": {...}}.");
-        var name = n.GetString()!.Trim();
         var tool = tools.FirstOrDefault(t => t.Definition.Name == name)
                    ?? tools.FirstOrDefault(t => string.Equals(t.Definition.Name, name, StringComparison.OrdinalIgnoreCase));
         if (tool is null)
             return (null, $"Unknown tool '{name}': it is not a tool this chat can call. Find it with tool_search.");
         if (tool is IDeferredToolInfrastructure || tool is CallTool)
             return (null, $"'{name}' is a tool of its own: call it directly, not through call_tool.");
-        var raw = "{}";
-        if (args.TryGetProperty("arguments", out var a) && a.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
-            raw = a.ValueKind == JsonValueKind.String ? a.GetString() ?? "{}" : a.GetRawText();
         return (new ToolCallPart { Name = tool.Definition.Name, Arguments = raw }, null);
     }
 }

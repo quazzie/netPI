@@ -1,5 +1,6 @@
 <script>
-  import { onMount, tick } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
+  import { scrollIntoView } from '../../lib/actions.js';
   import Icon from '../../lib/kit/Icon.svelte';
   import AgentPicker from './AgentPicker.svelte';
   import EffortPicker from './EffortPicker.svelte';
@@ -98,11 +99,22 @@
   });
 
   let draftTimer = 0;
+  // leaving with a draft save still waiting: save it now rather than lose the last keystrokes
+  onDestroy(() => {
+    clearTimeout(searchTimer);
+    if (draftTimer) {
+      clearTimeout(draftTimer);
+      chat.saveDraft();
+    }
+  });
   function onInput() {
     autosize();
     updatePopup();
     clearTimeout(draftTimer);
-    draftTimer = setTimeout(() => chat.saveDraft(), 400);
+    draftTimer = setTimeout(() => {
+      draftTimer = 0;
+      chat.saveDraft();
+    }, 400);
   }
 
   // ------------------------------------------------------------------ popups (/ commands, @ mentions)
@@ -334,11 +346,6 @@
       ta.setSelectionRange(pos + 1, pos + 1);
       updatePopup();
     });
-  }
-
-  function scrollIntoView(node, active) {
-    if (active) node.scrollIntoView({ block: 'nearest' });
-    return { update: (a) => a && node.scrollIntoView({ block: 'nearest' }) };
   }
 </script>
 

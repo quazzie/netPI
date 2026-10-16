@@ -129,16 +129,17 @@ public static class FileLists
             if (m.Role != MessageRole.Assistant) continue;
             foreach (var call in m.ToolCalls)
             {
+                var (tool, arguments) = ToolCalls.Effective(call);   // a call made through call_tool is the tool it ran
                 // An edit of several files names them in files[].path.
-                if (call.Name == "edit" && EditFiles(call.Arguments) is { Count: > 0 } several)
+                if (tool == "edit" && EditFiles(arguments) is { Count: > 0 } several)
                 {
                     foreach (var p in several) modified.Add(p);
                     continue;
                 }
-                var (path, host, action) = PathOf(call.Arguments);
+                var (path, host, action) = PathOf(arguments);
                 if (path is null) continue;
                 // a tool with actions counts as <tool>_<action>: ssh + read is ssh_read, the older name still in older chats
-                var name = action is not null ? call.Name + "_" + action : call.Name;
+                var name = action is not null ? tool + "_" + action : tool;
                 switch (name)
                 {
                     case "read": read.Add(path); break;

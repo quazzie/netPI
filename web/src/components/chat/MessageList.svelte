@@ -26,7 +26,7 @@
   // the streaming answer is laid out like the finished one (thinking and tool calls join the open steps group), so the
   // chat does not jump when message.added replaces it
   // with the system prompts the chat was sent (the first above the first message when the window starts there)
-  const items = $derived(chat.hasNewer ? built : withStream(built, chat.stream));
+  const items = $derived(chat.hasNewer ? built : withStream(built, chat.stream, chat.live));
   const running = $derived(isBusy(session.id));
   // fork: a user message forks before it (its text goes to the new chat's message box), an answer forks after it
   const forkable = $derived(session.kind !== 'subagent');

@@ -8,6 +8,9 @@ namespace NetPI.Agents;
 
 internal sealed partial class Ledger
 {
+    /// <summary>The child's session meta key for the spend cap <c>agent_spawn</c> gave it (USD).</summary>
+    internal const string MaxUsdMetaKey = "maxUsd";
+
     internal sealed record Reservation(long Id, double Cost, ModelRequest Request, string? Agent, JsonObject? Config);
 
     /// <summary>
@@ -215,6 +218,8 @@ internal sealed partial class Ledger
         var session = request.SessionId is null ? null : _ctx.Sessions.GetSession(request.SessionId);
         var ask = o.OnLimit == "ask" && session is { Kind: not "subagent" } && request.Purpose == "agent";
         var allowed = ask && AllowedNow(session!);
+        // a spawn's own cap (agent_spawn maxUsd, kept on the child's session meta): the child's own calls may not cost more
+        var maxUsd = Positive(session?.Meta?[MaxUsdMetaKey]);
         if (_calls is null)
         {
             // Fail closed, as when the ledger was unavailable: the limits cannot be checked for a paid call, and a
@@ -254,6 +259,15 @@ internal sealed partial class Ledger
                     fit = $"The budget cannot fit this call's {Usd(cost)} reservation including concurrent calls. Lower the output limit, raise the budget, or use a free model.";
             }
             if (fit is not null && !allowed) throw new CallRefusedException(fit) { Kind = "budget", CanOverride = ask };
+            if (paid && maxUsd is { } cap2 && request.SessionId is not null)
+            {
+                // the child's own calls so far, reservations of calls in flight included, plus this one
+                var spent = D(_sessionUsage?.Get("s|" + request.SessionId)?["costUsd"]);
+                if (price is null)
+                    throw new CallRefusedException($"Stopped: its maxUsd of {Usd(cap2)} cannot be kept, this model's price is unknown.") { Kind = "budget" };
+                if (spent + cost > cap2)
+                    throw new CallRefusedException($"Stopped: its maxUsd of {Usd(cap2)} is spent ({Usd(spent)} so far, this call would reserve {Usd(cost)}).") { Kind = "budget" };
+            }
             // Persist before dispatch. A crash leaves a conservative reservation, not unaccounted spending.
             var id = AddCharge(request, agent, root, new Usage(), cost, price is null && paid ? "unknown" : "reserved");
             ScheduleChanged();

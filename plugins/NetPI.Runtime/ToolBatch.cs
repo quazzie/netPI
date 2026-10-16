@@ -246,7 +246,18 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
 
         foreach (var hook in rt.Hooks())
         {
-            var decision = await AgentRunner.SafeAsync(Ctx, () => hook.OnBeforeToolCallAsync(turn, call), "OnBeforeToolCall", ct).ConfigureAwait(false);
+            // this hook is a gate: one that throws blocks the call (the others are logged and skipped)
+            ToolCallDecision? decision;
+            try { decision = await hook.OnBeforeToolCallAsync(turn, call).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                var hookName = hook.GetType().Name;
+                Ctx.Logger.LogWarning(ex, "Agent hook {Hook} failed before tool call {Tool}: the call is blocked", hookName, call.Name);
+                call.Arguments = original;
+                prepared.Early = ToolResult.Error($"Blocked: the policy hook {hookName} failed before the call ({ex.Message}), so '{call.Name}' was not run.");
+                return (prepared, false);
+            }
             if (decision is null) continue;
             if (decision.Block)
             {
