@@ -149,6 +149,44 @@ internal static partial class AnthropicRequest
     private static bool HasToolResult(JsonObject turn) =>
         turn["content"] is JsonArray c && c.OfType<JsonObject>().Any(b => b.Str("type") == "tool_result");
 
+    /// <summary>The beta that lets a request carry <c>thinking.block_binding</c>.</summary>
+    public const string BindingBeta = "thinking-binding-controls-2026-08-01";
+
+    /// <summary>
+    /// The 400 a replayed thinking block gets when the system prompt, tools or messages before it changed since it was
+    /// made ("Invalid `signature` in `thinking` block. The block is bound to a different conversation."). Matched on
+    /// the stable first part and the setting it names; the sentence after it saying what changed is not for code.
+    /// A bare "Invalid `signature`" (a truncated or altered signature) is another failure that dropping does not cure.
+    /// </summary>
+    public static bool IsBindingMismatch(string? errBody) =>
+        errBody is not null
+        && errBody.Contains("Invalid `signature`", StringComparison.Ordinal)
+        && errBody.Contains("prefix_mismatch_behavior", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Let the API drop the replayed thinking blocks that no longer verify: <c>block_binding.prefix_mismatch_behavior:
+    /// drop_block</c> on adaptive thinking (with <see cref="BindingBeta"/>). A request without adaptive thinking cannot
+    /// carry the setting, so its history goes without thinking blocks instead (the documented alternative).
+    /// </summary>
+    public static void DropUnboundThinking(JsonObject body)
+    {
+        if (body["thinking"] is JsonObject t && t.Str("type") == "adaptive")
+        {
+            t["block_binding"] = new JsonObject { ["prefix_mismatch_behavior"] = "drop_block" };
+            return;
+        }
+        if (body["messages"] is not JsonArray messages) return;
+        foreach (var m in messages.OfType<JsonObject>())
+        {
+            if (m.Str("role") != "assistant" || m["content"] is not JsonArray c) continue;
+            for (var i = c.Count - 1; i >= 0; i--)
+                if (c[i] is JsonObject b && b.Str("type") is "thinking" or "redacted_thinking") c.RemoveAt(i);
+            if (c.Count == 0) c.Add(Text("(no content)"));
+        }
+    }
+
+    public static bool HasBlockBinding(JsonObject body) => body["thinking"] is JsonObject t && t["block_binding"] is not null;
+
     /// <summary>
     /// Convert normalized messages to Messages API turns. Without tool definitions the API rejects tool_use/tool_result
     /// blocks, so they are flattened to text (e.g. compaction/title calls over an agent transcript).

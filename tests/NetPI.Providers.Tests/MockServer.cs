@@ -499,6 +499,17 @@ internal sealed class MockServer : IAsyncDisposable
             case "prompt-too-long":
                 await Json(ctx, """{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 250000 tokens > 200000 maximum"}}""", 400);
                 return;
+            // A model that binds replayed thinking to the prefix: any signed thinking block in the history fails the
+            // call unless the request lets the API drop it (block_binding with its beta) or carries none.
+            case "claude-bound-thinking":
+                var dropping = body["thinking"]?["block_binding"]?["prefix_mismatch_behavior"]?.GetValue<string>() == "drop_block"
+                    && ctx.Request.Headers["anthropic-beta"].ToString().Contains("thinking-binding-controls-2026-08-01");
+                if (!dropping && body["messages"]!.ToJsonString().Contains("\"signature\""))
+                {
+                    await Json(ctx, """{"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation. Remove the block, or set `thinking.block_binding.prefix_mismatch_behavior` to \"drop_block\". That setting requires the `thinking-binding-controls-2026-08-01` value in the `anthropic-beta` header. The `tools` list differs from the one this block was created with."}}""", 400);
+                    return;
+                }
+                break;
             case "rate-limited":
                 ctx.Response.Headers["request-id"] = "req_rate";
                 ctx.Response.Headers["Retry-After"] = "4";

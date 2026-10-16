@@ -1618,6 +1618,45 @@ await t.Run("anthropic: thinking never raises max_tokens over an explicit caller
     t.Check(b["thinking"] is null && b["max_tokens"]!.GetValue<int>() == 1500, "too small for both: no thinking, cap kept");
 });
 
+// Claude 5.5-era models bind a replayed thinking block to the prefix it was made under. A publish that changed one tool
+// description invalidated every thinking block of a long Opus chat, and every later call failed with the same 400
+// ("bound to a different conversation"); retrying the body never clears it. The call now goes again with drop_block,
+// and the model keeps that, so later calls do not pay a failed request first.
+await t.Run("anthropic: thinking bound to an earlier prefix -> one retry with drop_block, remembered per model", async () =>
+{
+    var bound = AN.ClaudeCapabilities.ToModelInfo("anthropic", "claude-bound-thinking", null);
+    var history = new List<ChatMessage>
+    {
+        ChatMessage.UserText("first"),
+        new() { Role = MessageRole.Assistant, Provider = "anthropic", Parts = [new ThinkingPart { Text = "old", Signature = "OLDSIG" }, new TextPart { Text = "answer" }] },
+        ChatMessage.UserText("again"),
+    };
+    var before = mock.Requests.Count(r => r.Path == "/v1/messages");
+    var done = (await Collect(anthropic, Req(bound, history, "high")))[^1];
+    t.Check(done is StreamCompleted, "the call succeeds");
+    var sent = mock.Requests.Where(r => r.Path == "/v1/messages").Skip(before).ToList();
+    t.Eq(2, sent.Count, "one failed request, one retry");
+    t.Eq("drop_block", sent[1].Json["thinking"]?["block_binding"]?["prefix_mismatch_behavior"]?.GetValue<string>(), "the retry lets the API drop the block");
+    t.Check(sent[1].Headers.GetValueOrDefault("anthropic-beta", "").Contains(AN.AnthropicRequest.BindingBeta), "with its beta");
+    t.Check(sent[1].Json["messages"]!.ToJsonString().Contains("OLDSIG"), "the block itself is still sent: the API decides what no longer verifies");
+
+    before = mock.Requests.Count(r => r.Path == "/v1/messages");
+    await Collect(anthropic, Req(bound, history, "high"));
+    t.Eq(1, mock.Requests.Count(r => r.Path == "/v1/messages") - before, "the next call sends drop_block at once");
+
+    // Without adaptive thinking there is nothing to carry the setting: the history goes without its thinking blocks.
+    before = mock.Requests.Count(r => r.Path == "/v1/messages");
+    t.Check((await Collect(anthropic, Req(bound, history, "none")))[^1] is StreamCompleted, "no thinking: still succeeds");
+    var last = mock.Last("/v1/messages").Json;
+    t.Check(last["thinking"] is null && !last["messages"]!.ToJsonString().Contains("OLDSIG"), "thinking blocks stripped from the history");
+    t.Eq(1, mock.Requests.Count(r => r.Path == "/v1/messages") - before, "in one request");
+
+    // Another 400 is not retried.
+    before = mock.Requests.Count(r => r.Path == "/v1/messages");
+    await Fails(anthropic, Req(M("anthropic", "prompt-too-long")));
+    t.Eq(1, mock.Requests.Count(r => r.Path == "/v1/messages") - before, "prompt too long: no retry");
+});
+
 await t.Run("anthropic: an oversize image is replaced by a note instead of a 400 on every later call", async () =>
 {
     var messages = new List<ChatMessage>

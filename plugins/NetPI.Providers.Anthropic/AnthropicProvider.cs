@@ -21,6 +21,8 @@ public sealed class AnthropicProvider : IModelProvider
     private readonly ILogger _log;
     private readonly string? _dumpDir;
     private readonly ModelListCache _models;
+    /// <summary>Models whose chats met a thinking block bound to another prefix: their calls drop such blocks from then on.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _dropUnboundThinking = new(StringComparer.OrdinalIgnoreCase);
 
     public AnthropicProvider(HttpClient http, Func<JsonObject?> config, ILogger? logger = null, IEventBus? events = null,
         string id = "anthropic", string? logsDir = null)
@@ -106,32 +108,50 @@ public sealed class AnthropicProvider : IModelProvider
         if (!o.Enabled) throw new ModelException("Anthropic: provider is disabled in settings.", false, null, "provider_disabled");
         if (o.ApiKey is null) throw new ModelException(NoKeyMessage, false, 401, "authentication_error");
 
-        var body = AnthropicRequest.BuildBody(request, o, Id);
-        using var httpReq = new HttpRequestMessage(HttpMethod.Post, o.Root + "/v1/messages");
-        httpReq.Content = new ByteArrayContent(J.Utf8(body));
-        httpReq.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-        httpReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-        ApplyHeaders(httpReq, o);
-        call.Url = httpReq.RequestUri?.ToString();
-        call.Body = body;
-        call.Dump = o.DumpFailedRequests;
-
+        var binding = _dropUnboundThinking.ContainsKey(request.Model.Id);
         HttpResponseMessage resp;
-        try { resp = await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "Anthropic", ct); }
+        for (var attempt = 0; ; attempt++)
+        {
+            var body = AnthropicRequest.BuildBody(request, o, Id);
+            if (binding) AnthropicRequest.DropUnboundThinking(body);
+            using var httpReq = new HttpRequestMessage(HttpMethod.Post, o.Root + "/v1/messages");
+            httpReq.Content = new ByteArrayContent(J.Utf8(body));
+            httpReq.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            httpReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+            ApplyHeaders(httpReq, o, binding && AnthropicRequest.HasBlockBinding(body) ? AnthropicRequest.BindingBeta : null);
+            call.Url = httpReq.RequestUri?.ToString();
+            call.Body = body;
+            call.Dump = o.DumpFailedRequests;
+
+            try { resp = await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "Anthropic", ct); }
+
+            // The id Anthropic puts on every response and every error page: the only way to find the failure in their logs.
+            if (resp.Headers.TryGetValues("request-id", out var rid)) call.RequestId = rid.FirstOrDefault();
+            if (resp.IsSuccessStatusCode) break;
+            using var failed = resp;
+            var errBody = await ProviderErrors.ReadBodySafeAsync(resp, ct).ConfigureAwait(false);
+            call.ResponseBody = errBody;
+            ct.ThrowIfCancellationRequested();
+            // Claude 5.5-era models bind a replayed thinking block to the system prompt, tools and messages before it:
+            // a publish that changed a tool description, or a reload that changed the tool list, invalidates every
+            // thinking block of a chat (HTTP 400 "bound to a different conversation"), and retrying the same body never
+            // clears it. The call goes again with the blocks that no longer verify dropped (block_binding drop_block,
+            // or stripped where the request has no adaptive thinking to carry the setting), and the model keeps that
+            // from then on: the stored history still holds the old signatures.
+            if (attempt == 0 && !binding && (int)resp.StatusCode == 400 && AnthropicRequest.IsBindingMismatch(errBody))
+            {
+                _log.LogInformation("anthropic: thinking blocks bound to an earlier prefix (session {Session}, {Model}); retrying with them dropped",
+                    request.SessionId, request.Model.Id);
+                _dropUnboundThinking[request.Model.Id] = true;
+                binding = true;
+                continue;
+            }
+            throw ProviderErrors.FromHttp("Anthropic", resp, errBody);
+        }
 
         using (resp)
         {
-            // The id Anthropic puts on every response and every error page: the only way to find the failure in their logs.
-            if (resp.Headers.TryGetValues("request-id", out var rid)) call.RequestId = rid.FirstOrDefault();
-            if (!resp.IsSuccessStatusCode)
-            {
-                var errBody = await ProviderErrors.ReadBodySafeAsync(resp, ct).ConfigureAwait(false);
-                call.ResponseBody = errBody;
-                ct.ThrowIfCancellationRequested();
-                throw ProviderErrors.FromHttp("Anthropic", resp, errBody);
-            }
-
             Stream stream;
             try { stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); }
             catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "Anthropic", ct); }
@@ -153,11 +173,12 @@ public sealed class AnthropicProvider : IModelProvider
         }
     }
 
-    private static void ApplyHeaders(HttpRequestMessage req, AnthropicOptions o)
+    private static void ApplyHeaders(HttpRequestMessage req, AnthropicOptions o, string? extraBeta = null)
     {
         if (o.ApiKey is not null) req.Headers.TryAddWithoutValidation("x-api-key", o.ApiKey);
         req.Headers.TryAddWithoutValidation("anthropic-version", ApiVersion);
-        if (o.Betas.Count > 0) req.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", o.Betas));
+        var betas = extraBeta is null || o.Betas.Contains(extraBeta) ? o.Betas : [.. o.Betas, extraBeta];
+        if (betas.Count > 0) req.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", betas));
         HttpTransport.ApplyCustomHeaders(req, o.Headers);
     }
 }
