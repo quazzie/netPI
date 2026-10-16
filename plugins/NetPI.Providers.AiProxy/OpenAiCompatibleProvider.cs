@@ -230,7 +230,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                 try { stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); }
                 catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, DisplayName, ct); }
 
-                await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct), DisplayName, ct).ConfigureAwait(false))
+                await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct, DisplayName), DisplayName, ct).ConfigureAwait(false))
                 {
                     // Both transports report the server's id for the response (Responses: response.id, Chat: the
                     // completion id); a backend with no x-request-id header offers only this (idea-uab5a4).

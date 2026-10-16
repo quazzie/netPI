@@ -109,6 +109,29 @@ await t.Run("SSE reader: event names, multi-line data, comments, CRLF, missing s
     t.Eq("last", events[4].Data, "trailing event without blank line");
 });
 
+// A line the server never ends used to be read without limit (the process's memory is the only cap); past the
+// reader's cap the stream is a provider error, like every other unreadable stream.
+await t.Run("SSE reader: a line over the cap is a provider error, not an unbounded read", async () =>
+{
+    ModelException? caught = null;
+    try
+    {
+        await foreach (var _ in Kit.SseReader.ReadAsync(new MemoryStream(Encoding.UTF8.GetBytes("data: " + new string('x', Kit.SseReader.MaxLineLength + 1))), default, "P"))
+        {
+        }
+    }
+    catch (ModelException ex) { caught = ex; }
+    t.Check(caught is { Transient: true, ErrorType: "stream_truncated" }, "over the cap: " + caught?.Message);
+    t.Check(caught!.Message.Contains("16 MB") && caught.Message.StartsWith("P:"), "the cap and the provider are named");
+
+    var payload = new string('x', Kit.SseReader.MaxLineLength - 6); // "data: " is the 6 chars the line adds
+    var atCap = "data: " + payload + "\n\n";
+    var events = new List<Kit.SseEvent>();
+    await foreach (var e in Kit.SseReader.ReadAsync(new MemoryStream(Encoding.UTF8.GetBytes(atCap)))) events.Add(e);
+    t.Eq(1, events.Count, "a line at the cap is read");
+    t.Eq(payload.Length, events[0].Data.Length, "the data field, without the 'data: ' prefix");
+});
+
 await t.Run("Think-tag splitter: tags split at every chunk boundary", () =>
 {
     const string s = "  <think>abc</think>\n\nhello <b>x</b> <thin end";

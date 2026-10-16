@@ -211,7 +211,7 @@ public sealed class OpenRouterProvider : IModelProvider
                 try { stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); }
                 catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "OpenRouter", ct); }
 
-                await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct), DisplayName, ct).ConfigureAwait(false))
+                await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct, DisplayName), DisplayName, ct).ConfigureAwait(false))
                 {
                     try { parser.Handle(sse); }
                     finally { call.ResponseId ??= parser.GenerationId; }

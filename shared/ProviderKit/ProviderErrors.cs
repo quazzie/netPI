@@ -110,6 +110,11 @@ internal static partial class ProviderErrors
         new(dropped is null ? $"{provider}: the response stream ended unexpectedly"
             : $"{provider}: the response stream ended unexpectedly ({dropped})", transient: true, null, "stream_truncated");
 
+    /// <summary>An SSE line over the reader's cap: the server does not end its line, and the stream is not readable.</summary>
+    public static ModelException SseLineTooLong(string? provider, int limitChars) =>
+        new($"{(provider is null ? "" : provider + ": ")}SSE line over {limitChars / 1024 / 1024} MB: the stream is not readable",
+            transient: true, null, "stream_truncated");
+
     /// <summary>Translate a transport exception. User cancellation is re-thrown as <see cref="OperationCanceledException"/>.</summary>
     public static Exception Translate(Exception ex, string provider, CancellationToken ct)
     {

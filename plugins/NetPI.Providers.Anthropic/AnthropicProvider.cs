@@ -138,7 +138,7 @@ public sealed class AnthropicProvider : IModelProvider
 
             var asm = new MessageAssembler();
             var parser = new AnthropicStreamParser(asm, "Anthropic");
-            await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct), "Anthropic", ct).ConfigureAwait(false))
+            await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct, "Anthropic"), "Anthropic", ct).ConfigureAwait(false))
             {
                 // An error frame carries its own request id, for a gateway that sends no header.
                 try { parser.Handle(sse); }
