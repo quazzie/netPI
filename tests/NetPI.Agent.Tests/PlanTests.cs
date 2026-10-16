@@ -381,7 +381,6 @@ public static class PlanTests
     private sealed class FakeResolver(string cwd, WorkspaceBinding binding) : IWorkspaceResolver
     {
         public WorkspaceBinding? Resolve(SessionInfo? session) => binding;
-        public WorkspaceBinding? ResolveById(string workspaceId) => binding;
         public WorkspaceBinding Require(SessionInfo session) => binding;
         public string CwdOf(SessionInfo session) => cwd;
         public string IdentityOf(SessionInfo session) => binding.WorkspaceId;

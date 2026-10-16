@@ -75,8 +75,6 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
         catch (WorkspaceUnavailableException) { return null; }
     }
 
-    public WorkspaceBinding? ResolveById(string workspaceId) => Resolve(store.GetWorkspace(workspaceId) is { } w ? SessionFor(w) : null);
-
     public WorkspaceBinding Require(SessionInfo session)
     {
         ArgumentNullException.ThrowIfNull(session);
@@ -156,7 +154,4 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
     private static string NoWorkspace(SessionInfo session) =>
         session.ProjectId is null ? "This session has no project and no workspace, so there is no directory to work in."
         : $"Session {session.Id} has no usable workspace.";
-
-    /// <summary>A stand-in session for resolving a workspace by id (no project to check it against).</summary>
-    private static SessionInfo SessionFor(WorkspaceInfo w) => new() { Id = "", ProjectId = null, Meta = new System.Text.Json.Nodes.JsonObject { [SessionWorkspace.MetaKey] = w.Id } };
 }
