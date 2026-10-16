@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using NetPI.Embeddings;
 using NetPI.Host.Sessions;
 using NetPI.Ideas;
+using NetPI.Memory;
 
 namespace NetPI.Aux.Tests;
 
@@ -21,12 +22,16 @@ public static class EmbeddingsTests
         public string? Model { get; set; } = model;
         public bool Available { get; set; } = true;
         public List<(EmbeddingKind Kind, string Text)> Seen { get; } = [];
+        /// <summary>Texts this embedder refuses (throws on): a sweep must skip them and keep going.</summary>
+        public List<string> Refuse { get; } = [];
         /// <summary>Words that mean another word to this embedder (and to nothing else): meaning without shared words.</summary>
         public Dictionary<string, string> Synonyms { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public Task<EmbeddingResult> EmbedAsync(EmbeddingRequest request, CancellationToken ct)
         {
             if (!Available || Model is null) throw new EmbeddingException("unavailable", "down");
+            if (request.Texts.Any(t => Refuse.Any(f => t.Contains(f, StringComparison.Ordinal))))
+                throw new EmbeddingException("refused", "the model refused these texts");
             lock (Seen) Seen.AddRange(request.Texts.Select(t => (request.Kind, t)));
             return Task.FromResult(new EmbeddingResult(Model, 64, request.Texts
                 .Select(t => Vector(string.Join(" ", t.Split(" ").Select(w => Synonyms.GetValueOrDefault(w.Trim(), w))))).ToList()));
@@ -312,6 +317,32 @@ public static class EmbeddingsTests
             var result = await env.Tool(new { action = "list", query = "timer leaks collapse" });
             Check.False(result.IsError);
             Check.NotContains(result.Content, "Closest by meaning");
+        });
+
+        r.Add("memory: a chat the embedder refuses is skipped and named, the rest of the sweep goes on", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("mem-home"));
+            var embedder = new BagOfWords();
+            ctx.ServicesFake.Register<IEmbeddingService>(embedder);
+            await new MemoryPlugin().StartAsync(ctx, CancellationToken.None);
+            try
+            {
+                var good = ctx.Sessions.CreateSession(new SessionInfo { Title = "good chat" });
+                ctx.Sessions.AppendMessage(good.Id, new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "hello from the good chat" }] });
+                var poison = ctx.Sessions.CreateSession(new SessionInfo { Title = "poison chat" });
+                ctx.Sessions.AppendMessage(poison.Id, new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "poison" }] });
+                embedder.Refuse.Add("poison");
+
+                var result = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.reindex", new JsonObject()))!;
+                Check.Equal(1, result["indexed"]!.GetValue<int>(), "the good chat is indexed");
+                Check.Equal(1, result["skipped"]!.GetValue<int>(), "the refused chat is named in the answer, not a failure of the sweep");
+                Check.True(ctx.Log.Lines.Any(l => l.Contains("poison chat") && l.Contains("was not indexed")), "the skip is logged");
+
+                var found = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.search", new JsonObject { ["query"] = "good chat" }))!;
+                Check.True(found["available"]!.GetValue<bool>());
+                Check.Equal(good.Id, ((JsonArray)found["chats"]!)[0]!["sessionId"]!.GetValue<string>());
+            }
+            finally { ctx.Unload(); }
         });
 
         r.Add("notice: the commit message comes from -m (several, quoted) or from git's [branch hash] line", () =>
