@@ -5,7 +5,7 @@ import { app, projectOf } from './app.svelte.js';
 import { asks } from './asks.svelte.js';
 import { plans } from './plans.svelte.js';
 import { scheduleProposals } from './schedules.svelte.js';
-import { firstLine } from '../notify.js';
+import { firstLine } from '../format.js';
 
 export const KINDS = {
   question: { icon: 'message-circle', label: 'Question' },

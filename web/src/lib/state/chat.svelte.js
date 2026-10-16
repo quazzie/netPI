@@ -10,6 +10,7 @@ export const PAGE = 60;
 export const CAP = 200; // max messages kept in the window (≈ DOM cap)
 const SLACK = 20; // trim only when this far over the cap (avoids trimming on every message)
 const OUTPUT_CAP = 200_000; // live tool output kept per call (tail)
+const OUTPUT_SLACK = 64_000; // trimmed only once it exceeds the cap by this much, so a chunk does not copy the buffer each time
 const LRU_MAX = 5;
 
 /** Live state of a running (or just finished) tool call, fed by tool.start/output/result/end. */
@@ -38,7 +39,7 @@ export class LiveTool {
   }
   append(chunk) {
     this.#buf += chunk;
-    if (this.#buf.length > OUTPUT_CAP) {
+    if (this.#buf.length > OUTPUT_CAP + OUTPUT_SLACK) {
       // keep the tail, starting at a line boundary
       let cut = this.#buf.length - OUTPUT_CAP;
       const nl = this.#buf.indexOf('\n', cut);
@@ -312,13 +313,16 @@ export class ChatStore {
   async loadNewer() {
     if (this.loadingNewer || !this.hasNewer || !this.messages.length) return false;
     this.loadingNewer = true;
+    const seq = this.#loadSeq;
     try {
       let added = 0;
       for (let round = 0; round < 3; round++) {
         const last = this.messages[this.messages.length - 1].seq;
         const counted = this.newerCount;
         const res = await rpc('sessions.messages', { id: this.id, afterSeq: last, limit: PAGE });
-        const newer = (res?.messages ?? []).filter((m) => m.seq > last);
+        if (seq !== this.#loadSeq) return false; // a load() replaced the window meanwhile: this page is stale
+        const have = new Set(this.messages.map((m) => m.id));
+        const newer = (res?.messages ?? []).filter((m) => m.seq > last && !have.has(m.id));
         let next = this.messages.concat(newer);
         if (next.length > CAP) {
           next = next.slice(next.length - CAP);
@@ -496,7 +500,12 @@ export class ChatStore {
 
   /** The agent run ended: drop any leftover transient state. */
   runEnded() {
-    if (this.stream.active && this.stream.ended) this.stream.clear();
+    this.#settleRun(this.stream.active && this.stream.ended);
+  }
+
+  /** What a finished run leaves behind: optionally the stream, a non-error notice, calls still marked running. */
+  #settleRun(clearStream) {
+    if (clearStream) this.stream.clear();
     if (this.notice && this.notice.level !== 'error') this.notice = null;
     for (const t of this.live.values()) if (t.status === 'running') t.status = 'done';
   }
@@ -545,9 +554,7 @@ export class ChatStore {
    *  cleared — a run that is still busy keeps streaming, and its live state stays. */
   reconcile(runBusy) {
     if (runBusy) return;
-    if (this.stream.active) this.stream.clear();
-    if (this.notice && this.notice.level !== 'error') this.notice = null;
-    for (const t of this.live.values()) if (t.status === 'running') t.status = 'done';
+    this.#settleRun(this.stream.active);
   }
 
   dispose() {
@@ -565,6 +572,7 @@ function findIndexById(msgs, id) {
 // ------------------------------------------------------------------------------------------ LRU cache
 
 const cache = new Map();
+let shownId = null; // the chat on screen: never evicted, since the view only looks it up (peekChat) and does not touch it
 
 /** Get (or create) the store for a session and mark it most recently used. */
 export function getChat(id) {
@@ -579,12 +587,17 @@ export function getChat(id) {
   if (cache.size > LRU_MAX) {
     for (const [k, v] of cache) {
       if (cache.size <= LRU_MAX) break;
-      if (k === id || v.stream.active) continue; // keep streaming sessions
+      if (k === id || k === shownId || v.stream.active) continue; // keep streaming sessions
       v.dispose();
       cache.delete(k);
     }
   }
   return c;
+}
+
+/** The store the view shows: activation creates it (getChat), this keeps it out of the LRU's reach. */
+export function pinChat(id) {
+  shownId = id;
 }
 
 /** Existing store or undefined (events for uncached sessions are ignored; they reload on open). */

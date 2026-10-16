@@ -11,7 +11,7 @@ namespace NetPI.Host.Plugins;
 /// Discovers, loads, starts, hot-reloads and unloads plugins.
 /// <list type="bullet">
 /// <item>Discovery: every sub-folder <c>X/</c> of a plugin directory containing <c>X.dll</c> (or a <c>plugin.json</c> naming its assembly).</item>
-/// <item>Each load shadow-copies the folder (except <c>wwwroot</c>) to <c>&lt;home&gt;/shadow/&lt;name&gt;/&lt;pid&gt;_&lt;n&gt;/</c> and loads it into a
+/// <item>Each load shadow-copies the folder (except <c>wwwroot</c>) to <c>&lt;home&gt;/shadow/&lt;name&gt;/&lt;pid&gt;_&lt;start&gt;_&lt;n&gt;/</c> and loads it into a
 /// collectible <see cref="PluginLoadContext"/>, so a build can overwrite the originals while the plugin runs.</item>
 /// <item>Plugins start in (Order, Name) sequence with a 30 s timeout. Failures leave the plugin <c>failed</c> with its registrations removed.</item>
 /// <item>A watcher per plugin directory reloads a plugin ~800 ms after its dll/pdb/json files change; <c>wwwroot</c> changes only bump its UI version, and only when its files really differ.</item>
@@ -302,7 +302,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     internal (WeakReference? Current, WeakReference? LastUnloaded, bool? LastUnloadCollected) GetLoadState(string pluginId)
     {
         var e = FindById(pluginId) ?? throw new KeyNotFoundException(pluginId);
-        return (e.Alc is null ? null : new WeakReference(e.Alc), e.LastUnloaded, e.LastUnloadCollected);
+        return (e.Load.Alc is null ? null : new WeakReference(e.Load.Alc), e.LastUnloaded, e.LastUnloadCollected);
     }
 
     // ------------------------------------------------------------------ discovery
@@ -336,8 +336,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                 if (knownFolders.Contains(folder)) continue;
                 var folderName = Path.GetFileName(folder);
                 if (folderName.StartsWith('.') || folderName.StartsWith('_')) continue;
-                var manifestFile = Path.Combine(folder, "plugin.json");
-                var manifest = File.Exists(manifestFile) ? PluginManifest.TryLoad(manifestFile, _log) : null;
+                var manifest = ReadManifest(folder);
                 var asmFile = AssemblyFileName(manifest, folderName);
                 if (!File.Exists(Path.Combine(folder, asmFile))) continue;
                 var id = manifest?.Id ?? Path.GetFileNameWithoutExtension(asmFile).ToLowerInvariant();
@@ -431,9 +430,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                 e.Description = attr?.Description ?? e.Manifest?.Description;
                 e.Order = e.Manifest?.Order ?? attr?.Order ?? 100;
                 e.Version = VersionOf(asm);
-                e.Alc = alc;
-                e.PluginType = type;
-                e.ShadowDir = shadow;
+                e.Load = e.Load with { Alc = alc, PluginType = type, ShadowDir = shadow };
                 e.LoadMs = sw.ElapsedMilliseconds;
                 return true;
             }
@@ -470,13 +467,11 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         INetPiPlugin? instance = null;
         try
         {
-            instance = (INetPiPlugin)Activator.CreateInstance(e.PluginType!)!;
+            instance = (INetPiPlugin)Activator.CreateInstance(e.Load.PluginType!)!;
             using var startCts = CancellationTokenSource.CreateLinkedTokenSource(ct, stopping.Token, _shutdown.Token);
             startCts.CancelAfter(StartTimeout);
             await instance.StartAsync(context, startCts.Token).WaitAsync(StartTimeout, ct).ConfigureAwait(false);
-            e.Instance = instance;
-            e.Scope = scope;
-            e.Stopping = stopping;
+            e.Load = e.Load with { Instance = instance, Scope = scope, Stopping = stopping };
             e.State = "running";
             e.Error = null;
             e.LoadedAt = DateTimeOffset.UtcNow;
@@ -545,7 +540,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         var shadow = load.ShadowDir;
         // The entry's own load (a start that failed, a disabled or duplicate id): nothing of it may stay on the entry,
         // the context least of all - a reference there would keep it alive through every collection.
-        if (ReferenceEquals(e.Alc, load.Alc)) ClearLoad(e);
+        if (ReferenceEquals(e.Load.Alc, load.Alc)) ClearLoad(e);
         // Deliver queued events (they may carry plugin payloads) before snapshotting the ring buffer.
         try { await _k.Bus.FlushAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
         catch (TimeoutException) { }
@@ -667,29 +662,33 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     /// reload can start the <em>next</em> load while this one is still serving, then retire this one explicitly
     /// (see <see cref="ReloadEntryAsync"/>).
     /// </summary>
-    private sealed record Load(PluginLoadContext? Alc, Type? PluginType, string? ShadowDir, INetPiPlugin? Instance,
+    internal sealed record Load(PluginLoadContext? Alc, Type? PluginType, string? ShadowDir, INetPiPlugin? Instance,
         PluginScope? Scope, CancellationTokenSource? Stopping)
     {
         public static readonly Load None = new(null, null, null, null, null, null);
         public bool Live => Alc is not null || Instance is not null;
     }
 
+    /// <summary>The <c>plugin.json</c> of a plugin folder, or null: read in discovery and in a reload, one way.</summary>
+    private PluginManifest? ReadManifest(string folder)
+    {
+        var manifestFile = Path.Combine(folder, "plugin.json");
+        return File.Exists(manifestFile) ? PluginManifest.TryLoad(manifestFile, _log) : null;
+    }
+
     private static Load TakeLoad(PluginEntry e)
     {
-        var load = CurrentLoad(e);
-        ClearLoad(e);
+        var load = e.Load;
+        e.Load = Load.None;
         return load;
     }
 
-    /// <summary>The load the entry currently points at (not taken: the entry keeps pointing at it).</summary>
-    private static Load CurrentLoad(PluginEntry e) =>
-        new(e.Alc, e.PluginType, e.ShadowDir, e.Instance, e.Scope, e.Stopping);
+    /// <summary>The load the entry currently points at (a copy: the entry keeps pointing at it).</summary>
+    private static Load CurrentLoad(PluginEntry e) => e.Load;
 
-    private static void RestoreLoad(PluginEntry e, Load load)
-    {
-        e.Alc = load.Alc; e.PluginType = load.PluginType; e.ShadowDir = load.ShadowDir;
-        e.Instance = load.Instance; e.Scope = load.Scope; e.Stopping = load.Stopping;
-    }
+    private static void RestoreLoad(PluginEntry e, Load load) => e.Load = load;
+
+    private static void ClearLoad(PluginEntry e) => e.Load = Load.None;
 
     /// <summary>
     /// Every reload comes here (the watcher, <c>plugins.reload</c>, a rescan that finds a changed assembly): it is
@@ -711,20 +710,19 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             if (_disposed) return;
             lock (_gate) if (!_entries.Contains(e)) return;   // a rescan removed it meanwhile
             changed = true;
-            var manifestFile = Path.Combine(e.Folder, "plugin.json");
-            e.Manifest = File.Exists(manifestFile) ? PluginManifest.TryLoad(manifestFile, _log) : null;
+            e.Manifest = ReadManifest(e.Folder);
             e.AssemblyFile = AssemblyFileName(e.Manifest, e.FolderName);
             if (!IsEnabled(e, EnabledSets.Read(_k.Settings)))
             {
                 // plugin.json says enabled:false (or the settings do): a plugin that is off is stopped, not hot-reloaded
-                if (e.Instance is not null) kind = "disabled";
+                if (e.Load.Instance is not null) kind = "disabled";
                 _log.LogInformation("Plugin {Id}: off by its plugin.json or the settings; {What}", e.Id, kind is null ? "not loading it" : "stopping the running version");
                 await StopInstanceAsync(e, track: true).ConfigureAwait(false);
                 e.State = "disabled";
                 e.Error = null;
                 return;
             }
-            if (e.Instance is null && RunningTwin(e) is { } twin)
+            if (e.Load.Instance is null && RunningTwin(e) is { } twin)
             {
                 // its id is taken: a second instance would answer the same RPCs and tools (LoadAndStartAsync refuses the same)
                 e.State = "failed";
@@ -791,11 +789,6 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         }
     }
 
-    private static void ClearLoad(PluginEntry e)
-    {
-        e.Alc = null; e.PluginType = null; e.ShadowDir = null; e.Instance = null; e.Scope = null; e.Stopping = null;
-    }
-
     /// <summary>
     /// Stop, unregister and unload a load that has been replaced: StopAsync → cancel Stopping → dispose its
     /// registrations → unload its context. The registrations go last, because they are what the tools are: until this
@@ -824,7 +817,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             if (_disposed) return;
             var sets = EnabledSets.Read(_k.Settings);
             var stopped = new List<string>();
-            foreach (var e in Snapshot().Where(e => e.Instance is not null).OrderByDescending(e => e.Order))
+            foreach (var e in Snapshot().Where(e => e.Load.Instance is not null).OrderByDescending(e => e.Order))
             {
                 if (IsEnabled(e, sets)) continue;
                 _log.LogInformation("Disabling plugin {Id}", e.Id);
@@ -973,9 +966,18 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     private string ShadowCopy(PluginEntry e)
     {
         var n = Interlocked.Increment(ref s_shadowCounter);
-        var dir = Path.Combine(_shadowRoot, SafeName(e.FolderName), $"{Environment.ProcessId}_{n}");
+        // The owner's start time in the name: a pid is reused by the OS, and a dead owner's copy must go when its pid
+        // comes back to life as a different process - the start time is what tells the two apart (see CleanShadowRoot).
+        var dir = Path.Combine(_shadowRoot, SafeName(e.FolderName), $"{Environment.ProcessId}_{OwnerStartTicks()}_{n}");
         CopyDirectory(e.Folder, dir, top: true);
         return dir;
+    }
+
+    /// <summary>The start time of this process (in <see cref="DateTime"/> ticks): the owner mark of its shadow copies.</summary>
+    private static long OwnerStartTicks()
+    {
+        try { return Process.GetCurrentProcess().StartTime.Ticks; }
+        catch { return 0; }
     }
 
     private static void CopyDirectory(string source, string target, bool top)
@@ -992,7 +994,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         }
     }
 
-    /// <summary>Delete shadow copies left behind by processes that are no longer running.</summary>
+    /// <summary>Delete shadow copies left behind by processes that are no longer running (or whose pid the OS reused).</summary>
     private void CleanShadowRoot()
     {
         try
@@ -1002,8 +1004,12 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                 foreach (var loadDir in Directory.GetDirectories(nameDir))
                 {
                     var leaf = Path.GetFileName(loadDir);
-                    var sep = leaf.IndexOf('_');
-                    if (sep > 0 && int.TryParse(leaf.AsSpan(0, sep), out var pid) && (pid == Environment.ProcessId || IsProcessAlive(pid))) continue;
+                    // {pid}_{startTicks}_{n}: a pid the OS reused is a different process (a different start time), so the
+                    // copy of the dead owner goes with it. Our own pid is never cleaned.
+                    var parts = leaf.Split('_');
+                    var owner = parts.Length >= 3 && long.TryParse(parts[0], out var pid) && long.TryParse(parts[1], out var start)
+                        && (pid == Environment.ProcessId || IsProcessAlive((int)pid, start));
+                    if (owner) continue;
                     PathUtil.TryDeleteDirectory(loadDir);
                 }
                 try
@@ -1019,17 +1025,17 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         }
     }
 
-    private static bool IsProcessAlive(int pid)
+    /// <summary>Whether <paramref name="pid"/> is the process the shadow was copied for: alive AND started at the recorded time.
+    /// A reused pid (alive, but a different start time) is not the owner, so its dead predecessor's copy is cleaned.</summary>
+    private static bool IsProcessAlive(int pid, long startTicks)
     {
         try
         {
             using var p = Process.GetProcessById(pid);
-            return !p.HasExited;
+            if (p.HasExited) return false;
+            return p.StartTime.Ticks == startTicks;
         }
-        catch
-        {
-            return false;
-        }
+        catch { return false; }
     }
 
     private static string SafeName(string name)
@@ -1107,14 +1113,14 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         lock (_gate)
         {
             var byId = _entries.Where(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase)).ToList();
-            return byId.FirstOrDefault(e => e.Instance is not null) ?? byId.FirstOrDefault()
+            return byId.FirstOrDefault(e => e.Load.Instance is not null) ?? byId.FirstOrDefault()
                    ?? _entries.FirstOrDefault(e => e.FolderName.Equals(id, StringComparison.OrdinalIgnoreCase));
         }
     }
 
     /// <summary>Another entry running under this one's id: two folders with one plugin id, of which only one may run.</summary>
     private PluginEntry? RunningTwin(PluginEntry e) =>
-        Snapshot().FirstOrDefault(o => !ReferenceEquals(o, e) && o.Instance is not null && o.Id.Equals(e.Id, StringComparison.OrdinalIgnoreCase));
+        Snapshot().FirstOrDefault(o => !ReferenceEquals(o, e) && o.Load.Instance is not null && o.Id.Equals(e.Id, StringComparison.OrdinalIgnoreCase));
 
     private List<PluginEntry> Snapshot()
     {
@@ -1161,7 +1167,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         await _op.WaitAsync().ConfigureAwait(false);
         try
         {
-            foreach (var e in Snapshot().Where(e => e.Instance is not null)
+            foreach (var e in Snapshot().Where(e => e.Load.Instance is not null)
                          .OrderByDescending(e => e.Order).ThenByDescending(e => e.Name, StringComparer.OrdinalIgnoreCase))
             {
                 _log.LogDebug("Stopping plugin {Id}", e.Id);
@@ -1209,13 +1215,8 @@ internal sealed class PluginEntry
     /// <summary>The <c>wwwroot</c> files <see cref="UiVersion"/> was set for (see UiStampOf).</summary>
     public string UiStamp { get; set; } = "";
 
-    // Current load (all cleared on unload so nothing roots the collectible context).
-    public PluginLoadContext? Alc { get; set; }
-    public Type? PluginType { get; set; }
-    public string? ShadowDir { get; set; }
-    public INetPiPlugin? Instance { get; set; }
-    public PluginScope? Scope { get; set; }
-    public CancellationTokenSource? Stopping { get; set; }
+    // The current load (cleared on unload so nothing roots the collectible context): one object, not six fields.
+    public PluginManager.Load Load { get; set; } = PluginManager.Load.None;
 
     public WeakReference? LastUnloaded { get; set; }
     public bool? LastUnloadCollected { get; set; }

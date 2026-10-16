@@ -176,6 +176,9 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
         return adapt;
     }
 
+    /// <summary>How long the output pipes get to close after the hook exited before its remaining children are killed.</summary>
+    internal static TimeSpan DrainGrace = TimeSpan.FromSeconds(2);
+
     internal sealed record HookRun(string Detail, string Output);
 
     /// <summary>Run one hook with a context on its standard input; the one-line result and the whole standard output. Used by the hooks and by <c>webhooks.testHook</c>.</summary>
@@ -193,25 +196,52 @@ internal sealed class HookEngine(IPluginContext ctx, WebhookStore store, TimePro
         try { process = Process.Start(info) ?? throw new InvalidOperationException($"{program} did not start"); }
         catch (Win32Exception ex) { throw new InvalidOperationException($"{program} could not be started: {ex.Message}"); }
         using (process)
+        using (var job = new ProcessJob()) // the hook's tree ends with it: a timeout, a cancel or a child that keeps the pipes open
         {
+            job.Assign(process);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(seconds));
-            var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var errors = process.StandardError.ReadToEndAsync(timeout.Token);
+            // read without the token: killing the job closes the pipes, which ends the reads
+            var output = process.StandardOutput.ReadToEndAsync();
+            var errors = process.StandardError.ReadToEndAsync();
+            string o, e;
             try
             {
                 await process.StandardInput.WriteAsync(context.ToJsonString().AsMemory(), timeout.Token).ConfigureAwait(false);
                 process.StandardInput.Close();
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                // the hook has exited; a child of it may still hold the pipes: give the reads a moment, then end the tree
+                var reads = Task.WhenAll(output, errors);
+                if (await Task.WhenAny(reads, Task.Delay(DrainGrace, timeout.Token)).ConfigureAwait(false) != reads)
+                {
+                    job.Kill(process);
+                    await Task.WhenAny(reads, Task.Delay(DrainGrace, timeout.Token)).ConfigureAwait(false);
+                }
+                o = (output.IsCompletedSuccessfully ? output.Result : "").Trim();
+                e = (errors.IsCompletedSuccessfully ? errors.Result : "").Trim();
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
+                job.Kill(process);
+                if (ct.IsCancellationRequested) throw;
                 throw new InvalidOperationException($"{Path.GetFileName(program)} did not finish within {seconds} s and was stopped");
             }
-            catch (IOException) { /* the program closed its input early: its exit code says what happened */ }
-            var o = (await output.ConfigureAwait(false)).Trim();
-            var e = (await errors.ConfigureAwait(false)).Trim();
+            catch (IOException)
+            {
+                // the program closed its input early: its exit code says what happened
+                try { await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException)
+                {
+                    job.Kill(process);
+                    if (ct.IsCancellationRequested) throw;
+                    throw new InvalidOperationException($"{Path.GetFileName(program)} did not finish within {seconds} s and was stopped");
+                }
+                var reads = Task.WhenAll(output, errors);
+                if (await Task.WhenAny(reads, Task.Delay(DrainGrace)).ConfigureAwait(false) != reads) job.Kill(process);
+                await Task.WhenAny(reads, Task.Delay(DrainGrace)).ConfigureAwait(false);
+                o = (output.IsCompletedSuccessfully ? output.Result : "").Trim();
+                e = (errors.IsCompletedSuccessfully ? errors.Result : "").Trim();
+            }
             var name = Path.GetFileName(program);
             if (process.ExitCode != 0)
                 throw new InvalidOperationException($"{name} exited {process.ExitCode}" + (FirstLine(e.Length > 0 ? e : o) is { Length: > 0 } why ? ": " + why : ""));

@@ -116,7 +116,7 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(evt);
         if (string.IsNullOrEmpty(evt.Type)) throw new ArgumentException("Event type is required", nameof(evt));
-        var depth = (int)Interlocked.Increment(ref _backlog) + 1;
+        var depth = (int)Interlocked.Increment(ref _backlog);
         if (depth >= BacklogWarnAt && depth >= Volatile.Read(ref _warnedBacklog) * 2)
         {
             Volatile.Write(ref _warnedBacklog, Math.Min(int.MaxValue, depth));   // doubling within an episode; reset when it drains (Deliver)
@@ -239,21 +239,25 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     /// </summary>
     public void DetachCollectible()
     {
-        lock (_ringLock)
+        // Serialize outside the ring lock: up to 500 payloads, each of which can be megabytes, must not hold the lock
+        // that a dispatch (AddToRing) and a Recent read take. Copy the references under the lock, and swap the
+        // snapshots back by Seq, so a ring that wrapped in the meantime does not replace the event that evicted it.
+        BusEvent?[] copy;
+        lock (_ringLock) copy = (BusEvent?[])_ring.Clone();
+        for (var i = 0; i < copy.Length; i++)
         {
-            for (var i = 0; i < RingSize; i++)
+            var e = copy[i];
+            if (e?.Data is null || !e.Data.GetType().IsCollectible) continue;
+            JsonElement snapshot;
+            try { snapshot = NetPiJson.ToElement(e.Data); }
+            catch { snapshot = default; }
+            var replaced = new BusEvent
             {
-                var e = _ring[i];
-                if (e?.Data is null || !e.Data.GetType().IsCollectible) continue;
-                JsonElement snapshot;
-                try { snapshot = NetPiJson.ToElement(e.Data); }
-                catch { snapshot = default; }
-                _ring[i] = new BusEvent
-                {
-                    Type = e.Type, Data = snapshot.ValueKind == JsonValueKind.Undefined ? null : snapshot,
-                    SessionId = e.SessionId, Source = e.Source, Ui = e.Ui, Time = e.Time, Seq = e.Seq,
-                };
-            }
+                Type = e.Type, Data = snapshot.ValueKind == JsonValueKind.Undefined ? null : snapshot,
+                SessionId = e.SessionId, Source = e.Source, Ui = e.Ui, Time = e.Time, Seq = e.Seq,
+            };
+            lock (_ringLock)
+                if (_ring[i] is { } current && current.Seq == e.Seq) _ring[i] = replaced;
         }
     }
 

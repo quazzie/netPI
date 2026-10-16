@@ -109,7 +109,8 @@ public sealed class IgnoreStack
 
     public static IgnoreStack Empty => new([]);
 
-    /// <summary>Stack for a walk rooted at <paramref name="root"/>: ignore files of the git repository root and every directory between it and root.</summary>
+    /// <summary>Stack for a walk rooted at <paramref name="root"/>: the repository's <c>info/exclude</c>, the ignore files of the
+    /// git repository root and every directory between it and root.</summary>
     public static IgnoreStack ForRoot(string root)
     {
         var files = new List<IgnoreFile>();
@@ -131,14 +132,53 @@ public sealed class IgnoreStack
             // Without a repository only the root's own ignore files apply (to the walk they are loaded on entry).
             if (repoRoot is not null)
             {
+                // git reads <gitdir>/info/exclude as a .gitignore at the repository root, before the root's own .gitignore
+                // (which can re-include what it excludes), so it goes in first.
+                if (ExcludeFile(repoRoot) is { } exclude && File.Exists(exclude))
+                {
+                    var f = new IgnoreFile(repoRoot, File.ReadAllLines(exclude, Encoding.UTF8));
+                    if (f.Count > 0) files.Add(f);
+                }
                 chain.Reverse();
                 foreach (var d in chain.Take(chain.Count - 1)) // root itself is loaded by Enter()
                     foreach (var name in IgnoreFileNames)
-                        if (IgnoreFile.TryLoad(d, name) is { } f) files.Add(f);
+                        if (IgnoreFile.TryLoad(d, name) is { } g) files.Add(g);
             }
         }
         catch { }
         return new IgnoreStack(files);
+    }
+
+    /// <summary>
+    /// The repository's <c>info/exclude</c> file, or null: a <c>.git</c> directory keeps it under itself; a <c>.git</c>
+    /// file (a worktree, a sub-clone) points at its git directory, and a linked worktree's git directory in turn
+    /// points at the common one through a <c>commondir</c> file — the exclude file lives in the common directory.
+    /// </summary>
+    internal static string? ExcludeFile(string repoRoot)
+    {
+        try
+        {
+            var git = Path.Combine(repoRoot, ".git");
+            string gitdir;
+            if (Directory.Exists(git)) gitdir = git;
+            else if (File.Exists(git))
+            {
+                var line = File.ReadAllText(git).Trim();
+                if (!line.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase)) return null;
+                var p = line["gitdir:".Length..].Trim();
+                gitdir = Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(repoRoot, p));
+            }
+            else return null;
+            var common = gitdir;
+            var commondir = Path.Combine(gitdir, "commondir");
+            if (File.Exists(commondir))
+            {
+                var c = File.ReadAllText(commondir).Trim();
+                if (c.Length > 0) common = Path.GetFullPath(Path.Combine(gitdir, c));
+            }
+            return Path.Combine(common, "info", "exclude");
+        }
+        catch { return null; }
     }
 
     /// <summary>A new stack including the ignore files found in <paramref name="dir"/> (the receiver is unchanged).</summary>

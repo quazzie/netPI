@@ -87,6 +87,7 @@
         if (q.trim() === query) serverHits = res;
       } catch {}
     }, 220);
+    return () => clearTimeout(searchTimer);
   });
 
   // The archived section is a separate, paged query (archivedOnly): the newest active sessions cannot push an old

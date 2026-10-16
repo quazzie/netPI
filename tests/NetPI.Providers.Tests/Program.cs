@@ -179,8 +179,8 @@ await t.Run("provider kit: one shared source set, compiled into all three provid
         var compiles = System.Xml.Linq.XDocument.Load(csproj).Descendants().Where(n => n.Name.LocalName == "Compile").ToArray();
         t.Check(compiles.Length > 0, $"{provider}: compiles the kit");
         foreach (var node in compiles)
-            t.Check(((string?)node.Attribute("Include"))?.Replace('\\', '/').Contains("shared/ProviderKit") == true,
-                $"{provider}: the only compiled-in shared source is the kit: {node.Attribute("Include")?.Value}");
+            t.Check(((string?)node.Attribute("Include"))?.Replace('\\', '/') is { } inc && (inc.Contains("shared/ProviderKit") || inc.Contains("shared/ProcessKit")),
+                $"{provider}: the only compiled-in shared sources are the kits: {node.Attribute("Include")?.Value}");
     }
 
     var kit = typeof(Kit.ThinkTagSplitter).Assembly.GetTypes().Where(t => t.Namespace == "NetPI.Providers.Kit").Select(t => t.FullName!).ToArray();
@@ -1606,6 +1606,21 @@ await t.Run("providers: none exist until added; each entry of a type is its own 
     await plugin.StopAsync(CancellationToken.None);
     t.Eq(0, ctx.ServicesImpl.GetAll<IModelProvider>().Count, "and stopping removes the rest");
     t.Check(!ProviderInstances.ValidId("a/b") && !ProviderInstances.ValidId("a.b") && ProviderInstances.ValidId("claude-cli_2"), "ids are letters, digits, - and _");
+    // A "type" that is not a string is not this type: Of skips it rather than throw (GetValue<string> used to throw on a number).
+    var ofSettings = new FakeSettings(root: new JsonObject
+    {
+        ["providers"] = new JsonObject
+        {
+            ["instances"] = new JsonObject
+            {
+                ["good"] = new JsonObject { ["type"] = "anthropic" },
+                ["weird"] = new JsonObject { ["type"] = 42 },
+                ["obj"] = new JsonObject { ["type"] = new JsonObject { ["x"] = 1 } },
+            },
+        },
+    });
+    var of = ProviderInstances.Of(ofSettings, "anthropic");
+    t.Eq("good", string.Join(",", of.Select(x => x.Id)), "a non-string type is not this type, and does not throw");
 });
 
 // ================================================================== OpenRouter

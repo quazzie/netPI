@@ -45,7 +45,9 @@ public static class ShellLaunch
         var win = windowsStyle ?? OperatingSystem.IsWindows();
         var env = BaseEnvironment();
         env["CHERE_INVOKING"] = "1";
-        if (command.Length > MaxInlineCommand)
+        // On Windows the command rides in the environment, which (inherited variables included) is capped at ~32,767 characters in all
+        var tooLong = command.Length > MaxInlineCommand || (win && command.Length + EnvironmentChars(env) > MaxInlineCommand);
+        if (tooLong)
         {
             Directory.CreateDirectory(tempDir);
             var script = Path.Combine(tempDir, $"cmd-{Guid.NewGuid():N}.sh");
@@ -62,6 +64,17 @@ public static class ShellLaunch
             };
         }
         return new LaunchSpec { Shell = "bash", Executable = bashPath, Arguments = ["-c", BashMergeStderr + command], Environment = env };
+    }
+
+    /// <summary>Characters the child's environment block takes: the inherited variables with <paramref name="overrides"/> applied ("name=value" and a terminator each). Over-counts what a hidden variable would free: the safe side.</summary>
+    public static int EnvironmentChars(Dictionary<string, string?> overrides)
+    {
+        var total = 0;
+        var names = new HashSet<string>(overrides.Keys, StringComparer.OrdinalIgnoreCase);
+        foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
+            if (!names.Contains((string)e.Key)) total += ((string)e.Key).Length + (((string?)e.Value)?.Length ?? 0) + 2;
+        foreach (var (k, v) in overrides) total += k.Length + (v?.Length ?? 0) + 2;
+        return total + 1;
     }
 
     /// <summary>Script prefix: no progress bars, UTF-8 in and out, plain-text rendering.</summary>

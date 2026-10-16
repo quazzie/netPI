@@ -69,6 +69,7 @@
     prefetchUsage();
   }
 
+  let previewSeq = 0; // an older answer must not overwrite the one of the latest opening
   async function show() {
     refresh();
     open = !open;
@@ -76,11 +77,14 @@
     // every time it is opened, not once per mount: the breakdown describes the prompt as it is now, and a session that
     // has run a while sends a different one than the ring was mounted with (a reload or a new tool changes it too)
     previewState = 'loading';
+    const seq = ++previewSeq;
     try {
-      preview = await rpc('context.preview', { sessionId });
+      const res = await rpc('context.preview', { sessionId });
+      if (seq !== previewSeq) return;
+      preview = res;
       previewState = 'ready';
     } catch {
-      previewState = 'error';
+      if (seq === previewSeq) previewState = 'error';
     }
   }
 
@@ -171,7 +175,7 @@
       cx="9"
       cy="9"
       r={R}
-      class="bar"
+      class="arc"
       stroke-dasharray="{C * frac} {C}"
       transform="rotate(-90 9 9)"
     />
@@ -281,15 +285,15 @@
   .track {
     stroke: var(--bg-3);
   }
-  .bar {
+  .arc {
     stroke: var(--fg-muted);
     stroke-linecap: round;
     transition: stroke-dasharray var(--t);
   }
-  .ring[data-tone='warn'] .bar {
+  .ring[data-tone='warn'] .arc {
     stroke: var(--warn);
   }
-  .ring[data-tone='err'] .bar {
+  .ring[data-tone='err'] .arc {
     stroke: var(--err);
   }
   .ring[data-tone='warn'] .pct {

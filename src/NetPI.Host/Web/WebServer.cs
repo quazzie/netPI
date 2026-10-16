@@ -159,7 +159,7 @@ internal sealed class WebServer : IAsyncDisposable
             await PluginHttpAsync(ctx, path["/api/p/".Length..]).ConfigureAwait(false);
             return;
         }
-        if (!IsAuthorized(ctx))
+        if (!IsAuthorized(ctx, allowQueryToken: false))
         {
             await WriteErrorAsync(ctx, 401, "unauthorized", "Missing or invalid token").ConfigureAwait(false);
             return;
@@ -270,7 +270,7 @@ internal sealed class WebServer : IAsyncDisposable
             await WriteErrorAsync(ctx, 400, "bad_request", "WebSocket upgrade expected").ConfigureAwait(false);
             return;
         }
-        if (!IsAuthorized(ctx))
+        if (!IsAuthorized(ctx, allowQueryToken: true))
         {
             await WriteErrorAsync(ctx, 401, "unauthorized", "Missing or invalid token").ConfigureAwait(false);
             return;
@@ -299,7 +299,7 @@ internal sealed class WebServer : IAsyncDisposable
     {
         if (!Matches(ctx.Request.Query["token"].ToString()))
         {
-            if (IsAuthorized(ctx))
+            if (IsAuthorized(ctx, allowQueryToken: true))
             {
                 // A stale launch URL (old token) while the browser already holds a valid cookie.
                 ctx.Response.Redirect("/");
@@ -431,13 +431,15 @@ internal sealed class WebServer : IAsyncDisposable
 
     // ------------------------------------------------------------------ security
 
-    private bool IsAuthorized(HttpContext ctx)
+    private bool IsAuthorized(HttpContext ctx, bool allowQueryToken)
     {
         var req = ctx.Request;
+        // The query token is accepted only for the login ("/") and the WebSocket upgrade: a token in a URL is logged
+        // in proxies and history, so an /api route must carry it in the header or a cookie, not the query string.
         return Matches(req.Headers[TokenHeader].ToString())
                || Matches(req.Cookies[CookieName + "_" + ctx.Connection.LocalPort])
                || Matches(req.Cookies[CookieName])
-               || Matches(req.Query["token"].ToString());
+               || (allowQueryToken && Matches(req.Query["token"].ToString()));
     }
 
     private bool Matches(string? candidate)

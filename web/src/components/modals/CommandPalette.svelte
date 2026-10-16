@@ -6,6 +6,7 @@
   import { modals, prefs, savePrefs, togglePanel, composer, openProjects } from '../../lib/state/ui.svelte.js';
   import { tabs, openPanelTab, resetTabPlacement } from '../../lib/state/tabs.svelte.js';
   import { allCommands } from '../../lib/commands.js';
+  import { scrollIntoView } from '../../lib/actions.js';
 
   let { onclose } = $props();
   let q = $state('');
@@ -125,10 +126,6 @@
     };
   });
 
-  function scrollIntoView(node, active) {
-    if (active) node.scrollIntoView({ block: 'nearest' });
-    return { update: (a) => a && node.scrollIntoView({ block: 'nearest' }) };
-  }
 </script>
 
 <div class="overlay" bind:this={el} role="presentation" onpointerdown={(e) => e.target === e.currentTarget && onclose()}>

@@ -268,6 +268,21 @@ public static class CollectionTests
             Check.Equal(2L, dropped.Count(), "but the documents are still there");
         });
 
+        Providers.Add(r, "collections: a new index field back-fills a collection bigger than one page", store =>
+        {
+            var data = store.Plugins.For("test");
+            var docs = data.Collection("big", new CollectionSpec().Text("t"));
+            // More documents than the back-fill's page size (500), so the new field's back-fill runs over several pages:
+            // the one that loaded them all at once held the store's gate (and the memory) for the whole collection.
+            for (var i = 0; i < 1200; i++) docs.Put("k" + i.ToString("D4"), Build.Doc(("t", "v" + i)));
+            Check.Equal(1200L, docs.Count());
+
+            var again = data.Collection("big", new CollectionSpec().Text("t").Integer("ord"));
+            Check.Equal(1200L, again.Count(new DataQuery().IsNull("ord")),
+                "every stored document, across every page, reads the new field as no value");
+            Check.Equal(0L, again.Count(new DataQuery().NotNull("ord")));
+        });
+
         // ---------------------------------------------------------------- transactions
 
         Providers.Add(r, "collections: a transaction that throws rolls back everything it wrote", store =>

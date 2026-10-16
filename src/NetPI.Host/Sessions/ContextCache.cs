@@ -25,8 +25,17 @@ internal sealed class ContextCache
     /// storage, and may fill the slot only if nothing dropped in the meantime. That is the check the seq compare
     /// cannot give: rows and newest are read as two separate statements, and a write that changes a message in
     /// place (or compacts) commits between them with the seq still matching, leaving pre-write rows in the cache.
+    /// The entry goes (is not bumped) when nothing is cached and no read is in flight, so the dictionary does not
+    /// grow with every session touched.
     /// </summary>
     private readonly Dictionary<string, long> _generation = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The cold reads in flight per session (a <see cref="BeginRead"/> that has not reached its <see cref="Fill"/> yet).
+    /// A drop or append must bump the generation while one is in flight (to poison it), and may let the generation
+    /// go only when none is.
+    /// </summary>
+    private readonly Dictionary<string, int> _inflight = new(StringComparer.Ordinal);
 
     private readonly object _lock = new();
     private long _hits, _reads;
@@ -38,7 +47,11 @@ internal sealed class ContextCache
     public long BeginRead(string sessionId)
     {
         Interlocked.Increment(ref _reads);
-        lock (_lock) return _generation.GetValueOrDefault(sessionId);
+        lock (_lock)
+        {
+            _inflight[sessionId] = _inflight.GetValueOrDefault(sessionId) + 1;
+            return _generation.GetValueOrDefault(sessionId);
+        }
     }
 
     /// <summary>The session's cached context (a hit), copied for the caller — or null. The copy is what a warm read costs.</summary>
@@ -62,10 +75,11 @@ internal sealed class ContextCache
     /// </summary>
     public void Fill(string sessionId, List<ChatMessage> rows, long newest, long generation)
     {
-        if (rows.Count > MaxMessages) return;
-        if (rows.Count == 0 ? newest != 0 : rows[^1].Seq != newest) return;
+        var fillable = rows.Count <= MaxMessages && (rows.Count == 0 ? newest == 0 : rows[^1].Seq == newest);
+        if (!fillable) { DecrementInflight(sessionId); return; }
         lock (_lock)
         {
+            DecrementInflightLocked(sessionId);
             if (generation != _generation.GetValueOrDefault(sessionId) || _entries.ContainsKey(sessionId)) return;
             _entries[sessionId] = new Entry([.. rows], newest); // its own list: the caller keeps (and reads) the one it passed, while an append extends the cached one
             _lru.AddLast(sessionId);
@@ -75,6 +89,32 @@ internal sealed class ContextCache
                 _lru.RemoveFirst();
             }
         }
+    }
+
+    /// <summary>The read is complete (filled or refused): it no longer poisons a drop, so the in-flight count goes down.</summary>
+    private void DecrementInflight(string sessionId)
+    {
+        lock (_lock) DecrementInflightLocked(sessionId);
+    }
+
+    private void DecrementInflightLocked(string sessionId)
+    {
+        if (!_inflight.TryGetValue(sessionId, out var n)) return;
+        if (n <= 1) _inflight.Remove(sessionId);
+        else _inflight[sessionId] = n - 1;
+    }
+
+    /// <summary>
+    /// A write (a drop, an append with nothing to extend) settles the session's generation: bumped while a read is in
+    /// flight (so it is poisoned and cannot fill with pre-write rows), let go when nothing is in flight and nothing
+    /// is cached (so the dictionary does not grow with every session touched).
+    /// </summary>
+    private void SettleGenerationLocked(string sessionId)
+    {
+        if (_inflight.ContainsKey(sessionId))
+            _generation[sessionId] = _generation.GetValueOrDefault(sessionId) + 1;
+        else
+            _generation.Remove(sessionId);
     }
 
     /// <summary>
@@ -98,7 +138,7 @@ internal sealed class ContextCache
         {
             if (!_entries.TryGetValue(message.SessionId, out var entry))
             {
-                _generation[message.SessionId] = _generation.GetValueOrDefault(message.SessionId) + 1;
+                SettleGenerationLocked(message.SessionId);
                 return;
             }
             if (message.Seq <= entry.LastSeq || entry.Rows.Count >= MaxMessages)
@@ -119,17 +159,18 @@ internal sealed class ContextCache
         lock (_lock)
         {
             if (_entries.Remove(sessionId)) _lru.Remove(sessionId);
-            _generation[sessionId] = _generation.GetValueOrDefault(sessionId) + 1;
+            SettleGenerationLocked(sessionId);
         }
     }
 
-    /// <summary>A session that is going away: forget its cached context and let its generation go with it.</summary>
+    /// <summary>A session that is going away: forget its cached context, its generation and any in-flight read of it.</summary>
     public void Forget(string sessionId)
     {
         lock (_lock)
         {
             if (_entries.Remove(sessionId)) _lru.Remove(sessionId);
             _generation.Remove(sessionId);
+            _inflight.Remove(sessionId);
         }
     }
 
