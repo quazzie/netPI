@@ -3,6 +3,7 @@
 import fs from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
+import { Transform } from 'node:stream';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -42,9 +43,17 @@ async function head(file, length) {
   }
 }
 
-/** A file copied by streaming, created exclusively and readable by the user alone, like every file a restore writes. */
-async function copy(source, target) {
-  await pipeline(createReadStream(source), createWriteStream(target, { flags: 'wx', mode: 0o600 }));
+/** A file copied by streaming, created exclusively and readable by the user alone, like every file a restore writes.
+ *  The bytes as they are written are hashed and compared with the manifest's checksum for the source: a write that does
+ *  not land as the snapshot has it is a failure, not a restored home. */
+async function copy(source, target, expected) {
+  const hash = createHash('sha256');
+  const meter = new Transform({
+    transform(chunk, _enc, done) { hash.update(chunk); this.push(chunk); done(); },
+  });
+  await pipeline(createReadStream(source), meter, createWriteStream(target, { flags: 'wx', mode: 0o600 }));
+  if (expected && hash.digest('hex') !== expected.toLowerCase())
+    throw new Error(`The write of ${path.basename(target)} did not land as the snapshot has it (checksum)`);
 }
 
 export async function restoreBackup(backup, destination) {
@@ -94,15 +103,18 @@ export async function restoreBackup(backup, destination) {
   const imageFiles = new Map();
   for (const [name, target] of Object.entries(images)) {
     if (!verified.has(name)) throw new Error(`The manifest lists an idea image, ${name}, that the snapshot does not have`);
-    imageFiles.set(imageTarget(target), inside(backup, name));
+    const t = imageTarget(target);
+    if (imageFiles.has(t))
+      throw new Error(`The idea images ${JSON.stringify(imageFiles.get(t).name)} and ${JSON.stringify(name)} of the manifest both restore to ${JSON.stringify(target)}; a manifest names one file per place`);
+    imageFiles.set(t, { name, file: inside(backup, name), expected: listed[name] });
   }
   // Exclusive creation rejects existing homes, including symlinks. On a write failure keep the partial directory
   // for inspection; another restore must choose a different destination.
   await fs.mkdir(destination);
-  for (const name of verified) await copy(inside(backup, name), inside(destination, name));
+  for (const name of verified) await copy(inside(backup, name), inside(destination, name), listed[name]);
   if (imageFiles.size) {
     await fs.mkdir(path.join(destination, 'idea-images'), { mode: 0o700 });
-    for (const [target, source] of imageFiles) await copy(source, path.join(destination, 'idea-images', target));
+    for (const [target, image] of imageFiles) await copy(image.file, path.join(destination, 'idea-images', target), image.expected);
   }
   return destination;
 }

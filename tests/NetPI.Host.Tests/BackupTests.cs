@@ -474,6 +474,28 @@ public static class BackupTests
             Check.Equal(1, exit2, "a file nobody names is refused: " + err2);
             Check.Contains(err2, "evil.bin", err2);
             Check.False(Directory.Exists(Path.Combine(home, "restored-stray")), "and nothing was written");
+
+            // Two idea images that both claim the same place in the images directory: a manifest names one file per place,
+            // and the restore says which two it is before it writes anything.
+            string Sha(string content) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
+            var dup = Make("dup", "dup");
+            File.WriteAllText(Path.Combine(dup, "img-1.bin"), "one");
+            File.WriteAllText(Path.Combine(dup, "img-2.bin"), "two");
+            var dupManifest = JsonNode.Parse(File.ReadAllText(Path.Combine(dup, "manifest.json")))!.AsObject();
+            dupManifest["files"]!.AsObject()["img-1.bin"] = Sha("one");
+            dupManifest["files"]!.AsObject()["img-2.bin"] = Sha("two");
+            dupManifest["ideaImages"] = new JsonObject
+            {
+                ["img-1.bin"] = "idea-images/same.png",
+                ["img-2.bin"] = "idea-images/same.png",
+            };
+            File.WriteAllText(Path.Combine(dup, "manifest.json"), dupManifest.ToJsonString());
+            var (exit3, err3) = await Restore(dup, Path.Combine(home, "restored-dup"));
+            Check.Equal(1, exit3, "two images claiming one place are refused: " + err3);
+            Check.Contains(err3, "img-1.bin", err3);
+            Check.Contains(err3, "img-2.bin", err3);
+            Check.Contains(err3, "idea-images/same.png", err3);
+            Check.False(Directory.Exists(Path.Combine(home, "restored-dup")), "and nothing was written");
         });
     }
 
