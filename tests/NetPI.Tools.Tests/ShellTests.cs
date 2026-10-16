@@ -1031,7 +1031,7 @@ public static class ShellTests
             Check.True(script.StartsWith("$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.Encoding]::UTF8;"));
             Check.Equal(script, Encoding.Unicode.GetString(Convert.FromBase64String(ShellLaunch.EncodePwsh(script))));
             var spec = ShellLaunch.Pwsh("pwsh", "Get-Date", T.TempDir("pwsh"));
-            Check.Equal("-NoLogo,-NoProfile,-NonInteractive", string.Join(",", spec.Arguments.Take(3)));
+            Check.Equal("-NoLogo,-NoProfile,-NonInteractive,-OutputFormat,Text", string.Join(",", spec.Arguments.Take(5)));
             Check.True(spec.Arguments.Contains("-EncodedCommand"));
 
             var (svc, _, _) = NewService();
@@ -1049,6 +1049,11 @@ public static class ShellTests
                 Check.Contains(res.Content, "hi ✓");
                 Check.Contains(res.Content, "[exit code 3]");
                 Check.Equal("pwsh", T.D(res).Str("shell"));
+                // Write-Host and Write-Information are plain lines, not CLIXML on stderr (build.ps1 and test.ps1 print that way)
+                var host = await T.Run(pwsh, T.TempDir("pwsh"), new { command = "Write-Host 'from host'; Write-Information 'from info' -InformationAction Continue" });
+                Check.Contains(host.Content, "from host");
+                Check.Contains(host.Content, "from info");
+                Check.False(host.Content.Contains("CLIXML") || host.Content.Contains("<Objs"), "no serialized streams: " + host.Content);
             }
             // Configured path that does not exist falls back to discovery (still absent or found consistently).
             var settings = new FakeSettings();

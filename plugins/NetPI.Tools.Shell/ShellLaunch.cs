@@ -97,7 +97,10 @@ public static class ShellLaunch
         env["POWERSHELL_TELEMETRY_OPTOUT"] = "1";
         env["POWERSHELL_UPDATECHECK"] = "Off";
         var script = PwshScript(command);
-        var args = new List<string> { "-NoLogo", "-NoProfile", "-NonInteractive" };
+        // -OutputFormat Text: with its output redirected and -EncodedCommand, pwsh writes the information, warning and
+        // verbose streams to stderr as CLIXML ("#< CLIXML <Objs ..."): a script's Write-Host lines (build.ps1, test.ps1)
+        // came back as kilobytes of serialized InformationRecords around the one line that mattered.
+        var args = new List<string> { "-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text" };
         if (OperatingSystem.IsWindows()) args.AddRange(["-ExecutionPolicy", "Bypass"]);
         var encoded = EncodePwsh(script);
         string? temp = null;
