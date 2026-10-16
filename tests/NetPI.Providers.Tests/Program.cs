@@ -179,8 +179,8 @@ await t.Run("provider kit: one shared source set, compiled into all three provid
         var compiles = System.Xml.Linq.XDocument.Load(csproj).Descendants().Where(n => n.Name.LocalName == "Compile").ToArray();
         t.Check(compiles.Length > 0, $"{provider}: compiles the kit");
         foreach (var node in compiles)
-            t.Check(((string?)node.Attribute("Include"))?.Replace('\\', '/').Contains("shared/ProviderKit") == true,
-                $"{provider}: the only compiled-in shared source is the kit: {node.Attribute("Include")?.Value}");
+            t.Check(((string?)node.Attribute("Include"))?.Replace('\\', '/') is { } inc && (inc.Contains("shared/ProviderKit") || inc.Contains("shared/ProcessKit")),
+                $"{provider}: the only compiled-in shared sources are the kits: {node.Attribute("Include")?.Value}");
     }
 
     var kit = typeof(Kit.ThinkTagSplitter).Assembly.GetTypes().Where(t => t.Namespace == "NetPI.Providers.Kit").Select(t => t.FullName!).ToArray();

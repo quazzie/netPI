@@ -26,7 +26,7 @@ public static class WebhookHooksTests
     /// <summary>The <c>--hook-orphan PIDFILE</c> mode: start a sleeping child that inherits stdout, write its pid to PIDFILE, exit 0 at once.</summary>
     public static void Orphan(string pidFile)
     {
-        var child = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, ArgumentList = { typeof(WebhookHooksTests).Assembly.Location, "--hook-sleep" } })!;
+        var child = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true, ArgumentList = { typeof(WebhookHooksTests).Assembly.Location, "--hook-sleep" } })!;
         File.WriteAllText(pidFile, child.Id.ToString());
     }
 
