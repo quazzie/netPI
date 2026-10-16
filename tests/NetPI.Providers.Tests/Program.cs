@@ -794,6 +794,52 @@ await t.Run("responses: only response.completed with output list; generated call
     t.Eq("tool_use", msg.StopReason, "stop");
 });
 
+// An args delta that arrives before the item's added/done events used to start the call with a generated id, and
+// the item's own call_id never reached the part: the function_call_output that follows the call (and the next
+// turn's replay) referenced an id the part did not have.
+await t.Run("responses: an args delta before the item's events keeps the call_id the item names", () =>
+{
+    static Kit.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
+    var asm = new Kit.MessageAssembler();
+    var p = new AP.ResponsesStreamParser(asm, "P");
+    p.Handle(Ev(new { type = "response.function_call_arguments.delta", item_id = "fc_1", output_index = 0, delta = "{\"a\":" }));
+    p.Handle(Ev(new { type = "response.function_call_arguments.done", item_id = "fc_1", output_index = 0, name = "read", arguments = "{\"a\":1}" }));
+    p.Handle(Ev(new { type = "response.output_item.added", output_index = 0, item = new { id = "fc_1", type = "function_call", call_id = "call_9", name = "read", arguments = "" } }));
+    p.Handle(Ev(new { type = "response.output_item.done", output_index = 0, item = new { id = "fc_1", type = "function_call", call_id = "call_9", name = "read", arguments = "{\"a\":1}" } }));
+    p.Handle(Ev(new { type = "response.completed", response = new { status = "completed" } }));
+    p.Finish();
+    var call = asm.Build("p", "m", null, 0).ToolCalls.Single();
+    t.Eq("call_9", call.Id, "the item's call_id, not the generated id");
+    t.Eq("read", call.Name, "name");
+    t.Eq("{\"a\":1}", call.Arguments, "arguments");
+    return Task.CompletedTask;
+});
+
+// The final output list re-announces what streamed; an id-less item that never streamed used to be dropped
+// whenever any earlier item had streamed ("any item + no id = a re-announcement"), and the call was lost.
+await t.Run("responses: an id-less output item that never streamed is not dropped by the completed event", () =>
+{
+    static Kit.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
+    var asm = new Kit.MessageAssembler();
+    var p = new AP.ResponsesStreamParser(asm, "P");
+    p.Handle(Ev(new { type = "response.output_item.added", output_index = 0, item = new { id = "msg_1", type = "message", content = Array.Empty<object>() } }));
+    p.Handle(Ev(new { type = "response.output_text.delta", item_id = "msg_1", output_index = 0, content_index = 0, delta = "Hello" }));
+    p.Handle(Ev(new { type = "response.output_item.done", output_index = 0, item = new { id = "msg_1", type = "message", content = new[] { new { type = "output_text", text = "Hello" } } } }));
+    // The final list adds an id-less function call at index 1 that never streamed: it is not a re-announcement.
+    p.Handle(Ev(new { type = "response.completed", response = new { status = "completed",
+        output = new object[]
+        {
+            new { id = "msg_1", type = "message", content = new[] { new { type = "output_text", text = "Hello" } } },
+            new { type = "function_call", call_id = "call_x", name = "read", arguments = "{}" },
+        } } }));
+    p.Finish();
+    var msg = asm.Build("p", "m", null, 0);
+    t.Eq("Hello", msg.Text, "the streamed text, once");
+    var call = msg.ToolCalls.Single();
+    t.Check(call is { Id: "call_x", Name: "read", Arguments: "{}" }, "the id-less item from the final list");
+    return Task.CompletedTask;
+});
+
 // A Responses stream that ends in OpenAI's [DONE] sentinel with no terminal event (response.completed, .incomplete,
 // .failed) is a cut stream: nothing said how it ended and no usage arrived. It used to pass as a clean completion
 // once anything had streamed, so the ledger recorded no usage and the retry plugin saw nothing to retry (D3).
