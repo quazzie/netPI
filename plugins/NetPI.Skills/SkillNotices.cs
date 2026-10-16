@@ -169,12 +169,14 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
         {
             if (!string.IsNullOrEmpty(n) && !names.Contains(n, StringComparer.OrdinalIgnoreCase)) names.Add(n);
         }
-        foreach (var m in messages)
+        var all = messages as IReadOnlyList<ChatMessage> ?? [.. messages];
+        var calls = ToolCalls.Index(all);
+        foreach (var m in all)
         {
             if (m.Role == MessageRole.Notice && m.MetaString("kind") == SkillKind && m.Meta?["missing"] is null) Add(m.MetaString("skill"));
             else if (m.Role == MessageRole.Tool)
                 foreach (var r in m.ToolResults)
-                    if (r.Name == SkillTool.Name && !r.IsError && r.Details is JsonObject d && d["name"] is JsonValue v && v.TryGetValue<string>(out var n)) Add(n);
+                    if (ToolCalls.IsResultOf(r, SkillTool.Name, calls) && !r.IsError && r.Details is JsonObject d && d["name"] is JsonValue v && v.TryGetValue<string>(out var n)) Add(n);
         }
         return names;
     }

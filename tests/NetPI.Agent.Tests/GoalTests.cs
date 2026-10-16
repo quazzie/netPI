@@ -23,6 +23,7 @@ public static class GoalTests
         t.Add("goal: announced again after compaction, once; changes and resumes are announced", Notices);
         t.Add("goal: RPC validation (empty, too long, subagent sessions, nothing to pause)", RpcValidation);
         t.Add("goal: a model that runs its own tools: set and resume are refused, a goal whose chat moved to one pauses", OwnToolsModel);
+        t.Add("goal: goal tools and evidence see a call made through call_tool as the tool it ran", WrappedGoalCalls);
         t.Add("goal: the review's evidence carries the subagents' reports, from a notice or a wait, their start and end", ReviewSeesReports);
         t.Add("goal: a completion is reviewed against the evidence: gaps refuse it, a second refusal blocks it for the user", ReviewRefusesThenBlocks);
         t.Add("goal: a completion the review passes closes the goal; a review that cannot run never holds it back", ReviewPasses);
@@ -494,6 +495,24 @@ public static class GoalTests
 
     // An orchestrator's work is its subagents': their reports came in as notices (left out of the evidence) or through a wait
     // (cut to their last 240 characters), so the reviewer saw no proof and refused finished goals (idea-nemj9e).
+    private static Task WrappedGoalCalls()
+    {
+        ToolCallPart Wrapped(string id, string tool, string args) => new() { Id = id, Name = "call_tool", Arguments = "{\"name\":\"" + tool + "\",\"arguments\":" + args + "}" };
+        var context = new List<ChatMessage>
+        {
+            ChatMessage.UserText("go"),
+            new() { Role = MessageRole.Assistant, Parts = [Wrapped("c1", "goal_update", "{\"status\":\"complete\"}"), Wrapped("c2", "deferred_probe", "{\"q\":1}")] },
+            new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c1", Name = "call_tool", Content = "marked" }, new ToolResultPart { CallId = "c2", Name = "call_tool", Content = "probe ok" }] },
+        };
+        var evidence = GoalReview.Evidence(context);
+        Check.NotContains(evidence, "goal_update", "the goal tool's own calls are not evidence");
+        Check.Contains(evidence, "deferred_probe {\"q\":1}", "the other call is named by the tool it ran");
+        Check.NotContains(evidence, "call_tool");
+        Check.True(Goals.InContext(context, "goal_x"), "a goal_update through call_tool means the model knows the goal");
+        Check.False(Goals.InContext(context.Take(1).ToList(), "goal_x"));
+        return Task.CompletedTask;
+    }
+
     private static Task ReviewSeesReports()
     {
         var parser = "Implemented the parser. " + new string('x', 5000) + " All 54 tests pass.";

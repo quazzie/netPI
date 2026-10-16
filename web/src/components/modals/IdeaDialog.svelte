@@ -46,6 +46,7 @@
   let note = $state('');
   let fileInput = $state(null);
   let committed = false;
+  let closed = false; // cancelled: an image that finishes uploading after this is removed again, nothing references it
   const added = []; // paths stored while the dialog is open: a cancel takes them away again
 
   const agents = $derived(agentList().filter((a) => a.available && !a.disabled));
@@ -81,6 +82,11 @@
           if (n) note = n;
           if (!image) continue;
           const r = await rpc('ideas.addImage', { data: image.data, mediaType: image.mediaType, name: image.name });
+          if (closed || committed) {
+            // the dialog is gone (or the save went out without it): nothing will ever reference this file
+            rpc('ideas.removeImage', { path: r.path }).catch(() => {});
+            continue;
+          }
           added.push(r.path);
           images = [...images, { ...r, url: image.url }];
         } catch (e) {
@@ -213,6 +219,9 @@
   }
 
   function cancel() {
+    // a save in flight references the images: closing now would delete files the saved idea points at
+    if (busy) return;
+    closed = true;
     if (!committed && added.length) for (const path of added) rpc('ideas.removeImage', { path }).catch(() => {});
     onclose();
   }

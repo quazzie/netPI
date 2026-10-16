@@ -329,7 +329,8 @@ internal sealed class Goals(IPluginContext ctx)
 
     internal static bool InContext(IReadOnlyList<ChatMessage> context, string goalId) => context.Any(m =>
         (m.Role == MessageRole.Notice && m.MetaString("kind") == NoticeKind && m.MetaString("goalId") == goalId)
-        || m.Parts.Any(p => p is ToolCallPart { Name: "goal_update" or "goal_set" } or ToolResultPart { Name: "goal_update" or "goal_set" }));
+        || m.Parts.Any(p => p is ToolCallPart c && ToolCalls.EffectiveName(c) is "goal_update" or "goal_set"
+                         || p is ToolResultPart { Name: "goal_update" or "goal_set" }));
 
     /// <summary>
     /// Before a model call: tells the model about a goal it has not seen (set while it was busy, compacted away), a change of

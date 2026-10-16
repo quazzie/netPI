@@ -9,45 +9,146 @@ internal sealed record EditOutcome(string Text, string Diff, int Added, int Remo
 /// <summary>
 /// Exact replacements like the local <c>edit</c> tool: the edits are applied **in order to the evolving text**, so a
 /// second edit can match what a first one wrote (rename the declaration, then its first use); matching ignores CRLF vs
-/// LF, the file keeps its own line endings, each oldText must match exactly once unless replace_all, and a failure
-/// applies nothing. Produces a unified diff for the UI.
+/// LF, a uniform file keeps its own line endings, and in a mixed file the untouched lines keep their exact bytes while
+/// only the lines an edit produces get the file's majority ending. Each oldText must match exactly once unless
+/// replace_all, and a failure applies nothing. Produces a unified diff for the UI.
 /// </summary>
 internal static class TextEdits
 {
     public static EditOutcome Apply(string original, IReadOnlyList<TextEdit> edits, string path)
     {
-        var crlf = original.Contains("\r\n", StringComparison.Ordinal);
+        var (crlfCount, lfCount) = CountBreaks(original);
         var originalNorm = original.Replace("\r\n", "\n");
-        var text = originalNorm;
-        var replacements = 0;
+        // A uniform file is converted whole, the way it always was: a CRLF file comes back CRLF, an LF file stays LF.
+        if (crlfCount == 0 || lfCount == 0)
+        {
+            var toCrlf = crlfCount > 0;
+            var text = originalNorm;
+            var replacements = 0;
+            foreach (var e in edits)
+            {
+                var old = e.OldText.Replace("\r\n", "\n");
+                var replacement = e.NewText.Replace("\r\n", "\n");
+                if (old.Length == 0) throw new EditException("oldText is empty.");
+                // Like the local edit tool, every edit locates its oldText in the text the earlier edits left behind:
+                // the spans shift with each replacement, so all-at-once bookkeeping against the original document would
+                // refuse lists the local tool accepts.
+                var found = FindAll(text, old);
+                if (found.Count == 0) throw new EditException($"oldText not found in {path}: {Preview(old)}. Read the file again and copy the text exactly.");
+                if (found.Count > 1 && !e.ReplaceAll)
+                    throw new EditException($"oldText matches {found.Count} times in {path}: {Preview(old)}. Add surrounding lines to make it unique, or set replace_all.");
+                text = Splice(text, found, old, replacement);
+                replacements += found.Count;
+            }
+            var result = toCrlf ? text.Replace("\n", "\r\n") : text;
+            var (diff, added, removed, first) = Diff(originalNorm, text, path);
+            return new EditOutcome(result, diff, added, removed, replacements, first);
+        }
+        // Mixed line endings: the untouched text keeps its exact bytes; only the text an edit produces gets the file's
+        // majority ending, so a CRLF-majority file does not become fully CRLF (nor an LF-majority one fully LF).
+        var majorityCrlf = crlfCount > lfCount;
+        var mixed = original;
+        var nrepl = 0;
         foreach (var e in edits)
         {
+            var (norm, map) = NormalizeWithMap(mixed);
             var old = e.OldText.Replace("\r\n", "\n");
             var replacement = e.NewText.Replace("\r\n", "\n");
             if (old.Length == 0) throw new EditException("oldText is empty.");
-            // Like the local edit tool, every edit locates its oldText in the text the earlier edits left behind:
-            // the spans shift with each replacement, so all-at-once bookkeeping against the original document would
-            // refuse lists the local tool accepts.
-            var found = new List<int>();
-            for (var i = text.IndexOf(old, StringComparison.Ordinal); i >= 0; i = text.IndexOf(old, i + old.Length, StringComparison.Ordinal))
-                found.Add(i);
+            var found = FindAll(norm, old);
             if (found.Count == 0) throw new EditException($"oldText not found in {path}: {Preview(old)}. Read the file again and copy the text exactly.");
             if (found.Count > 1 && !e.ReplaceAll)
                 throw new EditException($"oldText matches {found.Count} times in {path}: {Preview(old)}. Add surrounding lines to make it unique, or set replace_all.");
-            var sb = new StringBuilder(text.Length + Math.Max(0, (replacement.Length - old.Length) * found.Count));
-            var last = 0;
-            foreach (var p in found)
-            {
-                sb.Append(text, last, p - last).Append(replacement);
-                last = p + old.Length;
-            }
-            sb.Append(text, last, text.Length - last);
-            text = sb.ToString();
-            replacements += found.Count;
+            mixed = Splice(mixed, map, found, old, majorityCrlf ? replacement.Replace("\n", "\r\n") : replacement);
+            nrepl += found.Count;
         }
-        var result = crlf ? text.Replace("\n", "\r\n") : text;
-        var (diff, added, removed, first) = Diff(originalNorm, text, path);
-        return new EditOutcome(result, diff, added, removed, replacements, first);
+        var (mdiff, madded, mremoved, mfirst) = Diff(originalNorm, mixed.Replace("\r\n", "\n"), path);
+        return new EditOutcome(mixed, mdiff, madded, mremoved, nrepl, mfirst);
+    }
+
+    /// <summary>The CRLF and lone-LF breaks of a text (a lone \r is content, not a break, like the local codec).</summary>
+    private static (int Crlf, int Lf) CountBreaks(string text)
+    {
+        int crlf = 0, lf = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '\r' && i + 1 < text.Length && text[i + 1] == '\n') { crlf++; i++; }
+            else if (text[i] == '\n') lf++;
+        }
+        return (crlf, lf);
+    }
+
+    private static List<int> FindAll(string text, string old)
+    {
+        var found = new List<int>();
+        for (var i = text.IndexOf(old, StringComparison.Ordinal); i >= 0; i = text.IndexOf(old, i + old.Length, StringComparison.Ordinal))
+            found.Add(i);
+        return found;
+    }
+
+    /// <summary>Replace every found span (positions in the text) with the replacement.</summary>
+    private static string Splice(string text, List<int> found, string old, string replacement)
+    {
+        var sb = new StringBuilder(text.Length + Math.Max(0, (replacement.Length - old.Length) * found.Count));
+        var last = 0;
+        foreach (var p in found)
+        {
+            sb.Append(text, last, p - last).Append(replacement);
+            last = p + old.Length;
+        }
+        sb.Append(text, last, text.Length - last);
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Replace every found span (positions in the LF-normalized view) with the replacement, spliced back onto the
+    /// text with its line endings: <c>map[p]</c> is where the view's character <c>p</c> sits in the text, so a CRLF the
+    /// view folded to one \n maps onto its two characters, and the untouched stretches keep their exact bytes.
+    /// </summary>
+    private static string Splice(string text, int[] map, List<int> found, string old, string replacement)
+    {
+        var sb = new StringBuilder(text.Length + Math.Max(0, (replacement.Length - old.Length) * found.Count));
+        var last = 0;
+        foreach (var p in found)
+        {
+            var from = map[p];
+            var to = map[p + old.Length];
+            sb.Append(text, last, from - last).Append(replacement);
+            last = to;
+        }
+        sb.Append(text, last, text.Length - last);
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The LF-normalized view of <paramref name="text"/> with a map back to it: <c>map[i]</c> is the index in the text
+    /// of the character the view's character <c>i</c> stands for, and <c>map[n]</c> is the text's length.
+    /// </summary>
+    private static (string Norm, int[] Map) NormalizeWithMap(string text)
+    {
+        var chars = new char[text.Length];
+        var map = new int[text.Length + 1];
+        var n = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '\r' && i + 1 < text.Length && text[i + 1] == '\n')
+            {
+                chars[n] = '\n';
+                map[n] = i;      // the view's \n stands for the CRLF starting here
+                n++;
+                map[n] = i + 2;  // the next view character starts after it
+                i++;
+            }
+            else
+            {
+                chars[n] = text[i];
+                map[n] = i;
+                n++;
+                map[n] = i + 1;
+            }
+        }
+        map[n] = text.Length;
+        return (new string(chars, 0, n), map);
     }
 
     private static string Preview(string s)

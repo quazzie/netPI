@@ -105,7 +105,9 @@ command -v dotnet >/dev/null || { echo ".NET 10 SDK not found"; exit 1; }
 # tree, and a commit there would revert those commits). Advisory, and only in the main checkout.
 if command -v git >/dev/null && git rev-parse --absolute-git-dir >/dev/null 2>&1; then
   GIT_DIR=$(git rev-parse --absolute-git-dir); TOP=$(git rev-parse --show-toplevel)
-  if [ "$(dirname "$GIT_DIR")" = "$(dirname "$TOP")" ] && ! git diff --cached --quiet; then
+  # the main checkout is the one whose git dir's parent is the toplevel (a linked worktree's git dir is nested under the
+  # main checkout's .git); only there is a staged index dangerous to a commit. --quiet's exit code says what is staged.
+  if [ "$(dirname "$GIT_DIR")" = "$TOP" ] && ! git diff --cached --quiet; then
     echo ""
     echo "This checkout's index is not HEAD: $(git diff --cached --name-only | wc -l) file(s) are staged here." >&2
     echo "  A 'git commit' here would commit those, not HEAD - they are usually the reverse of commits" >&2

@@ -13,6 +13,8 @@ internal sealed class AgentState(AgentInfo info)
     /// <summary>Subagent role instructions (rendered by the context plugin's subagent section).</summary>
     public string? Instructions { get; set; }
     public bool NotifyParent { get; set; } = true;
+    /// <summary>Counts the saves of this record (taken under <see cref="Gate"/>): the store drops a write older than the last one it made.</summary>
+    public long SaveVersion { get; set; }
 
     public List<UserInput> Steering { get; } = [];
     public List<UserInput> FollowUps { get; } = [];

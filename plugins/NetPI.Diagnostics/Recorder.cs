@@ -481,7 +481,7 @@ public sealed class CallRecord
                     _usage = c.Message.Usage ?? _usage;
                     _stopReason = c.Message.StopReason;
                     _toolCalls.Clear();
-                    _toolCalls.AddRange(c.Message.ToolCalls.Select(x => x.Name));
+                    _toolCalls.AddRange(c.Message.ToolCalls.Select(ToolCalls.EffectiveName));
                     break;
             }
         }

@@ -138,7 +138,11 @@ public static class TranscriptSerializer
     public const int ToolResultChars = 2000;
     public const int ToolArgsChars = 1000;
 
-    public static string Serialize(ChatMessage m)
+    public static string Serialize(ChatMessage m) => Serialize(m, null);
+
+    /// <summary>A call made through <c>call_tool</c> reads as the tool it ran; <paramref name="calls"/> (<see cref="ToolCalls.Index"/>)
+    /// names a result the same way.</summary>
+    public static string Serialize(ChatMessage m, IReadOnlyDictionary<string, ToolCallPart>? calls)
     {
         var sb = new StringBuilder();
         switch (m.Role)
@@ -168,7 +172,8 @@ public static class TranscriptSerializer
                             sb.Append("\n[Thinking] ").Append(th.Text.Trim());
                             break;
                         case ToolCallPart c:
-                            sb.Append("\n[Tool call] ").Append(c.Name).Append('(').Append(Truncate(c.Arguments.Trim(), ToolArgsChars)).Append(')');
+                            var (callName, callArgs) = ToolCalls.Effective(c);
+                            sb.Append("\n[Tool call] ").Append(callName).Append('(').Append(Truncate(callArgs.Trim(), ToolArgsChars)).Append(')');
                             break;
                     }
                 }
@@ -180,7 +185,7 @@ public static class TranscriptSerializer
                 {
                     if (!first) sb.Append('\n');
                     first = false;
-                    sb.Append("[Tool result: ").Append(r.Name).Append(r.IsError ? " (error)]\n" : "]\n")
+                    sb.Append("[Tool result: ").Append(calls is null ? r.Name : ToolCalls.EffectiveName(r, calls)).Append(r.IsError ? " (error)]\n" : "]\n")
                       .Append(Truncate(r.Content.Trim(), ToolResultChars));
                 }
                 break;
