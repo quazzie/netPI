@@ -354,6 +354,32 @@ public static class BrowserTests
             }
         });
 
+        r.Add("browser: the extension relay caps a message at 16 MB and closes the socket past it", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var key = File.ReadAllText(Path.Combine(env.Ctx.Paths.Home, "browser", "extension-key")).Trim();
+            var http = (FakeHttp)env.Ctx.Http;
+            await using var web = await LocalWeb.StartAsync(app =>
+            {
+                app.UseWebSockets();
+                app.Map("/api/p/netpi.tools.web/{**rest}", (HttpContext ctx) => http.Routes[ctx.Request.RouteValues["rest"]!.ToString()!].Handler(ctx));
+            });
+            try
+            {
+                using var ws = new ClientWebSocket();
+                await ws.ConnectAsync(new Uri(web.Url.Replace("http://", "ws://") + "/api/p/netpi.tools.web/extension?key=" + key), CancellationToken.None);
+                var big = new byte[17 * 1024 * 1024];
+                Array.Fill(big, (byte)'x');   // a text frame has to be valid UTF-8, whatever the relay does with it
+                await ws.SendAsync(big, WebSocketMessageType.Text, endOfMessage: true, CancellationToken.None);
+                var r = await ws.ReceiveAsync(new byte[64 * 1024], CancellationToken.None);
+                Check.Equal(WebSocketMessageType.Close, r.MessageType, "the relay closed the socket");
+                Check.Equal(WebSocketCloseStatus.MessageTooBig, r.CloseStatus);
+                Check.Contains(r.CloseStatusDescription ?? "", "too large");
+            }
+            finally { env.Ctx.Unload(); }
+        });
+
         r.Add("browser: the extension relay: a shared tab becomes a chat's, the pool, agent tabs in the user's Chrome, unshare, a wrong key refused", async () =>
         {
             var env = new Env();
