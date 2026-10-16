@@ -234,8 +234,19 @@ public sealed class FakePluginManager : IPluginManager
     public List<PluginInfo> Plugins { get; } = [];
     public ConcurrentQueue<string> Reloaded { get; } = new();
     public int Rescans;
+    /// <summary>The token the last reload ran on: a test tells the plugin's stopping token from <see cref="CancellationToken.None"/> by cancelling it.</summary>
+    public CancellationToken LastToken;
+    /// <summary>Thrown from <see cref="ReloadAsync"/> for the named plugin: a fault a background reload must observe and log.</summary>
+    public Func<string, Exception?>? Fail { get; set; }
+
     public IReadOnlyList<PluginInfo> List() => Plugins;
-    public Task ReloadAsync(string pluginId, CancellationToken ct = default) { Reloaded.Enqueue(pluginId); return Task.CompletedTask; }
+    public Task ReloadAsync(string pluginId, CancellationToken ct = default)
+    {
+        Reloaded.Enqueue(pluginId);
+        LastToken = ct;
+        if (Fail?.Invoke(pluginId) is { } ex) return Task.FromException(ex);
+        return Task.CompletedTask;
+    }
     public Task SetEnabledAsync(string pluginId, bool enabled, CancellationToken ct = default) => Task.CompletedTask;
     public Task RescanAsync(CancellationToken ct = default) { Interlocked.Increment(ref Rescans); return Task.CompletedTask; }
 

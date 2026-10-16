@@ -23,6 +23,7 @@ public static class InspectTests
         r.Add("inspect: no tool schema carries a null keyword value (strict providers answer HTTP 400)", NoNullSchemaKeywords);
         r.Add("inspect: diag rpc reaches any read-only method and nothing else; a journal type query is global", DiagRpcAndJournalScope);
         r.Add("inspect: a reload says what it cost: the tools at stake, or that a hook-only plugin announces nothing", ReloadImpact);
+        r.Add("inspect: a background reload runs on the plugin's stopping token, and a fault of the task is logged", ReloadBackground);
     }
 
     // OpenRouter's Poolside provider refused the whole request for diag's "description": null.
@@ -347,6 +348,33 @@ private static async Task BoundedScans()
     Check.Equal(3 * Inspector.ToolPartPage, ctx.SessionsFake.MessagesRead, "one page per session on screen");
 
     static IEnumerable<ChatMessage> Filler(int n) => Enumerable.Range(0, n).Select(i => ChatMessage.UserText($"filler {i}"));
+}
+
+// The all-plugins and the self-reload paths answer at once and reload in the background. That background task must run on the
+// plugin's stopping token (a stopped plugin ends it, it does not run on), and a fault of the task itself must be logged,
+// not lost in a fire-and-forget Task.Run.
+private static async Task ReloadBackground()
+{
+    var ctx = new FakePluginContext(pluginId: "netpi.a");
+    var pm = new FakePluginManager();
+    pm.Plugins.AddRange([FakePluginManager.Info("netpi.a", "A"), FakePluginManager.Info("netpi.b", "B")]);
+    ctx.ServicesFake.Register<IPluginManager>(pm);
+    pm.Fail = id => id == "netpi.b" ? new Exception("the plugin's assembly is gone") : null;
+    var service = new DiagnosticsService(ctx);
+
+    var answer = (string?)await service.ReloadAsync(null, CancellationToken.None);
+    Check.Contains(answer!, "2 plugins");
+    await Wait.Until(() => pm.Reloaded.Contains("netpi.b"), "the background reload reached the second plugin");
+    Check.True(ctx.Log.Lines.Any(l => l.Contains("netpi.b") && l.Contains("failed")), "the failed plugin is logged");
+
+    // the self-reload path: the same observation, the same token
+    var self = (string?)await service.ReloadAsync("netpi.a", CancellationToken.None);
+    Check.Contains(self!, "netpi.a");
+    var before = pm.Reloaded.Count(x => x == "netpi.a");
+    await Wait.Until(() => pm.Reloaded.Count(x => x == "netpi.a") > before, "the self-reload ran");
+
+    ctx.Stop();   // the plugin stops: a reload that ran on its stopping token is cancelled with it, CancellationToken.None is not
+    Check.True(pm.LastToken.IsCancellationRequested, "the reloads ran on the plugin's stopping token, not on none");
 }
 
 // Only a plugin that registers tools can take a tool away. A hook-only reload (context, nudge) swaps under a
