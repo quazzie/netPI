@@ -178,13 +178,31 @@
     }}
     ondblclick={() => startRename(s)}
   >
-    <span class="lead">
-      {#if depth > 0}
-        <Icon name="branch" size={12} />
-      {:else if status !== 'idle'}
-        <span class="np-dot" data-status={status}></span>
-      {/if}
-    </span>
+    {#if kids?.length}
+      <!-- the lead column: the status dot on the title line, the subagent toggle under it on the second line (no extra width) -->
+      <span class="lead stack">
+        <span class="top">{#if status !== 'idle'}<span class="np-dot" data-status={status}></span>{/if}</span>
+        <button
+          class="twist"
+          aria-expanded={expanded.has(s.id)}
+          title={expanded.has(s.id) ? 'Hide subagents' : 'Show subagents'}
+          onclick={(e) => {
+            e.stopPropagation();
+            expanded.has(s.id) ? expanded.delete(s.id) : expanded.add(s.id);
+          }}
+        >
+          <span class="chev" class:open={expanded.has(s.id)}><Icon name="chevron-right" size={13} /></span>
+        </button>
+      </span>
+    {:else}
+      <span class="lead">
+        {#if depth > 0}
+          <Icon name="branch" size={12} />
+        {:else if status !== 'idle'}
+          <span class="np-dot" data-status={status}></span>
+        {/if}
+      </span>
+    {/if}
     <div class="main">
       {#if editing === s.id}
         <input
@@ -213,17 +231,7 @@
             >
           {:else if depth === 0 && s.messageCount}<span class="count">{s.messageCount} msgs</span>{/if}
           {#if kids?.length}
-            <button
-              class="kids"
-              title={expanded.has(s.id) ? 'Hide subagents' : 'Show subagents'}
-              onclick={(e) => {
-                e.stopPropagation();
-                expanded.has(s.id) ? expanded.delete(s.id) : expanded.add(s.id);
-              }}
-            >
-              <span class="chev" class:open={expanded.has(s.id)}><Icon name="chevron-right" size={11} /></span>
-              {kids.length}<span class="kl">&nbsp;subagent{kids.length === 1 ? '' : 's'}</span>
-            </button>
+            <span class="kids">{kids.length}<span class="kl">&nbsp;subagent{kids.length === 1 ? '' : 's'}</span></span>
           {/if}
         </div>
       {/if}
@@ -509,17 +517,34 @@
   }
   .kids {
     flex: none;
-    display: inline-flex;
+    color: var(--fg-muted);
+  }
+  /* with subagents the lead column is two cells: the status dot on the title line, the toggle on the second line */
+  .lead.stack {
+    height: auto;
+    display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 2px;
-    padding: 0 4px 0 2px;
+  }
+  .lead.stack .top {
+    height: 19px;
+    display: grid;
+    place-items: center;
+  }
+  .twist {
+    width: 18px;
+    height: 17px;
+    margin: 0 0 0 0;
+    padding: 0;
+    display: grid;
+    place-items: center;
     border: 0;
     border-radius: 4px;
     background: transparent;
     color: var(--fg-muted);
-    font-size: var(--fs-xs);
+    cursor: pointer;
   }
-  .kids:hover {
+  .twist:hover {
     background: var(--bg-3);
     color: var(--fg);
   }
