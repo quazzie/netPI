@@ -27,16 +27,37 @@ public static class FileTests
         });
 
         // ------------------------------------------------ codec
-        r.Add("codec: EOL detection (majority, tie, none)", () =>
+        r.Add("codec: EOL detection (majority, tie, none, CR-only)", () =>
         {
             Check.Equal<EolStyle?>(EolStyle.CrLf, TextCodec.DetectEol("a\r\nb\r\nc\n"));
             Check.Equal<EolStyle?>(EolStyle.Lf, TextCodec.DetectEol("a\nb\nc\r\n"));
             Check.Equal<EolStyle?>(EolStyle.Lf, TextCodec.DetectEol("a\r\nb\n"), "tie → LF");
+            Check.Equal<EolStyle?>(EolStyle.Cr, TextCodec.DetectEol("a\rb\rc\r"), "a CR-only file is CR");
+            Check.Equal<EolStyle?>(EolStyle.Lf, TextCodec.DetectEol("a\rb\n"), "CR vs LF tie → LF");
             Check.Equal<EolStyle?>(null, TextCodec.DetectEol("no breaks"));
             var s = TextCodec.CountEol("a\r\nb\nc\rd");
             Check.Equal(1, s.CrLf); Check.Equal(1, s.Lf); Check.Equal(1, s.Cr); Check.True(s.Mixed);
             Check.Equal("a\nb\nc\nd", TextCodec.NormalizeToLf("a\r\nb\nc\rd"));
             Check.Equal("a\r\nb\r\n", TextCodec.ToEol("a\nb\r\n", EolStyle.CrLf));
+            Check.Equal("a\rb", TextCodec.ToEol("a\nb", EolStyle.Cr));
+            Check.Equal("cr", TextCodec.EolName(EolStyle.Cr));
+            Check.Equal<EolStyle?>(EolStyle.Cr, TextCodec.ParseEol("cr"));
+        });
+
+        r.Add("codec: DetectEolSample reads the BOM and the style from a bounded sample", () =>
+        {
+            var dir = T.TempDir("sample");
+            var cr = T.WriteText(dir, "cr.txt", "a\rb\rc\r", bom: true);
+            Check.Equal((EolStyle.Cr, true), TextCodec.DetectEolSample(cr, 16), "the BOM and the CR style");
+            Check.Equal(((EolStyle?)null, true), TextCodec.DetectEolSample(cr, 4), "a 4-byte sample sees the BOM but no line break");
+            var crlf = T.WriteText(dir, "crlf.txt", "a\r\nb\r\nc\r\n");
+            Check.Equal((EolStyle.CrLf, false), TextCodec.DetectEolSample(crlf, 4));
+            var lf = T.WriteText(dir, "lf.txt", "a\nb\nc\n");
+            Check.Equal((EolStyle.Lf, false), TextCodec.DetectEolSample(lf, 4));
+            // a sample that ends on the \r of a CRLF the cut left behind does not count it as a CR break
+            var cut = T.WriteBytes(dir, "cut.txt", [0x61, 0x0D, 0x0A, 0x62, 0x0D, 0x78, 0x78]);
+            Check.Equal((EolStyle.CrLf, false), TextCodec.DetectEolSample(cut, 5));
+            Check.Equal(((EolStyle?)null, false), TextCodec.DetectEolSample(T.WriteBytes(dir, "empty.txt", []), 4));
         });
 
         r.Add("codec: BOM, UTF-16, Latin-1 round trip, binary sniffing", () =>
@@ -93,6 +114,19 @@ public static class FileTests
             ToolCheck.Ok(res);
             Check.Equal("a\r\nb\r\nC\r\nD\r\n", T.ReadRaw(f));
             Check.Contains(res.Content, "mixed line endings");
+        });
+
+        r.Add("edit: a CR-only file keeps its CR line breaks", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "cr.txt", "a\rb\rc\r");
+            var res = await T.Run(Edit, dir, new { path = "cr.txt", oldText = "b\rc", newText = "B\nC" });
+            ToolCheck.Ok(res);
+            Check.Equal("a\rB\rC\r", T.ReadRaw(f), "the untouched lines stay CR");
+            Check.Equal("cr", T.D(res).Str("eol"));
+            // and the write tool keeps them too
+            ToolCheck.Ok(await T.Run(Write, dir, new { path = "cr.txt", content = "x\ny\n" }));
+            Check.Equal("x\ry\r", T.ReadRaw(f));
         });
 
         r.Add("edit: UTF-8 BOM is preserved", async () =>
@@ -439,6 +473,58 @@ public static class FileTests
             ToolCheck.Error(await T.Run(Write, dir, new { path = "x.txt" }), "content");
             ToolCheck.Error(await T.Run(Write, dir, new { content = "x" }), "path");
             ToolCheck.Error(await T.Run(Write, dir, new { path = ".", content = "x" }), "directory");
+        });
+
+        r.Add("write: a file over the edit cap keeps its line endings and BOM (detected from a sample)", async () =>
+        {
+            var dir = T.TempDir("bigwrite");
+            var f = Path.Combine(dir, "big.txt");
+            // over MaxEditableBytes, CRLF with a UTF-8 BOM
+            using (var fs = File.Create(f))
+            {
+                fs.Write([0xEF, 0xBB, 0xBF]);
+                var chunk = Encoding.UTF8.GetBytes(new string('x', 1023) + "\r\n"); // 1025 bytes
+                for (var i = 0; i < 66049; i++) fs.Write(chunk, 0, chunk.Length); // ~67 MB
+            }
+            Check.True(new FileInfo(f).Length > FileToolBase.MaxEditableBytes, "the file is really over the cap");
+            var res = await T.Run(Write, dir, new { path = "big.txt", content = "a\r\nb\r\n" });
+            ToolCheck.Ok(res);
+            var head = new byte[8];
+            using (var fs = File.OpenRead(f)) fs.ReadExactly(head, 0, head.Length);
+            Check.Equal("EF-BB-BF-61-0D-0A-62-0D", BitConverter.ToString(head), "the BOM and the CRLF style were kept");
+            Check.Contains(res.Content, "too large to diff");
+            Check.Contains(res.Content, "CRLF line endings and BOM were kept");
+            var d = T.D(res);
+            Check.Equal("crlf", d.Str("eol"));
+            Check.True(d.Bool("bom"));
+
+            // a CR-style file over the cap keeps its CR breaks too
+            var f2 = Path.Combine(dir, "bigcr.txt");
+            using (var fs = File.Create(f2))
+            {
+                var crChunk = Encoding.UTF8.GetBytes(new string('y', 1023) + "\r");
+                for (var i = 0; i < 66049; i++) fs.Write(crChunk, 0, crChunk.Length);
+            }
+            var res2 = await T.Run(Write, dir, new { path = "bigcr.txt", content = "p\rq\n" });
+            ToolCheck.Ok(res2);
+            var head2 = new byte[4];
+            using (var fs = File.OpenRead(f2)) fs.ReadExactly(head2, 0, head2.Length);
+            Check.Equal("70-0D-71-0D", BitConverter.ToString(head2), "the CR style was kept");
+            Check.Contains(res2.Content, "CR line endings");
+        });
+
+        r.Add("write: overwriting a binary file says so and uses the default line endings", async () =>
+        {
+            var dir = T.TempDir("binwrite");
+            var f = T.WriteBytes(dir, "img.bin", [1, 2, 3, 0, 4, 5, 6]); // a NUL byte: binary
+            var res = await T.Run(Write, dir, new { path = "img.bin", content = "a\nb\n" });
+            ToolCheck.Ok(res);
+            Check.Contains(res.Content, "previous content was binary");
+            Check.Contains(res.Content, "default LF line endings");
+            Check.Equal("a\nb\n", T.ReadRaw(f), "the text is there, in the default style");
+            var d = T.D(res);
+            Check.Equal("lf", d.Str("eol"));
+            Check.False(d.Bool("bom"));
         });
 
         // ------------------------------------------------ read

@@ -2,15 +2,15 @@ using System.Text;
 
 namespace NetPI.Tools.Files;
 
-public enum EolStyle { Lf, CrLf }
+public enum EolStyle { Lf, CrLf, Cr }
 
 /// <summary>Line-break statistics of a text.</summary>
 public readonly record struct EolStats(int CrLf, int Lf, int Cr)
 {
     public int Total => CrLf + Lf + Cr;
     public bool Mixed => (CrLf > 0 ? 1 : 0) + (Lf > 0 ? 1 : 0) + (Cr > 0 ? 1 : 0) > 1;
-    /// <summary>CRLF when the (strict) majority of line breaks are CRLF, LF otherwise; null when there are no line breaks.</summary>
-    public EolStyle? Style => Total == 0 ? null : CrLf > Lf + Cr ? EolStyle.CrLf : EolStyle.Lf;
+    /// <summary>The (strict) majority of the line breaks: CRLF, CR, or LF (LF wins a tie); null when there are no line breaks.</summary>
+    public EolStyle? Style => Total == 0 ? null : CrLf > Lf + Cr ? EolStyle.CrLf : Cr > CrLf + Lf ? EolStyle.Cr : EolStyle.Lf;
 }
 
 /// <summary>A decoded text file: <see cref="Text"/> is always LF-normalized.</summary>
@@ -82,6 +82,39 @@ public static class TextCodec
         return IsBinary(buf[..total]);
     }
 
+    /// <summary>
+    /// The BOM and line-ending style of a file that is too large to decode whole: the BOM from the first bytes, the
+    /// style from a bounded sample of the start of the file. A sample can cut a multi-byte character, so the decode
+    /// is the forgiving one (<see cref="DetectEncoding"/>); a lone \r at the very end of a cut sample may be the first
+    /// half of a CRLF the cut left behind, so it does not count as a line break.
+    /// </summary>
+    public static (EolStyle? Eol, bool Bom) DetectEolSample(string path, int sampleBytes = 64 * 1024)
+    {
+        byte[] sample;
+        long length;
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None))
+        {
+            length = fs.Length;
+            var take = (int)Math.Min(length, sampleBytes);
+            sample = new byte[take];
+            var read = 0;
+            while (read < take)
+            {
+                var n = fs.Read(sample, read, take - read);
+                if (n == 0) break;
+                read += n;
+            }
+            if (read < take) sample = sample[..read];
+        }
+        if (sample.Length == 0) return (null, false);
+        var (enc, _, bomLen) = DetectEncoding(sample);
+        var body = sample[bomLen..];
+        if (enc is UnicodeEncoding && body.Length % 2 == 1) body = body[..^1]; // a UTF-16 character the cut left half
+        var text = enc.GetString(body);
+        if (sample.Length < length && text.EndsWith("\r", StringComparison.Ordinal)) text = text[..^1];
+        return (CountEol(text).Style, bomLen > 0);
+    }
+
     public static EolStats CountEol(string text)
     {
         int crlf = 0, lf = 0, cr = 0;
@@ -111,18 +144,20 @@ public static class TextCodec
     }
 
     /// <summary>Convert LF-normalized (or any) text to the given line-break style.</summary>
-    public static string ToEol(string text, EolStyle eol)
+    public static string ToEol(string text, EolStyle eol) => eol switch
     {
-        var lf = NormalizeToLf(text);
-        return eol == EolStyle.CrLf ? lf.Replace("\n", "\r\n") : lf;
-    }
+        EolStyle.CrLf => NormalizeToLf(text).Replace("\n", "\r\n"),
+        EolStyle.Cr => NormalizeToLf(text).Replace('\n', '\r'),
+        _ => NormalizeToLf(text),
+    };
 
-    public static string EolName(EolStyle? eol) => eol == EolStyle.CrLf ? "crlf" : "lf";
+    public static string EolName(EolStyle? eol) => eol switch { EolStyle.CrLf => "crlf", EolStyle.Cr => "cr", _ => "lf" };
 
     public static EolStyle? ParseEol(string? value) => value?.Trim().ToLowerInvariant() switch
     {
         "lf" or "\n" or "unix" => EolStyle.Lf,
         "crlf" or "\r\n" or "windows" => EolStyle.CrLf,
+        "cr" => EolStyle.Cr,
         "auto" or "native" or "os" => OperatingSystem.IsWindows() ? EolStyle.CrLf : EolStyle.Lf,
         _ => null,
     };
