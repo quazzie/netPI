@@ -66,17 +66,33 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
                     if (_waiters.Remove(w)) w.Done.TrySetCanceled(ct);
             });
         }
+        Handle? admitted = null;
+        var cancelled = false;
         lock (_lock)
         {
             // Cancelled in the meantime (between the registration and the publish): the callback found no waiter to remove,
             // so complete the task here and do not publish it.
-            if (ct.IsCancellationRequested)
+            if (ct.IsCancellationRequested) cancelled = true;
+            // The apply ended in the meantime (between the first look and here): EndApply admitted the waiters it saw, and
+            // this one was not among them - published now, nothing would admit it until some later batch ended.
+            else if (_disposed || !_applying)
             {
-                w.Registration.Dispose();
-                w.Done.TrySetCanceled(ct);
-                return new ValueTask<IDisposable>(w.Done.Task);
+                admitted = new Handle(this, owner, reason, own: false);
+                _holds.Add(admitted);
             }
-            _waiters.Add(w);
+            else _waiters.Add(w);
+        }
+        // Outside the lock: disposing a registration waits for its callback when that runs on another thread, and the
+        // callback takes the lock.
+        if (cancelled)
+        {
+            w.Registration.Dispose();
+            w.Done.TrySetCanceled(ct);
+        }
+        else if (admitted is not null)
+        {
+            w.Registration.Dispose();
+            return ValueTask.FromResult<IDisposable>(admitted);
         }
         return new ValueTask<IDisposable>(w.Done.Task);
     }
