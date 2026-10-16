@@ -557,7 +557,7 @@ public static class RunnerSelfTests
     }
 
     /// <summary>
-    /// The ledger is committed, so a run must only ever write the file it was pointed at. The first version resolved the
+    /// The ledger is shared by every worktree, so a run must only ever write the file it was pointed at. The first version resolved the
     /// path from the repository inside the orchestrator, and every self-test that ran a shard quietly added its fake
     /// ids to the real ledger.
     /// </summary>
@@ -574,8 +574,11 @@ public static class RunnerSelfTests
             o => o.LedgerPath = ledger);
         Check.Equal(1, report.ExitCode, "the run failed as asked");
         Check.True(FlakeLedger.Load(ledger).Any(e => e.Id == "fake.bad"), "the ledger it was given has the failure");
-        // And the committed one is untouched: nothing in a self-test may write there.
+        // And the shared one is untouched: nothing in a self-test may write there.
         var committed = FlakeLedger.PathFor(Env.FindRepoRoot());
+        Check.True(committed.EndsWith(Path.Combine("artifacts", "flakes.json"), StringComparison.OrdinalIgnoreCase)
+            && !committed.Contains(Path.DirectorySeparatorChar + ".worktrees" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase),
+            $"the ledger is the main checkout's, also from a worktree: {committed}");
         Check.False(File.Exists(committed) && FlakeLedger.Load(committed).Any(e => e.Id.StartsWith("fake.", StringComparison.Ordinal)),
             "no self-test id reached the committed ledger");
 

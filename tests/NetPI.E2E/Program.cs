@@ -23,7 +23,7 @@ using NetPI.E2E;
 //   results
 //     --out DIR       this run's folder: report.json, failures/<id>.txt, screenshots/ (default artifacts/e2elogs/<run>)
 //     --state-dir DIR where the failing list and the timing history persist (default artifacts/e2elogs); --no-state = nowhere
-//     --ledger FILE  where the flake ledger is written (default tests/NetPI.E2E/flakes.json, committed)
+//     --ledger FILE  where the flake ledger is written (default artifacts/flakes.json of the main checkout, shared by its worktrees)
 //     --failed        run the tests that failed and have not passed since (across runs)
 //     --flakes        print the flake ledger (how often each test fails, and the runner's diagnosis when it last did)
 //     --keep          keep each server's work folder (server.log, home, projects, app copy)

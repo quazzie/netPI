@@ -359,8 +359,9 @@ its own events are delivered (`settings.set` returns before its `settings.change
 test's window and satisfies its first wait for "an event of that type" (`settings.live-edit` failed that way); the flush answers behind
 every earlier event on the socket, so the event log is complete when the next test marks its start.
 
-**The flake ledger.** `tests/NetPI.E2E/flakes.json` is the suite's health across runs, committed beside the test list so that
-pruning `artifacts/e2elogs` cannot take it and a reader sees the rates without running anything. Every run folds its results in: a
+**The flake ledger.** `artifacts/flakes.json` of the main checkout is the suite's health across runs: outside `artifacts/e2elogs`
+so that pruning cannot take it, and outside git, so a run never dirties a tracked file. A run in a worktree (`.worktrees/<agent>`)
+writes the main checkout's ledger too, so the rates count every worktree's runs. Every run folds its results in: a
 test that has failed at least once gets a row with how many times it ran and failed, when it first and last failed, and the cause
 the runner's own diagnosis gave (the server verdict first, the test's message beside it). A later pass marks the row `quiet` rather
 than deleting it — "it flaked 2 in 20" is the part worth keeping — and a test that has never failed gets no row at all.

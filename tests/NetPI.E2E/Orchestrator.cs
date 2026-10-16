@@ -516,8 +516,30 @@ public sealed class FlakeEntry
 
 public static class FlakeLedger
 {
-    /// <summary>Beside the test list, so it survives pruning and shows up in a diff.</summary>
-    public static string PathFor(string repo) => System.IO.Path.Combine(repo, "tests", "NetPI.E2E", "flakes.json");
+    /// <summary>
+    /// In the main checkout's <c>artifacts/</c>, outside <c>e2elogs</c> (whose pruning must not take it) and outside git: every
+    /// worktree's runs fold into the one ledger, so the rates count all of them. It used to be committed, and every run in every
+    /// worktree rewrote a tracked file each agent then had to revert by hand.
+    /// </summary>
+    public static string PathFor(string repo) => System.IO.Path.Combine(MainCheckout(repo), "artifacts", "flakes.json");
+
+    /// <summary>The main checkout of <paramref name="repo"/>: a worktree's <c>.git</c> is a file naming
+    /// <c>&lt;main&gt;/.git/worktrees/&lt;name&gt;</c>; anything else is the main checkout itself.</summary>
+    internal static string MainCheckout(string repo)
+    {
+        try
+        {
+            var dotGit = System.IO.Path.Combine(repo, ".git");
+            if (!File.Exists(dotGit)) return repo;
+            var line = File.ReadAllText(dotGit).Trim();
+            if (!line.StartsWith("gitdir:", StringComparison.Ordinal)) return repo;
+            var gitDir = System.IO.Path.GetFullPath(line["gitdir:".Length..].Trim(), repo);
+            var worktrees = Directory.GetParent(gitDir);                   // <main>/.git/worktrees
+            if (worktrees?.Name != "worktrees" || worktrees.Parent is not { Name: ".git" } git || git.Parent is null) return repo;
+            return git.Parent.FullName;
+        }
+        catch { return repo; }
+    }
 
     public static List<FlakeEntry> Load(string path)
     {
@@ -584,11 +606,15 @@ public static class FlakeLedger
                 ["firstSeen"] = e.FirstSeen, ["lastFailure"] = e.LastFailure, ["cause"] = e.Cause,
                 ["quiet"] = e.Quiet,
             }).ToArray());
-            File.WriteAllText(path, new JsonObject
+            // whole or not at all: the runs of other worktrees read the same file
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path))!);
+            var tmp = path + "." + Environment.ProcessId + ".tmp";
+            File.WriteAllText(tmp, new JsonObject
             {
                 ["note"] = "Flake ledger: how often each test has failed, and the runner's own diagnosis when it last did. Updated by every run; a pass marks an entry quiet rather than deleting it.",
                 ["flakes"] = arr,
             }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(tmp, path, overwrite: true);
         }
         catch (Exception ex) { Console.WriteLine("  could not update the flake ledger: " + ex.Message); }
     }
