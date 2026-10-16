@@ -659,6 +659,24 @@ public static class WebhooksTests
             Check.Equal(false, (await env.Get(id))["enabled"]!.GetValue<bool>());
         });
 
+        r.Add("webhooks: a receiver that cannot bind is logged, and a stop waits for the reconciles it started", async () =>
+        {
+            var env = await new Env(listen: true).StartAsync();
+            env.Ctx.SettingsFake.SetQuiet("webhooks.bind", "999.999.999.999");
+            env.Ctx.SettingsFake.SetQuiet("webhooks.enabled", true);
+            env.Ctx.Events.Publish("settings.changed", new JsonObject { ["path"] = "webhooks.bind" });
+            await WaitFor(() => env.Plugin.Status()["error"] is not null);
+            Check.Contains(env.Plugin.Status()["error"]!.GetValue<string>(), "not an IP");
+            Check.True(env.Ctx.Log.Lines.Any(l => l.Contains("not an IP address")), "the failed bind is logged");
+
+            // a settings change at the moment of the stop starts one more reconcile: the stop waits for it, bounded
+            env.Ctx.Events.Publish("settings.changed", new JsonObject { ["path"] = "webhooks.port" });
+            var stopping = System.Diagnostics.Stopwatch.StartNew();
+            await env.Plugin.StopAsync(CancellationToken.None);
+            Check.True(stopping.Elapsed < TimeSpan.FromSeconds(10), "the stop did not hang on a reconcile: " + stopping.Elapsed);
+            Check.Equal(false, env.Plugin.Status()["listening"]!.GetValue<bool>());
+        });
+
         r.Add("webhooks: a reloaded plugin starts at once and takes over the port its previous generation still holds; a stop ends a bind that is still waiting", async () =>
         {
             var port = FreePort();
