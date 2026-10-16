@@ -25,13 +25,16 @@ internal static class SseReader
         string? evt = null, id = null;
         var data = new StringBuilder();
         var hasData = false;
-        char? pending = null;
-        var buf = new char[1];
+        var buf = new char[16 * 1024];
+        int pos = 0, len = 0;
+        var skipLf = false;   // the last line ended in \r: a \n that follows is part of that ending
+        var lineBuf = new StringBuilder();
 
         while (true)
         {
-            var line = await NextLine();
-            if (line is null) break;
+            var next = await NextLine();
+            if (next is null) break;
+            var line = next;
 
             if (line.Length == 0)
             {
@@ -73,34 +76,40 @@ internal static class SseReader
         }
         if (hasData) yield return new SseEvent(evt, data.ToString(), id);
 
-        // One char at a time (ReadLineAsync would grow a line without limit): \n and \r both end a line, a \n after
-        // a \r is part of the ending, and a line past the cap is the provider's problem, not the process's memory.
+        // A line reader over our own buffer (ReadLineAsync would grow a line without limit): \n, \r and \r\n end a line,
+        // a line ending in \r is returned at once (no read-ahead that would hold an event until the next byte), and a
+        // line past the cap is the provider's problem, not the process's memory.
         async Task<string?> NextLine()
         {
-            var sb = new StringBuilder();
+            lineBuf.Clear();
             while (true)
             {
-                char ch;
-                if (pending is { } p) { ch = p; pending = null; }
+                if (pos == len)
+                {
+                    len = await reader.ReadAsync(buf.AsMemory(), ct).ConfigureAwait(false);
+                    pos = 0;
+                    if (len == 0) return lineBuf.Length == 0 ? null : lineBuf.ToString();
+                }
+                if (skipLf)
+                {
+                    skipLf = false;
+                    if (buf[pos] == '\n') { pos++; continue; }
+                }
+                var span = buf.AsSpan(pos, len - pos);
+                var end = span.IndexOfAny('\r', '\n');
+                if (end < 0)
+                {
+                    lineBuf.Append(span);
+                    pos = len;
+                }
                 else
                 {
-                    var n = await reader.ReadAsync(buf.AsMemory(), ct).ConfigureAwait(false);
-                    if (n == 0) return sb.Length == 0 ? null : sb.ToString();
-                    ch = buf[0];
+                    lineBuf.Append(span[..end]);
+                    skipLf = span[end] == '\r';
+                    pos += end + 1;
                 }
-                if (ch == '\n')
-                {
-                    if (sb.Length > 0 && sb[^1] == '\r') sb.Length--;
-                    return sb.ToString();
-                }
-                if (ch == '\r')
-                {
-                    var n2 = await reader.ReadAsync(buf.AsMemory(), ct).ConfigureAwait(false);
-                    if (n2 > 0 && buf[0] != '\n') pending = buf[0];
-                    return sb.ToString();
-                }
-                sb.Append(ch);
-                if (sb.Length > MaxLineLength) throw ProviderErrors.SseLineTooLong(provider, MaxLineLength);
+                if (lineBuf.Length > MaxLineLength) throw ProviderErrors.SseLineTooLong(provider, MaxLineLength);
+                if (end >= 0) return lineBuf.ToString();
             }
         }
     }
