@@ -120,6 +120,18 @@ public static class SchedulerTests
         await h.Bus.DrainAsync();
         Check.True(h.Scheduler.Snapshot().Single(p => p.Key == "coder").Available);
 
+        // a backend that unloads a model drops it from its list: the agent is not loaded, even though it was loaded when last listed
+        h.Catalog.RemoveModel(local);
+        ((IEventBus)h.Bus).Publish(EventTypes.ModelsChanged, new JsonObject());
+        await h.Bus.DrainAsync();
+        coder = h.Scheduler.Snapshot().Single(p => p.Key == "coder");
+        Check.False(coder.Available);
+        Check.Equal("local isn't loaded", coder.Unavailable);
+        h.Catalog.AddModel(local);
+        ((IEventBus)h.Bus).Publish(EventTypes.ModelsChanged, new JsonObject());
+        await h.Bus.DrainAsync();
+        Check.True(h.Scheduler.Snapshot().Single(p => p.Key == "coder").Available);
+
         // other model calls show while they run
         var lease = await h.Scheduler.AcquireAsync(Req(h.Scheduler.Resolve(TestHost.SoloModel()), "summarizer"), CancellationToken.None);
         var busy = h.Scheduler.Snapshot().Single(p => p.Key == "fake/solo");

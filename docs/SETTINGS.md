@@ -76,7 +76,7 @@ An id is letters, digits, `-` and `_`. Kinds: `aiproxy`, `openai-compatible`, `o
 | `dumpFailedRequests` | `true` | save the request **and response** body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30, response capped at 16k chars) and add the server's `x-request-id` / response id to the error, for reproducing backend bugs. A rate limit or an overloaded backend is not saved: it repeats on every attempt and its dumps rotate the useful ones out |
 | `parseThinkTags` | `true` | split a leading inline `<think>…</think>` into thinking blocks; a tag after visible text stays text (it is content the model wrote) |
 | `defaultMaxOutputTokens` | `16384` | when the catalog says `max_output_tokens: null`. Every provider also cuts the value down to what the model's `contextWindow` has left beside the request, so it never sends more output than the window can hold |
-| `modelsCacheSeconds` | `10` | `/v1/models` cache; local endpoints are checked every 2 s in the provider background loop, respecting this TTL |
+| `modelsCacheSeconds` | `10` | `/v1/models` cache; local endpoints are checked every 2 s in the provider background loop, with the TTL capped at 1 s so a loadout switch shows within about 2 s |
 | `reasoningSummary` | – | Responses `reasoning.summary` (nInfer rejects it with HTTP 400; leave unset for AiProxy/nInfer) |
 | `headers` | – | extra HTTP headers |
 | `enabled`, `local` | `true` | a local model's `concurrency` is how many runs its agents share |

@@ -131,6 +131,12 @@ public sealed class FakeCatalog(IServiceRegistry services) : IModelCatalog
 
     public IReadOnlyList<ModelInfo> Cached { get { lock (_gate) return [.. _models]; } }
 
+    /// <summary>Takes a model off the list, as a backend does when it unloads one.</summary>
+    public void RemoveModel(ModelInfo model)
+    {
+        lock (_gate) _models.Remove(model);
+    }
+
     /// <summary>Called by <see cref="ListAsync"/> (simulates a catalog that loads lazily).</summary>
     public Action? OnList { get; set; }
 

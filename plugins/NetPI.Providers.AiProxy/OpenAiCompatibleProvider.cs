@@ -51,6 +51,9 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         catch (Exception ex) { _log.LogWarning(ex, "{Provider}: could not read settings", Id); return null; }
     }
 
+    /// <summary>The longest a local backend's model list is served from the cache (its poll reads it on that cadence).</summary>
+    internal const int LocalCacheCapSeconds = 1;
+
     /// <summary>Drop the cached model list (next <see cref="ListModelsAsync"/> refetches).</summary>
     public void InvalidateModels() => _models.Invalidate();
 
@@ -72,7 +75,8 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         {
             Fingerprint = Key(o),
             CanFetch = o.Enabled,
-            Ttl = TimeSpan.FromSeconds(Math.Max(0, o.ModelsCacheSeconds)),
+            // a local backend's loads and unloads happen outside NetPI: its list is never served older than LocalCacheCapSeconds
+            Ttl = TimeSpan.FromSeconds(o.IsLocal ? Math.Min(Math.Max(0, o.ModelsCacheSeconds), LocalCacheCapSeconds) : Math.Max(0, o.ModelsCacheSeconds)),
             Url = o.Root,
         };
         return await _models.ListAsync(refresh, policy, c => FetchModelsAsync(o, c), ct).ConfigureAwait(false);

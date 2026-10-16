@@ -110,8 +110,8 @@ public sealed class AiProxyPlugin : INetPiPlugin
         _http = null;
     }
 
-    // Local backend/profile changes occur outside NetPI settings. Keep the provider cache current
-    // even when no UI requests the catalog; its existing TTL limits network traffic.
+    // Local backend/profile changes occur outside NetPI settings (AiHub switching a loadout). Keep the provider cache current
+    // even when no UI requests the catalog. Local lists are capped at a 1 s TTL, so each tick really reads the backend.
     private async Task PollLocalModelsAsync(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));

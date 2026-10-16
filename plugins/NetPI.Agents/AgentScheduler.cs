@@ -27,6 +27,8 @@ internal sealed class AgentScheduler : IAgentScheduler
     private readonly List<Waiter> _floating = [];
     /// <summary>Every model we have seen (catalog cache + models passed to <see cref="Resolve(ModelInfo)"/>), by ref.</summary>
     private readonly Dictionary<string, ModelInfo> _models = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The model refs the catalog lists now. A model that left its backend's list is not loaded, whatever it last reported.</summary>
+    private HashSet<string> _listed = new(StringComparer.OrdinalIgnoreCase);
     private long _seq;
     private bool _stopped;
     private int _publishScheduled;
@@ -274,6 +276,8 @@ internal sealed class AgentScheduler : IAgentScheduler
         if (p.Disabled) return (false, "disabled");
         if (p.Model is null || !_models.TryGetValue(p.Model, out var m)) return (false, $"{p.Model} is not in the model list");
         if (m.IsLocal)
+        {
+            if (!_listed.Contains(m.Ref)) return (false, $"{m.Id} isn't loaded");
             return m.Status switch
             {
                 null or "loaded" => (true, null),
@@ -281,6 +285,7 @@ internal sealed class AgentScheduler : IAgentScheduler
                 "stopped" => (false, $"{m.Id} isn't loaded (its backend isn't running)"),
                 _ => (false, $"{m.Id} isn't loaded"),
             };
+        }
         return m.Status is "offline" ? (false, $"{m.Provider} can't be reached") : (true, null);
     }
 
@@ -360,14 +365,18 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// <summary>Re-read the agents and the models' states (settings or models changed). Returns whether anything changed.</summary>
     public bool Refresh()
     {
-        IReadOnlyList<ModelInfo> cached;
-        try { cached = _ctx.Models?.Cached ?? []; } catch { cached = []; }
+        IReadOnlyList<ModelInfo>? cached = null;
+        try { cached = _ctx.Models?.Cached ?? []; } catch { }
         var agents = Agents();
         List<(Waiter W, string Reason)> refused = [];
 
         lock (_gate)
         {
-            foreach (var m in cached) _models[m.Ref] = m;
+            if (cached is not null)
+            {
+                foreach (var m in cached) _models[m.Ref] = m;
+                _listed = new HashSet<string>(cached.Select(m => m.Ref), StringComparer.OrdinalIgnoreCase);
+            }
             var ids = new HashSet<string>(agents.Select(a => a.Id), StringComparer.OrdinalIgnoreCase);
             foreach (var a in agents) ApplyAgent(GetOrCreate(a.Id), a);
             foreach (var pool in _pools.Values.ToList())
