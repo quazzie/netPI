@@ -1079,5 +1079,49 @@ public static class SessionStoreTests
             }
             finally { Environment.SetEnvironmentVariable("NETPI_HOME", old); }
         });
+
+        r.Add("sessions: updating a message without a session id drops that session's cached context", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo());
+            for (var i = 1; i <= 3; i++) f.Store.AppendMessage(s.Id, ChatMessage.UserText("m" + i));
+            // warm the cache, so the next read is a hit
+            Check.Equal("m1,m2,m3", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)));
+            var (hits0, reads0) = f.Store.ContextCache;
+            Check.Equal(0L, hits0);
+            Check.Equal(1L, reads0);
+
+            // A message handed in without its session id (and seq): the update must still drop THIS session's cached
+            // context, not the empty id's. Before the fix the drop named the empty session and the warm cache kept
+            // serving the old text.
+            var target = f.Store.GetMessages(s.Id).First(m => m.Text == "m2");
+            var bare = new ChatMessage
+            {
+                Id = target.Id,
+                Role = target.Role,
+                Parts = [new TextPart { Text = "m2 edited" }],
+                CreatedAt = target.CreatedAt,
+            };
+            Check.True(string.IsNullOrEmpty(bare.SessionId), "the message has no session id");
+            f.Store.UpdateMessage(bare);
+            Check.Equal(s.Id, bare.SessionId, "the update filled the session id from the store");
+            var (hits1, reads1) = f.Store.ContextCache;
+            Check.Equal("m1,m2 edited,m3", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)));
+            Check.Equal(hits1, f.Store.ContextCache.Hits, "the read after the edit is a read, not a hit (the cache was dropped)");
+            Check.Equal(reads1 + 1, f.Store.ContextCache.Reads);
+        });
+
+        r.Add("sessions: a remembered fork-reset list with non-string elements does not throw", async () =>
+        {
+            await using var f = new Fixture();
+            // Seed the remembered keys with a mix of string and non-string elements: a number, an object and a null.
+            f.Storage.Values.Set("fork.resetKeys", "[\"goal\", 42, {\"x\":1}, null]");
+            // Constructing a service over the same storage parses the list; a non-string element is not a key name and
+            // must be skipped, not throw (GetValue<string> used to throw an uncaught InvalidOperationException on it).
+            var service = new SessionService(f.Storage, f.Bus, f.Dir);
+            var keys = service.ForkResetKeys();
+            Check.True(keys.Contains("goal"), "the string element is a remembered key");
+            Check.True(!keys.Contains("42"), "a number element is not a key name");
+        });
     }
 }
