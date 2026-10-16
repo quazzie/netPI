@@ -312,8 +312,14 @@ public static class AskTests
         Check.Equal("to prod", wrapped[0].Options.Single().Description);
         Check.False(wrapped[0].Multiple, "several picks need several options");
 
-        var plain = Parse("""{ "questions": ["Why?", { "question": "  " }] }""", out _);
-        Check.Equal("Why?", plain.Single().Question, "a plain string is a question without options; an empty one is skipped");
+        var plain = Parse("""{ "questions": ["Why?", { "question": "ok?" }] }""", out _);
+        Check.Equal("Why?", plain.First().Question, "a plain string is a question without options");
+
+        // a question that cannot be used is an error naming it, never a shorter set (answers are read by position)
+        var dropped = Parse("""{ "questions": ["Why?", { "question": "  " }, 7] }""", out var unusable);
+        Check.Equal(0, dropped.Count);
+        Check.Contains(unusable, "#2 (no question text)");
+        Check.Contains(unusable, "#3 (a number instead of a string or an object)");
 
         Parse("""{ "questions": [] }""", out var error);
         Check.Contains(error, "ask_user needs \"questions\"");

@@ -746,7 +746,7 @@ details: { items: { text, status }[], done, total }
 
 `plugins/NetPI.Ask`. `{ questions: { question, options?: { label, description? }[], multiple? }[] }` (1 to 4 questions,
 at most 8 options each; a question up to 1000 characters, an option label up to 400 and its description up to 600,
-longer text cut with a `…`) asks the user and waits for the answers. The label is what the user picks, so it carries the
+longer text cut with a `…`; a question without text or an entry that is no string or object is an error naming it, never dropped) asks the user and waits for the answers. The label is what the user picks, so it carries the
 choice itself and the description what it means — the card wraps both. The questions appear in the chat below the agent's
 message, and the run ends at the call (a wait for the user, `UserWait` kind `ask`, docs/PLUGINS.md "Waiting for the
 user"): the agent shows as yielded, "waiting for your answer", holding no instance and no reload, and the chat goes on
@@ -795,7 +795,7 @@ that started a research subagent) is in plan mode, and the provider then gives t
 ### `plan_submit`
 
 `{ title, summary?, steps: (string | { text, detail? })[], files?: (string | { path, note? })[], risks?, tests?, openQuestions?: string[] }`
-(lenient: `step`/`task`, `file`/`what`, a JSON string; at most 40 steps, 60 files, 20 of each list). Stores the plan as the chat's
+(lenient: `step`/`task`, `file`/`what`, a JSON string; at most 40 steps, 60 files, 20 of each list; more steps or files is an error naming the limit, not a cut). Stores the plan as the chat's
 next revision (the same plan again, as after a stop, is not a new revision) and waits for the user's decision: a wait for the user
 (`UserWait` kind `plan`, "waiting for your decision on the plan"), so the run ends at the call holding nothing, the decision is its
 result in the run that goes on, and it survives a reload of the plugin or the runtime and a restart. Only in plan mode, only the main
@@ -957,7 +957,7 @@ so it would pass, a warning the summary does not deal with (`OVER BUDGET`), a cl
 goal that cannot be finished by its nature. Gaps refuse the completion (an error result listing them; the goal stays
 active and the agent goes on); a second refusal in a row blocks the goal for the user with the gaps as its reason
 (`refusals` in the goal counts them; resume resets it), so the two never loop. A pass closes the goal and says so in
-the result; a review that cannot run (no model, an error) never holds a completion back and says that instead.
+the result; a review that cannot run (no model, an error) or answers without an explicit `PASS`/`GAPS` (empty, no verdict) never holds a completion back: the result says it was not reviewed.
 
 ### `goal_set` (summary arg `objective`)
 
