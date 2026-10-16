@@ -15,6 +15,9 @@ public static class PlanTests
         t.Add("plan: plan_submit reads lenient arguments and refuses a plan without steps", Parsing);
         t.Add("plan: blocked tools never run, readers do, the plan waits with its instance given back, and approval lets writes through", BlockedThenApproved);
         t.Add("plan: a chat that is not in plan mode writes as ever and plan_submit says so", NotInPlanMode);
+        t.Add("plan: a submit that waited for the gate while plan mode was left does not switch it back on", SubmitAfterExit);
+        t.Add("plan: an offer that cannot be resolved does not leave the chat in plan mode", EnterAnswerRace);
+        t.Add("plan: save as file is refused when the workspace rule refuses the path, and nothing is written", FileRefusedByWorkspace);
         t.Add("plan: revise returns the feedback, the next submit is revision 2; a decided plan can't be decided again", Revise);
         t.Add("plan: a new message from the user ends the wait and reopens the plan for revision", Steered);
         t.Add("plan: approving after the run is gone does the same work and tells the chat with a message", ApproveWithoutRun);
@@ -211,8 +214,14 @@ public static class PlanTests
         Check.False(PlanBody.TryParse(JsonSerializer.SerializeToElement(new { title = "T", steps = Array.Empty<string>() }), out _, out var error));
         Check.Contains(error, "needs \"steps\"");
 
-        var many = Enumerable.Range(0, 60).Select(i => "step " + i).ToArray();
-        Check.True(PlanBody.TryParse(JsonSerializer.SerializeToElement(new { title = "T", steps = many }), out var capped, out _));
+        // over the limit is an error naming it (the model shortens the plan), never a silent cut; exactly the limit is fine
+        var many = Enumerable.Range(0, PlanBody.MaxSteps + 1).Select(i => "step " + i).ToArray();
+        Check.False(PlanBody.TryParse(JsonSerializer.SerializeToElement(new { title = "T", steps = many }), out _, out var tooMany));
+        Check.Contains(tooMany, $"at most {PlanBody.MaxSteps} steps");
+        var manyFiles = Enumerable.Range(0, PlanBody.MaxFiles + 1).Select(i => $"f{i}.cs").ToArray();
+        Check.False(PlanBody.TryParse(JsonSerializer.SerializeToElement(new { title = "T", steps = new[] { "x" }, files = manyFiles }), out _, out var tooManyFiles));
+        Check.Contains(tooManyFiles, $"at most {PlanBody.MaxFiles} files");
+        Check.True(PlanBody.TryParse(JsonSerializer.SerializeToElement(new { title = "T", steps = many.Take(PlanBody.MaxSteps), files = manyFiles.Take(PlanBody.MaxFiles) }), out var capped, out _));
         Check.Equal(PlanBody.MaxSteps, capped.Steps.Count);
         Check.True(capped.SameAs(PlanBody.FromJson(capped.ToJson())), "a plan survives its own JSON");
         return Task.CompletedTask;
@@ -314,6 +323,87 @@ public static class PlanTests
         Check.True(submit.IsError);
         Check.Contains(submit.Content, "not in plan mode");
         Check.Equal(0, Notices(h, s.Id).Count, "a chat that never was in plan mode is told nothing");
+    }
+
+    private static PlanService ServiceOf(TestHost h)
+    {
+        var tool = h.Tools.All.Single(x => x.Definition.Name == "plan_submit");
+        var field = tool.GetType().GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Single(f => f.FieldType == typeof(PlanService));
+        return (PlanService)field.GetValue(tool)!;
+    }
+
+    private static async Task SubmitAfterExit()
+    {
+        await using var h = await StartAsync();
+        var service = ServiceOf(h);
+        var gate = (SemaphoreSlim)typeof(PlanService).GetField("_gate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(service)!;
+        var s = h.NewSession();
+        await h.Rpc.InvokeAsync("plan.enter", new { sessionId = s.Id });
+        Check.True(PlanBody.TryParse(JsonSerializer.SerializeToElement(Plan()), out var body, out _));
+        var context = new ToolContext { SessionId = s.Id, AgentId = "a", CallId = "c~1", Cwd = h.Workspace, Services = h.Services, Events = h.Bus };
+
+        await gate.WaitAsync();
+        var submit = service.SubmitAsync(context, body, CancellationToken.None);   // passed its first check, waits for the gate
+        h.Sessions.UpdateSession(s.Id, x => x.Meta!.Remove("planMode"));            // /plan off while it waits
+        gate.Release();
+        var result = await submit;
+        Check.True(result.IsError);
+        Check.Contains(result.Content, "not in plan mode");
+        Check.Equal(null, ModeOf(h, s.Id), "plan mode stays off");
+    }
+
+    private static async Task EnterAnswerRace()
+    {
+        await using var h = await StartAsync();
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("ok") : Reply.Tool("plan_enter", new { reason = "x" });
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Bus.OfType("plan.enter.asked").Any(), "an offer waits");
+        var id = (string)FakeBus.Data(h.Bus.OfType("plan.enter.asked").Single())["id"]!;
+        // a declined answer and an accepting one at once: whichever loses must not leave the chat in plan mode
+        var a = h.Rpc.InvokeAsync("plan.enterAnswer", new { id, enter = false });
+        var b = h.Rpc.InvokeAsync("plan.enterAnswer", new { id, enter = true });
+        foreach (var t in new[] { a, b }) { try { await t; } catch (RpcException) { } }
+        await h.IdleAsync(s.Id);
+        var declinedWon = Result(h, s.Id, "plan_enter").Content.Contains("declined");
+        Check.Equal(declinedWon ? null : "planning", ModeOf(h, s.Id), "the mode follows the answer the run got");
+    }
+
+    private sealed class SameRepo : IWorkspaceRepoProbe
+    {
+        public string? CommonDirOf(string path) => "repo";
+        public Task<string?> CommonDirOfAsync(string path, CancellationToken ct) => Task.FromResult<string?>("repo");
+        public string? BranchOf(string path) => null;
+        public string? HeadOf(string path) => null;
+        public string? ProbeProblem(string path) => null;
+    }
+
+    private sealed class FakeResolver(string cwd, WorkspaceBinding binding) : IWorkspaceResolver
+    {
+        public WorkspaceBinding? Resolve(SessionInfo? session) => binding;
+        public WorkspaceBinding? ResolveById(string workspaceId) => binding;
+        public WorkspaceBinding Require(SessionInfo session) => binding;
+        public string CwdOf(SessionInfo session) => cwd;
+        public string IdentityOf(SessionInfo session) => binding.WorkspaceId;
+    }
+
+    private static async Task FileRefusedByWorkspace()
+    {
+        await using var h = await StartAsync();
+        var s = h.NewSession();
+        await h.Rpc.InvokeAsync("plan.enter", new { sessionId = s.Id });
+        var step = 0;
+        h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref step) == 1 ? Reply.Tool("plan_submit", Plan()) : Reply.Text("ok");
+        await h.SendAsync(s.Id, "go");
+        var planId = (string)(await ChangedAsync(h, s.Id, "awaiting", 1))["planId"]!;
+
+        // the chat works in h.Workspace but its (isolated) workspace is another checkout of the same repository
+        var other = Path.Combine(h.Workspace, "..", "other-checkout-" + Ids.Short(6));
+        h.Services.Register<IWorkspaceResolver>(new FakeResolver(h.Workspace, new WorkspaceBinding("wsp_x", Path.GetFullPath(other), Kind: "worktree")));
+        h.Services.Register<IWorkspaceRepoProbe>(new SameRepo());
+        var ex = await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("plan.answer", new { planId, decision = "file" }), "refused");
+        Check.Contains(ex.Message, "Refused");
+        Check.False(Directory.Exists(Path.Combine(h.Workspace, "docs", "plans")), "nothing was written");
     }
 
     private static async Task Revise()

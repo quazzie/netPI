@@ -8,6 +8,7 @@ namespace NetPI.Mcp;
 internal sealed class StdioTransport : IMcpTransport
 {
     private readonly Process _process;
+    private readonly ProcessJob _job = new(); // the server and what it spawns (npx, cmd): ended together
     private readonly CancellationTokenSource _stop = new();
     private readonly SemaphoreSlim _write = new(1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonObject>> _pending = new();
@@ -37,6 +38,7 @@ internal sealed class StdioTransport : IMcpTransport
             if (Environment.GetEnvironmentVariable(key) is { } value) info.Environment[key] = value;
         foreach (var (name, source) in config.Env) info.Environment[name] = config.Secret(source);
         _process = Process.Start(info) ?? throw new McpException("Could not start MCP server.");
+        _job.Assign(_process);
         _reader = ReadAsync();
         _stderr = DrainErrorsAsync(log);
     }
@@ -144,7 +146,9 @@ internal sealed class StdioTransport : IMcpTransport
             using var timeout = new CancellationTokenSource(1000);
             await _process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
         }
-        catch { try { if (!_process.HasExited) _process.Kill(entireProcessTree: true); } catch { } }
+        catch { }
+        _job.Kill(_process); // also what the server left behind after a graceful exit
+        _job.Dispose();
         try { await Task.WhenAll(_reader, _stderr).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
         _process.Dispose();
         _stop.Dispose();

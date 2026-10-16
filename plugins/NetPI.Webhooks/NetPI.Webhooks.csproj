@@ -2,4 +2,9 @@
   <ItemGroup>
     <InternalsVisibleTo Include="NetPI.Aux.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Shared SOURCE, not a shared assembly (docs/PLUGINS.md): job objects for child processes. -->
+    <Compile Include="$(RepoRoot)shared/ProcessKit/*.cs" LinkBase="ProcessKit" />
+    <Using Include="NetPI.ProcessKit" />
+  </ItemGroup>
 </Project>

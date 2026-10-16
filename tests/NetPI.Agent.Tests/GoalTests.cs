@@ -368,6 +368,8 @@ public static class GoalTests
         await h.SendAsync(s.Id, "Keep going until all tests pass, make that your goal.");
         await SettledAsync(h, s.Id, "complete");
         Check.Equal(2, h.Runtime.GetBySession(s.Id)!.Runs);
+        // the run that set the goal pays for it from then on: the calls after goal_set (3 of the 4) are metered too
+        Check.True(IntOf(h, s.Id, "tokensUsed") >= 3 * 110L, "the run that set the goal is charged for what it did after");
         var notices = GoalNotices(h, s.Id);
         Check.Equal(1, notices.Count); // the tool result told the model; only the continuation is a notice
         Check.Contains(notices[0].Text, "automatic continuation 1");
@@ -622,6 +624,28 @@ public static class GoalTests
         await h.Rpc.CallAsync("goal.set", new { sessionId = s2.Id, objective = "Do it again" });
         await SettledAsync(h, s2.Id, "complete");
         Check.Contains(GoalResults(h, s2.Id).Single().Content, "not reviewed: the reviewer is down");
+
+        // an empty or verdictless answer is not a PASS: the completion stands, and the note says it was not reviewed
+        foreach (var (answer, expected) in new[] { ("", "the reviewer gave no answer"), ("Looks fine to me.", "the reviewer's answer was neither PASS nor GAPS") })
+        {
+            var s3 = h.NewSession();
+            agentCalls = 0;
+            h.Catalog.Handler = (r, ct) =>
+            {
+                if (IsReview(r)) return Reply.Text(answer);
+                return Interlocked.Increment(ref agentCalls) switch
+                {
+                    1 => Reply.Tool("work"),
+                    2 => Reply.Tool("goal_update", new { status = "complete", summary = "Done." }),
+                    _ => Reply.Text("Done."),
+                };
+            };
+            await h.Rpc.CallAsync("goal.set", new { sessionId = s3.Id, objective = "Do it once more" });
+            await SettledAsync(h, s3.Id, "complete");
+            var content = GoalResults(h, s3.Id).Single().Content;
+            Check.Contains(content, "not reviewed: " + expected);
+            Check.False(content.Contains("passed it"), "an unclear answer is not a pass");
+        }
     }
 
     private static async Task ContinueWhileSubagentsWork()

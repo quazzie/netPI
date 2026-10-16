@@ -284,7 +284,7 @@ internal static class Agent
     private static string Timed(Func<string> f)
     {
         var t = Task.Run(f);
-        return t.Wait(3000) ? t.Result : "pattern call still running (a modal dialog?)";
+        return t.Wait(3000) ? t.GetAwaiter().GetResult() : "pattern call still running (a modal dialog?)"; // GetResult: a failure surfaces as itself, not an AggregateException
     }
 
     private static bool Try<T>(AutomationElement e, AutomationPattern p, out T pat) where T : class
@@ -460,7 +460,7 @@ internal sealed record TopWin(IntPtr Hwnd, int Pid, string Title, string Cls)
     public JsonObject ToJson()
     {
         string process = "";
-        try { process = Process.GetProcessById(Pid).ProcessName; } catch (Exception) { }
+        try { using var p = Process.GetProcessById(Pid); process = p.ProcessName; } catch (Exception) { }
         return new() { ["hwnd"] = (long)Hwnd, ["pid"] = Pid, ["title"] = Title, ["cls"] = Cls, ["process"] = process };
     }
 }

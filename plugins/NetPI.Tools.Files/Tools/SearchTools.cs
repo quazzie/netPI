@@ -12,7 +12,7 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
         Category = "files",
         ReadOnly = true,
         SummaryArg = "pattern",
-        Description = "Search file contents with a regular expression (.NET syntax); respects .gitignore.",
+        Description = "Search file contents with a regular expression (.NET syntax); respects .gitignore and .git/info/exclude; nested repositories and worktrees are skipped.",
         Help =
             "Skips binary files and node_modules/bin/obj/.git/dist/build. Escape ( ) [ ] . * + ? to match them, or pass " +
             "literal=true for plain text. glob filters files (\"*.cs\", \"**/*.{ts,tsx}\", \"!**/*.test.ts\"; several separated by " +
@@ -124,7 +124,7 @@ public sealed class FindTool(ISettings? settings = null) : FileToolBase(settings
         Category = "files",
         ReadOnly = true,
         SummaryArg = "pattern",
-        Description = "Find files and directories by glob pattern, e.g. \"**/*.cs\"; respects .gitignore.",
+        Description = "Find files and directories by glob pattern, e.g. \"**/*.cs\"; respects .gitignore and .git/info/exclude; nested repositories and worktrees are skipped.",
         Help =
             "Globs: `*`, `**`, `?`, `{a,b}`, `[abc]`, e.g. \"src/**/test_*.py\", \"*.{json,yaml}\". A pattern without '/' matches " +
             "file names at any depth; the pattern is relative to path. Directories are shown with a trailing '/'.",
@@ -198,7 +198,7 @@ public sealed class LsTool(ISettings? settings = null) : FileToolBase(settings)
         ReadOnly = true,
         SummaryArg = "path",
         Description = "List a directory: subdirectories, then files with sizes.",
-        Help = "Subdirectories first (with a trailing '/'), then files with their sizes. Entries ignored by .gitignore and build/dependency folders (.git, node_modules, bin…) are hidden unless all=true.",
+        Help = "Subdirectories first (with a trailing '/'), then files with their sizes. Entries ignored by .gitignore and .git/info/exclude, build/dependency folders (.git, node_modules, bin…) and nested repositories and worktrees are hidden unless all=true.",
         Parameters = ToolSchema.Object(
             ("path", ToolSchema.Str("Default: working directory"), false),
             ("all", ToolSchema.Bool("Also ignored entries"), false)),

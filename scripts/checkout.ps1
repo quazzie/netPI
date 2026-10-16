@@ -13,14 +13,20 @@ function Write-StaleCheckoutWarning([string] $RepoRoot) {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return }   # no git: nothing to check
     if (-not $RepoRoot) { $RepoRoot = (Get-Location).Path }
 
-    $git = { param([string[]] $Args) & git -C $RepoRoot @Args 2>$null }
+    # No param block: the automatic $Args carries every argument (a declared [string[]] $Args swallows the first one,
+    # which made every rev-parse below come back empty and the check a no-op).
+    $git = { & git -C $RepoRoot $Args 2>$null }
     try {
-        # A linked worktree's git dir is <main>/.git/worktrees/<name>; the main checkout's is the .git itself.
+        # A linked worktree's git dir is <main>/.git/worktrees/<name>; the main checkout's is the .git itself, whose
+        # parent is the toplevel. git prints forward slashes, so normalize (and compare case-insensitively) before testing.
         $gitDir = (& $git rev-parse --absolute-git-dir)
         $top = (& $git rev-parse --show-toplevel)
         if (-not $gitDir -or -not $top) { return }                      # not a repository
-        if ((Split-Path -Parent $gitDir) -ne (Split-Path -Parent $top)) { return }   # a worktree: staging is how you commit
-        if (-not (& $git diff --cached --quiet)) {
+        $gitDirParent = (Split-Path -Parent $gitDir) -replace '\\', '/'
+        if ($gitDirParent -ine ($top -replace '\\', '/')) { return }    # a worktree: staging is how you commit
+        # --quiet prints nothing: the staged-changes test is the exit code (0 = the index is HEAD, 1 = something is staged).
+        & $git diff --cached --quiet
+        if ($LASTEXITCODE -ne 0) {
             $staged = @(& $git diff --cached --name-only).Count
             Write-Host ''
             Write-Host "This checkout's index is not HEAD: $staged file(s) are staged here." -ForegroundColor Yellow

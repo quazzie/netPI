@@ -442,15 +442,16 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         }
 
         // the caps: the runtime keeps them on the child's session (the model-call count of a run, the Agents ledger's spend per call)
-        var limits = new JsonObject();
+        double? maxUsd = null;
+        int? maxTurns = null;
         if (itemArgs.TryGet(out var usdEl, "maxUsd", "max_usd"))
         {
-            if (usdEl.ValueKind == JsonValueKind.Number && usdEl.TryGetDouble(out var usd) && usd > 0) limits["maxUsd"] = usd;
+            if (usdEl.ValueKind == JsonValueKind.Number && usdEl.TryGetDouble(out var usd) && usd > 0) maxUsd = usd;
             else if (usdEl.ValueKind != JsonValueKind.Null) return (null, "maxUsd is a number above 0 (the most the subagent may spend, in USD).");
         }
         if (itemArgs.TryGet(out var turnsEl, "maxTurns", "max_turns"))
         {
-            if (turnsEl.ValueKind == JsonValueKind.Number && turnsEl.TryGetInt32(out var turns) && turns > 0) limits["maxTurns"] = turns;
+            if (turnsEl.ValueKind == JsonValueKind.Number && turnsEl.TryGetInt32(out var turns) && turns > 0) maxTurns = turns;
             else if (turnsEl.ValueKind != JsonValueKind.Null) return (null, "maxTurns is a whole number above 0 (the most model calls per run).");
         }
 
@@ -464,9 +465,10 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             Instructions = itemArgs.Str("instructions", "systemPrompt"),
             ParentAgentId = context.AgentId,
             Priority = priority,
+            MaxUsd = maxUsd,
+            MaxTurns = maxTurns,
         };
         if (workspace is not null || isolated) spawn.Features.Set(new SpawnWorkspace(workspace, isolated));
-        if (limits.Count > 0) spawn.Features.Set(limits);
         return (spawn, null);
     }
 
@@ -693,17 +695,19 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
 
         const double seconds = 3600;   // an hour; the user's message, or a report, ends a wait sooner
         var first = root.Bool("all") != true;
-        var started = Stopwatch.GetTimestamp();
-        var results = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct, first).ConfigureAwait(false);
+        var wait = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct, first).ConfigureAwait(false);
+        var results = wait.Agents;
 
         var sb = new StringBuilder();
         var running = results.Count(a => IsBusy(a.Status));
-        // why it returned (IAgentRuntime.WaitAsync does not say, so it is read from what it left): a report, else the user's message
-        // still queued for this chat, else the hour passing
-        var reason = results.Count - running > 0 ? "report"
-            : runtime.GetQueue(context.SessionId).Any(q => q.Source == "user") ? "user"
-            : Stopwatch.GetElapsedTime(started).TotalSeconds >= seconds - 1 ? "timeout"
-            : "interrupted";
+        // why it returned: the runtime says
+        var reason = wait.End switch
+        {
+            AgentWaitEnd.Report => "report",
+            AgentWaitEnd.UserMessage => "user",
+            AgentWaitEnd.Timeout => "timeout",
+            _ => "cancelled",
+        };
         sb.Append(running == 0
             ? $"{results.Count} agent{(results.Count == 1 ? "" : "s")} finished."
             : $"{results.Count - running} of {results.Count} agents finished; {running} still running ({reason switch
@@ -711,7 +715,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
                 "report" => first ? "you asked for the first report; the rest are still working" : "the wait ended before every one finished",
                 "user" => "the wait ended because the user wrote a message; the agents keep working, wait again for them",
                 "timeout" => "the wait timed out; the agents keep working, wait again for them",
-                _ => "the wait ended without a report; the agents keep working, wait again for them",
+                _ => "the wait was cancelled; the agents keep working, wait again for them",
             }}).");
         var arr = new JsonArray();
         foreach (var a in results)
@@ -859,7 +863,7 @@ internal sealed class AgentCancelTool(IPluginContext plugin) : AgentToolBase(plu
         var ok = await runtime.AbortAsync(a.Id).ConfigureAwait(false);
         // Consume the result: the caller asked for the cancellation, so it needs no agent-result notice about it.
         var final = await runtime.WaitAsync(context.AgentId, [a.Id], yieldSlot: false, TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
-        var now = final.FirstOrDefault() ?? runtime.Get(a.Id) ?? a;
+        var now = final.Agents.FirstOrDefault() ?? runtime.Get(a.Id) ?? a;
         return ok
             ? ToolResult.Ok($"Cancelled {now.Name} ({now.Id}); status {Status(now.Status)}.", Details(now))
             : ToolResult.Error($"{now.Name} ({now.Id}) could not be cancelled (status {Status(now.Status)}).", Details(now));

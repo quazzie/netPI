@@ -422,13 +422,15 @@ internal sealed class SessionService : ISessionStore
         // generation before the bump and must not fill after it, and one that fills in between the commit and the drop
         // is removed by the drop itself.
         if (!_repo.UpdateMessage(message)) throw new KeyNotFoundException($"Message {message.Id} not found");
-        DropContext(message.SessionId);
+        // The session id (and seq) are filled from the store BEFORE the drop, so the drop names the session that was
+        // written: a message handed in without a SessionId would otherwise drop the empty id, not the real one.
         if (string.IsNullOrEmpty(message.SessionId) || message.Seq == 0)
         {
             var stored = _repo.GetMessage(message.Id)!;
             message.SessionId = stored.SessionId;
             message.Seq = stored.Seq;
         }
+        DropContext(message.SessionId);
         PublishMessage(EventTypes.MessageUpdated, message);
     }
 
@@ -625,7 +627,17 @@ internal sealed class SessionService : ISessionStore
 
     private static IReadOnlyList<string>? ParseObjectArray(string json)
     {
-        try { return JsonNode.Parse(json) is JsonArray a ? a.Select(n => n?.GetValue<string>()).Where(s => !string.IsNullOrEmpty(s)).Select(s => s!).ToList() : null; }
+        try
+        {
+            // Only string elements are keys: a number or object element is not a key name, and GetValue<string> would
+            // throw (an uncaught InvalidOperationException) on it.
+            return JsonNode.Parse(json) is JsonArray a
+                ? a.Select(n => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null)
+                    .Where(s => !string.IsNullOrEmpty(s))
+                    .Select(s => s!)
+                    .ToList()
+                : null;
+        }
         catch (JsonException) { return null; }
     }
 

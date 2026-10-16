@@ -69,15 +69,26 @@ internal sealed unsafe class Database : IDisposable
             throw ex;
         }
         _db = db;
-        Sqlite3.sqlite3_busy_timeout(_db, 5000);
-        ExecScript("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY;");
-        // Reads: a cold context read was a row lookup per message of the session (16.8 ms on 12k rows); a memory map and a
-        // page cache that fits a database that outgrows the 2 MB default take it to ~4 ms. The WAL file on disk is capped.
-        ExecScript("PRAGMA mmap_size=1073741824; PRAGMA cache_size=-65536; PRAGMA journal_size_limit=67108864;");
-        // The built-in auto-checkpoint ran inline with the committing statement (50-350 ms of it under the gate), so it is
-        // off: the idle timer truncates the WAL when the database is quiet, and the one at close flushes what is left.
-        ExecScript("PRAGMA wal_autocheckpoint=0;");
-        _checkpointTimer = new Timer(IdleCheckpoint, null, CheckpointIntervalMs, CheckpointIntervalMs);
+        try
+        {
+            Sqlite3.sqlite3_busy_timeout(_db, 5000);
+            ExecScript("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY;");
+            // Reads: a cold context read was a row lookup per message of the session (16.8 ms on 12k rows); a memory map and a
+            // page cache that fits a database that outgrows the 2 MB default take it to ~4 ms. The WAL file on disk is capped.
+            ExecScript("PRAGMA mmap_size=1073741824; PRAGMA cache_size=-65536; PRAGMA journal_size_limit=67108864;");
+            // The built-in auto-checkpoint ran inline with the committing statement (50-350 ms of it under the gate), so it is
+            // off: the idle timer truncates the WAL when the database is quiet, and the one at close flushes what is left.
+            ExecScript("PRAGMA wal_autocheckpoint=0;");
+            _checkpointTimer = new Timer(IdleCheckpoint, null, CheckpointIntervalMs, CheckpointIntervalMs);
+        }
+        catch
+        {
+            // A PRAGMA that fails after the open (a read-only file, a locked WAL) must not leak the native connection:
+            // the object is gone with the exception, so the handle goes with it.
+            Sqlite3.sqlite3_close_v2(_db);
+            _db = IntPtr.Zero;
+            throw;
+        }
         _log?.LogDebug("SQLite {Version} ({Lib}) opened {File}", Sqlite3.Version, Sqlite3.LoadedFrom, filePath);
     }
 

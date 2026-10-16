@@ -34,7 +34,9 @@
     if (pre && pre.scrollHeight - pre.scrollTop - pre.clientHeight < 60) pre.scrollTop = pre.scrollHeight;
   }
 
+  let fetching = false; // the 2s poll skips a tick while the last read is still out
   async function fetchTail() {
+    fetching = true;
     try {
       const text = await ctx.rpc('processes.output', { id: proc.id, tail: 300 });
       output = String(text ?? '').slice(-MAX);
@@ -42,6 +44,8 @@
       if (pre) pre.scrollTop = pre.scrollHeight;
     } catch (e) {
       output = `(${e.message})`;
+    } finally {
+      fetching = false;
     }
   }
 
@@ -64,7 +68,7 @@
       append(d.chunk ?? '');
     });
     poll = setInterval(() => {
-      if (proc.status === 'running' && Date.now() - lastEvent > 3000) fetchTail();
+      if (proc.status === 'running' && !fetching && Date.now() - lastEvent > 3000) fetchTail();
     }, 2000);
   }
 

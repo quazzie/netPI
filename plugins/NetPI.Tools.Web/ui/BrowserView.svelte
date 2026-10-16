@@ -21,6 +21,7 @@
   let img = $state();
   let stage = $state();
   let retry = 0;
+  let retryTimer = 0;
   let closed = false;
 
   export function setVisible(v) {
@@ -30,13 +31,15 @@
   }
 
   function connect() {
-    if (closed || !ctx.sessionId) return;
+    clearTimeout(retryTimer);
+    if (closed || !ctx.sessionId || ws) return; // one socket: a retry timer and setVisible can both ask
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = new WebSocket(`${proto}://${location.host}/api/p/netpi.tools.web/view?session=${encodeURIComponent(ctx.sessionId)}`);
     ws = socket;
     socket.onopen = () => {
       connected = true;
       error = '';
+      retry = 0;
     };
     socket.onmessage = (e) => {
       let m;
@@ -60,7 +63,8 @@
       connected = false;
       if (closed || !visible) return;
       // the plugin reloaded, or the server restarted: come back
-      setTimeout(connect, Math.min(5000, 300 * ++retry));
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(connect, Math.min(5000, 300 * ++retry));
     };
   }
 
@@ -80,6 +84,7 @@
   loadExtension();
   onDestroy(() => {
     closed = true;
+    clearTimeout(retryTimer);
     ws?.close();
   });
 

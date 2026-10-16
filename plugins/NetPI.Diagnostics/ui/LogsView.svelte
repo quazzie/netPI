@@ -30,9 +30,21 @@
   useRefresh(ctx, { load, pollMs: 3000, visible: () => visible });
 
   const min = $derived({ all: 0, info: 2, warn: 3, error: 4 }[level]);
+  // A row's identity (every poll hands back new objects, so an expanded stack trace was closing as soon as it opened).
+  // An entry has no id: identical lines of the same second share time|category|message, so a repeat gets its occurrence
+  // number (counted oldest first, which a new entry at the end leaves alone).
+  const keyed = $derived.by(() => {
+    const seen = new Map();
+    return (logs ?? []).map((l) => {
+      const base = `${l.time}|${l.category}|${l.message}`;
+      const n = (seen.get(base) ?? 0) + 1;
+      seen.set(base, n);
+      return { l, k: `${base}|${n}` };
+    });
+  });
   const shown = $derived(
-    (logs ?? [])
-      .filter((l) => (RANK[norm(l.level)] ?? 2) >= min && (!q || `${l.category} ${l.message}`.toLowerCase().includes(q.toLowerCase())))
+    keyed
+      .filter(({ l }) => (RANK[norm(l.level)] ?? 2) >= min && (!q || `${l.category} ${l.message}`.toLowerCase().includes(q.toLowerCase())))
       .slice(-400)
       .reverse(),
   );
@@ -49,8 +61,6 @@
     const d = new Date(t);
     return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-GB');
   };
-  /** A row's identity: every poll hands back new objects, so an expanded stack trace was closing as soon as it opened. */
-  const key = (l) => `${l.time}|${l.category}|${l.message}`;
 </script>
 
 <div class="bar">
@@ -73,10 +83,10 @@
   <Empty icon="alert">logs.recent unavailable: {error}</Empty>
 {:else}
   <div class="list">
-    {#each shown as l (key(l))}
+    {#each shown as { l, k } (k)}
       {@const lv = norm(l.level)}
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-      <div class="log" data-l={lv} class:open={open === key(l)} onclick={() => (open = open === key(l) ? null : key(l))}>
+      <div class="log" data-l={lv} class:open={open === k} onclick={() => (open = open === k ? null : k)}>
         <div class="row np-line">
           <span class="t np-mono">{time(l.time)}</span>
           <span class="lvl np-mono">{lv}</span>
@@ -84,7 +94,7 @@
           {#if l.exception}<span class="x" title="Has an exception (click to show)">exception</span>{/if}
         </div>
         <div class="msg">{l.message}</div>
-        {#if l.exception && open === key(l)}<pre class="exc np-mono">{l.exception}</pre>{/if}
+        {#if l.exception && open === k}<pre class="exc np-mono">{l.exception}</pre>{/if}
       </div>
     {:else}
       <Empty>No log entries{q || level !== 'all' ? ' match the filter' : ''}</Empty>

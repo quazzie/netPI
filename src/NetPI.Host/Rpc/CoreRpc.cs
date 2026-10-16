@@ -167,7 +167,18 @@ internal static class CoreRpc
             if (from.Kind == "subagent") throw new RpcException("bad_request", "A subagent's chat can't be forked: fork the chat that started it.");
             var last = a.K.Sessions.GetMessages(id, null, 1).LastOrDefault()?.Seq ?? 0;
             var upTo = Math.Clamp(req.Int64("upToSeq") ?? last, 0, last);
-            var context = SessionFork.ContextTokens(a.K.Sessions.GetMessages(id, upTo + 1, 50));
+            // The last model call before the fork point: page back from it (50 at a time, at most 10 pages), so a long
+            // tool tail or a compacted middle cannot leave the fork without its context size.
+            var context = 0L;
+            var before = upTo + 1;
+            for (var page = 0; page < 10; page++)
+            {
+                var tail = a.K.Sessions.GetMessages(id, before, 50);
+                if (tail.Count == 0) break;
+                var withUsage = tail.LastOrDefault(m => m.Role == MessageRole.Assistant && m.Usage is not null);
+                if (withUsage is not null) { context = withUsage.Usage!.ContextTokens; break; }
+                before = tail[0].Seq;
+            }
             var taken = a.K.Sessions.ListSessions(new SessionQuery { Search = SessionFork.BaseTitle(from.Title), IncludeArchived = true, Limit = 1000 })
                 .Select(s => s.Title).ToHashSet(StringComparer.Ordinal);
             return a.K.Sessions.ForkSession(id, upTo, SessionFork.Template(from, upTo, context, a.K.Sessions.ForkResetKeys(), taken));

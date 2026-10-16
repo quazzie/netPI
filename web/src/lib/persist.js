@@ -34,7 +34,7 @@ export function persist(key, value, delay = 600) {
     key,
     setTimeout(() => {
       timers.delete(key);
-      rpc('ui.state.set', { key, value }, { timeout: 10_000 }).catch(() => {});
+      rpc('ui.state.set', { key, value }, { timeout: 10_000 }).catch((e) => console.warn(`ui.state.set ${key} failed`, e));
     }, delay),
   );
 }
