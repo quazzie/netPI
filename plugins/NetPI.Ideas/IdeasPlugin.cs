@@ -295,9 +295,11 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeaSna
     {
         ct.ThrowIfCancellationRequested();
         var id = req.Required("id");
-        // The idea's images belong to it: deleting the idea takes the files with it, so nothing is left behind.
-        if (_repo.Find(id) is { } found) IdeaImages.DeleteAll(_home, found.Doc);
-        if (!_repo.Delete(id)) throw new RpcException("not_found", $"Idea {req.Str("id")} not found");
+        var found = _repo.Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
+        // The idea's images belong to it: deleting the idea takes the files with it, so nothing is left behind —
+        // and only once the idea itself is gone, so a delete that does not land leaves its images with it.
+        if (!_repo.Delete(id)) throw new RpcException("not_found", $"Idea {id} not found");
+        IdeaImages.DeleteAll(_home, found.Doc);
         return Task.FromResult<object?>(true);
     });
 
