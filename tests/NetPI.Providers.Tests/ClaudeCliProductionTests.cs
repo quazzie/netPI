@@ -315,8 +315,8 @@ internal static class ClaudeCliProductionTests
                 using var child = Process.Start(new ProcessStartInfo("cmd.exe", "/c ping -n 30 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false })!;
                 try
                 {
-                    claudecli::NetPI.Providers.ClaudeCli.ChildJob.Assign(child);
-                    t.Check(claudecli::NetPI.Providers.ClaudeCli.ChildJob.Contains(child), "a child is in the job that dies with NetPI");
+                    claudecli::NetPI.ProcessKit.ChildJob.Assign(child);
+                    t.Check(claudecli::NetPI.ProcessKit.ChildJob.Contains(child), "a child is in the job that dies with NetPI");
                 }
                 finally { try { child.Kill(true); } catch { /* done */ } }
             }

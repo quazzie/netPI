@@ -23,6 +23,18 @@ public static class WebhookHooksTests
         return int.Parse(a[1]);
     }
 
+    /// <summary>The <c>--hook-orphan PIDFILE</c> mode: start a sleeping child that inherits stdout, write its pid to PIDFILE, exit 0 at once.</summary>
+    public static void Orphan(string pidFile)
+    {
+        var child = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, ArgumentList = { typeof(WebhookHooksTests).Assembly.Location, "--hook-sleep" } })!;
+        File.WriteAllText(pidFile, child.Id.ToString());
+    }
+
+    internal static bool Alive(int pid)
+    {
+        try { using var p = System.Diagnostics.Process.GetProcessById(pid); return !p.HasExited; } catch (ArgumentException) { return false; }
+    }
+
     /// <summary>The Before command the tests use: <c>--adapt:key+title+text+crit+skipok</c> answers like a Checkmk adapter would for the alert on standard input.</summary>
     private static string Adapter(string stdin, string spec)
     {
@@ -241,6 +253,20 @@ public static class WebhookHooksTests
             await env.Post(S(hang["id"])!, S(hang["token"])!, Alert("Hang"));
             Check.True(watch.Elapsed < TimeSpan.FromSeconds(10), "a hanging program is stopped at its timeout: " + watch.Elapsed);
             Check.True(HookLines(await env.History(S(hang["id"])!)).Any(x => x!.Contains("did not finish within 1 s")), "and says so");
+        });
+
+        r.Add("hooks: a hook that exits 0 while a child holds its stdout is recorded, not hung, and the child is killed", async () =>
+        {
+            var (env, sink) = await Setup();
+            var pidFile = Path.Combine(T.TempDir("hook-orphan"), "pid");
+            var added = await env.Add(extra: new { name = "orphan", pre = new { command = Environment.ProcessPath!, args = new[] { typeof(WebhookHooksTests).Assembly.Location, "--hook-orphan", pidFile }, timeoutSeconds = 30 } });
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            await env.Post(S(added["id"])!, S(added["token"])!, Alert("Orphan"));
+            Check.True(watch.Elapsed < TimeSpan.FromSeconds(15), "the post is answered after the short drain, not at the 30 s timeout: " + watch.Elapsed);
+            Check.True(HookLines(await env.History(S(added["id"])!)).Any(x => x!.Contains("Before command") && x.Contains("exited 0")), "a history row says the hook exited 0");
+            var pid = int.Parse(File.ReadAllText(pidFile));
+            for (var i = 0; i < 50 && Alive(pid); i++) await Task.Delay(100);
+            Check.True(!Alive(pid), "the child that held the pipe was killed");
         });
 
         r.Add("hooks: arguments are literal (no templates, no shell), and testHook runs a hook on a sample context", async () =>

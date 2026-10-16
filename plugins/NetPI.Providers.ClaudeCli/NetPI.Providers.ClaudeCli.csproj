@@ -2,8 +2,10 @@
   <ItemGroup>
     <!-- The provider kit is shared SOURCE, not a shared assembly (docs/PLUGINS.md). -->
     <Compile Include="$(RepoRoot)shared/ProviderKit/*.cs" LinkBase="Kit" />
+    <Compile Include="$(RepoRoot)shared/ProcessKit/*.cs" LinkBase="ProcessKit" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="NetPI.Providers.Kit" />
+    <Using Include="NetPI.ProcessKit" />
   </ItemGroup>
 </Project>

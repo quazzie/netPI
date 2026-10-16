@@ -4,6 +4,7 @@ using NetPI.Aux.Tests;
 if (args.FirstOrDefault() == "--mcp-fixture") return await McpFixture.RunAsync(args.Skip(1).ToArray());
 if (args.FirstOrDefault() == "--hook-echo") return WebhookHooksTests.Echo(args.Skip(1).ToArray());   // a command hook's test program: records its arguments and stdin
 if (args.FirstOrDefault() == "--hook-sleep") { Thread.Sleep(60_000); return 0; }
+if (args.FirstOrDefault() == "--hook-orphan") { WebhookHooksTests.Orphan(args[1]); return 0; }   // exits 0 and leaves a child holding stdout
 var runner = new TestRunner { Name = "Aux" };
 McpTests.Register(runner);
 McpResourceTests.Register(runner);
