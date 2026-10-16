@@ -381,6 +381,26 @@ internal static class ClaudeCliTests
             return Task.CompletedTask;
         });
 
+        await t.Run("claude-cli usage: a window named exactly 'seven_day_' is left out, not a crash", () =>
+        {
+            var info = new JsonObject
+            {
+                ["status"] = "allowed",
+                ["unifiedWindows"] = new JsonObject
+                {
+                    ["five_hour"] = new JsonObject { ["utilization"] = 0.25, ["resetsAt"] = 1 },
+                    ["seven_day_"] = new JsonObject { ["utilization"] = 0.5 },
+                    ["seven_day_opus"] = new JsonObject { ["utilization"] = 0.75, ["resetsAt"] = 2 },
+                },
+            };
+            var snap = CL.ClaudeUsageTracker.Normalize(info);
+            t.Check(snap is not null, "a reading");
+            var limits = snap!["limits"]!.AsArray();
+            t.Eq("session,weekly_opus", string.Join(",", limits.Select(l => l!["key"]!.GetValue<string>())), "the exact 'seven_day_' window is left out");
+            t.Eq("Week (Opus)", limits.Single(l => l!["key"]!.GetValue<string>() == "weekly_opus")!["label"]!.GetValue<string>(), "a scoped window's label");
+            return Task.CompletedTask;
+        });
+
         await t.Run("claude-cli: live call through the installed CLI (set NETPI_CLAUDE_CLI_LIVE=1; uses the subscription)", async () =>
         {
             if (Environment.GetEnvironmentVariable("NETPI_CLAUDE_CLI_LIVE") != "1") t.Skip("NETPI_CLAUDE_CLI_LIVE is not 1");
