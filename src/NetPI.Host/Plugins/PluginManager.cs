@@ -973,10 +973,11 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         return dir;
     }
 
-    /// <summary>The start time of this process (in <see cref="DateTime"/> ticks): the owner mark of its shadow copies.</summary>
+    /// <summary>The start time of this process (UTC <see cref="DateTime"/> ticks, so a DST or time-zone change between two
+    /// hosts does not move it): the owner mark of its shadow copies. 0 when it cannot be read (then the pid alone counts).</summary>
     private static long OwnerStartTicks()
     {
-        try { return Process.GetCurrentProcess().StartTime.Ticks; }
+        try { return Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks; }
         catch { return 0; }
     }
 
@@ -1007,8 +1008,8 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                     // {pid}_{startTicks}_{n}: a pid the OS reused is a different process (a different start time), so the
                     // copy of the dead owner goes with it. Our own pid is never cleaned.
                     var parts = leaf.Split('_');
-                    var owner = parts.Length >= 3 && long.TryParse(parts[0], out var pid) && long.TryParse(parts[1], out var start)
-                        && (pid == Environment.ProcessId || IsProcessAlive((int)pid, start));
+                    var owner = parts.Length >= 3 && int.TryParse(parts[0], out var pid) && long.TryParse(parts[1], out var start)
+                        && (pid == Environment.ProcessId || IsProcessAlive(pid, start));
                     if (owner) continue;
                     PathUtil.TryDeleteDirectory(loadDir);
                 }
@@ -1026,16 +1027,22 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     }
 
     /// <summary>Whether <paramref name="pid"/> is the process the shadow was copied for: alive AND started at the recorded time.
-    /// A reused pid (alive, but a different start time) is not the owner, so its dead predecessor's copy is cleaned.</summary>
+    /// A reused pid (alive, but a different start time) is not the owner, so its dead predecessor's copy is cleaned. No
+    /// recorded time (0), or a start time this process may not read: alive is enough - a live copy is never deleted on a guess.</summary>
     private static bool IsProcessAlive(int pid, long startTicks)
     {
-        try
+        Process p;
+        try { p = Process.GetProcessById(pid); }
+        catch { return false; } // not running
+        using (p)
         {
-            using var p = Process.GetProcessById(pid);
-            if (p.HasExited) return false;
-            return p.StartTime.Ticks == startTicks;
+            try
+            {
+                if (p.HasExited) return false;
+                return startTicks == 0 || p.StartTime.ToUniversalTime().Ticks == startTicks;
+            }
+            catch { return true; }
         }
-        catch { return false; }
     }
 
     private static string SafeName(string name)
