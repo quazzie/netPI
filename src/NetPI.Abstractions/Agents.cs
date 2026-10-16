@@ -93,7 +93,27 @@ public sealed class SpawnRequest
     /// Never above its parent's, nor above high: a subagent does not take slots from other runs.
     /// </summary>
     public int? Priority { get; init; }
+    /// <summary>The most the subagent may spend, in USD (its own model calls, reservations included). Null: no cap.</summary>
+    public double? MaxUsd { get; init; }
+    /// <summary>The most model calls one run of the subagent may make. Null: the run limit of the setup.</summary>
+    public int? MaxTurns { get; init; }
 }
+
+/// <summary>Why <see cref="IAgentRuntime.WaitAsync"/> returned.</summary>
+public enum AgentWaitEnd
+{
+    /// <summary>The awaited agents finished their runs (the first of them with <c>any</c>), or none had a run to wait for.</summary>
+    Report,
+    /// <summary>The caller was steered: its user wrote a message.</summary>
+    UserMessage,
+    /// <summary>The timeout passed first.</summary>
+    Timeout,
+    /// <summary>The caller's token was cancelled. The wait then throws <see cref="OperationCanceledException"/> instead of returning.</summary>
+    Cancelled,
+}
+
+/// <summary>The agents' state when <see cref="IAgentRuntime.WaitAsync"/> returned, and why it did.</summary>
+public sealed record AgentWaitResult(IReadOnlyList<AgentInfo> Agents, AgentWaitEnd End);
 
 public sealed class QueuedInput
 {
@@ -120,9 +140,9 @@ public interface IAgentRuntime
     /// Wait for agents to finish their current run. When <paramref name="yieldSlot"/> is true and the caller
     /// holds a slot, the slot is released while waiting and re-acquired (with priority) afterwards. With
     /// <paramref name="any"/> the wait ends as soon as the first of the agents finishes (the others keep running),
-    /// instead of when all have.
+    /// instead of when all have. The result says why it returned.
     /// </summary>
-    Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,
+    Task<AgentWaitResult> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,
         TimeSpan? timeout = null, CancellationToken ct = default, bool any = false);
 
     /// <summary>The calls that wait for the user (<see cref="UserWait"/>), oldest first: of one chat, of one kind, or all.</summary>

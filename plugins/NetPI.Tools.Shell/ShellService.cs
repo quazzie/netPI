@@ -240,7 +240,11 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
     {
         if (timeout is { } secs)
         {
-            _ = Task.Delay(TimeSpan.FromSeconds(secs)).ContinueWith(_ => mp.Kill("timeout"), TaskScheduler.Default);
+            // a timer that is dropped when the process completes: a Task.Delay would pin the process (and its output buffer) for the whole timeout
+            var timer = new CancellationTokenSource(TimeSpan.FromSeconds(secs));
+            timer.Token.Register(() => mp.Kill("timeout"));
+            // a descendant that outlived the shell still gets killed at the timeout, so the timer stays then
+            _ = mp.Completion.ContinueWith(_ => { if (!mp.TreeMayBeAlive) timer.Dispose(); }, TaskScheduler.Default);
         }
         try { await Task.WhenAny(mp.Completion, Task.Delay(BackgroundStartupWait, ct)).ConfigureAwait(false); }
         catch (OperationCanceledException) { }

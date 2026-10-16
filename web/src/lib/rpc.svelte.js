@@ -87,22 +87,28 @@ export function connect() {
     }
     handle(msg);
   };
-  sock.onclose = (e) => {
-    if (ws !== sock) return;
-    ws = null;
-    stopPing();
-    // Calls already on the wire are lost with the socket. The host's reason is worth passing on: it is what a
-    // message over the limit gets us ("message too big: 2 MB per message").
-    for (const [id, p] of pending) {
-      if (!p.sent) continue;
-      pending.delete(id);
-      clearTimeout(p.timer);
-      const why = e?.reason ? `Connection lost: ${e.reason}` : 'Connection lost';
-      p.reject(new RpcError('disconnected', why, p.m));
-    }
-    scheduleReconnect();
-  };
+  sock.onclose = (e) => detach(sock, e?.reason);
   sock.onerror = () => {};
+}
+
+/**
+ * Drop `sock` as the live connection at once (also from a dead-connection check, before the browser has finished
+ * closing it) and schedule a reconnect. Its later onclose finds `ws !== sock` and does nothing.
+ */
+function detach(sock, reason) {
+  if (ws !== sock) return;
+  ws = null;
+  stopPing();
+  // Calls already on the wire are lost with the socket. The host's reason is worth passing on: it is what a
+  // message over the limit gets us ("message too big: 2 MB per message").
+  for (const [id, p] of pending) {
+    if (!p.sent) continue;
+    pending.delete(id);
+    clearTimeout(p.timer);
+    const why = reason ? `Connection lost: ${reason}` : 'Connection lost';
+    p.reject(new RpcError('disconnected', why, p.m));
+  }
+  scheduleReconnect();
 }
 
 function handle(msg) {
@@ -152,9 +158,11 @@ function startPing() {
   pingTimer = setInterval(() => {
     if (!ws || ws.readyState !== 1) return;
     if (Date.now() - lastRx > 45_000) {
-      // dead connection: force a reconnect
+      // dead connection: detach now (a close on a dead TCP can take minutes), then close the old socket
+      const dead = ws;
+      detach(dead);
       try {
-        ws.close();
+        dead.close();
       } catch {}
       return;
     }

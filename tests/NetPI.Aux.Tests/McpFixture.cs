@@ -32,6 +32,12 @@ internal static class McpFixture
                "meta":{"type":"object","properties":{"item":{"type":"string"}}},
                "script":{"type":"string"}}}
             """)! };
+        // "spawn": the server starts a child of its own (the way npx/cmd do) and writes its pid to the file named by the argument.
+        if (mode == "spawn")
+        {
+            var child = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("dotnet") { UseShellExecute = false, CreateNoWindow = true, ArgumentList = { typeof(McpFixture).Assembly.Location, "--hook-sleep" } })!;
+            File.WriteAllText(counter!, child.Id.ToString());
+        }
         while (await Console.In.ReadLineAsync() is { } line)
         {
             var request = JsonNode.Parse(line)!.AsObject();

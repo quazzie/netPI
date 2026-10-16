@@ -27,16 +27,37 @@ public static class FileTests
         });
 
         // ------------------------------------------------ codec
-        r.Add("codec: EOL detection (majority, tie, none)", () =>
+        r.Add("codec: EOL detection (majority, tie, none, CR-only)", () =>
         {
             Check.Equal<EolStyle?>(EolStyle.CrLf, TextCodec.DetectEol("a\r\nb\r\nc\n"));
             Check.Equal<EolStyle?>(EolStyle.Lf, TextCodec.DetectEol("a\nb\nc\r\n"));
             Check.Equal<EolStyle?>(EolStyle.Lf, TextCodec.DetectEol("a\r\nb\n"), "tie → LF");
+            Check.Equal<EolStyle?>(EolStyle.Cr, TextCodec.DetectEol("a\rb\rc\r"), "a CR-only file is CR");
+            Check.Equal<EolStyle?>(EolStyle.Lf, TextCodec.DetectEol("a\rb\n"), "CR vs LF tie → LF");
             Check.Equal<EolStyle?>(null, TextCodec.DetectEol("no breaks"));
             var s = TextCodec.CountEol("a\r\nb\nc\rd");
             Check.Equal(1, s.CrLf); Check.Equal(1, s.Lf); Check.Equal(1, s.Cr); Check.True(s.Mixed);
             Check.Equal("a\nb\nc\nd", TextCodec.NormalizeToLf("a\r\nb\nc\rd"));
             Check.Equal("a\r\nb\r\n", TextCodec.ToEol("a\nb\r\n", EolStyle.CrLf));
+            Check.Equal("a\rb", TextCodec.ToEol("a\nb", EolStyle.Cr));
+            Check.Equal("cr", TextCodec.EolName(EolStyle.Cr));
+            Check.Equal<EolStyle?>(EolStyle.Cr, TextCodec.ParseEol("cr"));
+        });
+
+        r.Add("codec: DetectEolSample reads the BOM and the style from a bounded sample", () =>
+        {
+            var dir = T.TempDir("sample");
+            var cr = T.WriteText(dir, "cr.txt", "a\rb\rc\r", bom: true);
+            Check.Equal((EolStyle.Cr, true), TextCodec.DetectEolSample(cr, 16), "the BOM and the CR style");
+            Check.Equal(((EolStyle?)null, true), TextCodec.DetectEolSample(cr, 4), "a 4-byte sample sees the BOM but no line break");
+            var crlf = T.WriteText(dir, "crlf.txt", "a\r\nb\r\nc\r\n");
+            Check.Equal((EolStyle.CrLf, false), TextCodec.DetectEolSample(crlf, 4));
+            var lf = T.WriteText(dir, "lf.txt", "a\nb\nc\n");
+            Check.Equal((EolStyle.Lf, false), TextCodec.DetectEolSample(lf, 4));
+            // a sample that ends on the \r of a CRLF the cut left behind does not count it as a CR break
+            var cut = T.WriteBytes(dir, "cut.txt", [0x61, 0x0D, 0x0A, 0x62, 0x0D, 0x78, 0x78]);
+            Check.Equal((EolStyle.CrLf, false), TextCodec.DetectEolSample(cut, 5));
+            Check.Equal(((EolStyle?)null, false), TextCodec.DetectEolSample(T.WriteBytes(dir, "empty.txt", []), 4));
         });
 
         r.Add("codec: BOM, UTF-16, Latin-1 round trip, binary sniffing", () =>
@@ -93,6 +114,19 @@ public static class FileTests
             ToolCheck.Ok(res);
             Check.Equal("a\r\nb\r\nC\r\nD\r\n", T.ReadRaw(f));
             Check.Contains(res.Content, "mixed line endings");
+        });
+
+        r.Add("edit: a CR-only file keeps its CR line breaks", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "cr.txt", "a\rb\rc\r");
+            var res = await T.Run(Edit, dir, new { path = "cr.txt", oldText = "b\rc", newText = "B\nC" });
+            ToolCheck.Ok(res);
+            Check.Equal("a\rB\rC\r", T.ReadRaw(f), "the untouched lines stay CR");
+            Check.Equal("cr", T.D(res).Str("eol"));
+            // and the write tool keeps them too
+            ToolCheck.Ok(await T.Run(Write, dir, new { path = "cr.txt", content = "x\ny\n" }));
+            Check.Equal("x\ry\r", T.ReadRaw(f));
         });
 
         r.Add("edit: UTF-8 BOM is preserved", async () =>
@@ -439,6 +473,58 @@ public static class FileTests
             ToolCheck.Error(await T.Run(Write, dir, new { path = "x.txt" }), "content");
             ToolCheck.Error(await T.Run(Write, dir, new { content = "x" }), "path");
             ToolCheck.Error(await T.Run(Write, dir, new { path = ".", content = "x" }), "directory");
+        });
+
+        r.Add("write: a file over the edit cap keeps its line endings and BOM (detected from a sample)", async () =>
+        {
+            var dir = T.TempDir("bigwrite");
+            var f = Path.Combine(dir, "big.txt");
+            // over MaxEditableBytes, CRLF with a UTF-8 BOM
+            using (var fs = File.Create(f))
+            {
+                fs.Write([0xEF, 0xBB, 0xBF]);
+                var chunk = Encoding.UTF8.GetBytes(new string('x', 1023) + "\r\n"); // 1025 bytes
+                for (var i = 0; i < 66049; i++) fs.Write(chunk, 0, chunk.Length); // ~67 MB
+            }
+            Check.True(new FileInfo(f).Length > FileToolBase.MaxEditableBytes, "the file is really over the cap");
+            var res = await T.Run(Write, dir, new { path = "big.txt", content = "a\r\nb\r\n" });
+            ToolCheck.Ok(res);
+            var head = new byte[8];
+            using (var fs = File.OpenRead(f)) fs.ReadExactly(head, 0, head.Length);
+            Check.Equal("EF-BB-BF-61-0D-0A-62-0D", BitConverter.ToString(head), "the BOM and the CRLF style were kept");
+            Check.Contains(res.Content, "too large to diff");
+            Check.Contains(res.Content, "CRLF line endings and BOM were kept");
+            var d = T.D(res);
+            Check.Equal("crlf", d.Str("eol"));
+            Check.True(d.Bool("bom"));
+
+            // a CR-style file over the cap keeps its CR breaks too
+            var f2 = Path.Combine(dir, "bigcr.txt");
+            using (var fs = File.Create(f2))
+            {
+                var crChunk = Encoding.UTF8.GetBytes(new string('y', 1023) + "\r");
+                for (var i = 0; i < 66049; i++) fs.Write(crChunk, 0, crChunk.Length);
+            }
+            var res2 = await T.Run(Write, dir, new { path = "bigcr.txt", content = "p\rq\n" });
+            ToolCheck.Ok(res2);
+            var head2 = new byte[4];
+            using (var fs = File.OpenRead(f2)) fs.ReadExactly(head2, 0, head2.Length);
+            Check.Equal("70-0D-71-0D", BitConverter.ToString(head2), "the CR style was kept");
+            Check.Contains(res2.Content, "CR line endings");
+        });
+
+        r.Add("write: overwriting a binary file says so and uses the default line endings", async () =>
+        {
+            var dir = T.TempDir("binwrite");
+            var f = T.WriteBytes(dir, "img.bin", [1, 2, 3, 0, 4, 5, 6]); // a NUL byte: binary
+            var res = await T.Run(Write, dir, new { path = "img.bin", content = "a\nb\n" });
+            ToolCheck.Ok(res);
+            Check.Contains(res.Content, "previous content was binary");
+            Check.Contains(res.Content, "default LF line endings");
+            Check.Equal("a\nb\n", T.ReadRaw(f), "the text is there, in the default style");
+            var d = T.D(res);
+            Check.Equal("lf", d.Str("eol"));
+            Check.False(d.Bool("bom"));
         });
 
         // ------------------------------------------------ read
@@ -898,6 +984,104 @@ public static class FileTests
             finally { FileIndex.MaxListedEntries = old; }
         });
 
+        r.Add("walker: a capped listing is the first N by name, and a zero cap lists nothing", () =>
+        {
+            var dir = T.TempDir("cap");
+            // mixed-case names: the filesystem's enumeration order is not the name order
+            foreach (var n in new[] { "Zebra.txt", "apple.txt", "Mmm.txt", "banana.txt", "Cherry.txt" })
+                File.WriteAllText(Path.Combine(dir, n), "x\n");
+
+            var zero = FileWalker.ListDirectory(dir, maxEntries: 0);
+            Check.Equal(0, zero.Entries.Count, "a zero cap lists nothing");
+            Check.Equal(5, zero.Visible, "the totals are the directory's, not the cap's");
+
+            var (entries, visible, ignored) = FileWalker.ListDirectory(dir, maxEntries: 2);
+            Check.Equal(2, entries.Count);
+            Check.Equal("apple.txt,banana.txt", string.Join(",", entries.Select(e => e.Name)),
+                "the cap keeps the first N by name, not in enumeration order");
+            Check.Equal(5, visible);
+            Check.Equal(0, ignored);
+        });
+
+        r.Add("ignore: nested repositories (a .git file, a .git directory) are skipped; info/exclude is honoured", () =>
+        {
+            var dir = T.TempDir("nestedrepo");
+            Directory.CreateDirectory(Path.Combine(dir, ".git"));
+            T.WriteText(dir, ".git/config", "[core]\n");
+            T.WriteText(dir, ".git/info/exclude", "secret.txt\n");
+            T.WriteText(dir, "main.cs", "TODO main\n");
+            T.WriteText(dir, "secret.txt", "TODO secret\n");
+            // a linked worktree: a .git FILE pointing at a git dir whose commondir points at the main .git
+            var wt = Path.Combine(dir, "wt");
+            Directory.CreateDirectory(Path.Combine(wt, "src"));
+            File.WriteAllText(Path.Combine(wt, ".git"), "gitdir: ../.git/worktrees/wt\n");
+            Directory.CreateDirectory(Path.Combine(dir, ".git", "worktrees", "wt"));
+            File.WriteAllText(Path.Combine(dir, ".git", "worktrees", "wt", "commondir"), "..\n");
+            T.WriteText(dir, "wt/src/stale.cs", "TODO stale\n");
+            // a sub-clone: a .git DIRECTORY of its own
+            Directory.CreateDirectory(Path.Combine(dir, "sub", ".git"));
+            T.WriteText(dir, "sub/stale.cs", "TODO stale\n");
+
+            var files = FileWalker.Walk(dir, new WalkOptions { IncludeDirs = false }).Select(e => e.RelPath).ToList();
+            var joined = string.Join(",", files);
+            Check.True(files.Contains("main.cs"), joined);
+            Check.False(files.Any(f => f.StartsWith("wt/") || f.StartsWith("sub/")), "nested repositories are skipped: " + joined);
+            Check.False(files.Contains("secret.txt"), "an info/exclude rule hides it: " + joined);
+
+            // a walk rooted inside a nested repository searches it normally
+            var inWt = FileWalker.Walk(wt, new WalkOptions { IncludeDirs = false }).Select(e => e.RelPath).ToList();
+            Check.True(inWt.Contains("src/stale.cs"), "rooted inside the worktree: " + string.Join(",", inWt));
+            var inSub = FileWalker.Walk(Path.Combine(dir, "sub"), new WalkOptions { IncludeDirs = false }).Select(e => e.RelPath).ToList();
+            Check.True(inSub.Contains("stale.cs"), "rooted inside the sub-clone: " + string.Join(",", inSub));
+
+            // the worktree's exclude file is the main repository's (commondir), so its rules apply there too
+            var wtExcluded = FileWalker.Walk(wt, new WalkOptions { IncludeDirs = false }).Select(e => e.RelPath).ToList();
+            Check.True(wtExcluded.All(f => f != "secret.txt"), "the common info/exclude reaches the worktree");
+        });
+
+        r.Add("grep/find/ls: nested repositories and worktrees are skipped, info/exclude hides paths", async () =>
+        {
+            var dir = T.TempDir("nestedrepo-tools");
+            Directory.CreateDirectory(Path.Combine(dir, ".git"));
+            T.WriteText(dir, ".git/info/exclude", "scratch.log\n");
+            T.WriteText(dir, "main.cs", "TODO main\n");
+            T.WriteText(dir, "scratch.log", "TODO scratch\n");
+            var wt = Path.Combine(dir, ".claude", "worktrees", "x");
+            Directory.CreateDirectory(Path.Combine(wt, "src"));
+            File.WriteAllText(Path.Combine(wt, ".git"), "gitdir: ../../../.git/worktrees/x\n");
+            Directory.CreateDirectory(Path.Combine(dir, ".git", "worktrees", "x"));
+            File.WriteAllText(Path.Combine(dir, ".git", "worktrees", "x", "commondir"), "..\n");
+            T.WriteText(dir, ".claude/worktrees/x/src/stale.cs", "TODO stale\n");
+            Directory.CreateDirectory(Path.Combine(dir, "sub", ".git"));
+            T.WriteText(dir, "sub/stale.cs", "TODO stale\n");
+
+            // grep: the stale copies in the nested repositories never come back (no doubled hits)
+            var grep = new GrepTool();
+            var res = await T.Run(grep, dir, new { pattern = "TODO" });
+            ToolCheck.Ok(res);
+            Check.Contains(res.Content, "main.cs:1: TODO main");
+            Check.NotContains(res.Content, "stale", "the nested repositories are skipped");
+            Check.NotContains(res.Content, "scratch.log", "the info/exclude rule hides the file");
+
+            // find: same
+            var find = new FindTool();
+            var f = await T.Run(find, dir, new { pattern = "**/*.cs" });
+            ToolCheck.Ok(f);
+            Check.Equal("main.cs", f.Content);
+
+            // ls: the nested repositories are hidden counted entries (.claude/ itself is an ordinary directory and stays
+            // visible), all=true shows them
+            var ls = new LsTool();
+            var l = await T.Run(ls, dir, new { });
+            ToolCheck.Ok(l);
+            Check.Contains(l.Content, ".claude/", "an ordinary directory is not hidden by its hidden contents");
+            Check.NotContains(l.Content, "sub/");
+            var dl = T.D(l);
+            Check.True(dl.Int("hidden") >= 3, $"the nested repositories are counted hidden: hidden={dl.Int("hidden")}");
+            var lall = await T.Run(ls, dir, new { all = true });
+            Check.Contains(lall.Content, "sub/");
+        });
+
         // ------------------------------------------------ RPC
         r.Add("rpc: files.search fuzzy ranking and files.list", async () =>
         {
@@ -1311,6 +1495,26 @@ public static class FileTests
             ToolCheck.Error(await T.Run(git, dir, new { action = "blame", path = "adir" }), "is a directory");
             ToolCheck.Error(await T.Run(git, dir, new { action = "blame", path = "x.txt", start = 5 }), "given together");
             ToolCheck.Error(await T.Run(git, dir, new { action = "blame", path = "x.txt", start = 10, end = 5 }), "is before start");
+        });
+
+        r.Add("git: a helper that holds the pipe after git exited does not turn the result into a timeout", async () =>
+        {
+            if (!OperatingSystem.IsWindows()) return; // the fake git is a batch file
+            var fake = T.TempDir("githelper");
+            var exe = Path.Combine(fake, "git.cmd");
+            File.WriteAllText(exe, "@echo off\r\nstart /b ping -n 5 127.0.0.1 > nul\r\necho from-git\r\nexit /b 0\r\n");
+            var (oldExe, oldTimeout, oldGrace) = (GitRunner.Executable, GitRunner.Timeout, GitRunner.DrainGrace);
+            try
+            {
+                GitRunner.Executable = exe; GitRunner.Timeout = TimeSpan.FromSeconds(3); GitRunner.DrainGrace = TimeSpan.FromMilliseconds(300);
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var res = await GitRunner.RunAsync(fake, CancellationToken.None, 0, "status");
+                Check.True(!res.TimedOut && !res.Aborted, "git exited 0: not a timeout");
+                Check.Equal(0, res.ExitCode);
+                Check.Contains(res.Stdout, "from-git");
+                Check.True(watch.Elapsed < TimeSpan.FromSeconds(2.6), "answered after the grace, not at the deadline: " + watch.Elapsed);
+            }
+            finally { (GitRunner.Executable, GitRunner.Timeout, GitRunner.DrainGrace) = (oldExe, oldTimeout, oldGrace); }
         });
 
         r.Add("git: an answer over the tool result limit is cut, with the note that says what to narrow", async () =>

@@ -208,6 +208,8 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
         public TextPart? Text;
         public ThinkingPart? Thinking;
         public ToolCallPart? Call;
+        /// <summary>The call was started from an args delta, before the item's <c>call_id</c> was known.</summary>
+        public bool CallWithoutId;
         public int? SummaryIndex;
         public bool Done;
         /// <summary>Message text as received (think tags included), for catching up from "done" events.</summary>
@@ -356,14 +358,22 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
             case "response.function_call_arguments.delta":
             {
                 var it = Resolve(e, "function_call");
-                it.Call ??= asm.StartToolCall(null, "");
+                if (it.Call is null)
+                {
+                    it.Call = asm.StartToolCall(null, "");
+                    it.CallWithoutId = true;
+                }
                 asm.AppendToolArgs(it.Call, e.Str("delta"));
                 break;
             }
             case "response.function_call_arguments.done":
             {
                 var it = Resolve(e, "function_call");
-                it.Call ??= asm.StartToolCall(null, e.Str("name") ?? "");
+                if (it.Call is null)
+                {
+                    it.Call = asm.StartToolCall(null, e.Str("name") ?? "");
+                    it.CallWithoutId = true;
+                }
                 asm.CatchUp(it.Call, e.Str("arguments"));
                 break;
             }
@@ -486,8 +496,19 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
             }
             case "function_call":
             {
-                it.Call ??= asm.StartToolCall(item.Str("call_id") ?? item.Str("id"), item.Str("name") ?? "");
-                if (string.IsNullOrEmpty(it.Call.Name) && item.Str("name") is { } name) it.Call.Name = name;
+                var callId = item.Str("call_id");
+                if (it.Call is null)
+                {
+                    it.Call = asm.StartToolCall(callId ?? item.Str("id"), item.Str("name") ?? "");
+                }
+                else
+                {
+                    // Started from an args delta, before the item's call_id was known: take it here, or the
+                    // function_call_output that follows the call (and the next turn's replay) references an id
+                    // the part does not have.
+                    if (it.CallWithoutId && callId is { Length: > 0 }) it.Call.Id = callId;
+                    if (string.IsNullOrEmpty(it.Call.Name) && item.Str("name") is { } name) it.Call.Name = name;
+                }
                 asm.CatchUp(it.Call, item.Str("arguments"));
                 break;
             }
@@ -517,7 +538,9 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
                     var id = item.Str("id");
                     var known = (id is not null && _byId.TryGetValue(id, out var k) && k.Done)
                                 || (_byIndex.TryGetValue(idx, out var k2) && k2.Done && (id is null || k2.Id == id));
-                    if (!known && !(_items.Count > 0 && id is null)) ItemDone(item, idx);
+                    // "Already seen" is decided by the output index (or the id): an id-less item the server never
+                    // streamed is not a re-announcement of an earlier one, and dropping it loses the call.
+                    if (!known) ItemDone(item, idx);
                 }
             }
             if (response.Prop("usage").IsObj()) asm.SetUsage(OpenAiCommon.ResponsesUsage(response.Prop("usage")));

@@ -1177,12 +1177,9 @@ internal sealed class AgentRuntime : IAgentRuntime
         var plan = await _planner.PlanAsync(request, parentInfo, parentSession, id, name, ct).ConfigureAwait(false);
         var meta = plan.Meta;
         meta[RunPriority.MetaKey] = ChildPriority(request.Priority, parentSession);
-        // the caps the spawner gave it (agent_spawn maxUsd / maxTurns, passed as a JsonObject feature): kept on the child's session
-        if (request.Features.Get<JsonObject>() is { } limits)
-        {
-            if (limits[SpawnLimits.MaxUsd] is JsonValue u && u.TryGetValue<double>(out var usd) && usd > 0) meta[SpawnLimits.MaxUsd] = usd;
-            if (limits[SpawnLimits.MaxTurns] is JsonValue m && m.TryGetValue<int>(out var turns) && turns > 0) meta[SpawnLimits.MaxTurns] = turns;
-        }
+        // the caps the spawner gave it (agent_spawn maxUsd / maxTurns): kept on the child's session
+        if (request.MaxUsd is > 0 and var usd) meta[SpawnLimits.MaxUsd] = usd;
+        if (request.MaxTurns is > 0 and var turns) meta[SpawnLimits.MaxTurns] = turns;
         var session = Ctx.Sessions.CreateSession(new SessionInfo
         {
             Title = name,
@@ -1248,7 +1245,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         return Snapshot(state);
     }
 
-    public async Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,
+    public async Task<AgentWaitResult> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,
         TimeSpan? timeout = null, CancellationToken ct = default, bool any = false)
     {
         var caller = FindState(callerAgentId);
@@ -1279,10 +1276,11 @@ internal sealed class AgentRuntime : IAgentRuntime
             }
         }
 
+        var end = AgentWaitEnd.Report;
         try
         {
             // waiting for the first: a target that has finished already is that first one, there is nothing to wait for
-            if (tasks.Count > 0 && !(any && alreadyDone)) await WaitCoreAsync(caller, tasks, yieldSlot, timeout, ct, any: any).ConfigureAwait(false);
+            if (tasks.Count > 0 && !(any && alreadyDone)) end = await WaitCoreAsync(caller, tasks, yieldSlot, timeout, ct, any: any).ConfigureAwait(false);
         }
         finally
         {
@@ -1319,14 +1317,14 @@ internal sealed class AgentRuntime : IAgentRuntime
             }
             results.Add(snap);
         }
-        return results;
+        return new AgentWaitResult(results, end);
     }
 
     /// <summary>
     /// Waits for <paramref name="tasks"/> (agents' runs) with the caller's slot given back (when it holds one), until they
     /// end, the timeout passes or the user steers the caller. (Waiting for the user is not this: <see cref="UserWait"/>.)
     /// </summary>
-    private async Task WaitCoreAsync(AgentState? caller, List<Task> tasks, bool yieldSlot, TimeSpan? timeout, CancellationToken ct,
+    private async Task<AgentWaitEnd> WaitCoreAsync(AgentState? caller, List<Task> tasks, bool yieldSlot, TimeSpan? timeout, CancellationToken ct,
         bool any = false)
     {
         RunState? run = null;
@@ -1370,13 +1368,15 @@ internal sealed class AgentRuntime : IAgentRuntime
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, steer);
         if (timeout is { } to && to > TimeSpan.Zero && to < TimeSpan.FromDays(1)) linked.CancelAfter(to);
+        var end = AgentWaitEnd.Report;
         try
         {
             await (any ? Task.WhenAny(tasks) : Task.WhenAll(tasks)).WaitAsync(linked.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            // timeout, or the user steered the caller: return the current state
+            // the user steered the caller, or the timeout passed: return the current state
+            end = steer.IsCancellationRequested ? AgentWaitEnd.UserMessage : AgentWaitEnd.Timeout;
         }
         finally
         {
@@ -1402,6 +1402,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                     SetActivity(caller, null);
             }
         }
+        return end;
     }
 
     public async Task<bool> MessageAsync(string fromAgentId, string toAgentId, string text, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default)

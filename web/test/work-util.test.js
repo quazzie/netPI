@@ -90,3 +90,9 @@ test('agentDot maps a failed agent to the error dot', () => {
   assert.equal(agentDot('cancelled'), 'cancelled');
   assert.equal(agentDot('running'), 'running');
 });
+
+test('ACTIVE: the Work tab\'s copy of the host\'s busy run statuses', async () => {
+  const { BUSY } = await import('../src/lib/runStatus.js');
+  const { ACTIVE } = await import('../../plugins/NetPI.Work/ui/util.js');
+  assert.deepEqual([...ACTIVE].sort(), [...BUSY].sort());
+});

@@ -4,4 +4,9 @@
     <!-- The NetPI Chrome extension: copied to <home>/browser/chrome-extension at start, with its config.json -->
     <Content Include="extension/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Shared SOURCE, not a shared assembly (docs/PLUGINS.md): job objects for child processes. -->
+    <Compile Include="$(RepoRoot)shared/ProcessKit/*.cs" LinkBase="ProcessKit" />
+    <Using Include="NetPI.ProcessKit" />
+  </ItemGroup>
 </Project>

@@ -222,6 +222,20 @@ public static class McpTests
             await Check.ThrowsAsync<OperationCanceledException>(()=>c.CallAsync("weather",T.Args(new {city="slow"}),schema,cancel.Token));
             Check.Contains((await c.CallAsync("weather",T.Args(new {city="after"}),schema,timeout.Token)).ToJsonString(),"after");
         });
+        r.Add("mcp: stdio dispose kills the server's own children too", async () => {
+            var pidFile=Path.Combine(T.TempDir("mcp-spawn"),"pid");
+            var config=new ServerConfig {Id="fixture",Command="dotnet",Args=[typeof(McpTests).Assembly.Location,"--mcp-fixture","spawn",pidFile],Cwd=Path.GetTempPath(),ConnectTimeoutMs=5000,CallTimeoutMs=2000};
+            int pid;
+            await using(var c=new McpConnection(config,100000,_=>{}))
+            {
+                using var timeout=new CancellationTokenSource(10000);
+                await c.InitializeAsync(timeout.Token);
+                pid=int.Parse(File.ReadAllText(pidFile));
+                Check.True(WebhookHooksTests.Alive(pid),"the server's child runs");
+            }
+            for(var i=0;i<50&&WebhookHooksTests.Alive(pid);i++) await Task.Delay(100);
+            Check.True(!WebhookHooksTests.Alive(pid),"the child ended with the server");
+        });
         r.Add("mcp: a server's ping is answered with an empty result, not a method-not-found error", async () => {
             await using var c=new McpConnection(Config("ping"),100000,_=>{});
             using var timeout=new CancellationTokenSource(10000);

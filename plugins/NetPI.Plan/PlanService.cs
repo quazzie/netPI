@@ -130,14 +130,16 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
         var runtime = context.Services.Get<IAgentRuntime>();
         if (runtime?.Get(context.AgentId)?.IsSubagent == true)
             return ToolResult.Error("Only the main agent submits a plan: put what you found in your report instead.");
-        var session = ctx.Sessions.GetSession(context.SessionId);
-        if (!PlanMode.Active(session))
-            return ToolResult.Error("This chat is not in plan mode, so there is no plan to submit. The user starts one with /plan; you can offer it with plan_enter.");
+        const string NotInPlanMode = "This chat is not in plan mode, so there is no plan to submit. The user starts one with /plan; you can offer it with plan_enter.";
+        if (!PlanMode.Active(ctx.Sessions.GetSession(context.SessionId))) return ToolResult.Error(NotInPlanMode);
 
         JsonObject doc;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            // read again inside the gate: /plan off or a cancel may have left plan mode since the check above, and must not be undone
+            var session = ctx.Sessions.GetSession(context.SessionId);
+            if (!PlanMode.Active(session)) return ToolResult.Error(NotInPlanMode);
             doc = PlanMode.PlanId(session) is { } id && store.Get(id) is { } open && open["status"]?.GetValue<string>() is PlanStore.Awaiting or PlanStore.Revising
                 ? open
                 : store.Create(session!);
@@ -233,14 +235,22 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
     {
         var w = Runtime?.Waits(kind: EnterKind).FirstOrDefault(x => x.Id == requestId && !x.Answered)
                 ?? throw new RpcException("not_found", "No plan-mode offer waits with that id (it was answered, or its chat moved on).");
-        // plan mode is on before the run goes on, so its next tool call is already checked
-        if (enter) Enter(w.SessionId);
         var reason = (string?)w.Data?["reason"];
         var result = enter
             ? ToolResult.Ok(OnText, EnterDetails(reason, "entered"))
             : ToolResult.Ok("The user declined plan mode: go ahead without a plan (or ask what they prefer).", EnterDetails(reason, "declined"));
-        if (!await Runtime!.ResolveAsync(w.Id, WaitResolution.Answer(result), ct).ConfigureAwait(false))
+        // plan mode is on before the run goes on, so its next tool call is already checked; but only once the answer is taken:
+        // an offer that was answered meanwhile must not leave the chat in plan mode
+        var wasActive = PlanMode.Active(ctx.Sessions.GetSession(w.SessionId));
+        if (enter) Enter(w.SessionId);
+        bool resolved;
+        try { resolved = await Runtime!.ResolveAsync(w.Id, WaitResolution.Answer(result), ct).ConfigureAwait(false); }
+        catch { if (enter && !wasActive) await ExitAsync(w.SessionId).ConfigureAwait(false); throw; }
+        if (!resolved)
+        {
+            if (enter && !wasActive) await ExitAsync(w.SessionId).ConfigureAwait(false);
             throw new RpcException("not_found", "The offer was already answered.");
+        }
         EnterClosed(w.Id, w.SessionId, w.CallId, enter ? "entered" : "declined");
         return true;
     }
@@ -287,7 +297,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                 case "file":
                     {
                         if (doc["plan"] is null) throw new RpcException("bad_request", "This plan has no content yet.");
-                        result["path"] = SaveFile(doc);
+                        result["path"] = await SaveFileAsync(doc, ct).ConfigureAwait(false);
                         store.Put(doc);
                         break;
                     }
@@ -439,7 +449,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
     }
 
     /// <summary>The plan as <c>docs/plans/&lt;date&gt;-&lt;slug&gt;.md</c> in the chat's workspace (written only when the user asks); the path, relative to it.</summary>
-    private string SaveFile(JsonObject doc)
+    private async Task<string> SaveFileAsync(JsonObject doc, CancellationToken ct)
     {
         var session = ctx.Sessions.GetSession(doc["sessionId"]!.GetValue<string>()) ?? throw new RpcException("not_found", "The plan's chat is gone.");
         string cwd;
@@ -448,11 +458,19 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
         var body = PlanStore.Body(doc);
         var slug = Slug(body.Title);
         var dir = Path.Combine(cwd, "docs", "plans");
-        Directory.CreateDirectory(dir);
         var date = DateTime.Now.ToString("yyyy-MM-dd");
         // saved before: the same file is written again (the plan may have been revised); otherwise a name that is free
         var path = doc["filePath"]?.GetValue<string>() is { Length: > 0 } saved ? Path.Combine(cwd, saved) : Path.Combine(dir, $"{date}-{slug}.md");
         for (var i = 2; doc["filePath"] is null && File.Exists(path); i++) path = Path.Combine(dir, $"{date}-{slug}-{i}.md");
+        // the workspace rule of every native write: an isolated workspace never writes into another checkout or where git cannot say
+        if (ctx.Services.Get<IWorkspaceResolver>()?.Resolve(session) is { Isolated: true } binding)
+        {
+            var probe = ctx.Services.Get<IWorkspaceRepoProbe>();
+            var verdict = await WorkspacePaths.CheckMutationAsync(binding, Path.GetFullPath(path), probe, ct).ConfigureAwait(false);
+            if (verdict is WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable)
+                throw new RpcException("bad_request", "The plan was not written. " + await WorkspacePaths.RefusalAsync(binding, Path.GetFullPath(path), probe, verdict, ct).ConfigureAwait(false));
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, $"# {body.Title}\n\n{body.Markdown()}", new UTF8Encoding(false));
         var relative = Path.GetRelativePath(cwd, path).Replace('\\', '/');
         doc["filePath"] = relative;

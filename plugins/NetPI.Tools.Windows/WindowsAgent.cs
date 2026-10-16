@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
@@ -98,7 +99,10 @@ internal sealed class WindowsAgent(IPluginContext ctx) : IAsyncDisposable
                     Kill();
                     throw new InvalidOperationException("the UI Automation helper exited");
                 }
-                if (JsonNode.Parse(line) is not JsonObject answer || answer["id"]?.GetValue<long>() != id) continue;
+                JsonNode? parsed;
+                try { parsed = JsonNode.Parse(line); }
+                catch (JsonException) { continue; } // a stray non-JSON line on stdout (a library's trace): not an answer, keep reading
+                if (parsed is not JsonObject answer || answer["id"]?.GetValue<long>() != id) continue;
                 if (answer["error"]?.GetValue<string>() is { } error) throw new InvalidOperationException(error);
                 return answer;
             }

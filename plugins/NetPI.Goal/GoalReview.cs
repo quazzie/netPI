@@ -115,12 +115,20 @@ internal static class GoalReview
         $"<goal>\n{goal.Objective}\n</goal>\n\n<agent-summary>\n{summary}\n</agent-summary>\n\n<evidence>\n{evidence}\n</evidence>\n\n" +
         "Is the goal complete? First line PASS or GAPS.";
 
-    /// <summary>The verdict: null for PASS (or an answer without a clear verdict), else the gaps.</summary>
-    public static string? Gaps(string answer)
+    /// <summary>What the reviewer said: an explicit PASS, GAPS (with what is missing), or nothing usable (empty, or no verdict on the first line).</summary>
+    public enum Verdict { Pass, Gaps, Unclear }
+
+    public static (Verdict Verdict, string? Gaps) Judge(string? answer)
     {
-        var text = answer.Trim();
+        var text = (answer ?? "").Trim();
         var first = text.Split('\n', 2)[0].Trim().TrimStart('*', '#', ' ').ToUpperInvariant();
-        if (!first.StartsWith("GAPS", StringComparison.Ordinal)) return null;
+        if (first.StartsWith("PASS", StringComparison.Ordinal)) return (Verdict.Pass, null);
+        if (!first.StartsWith("GAPS", StringComparison.Ordinal)) return (Verdict.Unclear, null);
+        return (Verdict.Gaps, Gaps(text));
+    }
+
+    private static string Gaps(string text)
+    {
         var rest = text.Contains('\n') ? text[(text.IndexOf('\n') + 1)..].Trim() : "";
         return rest.Length == 0 ? "The review found gaps but did not name them." : Cut(rest, 2000);
     }
@@ -178,8 +186,12 @@ internal sealed class GoalsReview(IPluginContext ctx, Goals goals)
             return (null, $"(not reviewed: {ex.Message})");
         }
 
-        var gaps = GoalReview.Gaps(answer);
-        if (gaps is null)
+        var (verdict, gaps) = GoalReview.Judge(answer);
+        if (verdict == GoalReview.Verdict.Unclear)
+            return (null, string.IsNullOrWhiteSpace(answer)
+                ? "(not reviewed: the reviewer gave no answer)"
+                : "(not reviewed: the reviewer's answer was neither PASS nor GAPS)");
+        if (verdict == GoalReview.Verdict.Pass)
         {
             goals.Update(tc.SessionId, g => { if (g is not null && g.Id == goal.Id) g.Refusals = 0; return g; });
             return (null, "An independent review of the evidence passed it.");

@@ -9,7 +9,7 @@
   import Toasts from './components/Toasts.svelte';
   import Modals from './components/modals/Modals.svelte';
   import { app, startApp, activate, closeTab, cycleTab, newSession, abortAgent, isBusy, goneSessions, hasRpc, workspaceOf } from './lib/state/app.svelte.js';
-  import { getChat } from './lib/state/chat.svelte.js';
+  import { peekChat } from './lib/state/chat.svelte.js';
   import { modals, togglePanel, applyTheme, openIdeaDialog } from './lib/state/ui.svelte.js';
   import { registerCoreTab } from './lib/state/tabs.svelte.js';
   import { notifyAppChange } from './lib/pluginCtx.js';
@@ -23,9 +23,11 @@
   // rollback map). The goneSessions check is a plain, non-reactive read, so it is the only one the teardown
   // cannot answer stale: materializing a store for the gone session would leave a zombie in the LRU (evicting
   // a real tab), and a tab that is gone is never rendered, so nothing is lost by not materializing it.
+  // Activation (activate / showChat in app.svelte.js) creates the store; this only looks it up, so a derived never creates
+  // stores or reorders the LRU.
   const chat = $derived.by(() => {
     const id = app.activeId;
-    return id && !goneSessions.has(id) && app.openTabs.includes(id) ? getChat(id) : null;
+    return id && !goneSessions.has(id) && app.openTabs.includes(id) ? (peekChat(id) ?? null) : null;
   });
 
   // Plugin ctx.app.onChange(): fire when the active session, its project or its workspace changed — and only then. The

@@ -226,13 +226,25 @@ internal sealed class SqliteCollection : IDataCollection
     private void Backfill(List<string> fields)
     {
         var shape = _shape;
-        foreach (var (key, text) in _db.Query($"SELECT k, doc FROM {_table}", null, r => (r.GetString("k"), r.GetString("doc"))))
+        var sets = string.Join(", ", fields.Select((f, i) => $"f_{f} = @v{i}"));
+        const int Page = 500;
+        var after = "";
+        while (true)
         {
-            var doc = JsonNode.Parse(text) as JsonObject ?? [];
-            var sets = string.Join(", ", fields.Select((f, i) => $"f_{f} = @v{i}"));
-            var args = new Dictionary<string, object?> { ["k"] = key };
-            for (var i = 0; i < fields.Count; i++) args["v" + i.ToString(CultureInfo.InvariantCulture)] = FieldValue(shape, fields[i], doc);
-            _db.Execute($"UPDATE {_table} SET {sets} WHERE k = @k", args);
+            // Key-ordered pages: a new index field back-fills the whole collection, and it must not pull every document
+            // into memory at once (or hold the gate for the length of it). A short page is the last.
+            var page = _db.Query($"SELECT k, doc FROM {_table} WHERE k > @after ORDER BY k LIMIT @limit",
+                new { after, limit = Page }, r => (Key: r.GetString("k"), Doc: r.GetString("doc")));
+            if (page.Count == 0) break;
+            foreach (var (key, doc) in page)
+            {
+                var parsed = JsonNode.Parse(doc) as JsonObject ?? [];
+                var args = new Dictionary<string, object?> { ["k"] = key };
+                for (var i = 0; i < fields.Count; i++) args["v" + i.ToString(CultureInfo.InvariantCulture)] = FieldValue(shape, fields[i], parsed);
+                _db.Execute($"UPDATE {_table} SET {sets} WHERE k = @k", args);
+            }
+            after = page[^1].Key;
+            if (page.Count < Page) break;
         }
     }
 

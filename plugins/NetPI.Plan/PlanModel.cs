@@ -94,16 +94,16 @@ internal sealed record PlanBody(
             var text = e.ValueKind == JsonValueKind.String ? Clip(e.GetString(), 400) : Clip(new ToolArgs(e).Str("text", "step", "title", "task", "name"), 400);
             if (text is null) continue;
             var detail = e.ValueKind == JsonValueKind.Object ? Clip(new ToolArgs(e).Str("detail", "details", "description", "notes"), 1200) : null;
+            if (steps.Count == MaxSteps) { error = $"A plan has at most {MaxSteps} steps and this one has more: merge or drop steps (put the detail in \"detail\") and submit again."; return false; }
             steps.Add(new PlanStep(text, detail));
-            if (steps.Count == MaxSteps) break;
         }
         var files = new List<PlanFile>();
         foreach (var e in a.List("files", "paths") ?? [])
         {
             var path = e.ValueKind == JsonValueKind.String ? Clip(e.GetString(), 300) : Clip(new ToolArgs(e).Str("path", "file", "name"), 300);
             if (path is null) continue;
+            if (files.Count == MaxFiles) { error = $"A plan lists at most {MaxFiles} files and this one has more: group them (a folder or pattern) and submit again."; return false; }
             files.Add(new PlanFile(path, e.ValueKind == JsonValueKind.Object ? Clip(new ToolArgs(e).Str("note", "notes", "what", "change", "description"), 300) : null));
-            if (files.Count == MaxFiles) break;
         }
         if (steps.Count == 0)
         {
