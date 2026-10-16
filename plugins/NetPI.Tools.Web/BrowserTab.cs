@@ -128,16 +128,28 @@ internal sealed class BrowserTab
         Changed?.Invoke();
     }
 
-    /// <summary>A link of this tab opened a new tab: the chat follows it, as a user would.</summary>
+    /// <summary>A link of this tab opened a new tab: the chat follows it, as a user would. A follow that fails after the new
+    /// session was attached puts the tab back on the one it had, and the model is told with the next result.</summary>
     public async Task FollowAsync(string targetId)
     {
         await _busy.WaitAsync().ConfigureAwait(false);
         try
         {
-            await AttachToAsync(targetId, CancellationToken.None).ConfigureAwait(false);
-            _notes.Enqueue("The page opened a new tab: this chat's tab is that one now.");
+            var previous = (TargetId, SessionId);
+            try
+            {
+                await AttachToAsync(targetId, CancellationToken.None).ConfigureAwait(false);
+                _notes.Enqueue("The page opened a new tab: this chat's tab is that one now.");
+            }
+            catch (Exception ex)
+            {
+                // AttachToAsync set the new session before it failed: back on the tab the chat had, and the model is told
+                TargetId = previous.TargetId;
+                SessionId = previous.SessionId;
+                Changed?.Invoke();
+                _notes.Enqueue($"Could not follow the new tab: {ex.Message}. This chat's tab is the one it had before.");
+            }
         }
-        catch (Exception) { }
         finally { _busy.Release(); }
     }
 
