@@ -327,6 +327,26 @@ internal static class ClaudeCliProductionTests
             }
         });
 
+        await t.Run("claude-cli: a consumer that stops reading early ends the CLI process", async () =>
+        {
+            if (!OperatingSystem.IsWindows()) t.Skip("the fake CLI is a Windows batch file");
+            var dir = Path.Combine(Path.GetTempPath(), "netpi-claude-early-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var marker = Path.Combine(dir, "finished.txt");
+                var cmd = Path.Combine(dir, "claude.cmd");
+                // one line at once, then a few seconds of work, then the marker: a CLI left running writes it
+                File.WriteAllText(cmd, "@echo off\r\necho {\"type\":\"x\"}\r\nping -n 5 127.0.0.1 > nul\r\necho done> \"" + marker + "\"\r\n");
+                await foreach (var _ in claudecli::NetPI.Providers.ClaudeCli.ProcessRunner.Run(
+                    new claudecli::NetPI.Providers.ClaudeCli.CliCall(cmd, [], "", dir, TimeSpan.FromSeconds(30), []), CancellationToken.None))
+                    break;
+                await Task.Delay(6000);
+                t.Check(!File.Exists(marker), "the CLI was killed when the consumer stopped, not left to finish");
+            }
+            finally { try { Directory.Delete(dir, true); } catch { /* temp */ } }
+        });
+
         await t.Run("claude-cli: a refusal for the subscription's limit says when it opens and is not retried; stderr explains an early exit", async () =>
         {
             var limited = new[]

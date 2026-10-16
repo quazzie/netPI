@@ -56,44 +56,49 @@ internal static class ProcessRunner
         cts.CancelAfter(call.Timeout);
         using var kill = cts.Token.Register(() => { try { if (!proc.HasExited) proc.Kill(true); } catch { /* already gone */ } });
 
-        var stderr = new StringBuilder();
-        var errTask = Task.Run(async () =>
-        {
-            try { while (await proc.StandardError.ReadLineAsync().ConfigureAwait(false) is { } l) { lock (stderr) { if (stderr.Length < 8000) stderr.AppendLine(l); } } }
-            catch { /* the process was killed */ }
-        });
-
+        // the consumer may stop early (the provider breaks on the result line) or be cancelled: the CLI must not outlive that
         try
         {
-            await proc.StandardInput.WriteAsync(call.Stdin).ConfigureAwait(false);
-            proc.StandardInput.Close();
+            var stderr = new StringBuilder();
+            var errTask = Task.Run(async () =>
+            {
+                try { while (await proc.StandardError.ReadLineAsync().ConfigureAwait(false) is { } l) { lock (stderr) { if (stderr.Length < 8000) stderr.AppendLine(l); } } }
+                catch { /* the process was killed */ }
+            });
+
+            try
+            {
+                await proc.StandardInput.WriteAsync(call.Stdin).ConfigureAwait(false);
+                proc.StandardInput.Close();
+            }
+            catch (IOException) { /* the CLI exited before reading its input: its output says why */ }
+
+            var any = false;
+            while (true)
+            {
+                string? line;
+                try { line = await proc.StandardOutput.ReadLineAsync(cts.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { line = null; }
+                if (line is null) break;
+                if (line.Length == 0) continue;
+                any = true;
+                yield return line;
+            }
+
+            try { await proc.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false); }
+            catch (TimeoutException) { try { proc.Kill(true); } catch { /* gone */ } }
+            await errTask.ConfigureAwait(false);
+
+            ct.ThrowIfCancellationRequested();
+            string err; lock (stderr) err = stderr.ToString().Trim();
+            if (cts.IsCancellationRequested)
+                throw new ModelException($"Claude CLI ran longer than {call.Timeout.TotalSeconds:0}s and was stopped (providers.claudeCli.timeoutSeconds).", false, null, "timeout");
+            if (!any && proc.ExitCode != 0)
+                throw new ModelException($"Claude CLI exited with code {proc.ExitCode} and no output. {J.Truncate(err, 800)}".TrimEnd(), false, null, "cli_failed");
+            // what the CLI said on stderr goes to the stream as a last line: the provider adds it when the run ended without a result
+            if (err.Length > 0) yield return new System.Text.Json.Nodes.JsonObject { ["type"] = StderrLine, ["text"] = J.Truncate(err, 1500) }.ToJsonString();
         }
-        catch (IOException) { /* the CLI exited before reading its input: its output says why */ }
-
-        var any = false;
-        while (true)
-        {
-            string? line;
-            try { line = await proc.StandardOutput.ReadLineAsync(cts.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException) { line = null; }
-            if (line is null) break;
-            if (line.Length == 0) continue;
-            any = true;
-            yield return line;
-        }
-
-        try { await proc.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false); }
-        catch (TimeoutException) { try { proc.Kill(true); } catch { /* gone */ } }
-        await errTask.ConfigureAwait(false);
-
-        ct.ThrowIfCancellationRequested();
-        string err; lock (stderr) err = stderr.ToString().Trim();
-        if (cts.IsCancellationRequested)
-            throw new ModelException($"Claude CLI ran longer than {call.Timeout.TotalSeconds:0}s and was stopped (providers.claudeCli.timeoutSeconds).", false, null, "timeout");
-        if (!any && proc.ExitCode != 0)
-            throw new ModelException($"Claude CLI exited with code {proc.ExitCode} and no output. {J.Truncate(err, 800)}".TrimEnd(), false, null, "cli_failed");
-        // what the CLI said on stderr goes to the stream as a last line: the provider adds it when the run ended without a result
-        if (err.Length > 0) yield return new System.Text.Json.Nodes.JsonObject { ["type"] = StderrLine, ["text"] = J.Truncate(err, 1500) }.ToJsonString();
+        finally { try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { /* already gone */ } }
     }
 
     /// <summary>The <c>type</c> of the synthetic last line that carries the CLI's stderr.</summary>
