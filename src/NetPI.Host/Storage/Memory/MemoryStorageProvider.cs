@@ -223,9 +223,15 @@ internal sealed class MemoryStorage : IStorage
             Messages[row.SessionId] = rows;
         }
         var at = rows.FindIndex(r => r.Id == row.Id);
-        if (at < 0) rows.Add(row);
+        if (at < 0)
+        {
+            // The normal append is the session's new largest seq, so it goes at the end and needs no sort. Only an
+            // out-of-order store (a seq below the last) re-sorts the whole list (seq is unique inside a session).
+            var inOrder = rows.Count == 0 || row.Seq > rows[^1].Seq;
+            rows.Add(row);
+            if (!inOrder) rows.Sort(static (a, b) => a.Seq.CompareTo(b.Seq));
+        }
         else rows[at] = row;
-        rows.Sort(static (a, b) => a.Seq.CompareTo(b.Seq));   // seq is unique inside a session, so this is a total order
         MessageById[row.Id] = row;
     }
 
