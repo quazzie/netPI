@@ -702,6 +702,25 @@ private static async Task ReloadBackground()
         var bad = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.failure", new JsonObject { ["name"] = "../settings.json" }));
         Check.Equal("bad_request", bad.Code);
 
+        // diag.errors: one session's error notices and the failed requests saved for it, newest first, in one call
+        ctx.SessionsFake.Sessions.Add(new SessionInfo { Id = "ses_err", Title = "broken", CreatedAt = DateTimeOffset.UtcNow });
+        ctx.SessionsFake.AppendMessage("ses_err", ChatMessage.UserText("go"));
+        foreach (var text in new[] { "Model error (400): first", "Model error (400): second" })
+            ctx.SessionsFake.AppendMessage("ses_err", new ChatMessage { Role = MessageRole.Notice, Parts = [new TextPart { Text = text }], Meta = new JsonObject { ["kind"] = "error" } });
+        ctx.SessionsFake.AppendMessage("ses_err", new ChatMessage { Role = MessageRole.Notice, Parts = [new TextPart { Text = "just info" }], Meta = new JsonObject { ["kind"] = "nudge" } });
+        File.WriteAllText(Path.Combine(dir, "20260925-030000-000-opus.json"), new JsonObject
+        {
+            ["provider"] = "anthropic", ["model"] = "opus", ["sessionId"] = "ses_err", ["requestId"] = "req_err",
+            ["error"] = new JsonObject { ["message"] = "Invalid signature", ["status"] = 400 },
+        }.ToJsonString());
+        var errors = (JsonObject)(await ctx.RpcFake.Call("diag.errors", new JsonObject { ["sessionId"] = "ses_err" }))!;
+        var notices = (JsonArray)errors["notices"]!;
+        Check.Equal(2, notices.Count, "the error notices only, not the nudge");
+        Check.Equal("Model error (400): second", notices[0]!["text"].Str(), "newest first");
+        var saved = (JsonArray)errors["failures"]!;
+        Check.Equal("20260925-030000-000-opus.json", saved.Single()!["name"].Str(), "the failed request saved for this session, not the other one");
+        Check.Equal("req_err", saved[0]!["requestId"].Str());
+
         ctx.RpcFake.Register("sessions.stats", (_, _) => Task.FromResult<object?>(new { contextCache = new { hits = 3L, reads = 5L } }), "Session-service counters", readOnly: true);
         var overview = (JsonObject)(await ctx.RpcFake.Call("diag.overview"))!;
         foreach (var key in new[] { "app", "process", "plugins", "models", "agents", "sessions", "runs", "calls", "tools", "problems", "reloads", "more" })

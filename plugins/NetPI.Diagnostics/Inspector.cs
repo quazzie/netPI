@@ -637,6 +637,62 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         return dir.Exists ? dir.GetFiles("*.json").OrderByDescending(f => f.LastWriteTimeUtc) : [];
     }
 
+    /// <summary>How far back <see cref="Errors"/> reads: messages of the session, and saved failed requests.</summary>
+    private const int ErrorScanMessages = 5000, ErrorScanFailures = 200;
+
+    /// <summary>
+    /// What went wrong in one session, newest first, in one call: the error notices the chat shows (a failed model call,
+    /// a failed run), the failed requests the providers saved for it (the evidence: diag.failure { name }), and its failed
+    /// tool calls since the app started. Before this, "the error in my last session" meant paging back through
+    /// sessions.messages and matching log lines by hand.
+    /// </summary>
+    public JsonObject Errors(RpcRequest r)
+    {
+        var sessionId = r.Required("sessionId");
+        var session = ctx.Sessions.Require(sessionId);
+        var limit = Math.Clamp(r.Int("limit") ?? 10, 1, 100);
+        var notices = new JsonArray();
+        long? before = null;
+        for (var read = 0; read < ErrorScanMessages && notices.Count < limit; read += ToolPartPage)
+        {
+            var page = ctx.Sessions.GetMessages(sessionId, before, ToolPartPage);
+            if (page.Count == 0) break;
+            for (var i = page.Count - 1; i >= 0 && notices.Count < limit; i--)
+            {
+                var m = page[i];
+                if (m.Role != MessageRole.Notice || m.MetaString("kind") != "error") continue;
+                notices.Add(new JsonObject { ["seq"] = m.Seq, ["time"] = m.CreatedAt.ToString("O"), ["text"] = m.Text });
+            }
+            if (page.Count < ToolPartPage) break;
+            before = page[0].Seq;
+        }
+        var failures = new JsonArray();
+        foreach (var f in FailureFiles().Take(ErrorScanFailures))
+        {
+            if (failures.Count >= limit) break;
+            try
+            {
+                using var stream = f.OpenRead();
+                if (JsonNode.Parse(stream) is not JsonObject doc || doc["sessionId"]?.GetValue<string>() != sessionId) continue;
+                var o = new JsonObject { ["name"] = f.Name, ["time"] = f.LastWriteTimeUtc.ToString("O"), ["bytes"] = f.Length };
+                foreach (var key in (string[])["model", "requestId", "error"]) o[key] = doc[key]?.DeepClone();
+                failures.Add(o);
+            }
+            catch (Exception) { /* an unreadable file is diag.failures' to report */ }
+        }
+        var tools = new JsonArray([.. recorder.Tools().Where(x => x.SessionId == sessionId && x.EndedAt is not null && x.IsError)
+            .Take(limit).Select(x => (JsonNode?)x.ToJson())]);
+        return new JsonObject
+        {
+            ["sessionId"] = sessionId,
+            ["title"] = session.Title,
+            ["notices"] = notices,
+            ["failures"] = failures,
+            ["failedTools"] = tools,
+            ["hint"] = failures.Count > 0 ? "diag.failure { name } reads a saved request (summary: true for its shape)" : null,
+        };
+    }
+
     /// <summary>The failed requests the providers saved (logs/failed-requests): when, which model, the error, the server's ids.</summary>
     public JsonArray Failures(RpcRequest r)
     {

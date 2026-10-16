@@ -25,6 +25,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
     [
         ("overview", "diag.overview", "app, process, plugins, models, agents with holders and waiters, active runs, model calls, running tools, processes, problems, the other diag methods", false),
         ("problems", "diag.problems", "what looks wrong now, worst first", false),
+        ("errors", "diag.errors", "what went wrong in one session: its error notices, the failed requests saved for it, its failed tool calls", true),
         ("calls", "diag.calls", "model calls, newest first (running ones too)", true),
         ("call", "diag.call", "one model call in detail: id or correlationId", false),
         ("tools", "diag.tools", "tool calls, newest first", true),
@@ -73,7 +74,8 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             Read-only look inside NetPI itself (the same JSON as the methods behind it, docs/DEBUGGING.md). Nothing here
             changes the app: there is no reload, no setting write, no control of any kind.
             Start with action overview, then problems (what looks wrong), journal (the timeline), logs (filtered), and
-            toolsets (why a chat's tools changed). "What changed in my environment, when and why" is toolsets: it returns
+            toolsets (why a chat's tools changed). "What failed in that chat" is errors { sessionId }: its error notices,
+            the failed requests saved for it (read one with failure { name }) and its failed tool calls, newest first. "What changed in my environment, when and why" is toolsets: it returns
             the session's tools now, the baseline they started from and every change with its cause
             (plugin-reload with the plugin ids, profile, user, settings).
             messages is the full text of a chat: a page of its messages (role, text, tool calls, tool results), oldest
@@ -82,7 +84,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             call), callId (a tool call), name (a tool or a saved failed request), type (an event type prefix), sinceSeq,
             beforeSeq, afterSeq, level (debug|info|warn|error), category, contains (a substring of the message), sinceMinutes,
             maxChars, offset, summary, events, seq.
-            The actions that work on one session (calls, tools, journal, run, toolsets, messages) use the calling session
+            The actions that work on one session (errors, calls, tools, journal, run, toolsets, messages) use the calling session
             unless you give another sessionId; sessionId "all" means no filter. journal is the exception that reads
             global: with a type and no sessionId it looks at every session, because a type filter that silently stayed
             inside this chat is how you conclude an event never happened.
@@ -101,7 +103,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             {
                 ["action"] = Enum([.. Actions.Select(a => a.Action)], "what to inspect"),
                 ["limit"] = Int("how many entries, newest first (the method's own default when omitted)"),
-                ["sessionId"] = Str("a session; the calling one for calls, tools, journal, run, toolsets and messages, \"all\" for none"),
+                ["sessionId"] = Str("a session; the calling one for errors, calls, tools, journal, run, toolsets and messages, \"all\" for none"),
                 ["runId"] = Str("calls: only one run (its agent id)"),
                 ["agentId"] = Str("run: one agent (instead of sessionId)"),
                 ["id"] = Int("call: the model call (from calls)"),
