@@ -563,7 +563,10 @@ internal sealed class AgentScheduler : IAgentScheduler
         return changed;
     }
 
-    public IReadOnlyList<AgentSlots> Snapshot()
+    public IReadOnlyList<AgentSlots> Snapshot() => Snapshot(out _);
+
+    /// <summary>The agents, and the resources they were read against (one <see cref="Resources"/> read, for a publish that sends both).</summary>
+    private IReadOnlyList<AgentSlots> Snapshot(out IReadOnlyList<ModelResourceSlots> resourceList)
     {
         IReadOnlyList<ModelInfo> cached;
         try { cached = _ctx.Models?.Cached ?? []; } catch { cached = []; }
@@ -576,7 +579,8 @@ internal sealed class AgentScheduler : IAgentScheduler
         lock (_gate)
         {
             var held = _resources?.Snapshot();
-            var resources = Resources().ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
+            resourceList = Resources();
+            var resources = resourceList.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
             list = _pools.Values
                 .Where(p => p.Configured || PoolBusy(p) > 0 || p.Waiters.Count > 0)
                 .OrderBy(p => p.Configured ? 0 : 1)
@@ -803,10 +807,10 @@ internal sealed class AgentScheduler : IAgentScheduler
         a.Request.Priority > b.Request.Priority || (a.Request.Priority == b.Request.Priority && a.Seq < b.Seq);
 
     /// <summary>The first of an unassigned run's agents that can take it now.</summary>
-    private Pool? PoolFor(Waiter w)
+    private Pool? PoolFor(Waiter w, HashSet<Pool>? refused = null)
     {
         foreach (var key in w.Request.Candidates!)
-            if (_pools.TryGetValue(key, out var pool) && AvailabilityOf(pool).Available && CanGrant(pool)) return pool;
+            if (_pools.TryGetValue(key, out var pool) && refused?.Contains(pool) != true && AvailabilityOf(pool).Available && CanGrant(pool)) return pool;
         return null;
     }
 
@@ -824,25 +828,32 @@ internal sealed class AgentScheduler : IAgentScheduler
 
     private void Grant()
     {
+        // pools whose lease was refused in this pass: they sit out the rest of it, so the other pools' waiters still get theirs
+        // now (not at the next Pump) and the pass cannot spin on the same best
+        HashSet<Pool>? refused = null;
         while (true)
         {
             Waiter? best = null;
             Pool? bestPool = null;
             foreach (var p in _pools.Values)
             {
-                if (p.Waiters.Count == 0 || !CanGrant(p) || !AvailabilityOf(p).Available) continue;
+                if (p.Waiters.Count == 0 || refused?.Contains(p) == true || !CanGrant(p) || !AvailabilityOf(p).Available) continue;
                 if (best is null || Outranks(p.Waiters[0], best)) { best = p.Waiters[0]; bestPool = p; }
             }
             foreach (var w in _floating)
             {
                 if (best is not null && !Outranks(w, best)) continue;
-                if (PoolFor(w) is not { } p) continue;
+                if (PoolFor(w, refused) is not { } p) continue;
                 best = w;
                 bestPool = p;
             }
             if (best is null || bestPool is null) return;
             var lease = NewLease(bestPool, best.Floating ? Bind(best.Request, bestPool) : best.Request);
-            if (lease is null) return;
+            if (lease is null)
+            {
+                (refused ??= []).Add(bestPool);
+                continue;
+            }
             if (best.Floating) _floating.Remove(best); else bestPool.Waiters.Remove(best);
             best.Registration.Unregister(); // never Dispose under the lock: it would wait for a running callback
             bestPool.Owners.Add(lease);
@@ -965,8 +976,8 @@ internal sealed class AgentScheduler : IAgentScheduler
     {
         try
         {
-            var pools = Snapshot();
-            _ctx.Events.Publish(AgentSchedulerEvents.Changed, new JsonObject { ["agents"] = NetPiJson.ToNode(pools), ["resources"] = NetPiJson.ToNode(Resources()), ["unassigned"] = NetPiJson.ToNode(Unassigned()) });
+            var pools = Snapshot(out var resources);
+            _ctx.Events.Publish(AgentSchedulerEvents.Changed, new JsonObject { ["agents"] = NetPiJson.ToNode(pools), ["resources"] = NetPiJson.ToNode(resources), ["unassigned"] = NetPiJson.ToNode(Unassigned()) });
         }
         catch (Exception ex)
         {
