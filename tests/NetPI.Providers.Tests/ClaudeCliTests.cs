@@ -176,7 +176,7 @@ internal static class ClaudeCliTests
             t.Check(nonePrompt!.EndsWith(CL.ClaudeCliProvider.NoToolsNote), "no tools: the model is told it has none");
         });
 
-        await t.Run("claude-cli: the CLI's own tool use becomes tool-call parts with their results, and usage is the last turn's, not the total", async () =>
+        await t.Run("claude-cli: the CLI's own tool use becomes tool-call parts with their results; usage keeps the last turn's context and totals the output", async () =>
         {
             var lines = new[]
             {
@@ -219,7 +219,30 @@ internal static class ClaudeCliTests
             t.Check(call.ProviderLive, "the call is marked as reported live");
             t.Eq("read", call.ProviderAs, "named for the hooks as the NetPI tool it stands for");
             t.Eq(2000L, done.Usage!.CacheReadTokens, "context size is the last turn's");
-            t.Eq(7L, done.Usage!.OutputTokens, "output of the last turn");
+            t.Eq(27L, done.Usage!.OutputTokens, "output is the total over the CLI's turns (the result line's number), not the last turn's");
+        });
+
+        await t.Run("claude-cli: a result line without its own output total is the sum of the turns' outputs", async () =>
+        {
+            var lines = new[]
+            {
+                Init,
+                Ev("""{"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":1000,"output_tokens":1}}}"""),
+                Ev("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"Read","input":{}}}"""),
+                Ev("""{"type":"content_block_stop","index":0}"""),
+                Ev("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}"""),
+                Ev("""{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":2000,"output_tokens":1}}}"""),
+                Ev("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"""),
+                Ev("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Done."}}"""),
+                Ev("""{"type":"content_block_stop","index":0}"""),
+                Ev("""{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":5,"cache_read_input_tokens":2000,"output_tokens":7}}"""),
+                """{"type":"result","subtype":"success","is_error":false,"result":"Done.","usage":{"input_tokens":8,"cache_read_input_tokens":3000}}""",
+            };
+            var p = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines(lines, ct));
+            var done = (await Collect(p, Req())).OfType<StreamCompleted>().Single().Message;
+            t.Eq(5L, done.Usage!.InputTokens, "input is the last turn's");
+            t.Eq(2000L, done.Usage!.CacheReadTokens, "cache is the last turn's");
+            t.Eq(27L, done.Usage!.OutputTokens, "output is the sum of the turns' outputs (20 + 7)");
         });
 
         await t.Run("claude-cli: the CLI's own tools follow what NetPI gives the run: read-only in plan mode, a tool switched off is held back, one NetPI lacks is left alone", () =>
