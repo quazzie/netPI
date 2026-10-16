@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
-using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -153,27 +152,9 @@ public sealed class OpenRouterProvider : IModelProvider
 
     // ================================================================ streaming
 
-    public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
-    {
-        // Errors are reported as they are (no retries or workarounds here): the message is only extended with the
-        // generation id, and the request body is saved so the failure can be reproduced.
-        var call = new CallInfo { ResponseIdLabel = "generation", Transport = "chat" };
-        await using var e = StreamCoreAsync(request, call, ct).GetAsyncEnumerator(ct);
-        while (true)
-        {
-            ModelStreamEvent current;
-            try
-            {
-                if (!await e.MoveNextAsync().ConfigureAwait(false)) yield break;
-                current = e.Current;
-            }
-            catch (ModelException ex) when (!ct.IsCancellationRequested)
-            {
-                throw await FailedRequests.DescribeAsync(ex, request, call, Id, _dumpDir, _log, ct).ConfigureAwait(false);
-            }
-            yield return current;
-        }
-    }
+    public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken ct) =>
+        HttpTransport.StreamAsync(StreamCoreAsync, request, new CallInfo { ResponseIdLabel = "generation", Transport = "chat" },
+            Id, _dumpDir, _log, ct);
 
     private async IAsyncEnumerable<ModelStreamEvent> StreamCoreAsync(ModelRequest request, CallInfo call, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -199,7 +180,7 @@ public sealed class OpenRouterProvider : IModelProvider
 
         HttpResponseMessage resp;
         try { resp = await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not ModelException) { throw Rethrow(ex, ct); }
+        catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "OpenRouter", ct); }
 
         using (resp)
         {
@@ -219,7 +200,7 @@ public sealed class OpenRouterProvider : IModelProvider
             {
                 string text;
                 try { text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is not ModelException) { throw Rethrow(ex, ct); }
+                catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "OpenRouter", ct); }
                 call.ResponseBody = ProviderErrors.Cap(text);
                 try { parser.HandleJsonBody(text); }
                 finally { call.ResponseId ??= parser.GenerationId; }
@@ -228,7 +209,7 @@ public sealed class OpenRouterProvider : IModelProvider
             {
                 Stream stream;
                 try { stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is not ModelException) { throw Rethrow(ex, ct); }
+                catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "OpenRouter", ct); }
 
                 await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct), DisplayName, ct).ConfigureAwait(false))
                 {
@@ -280,16 +261,9 @@ public sealed class OpenRouterProvider : IModelProvider
         };
     }
 
-    private static Exception Rethrow(Exception ex, CancellationToken ct)
-    {
-        var t = ProviderErrors.Translate(ex, "OpenRouter", ct);
-        if (ReferenceEquals(t, ex)) ExceptionDispatchInfo.Capture(ex).Throw();
-        return t;
-    }
-
     private static void ApplyHeaders(HttpRequestMessage req, OpenRouterOptions o)
     {
-        if (!string.IsNullOrEmpty(o.ApiKey)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", o.ApiKey);
-        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, SettingsExtensions.ResolveSecret(v) ?? v);
+        HttpTransport.ApplyBearer(req, o.ApiKey);
+        HttpTransport.ApplyCustomHeaders(req, o.Headers);
     }
 }
