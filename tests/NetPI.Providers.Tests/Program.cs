@@ -1114,6 +1114,17 @@ await t.Run("chat: finish length, EOF, cut-off, error chunk, 400 overflow, non-s
     t.Check(msg.Usage is { InputTokens: 10, CacheReadTokens: 2, OutputTokens: 4 }, "DeepSeek-style cache hit tokens");
 });
 
+// The AiProxy parser used to override the shared usage read and drop cache_write_tokens (the base handles them);
+// it keeps the DeepSeek prompt_cache_hit_tokens fallback, which the base read now carries too.
+await t.Run("chat: usage keeps the DeepSeek cache-hit fallback and also honors cache writes", () =>
+{
+    var asm = new Kit.MessageAssembler();
+    var p = new AP.ChatStreamParser(asm, "P", false);
+    p.HandleJsonBody("""{"choices":[{"message":{"content":"x"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"prompt_cache_hit_tokens":2,"prompt_tokens_details":{"cache_write_tokens":3}}}""");
+    t.Check(asm.Usage is { InputTokens: 7, CacheReadTokens: 2, CacheWriteTokens: 3, OutputTokens: 4 }, "hits and writes are not input");
+    return Task.CompletedTask;
+});
+
 await t.Run("disabled provider: empty list + non-transient error", async () =>
 {
     apCtx.SettingsImpl.Set("providers.instances.aiproxy.enabled", false);

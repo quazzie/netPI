@@ -56,10 +56,13 @@ internal class ChatCompletionsParser(MessageAssembler asm, string provider, bool
     /// <summary>The usage one chunk reports.</summary>
     protected virtual Usage? ReadUsage(JsonElement usage)
     {
-        // prompt_tokens includes cache reads and writes, completion_tokens includes reasoning.
+        // prompt_tokens includes cache reads and writes, completion_tokens includes reasoning. DeepSeek reports its
+        // cache hits as prompt_cache_hit_tokens, not under prompt_tokens_details: without the details field the
+        // hits would count as fresh input.
         var prompt = usage.Long("prompt_tokens");
         var details = usage.Prop("prompt_tokens_details");
         var cached = details.Long("cached_tokens");
+        if (cached == 0) cached = usage.Long("prompt_cache_hit_tokens");
         var written = details.Long("cache_write_tokens");
         return new Usage
         {
