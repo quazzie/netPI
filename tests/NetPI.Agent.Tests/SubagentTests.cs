@@ -103,15 +103,23 @@ public static class SubagentTests
     {
         await using var h = await TestHost.StartAsync();
         h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 3;
+        // The quick child answers only once the parent is about to wait. Answering at once would reach the parent's
+        // transcript as a notice before its next model call: the model has then seen that report, and a wait rightly
+        // waits for the slow one alone.
+        var quickGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var slowGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         h.Catalog.Handler = (r, ct) =>
         {
             if (IsChild(r))
-                return Reply.LastUser(r).Contains("quick") ? Reply.Text("QUICK REPORT") : Reply.Text("SLOW REPORT", c => slowGate.Task.WaitAsync(c));
+                return Reply.LastUser(r).Contains("quick") ? Reply.Text("QUICK REPORT", c => quickGate.Task.WaitAsync(c)) : Reply.Text("SLOW REPORT", c => slowGate.Task.WaitAsync(c));
             var results = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
             if (results.Count == 0)
                 return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "quick part", name = "quick" }, new { task = "slow part", name = "slow" } } });
-            if (results.Count == 1) return Reply.Tool("agent", new { action = "wait" });
+            if (results.Count == 1)
+            {
+                quickGate.TrySetResult();
+                return Reply.Tool("agent", new { action = "wait" });
+            }
             if (results.Count == 2)
             {
                 slowGate.TrySetResult();

@@ -86,15 +86,20 @@ when you change it.
   tools rethrow `OperationCanceledException`. Shell tools kill the process tree and return an `[aborted]` result.
 - **Paths** go through `ToolContext.ResolvePath`: relative to the session cwd, `~`, the paths Git Bash prints on Windows
   (`/c/...` for drives, `/tmp/...` for the user's temp folder), and both `/` and `\`. Output paths are relative to the cwd with `/` separators, or absolute when outside the cwd.
-- **Line endings.** Every text tool works on LF-normalized text. On write, a file keeps its original style: CRLF when a strict
-  majority of its line breaks are CRLF, else LF. Its UTF-8/UTF-16 BOM and encoding are kept too. A file that is not valid
-  UTF-8 is read as Latin-1, so unchanged bytes round-trip exactly. A file whose first 8KB contain a NUL byte is binary: it is
-  never text-edited and grep skips it.
+- **Line endings.** Every text tool works on LF-normalized text. On write, a file keeps its original style: the strict
+  majority of its line breaks — CRLF, CR, or LF (LF wins a tie). Its UTF-8/UTF-16 BOM and encoding are kept too; a file
+  over the 64 MB edit cap is not diffed, but its style and BOM are detected from a sample of its start and kept. A file
+  that is not valid UTF-8 is read as Latin-1, so unchanged bytes round-trip exactly. A file whose first 8KB contain a NUL
+  byte is binary: it is never text-edited and grep skips it; writing text over one says so and uses the default style.
 - **Ignore rules** (used by grep, find, ls, `files.*`):
   - Built-in skipped directories: `.git node_modules bin obj .vs .idea dist build artifacts __pycache__ .venv .hg .svn`.
   - `.gitignore` and `.ignore` files: from the enclosing git repository root down to each directory, including nested ones.
     Supported syntax: `#` comments, `!` negation, trailing-`/` (directory only), anchored (`/x`, `a/b`) and basename
     patterns, `*`, `**`, `?` and `[…]`.
+  - `.git/info/exclude`: read as a `.gitignore` at the repository root (for a worktree, from its common directory).
+  - A directory below the walk root that is a git repository of its own — a `.git` file (a worktree) or a `.git`
+    directory (a sub-clone) — is skipped: its files are never searched, and `ls` hides it (`all=true` shows it). A walk
+    rooted inside such a directory works normally.
   - The directory you explicitly target is never skipped itself. Hidden files (dotfiles) are included, and directory
     symlinks/junctions are listed but not followed.
 - **Globs** (`find` pattern, grep `glob`): `*`, `**`, `?`, `{a,b}` (nestable), `[abc]`/`[!a-z]`, and a leading `!` to
@@ -104,7 +109,7 @@ when you change it.
 
 | key | default | meaning |
 |---|---|---|
-| `files.newFileEol` | `"lf"` | EOL for **new** files: `"lf"`, `"crlf"` or `"auto"` (CRLF on Windows) |
+| `files.newFileEol` | `"lf"` | EOL for **new** files: `"lf"`, `"crlf"`, `"cr"` or `"auto"` (CRLF on Windows) |
 | `shell.bashPath` | – | Explicit bash executable. Otherwise, on Windows (Git Bash only, **never** `System32\bash.exe`/WSL): `%ProgramFiles%\Git\bin\bash.exe`, `%ProgramFiles(x86)%\Git\bin\bash.exe`, `%LocalAppData%\Programs\Git\bin\bash.exe`, derived from `git.exe` on PATH (`…\Git\cmd\git.exe` → `…\Git\bin\bash.exe`), Scoop. Elsewhere: `/bin/bash`, PATH, `/bin/sh` |
 | `shell.pwshPath` | – | Explicit PowerShell executable. Otherwise: `pwsh` on PATH, `%ProgramFiles%\PowerShell\7\pwsh.exe` (plus the usual Unix locations), and on Windows as a last resort Windows PowerShell 5.1 (`powershell.exe`) |
 | `shell.timeoutSeconds` | `120` | Default foreground timeout (max 1800) |
@@ -146,7 +151,9 @@ details: { path: string /* absolute */, startLine: number, endLine: number, tota
 `{ path, content }`
 
 - Creates parent directories.
-- **Existing file:** keeps its EOL style, BOM and encoding. The content's line endings are converted to match.
+- **Existing file:** keeps its EOL style, BOM and encoding. The content's line endings are converted to match. Over the 64 MB
+  edit cap the style and BOM are detected from a sample of the file's start; over a binary file the default style is used and
+  the result says so.
 - **New file:** uses the `files.newFileEol` setting.
 - Writes atomically: a temp file in the same directory, then a rename. Symlinks are written through, the Unix file mode
   (for example `+x`) is preserved, and a read-only file is an error. When the rename is refused (the file is locked, or is
@@ -1200,7 +1207,9 @@ details: { host, path /* "host:path" */, created, append, bytes, lines }
 `{ host, path, edits: { oldText, newText, replace_all? }[], replace_all?, cwd? }` (a single `oldText`/`newText` pair is accepted too; a top-level `replace_all` is the default for every edit).
 Like `edit`: the edits are applied **in order to the evolving text**, so a second `oldText` may match what a first `newText`
 wrote (rename the declaration, then its first use); each `oldText` must match exactly once unless `replace_all` (in the text
-the earlier edits left), matching ignores CRLF vs LF and the file keeps its line endings. A failed edit applies nothing.
+the earlier edits left), matching ignores CRLF vs LF; a uniform file keeps its line endings, and in a mixed file the
+untouched lines keep their exact bytes while the lines an edit produces get the file's majority ending. A failed edit
+applies nothing.
 The file is read (with its content hash), edited locally and
 written back only if the hash is unchanged — a same-size edit inside one second, which size plus mtime could not see,
 is refused; otherwise nothing is written and the agent is told to read it again. The new content is written to a
