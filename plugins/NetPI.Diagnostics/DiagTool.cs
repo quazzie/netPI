@@ -34,7 +34,10 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         ("run", "diag.run", "one run in depth: sessionId or agentId", true),
         ("toolsets", "diag.toolsets", "a session's tools now and every change with the cause (a plugin reload, a profile, the user, a setting)", true),
         ("messages", "sessions.messages", "a page of a session's messages in full (role, text, tool calls and their results), oldest first: beforeSeq pages back, afterSeq forward", true),
-        ("logs", "diag.logs", "log entries, oldest first", false),
+        ("logs", "diag.logs", "log entries, oldest first: the live ring, and the day files for any older day (from/to/before)", false),
+        ("search", "diag.search", "text in every stored session, newest first: what was said, which tools ran with what, what failed (query, name, errors, callId, scope, from/to, cursor)", false),
+        ("sessions", "sessions.list", "the stored sessions, pinned then newest first, with offset paging (query matches the title)", false),
+        ("recall", "memory.search", "past chats closest in meaning to a question (embeddings): query, limit, projectId", false),
         ("settings", "diag.settings", "the settings document without secrets", false),
         ("failures", "diag.failures", "failed requests the providers saved, newest first", false),
         ("failure", "diag.failure", "one saved failed request with its body: name", false),
@@ -88,6 +91,16 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             unless you give another sessionId; sessionId "all" means no filter. journal is the exception that reads
             global: with a type and no sessionId it looks at every session, because a type filter that silently stayed
             inside this chat is how you conclude an event never happened.
+            History is not limited to what the app remembers since it started. logs reads the day files for anything the live
+            ring no longer holds: from/to (a date or time, local) name a window, before pages back (pass the first entry's time).
+            search finds text in every stored session (archived and subagent chats too), newest first: search { query: "timeout" }
+            over what was said and every tool call and result; name (a tool) and errors { name: "bash", errors: true } list failed
+            results of one tool; callId finds one call; scope narrows to text, tool-call or tool-result; role, sessionId, projectId,
+            from/to narrow it more; regex: true reads query as a regular expression. A scan has a time budget: done false means the
+            hit limit or the budget ended it, and nextCursor (pass it as cursor) continues exactly there. tool { callId } finds a
+            call in any session even when it left the tool log. sessions pages the session list (limit, offset, query = title).
+            recall is by meaning (embeddings, whole chats, the current one left out): "have we dealt with this before"; use search
+            for an exact string, a tool, an error text.
             rpc reaches anything else that only reads: rpc { action: "rpc", method: "events.recent", params: { max: 100 } }.
             Only methods the host marks read-only are reachable, so nothing that changes the app goes through it. What is
             reachable: rpc { action: "rpc", method: "rpc.list" } — the same list the outside script prints.
@@ -103,20 +116,33 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             {
                 ["action"] = Enum([.. Actions.Select(a => a.Action)], "what to inspect"),
                 ["limit"] = Int("how many entries, newest first (the method's own default when omitted)"),
-                ["sessionId"] = Str("a session; the calling one for errors, calls, tools, journal, run, toolsets and messages, \"all\" for none"),
+                ["sessionId"] = Str("a session; the calling one for errors, calls, tools, journal, run, toolsets and messages, \"all\" for none; search: one session (default every session)"),
                 ["runId"] = Str("calls: only one run (its agent id)"),
                 ["agentId"] = Str("run: one agent (instead of sessionId)"),
                 ["id"] = Int("call: the model call (from calls)"),
                 ["correlationId"] = Str("call: stable identifier from a physical owner"),
-                ["callId"] = Str("tool: the tool call (from tools)"),
-                ["name"] = Str("tools: only that tool; failure: the saved request's file name"),
+                ["callId"] = Str("tool, search: the tool call (from tools); tool finds it in any stored session"),
+                ["name"] = Str("tools, search: only that tool; failure: the saved request's file name"),
                 ["type"] = Str("journal: an event type or prefix (\"agent\", \"tool.\")"),
                 ["sinceSeq"] = Int("journal: only events after this seq"),
                 ["beforeSeq"] = Int("messages: page back to the messages before this seq"),
                 ["afterSeq"] = Int("messages: page forward to the messages after this seq, oldest first"),
-                ["errors"] = Bool("calls, tools: only the failed ones"),
+                ["errors"] = Bool("calls, tools, search: only the failed ones (search: failed tool results)"),
                 ["running"] = Bool("calls, tools: only the ones running now"),
                 ["detail"] = Bool("calls: the request and response with them"),
+                ["query"] = Str("search: the text to find (substring; recall: the question; sessions: part of the title)"),
+                ["regex"] = Bool("search: read query as a regular expression"),
+                ["scope"] = Enum(["all", "text", "tool-call", "tool-result", "tool"], "search: what to look in (default all)"),
+                ["role"] = Enum(["user", "assistant", "tool", "notice", "summary"], "search: only messages of this role"),
+                ["cursor"] = Str("search: the nextCursor of the previous answer"),
+                ["from"] = Str("logs, search: not before this date or time (local unless it has an offset)"),
+                ["to"] = Str("logs, search: not after this date or time"),
+                ["before"] = Str("logs: only entries before this time (to page back)"),
+                ["projectId"] = Str("search, sessions, recall: only this project"),
+                ["includeArchived"] = Bool("search, sessions: archived chats too (search: default true)"),
+                ["includeSubagents"] = Bool("search, sessions: subagent chats too (search: default true)"),
+                ["excludeSessionId"] = Str("recall: a chat to leave out (default the calling one)"),
+                ["budgetSeconds"] = Int("search: how long one scan may take (default 20, at most 120)"),
                 ["level"] = Enum(["debug", "info", "warn", "error"], "logs: at least this level"),
                 ["category"] = Str("logs: the logger's category"),
                 ["contains"] = Str("logs: only messages containing this"),
@@ -204,7 +230,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
     {
         var text = node?.ToJsonString() ?? "null";
         if (text.Length <= RpcMaxChars) return ToolResult.Ok(text, node);
-        return ToolResult.Ok(text[..RpcMaxChars] + $"… [cut at {RpcMaxChars} characters: ask for less, or filter it]", null);
+        return ToolResult.Ok(text[..RpcMaxChars] + $"… [cut at {RpcMaxChars} characters: ask for less (limit, a filter), or page on: beforeSeq/afterSeq, offset, cursor, before]", null);
     }
 
     /// <summary>
@@ -230,6 +256,10 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             if (kv.Key is "action" or null || kv.Value is null) continue;
             p[kv.Key] = kv.Value.DeepClone();
         }
+        // actions with their own defaults and names
+        if (action == "recall" && !p.ContainsKey("excludeSessionId")) p["excludeSessionId"] = sessionId;
+        if (action == "sessions" && p.Remove("query", out var title)) p["search"] = title;
+        if (action == "search" && p["sessionId"] is JsonValue sv && sv.TryGetValue<string>(out var which) && which.Trim() is "all" or "*") p.Remove("sessionId");
         if (!PerSession(action)) return p;
         // the session-scoped actions look at the calling chat unless another one is named ("all": no filter)
         // A journal query with a type and no session asks about every session: leaving it inside the calling chat is how

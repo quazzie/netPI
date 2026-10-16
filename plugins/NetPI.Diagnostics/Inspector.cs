@@ -20,6 +20,11 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     public static readonly TimeSpan ToolLong = TimeSpan.FromMinutes(10);
     public static readonly TimeSpan RecentWindow = TimeSpan.FromMinutes(15);
 
+    private readonly HistorySearch history = new(ctx);
+
+    /// <summary>Text in every stored session (<see cref="HistorySearch"/>).</summary>
+    public JsonObject Search(RpcRequest r, CancellationToken ct) => history.Search(r, ct);
+
     // ---------------------------------------------------------------- overview
 
     public async Task<JsonObject> OverviewAsync(CancellationToken ct)
@@ -348,9 +353,6 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     /// results are in the newest messages; a page this size finds them without deserialising a whole history.</summary>
     public const int ToolPartPage = 100;
 
-    /// <summary>How far back the tool-parts scan pages (10 pages of <see cref="ToolPartPage"/>).</summary>
-    public const int ToolPartMessages = 1_000;
-
     public JsonArray Tools(RpcRequest r)
     {
         var limit = Math.Clamp(r.Int("limit") ?? 50, 1, Recorder.ToolCapacity);
@@ -385,13 +387,17 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     {
         var callId = r.Required("callId");
         var record = recorder.Tools().FirstOrDefault(t => t.CallId == callId);
+        // Out of the tool log (older than its last 500 calls, or before a restart), the call is looked up in the stored
+        // sessions: the history is the source, the log only a faster way in.
         var sessionId = r.Str("sessionId") ?? record?.SessionId
-                        ?? throw new RpcException("not_found", $"Tool call {callId} is no longer in the tool log (it keeps the last {Recorder.ToolCapacity}): pass its sessionId.");
+                        ?? SessionOfCall(callId)
+                        ?? throw new RpcException("not_found", $"No tool call {callId} in any stored session.");
         // Paged backwards in small pages until the id turns up, rather than reading 2000 messages (every tool result and
         // image in them deserialised) to find one call — and the scan for the list of calls has the same shape (idea-5oitnm).
-        var parts = ToolParts([(sessionId, new HashSet<string>([callId], StringComparer.Ordinal))], maxMessages: ToolPartMessages);
+        // The session's whole history is the bound: the scan stops when the id turns up.
+        var parts = ToolParts([(sessionId, new HashSet<string>([callId], StringComparer.Ordinal))], maxMessages: int.MaxValue);
         if (!parts.TryGetValue(callId, out var found) && record is null)
-            throw new RpcException("not_found", $"No tool call {callId} in the newest {ToolPartMessages} messages of {sessionId}.");
+            throw new RpcException("not_found", $"No tool call {callId} in {sessionId}.");
         var o = record?.ToJson() ?? new JsonObject { ["callId"] = callId, ["sessionId"] = sessionId };
         if (found.Call is { } call)
         {
@@ -412,6 +418,17 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         return o;
     }
 
+    /// <summary>The stored session that holds a tool call, found by scanning the history (up to a minute: a call id that exists is found).</summary>
+    private string? SessionOfCall(string callId)
+    {
+        var request = new RpcRequest
+        {
+            Method = "diag.search",
+            Params = JsonSerializer.SerializeToElement(new JsonObject { ["callId"] = callId, ["limit"] = 1, ["budgetSeconds"] = 60 }),
+        };
+        return history.Search(request, CancellationToken.None)["hits"] is JsonArray { Count: > 0 } hits ? (string?)hits[0]?["sessionId"] : null;
+    }
+
     /// <summary>
     /// The tool calls and results in the recent messages of these sessions, by call id. Only the ids in a session's
     /// <c>Wanted</c> are collected, and a session stops being read as soon as they are all found or
@@ -420,7 +437,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     /// session" to render a 300-character preview (idea-5oitnm).
     /// </summary>
     private Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)> ToolParts(
-        IEnumerable<(string? SessionId, HashSet<string> Wanted)> sessions, int maxMessages = ToolPartMessages)
+        IEnumerable<(string? SessionId, HashSet<string> Wanted)> sessions, int maxMessages)
     {
         var map = new Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)>();
         foreach (var session in sessions.Where(s => s.SessionId is not null).GroupBy(s => s.SessionId))
@@ -612,24 +629,37 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         var contains = r.Str("contains");
         var sinceMinutes = r.Int("sinceMinutes");
         var now = DateTimeOffset.UtcNow;
+        // from / to / before name a window in time: that is a question for the day files, not for the ring of this process's
+        // last 2000 lines (times without an offset are local, like the files)
+        var from = LocalTime(r, "from") ?? (sinceMinutes is { } m ? DateTime.Now.AddMinutes(-m) : null);
+        var filter = new LogFiles.Filter(min, category, contains, from, LocalTime(r, "to"), LocalTime(r, "before"));
+        if (r.Str("from") is not null || r.Str("to") is not null || r.Str("before") is not null)
+            return LogFiles.Read(ctx.Paths.LogsDir, filter, limit, ct);
         if (await RpcAsync("logs.recent", new JsonObject { ["max"] = 2000 }, ct).ConfigureAwait(false) is not JsonArray logs) return [];
-        static int Rank(string? level) => (level ?? "").ToLowerInvariant() switch
-        {
-            var l when l.StartsWith("tr", StringComparison.Ordinal) => 0,
-            var l when l.StartsWith("d", StringComparison.Ordinal) => 1,
-            var l when l.StartsWith("i", StringComparison.Ordinal) => 2,
-            var l when l.StartsWith("w", StringComparison.Ordinal) => 3,
-            _ => 4,
-        };
+        static int Rank(string? level) => LogFiles.Rank(level);
         var hits = logs.OfType<JsonObject>()
             .Where(l => Rank((string?)l["level"]) >= min
                         && (category is null || ((string?)l["category"] ?? "").Contains(category, StringComparison.OrdinalIgnoreCase))
                         && (contains is null || $"{l["message"]} {l["exception"]}".Contains(contains, StringComparison.OrdinalIgnoreCase))
                         && (sinceMinutes is null || (l["time"] is JsonValue v && DateTimeOffset.TryParse(v.ToString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t) && now - t <= TimeSpan.FromMinutes(sinceMinutes.Value))))
             .TakeLast(limit)
-            .Select(l => (JsonNode?)l.DeepClone());
+            .Select(l => (JsonNode?)l.DeepClone()).ToList();
+        // fewer than asked for, and the ring starts after the window does (it holds only this process's lines, and not all
+        // of them once it is full): the files have the rest
+        var oldest = logs.OfType<JsonObject>().Select(l => l["time"] is JsonValue v && DateTimeOffset.TryParse(v.ToString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t) ? t : (DateTimeOffset?)null).FirstOrDefault(t => t is not null);
+        if (hits.Count < limit && (oldest is null || from is null || oldest.Value.LocalDateTime > from))
+        {
+            try { return LogFiles.Read(ctx.Paths.LogsDir, filter, limit, ct); }
+            catch (IOException) { /* the files are unreadable: the ring is still an answer */ }
+        }
         return new JsonArray([.. hits]);
     }
+
+    /// <summary>A time parameter as local time (the day files have no offset), or null when it is not given.</summary>
+    private static DateTime? LocalTime(RpcRequest r, string name) =>
+        r.Str(name) is not { } s ? null
+        : DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t) ? t.LocalDateTime
+        : throw new RpcException("bad_request", $"'{name}' is not a date or time: {s}");
 
     private IEnumerable<FileInfo> FailureFiles()
     {

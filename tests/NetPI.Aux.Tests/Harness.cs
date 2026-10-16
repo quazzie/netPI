@@ -45,7 +45,7 @@ public sealed class FakeSessionStore : ISessionStore
         query.AttachedKey is { Length: > 0 } key && query.AttachedValue is not null
             ? Sessions.Where(s => s.Meta?[key] is System.Text.Json.Nodes.JsonValue v && v.TryGetValue<string>(out var text) && text == query.AttachedValue
                                   && (query.IncludeArchived || !s.Archived)).ToList()
-            : Sessions;
+            : Sessions.Where(s => query.IncludeArchived || !s.Archived).Skip(query.Offset).Take(query.Limit <= 0 ? 100 : query.Limit).ToList();
     public void DeclareForkReset(params string[] keys) { }
     public SessionInfo ForkSession(string sessionId, long upToSeq, SessionInfo template) => throw new NotSupportedException("this fake does not fork: use a real SessionService");
     public SessionInfo? GetSession(string id) => Sessions.FirstOrDefault(s => s.Id == id);

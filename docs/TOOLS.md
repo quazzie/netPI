@@ -1334,15 +1334,18 @@ read-only ones and who may write instead. The single exception is the `rpc` acti
 | `journal` | `diag.journal` | the events that matter as a timeline (no per-token events) |
 | `run` | `diag.run` | one run in depth |
 | `toolsets` | `diag.toolsets` | this chat's tools now, the baseline and every change **with its cause** |
-| `logs` | `diag.logs` | log entries, filtered |
+| `logs` | `diag.logs` | log entries, filtered: the live ring, and the day files for older days (`from`, `to`, `before`) |
+| `search` | `diag.search` | text in every stored session, newest first: what was said, which tools ran with what, which results failed (`query`, `name`, `errors`, `callId`, `scope`, `role`, `from`/`to`, `cursor`) |
+| `sessions` | `sessions.list` | the stored sessions with `limit`/`offset` paging (`query` is the title search) |
+| `recall` | `memory.search` | past chats closest in meaning (embeddings; needs the Memory plugin's embedding model); the calling chat is left out unless `excludeSessionId` says otherwise |
 | `settings` | `diag.settings` | the settings document without secrets |
 | `failures`, `failure` | `diag.failures` | the requests a backend refused (`failure`: one with its body) |
 | `snapshot`, `event` | `diag.snapshot` | plugins, tools, RPC methods, recent events, logs, runtime (`event`: one event's payload) |
 | `rpc` | the method named by `method` | any other **read-only** method — the ones diag does not wrap |
 
 The arguments are the RPC's own: `limit`, `sessionId`, `runId`/`agentId`, `id`, `callId`, `name`, `type`, `sinceSeq`,
-`beforeSeq`, `errors`, `running`, `detail`, `level`, `category`, `contains`, `sinceMinutes`, `maxChars`, `events`,
-`seq`, and for `rpc` `method` + `params`. The session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`,
+`beforeSeq`, `errors`, `running`, `detail`, `level`, `category`, `contains`, `sinceMinutes`, `from`, `to`, `before`,
+`query`, `regex`, `scope`, `role`, `cursor`, `projectId`, `maxChars`, `events`, `seq`, and for `rpc` `method` + `params`. The session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`,
 `messages`) default to the **calling** chat; `sessionId: "all"` means no filter. A `journal` query with a `type` and no
 `sessionId` is the exception: it looks at **every** session, because a type filter silently scoped to one chat is how you
 conclude an event never happened. An action forwards to its method as-is, renaming a parameter

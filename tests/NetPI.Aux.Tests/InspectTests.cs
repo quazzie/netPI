@@ -24,6 +24,9 @@ public static class InspectTests
         r.Add("inspect: diag rpc reaches any read-only method and nothing else; a journal type query is global", DiagRpcAndJournalScope);
         r.Add("inspect: a reload says what it cost: the tools at stake, or that a hook-only plugin announces nothing", ReloadImpact);
         r.Add("inspect: a background reload runs on the plugin's stopping token, and a fault of the task is logged", ReloadBackground);
+        r.Add("inspect: logs come from the day files when the ring is short or a window is named, with multi-line entries and paging", LogsFromFiles);
+        r.Add("inspect: search finds text, tool calls and failed results in every stored session, with filters and a cursor that continues", SearchHistory);
+        r.Add("inspect: a tool call that left the tool log is found in the stored sessions; the new diag actions reach their methods", ToolLookupAndActions);
     }
 
     // OpenRouter's Poolside provider refused the whole request for diag's "description": null.
@@ -334,11 +337,13 @@ private static async Task BoundedScans()
     Check.Equal("result of c_mid", mid["result"].Str());
     Check.Equal(4 * Inspector.ToolPartPage, ctx.SessionsFake.MessagesRead, "four pages back, then it stops");
 
-    // Older than the window: not found, and the error says how far back it looked.
+    // The oldest call of a chat: no window any more — the history is the bound, and the scan still stops when the call turns up.
     ctx.SessionsFake.MessagesRead = 0;
-    var ancient = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "c_ancient", ["sessionId"] = "ses_1" }));
-    Check.Contains(ancient.Message, $"newest {Inspector.ToolPartMessages} messages");
-    Check.Equal(Inspector.ToolPartMessages, ctx.SessionsFake.MessagesRead, "the window is the bound");
+    var ancient = (JsonObject)(await ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "c_ancient", ["sessionId"] = "ses_1" }))!;
+    Check.Equal("result of c_ancient", ancient["result"].Str());
+    Check.Equal(History, ctx.SessionsFake.MessagesRead, "the whole chat, page by page");
+    var gone = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "c_nowhere", ["sessionId"] = "ses_1" }));
+    Check.Contains(gone.Message, "c_nowhere");
 
     // The list: one page per session it shows, and the previews are still there.
     ctx.SessionsFake.MessagesRead = 0;
@@ -796,5 +801,185 @@ private static async Task ReloadBackground()
         Check.Contains(missing.Content, "Missing 'action'");
         Check.Equal(0, reloaded, "diag.reload was never called");
         Check.Equal(0, pm.Reloaded.Count, "no plugin was reloaded");
+    }
+
+    // The ring holds this process's last 2000 lines; everything older, or from before a restart, was a file under ~/.netpi to open
+    // by hand. The day files answer now: for a named window, and when the ring holds fewer matches than asked for.
+    private static async Task LogsFromFiles()
+    {
+        var ctx = await StartAsync();
+        var dir = ctx.Paths.LogsDir;
+        var day1 = Path.Combine(dir, "netpi-20010203.log");
+        var day2 = Path.Combine(dir, "netpi-20010204.log");
+        try
+        {
+            File.WriteAllText(day1, string.Join("\n",
+                "2001-02-03 10:00:00.000 INF [A.B] started",
+                "2001-02-03 10:00:01.000 ERR [A.B] boom 1",
+                "System.Exception: boom",
+                "   at X.Y()",
+                "2001-02-03 10:00:02.000 WRN [C] careful") + "\n");
+            File.WriteAllText(day2, "2001-02-04 09:00:00.000 INF [A.B] next day\n2001-02-04 09:00:01.000 ERR [A.B] boom 2\n");
+            static JsonObject Window(int limit) => new() { ["from"] = "2001-02-03", ["to"] = "2001-02-05", ["limit"] = limit };
+
+            var all = (JsonArray)(await ctx.RpcFake.Call("diag.logs", Window(100)))!;
+            Check.Equal(5, all.Count, "every entry of both days");
+            Check.Equal("started", all[0]!["message"].Str(), "oldest first");
+            Check.Contains(all[1]!["message"].Str()!, "System.Exception: boom", "an exception's lines belong to its entry");
+            Check.Contains(all[1]!["message"].Str()!, "at X.Y()");
+            Check.Equal("err", all[1]!["level"].Str());
+            Check.Equal("A.B", all[1]!["category"].Str());
+
+            var errors = (JsonArray)(await ctx.RpcFake.Call("diag.logs", new JsonObject { ["from"] = "2001-02-03", ["to"] = "2001-02-05", ["level"] = "error" }))!;
+            Check.Equal(2, errors.Count, "the level filter");
+            var one = (JsonArray)(await ctx.RpcFake.Call("diag.logs", new JsonObject { ["from"] = "2001-02-03", ["to"] = "2001-02-05", ["contains"] = "CAREFUL", ["category"] = "c" }))!;
+            Check.Equal(1, one.Count, "contains and category, any case");
+
+            // the newest two, then the two before them: paging back with the first entry's time
+            var newest = (JsonArray)(await ctx.RpcFake.Call("diag.logs", Window(2)))!;
+            Check.Equal("next day", newest[0]!["message"].Str());
+            Check.Equal("boom 2", newest[1]!["message"].Str());
+            var older = (JsonArray)(await ctx.RpcFake.Call("diag.logs", new JsonObject { ["before"] = newest[0]!["time"].Str(), ["limit"] = 2, ["from"] = "2001-02-03" }))!;
+            Check.Equal(2, older.Count);
+            Check.Equal("boom 1", older[0]!["message"].Str().Split('\n')[0]);
+            Check.Equal("careful", older[1]!["message"].Str(), "strictly before the time given");
+            await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.logs", new JsonObject { ["from"] = "not a time" }));
+
+            // no window: the ring answers, and the files only when it holds fewer matches than asked for
+            ctx.RpcFake.Register("logs.recent", (_, _) => Task.FromResult<object?>(new JsonArray(new JsonObject
+            {
+                ["time"] = DateTimeOffset.Now.ToString("O"), ["level"] = "inf", ["category"] = "Live", ["message"] = "live line",
+            })), "recent log", readOnly: true);
+            var ring = (JsonArray)(await ctx.RpcFake.Call("diag.logs", new JsonObject { ["contains"] = "live", ["limit"] = 1 }))!;
+            Check.Equal("live line", ring.Single()!["message"].Str(), "enough in the ring: the ring");
+            var back = (JsonArray)(await ctx.RpcFake.Call("diag.logs", new JsonObject { ["contains"] = "boom 2" }))!;
+            Check.Equal(1, back.Count, "short in the ring: the day files");
+            Check.True(back[0]!["time"].Str()!.StartsWith("2001-02-04"), back[0]!["time"].Str());
+        }
+        finally
+        {
+            File.Delete(day1);
+            File.Delete(day2);
+        }
+    }
+
+    private static ChatMessage Said(MessageRole role, string text, DateTimeOffset? at = null) =>
+        new() { Role = role, Parts = [new TextPart { Text = text }], CreatedAt = at ?? DateTimeOffset.UtcNow };
+
+    private static ChatMessage Called(string callId, string tool, string args) =>
+        new() { Role = MessageRole.Assistant, Parts = [new ToolCallPart { Id = callId, Name = tool, Arguments = args }] };
+
+    private static ChatMessage Answered(string callId, string tool, string result, bool error = false) =>
+        new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = callId, Name = tool, Content = result, IsError = error }] };
+
+    private static SessionInfo Chat(FakePluginContext ctx, string id, string title, bool archived = false, string? project = null, DateTimeOffset? updated = null)
+    {
+        var s = new SessionInfo { Id = id, Title = title, Archived = archived, ProjectId = project, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = updated ?? DateTimeOffset.UtcNow };
+        ctx.SessionsFake.Sessions.Add(s);
+        return s;
+    }
+
+    // "Which chat ran tool X", "where did that error text appear", "who said Y": three questions that meant opening the database.
+    private static async Task SearchHistory()
+    {
+        var ctx = await StartAsync();
+        Chat(ctx, "ses_a", "Alpha");
+        Chat(ctx, "ses_b", "Beta", archived: true, project: "prj_1");
+        Chat(ctx, "ses_old", "Old", updated: new DateTimeOffset(2001, 2, 3, 0, 0, 0, TimeSpan.Zero));
+        var store = ctx.SessionsFake;
+        store.AppendMessage("ses_old", Said(MessageRole.User, "ancient timeout", new DateTimeOffset(2001, 2, 3, 0, 0, 0, TimeSpan.Zero)));
+        store.AppendMessage("ses_b", Said(MessageRole.User, "the Timeout problem again"));
+        store.AppendMessage("ses_b", Called("c_read", "read", "{\"path\":\"a\"}"));
+        store.AppendMessage("ses_b", Answered("c_read", "read", "fine"));
+        store.AppendMessage("ses_a", Said(MessageRole.User, "please deploy the thing"));
+        store.AppendMessage("ses_a", Called("c_dep", "bash", "{\"command\":\"deploy --prod\"}"));
+        store.AppendMessage("ses_a", Answered("c_dep", "bash", "deploy failed: timeout after 30s", error: true));
+        store.AppendMessage("ses_a", Answered("c_ok", "bash", "deploy ok"));
+
+        static JsonObject Q(string json) => JsonNode.Parse(json)!.AsObject();
+        async Task<JsonObject> Search(string json) => (JsonObject)(await ctx.RpcFake.Call("diag.search", Q(json)))!;
+        static List<string> Kinds(JsonObject r) => [.. ((JsonArray)r["hits"]!).Select(h => $"{h!["sessionId"].Str()}:{h["kind"].Str()}")];
+
+        var timeout = await Search("""{ "query": "TIMEOUT" }""");
+        Check.True(timeout["done"]!.GetValue<bool>(), "everything was looked at");
+        var kinds = Kinds(timeout);
+        Check.Equal(3, kinds.Count, string.Join(",", kinds));
+        Check.True(kinds.Contains("ses_a:tool-result") && kinds.Contains("ses_b:text") && kinds.Contains("ses_old:text"), "any case, archived included: " + string.Join(",", kinds));
+        var hit = ((JsonArray)timeout["hits"]!).First(h => h!["kind"].Str() == "tool-result")!;
+        Check.Equal("bash", hit["toolName"].Str());
+        Check.Equal("c_dep", hit["callId"].Str());
+        Check.True(hit["isError"]!.GetValue<bool>());
+        Check.Contains(hit["snippet"].Str()!, "timeout after 30s");
+        Check.Equal("Alpha", hit["title"].Str());
+        Check.Equal(3, timeout["scanned"]!["sessions"]!.GetValue<int>(), "three chats were read");
+
+        Check.Equal("ses_a:tool-call", Kinds(await Search("""{ "query": "deploy", "scope": "tool-call" }""")).Single());
+        Check.Equal("ses_a:tool-result", Kinds(await Search("""{ "name": "bash", "errors": true }""")).Single(), "the failed results of one tool");
+        Check.Equal(3, Kinds(await Search("""{ "name": "bash" }""")).Count, "a tool alone: its calls and results, never what people wrote");
+        Check.Equal(2, Kinds(await Search("""{ "callId": "c_dep" }""")).Count, "one call: the call and its result");
+        Check.Equal("ses_a:tool-call", Kinds(await Search("""{ "query": "deploy\\s+--prod", "regex": true }""")).Single());
+        Check.Equal("ses_b:text", Kinds(await Search("""{ "query": "timeout", "role": "user", "from": "2020-01-01" }""")).Single(), "role and from: the old chat is out of the window");
+        Check.Equal("ses_a:text", Kinds(await Search("""{ "query": "deploy", "scope": "text" }""")).Single());
+        Check.Equal(2, Kinds(await Search("""{ "query": "timeout", "includeArchived": false }""")).Count, "archived chats can be left out");
+        Check.Equal(1, Kinds(await Search("""{ "query": "timeout", "sessionId": "ses_b" }""")).Count);
+        foreach (var bad in new[] { "{}", """{ "query": "(", "regex": true }""", """{ "query": "x", "scope": "nope" }""", """{ "query": "x", "cursor": "zz" }""" })
+            await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.search", Q(bad)));
+
+        // a long chat is walked in pages, and a cursor continues exactly where the page ended: nothing twice, nothing missed
+        Chat(ctx, "ses_long", "Long", updated: DateTimeOffset.UtcNow.AddMinutes(-5));
+        foreach (var i in Enumerable.Range(0, 250)) store.AppendMessage("ses_long", Said(MessageRole.User, $"needle {i}"));
+        var seqs = new List<long>();
+        string? cursor = null;
+        var pages = 0;
+        do
+        {
+            var page = await Search(cursor is null ? """{ "query": "needle", "limit": 60 }""" : $$"""{ "query": "needle", "limit": 60, "cursor": "{{cursor}}" }""");
+            seqs.AddRange(((JsonArray)page["hits"]!).Select(h => h!["seq"]!.GetValue<long>()));
+            cursor = page["nextCursor"] is { } c ? c.Str() : null;
+            Check.Equal(cursor is null, page["done"]!.GetValue<bool>(), "done exactly when there is no cursor");
+            if (cursor is not null) Check.Contains(page["note"].Str()!, "nextCursor");
+            pages++;
+        } while (cursor is not null && pages < 20);
+        Check.Equal(250, seqs.Count, "every message once");
+        Check.Equal(250, seqs.Distinct().Count());
+        Check.True(seqs.SequenceEqual(seqs.OrderByDescending(s => s)), "newest first across pages");
+        Check.Equal(5, pages, "60 + 60 + 60 + 60 + 10");
+    }
+
+    // Out of the tool log (the last 500 calls, empty after a restart) a call was unreachable unless its session was known; and
+    // the new actions have to reach their methods under the right names.
+    private static async Task ToolLookupAndActions()
+    {
+        var ctx = await StartAsync();
+        Chat(ctx, "ses_1", "one");
+        Chat(ctx, "ses_2", "two");
+        ctx.SessionsFake.AppendMessage("ses_1", Called("c_other", "read", "{}"));
+        ctx.SessionsFake.AppendMessage("ses_2", Called("c_lost", "bash", "{\"command\":\"ls\"}"));
+        ctx.SessionsFake.AppendMessage("ses_2", Answered("c_lost", "bash", "a b c"));
+        var found = (JsonObject)(await ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "c_lost" }))!;
+        Check.Equal("ses_2", found["sessionId"].Str(), "no tool log, no session given: found in the stored sessions");
+        Check.Equal("a b c", found["result"].Str());
+        Check.Equal("bash", found["name"].Str());
+        await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "c_never" }));
+
+        var tool = ctx.ToolsFake.Tools.OfType<DiagTool>().Single();
+        var actions = ((JsonArray)tool.Definition.Parameters["properties"]!["action"]!["enum"]!).Select(a => a.Str()).ToList();
+        Check.True(actions.Contains("search") && actions.Contains("sessions") && actions.Contains("recall"), "the new actions are in the schema");
+
+        var viaTool = await Call(tool, """{ "action": "search", "query": "a b c", "sessionId": "all" }""");
+        Check.False(viaTool.IsError, viaTool.Content);
+        Check.Contains(viaTool.Content, "\"hits\"");
+        Check.Contains(viaTool.Content, "ses_2", "every session, not the calling one");
+
+        RpcRequest? list = null, recall = null;
+        ctx.RpcFake.Register("sessions.list", (r, _) => { list = r; return Task.FromResult<object?>(new JsonArray()); }, "sessions", readOnly: true);
+        ctx.RpcFake.Register("memory.search", (r, _) => { recall = r; return Task.FromResult<object?>(new JsonObject()); }, "memory", readOnly: true);
+        await Call(tool, """{ "action": "sessions", "query": "deploy", "offset": 200, "limit": 50 }""");
+        Check.Equal("deploy", list!.Str("search"), "the query is the title search of the list");
+        Check.Equal(200, list.Int("offset"));
+        Check.Equal(null, list.Str("sessionId"), "the list is not scoped to the calling chat");
+        await Call(tool, """{ "action": "recall", "query": "did we fix the timeout" }""");
+        Check.Equal("did we fix the timeout", recall!.Str("query"));
+        Check.Equal("ses_caller", recall.Str("excludeSessionId"), "the current chat is left out by default");
     }
 }

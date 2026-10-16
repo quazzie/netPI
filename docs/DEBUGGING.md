@@ -17,6 +17,9 @@ diag { "action": "journal", "limit": 50 }                 # the timeline of this
 diag { "action": "toolsets" }                             # this chat's tools and every change, with its cause
 diag { "action": "messages", "sessionId": "ses_other" }   # read another chat in full; beforeSeq pages back
 diag { "action": "logs", "level": "error", "sinceMinutes": 10 }
+diag { "action": "logs", "from": "2026-10-12", "to": "2026-10-13", "contains": "timeout" }   # older days come from the day files
+diag { "action": "search", "query": "connection refused" }                 # text in every stored chat, tool calls and results included
+diag { "action": "search", "name": "bash", "errors": true }                  # failed results of one tool, any chat
 ```
 
 The session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`, `messages`) use the calling chat unless
@@ -109,15 +112,16 @@ wrap costs one tool call, not a secret read out of `server.json`.
 | `diag.calls` | Model calls, newest first (running ones too): model, purpose, agent, chat, run, time to first token, duration, attempts (retries), tokens, stop reason, error. Filters: `sessionId`, `runId`, `agent`, `errors`, `running`, `limit`; `detail: true` adds what `diag.call` has |
 | `diag.call` | One call in detail: the request's size (messages, tools, system prompt, input chars, the person's last message), the response (text/thinking chars, tool calls), each retry and notice, the error's type, HTTP status, transient, context overflow |
 | `diag.tools` | Tool calls, newest first: name, chat, run, state (`running`, `ok`, `error`, or `interrupted` with the reason when the call's end never came: its stream was aborted or failed, or its agent stopped running), duration, arguments and the result the model got (both cut short). Filters: `sessionId`, `name`, `errors`, `running`. The results come from the chat's messages, and only the calls on screen are looked up: the store is read a page of 100 messages at a time, per session, and the scan stops as soon as those calls are found |
-| `diag.tool` | One tool call in full (`callId`, and `sessionId` once it has left the tool log): the parsed arguments, the whole result text the model got, the error flag, images and `details`. Found by paging back through the chat's messages — 100 at a time, at most the newest 1000 — so a call older than that is reported as not found rather than answered after reading the whole history |
+| `diag.tool` | One tool call in full (`callId`; `sessionId` is optional — out of the tool log the call is looked up in every stored session): the parsed arguments, the whole result text the model got, the error flag, images and `details`. Found by paging back through the chat's messages, 100 at a time, until it turns up |
 | `diag.journal` | The events that matter as a timeline, oldest first: statuses, messages (role, kind, a preview), tool starts and ends, stream starts and resets, agents' states, settings and plugin changes. Without the per-token events, which push everything else out of the host's `events.recent` within seconds. Filters: `sessionId`, `type` (prefix), `sinceSeq`. **Through the tool**, `sessionId` defaults to the calling chat — except with a `type` and no `sessionId`, which is a question about *every* session: a type filter quietly scoped to one chat is how you conclude an event never happened (idea-de1s7t) |
 | `diag.run` | One run in depth (`sessionId` or `agentId`): its info and since when it has its status, the chat (model, agent, profile, context size), the slot it holds or waits for (and who holds the others), its queued inputs, its subagents, its last calls, tool calls, journal and messages (tool calls with their arguments and call ids, tool results with a preview of their text) |
-| `diag.logs` | Log entries, filtered: `level` (at least), `category`, `contains`, `sinceMinutes`, `limit` |
+| `diag.logs` | Log entries, filtered: `level` (at least), `category`, `contains`, `sinceMinutes`, `limit`. The live ring (this process's last 2000 lines) answers first; when it holds fewer matches than `limit`, or `from`/`to`/`before` name a window, the day files `<home>/logs/netpi-YYYYMMDD.log` do, so any day still on disk is reachable without opening the file (page back by passing the first entry's time as `before`) |
+| `diag.search` | Text in every stored session (archived and subagent chats too), newest first: `query` (substring, or `regex: true`), `name` (a tool), `errors` (failed tool results), `callId`, `scope` (`text`, `tool-call`, `tool-result`), `role`, `sessionId`, `projectId`, `from`/`to`. Hits carry session, seq, kind, tool, snippet. A scan has a time budget (`budgetSeconds`, 20): `done: false` plus `nextCursor` says where it stopped and continues exactly there. `sessions.messages { id, beforeSeq }` reads the chat around a hit |
 | `diag.settings` | settings.json without secrets: API keys, tokens and passwords shown as their length, every value inside a `headers`/`auth`/`credentials` map masked whatever it is called, and a credential embedded in a *value* masked too (a token in a `baseUrl`'s query string or userinfo, a secret-shaped query parameter). `env:NAME` references kept |
 | `diag.failures`, `diag.failure` | The requests a backend refused, saved in `logs/failed-requests` (the newest 30): time, model, the server's request and response ids, the error; one with its body. A body larger than `maxChars` is reachable in slices (`offset`, follow `nextOffset`) and `summary: true` returns its shape — the ordered `input[]`/`messages[]` kinds by index, no payload |
 | `diag.toolsets` | One chat's tools now, the baseline they started from, and every change with its cause (`plugin-reload` with the plugin ids, `profile`, `user`, `settings`, `unknown`) and the notice the model got. `context.toolsets` is the same thing from the context plugin, which keeps the record |
 
-Also useful: `runs.list` (every run), `agents.list` (the agents and their slots), `sessions.messages`, `agent.queue`,
+Also useful: the diag tool's `sessions` (the stored sessions with offset paging) and `recall` (past chats by meaning, `memory.search`), `runs.list` (every run), `agents.list` (the agents and their slots), `sessions.messages`, `agent.queue`,
 `context.preview` (a chat's system prompt and tools), `models.list`, `plugins.list`, `usage.summary`, `budget.status`,
 `processes.list`, `rpc.list`. The log files are in `<home>/logs/netpi-YYYYMMDD.log`.
 
@@ -194,5 +198,7 @@ The E2E harness reads the same log line when a test fails: `artifacts/e2elogs/<r
 The diagnostics plugin (`plugins/NetPI.Diagnostics`) records in memory from its start: the last 300 model calls (a model
 middleware around all others, so a call's retries belong to it), the last 500 tool calls, a journal of the last
 3000 events, and the plugin reloads of the last 15 minutes (from the host's `plugins.reloaded`). A restart or a reload
-of the plugin starts them empty. The Diagnostics tab shows the same: a problems strip, a Calls view with each call's
+of the plugin starts them empty. What is **stored** needs none of that: the chats (messages, tool calls and their
+results) are searched with `diag.search` and read with `messages`/`tool`, and the log files with `diag.logs` windows. Model calls, the journal and
+reloads are the only history that does not survive a restart. The Diagnostics tab shows the same: a problems strip, a Calls view with each call's
 detail, and a "Tool changes" section per chat.
