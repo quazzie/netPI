@@ -874,8 +874,7 @@ that agent: at the cap the run fails with "Stopped: this run reached its maxTurn
 Agents ledger where a call is reserved: the child's own calls so far (calls in flight at their reservation) plus this call's
 reservation may not exceed it; a paid call that would is refused, the child ends `failed` with "Stopped: its maxUsd of $X is spent
 …" (a model with an unknown price cannot be capped and is refused too; free and local models are never stopped by it).
-Subagents of the child have their own caps. The runtime takes both from a `JsonObject` feature of `SpawnRequest.Features`
-(`maxUsd`, `maxTurns`): `SpawnRequest` has no field for them.
+Subagents of the child have their own caps. They are `SpawnRequest.MaxUsd` and `SpawnRequest.MaxTurns`.
 
 Where the caller's model is inherited, it means the effective model: the session's explicit model, otherwise its
 named agent's model, otherwise the catalog default. Turns, delegation and manual compaction use the same
@@ -911,9 +910,8 @@ tool through subagents, and `agent_choices` belongs to another plugin.
 instance is free for them meanwhile and it queues for one again first among the runs of its own priority. Without ids: all of the caller's running subagents, plus
 finished ones whose `agent-result` notice is still queued unseen (the report comes back here and the queued notice is
 dropped, so it arrives once). A new user message interrupts the wait. When agents are still running the text says why it
-returned (the first report arrived / the user wrote / the hour passed / interrupted: `details.reason` is `report`, `user`,
-`timeout` or `interrupted`; the runtime's `WaitAsync` does not report it, the tool reads it from what the wait left: a finished agent,
-else a user message queued for the chat, else the elapsed time). `details`: `{ agents: [{ agentId, sessionId, name, status, costUsd?, withSubagentsUsd? }], reason }`.
+returned (the first report arrived / the user wrote / the hour passed: `details.reason` is `report`, `user`, `timeout`; `cancelled` if the
+wait's token was cancelled). The runtime says it: `IAgentRuntime.WaitAsync` returns an `AgentWaitResult` (`Agents`, `End`: `Report`, `UserMessage`, `Timeout`, `Cancelled`). `details`: `{ agents: [{ agentId, sessionId, name, status, costUsd?, withSubagentsUsd? }], reason }`.
 
 `agent` `list`, `result` and `wait` show each subagent's spend (`$0.42`, with `($1.10 with its subagents)` when it has some, `free`
 when its calls cost nothing; left out before its first call) from the Agents plugin's `usage.session`, and put `costUsd` and
