@@ -52,6 +52,8 @@ internal static class SshToolSet
 internal sealed class SshTool : IAgentTool, IReadOnlyCalls
 {
     private readonly Dictionary<string, SshToolBase> _actions;
+    private readonly SshHostNotes _notes;
+    private readonly IPluginContext _ctx;
 
     public SshTool(IPluginContext ctx, ISshLauncher launcher, SshBroker? broker = null)
     {
@@ -63,7 +65,12 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
             new SshWriteTool(ctx, launcher),
             new SshEditTool(ctx, launcher),
             new SshCopyTool(ctx, launcher),
+            new SshJobTool(ctx, launcher),
+            new SshGrepTool(ctx, launcher),
+            new SshFindTool(ctx, launcher),
         };
+        _notes = new SshHostNotes(ctx);
+        _ctx = ctx;
         foreach (var action in actions) action.Broker = broker;
         _actions = actions.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
         Definition = new ToolDefinition
@@ -72,14 +79,14 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
             Label = "SSH",
             Category = "ssh",
             SummaryArg = "action",
-            Description = "Work on remote hosts (the aliases in ~/.ssh/config): hosts, run {host, script}, read, write, edit or copy (scp).",
+            Description = "Work on remote hosts (the aliases in ~/.ssh/config): hosts, run {host, script, background?}, job (a background run: output, wait, kill), read, write, edit, copy (scp), grep or find.",
             Help = string.Join("\n", actions.Select(t => $"- {t.Name}: {t.Summary}")),
             Parameters = new JsonObject
             {
                 ["type"] = "object",
                 ["properties"] = new JsonObject
                 {
-                    ["action"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("hosts", "run", "read", "write", "edit", "copy") },
+                    ["action"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("hosts", "run", "read", "write", "edit", "copy", "job", "grep", "find") },
                     ["host"] = S(), ["script"] = S(), ["cwd"] = S(), ["timeout"] = I(),
                     ["path"] = S(), ["offset"] = I(), ["limit"] = I(), ["content"] = S(), ["append"] = B(), ["replace_all"] = B(),
                     ["edits"] = new JsonObject
@@ -94,6 +101,9 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
                     },
                     ["direction"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("upload", "download") },
                     ["from"] = S(), ["to"] = S(), ["recursive"] = B(),
+                    ["background"] = B(),
+                    ["id"] = S(), ["op"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("output", "wait", "kill") }, ["tail"] = I(),
+                    ["pattern"] = S(), ["glob"] = S(), ["ignoreCase"] = B(), ["maxResults"] = I(),
                 },
                 ["required"] = new JsonArray("action"),
             },
@@ -112,13 +122,13 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
         return action switch { "exec" or "execute" => "run", "list" => "hosts", "cat" => "read", "scp" or "upload" or "download" => "copy", _ => action };
     }
 
-    public bool IsReadOnly(JsonElement args) => ActionOf(args) is { } a && _actions.TryGetValue(a, out var t) && t.ReadOnly;
+    public bool IsReadOnly(JsonElement args) => ActionOf(args) is { } a && _actions.TryGetValue(a, out var t) && t.ReadOnlyFor(args);
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
         var action = ActionOf(args);
         if (action is null || !_actions.TryGetValue(action, out var tool))
-            return Task.FromResult(ToolResult.Error($"{(action is null ? "Give an action" : $"Unknown action \"{action}\"")}: hosts, run, read, write, edit or copy."));
+            return Task.FromResult(ToolResult.Error($"{(action is null ? "Give an action" : $"Unknown action \"{action}\"")}: hosts, run, read, write, edit, copy, job, grep or find."));
         // "action": "upload" (or "download") is copy in that direction
         var a = new ToolArgs(args);
         if (a.Str("action")?.Trim().ToLowerInvariant() is "upload" or "download" && a.Str("direction") is null)
@@ -127,7 +137,21 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
             o["direction"] = a.Str("action")!.Trim().ToLowerInvariant();
             args = JsonSerializer.SerializeToElement(o);
         }
-        return tool.ExecuteAsync(context, args, ct);
+        return ExecuteWithNotesAsync(tool, context, args, ct);
+    }
+
+    /// <summary>The action's result, with the host's note (<c>ssh.hostNotes</c>) added when this chat has not had it yet.</summary>
+    private async Task<ToolResult> ExecuteWithNotesAsync(SshToolBase tool, ToolContext context, JsonElement args, CancellationToken ct)
+    {
+        string? notes = null;
+        if (tool is not SshHostsTool && new ToolArgs(args).Str("host", "server", "alias")?.Trim() is { Length: > 0 } name)
+        {
+            // only a real alias of the ssh config: the host the call resolves to
+            var alias = SshConfig.Read(SshOptions.Read(_ctx.Settings, _ctx.Paths.Home).Config).FirstOrDefault(h => h.Alias.Equals(name, StringComparison.OrdinalIgnoreCase))?.Alias;
+            if (alias is not null) notes = _notes.Take(context.SessionId, alias);
+        }
+        var result = await tool.ExecuteAsync(context, args, ct).ConfigureAwait(false);
+        return notes is null ? result : new ToolResult { Content = result.Content + "\n\n" + notes, IsError = result.IsError, Images = result.Images, Details = result.Details, Wait = result.Wait };
     }
 
     private static JsonObject S() => new() { ["type"] = "string" };
@@ -151,6 +175,8 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
     /// <summary>What the action does: the dispatcher's help shows it under the name.</summary>
     internal abstract string Summary { get; }
     internal virtual bool ReadOnly => false;
+    /// <summary>Whether this call only reads: the action's own flag unless the action has calls that differ (job: output and wait read, kill ends a process).</summary>
+    internal virtual bool ReadOnlyFor(JsonElement args) => ReadOnly;
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -265,7 +291,8 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
         "Run a bash script on a remote host. The script is sent as it is: quotes, $, " +
         "backslashes and heredocs need no escaping, and it can be long. cwd sets the remote working directory (default " +
         "the home folder). stdout and stderr are merged; the exit code is reported when it is not 0. timeout (default " +
-        "120 s, max 1800) ends the whole remote process tree, and so does stopping the run.";
+        "120 s, max 1800) ends the whole remote process tree, and so does stopping the run. background: true starts the script " +
+        "detached instead (no timeout, output to a log on the host) and returns a job id: follow it with the job action.";
 
     protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
     {
@@ -273,6 +300,7 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
         var script = a.Str(ToolPathArgs.SshCommandNames);
         if (string.IsNullOrWhiteSpace(script)) return ToolResult.Error("ssh_run needs a script.");
         var cwd = a.Str("cwd", "dir", "directory", "workdir");
+        if (a.Bool("background", "detach") == true) return await StartJobAsync(script, cwd, o, host, ct).ConfigureAwait(false);
         var timeout = Math.Clamp(a.Int("timeout", "timeout_seconds") ?? o.Timeout, 1, 1800);
 
         // The remote login shell only sees this fixed line: it saves stdin (the script) to a temp file and runs it under
@@ -357,6 +385,27 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
         else if (r.ExitCode == 125 && output.Contains("cd:", StringComparison.Ordinal)) sb.Append($"\n[the working directory {cwd} does not exist on {host.Alias}]");
         else if (r.ExitCode != 0) sb.Append($"\n[exit code {r.ExitCode}]");
         return new ToolResult { Content = sb.ToString(), IsError = timedOut || r.Aborted, Details = details };
+    }
+
+    /// <summary>
+    /// <c>background: true</c>: the script is saved on the host and started detached (its own session, no timeout, output to a
+    /// log); the answer is the job id for <c>job</c>. Every stream of the job is redirected away from the call, so the kept
+    /// connection is not given up for it (the broker's "lone &amp;" rule is told there is no background work: work "").
+    /// </summary>
+    private async Task<ToolResult> StartJobAsync(string script, string? cwd, SshOptions o, SshHost host, CancellationToken ct)
+    {
+        var id = SshJobs.NewId();
+        var body = Encoding.UTF8.GetBytes(Sh.Lf(script).TrimStart('\uFEFF') + (script.EndsWith('\n') ? "" : "\n"));
+        var r = await Ssh(o, host, SshJobs.StartCommand(id, cwd), body, TimeSpan.FromSeconds(Math.Max(60, o.Timeout)), ct, work: "").ConfigureAwait(false);
+        if (r.Aborted) return ToolResult.Error("Starting the job was aborted.");
+        if (r.TimedOut) return ToolResult.Error("Starting the job timed out.");
+        if (r.ExitCode == 255) return ToolResult.Error(Failure(host, r));
+        if (r.ExitCode == 125) return ToolResult.Error($"The working directory {cwd} does not exist on {host.Alias}.");
+        if (r.ExitCode != 0 || !r.Stdout.Contains(SshJobs.StatusMarker + id, StringComparison.Ordinal))
+            return ToolResult.Error($"Starting the job on {host.Alias} failed: {(r.Stderr.Trim() is { Length: > 0 } e ? e : $"exit code {r.ExitCode}")}");
+        return ToolResult.Ok($"Started job {id} on {host.Alias}; it runs detached, its output goes to ~/.cache/netpi-jobs/{id}.log. " +
+                             $"Follow it with ssh job {{ host: \"{host.Alias}\", id: \"{id}\", op: output | wait | kill }}.",
+            new { host = host.Alias, id, background = true, log = $"~/.cache/netpi-jobs/{id}.log", cwd });
     }
 
     private async Task KillGroupAsync(SshOptions o, SshHost host, int group)
@@ -672,8 +721,17 @@ internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : S
                 removed = outcome.Removed,
                 edits = outcome.Replacements,
                 firstChangedLine = outcome.FirstChangedLine,
-                eol = file.Text.Contains("\r\n", StringComparison.Ordinal) ? "crlf" : "lf",
+                eol = EolOf(file.Text),
             });
+    }
+
+    /// <summary>The file's line endings: crlf, lf, or mixed when both are there (the edit keeps each line's own ending).</summary>
+    internal static string EolOf(string text)
+    {
+        var crlf = 0;
+        for (var i = text.IndexOf("\r\n", StringComparison.Ordinal); i >= 0; i = text.IndexOf("\r\n", i + 2, StringComparison.Ordinal)) crlf++;
+        var lf = text.AsSpan().Count('\n') - crlf;
+        return crlf > 0 && lf > 0 ? "mixed" : crlf > 0 ? "crlf" : "lf";
     }
 
     private static List<TextEdit> Edits(JsonElement args)

@@ -30,6 +30,7 @@ EmbeddingsTests.Register(runner);
 DecisionReworkTests.Register(runner);
 LoopTests.Register(runner);
 SshTests.Register(runner);
+SshTests.RegisterMore(runner);
 SchedulesTests.Register(runner);
 SchedulesToolTests.Register(runner);
 WebhooksTests.Register(runner);

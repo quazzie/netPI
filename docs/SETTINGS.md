@@ -570,6 +570,7 @@ refuses an `ssh` download into another checkout of the repository.
 | `ssh.reuseConnections` | `true` | where the client cannot multiplex (Windows), keep connections to a host open between calls (below) |
 | `ssh.connectionsPerHost` | `3` | kept connections per host (1–8): calls running at the same time; one more opens its own ssh |
 | `ssh.idleSeconds` | `300` | a kept connection unused this long is closed (10–3600) |
+| `ssh.hostNotes` | `{}` | notes about hosts: `{ "folders": ["<dir>"], "files": { "<alias>": "<file>" } }` (settings.json only). A chat's first `ssh` call to a host gets the note as a section of the result: the file `files[alias]`, else `<folder>/<alias>.md` in the first folder that has one (a leading `~/` is expanded); at most 12 KB, a longer note is cut with a pointer to the file; shown again when compaction dropped it from the chat |
 
 Where the client supports it, calls to one host ride a single master connection (OpenSSH `ControlMaster`, 5 minutes
 after the last call): the first call of a run pays the TCP + transport + auth handshake, the rest reuse the socket. The

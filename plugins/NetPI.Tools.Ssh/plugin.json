@@ -1,5 +1,5 @@
 {
   "id": "netpi.tools.ssh",
   "name": "SSH tools",
-  "description": "ssh: run scripts and read, write, edit and copy files on the hosts in ~/.ssh/config; scripts and file contents go through stdin, not shell arguments."
+  "description": "ssh: run scripts (also as background jobs), grep, find, and read, write, edit and copy files on the hosts in the ssh config; scripts and file contents go through stdin, not shell arguments."
 }

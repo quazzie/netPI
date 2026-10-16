@@ -20,7 +20,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
 | `plugins/NetPI.Memory` | `netpi.memory` | `memory_search` | `memory.search`, `memory.reindex` |
 | `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
-| `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy`) | – |
+| `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy` `job` `grep` `find`) | – |
 | `plugins/NetPI.Workspaces` | `netpi.workspaces` | `workspace` (actions `info` `list` `switch`) | `workspaces.*` (see `docs/PROTOCOL.md`) |
 | `plugins/NetPI.Coordinator` | `netpi.coordinator` | – (for outside coordinators: the RPC/CLI only) | `sessions.dispatch`, `runs.result` |
 
@@ -1178,8 +1178,8 @@ plugin never reads key files and never uses passwords. Settings: `ssh.*` in `doc
   `cwd` that does not exist is reported as such. Each call is one ssh connection (0.2–0.5 s on a LAN).
 - ssh's own failures (exit 255) are errors with ssh's message and a hint for an unknown host key or a refused key.
 - **One tool, `ssh`, with an `action`** per job below (`{ action, host, … }`); a call with a `script` and no action is
-  `run`, and `action: "upload"`/`"download"` is `copy` in that direction. `hosts` and `read` only read
-  (`IReadOnlyCalls`), so several of them run in parallel. Until 2026-09-27 each job was a tool of its own (`ssh_run`,
+  `run`, and `action: "upload"`/`"download"` is `copy` in that direction. `hosts`, `read`, `grep`, `find` and `job` with
+  `op` output or wait only read (`IReadOnlyCalls`, per call), so several of them run in parallel. Until 2026-09-27 each job was a tool of its own (`ssh_run`,
   `ssh_read`, …): the chat view and compaction still understand those names in older chats, and each section below
   keeps its old name.
 
@@ -1252,8 +1252,42 @@ refused (use `run` with sed or python for those).
 
 ```ts
 details: { host, path /* "host:path" */, diff /* unified, 3 lines of context */, added, removed, edits /* replacements */,
-           firstChangedLine, eol: 'lf'|'crlf' }
+           firstChangedLine, eol: 'lf'|'crlf'|'mixed' /* mixed: both endings are in the file */ }
 ```
+
+### `ssh_run` with `background: true`, and `job`
+
+`run { host, script, cwd?, background: true }` saves the script on the host (under the job folder `.cache/netpi-jobs` in the
+home directory, as `<id>.sh`) and starts it **detached** (`setsid nohup bash`, every stream redirected, so the call returns at
+once and the kept connection is not given up); no timeout applies. Output goes to `<id>.log` (stdout and stderr), the process
+group's leader to `<id>.pid`, and the exit code, written then renamed into place when the script ends, to `<id>.exit`. The answer
+is the job id (`details: { host, id, background: true, log, cwd }`). Without `setsid` (macOS, some BusyBox) the job has no group
+of its own and a kill reaches only its shell.
+
+`job { host, id, op?: 'output'|'wait'|'kill', tail? (200, max 5000), timeout? (wait: 60, max 1800) }` — `output` (the default)
+is the log's last `tail` lines under a state line (`[job j1: running]`, `finished, exit code N`, `lost` when the process is
+gone without an exit code, `killed`); `wait` blocks on the host until the exit file exists (or the process is gone, or
+`timeout` seconds pass: `still running after Ns`); `kill` sends TERM, then KILL, to the process group and records 143 when the
+job left no exit code. Jobs and logs stay on the host (nothing removes them). An unknown id is `No such job`.
+
+### `ssh_grep` and `ssh_find` (read-only)
+
+`grep { host, pattern, path?, glob?, ignoreCase?, maxResults? (200, max 2000), cwd? }` runs `grep -rnIHE` on the host (extended
+regex, binary files skipped, `.git` and `node_modules` excluded; `glob` is one or more file-name globs separated by spaces or
+commas) and answers like the local `grep`: `path:line: text` rows (lines cut at 300 characters), what grep said on stderr
+(`Permission denied` and the like) as a note, a truncation note past `maxResults`; an invalid regex is the call's error.
+`find { host, pattern, path?, maxResults? (1000) }` runs `find` with the glob (`*.cs` matches names at any depth;
+`src/**/x_*.py` becomes a `-path` test; one level of `{a,b}` is expanded), `.git` and `node_modules` pruned. Both read at
+most `maxResults + 1` rows on the host (`head`), so a huge tree costs a bounded answer; `path` defaults to the home folder.
+
+### Host notes (`ssh.hostNotes`)
+
+A note the user keeps about a host (what runs there, what not to touch) is shown to the chat the first time it calls that
+host (any action): the note is added to that call's result as `[Host notes for <alias>: <file>] …` (at most 12 KB; a longer
+one is cut with a pointer to the full file). `ssh.hostNotes` is `{ "folders": ["<dir>"], "files": { "<alias>": "<file>" } }`
+(`docs/SETTINGS.md`); the file is `files[alias]`, else `<folder>/<alias>.md` in the first folder that has one. It is not
+repeated while an earlier result with it is still in the chat's context, and comes back when compaction dropped that
+result (the check reads the context, as the instruction-file notices do). Calls of one turn that start together get one copy.
 
 ### `ssh_copy` (summary arg `from`)
 

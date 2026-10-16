@@ -12,7 +12,7 @@ namespace NetPI.Aux.Tests;
 /// </summary>
 public static class SshTests
 {
-    private sealed class FakeLauncher : ISshLauncher
+    internal sealed class FakeLauncher : ISshLauncher
     {
         public readonly List<(string Exe, List<string> Args, byte[]? Stdin, string? WorkDir)> Calls = [];
         public Func<List<string>, byte[]?, SshExec> Reply = (_, _) => new SshExec(0, "", "", false, false);
@@ -41,7 +41,7 @@ public static class SshTests
         }
     }
 
-    private sealed class Env
+    internal sealed class Env
     {
         public FakePluginContext Ctx { get; } = new(T.TempDir("ssh-home"));
         public string Dir { get; } = T.TempDir("ssh");
@@ -75,9 +75,9 @@ public static class SshTests
         }
     }
 
-    private static JsonElement D(ToolResult r) => NetPiJson.ToElement(r.Details);
-    private static string Remote(List<string> args) => args[^1];
-    private static string Utf8(byte[]? b) => b is null ? "" : Encoding.UTF8.GetString(b);
+    internal static JsonElement D(ToolResult r) => NetPiJson.ToElement(r.Details);
+    internal static string Remote(List<string> args) => args[^1];
+    internal static string Utf8(byte[]? b) => b is null ? "" : Encoding.UTF8.GetString(b);
 
     public static void Register(TestRunner r)
     {
@@ -124,10 +124,13 @@ public static class SshTests
             Check.False(ssh.Definition.ReadOnly);
             // hosts and read only read; run, write, edit and copy change things
             var calls = (IReadOnlyCalls)ssh;
-            foreach (var (action, readOnly) in new[] { ("hosts", true), ("read", true), ("run", false), ("write", false), ("edit", false), ("copy", false) })
+            foreach (var (action, readOnly) in new[] { ("hosts", true), ("read", true), ("run", false), ("write", false), ("edit", false), ("copy", false), ("grep", true), ("find", true) })
                 Check.Equal(readOnly, calls.IsReadOnly(T.Args(new { action, host = "nuc" })), action);
+            Check.True(calls.IsReadOnly(T.Args(new { action = "job", host = "nuc", id = "j1" })), "job: output is the default op, and reads");
+            Check.True(calls.IsReadOnly(T.Args(new { action = "job", host = "nuc", id = "j1", op = "wait" })), "job wait reads");
+            Check.False(calls.IsReadOnly(T.Args(new { action = "job", host = "nuc", id = "j1", op = "kill" })), "job kill ends a process");
             Check.False(calls.IsReadOnly(T.Args(new { host = "nuc", script = "ls" })), "a script without an action runs");
-            foreach (var job in new[] { "hosts:", "run:", "read:", "write:", "edit:", "copy:" }) Check.Contains(ssh.Definition.Help!, "- " + job);
+            foreach (var job in new[] { "hosts:", "run:", "read:", "write:", "edit:", "copy:", "job:", "grep:", "find:" }) Check.Contains(ssh.Definition.Help!, "- " + job);
             Check.Contains((await ssh.ExecuteAsync(new ToolContext { SessionId = "s", AgentId = "a", CallId = "c", Cwd = env.Dir, Services = env.Ctx.Services, Events = env.Ctx.Events },
                 T.Args(new { action = "fly" }), CancellationToken.None)).Content, "Unknown action \"fly\"");
             var hosts = await env.Run("ssh_hosts", new { });
@@ -152,7 +155,7 @@ public static class SshTests
                     Check.True(props.ContainsKey(a), $"{action} reads {a} but the dispatcher's schema has no {a}");
             }
             var actions = props["action"]!.AsObject()["enum"]!.AsArray().Select(n => n!.GetValue<string>()!).ToHashSet();
-            Check.True(actions.SetEquals(new[] { "hosts", "run", "read", "write", "edit", "copy" }),
+            Check.True(actions.SetEquals(new[] { "hosts", "run", "read", "write", "edit", "copy", "job", "grep", "find" }),
                 "the action enum names the actions: " + string.Join(", ", actions.OrderBy(x => x)));
             foreach (var a in def.Parameters["required"]!.AsArray().Select(n => n!.GetValue<string>()!))
                 Check.True(props.ContainsKey(a), $"required {a} is not a property");
@@ -161,6 +164,10 @@ public static class SshTests
             Covers("write", "host", "path", "content", "append", "cwd");
             Covers("edit", "host", "path", "cwd", "edits", "replace_all");
             Covers("copy", "host", "direction", "from", "to", "recursive");
+            Covers("run", "background");
+            Covers("job", "host", "id", "op", "tail", "timeout");
+            Covers("grep", "host", "pattern", "path", "glob", "ignoreCase", "maxResults");
+            Covers("find", "host", "pattern", "path", "maxResults");
         });
 
         r.Add("ssh_run: the script goes through stdin byte for byte; fixed remote command; output and exit codes", async () =>
@@ -1021,6 +1028,8 @@ public static class SshTests
             Check.Equal(1, env.Fake.Calls.Count, "reuse off: the call runs its own ssh");
         });
     }
+
+    public static void RegisterMore(TestRunner r) => SshJobsTests.Register(r);
 
     private static readonly SshOptions BrokerOptions = new("ssh", "scp", "config", true, 5, 30, null);
     private static readonly SshHost BrokerHost = new("h1", null, null, null);
