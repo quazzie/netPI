@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -154,7 +155,46 @@ internal abstract class AgentToolBase(IPluginContext plugin)
         return false;
     }
 
-    protected static string Report(AgentInfo a)
+    /// <summary>What an agent's session cost (the Agents plugin's <c>usage.session</c>): its own calls and with its subagents.</summary>
+    protected sealed record AgentCost(double Usd, double WithSubagentsUsd, long Calls)
+    {
+        /// <summary>"$0.42", "$0.42 ($1.10 with its subagents)" or "free"; null when nothing was spent on calls yet.</summary>
+        public string? Text()
+        {
+            if (Calls == 0 && WithSubagentsUsd <= 0) return null;
+            var all = Math.Max(Usd, WithSubagentsUsd);
+            if (all <= 0) return "free";
+            var own = Usd.ToString("$0.00", CultureInfo.InvariantCulture);
+            return WithSubagentsUsd > Usd + 0.005 ? $"{own} ({WithSubagentsUsd.ToString("$0.00", CultureInfo.InvariantCulture)} with its subagents)" : own;
+        }
+
+        public void AddTo(JsonObject details)
+        {
+            details["costUsd"] = Usd;
+            details["withSubagentsUsd"] = WithSubagentsUsd;
+        }
+    }
+
+    /// <summary>The agent's spend, or null when the Agents plugin is not loaded or the call fails (the cost is left out then).</summary>
+    protected async Task<AgentCost?> CostOfAsync(AgentInfo a, CancellationToken ct)
+    {
+        try
+        {
+            if (!Plugin.Rpc.Exists("usage.session")) return null;
+            var raw = await Plugin.Rpc.InvokeAsync("usage.session", new JsonObject { ["sessionId"] = a.SessionId }, ct).ConfigureAwait(false);
+            if ((raw as JsonNode ?? NetPiJson.ToNode(raw)) is not JsonObject o) return null;
+            double Num(string k) => o[k] is JsonValue v && v.TryGetValue<double>(out var d) ? d : 0;
+            return new AgentCost(Num("costUsd"), Num("withSubagentsUsd"), (long)Num("calls"));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            Plugin.Logger.LogDebug(ex, "usage.session failed for {Agent}", a.Id);
+            return null;
+        }
+    }
+
+    protected static string Report(AgentInfo a, AgentCost? cost = null)
     {
         var sb = new StringBuilder();
         sb.Append("## ").Append(a.Name).Append(" (").Append(a.Id).Append(") — ");
@@ -165,7 +205,7 @@ internal abstract class AgentToolBase(IPluginContext plugin)
             sb.Append("\nCall agent with action wait again to keep waiting, or action cancel to stop it.");
             return sb.ToString();
         }
-        sb.Append(Status(a.Status)).Append(" [").Append(Stats(a)).Append("]\n");
+        sb.Append(Status(a.Status)).Append(" [").Append(Stats(a)).Append(cost?.Text() is { } spent ? ", " + spent : "").Append("]\n");
         if (!string.IsNullOrEmpty(a.Error) && a.Status != AgentStatus.Completed) sb.Append("Error: ").Append(a.Error).Append('\n');
         sb.Append(string.IsNullOrWhiteSpace(a.Result)
             ? "(no final report)"
@@ -201,8 +241,10 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         ["name"] = Prop("string", ""),
         ["agent"] = Prop("string", "An id from agent_choices, or \"any\": the first agent with a free instance takes it (it runs on that agent's model)"),
         ["model"] = Prop("string", ""),
-        ["tools"] = StringArray(""),
+        ["tools"] = StringArray("Tool names; your chat's switched-off tools are not applied to an explicit list"),
         ["instructions"] = Prop("string", ""),
+        ["maxUsd"] = Prop("number", "The most this subagent may spend (USD, its own calls)"),
+        ["maxTurns"] = Prop("integer", "The most model calls per run"),
         ["taskFile"] = Prop("string", "A file holding the task (appended to task, if any): for a long brief, write it to a file first so the call stays short"),
         ["workspace"] = Prop("string", "An existing workspace id or name; \"new\" (or isolated: true) gives the subagent its own worktree and branch"),
         ["isolated"] = Prop("boolean", "Give the subagent its own worktree and branch, so its writes cannot reach yours"),
@@ -223,14 +265,15 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         Description = "Start subagents on tasks (one: task; several at once: subagents) on the agents from agent_choices; returns at once, the reports come with agent wait or wake you.",
         Help =
             "Each subagent runs on one of the agents from agent_choices, in its own session, and ends with a final report. " +
-            "One: pass task (and agent, name, …). Several at once: pass subagents, each { task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority? }; " +
+            "One: pass task (and agent, name, …). Several at once: pass subagents, each { task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority?, maxUsd?, maxTurns? }; " +
             "they start together and all are checked first. agent goes inside each entry, not beside subagents.\n" +
             "The call returns at once with each subagent's state (running, or queued while its agent has no free instance). " +
             "Each report arrives later on its own and wakes you if you are idle; agent, action wait returns at the next one (your instance is free meanwhile).\n" +
             "task: self-contained (the subagent does not see your conversation): goal, paths, constraints, what to put in the report. " +
             "A long task goes in a file: pass taskFile (relative to your working directory). name: short, e.g. \"tests\". " +
             "agent: an id from agent_choices (required when agents are set up), or \"any\" for the first free one. model: only when no agents are set up (\"provider/model\"). " +
-            "tools: by name, may include tools you lack; default: yours. instructions: extra system-prompt text. " +
+            "tools: by name, may include tools you lack; default: yours (the tools switched off in your chat stay off then; an explicit list is taken as it is, the chat's switches are not applied to it). instructions: extra system-prompt text. " +
+            "maxUsd: the most the subagent may spend (USD, its own calls); a paid call that would go over is refused and it ends with \"stopped: its maxUsd is spent\". maxTurns: the most model calls per run. " +
             "priority: low, normal or high, the order it queues in while its agent is busy (default: yours, and never above yours); low for background work that can wait.\n" +
             "workspace: a subagent that only reads shares yours; one that writes gets its own git worktree and branch (merge it yourself afterwards; " +
             "it comes back in the report). isolated: true or workspace: \"new\" forces one; pass the same workspace to subagents that must see each other's files.",
@@ -260,7 +303,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         var requests = new List<SpawnRequest>(items.Count);
         for (var i = 0; i < items.Count; i++)
         {
-            var (request, error) = Prepare(items[i], agents, context);
+            var (request, error) = await PrepareAsync(items[i], agents, context, ct).ConfigureAwait(false);
             if (error is not null)
                 return ToolResult.Error(batch is null ? error : $"subagents[{i}]{(new ToolArgs(items[i]).Str("name") is { } n ? $" ({n})" : "")}: {error}\nNone of them was started.");
             requests.Add(request!);
@@ -268,11 +311,28 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
 
         // Every workspace the batch names is resolved and provisioned BEFORE the first child starts: a subagent that
         // cannot have a workspace is an error for the whole call, and nothing runs in the parent's checkout meanwhile.
-        var workspaceError = await PrepareBatchWorkspacesAsync(requests, context, batch is null, ct).ConfigureAwait(false);
+        var provision = new BatchProvision();
+        var workspaceError = await PrepareBatchWorkspacesAsync(requests, context, batch is null, provision, ct).ConfigureAwait(false);
         if (workspaceError is not null) return ToolResult.Error(workspaceError);
 
+        // All or nothing: a spawn that fails at item N stops the children already started and releases the batch's workspaces.
         var started = new List<AgentInfo>(requests.Count);
-        foreach (var request in requests) started.Add(await runtime.SpawnAsync(request, ct).ConfigureAwait(false));
+        for (var i = 0; i < requests.Count; i++)
+        {
+            try { started.Add(await runtime.SpawnAsync(requests[i], ct).ConfigureAwait(false)); }
+            catch (Exception ex)
+            {
+                var stopped = await StopStartedAsync(runtime, context, started).ConfigureAwait(false);
+                var released = await ReleaseAsync(provision.Bindings, provision.Before).ConfigureAwait(false);
+                if (ex is OperationCanceledException && ct.IsCancellationRequested) throw;
+                if (ex is not (ArgumentException or InvalidOperationException or KeyNotFoundException or CallRefusedException)) Plugin.Logger.LogWarning(ex, "agent_spawn: starting subagent {Index} failed", i);
+                var name = new ToolArgs(items[i]).Str("name") is { } n ? $" ({n})" : "";
+                var what = batch is null ? ex.Message : $"subagents[{i}]{name} could not start: {ex.Message}";
+                var after = started.Count == 0 ? "None of them was started."
+                    : $"The {started.Count} started before it ({string.Join(", ", started.Select(a => a.Name))}) {(started.Count == 1 ? "was" : "were")} stopped: none of the batch is running.";
+                return ToolResult.Error($"{what}\n{(batch is null ? "" : after)}{stopped}{released}".TrimEnd());
+            }
+        }
 
         var sb = new StringBuilder();
         foreach (var a in started)
@@ -288,8 +348,30 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             : ToolResult.Ok(sb.ToString(), new JsonObject { ["agents"] = new JsonArray([.. started.Select(a => (JsonNode)Details(runtime.Get(a.Id) ?? a))]) });
     }
 
+    /// <summary>Stop the children a failed batch had started, and take their results so the caller is told nothing about them.</summary>
+    private static async Task<string> StopStartedAsync(IAgentRuntime runtime, ToolContext context, List<AgentInfo> started)
+    {
+        if (started.Count == 0) return "";
+        var problems = new List<string>();
+        foreach (var a in started)
+        {
+            try { await runtime.AbortAsync(a.Id).ConfigureAwait(false); }
+            catch (Exception ex) { problems.Add($"{a.Name} ({a.Id}): {ex.Message}"); }
+        }
+        try { await runtime.WaitAsync(context.AgentId, started.Select(a => a.Id).ToList(), yieldSlot: false, TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false); }
+        catch (Exception) { /* they were told to stop; what is left shows in agent list */ }
+        return problems.Count == 0 ? "" : "\nCould not stop: " + string.Join("; ", problems) + " (agent with action cancel).";
+    }
+
+    /// <summary>What a batch created before its first child started (see <see cref="PrepareBatchWorkspacesAsync"/>), for releasing it when the batch fails.</summary>
+    private sealed class BatchProvision
+    {
+        public List<WorkspaceBinding> Bindings { get; } = [];
+        public HashSet<string>? Before { get; set; }
+    }
+
     /// <summary>One subagent's request, or why it can't start.</summary>
-    private (SpawnRequest? Request, string? Error) Prepare(JsonElement item, List<AgentSlots> agents, ToolContext context)
+    private async Task<(SpawnRequest? Request, string? Error)> PrepareAsync(JsonElement item, List<AgentSlots> agents, ToolContext context, CancellationToken ct)
     {
         var itemArgs = new ToolArgs(item);
         var task = itemArgs.Str("task", "prompt", "description", "message");
@@ -337,7 +419,14 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             spawnAgent = agent.Key;
             spawnModel = agent.Model;
         }
-        else spawnModel = agentArg ?? modelArg;
+        else
+        {
+            spawnModel = agentArg ?? modelArg;
+            // checked here, with the whole batch, not when the runtime plans the child: a model that does not exist must not fail the
+            // call after the children before it have started
+            if (!string.IsNullOrWhiteSpace(spawnModel) && !await ModelKnownAsync(spawnModel.Trim(), ct).ConfigureAwait(false))
+                return (null, $"Unknown agent or model '{spawnModel}'. agent_choices lists the agents.");
+        }
 
         // the caller may not see the tools it hands out (a limited orchestrator): unknown names get the list
         var tools = NameList(itemArgs, "tools", "allowedTools");
@@ -352,6 +441,19 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
                         .Select(g => $"- {g.Key}: {string.Join(", ", g.Select(t => t.Definition.Name).Distinct().Order(StringComparer.Ordinal))}")));
         }
 
+        // the caps: the runtime keeps them on the child's session (the model-call count of a run, the Agents ledger's spend per call)
+        var limits = new JsonObject();
+        if (itemArgs.TryGet(out var usdEl, "maxUsd", "max_usd"))
+        {
+            if (usdEl.ValueKind == JsonValueKind.Number && usdEl.TryGetDouble(out var usd) && usd > 0) limits["maxUsd"] = usd;
+            else if (usdEl.ValueKind != JsonValueKind.Null) return (null, "maxUsd is a number above 0 (the most the subagent may spend, in USD).");
+        }
+        if (itemArgs.TryGet(out var turnsEl, "maxTurns", "max_turns"))
+        {
+            if (turnsEl.ValueKind == JsonValueKind.Number && turnsEl.TryGetInt32(out var turns) && turns > 0) limits["maxTurns"] = turns;
+            else if (turnsEl.ValueKind != JsonValueKind.Null) return (null, "maxTurns is a whole number above 0 (the most model calls per run).");
+        }
+
         var spawn = new SpawnRequest
         {
             Task = task,
@@ -364,7 +466,16 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             Priority = priority,
         };
         if (workspace is not null || isolated) spawn.Features.Set(new SpawnWorkspace(workspace, isolated));
+        if (limits.Count > 0) spawn.Features.Set(limits);
         return (spawn, null);
+    }
+
+    private async Task<bool> ModelKnownAsync(string requested, CancellationToken ct)
+    {
+        try { if (await Plugin.Models.FindAsync(requested, ct).ConfigureAwait(false) is not null) return true; }
+        catch (Exception ex) when (ex is not OperationCanceledException) { Plugin.Logger.LogDebug(ex, "Model lookup failed for {Model}", requested); }
+        // an agent pool of that key (not set up by the user, but there) is taken by the runtime as before
+        return Plugin.Services.Get<IAgentScheduler>()?.Snapshot().Any(p => string.Equals(p.Key, requested, StringComparison.OrdinalIgnoreCase)) == true;
     }
 
     /// <summary>The workspace arguments of one subagent: a name/id to share, or a request for its own checkout.</summary>
@@ -386,7 +497,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     /// fails the whole call. A provisioning that fails after another succeeded releases what the batch created, so neither
     /// half a batch running in the caller's checkout nor a worktree without a worker is left behind.
     /// </summary>
-    private async Task<string?> PrepareBatchWorkspacesAsync(List<SpawnRequest> requests, ToolContext context, bool single, CancellationToken ct)
+    private async Task<string?> PrepareBatchWorkspacesAsync(List<SpawnRequest> requests, ToolContext context, bool single, BatchProvision batch, CancellationToken ct)
     {
         var provisioner = context.Services.Get<IWorkspaceProvisioner>();
         if (provisioner is null) return null;   // no workspace support loaded: the pre-workspace behavior for everything
@@ -394,7 +505,8 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         // What the batch creates is what was not there before it: only those are released on a failure (a named existing
         // workspace is bound, not made, and stays).
         var before = context.Services.Get<IWorkspaceStore>()?.ListWorkspaces().Select(w => w.Id).ToHashSet(StringComparer.Ordinal);
-        var provisioned = new List<WorkspaceBinding>();
+        batch.Before = before;
+        var provisioned = batch.Bindings;
         for (var i = 0; i < requests.Count; i++)
         {
             var request = requests[i];
@@ -437,7 +549,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             try
             {
                 if (!Plugin.Rpc.Exists("workspaces.delete")) throw new InvalidOperationException("workspaces.delete is not available");
-                await Plugin.Rpc.InvokeAsync("workspaces.delete", new { id = binding.WorkspaceId }, CancellationToken.None).ConfigureAwait(false);
+                await Plugin.Rpc.InvokeAsync("workspaces.delete", new JsonObject { ["id"] = binding.WorkspaceId }, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -581,18 +693,37 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
 
         const double seconds = 3600;   // an hour; the user's message, or a report, ends a wait sooner
         var first = root.Bool("all") != true;
+        var started = Stopwatch.GetTimestamp();
         var results = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct, first).ConfigureAwait(false);
 
         var sb = new StringBuilder();
         var running = results.Count(a => IsBusy(a.Status));
+        // why it returned (IAgentRuntime.WaitAsync does not say, so it is read from what it left): a report, else the user's message
+        // still queued for this chat, else the hour passing
+        var reason = results.Count - running > 0 ? "report"
+            : runtime.GetQueue(context.SessionId).Any(q => q.Source == "user") ? "user"
+            : Stopwatch.GetElapsedTime(started).TotalSeconds >= seconds - 1 ? "timeout"
+            : "interrupted";
         sb.Append(running == 0
             ? $"{results.Count} agent{(results.Count == 1 ? "" : "s")} finished."
-            : $"{results.Count - running} of {results.Count} agents finished; {running} still running ({(first ? "you asked for the first report; the rest are still working" : "the wait timed out or a new message arrived")}).");
-        foreach (var a in results) sb.Append("\n\n").Append(Report(a));
-        if (problems.Count > 0) sb.Append("\n\nUnknown or out-of-reach agent(s): ").Append(string.Join(", ", problems));
+            : $"{results.Count - running} of {results.Count} agents finished; {running} still running ({reason switch
+            {
+                "report" => first ? "you asked for the first report; the rest are still working" : "the wait ended before every one finished",
+                "user" => "the wait ended because the user wrote a message; the agents keep working, wait again for them",
+                "timeout" => "the wait timed out; the agents keep working, wait again for them",
+                _ => "the wait ended without a report; the agents keep working, wait again for them",
+            }}).");
         var arr = new JsonArray();
-        foreach (var a in results) arr.Add(Details(a));
-        return ToolResult.Ok(sb.ToString(), new JsonObject { ["agents"] = arr });
+        foreach (var a in results)
+        {
+            var cost = await CostOfAsync(a, ct).ConfigureAwait(false);
+            sb.Append("\n\n").Append(Report(a, cost));
+            var d = Details(a);
+            cost?.AddTo(d);
+            arr.Add(d);
+        }
+        if (problems.Count > 0) sb.Append("\n\nUnknown or out-of-reach agent(s): ").Append(string.Join(", ", problems));
+        return ToolResult.Ok(sb.ToString(), new JsonObject { ["agents"] = arr, ["reason"] = reason });
     }
 }
 
@@ -645,12 +776,12 @@ internal sealed class AgentListTool(IPluginContext plugin) : AgentToolBase(plugi
     internal override bool ReadOnly => true;
     internal override string Summary => "List your subagents (or all running agents with all=true) with status, activity, model, the agent they run on and usage.";
 
-    protected override Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
         var all = new ToolArgs(args).Bool("all") == true;
         var agents = runtime.List(true).Where(a => all || a.ParentAgentId == context.AgentId).Take(50).ToList();
         if (agents.Count == 0)
-            return Task.FromResult(ToolResult.Ok(all ? "No agents." : "You have no subagents. This tool only manages subagents you already started; to see which agents you can start, call agent_choices, then start one with agent_spawn.", new JsonObject { ["agents"] = new JsonArray() }));
+            return ToolResult.Ok(all ? "No agents." : "You have no subagents. This tool only manages subagents you already started; to see which agents you can start, call agent_choices, then start one with agent_spawn.", new JsonObject { ["agents"] = new JsonArray() });
         var sb = new StringBuilder();
         var arr = new JsonArray();
         foreach (var a in agents)
@@ -662,12 +793,16 @@ internal sealed class AgentListTool(IPluginContext plugin) : AgentToolBase(plugi
             if (a.Model is not null) sb.Append("model ").Append(a.Model).Append(", ");
             if (a.Agent is not null) sb.Append("agent ").Append(a.Agent).Append(", ");
             sb.Append(Stats(a));
+            var cost = await CostOfAsync(a, ct).ConfigureAwait(false);
+            if (cost?.Text() is { } spent) sb.Append(", ").Append(spent);
             if (a.QueuedMessages > 0) sb.Append(", ").Append(a.QueuedMessages).Append(" queued messages");
             if (!string.IsNullOrWhiteSpace(a.Task)) sb.Append("\n  task: ").Append(TextLimit.Head(a.Task.ReplaceLineEndings(" "), 160, "…"));
             sb.Append('\n');
-            arr.Add(Details(a));
+            var d = Details(a);
+            cost?.AddTo(d);
+            arr.Add(d);
         }
-        return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd(), new JsonObject { ["agents"] = arr }));
+        return ToolResult.Ok(sb.ToString().TrimEnd(), new JsonObject { ["agents"] = arr });
     }
 }
 
@@ -679,18 +814,21 @@ internal sealed class AgentResultTool(IPluginContext plugin) : AgentToolBase(plu
     internal override bool ReadOnly => true;
     internal override string Summary => "Get a subagent's status and final report (its last message) without waiting.";
 
-    protected override Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
         var id = new ToolArgs(args).Str("id", "agentId", "agent", "name");
-        if (string.IsNullOrWhiteSpace(id)) return Task.FromResult(ToolResult.Error("Missing 'id'."));
+        if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("Missing 'id'.");
         var a = Resolve(runtime, context.AgentId, id, out var refusal);
-        if (a is null) return Task.FromResult(ToolResult.Error(refusal is null
+        if (a is null) return ToolResult.Error(refusal is null
             ? $"Unknown agent '{id}'. Use agent with action list to see agents."
-            : $"Agent '{id}': {refusal}"));
-        var text = Report(a);
+            : $"Agent '{id}': {refusal}");
+        var cost = await CostOfAsync(a, ct).ConfigureAwait(false);
+        var text = Report(a, cost);
         if (IsBusy(a.Status) && !string.IsNullOrWhiteSpace(a.Result))
             text += "\n\nLast report of a previous run:\n" + TextLimit.Head(a.Result.Trim(), ReportChars, $"See session {a.SessionId}.");
-        return Task.FromResult(ToolResult.Ok(text, Details(a)));
+        var details = Details(a);
+        cost?.AddTo(details);
+        return ToolResult.Ok(text, details);
     }
 }
 

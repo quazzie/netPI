@@ -47,7 +47,7 @@ Every request carries the active tools (the highest-priority registration per na
 - for a subagent: the tools its owner chose. With an `agent_spawn` `tools` list exactly those, even tools the owner
   does not have (a limited orchestrator can dispatch an agent with the `ssh` tool; unknown names get the list of
   tools); without one the owner's tools (its allowlist, and its session's switched-off tools, copied to the subagent's
-  session). So a chat that may spawn subagents can reach every tool through them; switch `agent_spawn` off to prevent
+  session; an explicit list is taken as it is, the chat's switches are not applied to it). So a chat that may spawn subagents can reach every tool through them; switch `agent_spawn` off to prevent
   that. At the deepest level (`agents.maxDepth`) the orchestration tools are left out except `agent` (to send to the parent).
 
 A tool that appears or disappears during a session (a plugin loaded, reloaded or disabled) is announced the same way.
@@ -858,7 +858,17 @@ without an agent that are running. Without agents: "No agents are set up", and a
 instance takes the subagent, whatever its model); an agent that can't take work is refused with the list. The
 subagent's session keeps the agent (`meta.agent`) as where it runs by preference: it waits for the first agent on that
 model with a free instance (with `"any"`, for any agent), not in one agent's queue. Without agents, `model` (default: the caller's). `tools`: the subagent's tools, which may include
-tools the caller doesn't have (default: the caller's). `details`: the subagent's `{ agentId, sessionId, name, status }`.
+tools the caller doesn't have (default: the caller's; the chat's switched-off tools stay off only for that default, an explicit
+list is not filtered by them). `details`: the subagent's `{ agentId, sessionId, name, status }`.
+
+`maxUsd` (number, USD) and `maxTurns` (integer) cap one subagent (each `subagents[]` entry has its own). Both are kept on the
+child's session meta (`meta.maxUsd`, `meta.maxTurns`). `maxTurns` lowers the run's model-call limit (`agent.maxTurns`) for
+that agent: at the cap the run fails with "Stopped: this run reached its maxTurns of N model calls". `maxUsd` is checked by the
+Agents ledger where a call is reserved: the child's own calls so far (calls in flight at their reservation) plus this call's
+reservation may not exceed it; a paid call that would is refused, the child ends `failed` with "Stopped: its maxUsd of $X is spent
+…" (a model with an unknown price cannot be capped and is refused too; free and local models are never stopped by it).
+Subagents of the child have their own caps. The runtime takes both from a `JsonObject` feature of `SpawnRequest.Features`
+(`maxUsd`, `maxTurns`): `SpawnRequest` has no field for them.
 
 Where the caller's model is inherited, it means the effective model: the session's explicit model, otherwise its
 named agent's model, otherwise the catalog default. Turns, delegation and manual compaction use the same
@@ -870,11 +880,14 @@ including during manual compaction, rather than silently replaced by the global 
 "Priority"); default the caller's own, never above it (`critical` is refused: a subagent does not take instances from
 other runs, and a critical chat's subagents run at `high`). Work that can wait goes at `low`.
 
-Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority? }, …] }`.
+Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority?, maxUsd?, maxTurns? }, …] }`.
 `taskFile` reads a long task from a file (path relative to the working directory; appended to `task` if both are given), so a batch stays short enough for a model to write in one call. Arguments that end inside an open object or array are reported as cut off, with that advice.
 Every entry is checked first, and every workspace the batch needs is provisioned before the first child starts (a named one
 resolved, the worktree of every worker that writes created, by the same rule a single spawn follows); a bad one starts none of
-them ("subagents[1] (name): …") and releases the worktrees the batch had created. Then they all start together.
+them ("subagents[1] (name): …") and releases the worktrees the batch had created. A model that does not exist is such an error
+(without agents set up it is checked with the batch, not when the child is planned). Then they all start together; if a spawn
+still fails at entry N, the children already started are stopped, the batch's worktrees released and the error says what
+happened ("subagents[N] (name) could not start: …", the children stopped), so the batch is all or nothing.
 `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
 
 It never waits: the call returns at once and the result lists each subagent as `running` or `queued` (its agent has no free instance yet). Each report arrives later as an `agent-result` notice (it wakes an idle caller — a subagent that has already finished included: it runs again on the report and reports again to its own parent — or steers a running one), unless the caller collects it with `agent` `wait` first, which returns at the next report while the caller's instance is free for its subagents (`agent_choices` marks it: "one is you: free for your subagents while you wait"). Start subagents that should run together in one call; wait; start the next piece when an instance frees up; wait again. Ending the turn instead is fine: the reports wake the caller. A subagent whose turn ends while subagents of its own still run is not finished: it is *parked* (status `yielded`, activity "waiting for N agents", no run and no instance), sends no report to its parent, and a wait on it keeps waiting. Its children's reports or a message wake it; it completes, and reports once, when a run ends with none left. Cancelling a parked agent ends it as `cancelled` and cancels its children.
@@ -890,7 +903,14 @@ tool through subagents, and `agent_choices` belongs to another plugin.
 `{ ids?, all? }`: waits for the given subagents (ids or names) and returns as soon as one has finished, the others keep running (wait again for them; a freed instance can start the next piece meanwhile); `all: true` returns only when every one has A wait ends after an hour at the latest. The caller's
 instance is free for them meanwhile and it queues for one again first among the runs of its own priority. Without ids: all of the caller's running subagents, plus
 finished ones whose `agent-result` notice is still queued unseen (the report comes back here and the queued notice is
-dropped, so it arrives once). A new user message interrupts the wait. `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
+dropped, so it arrives once). A new user message interrupts the wait. When agents are still running the text says why it
+returned (the first report arrived / the user wrote / the hour passed / interrupted: `details.reason` is `report`, `user`,
+`timeout` or `interrupted`; the runtime's `WaitAsync` does not report it, the tool reads it from what the wait left: a finished agent,
+else a user message queued for the chat, else the elapsed time). `details`: `{ agents: [{ agentId, sessionId, name, status, costUsd?, withSubagentsUsd? }], reason }`.
+
+`agent` `list`, `result` and `wait` show each subagent's spend (`$0.42`, with `($1.10 with its subagents)` when it has some, `free`
+when its calls cost nothing; left out before its first call) from the Agents plugin's `usage.session`, and put `costUsd` and
+`withSubagentsUsd` in `details`; without that RPC nothing is shown.
 
 ## Goal (`category: "goal"`)
 
