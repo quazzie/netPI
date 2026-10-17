@@ -199,7 +199,9 @@ function renderWork() {
   else {
     const title = (id) => state.sessions.find((x) => x.id === id)?.title;
     nodes.push(el('div', { class: 'group' }, 'Agents'));
-    const pool = (w.agents || []).filter((a) => a.configured || a.busy || a.queued);
+    // the desktop's rule for "Off": switched off or unavailable, and nothing still running on it. Those stay out of the phone's list
+    const isOff = (a) => (a.disabled || a.available === false) && !(a.owners?.length || a.waiters?.length);
+    const pool = (w.agents || []).filter((a) => (a.configured || a.busy || a.queued) && !isOff(a));
     nodes.push(...(pool.length ? pool.map((a) => el('div', { class: 'row' }, el('span', { class: 'dot ' + (a.disabled || a.available === false ? 'off' : a.busy ? 'run' : 'on') }),
       el('div', { class: 't' }, el('b', {}, a.key), el('span', {}, [a.model || (a.models || [])[0], a.disabled ? 'off' : a.available === false ? (a.unavailable || 'unavailable') : null].filter(Boolean).join(' · '))),
       el('time', {}, a.busy + '/' + a.capacity + (a.queued ? ' +' + a.queued + ' queued' : '')))) : [el('div', { class: 'empty' }, 'No agents set up.')]));
