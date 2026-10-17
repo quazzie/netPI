@@ -122,7 +122,7 @@ function onEvent(e) {
     case 'message.added': case 'message.updated': case 'messages.compacted': if (sid === state.sessionId) loadMessages(false).catch(() => {}); return;
     default: return;
   }
-  if (state.view === 'chat') renderCards(); else if (state.view === 'list') render();
+  if (state.view === 'chat') { renderCards(); renderComposer(); } else if (state.view === 'list') render();
 }
 
 // ---------------------------------------------------------------- views
@@ -240,7 +240,7 @@ function renderCards() {
   const box = document.getElementById('cards'); if (!box) return;
   const w = waitsFor(state.sessionId); const nodes = [];
   for (const g of w.guards) {
-    const send = (allow, scope) => rpc('guard.answer', { approvalId: g.approvalId, allow, scope }).then(() => { state.guards = state.guards.filter((x) => x.approvalId !== g.approvalId); renderCards(); }).catch((e) => alert(e.message));
+    const send = (allow, scope) => rpc('guard.answer', { approvalId: g.approvalId, allow, scope }).then(() => { state.guards = state.guards.filter((x) => x.approvalId !== g.approvalId); renderCards(); renderComposer(); }).catch((e) => alert(e.message));
     nodes.push(el('div', { class: 'card' }, el('h3', {}, 'Approval needed · ' + g.tool), el('div', { class: 'subj' }, g.subject), g.rule ? el('div', { class: 'row-dim' }, 'rule: ' + g.rule) : null,
       g.opinion ? el('div', { class: 'row-dim' }, g.opinion.harmless ? 'Second opinion: looks harmless' : 'Second opinion: not clearly harmless') : null,
       el('div', { class: 'opts' }, el('button', { class: 'primary', onclick: () => send(true, 'once') }, 'Allow once'), el('button', { onclick: () => send(true, 'session') }, 'Allow for this chat'), el('button', { class: 'danger', onclick: () => send(false) }, 'Deny'))));
@@ -258,7 +258,7 @@ function askCard(a) {
     const answers = picks.map((s) => [...s]);
     if (!answers.some((x) => x.length) && !text.value.trim()) return;
     send.disabled = true;
-    try { await rpc('ask.answer', { id: a.id, answers: answers.some((x) => x.length) ? answers : undefined, text: text.value.trim() || undefined }); state.asks = state.asks.filter((x) => x.id !== a.id); renderCards(); }
+    try { await rpc('ask.answer', { id: a.id, answers: answers.some((x) => x.length) ? answers : undefined, text: text.value.trim() || undefined }); state.asks = state.asks.filter((x) => x.id !== a.id); renderCards(); renderComposer(); }
     catch (e) { alert(e.message); send.disabled = false; }
   } }, 'Answer');
   return el('div', { class: 'card' }, el('h3', {}, (a.agentName || 'The agent') + ' asks'), qs, text, send);
@@ -280,11 +280,12 @@ function renderComposer() {
       state.images = []; ta.value = ''; await loadMessages(false).catch(() => {}); renderComposer();
     } catch (e) { alert(e.message); send.disabled = false; }
   } }, 'Send');
-  box.replaceChildren(
+  box.replaceChildren(...[
     busy ? el('div', { class: 'mode' }, 'While it works:', ['queue', 'steer'].map((m) => el('button', { class: mode === m ? 'on' : '', onclick: () => { store.set('mode', m); renderComposer(); } }, m === 'queue' ? 'Queue' : 'Steer')),
       el('span', { style: 'flex:1' }), el('button', { class: 'danger', onclick: () => { rpc('agent.abort', { sessionId: state.sessionId }).catch((e) => alert(e.message)); } }, 'Stop')) : null,
     state.images.length ? el('div', { class: 'thumbs' }, state.images.map((i) => el('img', { src: 'data:' + i.mediaType + ';base64,' + i.data }))) : null,
-    el('div', { class: 'bar' }, el('button', { class: 'ghost', onclick: () => file.click(), 'aria-label': 'Attach a picture' }, '📎'), file, ta, send));
+    el('div', { class: 'bar' }, el('button', { class: 'ghost', onclick: () => file.click(), 'aria-label': 'Attach a picture' }, '📎'), file, ta, send),
+  ].filter(Boolean));
   if (keep) ta.dispatchEvent(new Event('input'));
 }
 // pictures are shrunk before they travel: a phone photo is several MB
