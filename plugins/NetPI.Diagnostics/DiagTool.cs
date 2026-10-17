@@ -37,7 +37,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         ("logs", "diag.logs", "log entries, oldest first: the live ring, and the day files for any older day (from/to/before)", false),
         ("search", "diag.search", "text in every stored session, newest first: what was said, which tools ran with what, what failed (query, name, errors, callId, scope, from/to, cursor)", false),
         ("sessions", "sessions.list", "the stored sessions, pinned then newest first, with offset paging (query matches the title)", false),
-        ("recall", "memory.search", "past chats closest in meaning to a question (embeddings): query, limit, projectId", false),
+        ("recall", "memory.search", "past chats closest to a question, by meaning (embeddings) and by its words: query, limit, projectId", false),
         ("settings", "diag.settings", "the settings document without secrets", false),
         ("failures", "diag.failures", "failed requests the providers saved, newest first", false),
         ("failure", "diag.failure", "one saved failed request with its body: name", false),

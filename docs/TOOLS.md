@@ -1337,7 +1337,7 @@ read-only ones and who may write instead. The single exception is the `rpc` acti
 | `logs` | `diag.logs` | log entries, filtered: the live ring, and the day files for older days (`from`, `to`, `before`) |
 | `search` | `diag.search` | text in every stored session, newest first: what was said, which tools ran with what, which results failed (`query`, `name`, `errors`, `callId`, `scope`, `role`, `from`/`to`, `cursor`) |
 | `sessions` | `sessions.list` | the stored sessions with `limit`/`offset` paging (`query` is the title search) |
-| `recall` | `memory.search` | past chats closest in meaning (embeddings; needs the Memory plugin's embedding model); the calling chat is left out unless `excludeSessionId` says otherwise |
+| `recall` | `memory.search` | past chats closest to the question, by meaning (embeddings) and by its words (words alone without an embedding model); the calling chat is left out unless `excludeSessionId` says otherwise |
 | `settings` | `diag.settings` | the settings document without secrets |
 | `failures`, `failure` | `diag.failures` | the requests a backend refused (`failure`: one with its body) |
 | `snapshot`, `event` | `diag.snapshot` | plugins, tools, RPC methods, recent events, logs, runtime (`event`: one event's payload) |
@@ -1477,11 +1477,18 @@ An argument the model wrote as JSON text inside a string, or a list it wrapped i
 
 ## `memory_search` (plugins/NetPI.Memory)
 
-Finds earlier chats by meaning: `{ query, limit? (5, at most 10), project? ("all"; default the session's project) }`. The
+Finds earlier chats by meaning and by words: `{ query, limit? (5, at most 10), project? ("all"; default the session's project) }`. The
 Memory plugin embeds every chat in the background (the Embeddings plugin's model; pieces of ~1,200 characters: the first
 request, the compaction summaries, the rest of the conversation — user and agent messages whole up to 6,000 characters,
 subagent reports, each tool call with its short arguments, the text of failed tools; not successful tool output — with
 its start and end kept first beyond `memory.maxChunksPerChat`) and scores a chat by its best piece. Pieces are packed
-from the start and keyed by a hash of their text, so a chat that grew re-embeds only its new last piece. Content: one line per chat, `- ses_… "Title" (date, score): snippet`, best first, the current chat left out.
-Details: `{ chats: [{ sessionId, title, projectId, updatedAt, score, snippet }] }`. Without an embedding model, or with the
-server not answering, the tool says so as an error. Read-only.
+from the start and keyed by a hash of their text, so a chat that grew re-embeds only its new last piece. Two rankings
+are fused by reciprocal rank (1/(60+rank) each): by meaning (cosine of the chat's best piece) and by words (BM25 of its
+best piece over the same texts, scanned at query time; words are runs of letters, digits and `_`, so `ERR_QUIX_4471` or
+`CS0103` match whole; common English words are left out), the word side weighted by each chat's score relative to the
+best, so a rare identifier one chat holds wins over words many share. Content: one line per chat,
+`- ses_… "Title" (date, score, n/m words): snippet`, best first, the current chat left out; the snippet is cut around the
+matched words. Details: `{ chats: [{ sessionId, title, projectId, updatedAt, score, words, snippet }] }` (`score` null for
+a chat found by words only). Without an embedding model the chats are indexed as text only and found by words (the answer
+says "words only"); the same when the server is not answering. An error only when memory is off, or there is neither a
+meaning nor a search word. Read-only.

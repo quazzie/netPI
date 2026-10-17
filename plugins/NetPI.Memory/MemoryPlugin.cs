@@ -7,13 +7,13 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Memory;
 
 /// <summary>
-/// Semantic memory over past chats (idea-61wg9p phase 3): every chat's text — what the user asked, what the agent
-/// answered, the compaction summaries — is embedded in chunks in the background (the Embeddings plugin), and
-/// <c>memory_search</c> / <c>memory.search</c> find the chats closest in meaning to a question: "have we done this
-/// before?", across projects or within one. Off without an embedding model; the chats' text goes only to the
-/// configured embedding server. Nothing here decides anything: it finds chats, the agent or the user reads them.
+/// Memory over past chats (idea-61wg9p phase 3): every chat's text — what the user asked, what the agent answered, the
+/// tool calls, failed tools, subagent reports and compaction summaries — is indexed in pieces in the background (and
+/// embedded with the Embeddings plugin's model when there is one), and <c>memory_search</c> / <c>memory.search</c> find
+/// the chats closest to a question by meaning and by its words: "have we done this before?", "where did ERR_X come
+/// up?", across projects or within one. The chats' text goes only to the configured embedding server. Nothing here decides anything: it finds chats, the agent or the user reads them.
 /// </summary>
-[NetPiPlugin("netpi.memory", Name = "Memory", Description = "Semantic search over past chats (needs the Embeddings plugin and an embedding model)", Order = 85)]
+[NetPiPlugin("netpi.memory", Name = "Memory", Description = "Search over past chats by meaning and by words (meaning needs the Embeddings plugin and an embedding model)", Order = 85)]
 public sealed class MemoryPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
@@ -23,20 +23,20 @@ public sealed class MemoryPlugin : INetPiPlugin
             Id = "memory", Title = "Memory", Group = "Tools", Order = 62,
             Settings =
             [
-                SettingInfo.Bool("memory.enabled", "Search past chats by meaning", true,
-                    "With an embedding model (embed.model) every chat is embedded in the background and the memory_search tool finds earlier chats by meaning. The text goes only to the embedding server."),
+                SettingInfo.Bool("memory.enabled", "Search past chats", true,
+                    "Every chat is indexed in the background and the memory_search tool finds earlier chats by their words and, with an embedding model (embed.model), by meaning. The text goes only to the embedding server."),
                 SettingInfo.Int("memory.maxChunksPerChat", "Pieces per chat", MemoryIndex.DefaultMaxChunks,
                     "How many pieces of ~1,200 characters a chat is embedded as at most (its start, its end and its summaries are kept first). Only pieces whose text changed are embedded again.", 4, 400),
             ],
         });
         var index = context.Track(new MemoryIndex(context));
         context.Tools.Register(new MemorySearchTool(context, index));
-        context.Rpc.Register(new RpcMethod("memory.search", "Past chats closest in meaning: { query, limit? (5), projectId?, excludeSessionId? } → { available, chats: [{ sessionId, title, projectId, updatedAt, score, snippet }] }", ReadOnly: true, Params: [RpcParam.Req("query"), RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("projectId"), RpcParam.Opt("excludeSessionId")]),
+        context.Rpc.Register(new RpcMethod("memory.search", "Past chats closest to a query, by meaning and by its words: { query, limit? (5), projectId?, excludeSessionId? } → { available, meaning, chats: [{ sessionId, title, projectId, updatedAt, score, words, snippet }] }", ReadOnly: true, Params: [RpcParam.Req("query"), RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("projectId"), RpcParam.Opt("excludeSessionId")]),
             async (r, rct) =>
         {
             var query = r.Required("query");
-            var hits = await index.SearchAsync(query, r.Int("limit") ?? 5, r.Str("projectId"), r.Str("excludeSessionId"), rct).ConfigureAwait(false);
-            return new JsonObject { ["available"] = hits is not null, ["chats"] = MemoryIndex.Json(hits ?? []) };
+            var found = await index.SearchAsync(query, r.Int("limit") ?? 5, r.Str("projectId"), r.Str("excludeSessionId"), rct).ConfigureAwait(false);
+            return new JsonObject { ["available"] = found is not null, ["meaning"] = found?.Meaning ?? false, ["chats"] = MemoryIndex.Json(found?.Hits ?? []) };
         });
         context.Rpc.Register(new RpcMethod("memory.reindex", "Embed the chats that changed since they were last embedded, now: { } → { enabled, indexed?, unchanged?, removed?, skipped?, pieces? }", ReadOnly: false, Params: []),
             async (_, rct) => await index.SweepAsync(rct).ConfigureAwait(false));
@@ -47,7 +47,11 @@ public sealed class MemoryPlugin : INetPiPlugin
     }
 }
 
-internal sealed record MemoryHit(string SessionId, string Title, string? ProjectId, string UpdatedAt, double Score, string Snippet);
+/// <summary>A chat found: <paramref name="Score"/> is the cosine of its best piece (null when it was found by words only), <paramref name="Words"/> how many of the query's words its best-matching piece holds.</summary>
+internal sealed record MemoryHit(string SessionId, string Title, string? ProjectId, string UpdatedAt, double? Score, int Words, string Snippet);
+
+/// <summary>A search's chats, best first; <paramref name="Meaning"/> false when the embedding server could not rank them (words only).</summary>
+internal sealed record MemorySearch(List<MemoryHit> Hits, bool Meaning, int Terms);
 
 /// <summary>The chats' embeddings: one document per chat in <c>chats</c>, kept in step by a sweep every few minutes.</summary>
 internal sealed class MemoryIndex : IDisposable
@@ -72,8 +76,14 @@ internal sealed class MemoryIndex : IDisposable
     private Dictionary<string, Entry>? _cache;
     private Timer? _timer;
 
-    /// <summary>One chat: its pieces' texts, their content hashes (a piece whose text is unchanged keeps its vector) and vectors.</summary>
-    private sealed record Entry(string Model, string Rev, string Title, string? ProjectId, string UpdatedAt, string[] Texts, string[] Hashes, float[][] Vectors);
+    /// <summary>
+    /// One chat: its pieces' texts, their content hashes (a piece whose text is unchanged keeps its vector), vectors (none
+    /// without an embedding model) and word counts (the word ranking's piece lengths).
+    /// </summary>
+    private sealed record Entry(string Model, string Rev, string Title, string? ProjectId, string UpdatedAt, string[] Texts, string[] Hashes, float[][] Vectors)
+    {
+        public int[] Lengths { get; } = Texts.Select(Lexical.Count).ToArray();
+    }
 
     public MemoryIndex(IPluginContext ctx)
     {
@@ -81,8 +91,9 @@ internal sealed class MemoryIndex : IDisposable
         _store = ctx.Data.Collection("chats", new CollectionSpec().Text("model").Text("projectId"));
     }
 
-    private IEmbeddingService? Service =>
-        _ctx.Settings.GetOr("memory.enabled", true) && _ctx.Services.Get<IEmbeddingService>() is { Model: not null } s ? s : null;
+    private bool Enabled => _ctx.Settings.GetOr("memory.enabled", true);
+
+    private IEmbeddingService? Service => Enabled && _ctx.Services.Get<IEmbeddingService>() is { Model: not null } s ? s : null;
 
     public void Start()
     {
@@ -97,11 +108,17 @@ internal sealed class MemoryIndex : IDisposable
         catch (Exception ex) { _ctx.Logger.LogInformation("Memory: the chat index was not updated: {Message}", ex.Message); }
     }
 
-    /// <summary>Embed every chat whose messages or model changed since it was embedded; drop the ones that are gone.</summary>
+    /// <summary>
+    /// Index every chat whose messages or model changed since it was indexed; drop the ones that are gone. Without an
+    /// embedding model the chats' pieces are kept as text only (the word search still finds them); with a model whose
+    /// server is not answering the sweep waits for the next round.
+    /// </summary>
     public async Task<JsonObject> SweepAsync(CancellationToken ct)
     {
-        if (Service is not { Model: { } model } service) return new JsonObject { ["enabled"] = false };
-        if (!service.Available) return new JsonObject { ["enabled"] = true, ["available"] = false };
+        if (!Enabled) return new JsonObject { ["enabled"] = false };
+        var service = Service;
+        if (service is { Available: false }) return new JsonObject { ["enabled"] = true, ["available"] = false };
+        var model = service?.Model ?? "";
         await _sweeping.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -116,7 +133,8 @@ internal sealed class MemoryIndex : IDisposable
                 {
                     var rev = $"{Format}:{session.MessageCount}:{session.UpdatedAt.ToUnixTimeSeconds()}:{maxChunks}";
                     cache.TryGetValue(session.Id, out var have);
-                    if (have is not null && have.Model == model && have.Rev == rev) { unchanged++; continue; }
+                    // Without a model a chat that did not change keeps the vectors it has, for the day the model is back.
+                    if (have is not null && have.Rev == rev && (have.Model == model || service is null)) { unchanged++; continue; }
                     var chunks = Chunks(session, _ctx.Sessions.GetMessages(session.Id), maxChunks);
                     if (chunks.Count == 0) { unchanged++; continue; }
                     // Only the pieces whose text is new are embedded: a chat that grew by a message re-embeds its last piece or two.
@@ -125,7 +143,7 @@ internal sealed class MemoryIndex : IDisposable
                     if (have is not null && have.Model == model)
                         for (var i = 0; i < Math.Min(have.Hashes.Length, have.Vectors.Length); i++) known.TryAdd(have.Hashes[i], have.Vectors[i]);
                     var missing = chunks.Where((_, i) => !known.ContainsKey(hashes[i])).Distinct(StringComparer.Ordinal).ToList();
-                    if (missing.Count > 0)
+                    if (service is not null && missing.Count > 0)
                     {
                         var result = await service.EmbedAsync(new EmbeddingRequest { Texts = missing, Background = true }, ct).ConfigureAwait(false);
                         for (var k = 0; k < missing.Count; k++) known[Hash(missing[k])] = result.Vectors[k];
@@ -133,7 +151,7 @@ internal sealed class MemoryIndex : IDisposable
                     }
                     // Stored under the configured model name: the one the next sweep and the search compare with.
                     var entry = new Entry(model, rev, session.Title, session.ProjectId, session.UpdatedAt.ToString("O"),
-                        chunks.ToArray(), hashes, hashes.Select(h => known[h]).ToArray());
+                        chunks.ToArray(), hashes, service is null ? [] : hashes.Select(h => known[h]).ToArray());
                     _store.Put(session.Id, new JsonObject
                     {
                         ["model"] = entry.Model, ["rev"] = rev, ["title"] = entry.Title, ["projectId"] = entry.ProjectId, ["updatedAt"] = entry.UpdatedAt,
@@ -160,7 +178,7 @@ internal sealed class MemoryIndex : IDisposable
                 removed++;
             }
             if (indexed + removed > 0) _ctx.Logger.LogInformation("Memory: embedded {Indexed} chats ({Pieces} new pieces), removed {Removed} ({Model})", indexed, pieces, removed, model);
-            return new JsonObject { ["enabled"] = true, ["model"] = model, ["indexed"] = indexed, ["unchanged"] = unchanged, ["removed"] = removed, ["skipped"] = skipped, ["pieces"] = pieces };
+            return new JsonObject { ["enabled"] = true, ["model"] = service?.Model, ["indexed"] = indexed, ["unchanged"] = unchanged, ["removed"] = removed, ["skipped"] = skipped, ["pieces"] = pieces };
         }
         finally { _sweeping.Release(); }
     }
@@ -196,32 +214,60 @@ internal sealed class MemoryIndex : IDisposable
         lock (_gate) _cache?.Remove(sessionId);
     }
 
-    /// <summary>The chats closest to the query, best chunk per chat; null without embeddings.</summary>
-    public async Task<List<MemoryHit>?> SearchAsync(string query, int limit, string? projectId, string? excludeSessionId, CancellationToken ct)
+    /// <summary>
+    /// The chats closest to the query: one ranking by meaning (cosine of the chat's best piece), one by words (BM25 of its
+    /// best piece: exact identifiers, error codes, file names), fused by reciprocal rank. Without an answering embedding
+    /// server it ranks by words alone (<see cref="MemorySearch.Meaning"/> false); null when memory is off or there is
+    /// neither a meaning nor a word to search with.
+    /// </summary>
+    public async Task<MemorySearch?> SearchAsync(string query, int limit, string? projectId, string? excludeSessionId, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(query) || Service is not { Available: true, Model: { } model } service) return null;
-        float[] q;
-        try { q = (await service.EmbedAsync(new EmbeddingRequest { Texts = [query], Kind = EmbeddingKind.Query }, ct).ConfigureAwait(false)).Vectors[0]; }
-        catch (EmbeddingException ex)
+        if (string.IsNullOrWhiteSpace(query) || !Enabled) return null;
+        float[]? q = null;
+        string? model = null;
+        if (Service is { Available: true, Model: { } m } service)
         {
-            _ctx.Logger.LogDebug("Memory: no search ({Code}): {Message}", ex.Code, ex.Message);
-            return null;
-        }
-        var hits = new List<MemoryHit>();
-        foreach (var (id, entry) in Load())
-        {
-            if (entry.Model != model || id == excludeSessionId) continue;
-            if (projectId is { Length: > 0 } && entry.ProjectId != projectId) continue;
-            var best = -1f;
-            var at = 0;
-            for (var i = 0; i < entry.Vectors.Length; i++)
+            try
             {
-                var s = VectorMath.Dot(q, entry.Vectors[i]);
-                if (s > best) { best = s; at = i; }
+                q = (await service.EmbedAsync(new EmbeddingRequest { Texts = [query], Kind = EmbeddingKind.Query }, ct).ConfigureAwait(false)).Vectors[0];
+                model = m;
             }
-            if (best > -1) hits.Add(new MemoryHit(id, entry.Title, entry.ProjectId, entry.UpdatedAt, Math.Round(best, 3), Snippet(entry.Texts.ElementAtOrDefault(at))));
+            catch (EmbeddingException ex) { _ctx.Logger.LogDebug("Memory: no meaning search ({Code}): {Message}", ex.Code, ex.Message); }
         }
-        return hits.OrderByDescending(h => h.Score).Take(Math.Clamp(limit, 1, 20)).ToList();
+        var terms = Lexical.Terms(query);
+        if (q is null && terms.Count == 0) return null;
+        var entries = Load().Where(e => e.Key != excludeSessionId && (projectId is not { Length: > 0 } || e.Value.ProjectId == projectId)).ToList();
+
+        var meaning = new Dictionary<string, (double Score, int At)>(StringComparer.Ordinal);
+        if (q is not null)
+            foreach (var (id, entry) in entries)
+            {
+                if (entry.Model != model || entry.Vectors.Length == 0) continue;
+                var best = float.MinValue;
+                var at = 0;
+                for (var i = 0; i < entry.Vectors.Length; i++)
+                {
+                    var s = VectorMath.Dot(q, entry.Vectors[i]);
+                    if (s > best) { best = s; at = i; }
+                }
+                meaning[id] = (best, at);
+            }
+        var words = Lexical.Rank(terms, entries.Select(e => (e.Key, e.Value.Texts, e.Value.Lengths)));
+
+        var fused = Lexical.Fuse(Lexical.Ranks(meaning.OrderByDescending(x => x.Value.Score).Select(x => x.Key)), Lexical.Ranks(words));
+        var byId = entries.ToDictionary(e => e.Key, e => e.Value, StringComparer.Ordinal);
+        var lexical = words.ToDictionary(w => w.Id, StringComparer.Ordinal);
+        var hits = new List<MemoryHit>();
+        foreach (var (id, _) in fused.Take(Math.Clamp(limit, 1, 20)))
+        {
+            var entry = byId[id];
+            double? score = meaning.TryGetValue(id, out var mm) ? Math.Round(mm.Score, 3) : null;
+            var snippet = lexical.TryGetValue(id, out var w)
+                ? Lexical.Window(entry.Texts[w.At], terms, 400)
+                : Snippet(entry.Texts.ElementAtOrDefault(mm.At));
+            hits.Add(new MemoryHit(id, entry.Title, entry.ProjectId, entry.UpdatedAt, score, w?.Words ?? 0, snippet));
+        }
+        return new MemorySearch(hits, q is not null, terms.Count);
     }
 
     /// <summary>
@@ -323,7 +369,7 @@ internal sealed class MemoryIndex : IDisposable
             foreach (var doc in _store.Find())
             {
                 var vectors = (doc.Doc["vectors"] as JsonArray ?? []).Select(v => VectorMath.Unpack(v?.GetValue<string>())).ToArray();
-                if (vectors.Length == 0 || vectors.Any(v => v is null)) continue;
+                if (vectors.Any(v => v is null)) continue;
                 map[doc.Key] = new Entry(Str(doc.Doc["model"]), Str(doc.Doc["rev"]), Str(doc.Doc["title"]), doc.Doc["projectId"]?.GetValue<string>(),
                     Str(doc.Doc["updatedAt"]), Strings(doc.Doc["texts"]), Strings(doc.Doc["hashes"]), vectors!);
             }
@@ -338,7 +384,7 @@ internal sealed class MemoryIndex : IDisposable
 
     public static JsonArray Json(IEnumerable<MemoryHit> hits) => new(hits.Select(h => (JsonNode)new JsonObject
     {
-        ["sessionId"] = h.SessionId, ["title"] = h.Title, ["projectId"] = h.ProjectId, ["updatedAt"] = h.UpdatedAt, ["score"] = h.Score, ["snippet"] = h.Snippet,
+        ["sessionId"] = h.SessionId, ["title"] = h.Title, ["projectId"] = h.ProjectId, ["updatedAt"] = h.UpdatedAt, ["score"] = h.Score, ["words"] = h.Words, ["snippet"] = h.Snippet,
     }).ToArray());
 
     public void Dispose()
@@ -358,7 +404,7 @@ internal sealed class MemorySearchTool(IPluginContext ctx, MemoryIndex index) : 
         Category = "memory",
         ReadOnly = true,
         SummaryArg = "query",
-        Description = "Find earlier chats about something by meaning (\"have we done this before?\", \"how did we fix X\"): the closest chats with a snippet.",
+        Description = "Find earlier chats about something by meaning and by exact words (\"have we done this before?\", \"how did we fix X\", an error code, a file or symbol name): the closest chats with a snippet.",
         PromptGuidelines = ["Before larger work or when the user refers to an earlier discussion, memory_search finds past chats about it; quote what you use."],
         Parameters = JsonNode.Parse("""{"type":"object","properties":{"query":{"type":"string","description":"what you are looking for, in your own words"},"limit":{"type":"integer","minimum":1,"maximum":10},"project":{"type":"string","description":"\"all\" (default: the session's project)"}},"required":["query"]}""")!.AsObject(),
     };
@@ -371,14 +417,143 @@ internal sealed class MemorySearchTool(IPluginContext ctx, MemoryIndex index) : 
         string? projectId = null;
         if (a.Str("project") is not "all")
             projectId = context.Project?.Id ?? ctx.Sessions.GetSession(context.SessionId)?.ProjectId;
-        var hits = await index.SearchAsync(query, a.Int("limit") ?? 5, projectId, context.SessionId, ct).ConfigureAwait(false);
-        if (hits is null) return ToolResult.Error("Memory search is not available: no embedding model (embed.model) or the embedding server is not answering.");
-        if (hits.Count == 0) return ToolResult.Ok("No earlier chats are indexed yet" + (projectId is null ? "." : " in this project (project \"all\" searches every project)."));
-        var text = new StringBuilder($"{hits.Count} earlier chats closest in meaning (score = cosine; below about 0.6 they are probably not about it):\n");
+        var found = await index.SearchAsync(query, a.Int("limit") ?? 5, projectId, context.SessionId, ct).ConfigureAwait(false);
+        if (found is null) return ToolResult.Error("Memory search is not available: memory is off (memory.enabled), or the embedding server is not answering and the query has no word to search for.");
+        var hits = found.Hits;
+        var scope = projectId is null ? "." : " in this project (project \"all\" searches every project).";
+        if (hits.Count == 0)
+            return ToolResult.Ok(found.Meaning ? "No earlier chats are indexed yet" + scope : "No earlier chat holds these words" + scope + " (no meaning search: no embedding model, or its server is not answering.)");
+        var text = new StringBuilder(found.Meaning
+            ? $"{hits.Count} earlier chats, ranked by meaning and by the query's words together (score = cosine, below about 0.6 probably not about it; words = how many of the {found.Terms} search words one piece holds):\n"
+            : $"{hits.Count} earlier chats holding the query's words (words only: no embedding model, or its server is not answering):\n");
         foreach (var h in hits)
-            text.Append("- ").Append(h.SessionId).Append(" \"").Append(h.Title).Append("\" (").Append(h.UpdatedAt[..Math.Min(10, h.UpdatedAt.Length)])
-                .Append(", ").Append(h.Score.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)).Append("): ")
-                .Append(h.Snippet.Replace('\n', ' ')).Append('\n');
+        {
+            text.Append("- ").Append(h.SessionId).Append(" \"").Append(h.Title).Append("\" (").Append(h.UpdatedAt[..Math.Min(10, h.UpdatedAt.Length)]);
+            if (h.Score is { } score) text.Append(", ").Append(score.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            if (h.Words > 0) text.Append(", ").Append(h.Words).Append('/').Append(found.Terms).Append(" words");
+            text.Append("): ").Append(h.Snippet.Replace('\n', ' ')).Append('\n');
+        }
         return ToolResult.Ok(text.ToString().TrimEnd(), new JsonObject { ["chats"] = MemoryIndex.Json(hits) });
+    }
+}
+
+/// <summary>
+/// The word side of the search: BM25 over the chats' pieces, scanned at query time (no inverted index held in memory:
+/// a piece that contains none of the query's words is skipped by a cheap substring test), and reciprocal-rank fusion
+/// with the meaning ranking. Words are runs of letters, digits and underscores, lower-cased; identifiers stay whole.
+/// </summary>
+internal static class Lexical
+{
+    private const double K1 = 1.2, B = 0.75;
+    /// <summary>The usual reciprocal-rank-fusion constant: a rank's weight is 1 / (60 + rank).</summary>
+    public const int RrfK = 60;
+
+    private static readonly HashSet<string> Stop = new(StringComparer.Ordinal)
+    {
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "did", "do", "does", "for", "from", "had", "has", "have",
+        "how", "i", "if", "in", "into", "is", "it", "its", "me", "my", "no", "not", "of", "on", "or", "our", "so", "that", "the",
+        "their", "then", "there", "these", "this", "to", "us", "was", "we", "were", "what", "when", "where", "which", "who",
+        "why", "will", "with", "you", "your",
+    };
+
+    public sealed record Hit(string Id, double Score, int At, int Words);
+
+    /// <summary>The words of a text, in order, lower-cased.</summary>
+    public static IEnumerable<string> Tokens(string text)
+    {
+        var start = -1;
+        for (var i = 0; i <= text.Length; i++)
+        {
+            var word = i < text.Length && (char.IsLetterOrDigit(text[i]) || text[i] == '_');
+            if (word && start < 0) start = i;
+            else if (!word && start >= 0)
+            {
+                yield return text[start..i].ToLowerInvariant();
+                start = -1;
+            }
+        }
+    }
+
+    public static int Count(string text) => Tokens(text).Count();
+
+    /// <summary>The query's search words: distinct, without one-letter words and common English ones.</summary>
+    public static List<string> Terms(string query) => Tokens(query).Where(t => t.Length > 1 && !Stop.Contains(t)).Distinct().Take(32).ToList();
+
+    /// <summary>The chats holding any of the terms, best first: BM25 of each chat's best piece.</summary>
+    public static List<Hit> Rank(List<string> terms, IEnumerable<(string Id, string[] Texts, int[] Lengths)> chats)
+    {
+        if (terms.Count == 0) return [];
+        long pieces = 0, words = 0;
+        var df = new int[terms.Count];
+        var found = new List<(string Id, int At, int Length, int[] Tf)>();
+        foreach (var (id, texts, lengths) in chats)
+            for (var i = 0; i < texts.Length; i++)
+            {
+                pieces++;
+                words += lengths[i];
+                var text = texts[i];
+                if (!terms.Any(t => text.Contains(t, StringComparison.OrdinalIgnoreCase))) continue;
+                var tf = new int[terms.Count];
+                foreach (var token in Tokens(text))
+                {
+                    var k = terms.IndexOf(token);
+                    if (k >= 0) tf[k]++;
+                }
+                if (!tf.Any(n => n > 0)) continue;
+                for (var k = 0; k < tf.Length; k++) if (tf[k] > 0) df[k]++;
+                found.Add((id, i, lengths[i], tf));
+            }
+        if (found.Count == 0) return [];
+        var avg = Math.Max(1.0, (double)words / Math.Max(1, pieces));
+        var idf = df.Select(d => Math.Log(1 + (pieces - d + 0.5) / (d + 0.5))).ToArray();
+        var best = new Dictionary<string, Hit>(StringComparer.Ordinal);
+        foreach (var (id, at, length, tf) in found)
+        {
+            double score = 0;
+            for (var k = 0; k < tf.Length; k++)
+                if (tf[k] > 0) score += idf[k] * tf[k] * (K1 + 1) / (tf[k] + K1 * (1 - B + B * length / avg));
+            var hit = new Hit(id, score, at, tf.Count(n => n > 0));
+            if (!best.TryGetValue(id, out var have) || score > have.Score) best[id] = hit;
+        }
+        return best.Values.OrderByDescending(h => h.Score).ThenBy(h => h.Id, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// Reciprocal-rank fusion of rankings (each best first): every list adds weight / (60 + rank) to the ids in it. The
+    /// word ranking weighs each chat by its BM25 score relative to the best one, so a rare identifier that only one chat
+    /// holds outweighs common words that many chats share (plain RRF would count rank 2 of a common word almost as much).
+    /// </summary>
+    public static List<(string Id, double Score)> Fuse(params IEnumerable<(string Id, double Weight)>[] rankings)
+    {
+        var score = new Dictionary<string, double>(StringComparer.Ordinal);
+        var first = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var ranking in rankings)
+        {
+            var rank = 0;
+            foreach (var (id, weight) in ranking)
+            {
+                rank++;
+                score[id] = score.GetValueOrDefault(id) + weight / (RrfK + rank);
+                first[id] = Math.Min(first.GetValueOrDefault(id, int.MaxValue), rank);
+            }
+        }
+        return score.OrderByDescending(x => x.Value).ThenBy(x => first[x.Key]).ThenBy(x => x.Key, StringComparer.Ordinal)
+            .Select(x => (x.Key, x.Value)).ToList();
+    }
+
+    /// <summary>A meaning ranking for <see cref="Fuse"/>: every rank weighs 1.</summary>
+    public static IEnumerable<(string Id, double Weight)> Ranks(IEnumerable<string> ids) => ids.Select(id => (id, 1.0));
+
+    /// <summary>A word ranking for <see cref="Fuse"/>: each chat weighs its score relative to the best.</summary>
+    public static IEnumerable<(string Id, double Weight)> Ranks(List<Hit> hits) =>
+        hits.Select(h => (h.Id, hits[0].Score > 0 ? h.Score / hits[0].Score : 1.0));
+
+    /// <summary>About <paramref name="size"/> characters of a piece around the first search word in it.</summary>
+    public static string Window(string text, List<string> terms, int size)
+    {
+        var at = terms.Select(t => text.IndexOf(t, StringComparison.OrdinalIgnoreCase)).Where(i => i >= 0).DefaultIfEmpty(0).Min();
+        var start = Math.Max(0, Math.Min(at - size / 4, text.Length - size));
+        var end = Math.Min(text.Length, start + size);
+        return (start > 0 ? "…" : "") + text[start..end] + (end < text.Length ? "…" : "");
     }
 }

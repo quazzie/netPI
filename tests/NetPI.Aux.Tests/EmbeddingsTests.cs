@@ -421,8 +421,13 @@ public static class EmbeddingsTests
             Check.Contains(chunks[^1], "line 199 ");
 
             embedder.Model = null;
+            var words = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.search", new JsonObject { ["query"] = "radio", ["excludeSessionId"] = current.Id }))!;
+            Check.True(words["available"]!.GetValue<bool>(), "without a model the words still find chats");
+            Check.False(words["meaning"]!.GetValue<bool>());
+            Check.Equal(radio.Id, words["chats"]![0]!["sessionId"]!.GetValue<string>());
+            ctx.SettingsFake.Set("memory.enabled", JsonValue.Create(false));
             var off = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.search", new JsonObject { ["query"] = "radio" }))!;
-            Check.False(off["available"]!.GetValue<bool>());
+            Check.False(off["available"]!.GetValue<bool>(), "memory switched off finds nothing");
             ctx.Unload();
         });
 
@@ -465,6 +470,55 @@ public static class EmbeddingsTests
             Check.NotContains(text, "boilerplate");
             Check.True(NetPI.Memory.MemoryIndex.Chunks(new SessionInfo { Title = "T" }, messages, 64).All(c => c.Length <= NetPI.Memory.MemoryIndex.ChunkChars + 20), "no piece is longer than a piece");
             ctx.Unload();
+        });
+
+        r.Add("memory: an exact identifier ranks its chat first (words fused with meaning); without a model the chats are indexed as text and found by words", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("memory-hybrid"));
+            var embedder = new BagOfWords();
+            ctx.ServicesFake.Register<IEmbeddingService>(embedder);
+            var needle = ctx.SessionsFake.CreateSession(new SessionInfo { Title = "Build trouble" });
+            ctx.SessionsFake.AppendMessage(needle.Id, ChatMessage.UserText("the nightly build is slow again, " + string.Join(" ", Enumerable.Range(0, 80).Select(i => $"word{i}"))));
+            ctx.SessionsFake.AppendMessage(needle.Id, new ChatMessage { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c", Name = "bash", Content = "fatal ERR_QUIX_4471 while linking", IsError = true }] });
+            for (var i = 0; i < 6; i++)
+            {
+                var s = ctx.SessionsFake.CreateSession(new SessionInfo { Title = $"Linking errors {i}" });
+                ctx.SessionsFake.AppendMessage(s.Id, ChatMessage.UserText($"fatal error while linking the host, attempt {i}"));
+            }
+            await new NetPI.Memory.MemoryPlugin().StartAsync(ctx, CancellationToken.None);
+            await ctx.Rpc.InvokeAsync("memory.reindex", new JsonObject());
+            var found = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.search", new JsonObject { ["query"] = "fatal ERR_QUIX_4471 linking" }))!;
+            Check.True(found["meaning"]!.GetValue<bool>());
+            var first = found["chats"]![0]!;
+            Check.Equal(needle.Id, first["sessionId"]!.GetValue<string>(), found.ToJsonString());
+            Check.Equal(3, first["words"]!.GetValue<int>());
+            Check.Contains(first["snippet"]!.GetValue<string>(), "ERR_QUIX_4471", "the snippet shows where the words are");
+
+            var fused = NetPI.Memory.Lexical.Fuse(NetPI.Memory.Lexical.Ranks(["a", "b", "c"]), NetPI.Memory.Lexical.Ranks(["c"]));
+            Check.Equal("c", fused[0].Id, "first by words and third by meaning beats first by meaning alone");
+            Check.Equal("a", fused[1].Id);
+            var weighted = NetPI.Memory.Lexical.Fuse(NetPI.Memory.Lexical.Ranks(["common", "rare"]),
+                NetPI.Memory.Lexical.Ranks(new List<NetPI.Memory.Lexical.Hit> { new("rare", 10, 0, 1), new("common", 1, 0, 1) }));
+            Check.Equal("rare", weighted[0].Id, "a word match ten times stronger outweighs one rank of meaning");
+
+            var plain = new FakePluginContext(T.TempDir("memory-words"));
+            plain.ServicesFake.Register<IEmbeddingService>(new BagOfWords { Model = null });
+            var chat = plain.SessionsFake.CreateSession(new SessionInfo { Title = "Frob" });
+            plain.SessionsFake.AppendMessage(chat.Id, ChatMessage.UserText("error CS0103: the name 'Frobnicate' does not exist"));
+            await new NetPI.Memory.MemoryPlugin().StartAsync(plain, CancellationToken.None);
+            var swept = (JsonObject)NetPiJson.ToNode(await plain.Rpc.InvokeAsync("memory.reindex", new JsonObject()))!;
+            Check.Equal(1, swept["indexed"]!.GetValue<int>(), "indexed as text without a model");
+            Check.Equal(0, swept["pieces"]!.GetValue<int>(), "nothing sent to an embedding server");
+            var result = await plain.ToolsFake.Get("memory_search")!.ExecuteAsync(new ToolContext
+            {
+                SessionId = "ses_other", AgentId = "agt_1", CallId = "call_1", Cwd = plain.Paths.Home, Services = plain.Services, Events = plain.Events,
+            }, T.Args(new { query = "frobnicate CS0103", project = "all" }), CancellationToken.None);
+            Check.False(result.IsError, result.Content);
+            Check.Contains(result.Content, chat.Id);
+            Check.Contains(result.Content, "words only");
+            Check.Contains(result.Content, "2/2 words");
+            ctx.Unload();
+            plain.Unload();
         });
 
         r.Add("memory: the sweep pages through every chat, not only the 100 most recent ones the list answers by default", async () =>
