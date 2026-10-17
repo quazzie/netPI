@@ -912,6 +912,10 @@ names or an inline `<svg …>` string.
   only while its window is not the active one: a tray icon's balloon, which Windows shows as a toast, and a flashing
   taskbar button. Clicking the toast brings the window up and replies `{ type: 'openSession', sessionId }`. The
   preference `notifications` (Settings → General, desktop app only) turns them off.
+- **Taskbar badge.** The page posts `{ type: 'taskbar', working, waiting }` (`lib/taskbar.js`, from `App.svelte`, debounced,
+  only when the pair changes): `waiting` is the WaitingMenu's count, `working` the top-level chats that run, are queued,
+  yielded or wait on subagents. The shell (`TaskbarBadge.cs`, ITaskbarList3 overlay icon) shows an orange badge with the
+  waiting count, else a blue one with the working count, else none; always, whatever the `notifications` preference.
 
 ## What the UI expects from the host (beyond PROTOCOL.md)
 

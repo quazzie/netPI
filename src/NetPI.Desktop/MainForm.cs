@@ -389,8 +389,23 @@ internal sealed class MainForm : Form
             case "notify":
                 ShowNotification(Str(msg, "title"), Str(msg, "body"), Str(msg, "sessionId"));
                 break;
+            case "taskbar":
+                _badge ??= new TaskbarBadge(Handle);
+                _badge.Set(Int(msg, "working"), Int(msg, "waiting"));
+                break;
         }
     }
+
+    private TaskbarBadge? _badge;
+
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        if (m.Msg == TaskbarBadge.ButtonCreatedMessage) _badge?.ButtonCreated();
+    }
+
+    private static int Int(JsonObject? o, string key) =>
+        o?[key] is JsonValue v && v.TryGetValue<int>(out var n) ? n : 0;
 
     private static string? Str(JsonObject? o, string key) =>
         o?[key] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
@@ -566,6 +581,8 @@ internal sealed class MainForm : Form
             _activateWait?.Unregister(null);
             _tray?.Dispose(); // else its icon lingers in the tray until the mouse passes over it
             _tray = null;
+            _badge?.Dispose();
+            _badge = null;
             _web.Dispose();
             var server = _server;
             if (server is not null)

@@ -13,6 +13,8 @@
   import { modals, togglePanel, applyTheme, openIdeaDialog } from './lib/state/ui.svelte.js';
   import { registerCoreTab } from './lib/state/tabs.svelte.js';
   import { notifyAppChange } from './lib/pluginCtx.js';
+  import { waitingItems } from './lib/state/waiting.svelte.js';
+  import { taskbarCounts, setTaskbarState } from './lib/taskbar.js';
 
   registerCoreTab({ key: 'core/sessions', title: 'Sessions', icon: 'sessions', panel: 'left', order: 0, component: SessionsTab });
   registerCoreTab({ key: 'core/projects', title: 'Projects', icon: 'folder', panel: 'left', order: 10, component: ProjectsTab });
@@ -38,6 +40,16 @@
     if (notified && now.id === notified.id && now.session === notified.session && now.project === notified.project && now.workspace === notified.workspace) return;
     notified = now;
     notifyAppChange();
+  });
+
+  // The desktop app's taskbar badge: blue while chats work, orange while they wait for the user (debounced)
+  $effect(() => {
+    const counts = taskbarCounts(
+      app.sessions.map((s) => ({ kind: s.kind, status: app.statusById.get(s.id) })),
+      waitingItems().length,
+    );
+    const t = setTimeout(() => setTaskbarState(counts), 200);
+    return () => clearTimeout(t);
   });
 
   onMount(() => {
