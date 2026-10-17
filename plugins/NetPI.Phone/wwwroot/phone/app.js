@@ -74,7 +74,19 @@ async function loadProjects() {
 }
 const refreshList = debounce(async () => { try { await loadList(); if (state.view === 'list') render(); else if (state.view === 'chat') renderCards(); } catch { /* shown by the connection dot */ } }, 400);
 
-async function openChat(id) {
+// Where the page is lives in the address (#chat=ID, #new, nothing for the list): a reload comes back to the same chat and the phone's back button works.
+const openChat = (id) => navigate('chat=' + encodeURIComponent(id));
+function navigate(h) { history.pushState({ app: 1 }, '', '#' + h); route(); }
+function goBack() { if (history.state?.app) history.back(); else { history.replaceState(null, '', location.pathname); route(); } }
+function route() {
+  if (!state.device) return;
+  const h = location.hash.slice(1); const m = /^chat=(.+)$/.exec(h);
+  if (m) return showChat(decodeURIComponent(m[1]));
+  if (h === 'new') return showNew();
+  state.view = 'list'; state.sessionId = null; closeChatState(); render();
+  loadList().then(() => { if (state.view === 'list') render(); }).catch(() => {});
+}
+async function showChat(id) {
   state.view = 'chat'; state.sessionId = id; state.messages = []; state.live = null; state.images = []; state.hasMore = false; render();
   await loadMessages(true);
 }
@@ -165,10 +177,10 @@ function renderList() {
       el('time', {}, ago(s.updatedAt))));
   }
   mount(header('Chats', null, null, el('button', { class: 'ghost', onclick: () => { loadList().then(render).catch(() => {}); }, 'aria-label': 'Refresh' }, '⟳')),
-    el('main', {}, rows.length ? nodes : el('div', { class: 'empty' }, 'No chats yet.')), el('button', { class: 'fab', onclick: openNew, 'aria-label': 'New chat' }, '+'));
+    el('main', {}, rows.length ? nodes : el('div', { class: 'empty' }, 'No chats yet.')), el('button', { class: 'fab', onclick: () => navigate('new'), 'aria-label': 'New chat' }, '+'));
 }
 
-async function openNew() { state.view = 'new'; render(); await loadProjects().catch(() => {}); if (state.view === 'new') render(); }
+async function showNew() { state.view = 'new'; render(); await loadProjects().catch(() => {}); if (state.view === 'new') render(); }
 function renderNew() {
   const project = el('select', {}, el('option', { value: '' }, 'No project'), state.projects.map((p) => el('option', { value: p.id, selected: p.id === store.get('lastProject', '') }, p.name)));
   const model = el('select', {}, el('option', { value: '' }, 'Default model'), state.models.map((m) => { const ref = m.ref || m.id || m; return el('option', { value: ref }, m.displayName || ref); }));
@@ -182,10 +194,10 @@ function renderNew() {
       const s = await rpc('sessions.create', { projectId: project.value || undefined, model: model.value || undefined });
       await rpc('agent.send', { sessionId: s.id, text: text.value.trim() });
       await loadList().catch(() => {});
-      await openChat(s.id);
+      history.replaceState({ app: 1 }, '', '#chat=' + encodeURIComponent(s.id)); route();   // back from the new chat goes to the list, not to this form
     } catch (e) { err.textContent = e.message; go.disabled = false; }
   } }, 'Start');
-  mount(header('New chat', null, () => { state.view = 'list'; render(); }), el('main', {}, el('div', { class: 'pair' }, project, model, text, go, err)));
+  mount(header('New chat', null, goBack), el('main', {}, el('div', { class: 'pair' }, project, model, text, go, err)));
 }
 
 function renderChat() {
@@ -203,7 +215,7 @@ function renderHeader() {
   const box = document.getElementById('hdrbox'); if (!box) return;
   const s = state.sessions.find((x) => x.id === state.sessionId);
   const run = state.runs.get(state.sessionId);
-  box.replaceChildren(header(s?.title || 'Chat', activeStatus(run?.status) ? (run.activity || 'working…') : null, () => { state.view = 'list'; state.sessionId = null; closeChatState(); render(); loadList().then(render).catch(() => {}); }));
+  box.replaceChildren(header(s?.title || 'Chat', activeStatus(run?.status) ? (run.activity || 'working…') : null, goBack));
 }
 function closeChatState() { state.live = null; state.images = []; }
 
@@ -285,6 +297,10 @@ const isBusy = () => { const w = waitsFor(state.sessionId); return activeStatus(
 function buildComposer(box) {
   const ta = el('textarea', { rows: 1, placeholder: 'Message', enterkeyhint: 'send' });
   ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + 'px'; });
+  // the keyboard's key says "send", so it sends; Shift+Enter (a physical keyboard) is the new line
+  let shift = false;
+  ta.addEventListener('keydown', (e) => { shift = e.shiftKey; if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send.click(); } });
+  ta.addEventListener('beforeinput', (e) => { if (e.inputType === 'insertLineBreak' && !shift) { e.preventDefault(); send.click(); } });   // soft keyboards that do not report the Enter key
   const file = el('input', { type: 'file', accept: 'image/*', style: 'display:none', onchange: async () => { for (const f of file.files) { try { state.images.push(await shrink(f)); } catch { /* not an image */ } } file.value = ''; renderComposer(); } });
   const send = el('button', { class: 'primary', onclick: async () => {
     const text = ta.value.trim(); if (!text && !state.images.length) return;
@@ -329,9 +345,9 @@ function shrink(f) {
 
 // ---------------------------------------------------------------- start
 async function start() {
-  history.replaceState(null, '', location.pathname);
+  if (/pair=/.test(location.hash)) history.replaceState(null, '', location.pathname);   // the one-time code does not stay in the address
   try { await Promise.all([loadList(), loadProjects()]); } catch { /* the list shows empty; the dot says why */ }
-  openEvents(); render();
+  openEvents(); route();
 }
 (async function boot() {
   const m = /pair=([A-Za-z0-9-]+)/.exec(location.hash);
@@ -341,4 +357,5 @@ async function start() {
   }
   try { const me = await api('/api/me'); state.device = me.device; await start(); } catch { renderPair(); }
 })();
+window.addEventListener('popstate', route);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.device) { if (!source) openEvents(); refreshList(); if (state.view === 'chat') loadMessages(false).catch(() => {}); } });
