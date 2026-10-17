@@ -1479,7 +1479,9 @@ An argument the model wrote as JSON text inside a string, or a list it wrapped i
 
 Finds earlier chats by meaning: `{ query, limit? (5, at most 10), project? ("all"; default the session's project) }`. The
 Memory plugin embeds every chat in the background (the Embeddings plugin's model; pieces of ~1,200 characters: the first
-request, the compaction summaries, the rest of the conversation with its start and end kept first) and scores a chat by
-its best piece. Content: one line per chat, `- ses_… "Title" (date, score): snippet`, best first, the current chat left out.
+request, the compaction summaries, the rest of the conversation — user and agent messages whole up to 6,000 characters,
+subagent reports, each tool call with its short arguments, the text of failed tools; not successful tool output — with
+its start and end kept first beyond `memory.maxChunksPerChat`) and scores a chat by its best piece. Pieces are packed
+from the start and keyed by a hash of their text, so a chat that grew re-embeds only its new last piece. Content: one line per chat, `- ses_… "Title" (date, score): snippet`, best first, the current chat left out.
 Details: `{ chats: [{ sessionId, title, projectId, updatedAt, score, snippet }] }`. Without an embedding model, or with the
 server not answering, the tool says so as an error. Read-only.

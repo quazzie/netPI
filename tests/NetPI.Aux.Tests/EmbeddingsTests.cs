@@ -426,6 +426,47 @@ public static class EmbeddingsTests
             ctx.Unload();
         });
 
+        r.Add("memory: a chat that grew embeds only its new pieces; long messages, tool calls, failed tools and agent reports are in it", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("memory-incremental"));
+            var embedder = new BagOfWords();
+            ctx.ServicesFake.Register<IEmbeddingService>(embedder);
+            var chat = ctx.SessionsFake.CreateSession(new SessionInfo { Title = "Growing" });
+            for (var i = 0; i < 12; i++) ctx.SessionsFake.AppendMessage(chat.Id, ChatMessage.UserText($"message {i} " + string.Join(" ", Enumerable.Repeat("filler", 120))));
+            await new NetPI.Memory.MemoryPlugin().StartAsync(ctx, CancellationToken.None);
+            var first = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.reindex", new JsonObject()))!;
+            var all = first["pieces"]!.GetValue<int>();
+            Check.True(all >= 12, $"every message is embedded ({all} pieces)");
+
+            ctx.SessionsFake.AppendMessage(chat.Id, ChatMessage.UserText("one more short message"));
+            // the fake store keeps no counts; the real one moves both on every message
+            ctx.SessionsFake.UpdateSession(chat.Id, s => { s.MessageCount = 13; s.UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(1); });
+            var grown = (JsonObject)NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("memory.reindex", new JsonObject()))!;
+            Check.Equal(1, grown["indexed"]!.GetValue<int>());
+            Check.Equal(1, grown["pieces"]!.GetValue<int>(), "only the new last piece is embedded again");
+
+            var long_ = new string('a', 2000) + " the needle sits deep in a long agent answer";
+            var messages = new List<ChatMessage>
+            {
+                ChatMessage.UserText("start"),
+                new() { Role = MessageRole.Assistant, Parts = [new TextPart { Text = long_ }, new ToolCallPart { Id = "c1", Name = "bash", Arguments = "{\"command\":\"dotnet build src/NetPI.Host\",\"content\":\"" + new string('z', 500) + "\"}" }] },
+                new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c1", Name = "bash", Content = "error CS0103: the name 'Frobnicate' does not exist", IsError = true }] },
+                new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c2", Name = "read", Content = "a whole file nobody needs to find again" }] },
+                ChatMessage.NoticeText("the subagent found the cause in Sqlite3.cs", "agent-result"),
+                ChatMessage.NoticeText("instructions boilerplate", "instructions"),
+            };
+            var text = string.Join("\n", NetPI.Memory.MemoryIndex.Chunks(new SessionInfo { Title = "T" }, messages, 64));
+            Check.Contains(text, "the needle sits deep", "an agent answer is no longer cut at 800 characters");
+            Check.Contains(text, "Tool bash: dotnet build src/NetPI.Host");
+            Check.NotContains(text, "zzzz", "a long argument (a file's content) is left out");
+            Check.Contains(text, "Tool error (bash): error CS0103: the name 'Frobnicate' does not exist");
+            Check.NotContains(text, "a whole file nobody", "successful tool output is not embedded");
+            Check.Contains(text, "Agent report: the subagent found the cause");
+            Check.NotContains(text, "boilerplate");
+            Check.True(NetPI.Memory.MemoryIndex.Chunks(new SessionInfo { Title = "T" }, messages, 64).All(c => c.Length <= NetPI.Memory.MemoryIndex.ChunkChars + 20), "no piece is longer than a piece");
+            ctx.Unload();
+        });
+
         r.Add("memory: the sweep pages through every chat, not only the 100 most recent ones the list answers by default", async () =>
         {
             // The real session service over the real store: its list has a window (100 by default), which the fake has not.

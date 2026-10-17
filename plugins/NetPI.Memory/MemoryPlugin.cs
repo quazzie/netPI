@@ -26,7 +26,7 @@ public sealed class MemoryPlugin : INetPiPlugin
                 SettingInfo.Bool("memory.enabled", "Search past chats by meaning", true,
                     "With an embedding model (embed.model) every chat is embedded in the background and the memory_search tool finds earlier chats by meaning. The text goes only to the embedding server."),
                 SettingInfo.Int("memory.maxChunksPerChat", "Pieces per chat", MemoryIndex.DefaultMaxChunks,
-                    "How many pieces of ~1,200 characters a chat is embedded as (its start, its end and its summaries are kept first).", 4, 200),
+                    "How many pieces of ~1,200 characters a chat is embedded as at most (its start, its end and its summaries are kept first). Only pieces whose text changed are embedded again.", 4, 400),
             ],
         });
         var index = context.Track(new MemoryIndex(context));
@@ -38,7 +38,7 @@ public sealed class MemoryPlugin : INetPiPlugin
             var hits = await index.SearchAsync(query, r.Int("limit") ?? 5, r.Str("projectId"), r.Str("excludeSessionId"), rct).ConfigureAwait(false);
             return new JsonObject { ["available"] = hits is not null, ["chats"] = MemoryIndex.Json(hits ?? []) };
         });
-        context.Rpc.Register(new RpcMethod("memory.reindex", "Embed the chats that changed since they were last embedded, now: { } → { enabled, indexed?, unchanged?, removed?, skipped? }", ReadOnly: false, Params: []),
+        context.Rpc.Register(new RpcMethod("memory.reindex", "Embed the chats that changed since they were last embedded, now: { } → { enabled, indexed?, unchanged?, removed?, skipped?, pieces? }", ReadOnly: false, Params: []),
             async (_, rct) => await index.SweepAsync(rct).ConfigureAwait(false));
         // the host publishes { id } as the payload (no session on the envelope), like sessions.delete does
         context.Track(context.Events.Subscribe(EventTypes.SessionDeleted, e => index.Forget(e.As<JsonObject>()?["id"]?.GetValue<string>() ?? e.SessionId)));
@@ -52,8 +52,14 @@ internal sealed record MemoryHit(string SessionId, string Title, string? Project
 /// <summary>The chats' embeddings: one document per chat in <c>chats</c>, kept in step by a sweep every few minutes.</summary>
 internal sealed class MemoryIndex : IDisposable
 {
-    public const int DefaultMaxChunks = 24;
+    public const int DefaultMaxChunks = 64;
     public const int ChunkChars = 1200;
+    /// <summary>A message longer than this is cut (a pasted log or file is not a conversation); up to here it is embedded whole, in several pieces.</summary>
+    public const int MaxMessageChars = 6000;
+    /// <summary>A tool call (its short arguments) or a failed tool's answer as one line of at most this many characters.</summary>
+    public const int MaxToolChars = 300;
+    /// <summary>Part of every entry's revision: a change in what a chat is made into re-embeds every chat once.</summary>
+    private const string Format = "v2";
     /// <summary>Sessions read per page: the store's list has a window (100 by default), so the sweep pages through all of them.</summary>
     public const int SessionPage = 100;
     private static readonly TimeSpan Every = TimeSpan.FromMinutes(5);
@@ -66,7 +72,8 @@ internal sealed class MemoryIndex : IDisposable
     private Dictionary<string, Entry>? _cache;
     private Timer? _timer;
 
-    private sealed record Entry(string Model, string Rev, string Title, string? ProjectId, string UpdatedAt, string[] Snippets, float[][] Vectors);
+    /// <summary>One chat: its pieces' texts, their content hashes (a piece whose text is unchanged keeps its vector) and vectors.</summary>
+    private sealed record Entry(string Model, string Rev, string Title, string? ProjectId, string UpdatedAt, string[] Texts, string[] Hashes, float[][] Vectors);
 
     public MemoryIndex(IPluginContext ctx)
     {
@@ -100,24 +107,38 @@ internal sealed class MemoryIndex : IDisposable
         {
             var cache = Load();
             var sessions = AllChats();
-            var maxChunks = Math.Clamp(_ctx.Settings.GetOr("memory.maxChunksPerChat", DefaultMaxChunks), 4, 200);
-            int indexed = 0, unchanged = 0, removed = 0, skipped = 0;
+            var maxChunks = Math.Clamp(_ctx.Settings.GetOr("memory.maxChunksPerChat", DefaultMaxChunks), 4, 400);
+            int indexed = 0, unchanged = 0, removed = 0, skipped = 0, pieces = 0;
             foreach (var session in sessions)
             {
                 ct.ThrowIfCancellationRequested();
                 try
                 {
-                    var rev = $"{session.MessageCount}:{session.UpdatedAt.ToUnixTimeSeconds()}:{maxChunks}";
-                    if (cache.TryGetValue(session.Id, out var have) && have.Model == model && have.Rev == rev) { unchanged++; continue; }
+                    var rev = $"{Format}:{session.MessageCount}:{session.UpdatedAt.ToUnixTimeSeconds()}:{maxChunks}";
+                    cache.TryGetValue(session.Id, out var have);
+                    if (have is not null && have.Model == model && have.Rev == rev) { unchanged++; continue; }
                     var chunks = Chunks(session, _ctx.Sessions.GetMessages(session.Id), maxChunks);
                     if (chunks.Count == 0) { unchanged++; continue; }
-                    var result = await service.EmbedAsync(new EmbeddingRequest { Texts = chunks, Background = true }, ct).ConfigureAwait(false);
-                    var entry = new Entry(result.Model, rev, session.Title, session.ProjectId, session.UpdatedAt.ToString("O"),
-                        chunks.Select(c => c.Length > 400 ? c[..400] + "…" : c).ToArray(), result.Vectors.ToArray());
+                    // Only the pieces whose text is new are embedded: a chat that grew by a message re-embeds its last piece or two.
+                    var hashes = chunks.Select(Hash).ToArray();
+                    var known = new Dictionary<string, float[]>(StringComparer.Ordinal);
+                    if (have is not null && have.Model == model)
+                        for (var i = 0; i < Math.Min(have.Hashes.Length, have.Vectors.Length); i++) known.TryAdd(have.Hashes[i], have.Vectors[i]);
+                    var missing = chunks.Where((_, i) => !known.ContainsKey(hashes[i])).Distinct(StringComparer.Ordinal).ToList();
+                    if (missing.Count > 0)
+                    {
+                        var result = await service.EmbedAsync(new EmbeddingRequest { Texts = missing, Background = true }, ct).ConfigureAwait(false);
+                        for (var k = 0; k < missing.Count; k++) known[Hash(missing[k])] = result.Vectors[k];
+                        pieces += missing.Count;
+                    }
+                    // Stored under the configured model name: the one the next sweep and the search compare with.
+                    var entry = new Entry(model, rev, session.Title, session.ProjectId, session.UpdatedAt.ToString("O"),
+                        chunks.ToArray(), hashes, hashes.Select(h => known[h]).ToArray());
                     _store.Put(session.Id, new JsonObject
                     {
                         ["model"] = entry.Model, ["rev"] = rev, ["title"] = entry.Title, ["projectId"] = entry.ProjectId, ["updatedAt"] = entry.UpdatedAt,
-                        ["snippets"] = new JsonArray(entry.Snippets.Select(s => (JsonNode)s).ToArray()),
+                        ["texts"] = new JsonArray(entry.Texts.Select(s => (JsonNode)s).ToArray()),
+                        ["hashes"] = new JsonArray(entry.Hashes.Select(s => (JsonNode)s).ToArray()),
                         ["vectors"] = new JsonArray(entry.Vectors.Select(v => (JsonNode)VectorMath.Pack(v)).ToArray()),
                     });
                     lock (_gate) if (_cache is not null) _cache[session.Id] = entry;
@@ -138,8 +159,8 @@ internal sealed class MemoryIndex : IDisposable
                 Forget(gone);
                 removed++;
             }
-            if (indexed + removed > 0) _ctx.Logger.LogInformation("Memory: embedded {Indexed} chats, removed {Removed} ({Model})", indexed, removed, model);
-            return new JsonObject { ["enabled"] = true, ["model"] = model, ["indexed"] = indexed, ["unchanged"] = unchanged, ["removed"] = removed, ["skipped"] = skipped };
+            if (indexed + removed > 0) _ctx.Logger.LogInformation("Memory: embedded {Indexed} chats ({Pieces} new pieces), removed {Removed} ({Model})", indexed, pieces, removed, model);
+            return new JsonObject { ["enabled"] = true, ["model"] = model, ["indexed"] = indexed, ["unchanged"] = unchanged, ["removed"] = removed, ["skipped"] = skipped, ["pieces"] = pieces };
         }
         finally { _sweeping.Release(); }
     }
@@ -198,14 +219,17 @@ internal sealed class MemoryIndex : IDisposable
                 var s = VectorMath.Dot(q, entry.Vectors[i]);
                 if (s > best) { best = s; at = i; }
             }
-            if (best > -1) hits.Add(new MemoryHit(id, entry.Title, entry.ProjectId, entry.UpdatedAt, Math.Round(best, 3), entry.Snippets.ElementAtOrDefault(at) ?? ""));
+            if (best > -1) hits.Add(new MemoryHit(id, entry.Title, entry.ProjectId, entry.UpdatedAt, Math.Round(best, 3), Snippet(entry.Texts.ElementAtOrDefault(at))));
         }
         return hits.OrderByDescending(h => h.Score).Take(Math.Clamp(limit, 1, 20)).ToList();
     }
 
     /// <summary>
     /// A chat as pieces to embed: the title with its first request, then its compaction summaries, then the rest of the
-    /// conversation (user and agent text, tools by name only) — the first and last pieces kept when it has to be cut.
+    /// conversation — user and agent text (each message whole up to <see cref="MaxMessageChars"/>), the subagents'
+    /// reports, every tool call with its short arguments (commands, paths, queries) and the text of failed tools — the
+    /// first and last pieces kept when it has to be cut. Pieces are packed from the start, so a chat that grows changes
+    /// only its last piece and the others keep their vectors.
     /// </summary>
     internal static List<string> Chunks(SessionInfo session, IReadOnlyList<ChatMessage> messages, int maxChunks)
     {
@@ -213,13 +237,21 @@ internal sealed class MemoryIndex : IDisposable
         var lines = new List<string>();
         foreach (var m in messages)
         {
-            var text = m.Text.Trim();
-            if (text.Length == 0) continue;
             switch (m.Role)
             {
-                case MessageRole.Summary: summaries.Add("Summary: " + Clip(text, 3000)); break;
-                case MessageRole.User: lines.Add("User: " + Clip(text, 1500)); break;
-                case MessageRole.Assistant: lines.Add("Agent: " + Clip(text, 800)); break;
+                case MessageRole.Summary: Split(summaries, "Summary: ", m.Text); break;
+                case MessageRole.User: Split(lines, "User: ", m.Text); break;
+                case MessageRole.Assistant:
+                    Split(lines, "Agent: ", m.Text);
+                    foreach (var call in m.ToolCalls) lines.Add(CallLine(call));
+                    break;
+                case MessageRole.Tool:
+                    foreach (var r in m.ToolResults)
+                        if (r.IsError && r.Content.Trim() is { Length: > 0 } error) lines.Add(Clip($"Tool error ({r.Name}): {OneLine(error)}", MaxToolChars));
+                    break;
+                case MessageRole.Notice when m.MetaString("kind") is "agent-result" or "agent-message":
+                    Split(lines, "Agent report: ", m.Text);
+                    break;
             }
         }
         if (lines.Count == 0 && summaries.Count == 0) return [];
@@ -242,7 +274,45 @@ internal sealed class MemoryIndex : IDisposable
         return chunks.Where(c => c.Length > 0).Take(maxChunks).ToList();
     }
 
+    /// <summary>A message as lines of at most <see cref="ChunkChars"/>, cut at a space or line break where one is near.</summary>
+    private static void Split(List<string> into, string label, string text)
+    {
+        text = Clip(text.Trim(), MaxMessageChars);
+        var room = ChunkChars - label.Length;
+        while (text.Length > 0)
+        {
+            var cut = text.Length;
+            if (cut > room)
+            {
+                var space = text.LastIndexOfAny([' ', '\n'], room - 1, room / 2);
+                cut = space > 0 ? space : room;
+            }
+            into.Add(label + text[..cut].TrimEnd());
+            text = text[cut..].TrimStart();
+        }
+    }
+
+    /// <summary>A tool call as one line: its name and its short string arguments (a file's new content or a long script is left out).</summary>
+    private static string CallLine(ToolCallPart call)
+    {
+        var args = new List<string>();
+        try
+        {
+            if (JsonNode.Parse(call.Arguments) is JsonObject o)
+                foreach (var (_, v) in o)
+                    if (v is JsonValue jv && jv.TryGetValue<string>(out var s) && s.Trim() is { Length: > 0 and <= 200 } t) args.Add(OneLine(t));
+        }
+        catch (JsonException) { }
+        return Clip(args.Count == 0 ? $"Tool {call.Name}" : $"Tool {call.Name}: {string.Join(" ", args)}", MaxToolChars);
+    }
+
+    private static string OneLine(string s) => s.Replace("\r", "").Replace('\n', ' ').Trim();
+
     private static string Clip(string s, int n) => s.Length > n ? s[..n] + "…" : s;
+
+    private static string Snippet(string? text) => text is null ? "" : Clip(text, 400);
+
+    private static string Hash(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)), 0, 12);
 
     private Dictionary<string, Entry> Load()
     {
@@ -255,7 +325,7 @@ internal sealed class MemoryIndex : IDisposable
                 var vectors = (doc.Doc["vectors"] as JsonArray ?? []).Select(v => VectorMath.Unpack(v?.GetValue<string>())).ToArray();
                 if (vectors.Length == 0 || vectors.Any(v => v is null)) continue;
                 map[doc.Key] = new Entry(Str(doc.Doc["model"]), Str(doc.Doc["rev"]), Str(doc.Doc["title"]), doc.Doc["projectId"]?.GetValue<string>(),
-                    Str(doc.Doc["updatedAt"]), (doc.Doc["snippets"] as JsonArray ?? []).Select(s => Str(s)).ToArray(), vectors!);
+                    Str(doc.Doc["updatedAt"]), Strings(doc.Doc["texts"]), Strings(doc.Doc["hashes"]), vectors!);
             }
             _cache = map;
             return new Dictionary<string, Entry>(map, StringComparer.Ordinal);
@@ -263,6 +333,8 @@ internal sealed class MemoryIndex : IDisposable
     }
 
     private static string Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : "";
+
+    private static string[] Strings(JsonNode? n) => (n as JsonArray ?? []).Select(Str).ToArray();
 
     public static JsonArray Json(IEnumerable<MemoryHit> hits) => new(hits.Select(h => (JsonNode)new JsonObject
     {
