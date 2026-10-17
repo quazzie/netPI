@@ -494,11 +494,11 @@ public static class EmbeddingsTests
             Check.Equal(3, first["words"]!.GetValue<int>());
             Check.Contains(first["snippet"]!.GetValue<string>(), "ERR_QUIX_4471", "the snippet shows where the words are");
 
-            var fused = NetPI.Memory.Lexical.Fuse(NetPI.Memory.Lexical.Ranks(["a", "b", "c"]), NetPI.Memory.Lexical.Ranks(["c"]));
+            var fused = NetPI.SearchKit.Lexical.Fuse(NetPI.SearchKit.Lexical.Ranks(["a", "b", "c"]), NetPI.SearchKit.Lexical.Ranks(["c"]));
             Check.Equal("c", fused[0].Id, "first by words and third by meaning beats first by meaning alone");
             Check.Equal("a", fused[1].Id);
-            var weighted = NetPI.Memory.Lexical.Fuse(NetPI.Memory.Lexical.Ranks(["common", "rare"]),
-                NetPI.Memory.Lexical.Ranks(new List<NetPI.Memory.Lexical.Hit> { new("rare", 10, 0, 1), new("common", 1, 0, 1) }));
+            var weighted = NetPI.SearchKit.Lexical.Fuse(NetPI.SearchKit.Lexical.Ranks(["common", "rare"]),
+                NetPI.SearchKit.Lexical.Ranks(new List<NetPI.SearchKit.Lexical.Hit> { new("rare", 10, 0, 1), new("common", 1, 0, 1) }));
             Check.Equal("rare", weighted[0].Id, "a word match ten times stronger outweighs one rank of meaning");
 
             var plain = new FakePluginContext(T.TempDir("memory-words"));

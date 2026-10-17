@@ -248,6 +248,12 @@
    ]
   },
   {
+   "path": "shared/SearchKit/",
+   "tags": [
+    "smoke"
+   ]
+  },
+  {
    "path": "shared/GitKit/",
    "tags": [
     "tools",

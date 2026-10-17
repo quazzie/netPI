@@ -2,4 +2,11 @@
   <ItemGroup>
     <InternalsVisibleTo Include="NetPI.Aux.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- BM25 and the rank fusion are shared SOURCE with NetPI.CodeSearch, not a shared assembly (docs/PLUGINS.md). -->
+    <Compile Include="$(RepoRoot)shared/SearchKit/*.cs" LinkBase="SearchKit" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="NetPI.SearchKit" />
+  </ItemGroup>
 </Project>
