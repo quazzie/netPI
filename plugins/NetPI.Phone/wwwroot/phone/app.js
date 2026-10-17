@@ -83,6 +83,7 @@ function route() {
   const h = location.hash.slice(1); const m = /^chat=(.+)$/.exec(h);
   if (m) return showChat(decodeURIComponent(m[1]));
   if (h === 'new') return showNew();
+  if (h === 'agents') return showWork();
   state.view = 'list'; state.sessionId = null; closeChatState(); render();
   loadList().then(() => { if (state.view === 'list') render(); }).catch(() => {});
 }
@@ -120,7 +121,8 @@ function onEvent(e) {
   const d = e.data || {}; const sid = e.sessionId || d.sessionId;
   switch (e.type) {
     case 'resync': refreshList(); if (state.view === 'chat') loadMessages(false).catch(() => {}); return;
-    case 'agent.status': if (d.agent) { state.runs.set(d.agent.sessionId, d.agent); if (state.view === 'list') render(); else if (d.agent.sessionId === state.sessionId) { renderHeader(); renderComposer(); } } return;
+    case 'agents.changed': case 'process.started': case 'process.exited': case 'usage.changed': if (state.view === 'work') refreshWork(); return;
+    case 'agent.status': if (d.agent) { state.runs.set(d.agent.sessionId, d.agent); if (state.view === 'work') refreshWork(); else if (state.view === 'list') render(); else if (d.agent.sessionId === state.sessionId) { renderHeader(); renderComposer(); } } return;
     case 'ask.asked': state.asks = [...state.asks.filter((a) => a.id !== d.id), d]; break;
     case 'ask.closed': state.asks = state.asks.filter((a) => a.id !== d.id); break;
     case 'guard.asked': state.guards = [...state.guards.filter((g) => g.approvalId !== d.approvalId), d]; break;
@@ -160,6 +162,7 @@ function render() {
   if (!state.device) return renderPair();
   if (state.view === 'list') return renderList();
   if (state.view === 'new') return renderNew();
+  if (state.view === 'work') return renderWork();
   if (state.view === 'chat') return renderChat();
 }
 
@@ -176,8 +179,51 @@ function renderList() {
       el('div', { class: 't' }, el('b', {}, (s.pinned ? '📌 ' : '') + (s.title || 'Untitled')), el('span', {}, [proj(s.projectId), state.runs.get(s.id)?.activity && st !== 'idle' ? state.runs.get(s.id).activity : null].filter(Boolean).join(' · '))),
       el('time', {}, ago(s.updatedAt))));
   }
-  mount(header('Chats', null, null, el('button', { class: 'ghost', onclick: () => { loadList().then(render).catch(() => {}); }, 'aria-label': 'Refresh' }, '⟳')),
+  mount(header('NetPI', null, null, el('button', { class: 'ghost', onclick: () => { loadList().then(render).catch(() => {}); }, 'aria-label': 'Refresh' }, '⟳')), tabsBar('chats'),
     el('main', {}, rows.length ? nodes : el('div', { class: 'empty' }, 'No chats yet.')), el('button', { class: 'fab', onclick: () => navigate('new'), 'aria-label': 'New chat' }, '+'));
+}
+
+// ---------------------------------------------------------------- agents (the Work tab)
+function tabsBar(active) {
+  const b = (id, label, hash) => el('button', { class: active === id ? 'on' : '', onclick: () => { if (active !== id) { history.replaceState({ app: 1 }, '', hash ? '#' + hash : location.pathname); route(); } } }, label);
+  return el('nav', { class: 'tabs' }, b('chats', 'Chats', ''), b('agents', 'Agents', 'agents'));
+}
+async function showWork() { state.view = 'work'; state.sessionId = null; render(); await refreshWork.now(); }
+const loadWork = async () => { try { state.work = await rpc('work.snapshot', {}); state.workError = ''; } catch (e) { state.workError = e.message; } if (state.view === 'work') render(); };
+const refreshWork = Object.assign(debounce(loadWork, 400), { now: loadWork });
+const tok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0));
+function renderWork() {
+  const w = state.work; const nodes = [];
+  if (state.workError) nodes.push(el('div', { class: 'empty err-text' }, state.workError));
+  if (!w) nodes.push(el('div', { class: 'empty' }, 'Loading…'));
+  else {
+    const title = (id) => state.sessions.find((x) => x.id === id)?.title;
+    nodes.push(el('div', { class: 'group' }, 'Agents'));
+    const pool = (w.agents || []).filter((a) => a.configured || a.busy || a.queued);
+    nodes.push(...(pool.length ? pool.map((a) => el('div', { class: 'row' }, el('span', { class: 'dot ' + (a.disabled || a.available === false ? 'off' : a.busy ? 'run' : 'on') }),
+      el('div', { class: 't' }, el('b', {}, a.key), el('span', {}, [a.model || (a.models || [])[0], a.disabled ? 'off' : a.available === false ? (a.unavailable || 'unavailable') : null].filter(Boolean).join(' · '))),
+      el('time', {}, a.busy + '/' + a.capacity + (a.queued ? ' +' + a.queued + ' queued' : '')))) : [el('div', { class: 'empty' }, 'No agents set up.')]));
+    const runs = (w.runs || []).slice().sort((a, b) => new Date(b.startedAt || b.createdAt) - new Date(a.startedAt || a.createdAt));
+    const live = runs.filter((r) => activeStatus(r.status)); const done = runs.filter((r) => !activeStatus(r.status)).slice(0, 12);
+    nodes.push(el('div', { class: 'group' }, 'Running'));
+    nodes.push(...(live.length ? live.map((r) => el('div', { class: 'row', onclick: () => openChat(r.sessionId) }, el('span', { class: 'dot ' + (waitsFor(r.sessionId).asks.length || waitsFor(r.sessionId).guards.length ? 'wait' : 'run') }),
+      el('div', { class: 't' }, el('b', {}, (r.isSubagent ? '↳ ' : '') + (title(r.sessionId) || r.name || r.id)), el('span', {}, [r.activity, r.agent || r.model, tok(r.inputTokens + r.outputTokens) + ' tok'].filter(Boolean).join(' · '))),
+      el('button', { class: 'danger', onclick: (e) => { e.stopPropagation(); rpc('agent.abort', { sessionId: r.sessionId, subagents: false }).then(refreshWork).catch((x) => alert(x.message)); } }, 'Stop'))) : [el('div', { class: 'empty' }, 'Nothing is running.')]));
+    if (done.length) {
+      nodes.push(el('div', { class: 'group' }, 'Finished'));
+      nodes.push(...done.map((r) => el('div', { class: 'row', onclick: () => openChat(r.sessionId) }, el('span', { class: 'dot ' + (r.status === 'failed' ? 'off' : 'idle') }),
+        el('div', { class: 't' }, el('b', {}, (r.isSubagent ? '↳ ' : '') + (title(r.sessionId) || r.name || r.id)), el('span', {}, r.status + (r.error ? ' · ' + r.error : r.result ? ' · ' + r.result : '').slice(0, 110))),
+        el('time', {}, ago(r.finishedAt || r.createdAt)))));
+    }
+    const procs = (w.processes || []).filter((p) => p.status === 'running');
+    if (procs.length) {
+      nodes.push(el('div', { class: 'group' }, 'Processes'));
+      nodes.push(...procs.map((p) => el('div', { class: 'row' }, el('span', { class: 'dot run' }), el('div', { class: 't' }, el('b', {}, p.command.replace(/\s+/g, ' ').slice(0, 80)), el('span', {}, p.shell + (p.background ? ' · background' : '') + ' · ' + ago(p.startedAt))))));
+    }
+    const u = w.usage?.budget;
+    if (u) nodes.push(el('div', { class: 'foot' }, 'Today $' + (u.todayUsd ?? 0).toFixed(2) + (u.dailyUsd ? ' of $' + u.dailyUsd : '') + ' · this period $' + (u.spentUsd ?? 0).toFixed(2) + (u.monthlyUsd ? ' of $' + u.monthlyUsd : '')));
+  }
+  mount(header('NetPI', null, null, el('button', { class: 'ghost', onclick: () => refreshWork.now(), 'aria-label': 'Refresh' }, '⟳')), tabsBar('agents'), el('main', {}, nodes));
 }
 
 async function showNew() { state.view = 'new'; render(); await loadProjects().catch(() => {}); if (state.view === 'new') render(); }

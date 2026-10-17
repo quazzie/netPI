@@ -195,6 +195,16 @@ public static class PhoneTests
             Check.False(lines[1].Contains("AAAA"), "the image does not ride the stream");
         });
 
+        r.Add("phone: the Agents view's snapshot is allowed, and the events that make it re-read carry no body", () =>
+        {
+            Check.True(PhoneApi.Allowed.ContainsKey("work.snapshot"), "work.snapshot is allowed");
+            Check.True(PhoneApi.Allowed["work.snapshot"].Length == 0, "and takes no parameters");
+            var frame = PhoneApi.Frame(new BusEvent { Type = "agents.changed", Data = new { agents = new[] { new { key = "x" } } } });
+            Check.Equal("agents.changed", S(frame["type"]));
+            Check.True(frame["data"] is null, "no agent list rides the stream");
+            return Task.CompletedTask;
+        });
+
         r.Add("phone: off until enabled, and the pairing call names the page's address", async () =>
         {
             var ctx = new FakePluginContext(T.TempDir("phone-off"), "netpi.phone");

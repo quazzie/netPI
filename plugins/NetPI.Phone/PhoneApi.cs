@@ -32,6 +32,7 @@ internal sealed class PhoneApi : IDisposable
         ["agent.send"] = ["sessionId", "text", "images", "mode"],
         ["agent.abort"] = ["sessionId"],
         ["runs.list"] = ["includeFinished"],
+        ["work.snapshot"] = [],
         ["agent.get"] = ["id", "sessionId"],
         ["agent.waits"] = ["sessionId"],
         ["agent.stream"] = ["sessionId"],
@@ -48,7 +49,7 @@ internal sealed class PhoneApi : IDisposable
     {
         "agent.status", "agent.queue", "agent.notice", "message.added", "message.updated", "messages.compacted",
         "stream.start", "stream.delta", "stream.end", "stream.reset", "stream.tool", "tool.start", "tool.end",
-        "ask.asked", "ask.closed", "guard.asked", "guard.closed", "session.created", "session.updated", "session.deleted", "session.context",
+        "ask.asked", "ask.closed", "guard.asked", "guard.closed", "agents.changed", "process.started", "process.exited", "usage.changed", "session.created", "session.updated", "session.deleted", "session.context",
     };
 
     private static readonly Dictionary<string, (string File, string Type)> Files = new(StringComparer.Ordinal)
@@ -261,6 +262,8 @@ internal sealed class PhoneApi : IDisposable
     /// <summary>One event as the phone gets it. A stored message is only announced (its session and seq): the page reads the message itself, so an image never rides the stream.</summary>
     internal static JsonObject Frame(BusEvent e)
     {
+        // the Agents view re-reads work.snapshot on these: the bodies (every agent, every process) would only cost the phone's radio
+        if (e.Type is "agents.changed" or "process.started" or "process.exited" or "usage.changed") return new JsonObject { ["type"] = e.Type, ["sessionId"] = e.SessionId };
         var node = NetPiJson.ToNode(e.Data);
         if (e.Type is "message.added" or "message.updated" && node is JsonObject d)
         {
