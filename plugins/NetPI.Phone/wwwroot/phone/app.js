@@ -3,7 +3,7 @@
 const $app = document.getElementById('app');
 const state = {
   device: null, sessions: [], projects: [], models: [], runs: new Map(), asks: [], guards: [],
-  view: 'list', sessionId: null, messages: [], hasMore: false, live: null, images: [], online: false, error: '',
+  view: 'list', sessionId: null, stick: true, open: new Set(), messages: [], hasMore: false, live: null, images: [], online: false, error: '',
 };
 const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } } };
 
@@ -190,8 +190,15 @@ function renderNew() {
 
 function renderChat() {
   mount(el('div', { id: 'hdrbox' }), el('main', { id: 'scroll' }, el('div', { class: 'msgs', id: 'msgs' })), el('div', { id: 'cards' }), el('div', { id: 'composer', class: 'composer' }));
+  state.stick = true;
+  const sc = document.getElementById('scroll');
+  // "following" = the reader is at the bottom; a scroll up lets go, a scroll back down picks it up again. Layout growth never lets go.
+  sc.addEventListener('scroll', () => { state.stick = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80; }, { passive: true });
+  const ro = new ResizeObserver(() => { if (state.stick) pin(); });   // a taller message, a growing composer, the keyboard, a picture that loaded
+  ro.observe(sc); ro.observe(document.getElementById('msgs'));
   renderHeader(); renderMessages(true); renderCards(); renderComposer();
 }
+function pin() { const sc = document.getElementById('scroll'); if (sc) sc.scrollTop = sc.scrollHeight; }
 function renderHeader() {
   const box = document.getElementById('hdrbox'); if (!box) return;
   const s = state.sessions.find((x) => x.id === state.sessionId);
@@ -202,7 +209,6 @@ function closeChatState() { state.live = null; state.images = []; }
 
 function renderMessages(stick, keepPos) {
   const box = document.getElementById('msgs'); const scroller = document.getElementById('scroll'); if (!box) return;
-  const nearEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 160;
   const prevH = scroller.scrollHeight;
   const results = new Map();
   for (const m of state.messages) for (const p of m.parts || []) if (p.type === 'tool_result') results.set(p.callId, p);
@@ -222,18 +228,18 @@ function renderMessages(stick, keepPos) {
   nodes.push(el('div', { class: 'msg assistant', id: 'live' }));
   box.replaceChildren(...nodes);
   renderLive();
-  if (keepPos) scroller.scrollTop += scroller.scrollHeight - prevH; else if (stick || nearEnd) scroller.scrollTop = scroller.scrollHeight;
+  if (keepPos) scroller.scrollTop += scroller.scrollHeight - prevH; else if (stick || state.stick) { state.stick = true; pin(); requestAnimationFrame(pin); }
 }
 function toolNode(call, res) {
   let args = ''; try { const a = JSON.parse(call.arguments || '{}'); args = a.command || a.path || a.query || a.url || a.description || Object.values(a).find((v) => typeof v === 'string') || ''; } catch { /* partial json */ }
   const sum = el('summary', { class: res?.isError ? 'err' : '' }, '⚙ ' + call.name + (args ? ' — ' + String(args).replace(/\s+/g, ' ').slice(0, 90) : ''));
   const body = res ? res.content.slice(0, 4000) + (res.content.length > 4000 ? '\n… (' + res.content.length + ' characters)' : '') : '(running…)';
-  return el('details', { class: 'tool' }, sum, el('pre', {}, body || '(no output)'));
+  return el('details', { class: 'tool', open: state.open.has(call.id), ontoggle: (e) => { e.target.open ? state.open.add(call.id) : state.open.delete(call.id); } }, sum, el('pre', {}, body || '(no output)'));
 }
 function renderLive() {
   const live = document.getElementById('live'); if (!live) return;
   live.replaceChildren(...(state.live && state.live.text ? [markdown(state.live.text)] : []));
-  const sc = document.getElementById('scroll'); if (sc && state.live && sc.scrollHeight - sc.scrollTop - sc.clientHeight < 200) sc.scrollTop = sc.scrollHeight;
+  if (state.stick) pin();
 }
 
 function renderCards() {
@@ -274,7 +280,7 @@ function renderComposer() {
   const file = el('input', { type: 'file', accept: 'image/*', style: 'display:none', onchange: async () => { for (const f of file.files) { try { state.images.push(await shrink(f)); } catch { /* not an image */ } } file.value = ''; renderComposer(); } });
   const send = el('button', { class: 'primary', onclick: async () => {
     const text = ta.value.trim(); if (!text && !state.images.length) return;
-    send.disabled = true;
+    send.disabled = true; state.stick = true;
     try {
       await rpc('agent.send', { sessionId: state.sessionId, text, images: state.images.length ? state.images : undefined, mode: busy ? mode : 'auto' });
       state.images = []; ta.value = ''; await loadMessages(false).catch(() => {}); renderComposer();
