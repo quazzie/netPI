@@ -115,8 +115,8 @@ function onEvent(e) {
     case 'guard.closed': state.guards = state.guards.filter((g) => g.approvalId !== d.approvalId); break;
     case 'session.created': case 'session.updated': case 'session.deleted': refreshList(); return;
     case 'agent.queue': if (sid === state.sessionId) { state.queued = d.items || []; renderComposer(); } return;
-    case 'stream.start': if (sid === state.sessionId) { state.live = { text: '' }; renderLive(); } return;
-    case 'stream.delta': if (sid === state.sessionId && state.live && d.kind === 'text') { state.live.text += d.text || ''; renderLive(); } return;
+    case 'stream.start': if (sid === state.sessionId) { state.live = { text: '', think: '' }; renderLive(); } return;
+    case 'stream.delta': if (sid === state.sessionId && state.live && (d.kind === 'text' || d.kind === 'thinking')) { state.live[d.kind === 'text' ? 'text' : 'think'] += d.text || ''; renderLive(); } return;
     case 'stream.reset': if (sid === state.sessionId) { state.live = null; renderLive(); } return;
     case 'stream.end': if (sid === state.sessionId) loadMessages(false).then(() => { state.live = null; renderLive(); }).catch(() => {}); return;
     case 'message.added': case 'message.updated': case 'messages.compacted': if (sid === state.sessionId) loadMessages(false).catch(() => {}); return;
@@ -190,7 +190,7 @@ function renderNew() {
 
 function renderChat() {
   mount(el('div', { id: 'hdrbox' }), el('main', { id: 'scroll' }, el('div', { class: 'msgs', id: 'msgs' })), el('div', { id: 'cards' }), el('div', { id: 'composer', class: 'composer' }));
-  state.stick = true;
+  state.stick = true; state.cardsSig = null; comp = null;
   const sc = document.getElementById('scroll');
   // "following" = the reader is at the bottom; a scroll up lets go, a scroll back down picks it up again. Layout growth never lets go.
   sc.addEventListener('scroll', () => { state.stick = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80; }, { passive: true });
@@ -219,6 +219,7 @@ function renderMessages(stick, keepPos) {
     const kids = [];
     for (const p of m.parts || []) {
       if (p.type === 'text') { if (m.role === 'user') kids.push(p.text); else kids.push(markdown(p.text)); }
+      else if (p.type === 'thinking') { if (p.text && p.text.trim()) kids.push(thinkNode(p.text, m.seq + ':' + kids.length)); }
       else if (p.type === 'image') kids.push(el('div', {}, '🖼 image'));
       else if (p.type === 'tool_call') kids.push(toolNode(p, results.get(p.id)));
     }
@@ -236,15 +237,23 @@ function toolNode(call, res) {
   const body = res ? res.content.slice(0, 4000) + (res.content.length > 4000 ? '\n… (' + res.content.length + ' characters)' : '') : '(running…)';
   return el('details', { class: 'tool', open: state.open.has(call.id), ontoggle: (e) => { e.target.open ? state.open.add(call.id) : state.open.delete(call.id); } }, sum, el('pre', {}, body || '(no output)'));
 }
+function thinkNode(text, key) {
+  const k = 'think:' + key;
+  return el('details', { class: 'think', open: state.open.has(k), ontoggle: (e) => { e.target.open ? state.open.add(k) : state.open.delete(k); } },
+    el('summary', {}, '💭 Thinking'), el('div', { class: 'thought' }, text));
+}
 function renderLive() {
   const live = document.getElementById('live'); if (!live) return;
-  live.replaceChildren(...(state.live && state.live.text ? [markdown(state.live.text)] : []));
+  live.replaceChildren(...(state.live ? [state.live.think ? thinkNode(state.live.think, 'live') : null, state.live.text ? markdown(state.live.text) : null].filter(Boolean) : []));
   if (state.stick) pin();
 }
 
 function renderCards() {
   const box = document.getElementById('cards'); if (!box) return;
   const w = waitsFor(state.sessionId); const nodes = [];
+  const sig = w.guards.map((g) => g.approvalId).join() + '|' + w.asks.map((a) => a.id).join();
+  if (sig === state.cardsSig) return;   // an answer being typed into a card must survive unrelated events
+  state.cardsSig = sig;
   for (const g of w.guards) {
     const send = (allow, scope) => rpc('guard.answer', { approvalId: g.approvalId, allow, scope }).then(() => { state.guards = state.guards.filter((x) => x.approvalId !== g.approvalId); renderCards(); renderComposer(); }).catch((e) => alert(e.message));
     nodes.push(el('div', { class: 'card' }, el('h3', {}, 'Approval needed · ' + g.tool), el('div', { class: 'subj' }, g.subject), g.rule ? el('div', { class: 'row-dim' }, 'rule: ' + g.rule) : null,
@@ -270,29 +279,39 @@ function askCard(a) {
   return el('div', { class: 'card' }, el('h3', {}, (a.agentName || 'The agent') + ' asks'), qs, text, send);
 }
 
-function renderComposer() {
-  const box = document.getElementById('composer'); if (!box) return;
-  const run = state.runs.get(state.sessionId); const busy = activeStatus(run?.status) && !waitsFor(state.sessionId).asks.length && !waitsFor(state.sessionId).guards.length;
-  const mode = store.get('mode', 'queue');
-  const prev = box.querySelector('textarea'); const keep = prev ? prev.value : '';
-  const ta = el('textarea', { rows: 1, placeholder: busy ? 'Message (' + mode + ')' : 'Message', enterkeyhint: 'send' }); ta.value = keep;
+// The composer is built once per chat and only updated afterwards: rebuilding the textarea on every event closed the keyboard.
+let comp = null;
+const isBusy = () => { const w = waitsFor(state.sessionId); return activeStatus(state.runs.get(state.sessionId)?.status) && !w.asks.length && !w.guards.length; };
+function buildComposer(box) {
+  const ta = el('textarea', { rows: 1, placeholder: 'Message', enterkeyhint: 'send' });
   ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + 'px'; });
   const file = el('input', { type: 'file', accept: 'image/*', style: 'display:none', onchange: async () => { for (const f of file.files) { try { state.images.push(await shrink(f)); } catch { /* not an image */ } } file.value = ''; renderComposer(); } });
   const send = el('button', { class: 'primary', onclick: async () => {
     const text = ta.value.trim(); if (!text && !state.images.length) return;
     send.disabled = true; state.stick = true;
     try {
-      await rpc('agent.send', { sessionId: state.sessionId, text, images: state.images.length ? state.images : undefined, mode: busy ? mode : 'auto' });
-      state.images = []; ta.value = ''; await loadMessages(false).catch(() => {}); renderComposer();
-    } catch (e) { alert(e.message); send.disabled = false; }
+      await rpc('agent.send', { sessionId: state.sessionId, text, images: state.images.length ? state.images : undefined, mode: isBusy() ? store.get('mode', 'queue') : 'auto' });
+      state.images = []; ta.value = ''; ta.style.height = 'auto'; await loadMessages(false).catch(() => {}); renderComposer();
+    } catch (e) { alert(e.message); }
+    send.disabled = false;
   } }, 'Send');
-  box.replaceChildren(...[
-    busy ? el('div', { class: 'mode' }, 'While it works:', ['queue', 'steer'].map((m) => el('button', { class: mode === m ? 'on' : '', onclick: () => { store.set('mode', m); renderComposer(); } }, m === 'queue' ? 'Queue' : 'Steer')),
-      el('span', { style: 'flex:1' }), el('button', { class: 'danger', onclick: () => { rpc('agent.abort', { sessionId: state.sessionId }).catch((e) => alert(e.message)); } }, 'Stop')) : null,
-    state.images.length ? el('div', { class: 'thumbs' }, state.images.map((i) => el('img', { src: 'data:' + i.mediaType + ';base64,' + i.data }))) : null,
-    el('div', { class: 'bar' }, el('button', { class: 'ghost', onclick: () => file.click(), 'aria-label': 'Attach a picture' }, '📎'), file, ta, send),
-  ].filter(Boolean));
-  if (keep) ta.dispatchEvent(new Event('input'));
+  const modeBar = el('div', { class: 'mode' }); const thumbs = el('div', { class: 'thumbs' });
+  box.replaceChildren(modeBar, thumbs, el('div', { class: 'bar' }, el('button', { class: 'ghost', onclick: () => file.click(), 'aria-label': 'Attach a picture' }, '📎'), file, ta, send));
+  comp = { box, ta, modeBar, thumbs, sig: '' };
+}
+function renderComposer() {
+  const box = document.getElementById('composer'); if (!box) return;
+  if (!comp || comp.box !== box) buildComposer(box);
+  const busy = isBusy(); const mode = store.get('mode', 'queue');
+  comp.ta.placeholder = busy ? 'Message (' + mode + ')' : 'Message';
+  const sig = (busy ? 'b' + mode : 'i') + '|' + state.images.length;
+  if (sig === comp.sig) return;   // nothing the user can see changed: leave the buttons (and the keyboard) alone
+  comp.sig = sig;
+  comp.modeBar.hidden = !busy;
+  comp.modeBar.replaceChildren(...(busy ? ['While it works:', ...['queue', 'steer'].map((m) => el('button', { class: mode === m ? 'on' : '', onclick: () => { store.set('mode', m); renderComposer(); } }, m === 'queue' ? 'Queue' : 'Steer')),
+    el('span', { style: 'flex:1' }), el('button', { class: 'danger', onclick: () => { rpc('agent.abort', { sessionId: state.sessionId }).catch((e) => alert(e.message)); } }, 'Stop')] : []));
+  comp.thumbs.hidden = !state.images.length;
+  comp.thumbs.replaceChildren(...state.images.map((i) => el('img', { src: 'data:' + i.mediaType + ';base64,' + i.data })));
 }
 // pictures are shrunk before they travel: a phone photo is several MB
 function shrink(f) {
