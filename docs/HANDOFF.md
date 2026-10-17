@@ -108,6 +108,10 @@ list/get/history/test/pause). Two things learnt: a plugin must not subscribe to 
 rooted the plugin's load context while other servers ran — use a sync `Subscribe` that schedules the work), and `FakeSettings.Set` publishes nothing without a bus.
 Hot reload order: the host starts the NEW generation of a plugin before it stops the old one, so a plugin that owns a socket must not wait for it inside StartAsync (the webhook receiver binds in the background, retrying for 90 s, and its stop cancels that wait). Setup recipe for Checkmk: `C:\AI\Sysadmin\docs\checkmk.md`.
 
+### Phone (2026-10-17)
+
+New plugin `NetPI.Phone` (tab, `phone.*` RPCs): a mobile page for the owner's phone on its **own small Kestrel listener** (`phone.enabled`, `.bind`, `.port`, `.allowFrom`, `.trustProxy`, `.publicUrl`), off by default, modelled on the webhook receiver. A phone pairs once with a code shown by the Phone tab (QR), keeps a hashed per-device token as a cookie, and talks to a fixed allow-list of the host's RPCs plus an SSE stream ([PROTOCOL](PROTOCOL.md#phone-listener-netpiphone)). Nothing in NetPI knows how the phone reaches the port (LAN, VPN, port forward, reverse proxy): that is the user's network, and the owner's recipe lives in `C:\AI\Sysadmin\docs`. Not in v1: push notifications, a diff view, TLS of its own, a relay.
+
 ### Schedules tab and tool (2026-10-06)
 
 The Schedules plugin (idea-1y1174) gained its missing surfaces: the **Schedules tab** (right panel, `plugins/NetPI.Schedules/ui/`, bundle `wwwroot/ui.js`) and the **`schedules` tool** (`SchedulesTool.cs`: list/get/history/add/update/run — no delete, up to the user; a scheduled chat cannot grow the set, cap 50). Zero new RPCs, events or settings. Covered by `SchedulesToolTests` (Aux), `web/test/schedules-model.test.js` and the updated `RpcReadOnlyTests`.

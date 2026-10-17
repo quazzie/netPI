@@ -36,6 +36,7 @@ SchedulesTests.Register(runner);
 SchedulesToolTests.Register(runner);
 WebhooksTests.Register(runner);
 WebhookHooksTests.Register(runner);
+PhoneTests.Register(runner);
 PlanStoreTests.Register(runner);
 SkillsCacheTests.Register(runner);
 PanelTests.Register(runner);

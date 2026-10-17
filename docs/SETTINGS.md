@@ -376,6 +376,17 @@ instructions.
 | `webhooks.allowFrom` | `["127.0.0.1/32","::1/128"]` | Addresses or CIDR ranges that may call the receiver; anything else is answered 403 before the token is looked at |
 | `webhooks.maxBodyKb` | `256` | Largest payload (1–1024 KB); bigger is answered 413 |
 
+## Phone
+
+| key | default | meaning |
+|---|---|---|
+| `phone.enabled` | `false` | Serve the phone page (`netpi.phone`) on its own small listener; NetPI's own API stays on loopback. Off: nothing listens |
+| `phone.bind` | `127.0.0.1` | The address it listens on: `127.0.0.1` (this PC; for a reverse proxy on it), this PC's LAN address, or `0.0.0.0`. Anything but loopback needs a firewall rule for the port |
+| `phone.port` | `7433` | The listener's port (1–65535); a busy port is retried for 90 s (a hot reload), then reported by `phone.status` |
+| `phone.allowFrom` | `["127.0.0.1/32","::1/128"]` | Addresses or CIDR ranges that may connect (a reverse proxy's address, or the LAN's); anything else is answered 403 |
+| `phone.trustProxy` | `false` | Read the phone's address, scheme and host from `X-Forwarded-For/-Proto/-Host` (only requests from `phone.allowFrom` are believed) |
+| `phone.publicUrl` | `` | The address shown in the pairing link, e.g. `https://phone.example.com`; empty: the listener's own address |
+
 A webhook's own settings (its conversation key, the safety fuse `maxChatsPerHour`) are per webhook, in the Webhooks tab. Twenty wrong tokens from one address in ten
 minutes lock that address out (429) for the rest of the window.
 

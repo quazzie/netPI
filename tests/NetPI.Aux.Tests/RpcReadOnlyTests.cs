@@ -53,6 +53,18 @@ public static class RpcReadOnlyTests
                 Check.False(flags[m], $"{m} changes webhooks or can start a chat, so the read-only tools may not call it");
         });
 
+        r.Add("rpc: the phone views are read-only; pairing and revoking are not", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("rpc-readonly"));
+            await new NetPI.Phone.PhonePlugin().StartAsync(ctx, CancellationToken.None);
+            var flags = ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
+
+            foreach (var m in new[] { "phone.status", "phone.devices" })
+                Check.True(flags[m], $"{m} only reads, so it is marked read-only");
+            foreach (var m in new[] { "phone.pair", "phone.revoke" })
+                Check.False(flags[m], $"{m} lets a device in or out, so the read-only tools may not call it");
+        });
+
         r.Add("rpc: the process views are read-only; killing a process and opening a path are not", async () =>
         {
             var ctx = new FakePluginContext(T.TempDir("rpc-readonly"));

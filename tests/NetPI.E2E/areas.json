@@ -292,6 +292,26 @@
    ]
   },
   {
+   "path": "plugins/NetPI.Phone/",
+   "tags": [
+    "smoke"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Phone/ui/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Phone/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Webhooks/",
    "tags": [
     "smoke"

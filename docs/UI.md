@@ -608,6 +608,8 @@ webhook: pause/resume, edit (an inline form), a two-step new token and delete, a
 shown once, with a ready `curl` line. The form is deliberately small: name, URL name, prompt, project, profile, agent, priority (low, normal, high, critical: its chats' place in the queue, and a critical one takes an instance from lower work started for the user — SETTINGS.md "Priority"; the row's meta line names it when it is not normal), a program with its arguments (one per line) for the Before and the After command, a timeout in minutes and the fuse. Filtering, grouping and wording belong to the Before command. Reads `webhooks.*` plus `projects.list`, `profiles.list` and `agents.list` (absent ones degrade their own feature); refreshes on
 `webhooks.changed`, `settings.changed` and a 30 s poll.
 
+**Phone** (`netpi.phone`, left, order 27). The phone listener's state (off / listening on an address / why it could not start), **Pair** (a one-time code with a countdown, its link and a QR code made in the tab itself, `ui/qr.js`) and the paired phones with a two-step unpair. Reads `phone.status` / `phone.devices`; refreshes on `phone.changed`, `settings.changed` and a 30 s poll. The phone's own page is `wwwroot/phone/` (list with *Needs you / Running / Chats* groups, chat with live streaming, Queue / Steer / Stop, picture attach, new-chat sheet, approval and question cards); it is not part of the web UI.
+
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and the collapsible sections (Off, Queued,
 Background, Finished). The open or closed state of each section is remembered (`storageKey`, versioned `work.v2.*` so the
 defaults of this layout apply). Top to bottom: summary, budget, Off, agents, Queued, Background, Finished.
