@@ -419,27 +419,73 @@ public static class CodeSearchTests
             Check.True(again["files"]!.GetValue<int>() > 100);
         });
 
-        r.Add("codesearch ranking: natural-language and identifier queries find the implementation file (NETPI_CODESEARCH_LIVE=1; words only; prints hit@1 / hit@4)", async () =>
+        r.Add("codesearch ranking: natural-language and identifier queries find the implementation file (NETPI_CODESEARCH_LIVE=1; words only, plus meaning with NETPI_CODESEARCH_EMBED_URL/_MODEL/_PREFIX; prints hit@1 / hit@4)", async () =>
         {
             if (Environment.GetEnvironmentVariable("NETPI_CODESEARCH_LIVE") != "1") Check.Skip("set NETPI_CODESEARCH_LIVE=1 to index this repository");
-            var root = NetPI.TestShared.T.RepoRoot;
-            using var ctx = await Started(root, null);
-            await Rpc(ctx, "codesearch.reindex", new { root });
-            var natural = 0; var named = 0; var h1 = 0; var h4 = 0; var n1 = 0; var n4 = 0;
-            foreach (var (query, expected) in RankingSet)
-            {
-                var found = await Rpc(ctx, "codesearch.search", new { root, query, limit = 8 });
-                var files = ((JsonArray)found["passages"]!).Select(p => p!["path"]!.GetValue<string>()).Distinct().ToList();
-                var rank = files.IndexOf(expected) + 1;
-                var isNamed = !query.Contains(' ');
-                if (isNamed) { named++; if (rank == 1) n1++; if (rank is >= 1 and <= 4) n4++; }
-                else { natural++; if (rank == 1) h1++; if (rank is >= 1 and <= 4) h4++; }
-                Console.WriteLine($"  rank {(rank == 0 ? "-" : rank.ToString())}  \"{query}\" -> {expected}  [{string.Join(", ", files.Take(4).Select(f => System.IO.Path.GetFileName(f)))}]");
-            }
-            Console.WriteLine($"  natural-language: hit@1 {h1}/{natural}, hit@4 {h4}/{natural}; identifiers: hit@1 {n1}/{named}, hit@4 {n4}/{named}");
-            Check.True(n4 == named, "every identifier query finds its file in the top 4");
-            Check.True(h4 >= natural * 6 / 10, $"natural-language hit@4 {h4}/{natural}");
+            var words = await Ranking(null, "words only");
+            Check.True(words.Named4 == words.Named, "every identifier query finds its file in the top 4");
+            Check.True(words.Natural4 >= words.Natural * 6 / 10, $"natural-language hit@4 {words.Natural4}/{words.Natural}");
+            var url = Environment.GetEnvironmentVariable("NETPI_CODESEARCH_EMBED_URL");
+            var model = Environment.GetEnvironmentVariable("NETPI_CODESEARCH_EMBED_MODEL");
+            if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(model)) return;
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+            var both = await Ranking(new HttpEmbedder(http, url.TrimEnd('/'), model, Environment.GetEnvironmentVariable("NETPI_CODESEARCH_EMBED_PREFIX") ?? ""), $"words + meaning ({model})");
+            Check.True(both.Named4 == both.Named, "with meaning every identifier query still finds its file in the top 4");
+            Check.True(both.Natural4 >= words.Natural4, $"meaning does not lose natural-language hits: {both.Natural4} vs {words.Natural4}");
         });
+    }
+
+    private sealed record RankStats(int Natural, int Natural1, int Natural4, int Named, int Named1, int Named4);
+
+    /// <summary>Indexes this repository (waiting for the vectors when there is an embedder), runs the RankingSet and prints the hits and the timings.</summary>
+    private static async Task<RankStats> Ranking(IEmbeddingService? embedder, string label)
+    {
+        var root = NetPI.TestShared.T.RepoRoot;
+        using var ctx = await Started(root, embedder);
+        var watch = Stopwatch.StartNew();
+        var status = await Rpc(ctx, "codesearch.reindex", new { root });
+        var indexMs = watch.ElapsedMilliseconds;
+        while (embedder is not null && (status["embedding"]?.GetValue<bool>() == true || status["embedded"]!.GetValue<int>() < status["passages"]!.GetValue<int>()) && status["embedError"] is null && watch.ElapsedMilliseconds < 600_000)
+        {
+            await Task.Delay(250);
+            status = await Rpc(ctx, "codesearch.reindex", new { root });
+        }
+        var totalMs = watch.ElapsedMilliseconds;
+        Console.WriteLine($"  [{label}] passages {status["passages"]}, embedded {status["embedded"]}, index {indexMs} ms, index+embed {totalMs} ms, embedError {status["embedError"]?.ToString() ?? "-"}");
+        int natural = 0, named = 0, h1 = 0, h4 = 0, n1 = 0, n4 = 0;
+        foreach (var (query, expected) in RankingSet)
+        {
+            var found = await Rpc(ctx, "codesearch.search", new { root, query, limit = 8 });
+            var files = ((JsonArray)found["passages"]!).Select(p => p!["path"]!.GetValue<string>()).Distinct().ToList();
+            var rank = files.IndexOf(expected) + 1;
+            if (!query.Contains(' ')) { named++; if (rank == 1) n1++; if (rank is >= 1 and <= 4) n4++; }
+            else { natural++; if (rank == 1) h1++; if (rank is >= 1 and <= 4) h4++; }
+            Console.WriteLine($"  rank {(rank == 0 ? "-" : rank.ToString())}  \"{query}\" -> {expected}  [{string.Join(", ", files.Take(4).Select(f => System.IO.Path.GetFileName(f)))}]");
+        }
+        Console.WriteLine($"  [{label}] natural-language: hit@1 {h1}/{natural}, hit@4 {h4}/{natural}; identifiers: hit@1 {n1}/{named}, hit@4 {n4}/{named}");
+        return new RankStats(natural, h1, h4, named, n1, n4);
+    }
+
+    /// <summary>POST /v1/embeddings as the Embeddings plugin does (a query gets the prefix, a document none), for the live ranking test.</summary>
+    private sealed class HttpEmbedder(HttpClient http, string root, string model, string queryPrefix) : IEmbeddingService
+    {
+        public string? Model => model;
+        public bool Available => true;
+
+        public async Task<EmbeddingResult> EmbedAsync(EmbeddingRequest request, CancellationToken ct)
+        {
+            var prefix = request.Kind == EmbeddingKind.Query ? queryPrefix : "";
+            var vectors = new List<float[]>();
+            for (var at = 0; at < request.Texts.Count; at += 32)
+            {
+                var body = new JsonObject { ["model"] = model, ["input"] = new JsonArray(request.Texts.Skip(at).Take(32).Select(t => (JsonNode)(prefix + t)).ToArray()) };
+                using var res = await http.PostAsync(root + "/v1/embeddings", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct);
+                var json = JsonNode.Parse(await res.Content.ReadAsStringAsync(ct));
+                if (!res.IsSuccessStatusCode || json?["data"] is not JsonArray data) throw new EmbeddingException("http", $"HTTP {(int)res.StatusCode}: {json}");
+                foreach (var d in data) vectors.Add(VectorMath.Normalize(d!["embedding"]!.AsArray().Select(x => x!.GetValue<float>()).ToArray()));
+            }
+            return new EmbeddingResult(model, vectors.Count == 0 ? 0 : vectors[0].Length, vectors);
+        }
     }
 
     private sealed class BrokenResolver : IWorkspaceResolver
