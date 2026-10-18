@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Tools.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Shared SOURCE, not shared assemblies (docs/PLUGINS.md): git's file list (GitKit) and BM25 with the rank fusion
+         (SearchKit, which NetPI.Memory compiles in too). -->
+    <Compile Include="$(RepoRoot)shared/GitKit/*.cs" LinkBase="GitKit" />
+    <Compile Include="$(RepoRoot)shared/SearchKit/*.cs" LinkBase="SearchKit" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="NetPI.GitKit" />
+    <Using Include="NetPI.SearchKit" />
+  </ItemGroup>
+</Project>

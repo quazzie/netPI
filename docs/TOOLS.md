@@ -19,6 +19,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Tools.Test` | `netpi.tools.test` | `test` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
 | `plugins/NetPI.Memory` | `netpi.memory` | `memory_search` | `memory.search`, `memory.reindex` |
+| `plugins/NetPI.CodeSearch` | `netpi.codesearch` | `code_search` | `codesearch.search`, `codesearch.status`, `codesearch.reindex` |
 | `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy` `job` `grep` `find`) | – |
 | `plugins/NetPI.Workspaces` | `netpi.workspaces` | `workspace` (actions `info` `list` `switch`) | `workspaces.*` (see `docs/PROTOCOL.md`) |
@@ -1492,3 +1493,46 @@ matched words. Details: `{ chats: [{ sessionId, title, projectId, updatedAt, sco
 a chat found by words only). Without an embedding model the chats are indexed as text only and found by words (the answer
 says "words only"); the same when the server is not answering. An error only when memory is off, or there is neither a
 meaning nor a search word. Read-only.
+
+## `code_search` (plugins/NetPI.CodeSearch)
+
+Finds the passages of the session's workspace closest to a query, instead of whole files: `{ query, limit? (8, at most 20),
+path? (only files under this folder or this file, relative; outside the workspace is an error) }`. The workspace is the
+session's bound checkout (`ToolContext.Workspace()`, else `IWorkspaceResolver.Resolve`: a bound session whose checkout is
+broken gets the resolver's error, never its project), else its project's folder, else its working folder.
+
+- **Files**: `git ls-files --cached --others --exclude-standard` (tracked and new, not ignored; nested repositories and
+  checkouts are not entered); without git (or outside a repository) a walk that honours the `.gitignore` files on the way
+  and skips nested repositories, build and dependency folders. Never searched: `node_modules`, `bin`, `obj`, `dist`, lock
+  files, `*.min.*`, binaries (by extension, or a NUL byte), minified text (a line over 2,000 characters or 300 on average),
+  files over `codesearch.maxFileKb`, links (they may lead outside), more than `codesearch.maxFiles` files.
+- **Passages**: cut at declarations by regular expressions per language — C# (types, members, constructors), TS/JS
+  (functions, classes, methods, arrow constants, interfaces, types), Svelte (`<script>` blocks and the functions in them),
+  Python, Go, Rust, PowerShell, markdown headings (not inside code fences); the comments, attributes and decorators right
+  above a declaration go with it. Its **signature** is the declaration line with the ones it sits in (by indentation, at
+  most three: `public sealed class X › public void Y(int z)`; markdown: `# A › ## B`). A passage with fewer than four lines
+  joins the next one (named by that one); one longer than `codesearch.maxChunkLines` (or 100 characters a line) is cut into
+  parts `(part n)` at blank lines; a file without known declarations is cut into 60-line windows. No language server is
+  used (the Lsp plugin offers no symbol service, and starting servers to index a workspace would take what they hold).
+- **Ranking**: BM25 over an in-memory inverted index (each passage's words: its path, signature and text; identifiers whole
+  and in their camelCase/snake_case parts, so `code index` finds `CodeIndex`), fused by weighted reciprocal rank (as
+  `memory_search`, the shared `shared/SearchKit`) with the cosine of the passages' vectors when the Embeddings plugin has a
+  model and `codesearch.embed` is on; else words only (the answer says so). At most 3 passages of a file, none overlapping.
+- **Index**: built in the background at the first search of a workspace; a search waits up to 3 s for it, then answers from
+  what is indexed and says "still indexing: n of m files read". A later search re-checks the files when the last check is
+  older than 3 s (git's list and a stat per file; a file whose size or time changed is re-read, a content hash decides whether
+  its passages change; deleted files drop out). Passages are embedded in the background in batches; a vector is stored per
+  model and passage hash, so a second checkout of the same repository and a restart embed nothing again. Kept in memory: the
+  last 6 workspaces. The plugin's data (`ctx.Data`): `files` (per workspace file: its hash and passage hashes), `vectors`,
+  `roots` (a workspace whose folder is gone or that nobody searched for 30 days is dropped by a sweep twice a day, with the
+  vectors no file refers to) and `stats`.
+
+Content: one line saying how many passages and how they were ranked, then per passage `path:start-end  signature  (cosine,
+n/m words)` and its text in a fenced block; passages that do not fit the tool result limit are listed by their header line
+only. Details: `{ root, meaning, indexing, indexed: { files, listed, passages }, passages: [{ path, start, end, signature,
+text, score, words }], returnedTokens, fileTokens, ratio, ms }` — **the counted metric**: `returnedTokens` is the answer's
+UTF-8 bytes / 4, `fileTokens` the size of the files its passages came from / 4 (what reading them whole would have cost);
+`codesearch.status` sums them over every search. Measured on this repository (916 files listed, 903 indexed, 7,954
+passages, 9.6 M characters): first build 1.9 s, a refresh with nothing changed 0.12 s, a search 1–30 ms (words only),
+about 2–4 k tokens returned against 40–56 k tokens of the files the passages came from; the managed heap after the build
+66 MB. Read-only.

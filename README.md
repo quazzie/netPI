@@ -148,6 +148,7 @@ web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Workspaces   checkou
                                                 │   NetPI.Lsp          language servers (C#, Svelte, JS/TS): the lsp tool
                                                 │   NetPI.CodeMode     codemode: a JavaScript script (Jint) that calls the tools
                                                 │   NetPI.Memory · NetPI.Embeddings   memory_search over past chats
+                                                │   NetPI.CodeSearch   code_search: the workspace's passages by words and meaning
                                                 │   NetPI.Decide · NetPI.Backup
                                                 └─ ~/.netpi/plugins/ (your own)
 ```

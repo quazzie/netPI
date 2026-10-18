@@ -1,0 +1,5 @@
+{
+  "id": "netpi.codesearch",
+  "name": "Code search",
+  "description": "code_search: the workspace's passages closest to a query (file:start-end with the signature), by words and, with the Embeddings plugin's model, by meaning; codesearch.search, codesearch.status, codesearch.reindex."
+}

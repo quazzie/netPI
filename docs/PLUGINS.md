@@ -58,6 +58,11 @@ waiting to happen: `tests/NetPI.Providers.Tests` fails on one.
 `shared/ProcessKit/` is compiled into the plugins that start child processes (Claude CLI, Lsp, Tools.Web, Tools.Shell, Mcp, Webhooks):
 `ChildJob` (the kill-on-close job that ends children with NetPI) and `ProcessJob` (a job per process tree, killed on demand).
 
+`shared/SearchKit/` is the word side of the hybrid searches, compiled into Memory and CodeSearch: tokens (code tokens split
+identifiers into their parts too), BM25 and the weighted reciprocal-rank fusion with a meaning ranking. A test suite that
+references two plugins compiling the same kit with `InternalsVisibleTo` puts one under an alias (`Aliases="codesearch"`,
+`extern alias`), as `tests/NetPI.Tools.Tests` does for GitKit.
+
 The dialect keeps its own subclass and overrides only what differs (OpenRouter's reasoning_details, cost and
 generation id; AiProxy's `reasoning_content` and usage), so no shared class grows an `if (openrouter)` branch.
 

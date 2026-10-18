@@ -116,6 +116,12 @@
    ]
   },
   {
+   "path": "plugins/NetPI.CodeSearch/",
+   "tags": [
+    "smoke"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Diagnostics/",
    "tags": [
     "inspect"

@@ -23,5 +23,7 @@
     <!-- Both plugins compile the shared GitKit source in and show this project their internals, so the shell assembly
          goes under an alias (extern alias shell): GitRunner then names the file tools' copy. -->
     <ProjectReference Include="../../plugins/NetPI.Tools.Shell/NetPI.Tools.Shell.csproj" Aliases="shell" />
+    <!-- Code search compiles GitKit in too (and SearchKit): under an alias for the same reason (extern alias codesearch). -->
+    <ProjectReference Include="../../plugins/NetPI.CodeSearch/NetPI.CodeSearch.csproj" Aliases="codesearch" />
   </ItemGroup>
 </Project>
