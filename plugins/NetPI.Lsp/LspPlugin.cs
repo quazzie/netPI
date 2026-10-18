@@ -4,11 +4,11 @@ namespace NetPI.Lsp;
 
 /// <summary>
 /// Language servers for code work (idea-fe26oh): the <c>lsp</c> tool asks csharp-ls (C#), svelte-language-server (.svelte)
-/// and typescript-language-server (JavaScript/TypeScript) for diagnostics, definitions and symbols. The servers are
+/// typescript-language-server (JavaScript/TypeScript) and gopls (Go, installed by the user) for diagnostics, definitions and symbols. The servers are
 /// downloaded on first use into <c>&lt;home&gt;/lsp/servers</c>, pinned and checked (plugin.json names the downloads), started
 /// lazily per workspace root, at most <c>lsp.maxServers</c> at once, and stopped after <c>lsp.idleMinutes</c> unused.
 /// </summary>
-[NetPiPlugin("netpi.lsp", Name = "Language servers", Description = "lsp: diagnostics, definitions and symbols from language servers (C#, Svelte, JavaScript/TypeScript)", Order = 27)]
+[NetPiPlugin("netpi.lsp", Name = "Language servers", Description = "lsp: diagnostics, definitions and symbols from language servers (C#, Svelte, JavaScript/TypeScript, Go)", Order = 27)]
 public sealed class LspPlugin : INetPiPlugin
 {
     private LspPool? _pool;

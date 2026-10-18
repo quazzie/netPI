@@ -16,6 +16,8 @@ internal sealed class LspServer
     public required string[] Extensions { get; init; }
     public required Func<string, string> LanguageIdOf { get; init; }
     public required Func<string, (string File, string[] Args)> CommandOf { get; init; }
+    /// <summary>Installed by the user, not by NetPI (gopls): nothing is downloaded, the command finds the binary itself.</summary>
+    public bool External { get; init; }
     public Func<string, JsonNode?> InitOptions { get; init; } = _ => null;
     /// <summary>What the server needs on the machine, said when it cannot be started.</summary>
     public string Needs { get; init; } = "";
@@ -54,7 +56,44 @@ internal sealed class LspServer
         Needs = "typescript-language-server runs on Node.js: node on PATH.",
     };
 
-    public static readonly LspServer[] All = [CSharp, Svelte, TypeScript];
+    public const string GoplsInstall = "go install golang.org/x/tools/gopls@latest";
+
+    public static readonly LspServer Go = new()
+    {
+        Id = "go", Install = "", External = true, Extensions = [".go"], LanguageIdOf = _ => "go",
+        CommandOf = _ => (FindGopls(), []),
+        Needs = $"gopls is not installed by NetPI: run `{GoplsInstall}` (needs Go), or set NETPI_GOPLS to the binary.",
+        // the first request loads the module and its dependencies (a big module, a cold build cache: minutes)
+        StartTimeout = TimeSpan.FromSeconds(180), RequestTimeout = TimeSpan.FromSeconds(90),
+    };
+
+    public static readonly LspServer[] All = [CSharp, Svelte, TypeScript, Go];
+
+    /// <summary>gopls: NETPI_GOPLS, then PATH, GOBIN, GOPATH/bin, ~/go/bin and Go's own folder; an <see cref="LspException"/> naming the install command when it is nowhere.</summary>
+    internal static string FindGopls()
+    {
+        var exe = OperatingSystem.IsWindows() ? "gopls.exe" : "gopls";
+        var explicitPath = Environment.GetEnvironmentVariable("NETPI_GOPLS");
+        if (!string.IsNullOrWhiteSpace(explicitPath))
+            return File.Exists(explicitPath) ? explicitPath : throw new LspException($"NETPI_GOPLS points to {explicitPath}, which does not exist.");
+        var dirs = new List<string>();
+        dirs.AddRange((Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries));
+        if (Environment.GetEnvironmentVariable("GOBIN") is { Length: > 0 } gobin) dirs.Add(gobin);
+        foreach (var gopath in (Environment.GetEnvironmentVariable("GOPATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            dirs.Add(Path.Combine(gopath, "bin"));
+        dirs.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "go", "bin"));
+        dirs.Add(OperatingSystem.IsWindows() ? @"C:\Program Files\Go\bin" : "/usr/local/go/bin");
+        foreach (var dir in dirs)
+        {
+            try
+            {
+                var candidate = Path.Combine(dir.Trim('"'), exe);
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch (ArgumentException) { /* a malformed PATH entry */ }
+        }
+        throw new LspException($"gopls was not found (looked in NETPI_GOPLS, PATH, GOBIN, GOPATH/bin, ~/go/bin). Install it with: {GoplsInstall}");
+    }
 
     /// <summary>The server for a file, by its extension; null for a file none of them serves.</summary>
     public static LspServer? For(string path) =>
@@ -84,6 +123,7 @@ internal sealed class LspInstaller(string serversDir, string pluginDir, HttpClie
     /// <summary>The server's install folder, installing it first when it is not there yet.</summary>
     public async Task<string> EnsureAsync(LspServer server, CancellationToken ct)
     {
+        if (server.External) return "";
         var dir = Folder(server);
         if (Installed(server)) return dir;
         var gate = _gates.GetOrAdd(server.Install, _ => new SemaphoreSlim(1, 1));

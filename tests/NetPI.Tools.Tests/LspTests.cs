@@ -22,6 +22,8 @@ public static class LspTests
         t.Add("lsp: the changed files are git's under the chat's folder (a subfolder of the repository too), renamed ones by their new name, deleted ones not", ChangedFiles);
         t.Add("lsp: the pool starts servers outside its lock and shares a start, stops the least recently used and the idle, starts a dead one again, forgets a failed start; diagnostics pulled and published", Pool);
         t.Add("lsp: references list every use with its line; rename asks the server, applies its edit to all files through files.applyEdits (EOL kept), and refuses file operations; rename is not read-only", ReferencesAndRename);
+        t.Add("lsp: Go goes to gopls, which is found by NETPI_GOPLS or the usual folders; a missing one is an error naming the install command", GoRouting);
+        t.Add("lsp: live: gopls (when installed) gives diagnostics, an outline, a workspace search, references and a definition for a Go module", LiveGo);
         t.Add("lsp: live: csharp-ls finds the uses of a method in two files and renames it in both (set NETPI_LSP_LIVE=1; downloads)", LiveRename);
         t.Add("lsp: live: csharp-ls, svelte-language-server and typescript-language-server installed: diagnostics, a definition, an outline and a workspace search (set NETPI_LSP_LIVE=1; downloads)", Live);
     }
@@ -95,6 +97,59 @@ public static class LspTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(body) });
+    }
+
+    private static Task GoRouting()
+    {
+        Check.Equal("go", LspServer.For("cmd/main.go")!.Id);
+        var old = Environment.GetEnvironmentVariable("NETPI_GOPLS");
+        var oldPath = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            var fake = Path.Combine(T.TempDir("lsp-gopls"), OperatingSystem.IsWindows() ? "gopls.exe" : "gopls");
+            File.WriteAllText(fake, "");
+            Environment.SetEnvironmentVariable("NETPI_GOPLS", fake);
+            Check.Equal(fake, LspServer.FindGopls());
+            Environment.SetEnvironmentVariable("NETPI_GOPLS", Path.Combine(Path.GetDirectoryName(fake)!, "nope"));
+            Check.Contains(Check.Throws<LspException>(() => LspServer.FindGopls()).Message, "NETPI_GOPLS");
+            Environment.SetEnvironmentVariable("NETPI_GOPLS", null);
+            Environment.SetEnvironmentVariable("PATH", Path.GetDirectoryName(fake));
+            Check.Equal(fake, LspServer.FindGopls());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NETPI_GOPLS", old);
+            Environment.SetEnvironmentVariable("PATH", oldPath);
+        }
+        return Task.CompletedTask;
+    }
+
+    private static async Task LiveGo()
+    {
+        try { LspServer.FindGopls(); } catch (LspException ex) { Check.Skip(ex.Message); }
+        var root = T.TempDir("lsp-go-project");
+        File.WriteAllText(Path.Combine(root, "go.mod"), "module example.com/probe\n\ngo 1.21\n");
+        File.WriteAllText(Path.Combine(root, "bridge.go"), "package probe\n\ntype Bridge struct{ N int }\n\nfunc NewBridge() *Bridge { return &Bridge{} }\n");
+        File.WriteAllText(Path.Combine(root, "use.go"), "package probe\n\nfunc Use(b *Bridge) int { return b.N }\n");
+        File.WriteAllText(Path.Combine(root, "bad.go"), "package probe\n\nfunc Bad() int { return \"x\" }\n");
+        using var http = new HttpClient();
+        await using var pool = new LspPool(new LspInstaller(T.TempDir("lsp-servers-go"), AppContext.BaseDirectory, http, NullLogger.Instance), NullLogger.Instance, () => 2, () => TimeSpan.FromMinutes(15));
+        var tool = new LspTool(pool);
+        async Task<string> Run(object args) => (await tool.ExecuteAsync(T.Ctx(root, (ModelInfo?)null), T.Args(args), CancellationToken.None)).Content;
+
+        var bad = await Run(new { action = "diagnostics", files = new[] { "bad.go" } });
+        Check.Contains(bad, "bad.go:3:", bad);
+        var clean = await Run(new { action = "diagnostics", files = new[] { "use.go" } });
+        Check.Contains(clean, "no problems", clean);
+        var outline = await Run(new { action = "symbols", file = "bridge.go" });
+        Check.Contains(outline, "Bridge", outline);
+        var search = await Run(new { action = "symbols", query = "Bridge", language = "go" });
+        Check.Contains(search, "Bridge", search);
+        var refs = await Run(new { action = "references", file = "bridge.go", line = 3, column = 6 });
+        Check.Contains(refs, "use.go:3:", refs);
+        Check.Contains(refs, "bridge.go:3:", refs);
+        var def = await Run(new { action = "definition", file = "use.go", line = 3, column = 15 });
+        Check.Contains(def, "bridge.go:3:", def);
     }
 
     private static async Task PinnedInstall()
