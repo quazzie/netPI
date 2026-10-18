@@ -71,6 +71,8 @@ internal sealed class MemoryIndex : IDisposable
     private readonly IPluginContext _ctx;
     private readonly IDataCollection _store;
     private readonly SemaphoreSlim _sweeping = new(1, 1);
+    /// <summary>Chats that failed to index, by the revision that failed: warned once, retried only after the chat changes.</summary>
+    private readonly Dictionary<string, string> _failed = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stop = new();
     private readonly Lock _gate = new();
     private Dictionary<string, Entry>? _cache;
@@ -129,9 +131,10 @@ internal sealed class MemoryIndex : IDisposable
             foreach (var session in sessions)
             {
                 ct.ThrowIfCancellationRequested();
+                var rev = $"{Format}:{session.MessageCount}:{session.UpdatedAt.ToUnixTimeSeconds()}:{maxChunks}";
+                if (_failed.TryGetValue(session.Id, out var failedRev) && failedRev == rev) { skipped++; continue; }
                 try
                 {
-                    var rev = $"{Format}:{session.MessageCount}:{session.UpdatedAt.ToUnixTimeSeconds()}:{maxChunks}";
                     cache.TryGetValue(session.Id, out var have);
                     // Without a model a chat that did not change keeps the vectors it has, for the day the model is back.
                     if (have is not null && have.Rev == rev && (have.Model == model || service is null)) { unchanged++; continue; }
@@ -161,6 +164,7 @@ internal sealed class MemoryIndex : IDisposable
                     });
                     lock (_gate) if (_cache is not null) _cache[session.Id] = entry;
                     indexed++;
+                    _failed.Remove(session.Id);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
@@ -168,6 +172,7 @@ internal sealed class MemoryIndex : IDisposable
                     // A chat that cannot be embedded (unreadable messages, a model that refuses it) is skipped and named:
                     // the sweep keeps going, and the answer says how many were left out.
                     skipped++;
+                    _failed[session.Id] = rev;
                     _ctx.Logger.LogWarning("Memory: the chat {Session} \"{Title}\" was not indexed: {Message}", session.Id, session.Title, ex.Message);
                 }
             }
@@ -344,9 +349,11 @@ internal sealed class MemoryIndex : IDisposable
         var args = new List<string>();
         try
         {
-            if (JsonNode.Parse(call.Arguments) is JsonObject o)
-                foreach (var (_, v) in o)
-                    if (v is JsonValue jv && jv.TryGetValue<string>(out var s) && s.Trim() is { Length: > 0 and <= 200 } t) args.Add(OneLine(t));
+            // JsonDocument, not JsonNode: models sometimes emit an object with a repeated key, which JsonNode rejects.
+            using var doc = JsonDocument.Parse(call.Arguments);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                foreach (var p in doc.RootElement.EnumerateObject())
+                    if (p.Value.ValueKind == JsonValueKind.String && p.Value.GetString()!.Trim() is { Length: > 0 and <= 200 } t) args.Add(OneLine(t));
         }
         catch (JsonException) { }
         return Clip(args.Count == 0 ? $"Tool {call.Name}" : $"Tool {call.Name}: {string.Join(" ", args)}", MaxToolChars);

@@ -472,6 +472,19 @@ public static class EmbeddingsTests
             ctx.Unload();
         });
 
+        r.Add("memory: a tool call whose arguments repeat a key does not stop its chat from being indexed", () =>
+        {
+            var messages = new List<ChatMessage>
+            {
+                ChatMessage.UserText("start"),
+                new() { Role = MessageRole.Assistant, Parts = [new ToolCallPart { Id = "c1", Name = "wrap", Arguments = "{\"arguments\":\"first\",\"arguments\":\"second one\",\"path\":\"a.cs\"}" }, new ToolCallPart { Id = "c2", Name = "bad", Arguments = "{not json" }] },
+            };
+            var text = string.Join("\n", NetPI.Memory.MemoryIndex.Chunks(new SessionInfo { Title = "T" }, messages, 64));
+            Check.Contains(text, "Tool wrap: first second one a.cs");
+            Check.Contains(text, "Tool bad");
+            return Task.CompletedTask;
+        });
+
         r.Add("memory: an exact identifier ranks its chat first (words fused with meaning); without a model the chats are indexed as text and found by words", async () =>
         {
             var ctx = new FakePluginContext(T.TempDir("memory-hybrid"));
