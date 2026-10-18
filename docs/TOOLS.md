@@ -1503,7 +1503,7 @@ meaning nor a search word. Read-only.
 ## `code_search` (plugins/NetPI.CodeSearch)
 
 Finds the passages of the session's workspace closest to a query, instead of whole files: `{ query, limit? (8, at most 20),
-path? (only files under this folder or this file, relative; outside the workspace is an error) }`. The workspace is the
+path? (only files under this folder or this file, relative; an absolute path outside the workspace searches that folder (or that file) as its own, separately indexed root; a relative path outside is an error) }`. The workspace is the
 session's bound checkout (`ToolContext.Workspace()`, else `IWorkspaceResolver.Resolve`: a bound session whose checkout is
 broken gets the resolver's error, never its project), else its project's folder, else its working folder.
 

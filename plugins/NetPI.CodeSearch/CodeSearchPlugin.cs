@@ -236,7 +236,7 @@ internal sealed class CodeSearchTool(IPluginContext ctx, CodeSearcher searcher) 
                       "functions, classes, doc sections — each as path:start-end with its signature and text, instead of whole files. " +
                       "Indexed in the background at the first search; the answer says when indexing is still going on.",
         PromptGuidelines = ["To find where something is implemented or explained, code_search returns the relevant passages with their lines; read further only where they point. grep remains the tool for an exact string."],
-        Parameters = JsonNode.Parse("""{"type":"object","properties":{"query":{"type":"string","description":"what you are looking for: words, identifiers, a description of the behavior"},"limit":{"type":"integer","minimum":1,"maximum":20,"description":"passages (default 8)"},"path":{"type":"string","description":"only files under this folder or this file (relative to the workspace)"}},"required":["query"]}""")!.AsObject(),
+        Parameters = JsonNode.Parse("""{"type":"object","properties":{"query":{"type":"string","description":"what you are looking for: words, identifiers, a description of the behavior"},"limit":{"type":"integer","minimum":1,"maximum":20,"description":"passages (default 8)"},"path":{"type":"string","description":"only files under this folder or this file (relative to the workspace); an absolute path outside the workspace searches that folder instead"}},"required":["query"]}""")!.AsObject(),
     };
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
@@ -249,7 +249,20 @@ internal sealed class CodeSearchTool(IPluginContext ctx, CodeSearcher searcher) 
         catch (WorkspaceUnavailableException ex) { return ToolResult.Error(ex.Message); }
         try
         {
-            var answer = await searcher.SearchAsync(root, query, a.Int("limit") ?? 8, a.Str("path"), ct).ConfigureAwait(false);
+            var path = a.Str("path");
+            // Read-only: an absolute path outside the workspace searches that folder (or the file's folder, filtered to the file) as its own root.
+            if (path is { Length: > 0 } && Path.IsPathRooted(path.Trim()))
+            {
+                var full = Path.GetFullPath(path.Trim());
+                var rel = Path.GetRelativePath(root, full);
+                if (rel.StartsWith("..") || Path.IsPathRooted(rel))
+                {
+                    if (Directory.Exists(full)) { root = full; path = null; }
+                    else if (File.Exists(full)) { root = Path.GetDirectoryName(full)!; path = Path.GetFileName(full); }
+                    else return ToolResult.Error($"Not found: {full}");
+                }
+            }
+            var answer = await searcher.SearchAsync(root, query, a.Int("limit") ?? 8, path, ct).ConfigureAwait(false);
             return ToolResult.Ok(answer.Text, answer.Details);
         }
         catch (RpcException ex) { return ToolResult.Error(ex.Message); }
