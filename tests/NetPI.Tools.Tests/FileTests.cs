@@ -1460,6 +1460,24 @@ public static class FileTests
 
         // ------------------------------------------------ git (read-only)
 
+        r.Add("git: cwd reads another repository, relative paths resolve against it", async () =>
+        {
+            var here = T.TempDir("gitcwd-here");
+            var other = T.TempDir("gitcwd-other");
+            if (!await TestGit.RunAsync(other, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
+            await TestGit.RunAsync(other, "config", "user.email", "test@example.com");
+            await TestGit.RunAsync(other, "config", "user.name", "Test");
+            T.WriteText(other, "lib/b.txt", "x\n");
+            await TestGit.RunAsync(other, "add", "-A");
+            await TestGit.RunAsync(other, "commit", "-q", "-m", "elsewhere commit");
+            var git = new GitTool();
+            var log = await T.Run(git, here, new { action = "log", cwd = other, path = "lib/b.txt" });
+            ToolCheck.Ok(log);
+            Check.Contains(log.Content, "elsewhere commit");
+            var missing = await T.Run(git, here, new { action = "log", cwd = Path.Combine(other, "nope") });
+            Check.True(missing.IsError, missing.Content);
+        });
+
         r.Add("git: log, show, diff, status and blame answer from the workspace's real git", async () =>
         {
             var dir = T.TempDir("gittool");

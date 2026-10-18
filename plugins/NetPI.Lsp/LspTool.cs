@@ -41,7 +41,7 @@ internal sealed class LspTool(LspPool pool, IRpcRegistry? rpc = null) : IAgentTo
                "the JavaScript servers search the projects of the files they have open: give a file of the project to search in, " +
                "else one is picked). The first call for a language installs its server (csharp-ls, svelte-language-server, " +
                "typescript-language-server, pinned and checked) and loads the project: it can take a minute or two; later calls are " +
-               "fast. Answers are about the files as they are on disk now.",
+               "fast. Answers are about the files as they are on disk now. cwd: analyse another project folder (not for rename, which stays in the chat's workspace).",
         Parameters = JsonNode.Parse("""
             {"type":"object","properties":{
               "action":{"type":"string","enum":["diagnostics","definition","references","rename","symbols"]},
@@ -51,7 +51,8 @@ internal sealed class LspTool(LspPool pool, IRpcRegistry? rpc = null) : IAgentTo
               "column":{"type":"integer","minimum":1},
               "query":{"type":"string"},
               "newName":{"type":"string"},
-              "language":{"type":"string","enum":["csharp","svelte","typescript"]}},
+              "language":{"type":"string","enum":["csharp","svelte","typescript"]},
+              "cwd":{"type":"string","description":"the project folder to analyse (absolute, or relative to the chat's folder; default: the chat's folder). Not for rename."}},
              "required":["action"]}
             """)!.AsObject(),
     };
@@ -65,9 +66,18 @@ internal sealed class LspTool(LspPool pool, IRpcRegistry? rpc = null) : IAgentTo
     {
         var a = new ToolArgs(args);
         var root = Path.GetFullPath(context.Cwd ?? Environment.CurrentDirectory);
+        var action = (a.Str("action") ?? "").ToLowerInvariant();
+        if (a.Str("cwd") is { Length: > 0 } other)
+        {
+            var dir = context.ResolvePath(other);
+            if (!Directory.Exists(dir)) return ToolResult.Error($"cwd {dir} does not exist.");
+            if (action == "rename" && !string.Equals(Path.TrimEndingDirectorySeparator(dir), Path.TrimEndingDirectorySeparator(root), StringComparison.OrdinalIgnoreCase))
+                return ToolResult.Error("rename works in the chat's workspace only: cwd is for reading other projects.");
+            root = dir;
+        }
         try
         {
-            return (a.Str("action") ?? "").ToLowerInvariant() switch
+            return action switch
             {
                 "diagnostics" => await DiagnosticsAsync(root, a, ct).ConfigureAwait(false),
                 "definition" => await DefinitionAsync(root, a, ct).ConfigureAwait(false),

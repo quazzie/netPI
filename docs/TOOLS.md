@@ -278,7 +278,7 @@ details: { path, entries: number, dirs: number, files: number, hidden: number, t
 
 ### `git` (read-only, summary arg `action`)
 
-`{ action: 'log'|'show'|'diff'|'status'|'blame', … }`
+`{ action: 'log'|'show'|'diff'|'status'|'blame', cwd?, … }` — `cwd` (absolute, or relative to the chat's folder) reads another repository; relative `path`s then resolve against it.
 
 - The git a **plan may run**: plan mode has no shell, and these are the history questions a plan needs answered. The tool
   is registered read-only (`ToolDefinition.ReadOnly`), so the plan policy lets it through; it is not plan-only.
@@ -565,7 +565,7 @@ so no chat parses a console log. The project describes it in `.netpi/tests.json`
 
 ## Code intelligence (`lsp`, `category: "code"`)
 
-`lsp` asks a language server about code (idea-fe26oh), read-only except `rename`: `diagnostics { files? }` (errors and warnings, default: the
+`lsp` (every action takes `cwd?`, another project folder to analyse; `rename` refuses a `cwd` other than the chat's) asks a language server about code (idea-fe26oh), read-only except `rename`: `diagnostics { files? }` (errors and warnings, default: the
 files `git status` reports changed under the chat's folder, at most 20 files and 200 lines), `definition { file, line, column }`
 (1-based), `references { file, line, column }` (`textDocument/references` with the declaration: `path:line:column: <line's text>`
 rows, at most 200, with the file count) and `rename { file, line, column, newName }` (`prepareRename` when the server offers

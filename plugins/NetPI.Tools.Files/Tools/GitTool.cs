@@ -29,7 +29,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
             "changed), diff (the changes, worktree or between commits), status, blame (who last changed each line). " +
             "Read-only: it never writes, so it is allowed in plan mode.",
         Help =
-            "Actions, all run in the session's workspace (paths are resolved like the file tools' paths, relative or " +
+            "Actions, all run in the session's workspace, or in the repository named by cwd (paths are resolved like the file tools' paths, relative or " +
             "absolute):\n" +
             "- log { n? (default 20, max 100), path? } — the recent commits, newest first: short hash, date, author, " +
             "subject. path limits them to the commits that touched a file or directory.\n" +
@@ -51,7 +51,8 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
             ("b", ToolSchema.Str("diff: second commit/branch"), false),
             ("staged", ToolSchema.Bool("diff: the staged changes against HEAD"), false),
             ("start", ToolSchema.Int("blame: first line (1-based)"), false),
-            ("end", ToolSchema.Int("blame: last line"), false)),
+            ("end", ToolSchema.Int("blame: last line"), false),
+            ("cwd", ToolSchema.Str("The repository folder to read (absolute, or relative to the chat's folder; default: the session's workspace). Relative paths then resolve against it."), false)),
         PromptGuidelines =
         [
             "For git questions (what changed lately, who touched this, what a commit does) use the git tool instead of " +
@@ -62,6 +63,12 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
     protected override async Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
         var action = (args.Str("action") ?? "").Trim().ToLowerInvariant();
+        if (args.Str("cwd", "repo") is { Length: > 0 } cwd)
+        {
+            var dir = ctx.ResolvePath(cwd);
+            if (!Directory.Exists(dir)) return ToolResult.Error($"cwd {dir} does not exist.");
+            ctx.Items[CwdKey] = dir;
+        }
         return action switch
         {
             "" => MissingArg("action", """{"action": "log", "n": 20}"""),
@@ -80,7 +87,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
     {
         var n = Math.Clamp(args.Int("n", "limit", "count") ?? 20, 1, MaxCommits);
         string? path = null;
-        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return Task.FromResult(NotFound(ctx, path)); }
+        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = Resolve(ctx, p); if (!File.Exists(path) && !Directory.Exists(path)) return Task.FromResult(NotFound(ctx, path)); }
         var list = new List<string> { "log", "--no-color", "-n", n.ToString(), "--pretty=format:%h %ad %an %s", "--date=short" };
         if (path is not null) list.AddRange(["--", path]);
         return Run(ctx, "log", ct, list, new { n, path });
@@ -92,7 +99,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
         if (string.IsNullOrWhiteSpace(commit)) return MissingArg("commit", """{"action": "show", "commit": "HEAD"}""");
         if (Ref(commit) is { } bad) return bad;
         string? path = null;
-        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
+        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = Resolve(ctx, p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
         var patch = args.Bool("patch", "full") ?? false;
         var list = new List<string> { "show", "--no-color", "--no-ext-diff" };
         if (patch) list.AddRange(["--stat", "--patch"]);
@@ -114,7 +121,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
             if (name == "a") a = value; else b = value;
         }
         string? path = null;
-        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
+        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = Resolve(ctx, p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
         var list = new List<string> { "diff", "--no-color", "--no-ext-diff" };
         if (staged) list.Add("--cached");
         if (a is not null) list.Add(a);
@@ -126,7 +133,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
     private async Task<ToolResult> StatusAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
         string? path = null;
-        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = ctx.ResolvePath(p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
+        if (args.Str(ToolPathArgs.PathNames) is { Length: > 0 } p) { path = Resolve(ctx, p); if (!File.Exists(path) && !Directory.Exists(path)) return NotFound(ctx, path); }
         var list = new List<string> { "status", "--porcelain=v1", "-b" };
         if (path is not null) list.AddRange(["--", path]);
         return await Run(ctx, "status", ct, list, new { path }).ConfigureAwait(false);
@@ -136,7 +143,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
     {
         var p = args.Str(ToolPathArgs.PathNames);
         if (string.IsNullOrWhiteSpace(p)) return MissingArg("path", """{"action": "blame", "path": "src/Upload.cs"}""");
-        var full = ctx.ResolvePath(p);
+        var full = Resolve(ctx, p);
         if (!File.Exists(full))
             return Directory.Exists(full)
                 ? ToolResult.Error($"{full} is a directory, not a file. blame blames one file.")
@@ -160,6 +167,19 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
 
     // ------------------------------------------------ plumbing
 
+    private const string CwdKey = "git.cwd";
+
+    /// <summary>The folder git runs in: the call's <c>cwd</c>, else the session's.</summary>
+    private static string RepoOf(ToolContext ctx) => ctx.Items.TryGetValue(CwdKey, out var v) && v is string s ? s : ctx.Cwd;
+
+    /// <summary>A path like <see cref="ToolContext.ResolvePath"/>, but a relative one resolves against the call's <c>cwd</c>.</summary>
+    private static string Resolve(ToolContext ctx, string p)
+    {
+        var full = ctx.ResolvePath(p);
+        if (RepoOf(ctx) == ctx.Cwd || Path.IsPathRooted(p.Trim().Trim('"')) || p.TrimStart().StartsWith('~') || p.TrimStart().StartsWith('/')) return full;
+        return Path.GetFullPath(Path.Combine(RepoOf(ctx), p.Trim().Trim('"')));
+    }
+
     /// <summary>A commit name this tool will run: a hash, HEAD, HEAD~2, a tag or a branch. Git's own parser takes the
     /// rest — the set here only keeps a value from naming anything but a revision (no colon, no space, nothing a
     /// shell would read as a command, and never a leading dash: a "commit" of <c>--ext-diff</c> would be an option that runs the
@@ -175,7 +195,7 @@ public sealed class GitTool(ISettings? settings = null) : FileToolBase(settings)
     private async Task<ToolResult> Run(ToolContext ctx, string action, CancellationToken ct, IReadOnlyList<string> list, object details)
     {
         var cap = ToolResultLimit.Fit(Settings, MaxOutputChars, 400);
-        var r = await GitRunner.RunAsync(ctx.Cwd, ct, cap, [.. list]).ConfigureAwait(false);
+        var r = await GitRunner.RunAsync(RepoOf(ctx), ct, cap, [.. list]).ConfigureAwait(false);
         if (r.Aborted) throw new OperationCanceledException(ct);
         if (r.StartError is not null)
             return ToolResult.Error($"git is not available ({r.StartError}). Install git or add it to PATH.");
