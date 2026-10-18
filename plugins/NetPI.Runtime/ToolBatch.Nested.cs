@@ -34,7 +34,7 @@ internal sealed partial class ToolBatch
             var id = parent.Call.Id + "~" + Interlocked.Increment(ref _count);
             JsonElement args;
             try { args = ToolArgs.Unwrap(arguments.Clone()); }
-            catch (JsonException ex) { return ToolResult.Error(InvalidJson(name, ex)); }
+            catch (JsonException ex) { return ToolResult.Error(InvalidJson(name, ex, outputLimit: false)); }
             if (args.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) args = JsonDocument.Parse("{}").RootElement.Clone();
             var call = new ToolCallPart { Id = id, Name = tool.Definition.Name, Arguments = args.GetRawText() };
             var readOnly = ReadsOnly(tool, call.Arguments);
@@ -83,7 +83,7 @@ internal sealed partial class ToolBatch
                 if (result.Wait is not null) result = CannotWait(call.Name);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (JsonException ex) { result = ToolResult.Error(InvalidJson(call.Name, ex)); }
+            catch (JsonException ex) { result = ToolResult.Error(InvalidJson(call.Name, ex, outputLimit: false)); }
             catch (Exception ex)
             {
                 batch.Ctx.Logger.LogDebug(ex, "Nested tool {Tool} threw", call.Name);
