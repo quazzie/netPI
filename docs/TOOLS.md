@@ -1517,7 +1517,13 @@ broken gets the resolver's error, never its project), else its project's folder,
 - **Ranking**: BM25 over an in-memory inverted index (each passage's words: its path, signature and text; identifiers whole
   and in their camelCase/snake_case parts, so `code index` finds `CodeIndex`), fused by weighted reciprocal rank (as
   `memory_search`, the shared `shared/SearchKit`) with the cosine of the passages' vectors when the Embeddings plugin has a
-  model and `codesearch.embed` is on; else words only (the answer says so). At most 3 passages of a file, none overlapping.
+  model and `codesearch.embed` is on; else words only (the answer says so). A word of the path or of the signature counts
+  3× in a passage's term frequency (once in its length: a name outweighs a mention), and after the fusion test files
+  (`tests/`, names with `test`/`mock`) weigh ×0.6 and documentation (`docs/`, `*.md`) ×0.7 unless the query itself says
+  test/spec/doc/readme/guide. At most 3 passages of a file, none overlapping. Measured on this repository (15 queries in
+  `CodeSearchTests`, `NETPI_CODESEARCH_LIVE=1`, words only), plain-words questions hit@1/hit@4 2/10 → 4/10 and 5/10 →
+  7/10, bare identifiers hit@1 3/5 → 5/5. Plural stemming was tried and made it worse; the rest are vocabulary gaps
+  ("truncated" vs `Fit`) that only the meaning side closes.
 - **Index**: built in the background at the first search of a workspace; a search waits up to 3 s for it, then answers from
   what is indexed and says "still indexing: n of m files read". A later search re-checks the files when the last check is
   older than 3 s (git's list and a stat per file; a file whose size or time changed is re-read, a content hash decides whether

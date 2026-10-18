@@ -109,6 +109,26 @@ public static class CodeSearchTests
         return dir;
     }
 
+    /// <summary>Query → the file that implements it, from this repository: plain-words questions first, then bare identifiers.</summary>
+    private static readonly (string Query, string File)[] RankingSet =
+    [
+        ("where is the reload gate that waits for agent runs to end", "src/NetPI.Host/Plugins/ReloadGate.cs"),
+        ("how are tool results truncated to fit the context", "src/NetPI.Abstractions/Tools.cs"),
+        ("parse server sent events from a streaming response", "shared/ProviderKit/SseReader.cs"),
+        ("error when the session's workspace folder is gone", "src/NetPI.Contracts/Workspaces.cs"),
+        ("reciprocal rank fusion of word and meaning rankings", "shared/SearchKit/Lexical.cs"),
+        ("split a source file into passages at declarations", "plugins/NetPI.CodeSearch/Chunker.cs"),
+        ("which messages to summarize when compacting a chat", "plugins/NetPI.Compaction/CompactionPlanner.cs"),
+        ("parse the yaml frontmatter of a skill file", "plugins/NetPI.Skills/Frontmatter.cs"),
+        ("list the git tracked files while honouring gitignore", "plugins/NetPI.CodeSearch/FileSource.cs"),
+        ("the skill tool that loads a skill's instructions", "plugins/NetPI.Skills/SkillTool.cs"),
+        ("ReloadGate", "src/NetPI.Host/Plugins/ReloadGate.cs"),
+        ("ToolResultLimit", "src/NetPI.Abstractions/Tools.cs"),
+        ("SseReader", "shared/ProviderKit/SseReader.cs"),
+        ("WorkspaceUnavailableException", "src/NetPI.Contracts/Workspaces.cs"),
+        ("CompactionPlanner", "plugins/NetPI.Compaction/CompactionPlanner.cs"),
+    ];
+
     public static void Register(TestRunner r)
     {
         r.Add("codesearch chunker: C# is cut at its type and members, comments and attributes go with them, the class names its members' signatures", () =>
@@ -397,6 +417,28 @@ public static class CodeSearchTests
                 Console.WriteLine($"  \"{q}\": {watch.ElapsedMilliseconds} ms (search {found["ms"]} ms), {found["returnedTokens"]} of {found["fileTokens"]} tokens; {top}");
             }
             Check.True(again["files"]!.GetValue<int>() > 100);
+        });
+
+        r.Add("codesearch ranking: natural-language and identifier queries find the implementation file (NETPI_CODESEARCH_LIVE=1; words only; prints hit@1 / hit@4)", async () =>
+        {
+            if (Environment.GetEnvironmentVariable("NETPI_CODESEARCH_LIVE") != "1") Check.Skip("set NETPI_CODESEARCH_LIVE=1 to index this repository");
+            var root = NetPI.TestShared.T.RepoRoot;
+            using var ctx = await Started(root, null);
+            await Rpc(ctx, "codesearch.reindex", new { root });
+            var natural = 0; var named = 0; var h1 = 0; var h4 = 0; var n1 = 0; var n4 = 0;
+            foreach (var (query, expected) in RankingSet)
+            {
+                var found = await Rpc(ctx, "codesearch.search", new { root, query, limit = 8 });
+                var files = ((JsonArray)found["passages"]!).Select(p => p!["path"]!.GetValue<string>()).Distinct().ToList();
+                var rank = files.IndexOf(expected) + 1;
+                var isNamed = !query.Contains(' ');
+                if (isNamed) { named++; if (rank == 1) n1++; if (rank is >= 1 and <= 4) n4++; }
+                else { natural++; if (rank == 1) h1++; if (rank is >= 1 and <= 4) h4++; }
+                Console.WriteLine($"  rank {(rank == 0 ? "-" : rank.ToString())}  \"{query}\" -> {expected}  [{string.Join(", ", files.Take(4).Select(f => System.IO.Path.GetFileName(f)))}]");
+            }
+            Console.WriteLine($"  natural-language: hit@1 {h1}/{natural}, hit@4 {h4}/{natural}; identifiers: hit@1 {n1}/{named}, hit@4 {n4}/{named}");
+            Check.True(n4 == named, "every identifier query finds its file in the top 4");
+            Check.True(h4 >= natural * 6 / 10, $"natural-language hit@4 {h4}/{natural}");
         });
     }
 

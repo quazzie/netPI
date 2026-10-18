@@ -291,15 +291,25 @@ internal sealed class CodeIndex : IDisposable
     private static void Publish(RootIndex index) =>
         index.Snapshot = new Snapshot(index.Files.Values.OrderBy(f => f.Path, StringComparer.Ordinal).SelectMany(f => f.Passages).ToArray());
 
+    private const int PathWeight = 3, SignatureWeight = 3;
+
     private static Passage Make(string rel, Chunk chunk, int fileBytes)
     {
+        // BM25F-style fields in one posting list: a word of the path or the signature (the declaration's name) counts
+        // PathWeight / SignatureWeight times in the term frequency but once in the length, so a name outweighs a passing mention.
         var tf = new Dictionary<string, int>(StringComparer.Ordinal);
         var length = 0;
-        foreach (var t in Lexical.CodeTokens(rel + "\n" + chunk.Signature + "\n" + chunk.Text))
+        void Add(string text, int weight)
         {
-            tf[t] = tf.GetValueOrDefault(t) + 1;
-            length++;
+            foreach (var t in Lexical.CodeTokens(text))
+            {
+                tf[t] = tf.GetValueOrDefault(t) + weight;
+                length++;
+            }
         }
+        Add(rel, PathWeight);
+        Add(chunk.Signature, SignatureWeight);
+        Add(chunk.Text, 1);
         return new Passage(rel, chunk, Hash(Encoding.UTF8.GetBytes(EmbedText(rel, chunk))), tf.Keys.ToArray(), tf.Values.ToArray(), length, fileBytes);
     }
 
@@ -455,6 +465,15 @@ internal sealed class CodeIndex : IDisposable
         }
         var byMeaning = cosine.OrderByDescending(x => x.Value).ThenBy(x => x.Key).Take(300).Select(x => x.Key.ToString());
         var fused = Lexical.Fuse(Lexical.Ranks(byMeaning), Lexical.Ranks(words));
+        // Tests and docs repeat the words of the code they describe: they rank below the implementation unless the query asks for them.
+        var wantsTests = Mentions(query, "test", "tests", "spec", "specs", "fixture", "mock");
+        var wantsDocs = Mentions(query, "doc", "docs", "documentation", "readme", "markdown", "handoff", "guide");
+        fused = fused.Select(f =>
+            {
+                var path = snap.Passages[int.Parse(f.Id)].Path;
+                return (f.Id, Score: f.Score * Kind(path, wantsTests, wantsDocs));
+            })
+            .OrderByDescending(f => f.Score).ThenBy(f => int.Parse(f.Id)).ToList();
 
         var hits = new List<Hit>();
         var perFileCount = new Dictionary<string, List<Chunk>>(StringComparer.Ordinal);
@@ -469,6 +488,22 @@ internal sealed class CodeIndex : IDisposable
             hits.Add(new Hit(p, cosine.TryGetValue(id, out var c) ? Math.Round(c, 3) : null, score.GetValueOrDefault(id).Words, fusedScore));
         }
         return new Result(hits, meaning, terms.Count, snap.Passages.Length, watch.ElapsedMilliseconds);
+    }
+
+    private const double DemoteTests = 0.6, DemoteDocs = 0.7;
+
+    private static bool Mentions(string query, params string[] words) => Lexical.Tokens(query).Any(t => words.Contains(t));
+
+    /// <summary>The ranking factor of a path: test files and documentation are demoted unless the query mentions them.</summary>
+    internal static double Kind(string path, bool wantsTests, bool wantsDocs)
+    {
+        var p = "/" + path.ToLowerInvariant();
+        var name = p[(p.LastIndexOf('/') + 1)..];
+        var isTest = p.Contains("/tests/") || p.Contains("/test/") || p.Contains("/__tests__/") || name.Contains("test") || name.Contains(".spec.") || name.Contains("mock");
+        var isDoc = p.Contains("/docs/") || name.EndsWith(".md") || name.EndsWith(".mdx") || name.EndsWith(".txt") || name.EndsWith(".rst");
+        if (isTest && !wantsTests) return DemoteTests;
+        if (isDoc && !wantsDocs) return DemoteDocs;
+        return 1.0;
     }
 
     // ------------------------------------------------------------------ the counted metric
