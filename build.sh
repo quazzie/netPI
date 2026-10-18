@@ -50,6 +50,14 @@ abs() { if [ -d "$1" ]; then (cd "$1" && pwd -P); else case "$1" in /*) echo "$1
 # a top-level string / integer member of a JSON file the host writes (one member per line, as it indents them)
 json_str() { sed -n 's/^[[:space:]]*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' "$1" | head -n 1 || true; }
 json_int() { sed -n 's/^[[:space:]]*"'"$2"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*$/\1/p' "$1" | head -n 1 || true; }
+# a top-level string member with the JSON backslash escapes undone: the host writes Windows paths as C:\\...,
+# which only worked by luck in Git Bash (MSYS path conversion)
+json_path() { json_str "$1" "$2" | sed 's/\\\\/\\/g'; }
+# is a pid alive: in Git Bash kill -0 only sees MSYS processes, but the server runs natively
+pid_alive() {
+  if kill -0 "$1" 2>/dev/null; then return 0; fi
+  tasklist //FI "PID eq $1" 2>/dev/null | grep -qE "^[^[:space:]]+[[:space:]]+$1[[:space:]]"
+}
 
 DEV=artifacts/dev/app
 SERVER_FILE="${NETPI_HOME:-$HOME/.netpi}/server.json"
@@ -60,7 +68,7 @@ SERVER_FILE="${NETPI_HOME:-$HOME/.netpi}/server.json"
 APP=artifacts/app; APP_NOTE=""
 if [ -n "$APP_DIR" ]; then APP=$APP_DIR
 elif [ -f "$SERVER_FILE" ]; then
-  dir=$(json_str "$SERVER_FILE" appDir)
+  dir=$(json_path "$SERVER_FILE" appDir)
   if [ -n "$dir" ] && [ -d "$dir" ]; then
     APP=$dir
     if [ "$(abs "$dir")" != "$(abs artifacts/app)" ]; then APP_NOTE="A NetPI is running from $dir (not this repository): installing there."; fi
@@ -72,8 +80,8 @@ PENDING_DIR="$APP/.pending"; OLD_DIR="$APP/.old"; LOCK="$APP/.install.lock"
 # running one says so itself: server.json holds its pid and appDir, written at start and removed at exit.
 RUNNING=0; RUNNING_PID=""
 if [ -f "$SERVER_FILE" ]; then
-  pid=$(json_int "$SERVER_FILE" pid); dir=$(json_str "$SERVER_FILE" appDir)
-  if [ -n "$pid" ] && [ -n "$dir" ] && [ "$(abs "$dir")" = "$(abs "$APP")" ] && kill -0 "$pid" 2>/dev/null; then
+  pid=$(json_int "$SERVER_FILE" pid); dir=$(json_path "$SERVER_FILE" appDir)
+  if [ -n "$pid" ] && [ -n "$dir" ] && [ "$(abs "$dir")" = "$(abs "$APP")" ] && pid_alive "$pid"; then
     RUNNING=1; RUNNING_PID=$pid
   fi
 fi
