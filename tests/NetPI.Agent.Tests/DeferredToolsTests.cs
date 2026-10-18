@@ -75,6 +75,47 @@ public static class DeferredToolsTests
             Check.Equal(0, weather.Calls.Count); Check.Contains(h.Messages(session.Id).SelectMany(m => m.ToolResults).Last(r => r.Name == "call_tool").Content, "effective target blocked");
             ctx.Unload();
         });
+        t.Add("arguments: one missing final bracket is closed (call_tool's inner arguments too), a cut-off call is not and says so", async () => {
+            Check.Equal("""{"a":"x}"}""", NetPI.Runtime.ToolBatch.CloseOneBracket("""{"a":"x}" """));
+            Check.Equal("""{"a":[1,2]}""", NetPI.Runtime.ToolBatch.CloseOneBracket("""{"a":[1,2]"""));
+            Check.Equal(null, NetPI.Runtime.ToolBatch.CloseOneBracket("""{"a":"open string"""), "ends inside a string");
+            Check.Equal(null, NetPI.Runtime.ToolBatch.CloseOneBracket("""{"a":[1,"""), "two open and a trailing comma");
+            Check.Equal(null, NetPI.Runtime.ToolBatch.CloseOneBracket("""{"a":1,"""), "a trailing comma");
+            Check.Equal(null, NetPI.Runtime.ToolBatch.CloseOneBracket("""{"a":1}"""), "nothing missing");
+
+            await using var h = await TestHost.StartAsync();
+            var ctx = new TestPluginContext(h, "netpi.test");
+            var weather = new Deferred("weather_lookup", "Current weather and forecast for a city.");
+            ctx.Tools.Register(weather);
+            var session = h.NewSession(); var stage = 0;
+            h.Catalog.Handler = (r, ct) => stage++ switch
+            {
+                // the inner arguments as a string without their final brace (seen from a local model), and a direct call short of one
+                0 => Reply.Tools(Reply.Call("call_tool", new { name = "weather_lookup", arguments = """{"city": "Oslo" """ }),
+                                 Reply.Call("weather_lookup", """{"city": "Bergen" """)),
+                _ => Reply.Text("done"),
+            };
+            await h.SendAsync(session.Id, "weather?"); await h.IdleAsync(session.Id);
+            var results = h.Messages(session.Id).SelectMany(m => m.ToolResults).ToList();
+            Check.True(results.All(r => !r.IsError), string.Join(" | ", results.Select(r => r.Content)));
+            Check.Equal("""{"city": "Oslo"}|{"city": "Bergen"}""", string.Join("|", weather.Calls));
+            var direct = h.Messages(session.Id).SelectMany(m => m.ToolCalls).Single(c => c.Name == "weather_lookup");
+            Check.Equal("""{"city": "Bergen"}""", direct.Arguments, "the stored call holds valid JSON");
+
+            // the same call from a response cut off at its output limit is not guessed at, and the message says why
+            var message = NetPI.Runtime.ToolBatch.InvalidJson("edit", Error("""{"a":"x" """), outputLimit: true);
+            Check.Contains(message, "output limit");
+            message = NetPI.Runtime.ToolBatch.InvalidJson("edit", Error("""{"a":"x" """), outputLimit: false);
+            Check.Contains(message, "closing brackets"); Check.NotContains(message, "too long");
+            ctx.Unload();
+
+            static JsonException Error(string json)
+            {
+                try { JsonDocument.Parse(json); }
+                catch (JsonException ex) { return ex; }
+                throw new InvalidOperationException("parsed");
+            }
+        });
         t.Add("deferred: tool_search returns only real matches", async () => {
             var tools = new[] { new Deferred("a_forecast", "Weather forecast for a city.").Definition, new Deferred("b_weather", "Weather forecast forecast forecast.").Definition, new Deferred("c_city", "Notes about the weather in a city.").Definition };
             Check.True(ToolRanking.Rank(tools, "weather forecast").Any(d => d.Name == "c_city"), "without the cut, the one-word overlap matches");

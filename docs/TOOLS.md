@@ -83,6 +83,12 @@ when you change it.
 - **Lenient arguments.** Names are matched ignoring case, `_` and `-` (`file_path` = `filePath` = `FilePath`), and common
   aliases are accepted (`file_path`/`file`/`filename` for `path`, `old_string`/`new_string` for `oldText`/`newText`, and so on).
   Numbers and booleans may be strings (`"30"`, `"true"`). An arguments object sent as a JSON string is unwrapped.
+  Arguments short of exactly one closing bracket at their end (outside a string, after a complete value) are closed by
+  the batch runner before any hook reads them, the inner arguments of a `call_tool` too (`ToolBatch.CloseOneBracket`); a
+  direct call's stored arguments are rewritten to the closed JSON. Not for a response that stopped at its output limit:
+  that call may lack more than a bracket. Other unparseable arguments are an error that says how the response ended:
+  cut off at the output limit (send less per call), or ended normally with brackets still open (close them; the length
+  is fine).
 - **Errors are results, never exceptions.** `isError: true` with a message that says what to do next (“Use ls…”,
   “Did you mean…”, “Include more context…”). Cancellation is the one exception: when the call's token is cancelled, file
   tools rethrow `OperationCanceledException`. Shell tools kill the process tree and return an `[aborted]` result.
@@ -924,7 +930,7 @@ including during manual compaction, rather than silently replaced by the global 
 other runs, and a critical chat's subagents run at `high`). Work that can wait goes at `low`.
 
 Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority?, maxUsd?, maxTurns? }, …] }`.
-`taskFile` reads a long task from a file (path relative to the working directory; appended to `task` if both are given), so a batch stays short enough for a model to write in one call. Arguments that end inside an open object or array are reported as cut off, with that advice.
+`taskFile` reads a long task from a file (path relative to the working directory; appended to `task` if both are given), so a batch stays short enough for a model to write in one call. Arguments that end inside an open object or array from a response cut off at its output limit are reported as cut off, with that advice.
 Every entry is checked first, and every workspace the batch needs is provisioned before the first child starts (a named one
 resolved, the worktree of every worker that writes created, by the same rule a single spawn follows); a bad one starts none of
 them ("subagents[1] (name): …") and releases the worktrees the batch had created. A model that does not exist is such an error

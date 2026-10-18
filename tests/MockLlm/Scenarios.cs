@@ -481,9 +481,10 @@ public sealed partial class ScenarioEngine
         switch (step)
         {
             case 0:
-                // truncated JSON (as if cut off) and a hallucinated tool name in one batch
+                // truncated JSON (inside a string: more than a missing final brace, which the runtime closes) and a
+                // hallucinated tool name in one batch
                 var plan = new Plan { Text = "Reading the file." };
-                plan.Calls.Add(new NCall { Name = "read", Args = "{\"path\": \"" + file + "\"" });
+                plan.Calls.Add(new NCall { Name = "read", Args = "{\"path\": \"" + file });
                 plan.Calls.Add(new NCall { Name = "read_file", Args = "{\"path\": \"" + file + "\"}" });
                 return plan;
             case 1:

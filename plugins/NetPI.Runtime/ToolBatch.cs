@@ -12,18 +12,62 @@ namespace NetPI.Runtime;
 internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, AgentRunContext rc, Func<bool> hasSteering)
 {
     /// <summary>
-    /// The message for arguments that are not JSON. A call that ends inside an object or array was almost always cut off
-    /// (the model ran out of output): say so, so the model shortens the call instead of resending it as it was.
+    /// The message for arguments that are not JSON. Arguments that end inside an object or array are explained by how the
+    /// response ended: at the output limit (<paramref name="outputLimit"/>) the call was cut off, so the model shortens it;
+    /// a response that ended normally left its closing brackets off, and "too long" would send the model shortening a call
+    /// whose length was never the problem (seen with a local model resending the same call four times, ever shorter).
     /// </summary>
-    internal static string InvalidJson(string tool, JsonException ex)
+    internal static string InvalidJson(string tool, JsonException ex, bool outputLimit)
     {
         var text = $"Invalid JSON arguments for {tool}: {ex.Message}";
-        var cutOff = ex.Message.Contains("depth to be zero", StringComparison.Ordinal) || ex.Message.Contains("end of data", StringComparison.OrdinalIgnoreCase)
+        var unclosed = ex.Message.Contains("depth to be zero", StringComparison.Ordinal) || ex.Message.Contains("end of data", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("end of the string", StringComparison.OrdinalIgnoreCase);
-        return cutOff
-            ? text + "\nThe call looks cut off before its end (an open object or array): it was probably too long to write in one go. "
+        if (!unclosed) return text;
+        return outputLimit
+            ? text + "\nThe call was cut off at the output limit before its end (an open object or array): it was too long to write in one go. "
               + "Send less per call: fewer items, or long texts in a file (agent_spawn: taskFile) instead of inline."
-            : text;
+            : text + "\nThe arguments end before their closing brackets: an object or array (or a string) is still open. "
+              + "The length is fine; close every string, object and array (the final } is the usual one missing).";
+    }
+
+    /// <summary>
+    /// The arguments with the one closing bracket a model left off their end, when that is all that is wrong: the text
+    /// ends outside a string, after a complete value, with exactly one object or array open, and parses once it is closed.
+    /// Null otherwise. Only for a response that ended normally (a cut-off call may be missing more than a bracket).
+    /// </summary>
+    internal static string? CloseOneBracket(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        var open = new Stack<char>();
+        bool inString = false, escape = false;
+        foreach (var ch in json)
+        {
+            if (inString)
+            {
+                if (escape) escape = false;
+                else if (ch == '\\') escape = true;
+                else if (ch == '"') inString = false;
+                continue;
+            }
+            switch (ch)
+            {
+                case '"': inString = true; break;
+                case '{': open.Push('}'); break;
+                case '[': open.Push(']'); break;
+                case '}' or ']':
+                    if (open.Count == 0 || open.Pop() != ch) return null;
+                    break;
+            }
+        }
+        var trimmed = json.TrimEnd();
+        if (inString || open.Count != 1 || trimmed[^1] is ',' or ':') return null;
+        var closed = trimmed + open.Pop();
+        try
+        {
+            using var _ = JsonDocument.Parse(closed);
+            return closed;
+        }
+        catch (JsonException) { return null; }
     }
 
     private IPluginContext Ctx => rt.Ctx;
@@ -36,6 +80,9 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
 
     /// <summary>The <c>call_tool</c> calls of this batch by call id: the runner works on the inner call, the transcript keeps the outer.</summary>
     private readonly Dictionary<string, ToolCallPart> _outer = new(StringComparer.Ordinal);
+
+    /// <summary>The response that asked for these calls ended at its output limit (stop reason <c>length</c>).</summary>
+    private bool _outputLimit;
 
     /// <summary>
     /// The batch a run goes on with after the user answered (<see cref="RunState.Resume"/>): the answers by call id. An
@@ -76,6 +123,14 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
         return ToolArgs.Unwrap(doc.RootElement.Clone());
     }
 
+    private bool CloseArguments(ToolCallPart call)
+    {
+        if (_outputLimit || CloseOneBracket(call.Arguments) is not { } closed) return false;
+        Ctx.Logger.LogDebug("Closed the open bracket at the end of {Tool} call {CallId}'s arguments", call.Name, call.Id);
+        call.Arguments = closed;
+        return true;
+    }
+
     /// <summary>The call only reads: a read-only tool, or a tool with actions that says so for these arguments.</summary>
     private static bool ReadsOnly(IAgentTool? tool, string? arguments)
     {
@@ -94,15 +149,20 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
     {
         // call_tool { name, arguments } is unwrapped here, before any hook sees the call: everything downstream — policy hooks,
         // the guard, parallelism, events — works on the inner tool, and its result is stored under the outer call's id
+        // arguments that lack only their final bracket are closed before anything reads them (a response cut off at its
+        // output limit may lack more, so its calls are left as they are): the stored call's own (the provider gets valid
+        // JSON back), then the inner arguments of a call_tool, which only the runner sees
+        _outputLimit = assistant.StopReason == "length";
+        var argsChanged = calls.Aggregate(false, (changed, c) => CloseArguments(c) | changed);
         calls = [.. calls.Select(c =>
         {
             if (CallTool.TryUnwrap(c, tools) is not { } inner) return c;
             _outer[c.Id] = c;
+            CloseArguments(inner);
             return inner;
         })];
         var done = new HashSet<string>(StringComparer.Ordinal);
         var started = new HashSet<string>(StringComparer.Ordinal);
-        var argsChanged = false;
         var parallel = calls.Count > 1
                        && rt.Ctx.Settings.GetBool("agent.parallelReadOnlyTools", true)
                        && calls.All(c => ReadsOnly(FindTool(tools, c.Name), c.Arguments));
@@ -232,7 +292,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (JsonException ex) { prepared.Early = ToolResult.Error(InvalidJson(call.Name, ex)); }
+        catch (JsonException ex) { prepared.Early = ToolResult.Error(InvalidJson(call.Name, ex, _outputLimit)); }
         catch (Exception ex) { prepared.Early = ToolResult.Error(ex.Message); }
 
         rt.Emit(EventTypes.ToolStart, new JsonObject
@@ -285,7 +345,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             if (ToolHelp.Asked(prepared.Tool.Definition, prepared.Args))
                 prepared.Early = ToolResult.Ok(ToolHelp.Text(prepared.Tool.Definition));
         }
-        catch (JsonException ex) { prepared.Early = ToolResult.Error(InvalidJson(call.Name, ex)); }
+        catch (JsonException ex) { prepared.Early = ToolResult.Error(InvalidJson(call.Name, ex, _outputLimit)); }
         return (prepared, changed);
     }
 
