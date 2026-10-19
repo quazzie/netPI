@@ -18,7 +18,8 @@ namespace NetPI.Webhooks;
 /// <item><b>waiting</b>: the chat cannot start now (no agent available, the model not loaded, the safety fuse). The payload is kept with its conversation,
 /// later payloads with the same key wait with it, and the start is tried again every 30 seconds for 30 minutes instead of being dropped.</item>
 /// </list>
-/// A chat starts as a scheduled run does (<c>CreateSession</c> with meta <c>webhook</c>, <c>agents.use</c>,
+/// A chat starts as a scheduled run does (<c>CreateSession</c> with meta <c>webhook</c> and — when the webhook's "open in a tab" option is set —
+/// <c>openInTab</c>, the app windows opening it as a background tab on <c>session.created</c>, <c>agents.use</c>,
 /// <c>profiles.apply</c> with the webhook's own profile — or <c>profiles.applyAuto</c> when it names none —, <c>IAgentRuntime.SendAsync</c>
 /// as the system). A webhook should name its profile when its chats need particular tools: the automatic profile is whatever a new chat gets. There is no concurrency cap: NetPI queues runs for the agent's instances itself, and the budget is the
 /// Agents plugin's to enforce.
@@ -337,6 +338,13 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
 
         var runtime = ctx.Services.Get<IAgentRuntime>()!;
         var prompt = BuildPrompt(hook, batch, now);
+        var meta = new JsonObject
+        {
+            ["webhook"] = id, ["webhookName"] = hook["name"]?.GetValue<string>() ?? id, ["incident"] = batch.Key,
+            // the chat was started for the user: it queues at the webhook's level, and a critical one takes an instance
+            [RunPriority.MetaKey] = RunPriority.Name(RunPriority.Parse(hook["priority"]?.GetValue<string>()) ?? RunPriority.Normal),
+        };
+        if (WebhookStore.OpenInTab(hook)) meta["openInTab"] = true;   // the app windows open it as a background tab
         SessionInfo session;
         try
         {
@@ -344,12 +352,7 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
             {
                 Title = Template.Clip("Webhook: " + title.ReplaceLineEndings(" "), 80),
                 ProjectId = hook["projectId"]?.GetValue<string>(),
-                Meta = new JsonObject
-                {
-                    ["webhook"] = id, ["webhookName"] = hook["name"]?.GetValue<string>() ?? id, ["incident"] = batch.Key,
-                    // the chat was started for the user: it queues at the webhook's level, and a critical one takes an instance
-                    [RunPriority.MetaKey] = RunPriority.Name(RunPriority.Parse(hook["priority"]?.GetValue<string>()) ?? RunPriority.Normal),
-                },
+                Meta = meta,
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

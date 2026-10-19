@@ -8,7 +8,8 @@ namespace NetPI.Webhooks;
 /// <summary>
 /// The webhooks, their delivery history and their incidents in the plugin's own collections.
 /// <para>A webhook: <c>{ id, name, enabled, tokenHash, tokenHint, projectId?, agent?, prompt, alert?, followUp?, title?, match?,
-/// maxChatsPerHour, proposedBy?, createdAt, updatedAt, lastAt?, lastStatus?, lastReason?, lastSessionId? }</c>. A delivery (a row of the history): <c>{ webhookId, atMs, at, status, reason?, sessionId?, key?,
+/// maxChatsPerHour, openInTab?, proposedBy?, createdAt, updatedAt, lastAt?, lastStatus?, lastReason?, lastSessionId? }</c>. <c>openInTab</c>: its chats carry
+/// <c>meta.openInTab</c> and the app windows open them as background tabs when they start. A delivery (a row of the history): <c>{ webhookId, atMs, at, status, reason?, sessionId?, key?,
 /// summary?, from? }</c>. The bearer token itself is shown once, when it is made; only its SHA-256 is stored, so a leaked database does
 /// not leak a working token. A <c>group</c> an older version stored is ignored: NetPI holds no payload to group it, the sender does that.</para>
 /// <para>An incident is the unit a conversation key makes: <c>{ webhookId, key, state: waiting|open, startAtMs?, pending: [{ payload, at, from }],
@@ -152,6 +153,9 @@ internal sealed class WebhookStore(IPluginData data)
     }
 
     public static bool Enabled(JsonObject doc) => doc["enabled"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+
+    /// <summary>Whether the chats this webhook starts open as background tabs in the app's windows (their meta carries <c>openInTab</c>).</summary>
+    public static bool OpenInTab(JsonObject doc) => doc["openInTab"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
 
     public static string Iso(DateTimeOffset t) => t.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 }
