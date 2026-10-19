@@ -25,6 +25,7 @@
         timeoutMinutes: hook.timeoutMinutes ?? 10,
         maxChatsPerHour: hook.maxChatsPerHour ?? 60,
         enabled: hook.enabled !== false,
+        openInTab: hook.openInTab === true,
       };
     }
     return {
@@ -46,6 +47,7 @@
       timeoutMinutes: 10,
       maxChatsPerHour: 60,
       enabled: true,
+      openInTab: false,
     };
   }
   const f = $state(initForm());
@@ -84,6 +86,7 @@
       timeoutMinutes: Number(f.timeoutMinutes),
       maxChatsPerHour: Number(f.maxChatsPerHour),
       enabled: f.enabled,
+      openInTab: f.openInTab,
     };
     busy = true;
     try {
@@ -111,6 +114,14 @@
     <input type="checkbox" bind:checked={f.enabled} />
     <span>Enabled</span>
   </label>
+
+  <div class="fld">
+    <label class="np-check f-enabled">
+      <input type="checkbox" bind:checked={f.openInTab} />
+      <span>Open in a tab</span>
+    </label>
+    <span class="np-small np-dim">The chat this webhook starts opens as a tab in the app when it starts (in the background).</span>
+  </div>
 
   <label class="fld">
     <span class="f-label">Name</span>
