@@ -406,6 +406,21 @@ export function activate(id) {
   persistTabs();
 }
 
+/**
+ * A chat a webhook started with its "open in a tab" option (meta.openInTab): this window opens it as a background tab.
+ * activeId stays where it is — nothing is focused and nothing is announced (a session.created is not a notification). A tab
+ * already open does not move, a session that went while this window was open (goneSessions) is not re-materialized, and a chat
+ * that started while no window was open is not opened retroactively: the open set is per-window and restores only what it persisted.
+ */
+function openInTab(session) {
+  const id = session?.id;
+  if (!id || session.meta?.openInTab !== true || app.openTabs.includes(id) || goneSessions.has(id)) return;
+  app.openTabs.push(id);
+  resubscribe();   // the store follows its events before it is shown: the copy and the live events meet (see showChat)
+  showChat(getChat(id));
+  persistTabs();
+}
+
 export async function openSession(id) {
   if (!id) return;
   if (!app.sessionsById.has(id)) {
@@ -855,6 +870,10 @@ function onEvent(d, env) {
   }
   switch (type) {
     case 'session.created':
+      goalNotification(app.sessionsById.get(d.session?.id), d.session);
+      upsertSession(d.session);
+      openInTab(d.session);   // the webhook's "open in a tab": read on created only — a session.updated must not re-open tabs
+      break;
     case 'session.updated':
       goalNotification(app.sessionsById.get(d.session?.id), d.session);
       upsertSession(d.session);
