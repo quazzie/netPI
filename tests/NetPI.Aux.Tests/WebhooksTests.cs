@@ -156,6 +156,33 @@ public static class WebhooksTests
             Check.Equal(false, raised["enabled"]!.GetValue<bool>(), "an agent changing its priority pauses it as a proposal");
         });
 
+        r.Add("webhooks: openInTab marks the chats a webhook starts; the option is stored on add and set or cleared on update", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var added = await env.Add(extra: new { openInTab = true });
+            Check.Equal(true, added["openInTab"]!.GetValue<bool>());
+            var id = S(added["id"])!;
+            Check.Equal(202, (await env.Post(id, S(added["token"])!, Alert())).Status);
+            Check.Equal(true, env.Ctx.SessionsFake.Sessions.Single().Meta?["openInTab"]?.GetValue<bool>());
+
+            // a webhook without the option: its doc stores false, and the chat it starts carries no such key
+            var plain = await env.Add(extra: new { name = "plain" });
+            Check.Equal(false, plain["openInTab"]!.GetValue<bool>(), "default off");
+            await env.Post(S(plain["id"])!, S(plain["token"])!, Alert());
+            Check.True(env.Ctx.SessionsFake.Sessions[^1].Meta?["openInTab"] is null, "no key: the app windows open no tab");
+            Check.True(env.Ctx.SessionsFake.Sessions[^1].Meta?["webhook"] is not null, "(it is still a webhook chat)");
+
+            // an update sets the flag (and the next chat carries it), clears it again, and an omitted one is never cleared by accident
+            var set = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id = S(plain["id"]), openInTab = true }))!;
+            Check.Equal(true, set["openInTab"]!.GetValue<bool>());
+            await env.Post(S(plain["id"])!, S(plain["token"])!, Alert("after"));
+            Check.Equal(true, env.Ctx.SessionsFake.Sessions[^1].Meta?["openInTab"]?.GetValue<bool>());
+            var cleared = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id = S(plain["id"]), openInTab = false }))!;
+            Check.Equal(false, cleared["openInTab"]!.GetValue<bool>(), "an explicit false clears it");
+            var untouched = (await env.Ctx.RpcFake.CallAsync("webhooks.update", new { id = S(plain["id"]), prompt = "same {{host}}" }))!;
+            Check.Equal(false, untouched["openInTab"]!.GetValue<bool>(), "an update without it leaves it alone");
+        });
+
         r.Add("webhooks: an ungrouped payload becomes a chat at once, on the project, sent as the system", async () =>
         {
             var env = await new Env().StartAsync();
