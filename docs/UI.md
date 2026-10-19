@@ -140,7 +140,11 @@ by type:
   `message.*`, `messages.compacted`, `stream.*`, `tool.*`, `agent.queue` and `agent.notice`. Events for
   sessions with no cached store are dropped; an assistant `message.added` for an open background tab marks it
   unread.
-- **Broadcast types** update global state. `session.*` and `project.*` upsert the lists. `agent.status` updates
+- **Broadcast types** update global state. `session.*` and `project.*` upsert the lists. A `session.created` whose
+  session carries `meta.openInTab` (the Webhooks "Open in a tab" option) additionally opens that chat as a background
+  tab in this window: `activeId` stays where it is (no focus stealing, no notification), an already-open tab does not
+  move, a closed session does not re-open, and a chat that started while no window was open is not opened
+  retroactively (the open set is per-window, read on `session.created` only). `agent.status` updates
   a `SvelteMap` keyed by session, so only that session's dots re-render. When an agent goes from busy to idle
   in a background tab, the tab becomes *unread*. A background run that ends in an error (an `error` notice or
   `stopReason: 'error'`) gives the tab the *error* dot. `session.context` feeds the context ring.
