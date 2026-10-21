@@ -47,7 +47,7 @@ public static class IdeasAutoRefineTests
         public IdeaAutoRefine Drain => Plugin.AutoRefine!;
         private int _n;
 
-        public Env(bool enabled = true, string[]? agents = null, int? perDay = null, int? max = null)
+        public Env(bool enabled = true, string[]? agents = null, int? max = null)
         {
             Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             Project = Ctx.SessionsFake.CreateProject("Demo", T.TempDir("autorefine-proj"));
@@ -58,7 +58,6 @@ public static class IdeasAutoRefineTests
             Ctx.SettingsFake.Set("ideas.autoRefine.delayMinutes", 10);
             if (enabled) Ctx.SettingsFake.Set("ideas.autoRefine.enabled", true);
             if (agents is not null) Ctx.SettingsFake.Set("ideas.autoRefine.agents", new JsonArray([.. agents.Select(a => (JsonNode)a)]));
-            if (perDay is { } p) Ctx.SettingsFake.Set("ideas.autoRefine.perDay", p);
             if (max is { } m) Ctx.SettingsFake.Set("ideas.autoRefine.maxConcurrent", m);
         }
 
@@ -145,7 +144,6 @@ public static class IdeasAutoRefineTests
             var status = await env.Status();
             Check.Equal(1, ((JsonArray)status["running"]!).Count);
             Check.Equal(1, ((JsonArray)status["queued"]!).Count);
-            Check.Equal(1, status["today"]!.GetValue<int>());
         });
 
         r.Add("ideas.autoRefine: maxConcurrent is respected and the agents are taken in turn", async () =>
@@ -165,15 +163,19 @@ public static class IdeasAutoRefineTests
             Check.Equal("a", env.Used[2]);
         });
 
-        r.Add("ideas.autoRefine: perDay caps the starts in 24 hours", async () =>
+        r.Add("ideas.autoRefine: keeps going until every eligible idea is refined (no daily cap)", async () =>
         {
-            var env = await new Env(agents: ["qwen"], perDay: 2, max: 4).StartAsync();
-            for (var i = 0; i < 4; i++) env.Idea("i" + i, ageMinutes: 60 + i);
-            await env.Tick();
-            Check.Equal(2, env.Runtime.Sent.Count);
-            await env.Tick();
-            Check.Equal(2, env.Runtime.Sent.Count, "the cap holds");
-            Check.Equal(2, (await env.Status())["today"]!.GetValue<int>());
+            var env = await new Env(agents: ["qwen"], max: 1).StartAsync();
+            var ids = Enumerable.Range(0, 30).Select(i => env.Idea("i" + i, ageMinutes: 60 + i)).ToList();
+            for (var n = 0; n < ids.Count; n++)
+            {
+                await env.Tick();
+                Check.Equal(n + 1, env.Runtime.Sent.Count, "one more started");
+                var running = ids.Single(id => env.State(id) == "running");
+                env.Finish(env.SessionOf(running), AgentStatus.Idle);
+                await Settled(() => env.State(running) == "done");
+            }
+            Check.True(ids.All(id => env.State(id) == "done"), "all 30 refined");
         });
 
         r.Add("ideas.autoRefine: agent-filed, no-refine, already refined, not open and edited-just-now ideas are skipped", async () =>

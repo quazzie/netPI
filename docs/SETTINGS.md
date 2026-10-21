@@ -481,8 +481,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `ideas.autoRefine.enabled` | `false` | your own agents refine newly filed ideas in the background (the Refine button's task; docs/PLUGIN-IDEAS.md "Automatic refine"). Only ideas you filed yourself, still open, never refined (a manual refine counts), without the `no-refine` tag |
 | `ideas.autoRefine.agents` | `[]` | the agent keys that may run it, taken in turn (prefer free local ones). Empty: nothing runs; there is no "any agent", which could pick a paid one |
 | `ideas.autoRefine.maxConcurrent` | `1` | refines running at once (1–4); the chats are low priority, so yours win the slots |
-| `ideas.autoRefine.delayMinutes` | `10` | an idea is refined only once you have not created or edited it for this long (0–10080). With `perDay` it paces the first pass over an existing backlog |
-| `ideas.autoRefine.perDay` | `20` | at most this many automatic refines start in 24 hours (1–1000) |
+| `ideas.autoRefine.delayMinutes` | `1` | an idea is refined only once you have not created or edited it for this long, so one you are still writing is left alone (0–10080; 0: at once). The drain then keeps going until every eligible idea is refined |
 | `ideas.autoRefine.archiveWhenDone` | `true` | the finished chat is archived; it stays linked on the idea's card |
 
 ## Workspaces

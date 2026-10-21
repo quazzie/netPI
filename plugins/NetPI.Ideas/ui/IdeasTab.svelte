@@ -328,7 +328,7 @@
       <span class="file" title="The ideas backlog lives in the {storage.database} database ({storage.scope}, version {storage.schemaVersion}) - it is not a file you can edit"><Icon name="archive" size={12} /></span>
     {/if}
     {#if autoRefineText}
-      <span class="arstat np-ellipsis" title="Your agents refine new ideas in the background ({autoRefine.today} of {autoRefine.perDay} today). Settings: Ideas.">
+      <span class="arstat np-ellipsis" title="Your agents refine new ideas in the background, one after another at low priority, until all are refined. Settings: Ideas.">
         <Icon name="bot" size={12} /> {autoRefineText}
       </span>
     {/if}

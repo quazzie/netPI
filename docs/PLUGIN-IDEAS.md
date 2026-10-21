@@ -293,18 +293,19 @@ define it better, without changing any files; the chat is recorded on the idea's
 Off by default. When on, the owner's own agents refine newly filed ideas in the background through the same code as
 `ideas.refine` (one method, `IdeaRefine.StartAsync`), so each idea becomes a clear, checkable piece of work without the
 owner pressing Refine. Settings (docs/SETTINGS.md): `enabled` (false), `agents` (the agent keys that may run it; **empty
-means nothing runs**, never "any agent", which could be a paid one), `maxConcurrent` (1, 1–4), `delayMinutes` (10),
-`perDay` (20), `archiveWhenDone` (true).
+means nothing runs**, never "any agent", which could be a paid one), `maxConcurrent` (1, 1–4), `delayMinutes` (1),
+`archiveWhenDone` (true).
 
 - **Which ideas:** status open, filed by the user (`createdBy: "user"`, not an agent), no `autoRefine` field yet (a manual
   `ideas.refine` sets it too, so it counts), not tagged `no-refine`, and neither created nor edited for `delayMinutes`
   (`updatedAt`, so a half-written idea is left alone). Oldest first. The state writes (`SetAutoRefine`) change neither
   `updatedAt` nor any of the owner's text. An edit while a run is going leaves the run alone.
-- **Pace for an existing backlog:** the first pass over a backlog is not one big burst: at most `maxConcurrent` run at once
-  and at most `perDay` start in any 24 hours, taken oldest first. Tag an idea `no-refine` (the `ideas.autoRefine.skip` RPC,
+- **Pace:** it keeps going until every eligible idea is refined, oldest first, at most `maxConcurrent` at once. The chats
+  run at low priority: a run keeps its slot until it ends, and the owner's chats take the next free slot before the next
+  refine. Tag an idea `no-refine` (the `ideas.autoRefine.skip` RPC,
   or by hand) to keep it out.
 - **The drain:** a timer (every minute) and every idea change run one pass; it does something only when enabled, with
-  agents listed, fewer than `maxConcurrent` running and fewer than `perDay` started in the last 24 hours. The agent is the
+  agents listed, fewer than `maxConcurrent` running. The agent is the
   next of `agents` in turn, preferring one with a free instance (`agents.list`; disabled/unavailable ones are not used).
   The chat is as `ideas.refine`'s, plus `meta.priority = "low"` (the owner's chats win the slots), `ask_user` switched off,
   and a prompt saying nobody is watching: questions go into the idea's "Questions" section (kind `blocker`).
@@ -314,7 +315,7 @@ means nothing runs**, never "any agent", which could be a paid one), `maxConcurr
   Then the chat is archived when `archiveWhenDone` (it stays linked under the card's Chats), and `ideas.changed` fires
   (`reason: "auto-refine"`). A start that fails is `failed` with the reason and leaves no chat. A failed idea is not retried
   by itself: the card's **retry** opens the normal refine.
-- `ideas.autoRefine.status` (read-only) `{}` → `{ enabled, agents, maxConcurrent, perDay, today, running: [{ id, title,
+- `ideas.autoRefine.status` (read-only) `{}` → `{ enabled, agents, maxConcurrent, running: [{ id, title,
   sessionId, at }], queued: [{ id, title, dueAt }] }`; `queued` is derived (eligible ideas, delay not counted), it is not a
   stored state. `ideas.autoRefine.skip { id }` → the idea, with the `no-refine` tag added.
 

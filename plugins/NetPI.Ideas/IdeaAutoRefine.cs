@@ -16,7 +16,8 @@ namespace NetPI.Ideas;
 /// </para>
 /// <para>
 /// A timer (once a minute) and every idea change run <see cref="TickAsync"/>: sweep finished runs, then start refines while
-/// fewer than <c>maxConcurrent</c> run and fewer than <c>perDay</c> started in the last 24 hours. A finish is seen on
+/// fewer than <c>maxConcurrent</c> run, until every eligible idea is refined (they run at low priority, so the owner's chats
+/// take the next free slot). A finish is seen on
 /// <c>agent.status</c> events and on the sweep (a bus event can be dropped; a run still marked running after a restart is settled
 /// by the sweep too).
 /// </para>
@@ -24,7 +25,7 @@ namespace NetPI.Ideas;
 public sealed class IdeaAutoRefine : IDisposable
 {
     public const string NoRefineTag = "no-refine";
-    public const int DefaultMaxConcurrent = 1, DefaultDelayMinutes = 10, DefaultPerDay = 20;
+    public const int DefaultMaxConcurrent = 1, DefaultDelayMinutes = 1;
 
     private readonly IPluginContext _ctx;
     private readonly IdeasRepository _repo;
@@ -65,7 +66,7 @@ public sealed class IdeaAutoRefine : IDisposable
 
     public void Register(IRpcRegistry rpc)
     {
-        rpc.Register(new RpcMethod("ideas.autoRefine.status", "The automatic refine drain: → { enabled, agents, maxConcurrent, perDay, today (started in the last 24 hours), running: [{ id, title, sessionId, at }], queued: [{ id, title, dueAt }] }", ReadOnly: true, Params: []),
+        rpc.Register(new RpcMethod("ideas.autoRefine.status", "The automatic refine drain: → { enabled, agents, maxConcurrent, running: [{ id, title, sessionId, at }], queued: [{ id, title, dueAt }] }", ReadOnly: true, Params: []),
             (_, _) => Task.FromResult<object?>(Status()));
         rpc.Register(new RpcMethod("ideas.autoRefine.skip", "Keep an idea out of the automatic refine (adds the no-refine tag): { id } → idea", ReadOnly: false, Params: [RpcParam.Req("id")]),
             (req, _) => IdeasRpc.Guard(() =>
@@ -84,7 +85,6 @@ public sealed class IdeaAutoRefine : IDisposable
     private List<string> AgentKeys => _ctx.Settings.GetStrings("ideas.autoRefine.agents");
     private int MaxConcurrent => Math.Clamp(_ctx.Settings.GetInt("ideas.autoRefine.maxConcurrent", DefaultMaxConcurrent), 1, 4);
     private int Delay => Math.Clamp(_ctx.Settings.GetInt("ideas.autoRefine.delayMinutes", DefaultDelayMinutes), 0, 10080);
-    private int PerDay => Math.Clamp(_ctx.Settings.GetInt("ideas.autoRefine.perDay", DefaultPerDay), 1, 1000);
     private bool ArchiveWhenDone => _ctx.Settings.GetOr("ideas.autoRefine.archiveWhenDone", true);
 
     // ------------------------------------------------------------------ eligibility
@@ -108,12 +108,6 @@ public sealed class IdeaAutoRefine : IDisposable
     private static DateTimeOffset Touched(JsonObject idea) =>
         new[] { Time(idea["updatedAt"]), Time(idea["createdAt"]) }.Max() ?? DateTimeOffset.MinValue;
 
-    private int StartedToday(List<JsonObject> ideas)
-    {
-        var since = DateTimeOffset.UtcNow.AddDays(-1);
-        return ideas.Count(i => i["autoRefine"] is JsonObject a && a["manual"] is not JsonValue && Time(a["at"]) is { } t && t >= since);
-    }
-
     public JsonObject Status()
     {
         var ideas = _repo.All();
@@ -123,8 +117,6 @@ public sealed class IdeaAutoRefine : IDisposable
             ["enabled"] = Enabled,
             ["agents"] = new JsonArray([.. AgentKeys.Select(k => (JsonNode)k)]),
             ["maxConcurrent"] = MaxConcurrent,
-            ["perDay"] = PerDay,
-            ["today"] = StartedToday(ideas),
             ["running"] = new JsonArray([.. ideas.Where(i => State(i) == "running").Select(i => (JsonNode)new JsonObject
             {
                 ["id"] = IdeaOps.Str(i["id"]), ["title"] = IdeaOps.Str(i["title"]), ["sessionId"] = IdeaOps.Str(i["autoRefine"]?["sessionId"]), ["at"] = IdeaOps.Str(i["autoRefine"]?["at"]),
@@ -237,7 +229,7 @@ public sealed class IdeaAutoRefine : IDisposable
         var keys = AgentKeys;
         if (keys.Count == 0 || _ctx.Services.Get<IAgentRuntime>() is null) return;
         var ideas = _repo.All();
-        var room = Math.Min(MaxConcurrent - ideas.Count(i => State(i) == "running"), PerDay - StartedToday(ideas));
+        var room = MaxConcurrent - ideas.Count(i => State(i) == "running");
         if (room <= 0) return;
         var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(Delay);
         foreach (var idea in ideas.Where(Candidate).Where(i => Touched(i) <= cutoff).OrderBy(Touched).Take(room))
