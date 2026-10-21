@@ -122,7 +122,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 || !keys.Any(k => k?.GetValue<string>() is "priority" or "prioritySource")) return;
             var session = Ctx.Sessions.GetSession(id);
             if (session is null) return;
-            Ctx.Services.Get<IAgentScheduler>()?.UpdatePriority(id, RunPriority.Of(session), RunPriority.Stamped(session) && !IsManuallyPrioritized(session));
+            Ctx.Services.Get<IAgentScheduler>()?.UpdatePriority(id, RunPriority.Of(session), IsPausable(session));
         });
         _store.Initialize();
         var interrupted = _store.MarkInterrupted();
@@ -974,13 +974,17 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     /// <summary>
     /// The priority a run of the chat queues at (<see cref="RunPriority"/>, plus <see cref="RunPriority.Resume"/> when it
-    /// queues again after giving its slot away), and whether it may give its slot to a critical run.
+    /// queues again after giving its slot away), and whether it may give its slot to a higher-priority run.
     /// </summary>
     private (int Priority, bool Pausable) PriorityOf(AgentState s, bool resume)
     {
         var session = Ctx.Sessions.GetSession(s.Info.SessionId);
-        return (RunPriority.Of(session) + (resume ? RunPriority.Resume : 0), RunPriority.Stamped(session) && !IsManuallyPrioritized(session));
+        return (RunPriority.Of(session) + (resume ? RunPriority.Resume : 0), IsPausable(session));
     }
+
+    /// <summary>Stamped chats not set by hand may be paused; a background chat always may (even a manual one: it asked to yield to everything).</summary>
+    private static bool IsPausable(SessionInfo? session) => RunPriority.Stamped(session)
+        && (!IsManuallyPrioritized(session) || RunPriority.IsBackground(RunPriority.Of(session)));
 
     private static bool IsManuallyPrioritized(SessionInfo? session) => session?.Meta?["prioritySource"] is JsonValue source
         && source.TryGetValue<string>(out var value) && string.Equals(value, "manual", StringComparison.Ordinal);
@@ -1049,7 +1053,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 run.SlotDecided.TrySetResult();
                 return lease;
             }
-            SetStatus(s, AgentStatus.Queued, paused ? "paused for a critical run"
+            SetStatus(s, AgentStatus.Queued, paused ? "paused for a higher-priority run"
                 : several ? "waiting for a free agent" : agents.Count == 0 ? $"waiting for a slot on {pool}" : $"waiting for agent {pool}");
             run.SlotDecided.TrySetResult();
             try
@@ -1142,7 +1146,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     {
         var parent = RunPriority.Of(parentSession);
         var level = Math.Min(Math.Min(requested ?? parent, parent), RunPriority.High);
-        return RunPriority.Name(Math.Max(level, RunPriority.Low));
+        return RunPriority.Name(Math.Max(level, RunPriority.Background));
     }
 
     public async Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default)

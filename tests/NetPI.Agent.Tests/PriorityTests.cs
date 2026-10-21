@@ -19,6 +19,111 @@ public static class PriorityTests
         t.Add("priority: a critical chat takes the slot of a pausable run at its next model call, and that run goes on after it", PausedAtNextCall);
         t.Add("priority: the user's own chat is never paused, and a high chat only queues first", NotPaused);
         t.Add("priority: a tool that has run past LendSlotAfter lends the slot to a critical run; it keeps running and its result reaches the model", LentWhileToolsRun);
+        t.Add("priority: the pair rule: critical preempts below critical, any waiter above background preempts a background run, a background waiter nothing", PairRule);
+        t.Add("priority: a background run gives its slot to a normal waiter at its next model call and resumes afterwards; a manual background chat too", BackgroundPausedAtNextCall);
+        t.Add("priority: a background run lends its slot to a normal waiter during a long tool batch", BackgroundLentWhileToolsRun);
+        t.Add("priority: a low run is only preempted by critical, and a background waiter never preempts", LowAndBackgroundWaiter);
+    }
+
+    private static void PairRule()
+    {
+        Check.True(RunPriority.CanPreempt(RunPriority.Critical, RunPriority.Low), "critical over low");
+        Check.True(RunPriority.CanPreempt(RunPriority.Critical, RunPriority.High + RunPriority.Resume), "critical over a resumed high");
+        Check.False(RunPriority.CanPreempt(RunPriority.Critical, RunPriority.Critical + RunPriority.Resume), "not over critical");
+        Check.True(RunPriority.CanPreempt(RunPriority.Low, RunPriority.Background), "low over background");
+        Check.True(RunPriority.CanPreempt(RunPriority.Normal + RunPriority.Resume, RunPriority.Background + RunPriority.Resume), "resumed normal over resumed background");
+        Check.True(RunPriority.CanPreempt(RunPriority.Low, RunPriority.Background + RunPriority.Resume), "a resumed background run is still background");
+        Check.False(RunPriority.CanPreempt(RunPriority.Normal, RunPriority.Low + RunPriority.Resume), "a resumed low run is still low");
+        Check.False(RunPriority.CanPreempt(RunPriority.Background, RunPriority.Background), "background over background");
+        Check.False(RunPriority.CanPreempt(RunPriority.Background + RunPriority.Resume, RunPriority.Background), "a resumed background waiter preempts nothing");
+        Check.False(RunPriority.CanPreemptAny(RunPriority.Background + RunPriority.Resume));
+        Check.True(RunPriority.CanPreemptAny(RunPriority.Low));
+        Check.Equal("background", RunPriority.Name(RunPriority.Background + RunPriority.Resume));
+        Check.Equal("low", RunPriority.Name(RunPriority.Low + RunPriority.Resume));
+        Check.Equal(RunPriority.Background, RunPriority.Parse("Background"));
+    }
+
+    private static async Task BackgroundPausedAtNextCall()
+    {
+        foreach (var manual in new[] { false, true })
+        {
+            var (h, script) = await StartAsync();
+            await using var host = h;
+            var victim = Chat(h, "background", manuallyPrioritized: manual);
+            await h.SendAsync(victim.Id, "victim");
+            await Wait.Until(() => script.Slow.Calls == 1, "the background chat's tool runs");
+            var normal = Chat(h, "normal");
+            script.Hold("normal");
+            await h.SendAsync(normal.Id, "normal");
+            await Wait.Until(() => h.Runtime.GetBySession(normal.Id)!.Status == AgentStatus.Queued, "the normal chat queues behind the tool");
+            script.ToolGate.SetResult();
+            await Wait.Until(() => script.Order == "victim,normal", "at its next model call the background run gives its slot up");
+            await Wait.Until(() => h.Runtime.GetBySession(victim.Id) is { Status: AgentStatus.Queued, Activity: "paused for a higher-priority run" }, "and says why");
+            Check.Equal(RunPriority.Background + RunPriority.Resume, h.Scheduler!.Snapshot().Single(p => p.Key == "fake/solo").Waiters.Single().Priority);
+            script.Hold("normal").SetResult();
+            await h.IdleAsync(normal.Id);
+            await h.IdleAsync(victim.Id);
+            Check.Equal("victim,normal,victim:after", script.Order, "the background run goes on afterwards (manual: " + manual + ")");
+        }
+    }
+
+    private static async Task BackgroundLentWhileToolsRun()
+    {
+        var (h, script) = await StartAsync();
+        await using var host = h;
+        ((AgentRuntime)h.Runtime).LendSlotAfter = TimeSpan.FromMilliseconds(200);
+        var victim = Chat(h, "background");
+        await h.SendAsync(victim.Id, "victim");
+        await Wait.Until(() => script.Slow.Calls == 1, "the tool runs");
+        var normal = Chat(h, "normal");
+        script.Hold("normal");
+        await h.SendAsync(normal.Id, "normal");
+        await Wait.Until(() => script.Order == "victim,normal", "the normal chat runs while the tool still does");
+        Check.Equal("slot lent to a higher-priority run, tools still running", h.Runtime.GetBySession(victim.Id)!.Activity);
+        script.ToolGate.SetResult();
+        script.Hold("normal").SetResult();
+        await h.IdleAsync(normal.Id);
+        await h.IdleAsync(victim.Id);
+        Check.Equal("victim,normal,victim:after", script.Order);
+    }
+
+    private static async Task LowAndBackgroundWaiter()
+    {
+        // a low run is not paused for a normal one, but for a critical one
+        var (h, script) = await StartAsync();
+        await using var host = h;
+        ((AgentRuntime)h.Runtime).LendSlotAfter = TimeSpan.FromMilliseconds(100);
+        var low = Chat(h, "low");
+        await h.SendAsync(low.Id, "victim");
+        await Wait.Until(() => script.Slow.Calls == 1, "the low chat's tool runs");
+        var normal = Chat(h, "normal");
+        await h.SendAsync(normal.Id, "normal");
+        await Wait.Until(() => h.Runtime.GetBySession(normal.Id)!.Status == AgentStatus.Queued, "normal queues");
+        await Task.Delay(400);
+        Check.Equal("victim", script.Order, "a normal waiter does not take a low run's slot");
+        Check.Equal(1, h.Scheduler!.Snapshot().Single(p => p.Key == "fake/solo").Busy);
+        var critical = Chat(h, "critical");
+        await h.SendAsync(critical.Id, "critical");
+        await Wait.Until(() => script.Order.StartsWith("victim,critical"), "a critical waiter does");
+        script.ToolGate.SetResult();
+        foreach (var s in new[] { low, normal, critical }) await h.IdleAsync(s.Id);
+
+        // a background waiter never preempts
+        var (h2, script2) = await StartAsync();
+        await using var host2 = h2;
+        ((AgentRuntime)h2.Runtime).LendSlotAfter = TimeSpan.FromMilliseconds(100);
+        var holder = Chat(h2, "low");
+        await h2.SendAsync(holder.Id, "victim");
+        await Wait.Until(() => script2.Slow.Calls == 1, "the holder's tool runs");
+        var bg = Chat(h2, "background");
+        await h2.SendAsync(bg.Id, "bg");
+        await Wait.Until(() => h2.Runtime.GetBySession(bg.Id)!.Status == AgentStatus.Queued, "background queues");
+        await Task.Delay(400);
+        Check.Equal("victim", script2.Order, "a background waiter takes nothing");
+        Check.False(h2.Scheduler!.Snapshot().Single(p => p.Key == "fake/solo").Owners.Any(o => o.SessionId == bg.Id));
+        script2.ToolGate.SetResult();
+        foreach (var s in new[] { holder, bg }) await h2.IdleAsync(s.Id);
+        Check.Equal("victim,victim:after,bg", script2.Order);
     }
 
     /// <summary>
@@ -138,7 +243,7 @@ public static class PriorityTests
 
         script.ToolGate.SetResult();
         await Wait.Until(() => script.Order == "victim,critical", "at its next model call the victim gives its slot up");
-        await Wait.Until(() => h.Runtime.GetBySession(victim.Id) is { Status: AgentStatus.Queued, Activity: "paused for a critical run" },
+        await Wait.Until(() => h.Runtime.GetBySession(victim.Id) is { Status: AgentStatus.Queued, Activity: "paused for a higher-priority run" },
             "the victim is paused, and says why");
         Check.Equal(RunPriority.Normal + RunPriority.Resume, h.Scheduler!.Snapshot().Single(p => p.Key == "fake/solo").Waiters.Single().Priority,
             "it queues first among its own level");
@@ -220,12 +325,12 @@ public static class PriorityTests
         await Wait.Until(() => script.Order == "victim,critical", "the critical chat runs while the victim's tool still does");
         var lent = h.Runtime.GetBySession(victim.Id)!;
         Check.Equal(AgentStatus.Running, lent.Status, "the victim still runs its tool");
-        Check.Equal("slot lent to a critical run, tools still running", lent.Activity);
+        Check.Equal("slot lent to a higher-priority run, tools still running", lent.Activity);
         Check.Equal(0, h.Scheduler!.Snapshot().Single(p => p.Key == "fake/solo").Queued, "and holds no place in the queue while its tool runs");
 
         // the tool ends while the critical chat holds the slot: the victim queues for one, first in its level
         script.ToolGate.SetResult();
-        await Wait.Until(() => h.Runtime.GetBySession(victim.Id) is { Status: AgentStatus.Queued, Activity: "paused for a critical run" },
+        await Wait.Until(() => h.Runtime.GetBySession(victim.Id) is { Status: AgentStatus.Queued, Activity: "paused for a higher-priority run" },
             "the victim waits for the slot with its tool's result");
         script.Hold("critical").SetResult();
         await h.IdleAsync(critical.Id);
