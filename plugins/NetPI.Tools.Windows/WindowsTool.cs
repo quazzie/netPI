@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -27,7 +26,8 @@ internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAge
 
     private sealed record Item(int N, string Text, double Dist);
 
-    private readonly ConcurrentDictionary<string, ChatWindow> _windows = new();
+    // a chat's window is dropped when the chat is deleted (and with the plugin: the subscription is the plugin's own)
+    private readonly SessionState<ChatWindow> _windows = new(ctx.Events);
     private readonly SemaphoreSlim _journal = new(1, 1);
 
     private static readonly string[] StepActions = ["click", "hover", "type", "key", "toggle", "expand", "collapse", "select", "scroll", "focus", "wait"];
@@ -179,7 +179,7 @@ internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAge
             case "close":
             {
                 var r = await agent.CallAsync(new JsonObject { ["cmd"] = "close", ["hwnd"] = win.Hwnd }, ct).ConfigureAwait(false);
-                _windows.TryRemove(sid, out _);
+                _windows.Forget(sid);
                 return new ToolResult { Content = $"Closed the window {win.Title} ({r["how"]}). If it asks to save, it shows a dialog: list the windows to see it.", Details = new { action, window = win.Hwnd } };
             }
             case "steps":
