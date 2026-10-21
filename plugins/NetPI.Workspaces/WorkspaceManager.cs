@@ -32,12 +32,22 @@ public sealed class WorkspaceManager(
     {
         var named = request.Workspace()?.WorkspaceId;
         if (named is { Length: > 0 } && !string.Equals(named, "new", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(named, "own", StringComparison.OrdinalIgnoreCase) && !Isolated(request, ctx.Services.Get<IToolRegistry>()))
+            !string.Equals(named, "own", StringComparison.OrdinalIgnoreCase))
         {
+            // A named workspace is bound exactly as named: neither the isolation setting (a writer would otherwise get a
+            // fresh worktree) nor the parent's own isolation may replace it.
+            if (request.Workspace()?.Isolated == true)
+                return new WorkspaceOutcome(null, $"workspace \"{named}\" and isolated: true contradict each other: name an existing workspace to work in, or ask for isolated: true (or workspace: \"new\") for a fresh worktree, not both.");
             var found = Find(named);
             if (found is null) return new WorkspaceOutcome(null, NoWorkspace(named));
-            if (parentSession?.ProjectId is { } parentProject && found.ProjectId is not null && found.ProjectId != parentProject)
-                return new WorkspaceOutcome(null, $"Workspace \"{found.Name}\" belongs to another project than this one; a worker of a project works in one of its workspaces.");
+            var callerProject = request.ProjectId ?? parentSession?.ProjectId;
+            if (callerProject is not null && found.ProjectId is not null && found.ProjectId != callerProject)
+            {
+                var owner = ctx.Sessions.GetProject(found.ProjectId)?.Name;
+                return new WorkspaceOutcome(null,
+                    $"Workspace \"{found.Name}\" belongs to project {(owner is null ? "" : $"\"{owner}\" ")}({found.ProjectId}), not to this one ({callerProject}); a subagent works in a workspace of its parent's project. " +
+                    "Nothing was started; do that work in the other project's own session.");
+            }
             if (!Directory.Exists(found.Path))
                 return new WorkspaceOutcome(null, NoWorkspace(named));
             return new WorkspaceOutcome(resolver.Bind(found), null);

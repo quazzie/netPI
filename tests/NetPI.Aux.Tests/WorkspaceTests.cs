@@ -29,6 +29,7 @@ public static class WorkspaceTests
         t.Add("workspaces: worktrees live inside the project (.worktrees), and the primary checkout stays clean", WorktreesInsideProject);
         t.Add("workspaces: a non-git project gets a plain folder, with no git workflow", NonGitProject);
         t.Add("workspaces: a failed provisioning leaves no runnable workspace", FailedProvisioning);
+        t.Add("workspaces: a named workspace is bound as named, never replaced by a fresh worktree", NamedWorkspaceIsBound);
         t.Add("workspaces: integrations into one branch serialize", IntegrationSerializes);
         t.Add("workspaces: integrate verifies the branch the worktree is on, and refuses a stale record", IntegrateRefusesStaleRecord);
         t.Add("workspaces: a gated integrate merges the base first, runs verify in the worktree, and moves the base only when it passes", IntegrateGated);
@@ -497,6 +498,44 @@ public static class WorkspaceTests
         Check.True(Directory.Exists(w.Binding.Root));
         Check.Differs(env.ProjectPath, w.Binding.Root);
         Check.False(w.Binding.Isolated);
+        return Task.CompletedTask;
+    }
+
+    private static Task NamedWorkspaceIsBound()
+    {
+        using var env = new Env(git: false);
+        var store = env.Store;
+        var own = store.CreateWorkspace(new WorkspaceInfo { Name = "mine", Path = env.ProjectPath, ProjectId = env.Project.Id, Kind = "attached" });
+        var otherDir = Path.Combine(env.Root, "other");
+        Directory.CreateDirectory(otherDir);
+        var otherProject = env.Ctx.SessionsFake.CreateProject("AiSwitcher", otherDir);
+        var foreign = store.CreateWorkspace(new WorkspaceInfo { Name = "loopback", Path = otherDir, ProjectId = otherProject.Id, Kind = "worktree" });
+        var parent = env.Session("parent");
+
+        SpawnRequest Ask(string workspace, bool isolated, string name)
+        {
+            // a writer (isolation on by default): the setting alone must not replace the named workspace
+            var request = new SpawnRequest { Task = "t", Name = name, Tools = ["write", "bash"] };
+            request.Features.Set(new SpawnWorkspace(WorkspaceId: workspace, Isolated: isolated));
+            return request;
+        }
+        WorkspaceOutcome Run(SpawnRequest r) => env.Manager.ForChildAsync(r, parent, "ses_child", "child", CancellationToken.None).GetAwaiter().GetResult();
+
+        var bound = Run(Ask("mine", false, "n1"));
+        Check.True(bound.Ok, bound.Error ?? "");
+        Check.Equal(own.Id, bound.Binding!.WorkspaceId);
+        Check.Equal(0, store.ListWorkspaces().Count(w => w.Name == "n1" || w.Name == "child"));
+
+        var other = Run(Ask("loopback", false, "n2"));
+        Check.False(other.Ok);
+        Check.Contains(other.Error!, "AiSwitcher");
+        Check.Contains(other.Error!, otherProject.Id);
+        Check.Equal(2, store.ListWorkspaces().Count);
+
+        var both = Run(Ask("mine", true, "n3"));
+        Check.False(both.Ok);
+        Check.Contains(both.Error!, "isolated");
+        Check.Equal(2, store.ListWorkspaces().Count);
         return Task.CompletedTask;
     }
 
