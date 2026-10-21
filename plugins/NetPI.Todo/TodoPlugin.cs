@@ -25,16 +25,16 @@ public sealed class TodoPlugin : INetPiPlugin
         return Task.CompletedTask;
     }
 
+    /// <summary>Messages per page when a fork's history is read back, and the pages read at most (the walk ends at the last todo_write).</summary>
+    internal const int ForkPage = 200;
+    internal const int ForkMaxPages = 25;
+
     /// <summary>A fork's checklist is the one it had at the fork point: its last todo_write (the fork starts without one).</summary>
     internal static void Forked(IPluginContext context, string sessionId)
     {
         try
         {
-            var messages = context.Sessions.GetMessages(sessionId);
-            var calls = ToolCalls.Index(messages);
-            var result = messages.SelectMany(m => m.ToolResults)
-                .LastOrDefault(r => ToolCalls.IsResultOf(r, "todo_write", calls) && !r.IsError);
-            if (result?.Details?["items"] is not JsonArray items) return;
+            if (LastTodoItems(context, sessionId) is not { } items) return;
             context.Sessions.UpdateSession(sessionId, s =>
             {
                 s.Meta ??= new JsonObject();
@@ -42,6 +42,53 @@ public sealed class TodoPlugin : INetPiPlugin
             });
         }
         catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException) { } // deleted meanwhile
+    }
+
+    /// <summary>
+    /// The items of the session's last successful todo_write, read back page by page from the newest message (a fork's
+    /// whole history is not loaded for one result). A result made through call_tool is matched to its call, which is
+    /// older than the result, so the walk keeps paging back until each candidate result is resolved.
+    /// </summary>
+    internal static JsonArray? LastTodoItems(IPluginContext context, string sessionId)
+    {
+        var calls = new Dictionary<string, ToolCallPart>(StringComparer.Ordinal); // newest wins, as ToolCalls.Index
+        var candidates = new List<ToolResultPart>();                              // non-error results that may be todo_write, newest first
+        long? before = null;
+        for (var page = 0; page < ForkMaxPages; page++)
+        {
+            var batch = context.Sessions.GetMessages(sessionId, before, ForkPage);
+            for (var i = batch.Count - 1; i >= 0; i--)
+            {
+                var m = batch[i];
+                foreach (var c in m.ToolCalls)
+                    if (c.Id.Length > 0) calls.TryAdd(c.Id, c);
+                foreach (var r in m.ToolResults.Reverse())
+                    if (!r.IsError && (r.Name == "todo_write" || ToolCalls.IsCallTool(r.Name))) candidates.Add(r);
+            }
+            var end = batch.Count < ForkPage;
+            var found = Newest(candidates, calls, end, out var decided);
+            if (decided) return found?.Details?["items"] as JsonArray;
+            if (end) return null;
+            before = batch[0].Seq;
+        }
+        return null;
+    }
+
+    /// <summary>The newest candidate that is a todo_write result; undecided while an unresolved call_tool result may have an older call.</summary>
+    private static ToolResultPart? Newest(List<ToolResultPart> candidates, Dictionary<string, ToolCallPart> calls, bool end, out bool decided)
+    {
+        decided = true;
+        foreach (var r in candidates)
+        {
+            if (!ToolCalls.IsCallTool(r.Name)) return r;
+            if (calls.TryGetValue(r.CallId, out var call))
+            {
+                if (ToolCalls.EffectiveName(call) == "todo_write") return r;
+                continue;
+            }
+            if (!end) { decided = false; return null; }  // its call is further back
+        }
+        return null;
     }
 }
 

@@ -86,6 +86,49 @@ public static class TodoTests
             env.Ctx.Unload();
         });
 
+        r.Add("todo: a fork reads its checklist back from the newest page only (not its whole history)", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var fork = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "long fork" });
+            var store = env.Ctx.SessionsFake;
+            store.AppendMessage(fork.Id, new ChatMessage { Role = MessageRole.Tool, Parts = [new ToolResultPart
+            {
+                CallId = "old", Name = "todo_write", Content = "…",
+                Details = new JsonObject { ["items"] = new JsonArray(new JsonObject { ["text"] = "Old", ["status"] = "done" }) },
+            }] });
+            for (var i = 0; i < 3 * TodoPlugin.ForkPage; i++) store.AppendMessage(fork.Id, T.Assistant("filler " + i));
+            store.AppendMessage(fork.Id, new ChatMessage { Role = MessageRole.Tool, Parts = [new ToolResultPart
+            {
+                CallId = "new", Name = "todo_write", Content = "…",
+                Details = new JsonObject { ["items"] = new JsonArray(new JsonObject { ["text"] = "New", ["status"] = "pending" }) },
+            }] });
+
+            store.MessagesRead = 0;
+            TodoPlugin.Forked(env.Ctx, fork.Id);
+            Check.Equal("pending", Statuses(store.GetSession(fork.Id)?.Meta?["todo"] as JsonArray), "the newest todo_write");
+            Check.True(store.MessagesRead <= TodoPlugin.ForkPage, $"one page read for a recent todo_write (read {store.MessagesRead})");
+            env.Ctx.Unload();
+        });
+
+        r.Add("todo: a call_tool todo_write whose call is on an older page is still found", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var fork = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "wrapped" });
+            var store = env.Ctx.SessionsFake;
+            store.AppendMessage(fork.Id, T.Assistant("", CallToolReadersTests.Wrapped("far", "todo_write", "{}")));
+            for (var i = 0; i < TodoPlugin.ForkPage + 10; i++) store.AppendMessage(fork.Id, T.Assistant("filler " + i));
+            store.AppendMessage(fork.Id, new ChatMessage { Role = MessageRole.Tool, Parts = [new ToolResultPart
+            {
+                CallId = "far", Name = "call_tool", Content = "…",
+                Details = new JsonObject { ["items"] = new JsonArray(new JsonObject { ["text"] = "Wrapped", ["status"] = "in_progress" }) },
+            }] });
+            TodoPlugin.Forked(env.Ctx, fork.Id);
+            Check.Equal("in_progress", Statuses(store.GetSession(fork.Id)?.Meta?["todo"] as JsonArray));
+            env.Ctx.Unload();
+        });
+
         r.Add("todo: a todo_write made through call_tool is the fork's checklist and counts as visible", async () =>
         {
             var env = new Env();
