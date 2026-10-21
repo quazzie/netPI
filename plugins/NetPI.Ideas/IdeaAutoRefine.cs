@@ -16,7 +16,7 @@ namespace NetPI.Ideas;
 /// </para>
 /// <para>
 /// A timer (once a minute) and every idea change run <see cref="TickAsync"/>: sweep finished runs, then start refines while
-/// fewer than <c>maxConcurrent</c> run, until every eligible idea is refined (they run at low priority, so the owner's chats
+/// fewer than <c>maxConcurrent</c> run, until every eligible idea is refined (they run at background priority, so the owner's chats
 /// take the next free slot). A finish is seen on
 /// <c>agent.status</c> events and on the sweep (a bus event can be dropped; a run still marked running after a restart is settled
 /// by the sweep too).

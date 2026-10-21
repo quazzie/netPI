@@ -12,7 +12,7 @@ namespace NetPI.Agents;
 /// runs on the model than it serves. Model calls without an agent (a separate summarizer, and every call while no agent
 /// is set up) get a slot per model while they run: a local model by its concurrency (<c>models.localSlots</c>),
 /// a cloud provider's models together (<c>models.cloudSlots</c>). Waiters are served by priority (desc), then FIFO, and
-/// wait until they get a slot or are cancelled. A critical waiter (<see cref="RunPriority.Preempts"/>) with no slot free
+/// wait until they get a slot or are cancelled. A critical waiter, or any waiter above a background run (<see cref="RunPriority.CanPreempt"/>), with no slot free
 /// signals the pausable runs below it that could free one (<see cref="IAgentSlot.Wanted"/>); the first of them to reach a
 /// point where it can stop gives its slot up (<see cref="IAgentSlot.GiveUpIfWanted"/>).
 /// </summary>
@@ -876,9 +876,9 @@ internal sealed class AgentScheduler : IAgentScheduler
 
     // ---------------------------------------------------------------- a critical run takes a slot
 
-    /// <summary>The waiting runs that take a slot from a pausable run below them (<see cref="RunPriority.Preempts"/>). Caller holds <see cref="_gate"/>.</summary>
-    private IEnumerable<Waiter> CriticalWaiters() =>
-        _pools.Values.SelectMany(p => p.Waiters).Concat(_floating).Where(w => RunPriority.Preempts(w.Request.Priority));
+    /// <summary>The waiting runs that take a slot from a pausable run below them (<see cref="RunPriority.CanPreempt"/>). Caller holds <see cref="_gate"/>.</summary>
+    private IEnumerable<Waiter> PreemptingWaiters() =>
+        _pools.Values.SelectMany(p => p.Waiters).Concat(_floating).Where(w => RunPriority.CanPreemptAny(w.Request.Priority));
 
     /// <summary>
     /// The runs that could make room for <paramref name="w"/>: pausable runs below it on an agent it may go to that is
@@ -896,7 +896,7 @@ internal sealed class AgentScheduler : IAgentScheduler
                 holders = _pools.Values.SelectMany(p => p.Owners).Where(o => string.Equals(o.LocalModel, model, StringComparison.OrdinalIgnoreCase));
             else continue;   // there is room: the next grant takes it
             foreach (var lease in holders)
-                if (lease.Pausable && !lease.IsReleased && lease.Priority < w.Request.Priority && !RunPriority.Preempts(lease.Priority))
+                if (lease.Pausable && !lease.IsReleased && RunPriority.CanPreempt(w.Request.Priority, lease.Priority))
                     yield return lease;
         }
     }
@@ -908,7 +908,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// </summary>
     private void SignalWanted()
     {
-        foreach (var w in CriticalWaiters())
+        foreach (var w in PreemptingWaiters())
             foreach (var lease in Victims(w))
                 lease.Want();
     }
@@ -923,7 +923,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         lock (_gate)
         {
             if (lease.IsReleased || _stopped) return false;
-            if (!CriticalWaiters().Any(w => Victims(w).Contains(lease)))
+            if (!PreemptingWaiters().Any(w => Victims(w).Contains(lease)))
             {
                 lease.Renew();
                 return false;
@@ -936,7 +936,7 @@ internal sealed class AgentScheduler : IAgentScheduler
                 if (!pool.Configured && pool.Owners.Count == 0 && pool.Waiters.Count == 0) _pools.Remove(pool.Key);
             }
         }
-        _ctx.Logger.LogInformation("{Agent} gave its slot on {Key} to a critical run", lease.AgentId, lease.Key);
+        _ctx.Logger.LogInformation("{Agent} gave its slot on {Key} to a higher-priority run", lease.AgentId, lease.Key);
         SchedulePublish();
         return true;
     }

@@ -512,7 +512,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
     /// <summary>
     /// Runs the tool batch <paramref name="tools"/>; once it has run for <see cref="AgentRuntime.LendSlotAfter"/> (the model
-    /// instance idles meanwhile), the slot goes to a critical run that wants it. The tools go on, and the next model call
+    /// instance idles meanwhile), the slot goes to a higher-priority run that wants it. The tools go on, and the next model call
     /// queues for a slot again (<see cref="EnsureSlotAsync"/>), so the results reach the model as usual.
     /// </summary>
     private async Task LendingAsync(Task tools)
@@ -542,7 +542,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 if (done.IsCancellationRequested || !ReferenceEquals(run.Lease, lease)) return;   // the batch ended, or a wait took the slot
                 if (!lease.GiveUpIfWanted()) continue;   // no one needs it any more: a fresh signal to wait for
                 if (run.ClearLease(lease)) run.SlotLent = true;
-                rt.SetActivity(state, "slot lent to a critical run, tools still running");
+                rt.SetActivity(state, "slot lent to a higher-priority run, tools still running");
                 return;
             }
         }
@@ -552,7 +552,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
     private async Task EnsureSlotAsync(ModelInfo model, CancellationToken ct)
     {
-        // A critical run waits for this run's slot: given up here, between two model calls, and the run queues for one
+        // A higher-priority run waits for this run's slot: given up here, between two model calls, and the run queues for one
         // again (first among its own level). One given up while the tools ran (LendAsync) queues the same way.
         var paused = run.SlotLent;
         run.SlotLent = false;

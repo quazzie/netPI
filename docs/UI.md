@@ -406,10 +406,10 @@ Timings measured by the old mock walkthrough (headless Chromium):
   on it) and **Manage agents** (Settings → Agents & budget). Choosing one calls `agents.use` (the chat's `meta.agent` and
   model). New chats start on the agent chosen last while it is active, else the first active one. The effort picker offers "default" plus
   `model.reasoning.efforts` and calls `sessions.update { reasoning }`; `''` means the model default.
-- The priority selector in the composer offers low, normal, high and critical. It calls `sessions.update` with
+- The priority selector in the composer offers background, low, normal, high and critical. It calls `sessions.update` with
   `meta.priority`, immediately reorders a queued run, and can change an active run's priority for later queueing. New
   manual chats begin at high priority. A critical run may pause eligible lower priority system-started work; manually
-  started chats remain protected. At narrow widths the selector keeps only its priority icon.
+  started chats remain protected, except background ones, which yield to any higher waiting run. At narrow widths the selector keeps only its priority icon.
 - The profile picker (shown once there are profiles) sets the chat's profile (`profiles.apply`): free before the first
   message; in a started chat it says the system prompt and tools change and the chat is read again (with its size).
 - The project button (folder icon + name, dimmed “No project” while none is attached) sets the session's project
@@ -579,7 +579,7 @@ Per-tab narrow layouts:
 - **Schedules:** a row reads a status dot · name · right-aligned next-run label (`in 3 h`, `tomorrow 07:30`, `paused`,
   `proposed`, `finished`, `overdue`); line 2 is one meta line (when · project · agent · priority when not normal · last-run chip). The hover actions are
   run now, pause/resume, edit, history and a two-step delete; expanding a row shows the prompt, the ids, **Open last
-  chat** and the run history. The add/edit form replaces the list (no modal), stacked fields; its **Priority** (low,
+  chat** and the run history. The add/edit form replaces the list (no modal), stacked fields; its **Priority** (background, low,
   normal, high, critical) is its chats' place in the queue (SETTINGS.md "Priority"). A schedule an agent added
   or changed (`proposedBy`) is **proposed**: a warning dot, "proposed by an agent" leading its meta line, and the resume
   button (titled to say so) is the approval that lets it run.
@@ -607,7 +607,7 @@ session-scoped to the chat a run started.
 **Webhooks** (`netpi.webhooks`, left, order 26 — after Schedules). The receiver's state (off / listening on a URL / why it could not start), then each
 webhook: pause/resume, edit (an inline form), a two-step new token and delete, and a detail with the URL to POST to, the prompt, a “try a payload” box
 (Preview shows the filled-in prompt and every verdict and starts nothing; Send delivers it for real) its before / after commands, the open conversations of the webhook (open, or waiting to start and why; each with a link to its chat) and, from the clock button, the delivery history in a dialog (waiting / started / appended / duplicate / skipped / failed). A new or re-keyed token is
-shown once, with a ready `curl` line. The form is deliberately small: name, URL name, prompt, project, profile, agent, priority (low, normal, high, critical: its chats' place in the queue, and a critical one takes an instance from lower work started for the user — SETTINGS.md "Priority"; the row's meta line names it when it is not normal), a program with its arguments (one per line) for the Before and the After command, a timeout in minutes and the fuse. Filtering, grouping and wording belong to the Before command. Reads `webhooks.*` plus `projects.list`, `profiles.list` and `agents.list` (absent ones degrade their own feature); refreshes on
+shown once, with a ready `curl` line. The form is deliberately small: name, URL name, prompt, project, profile, agent, priority (background, low, normal, high, critical: its chats' place in the queue, and a critical one takes an instance from lower work started for the user — SETTINGS.md "Priority"; the row's meta line names it when it is not normal), a program with its arguments (one per line) for the Before and the After command, a timeout in minutes and the fuse. Filtering, grouping and wording belong to the Before command. Reads `webhooks.*` plus `projects.list`, `profiles.list` and `agents.list` (absent ones degrade their own feature); refreshes on
 `webhooks.changed`, `settings.changed` and a 30 s poll.
 
 **Phone** (`netpi.phone`, left, order 27). The phone listener's state (off / listening on an address / why it could not start), **Pair** (a one-time code with a countdown, its link and a QR code made in the tab itself, `ui/qr.js`) and the paired phones with a two-step unpair. Reads `phone.status` / `phone.devices`; refreshes on `phone.changed`, `settings.changed` and a 30 s poll. The phone's own page is `wwwroot/phone/` (a Chats / Agents switch — *Agents* is a compact Work tab: the agent pool, running and finished runs with Stop, processes, today's spend; the address holds the view: `#chat=ID`, `#new`, `#agents`; chats list with *Needs you / Running / Chats* groups, chat with live streaming, Queue / Steer / Stop, picture attach, new-chat sheet, approval and question cards); it is not part of the web UI.
@@ -632,7 +632,7 @@ defaults of this layout apply). Top to bottom: summary, budget, Off, agents, Que
   Above 4 instances the rows are one line each. A busy row is the run holding the instance (the `owners` of `agents.list`
   joined to the runs by run id): line 1 the chat title (never squeezed below 8 characters) and the elapsed time, line 2
   `↳` for a subagent, `for <chat>` for the chat it works for, then the activity — or, while the chat runs a foreground
-  shell command, the command (`$ dotnet build …`). Priority is the row's left edge (amber high, red critical, dotted low),
+  shell command, the command (`$ dotnet build …`). Priority is the row's left edge (amber high, red critical, dotted low, dimmer dotted background),
   the tooltip names it. Clicking opens the session, the hover button stops that run alone (`agent.abort { sessionId,
   subagents: false }`; Shift+click stops its subagents too). Under the rows, only when something is queued for the agent,
   one line `N queued, longest 14m` (with a `critical` chip when a critical run is among them); clicking it opens who is

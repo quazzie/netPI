@@ -8,6 +8,7 @@
   let busy = $state(false);
 
   const levels = [
+    { value: 'background', label: 'Background', detail: 'Yields its slot to any waiting higher priority run, even one you started.' },
     { value: 'low', label: 'Low', detail: 'Runs after normal and higher priority work.' },
     { value: 'normal', label: 'Normal', detail: 'The standard queue position.' },
     { value: 'high', label: 'High', detail: 'Runs before normal and low priority work.' },

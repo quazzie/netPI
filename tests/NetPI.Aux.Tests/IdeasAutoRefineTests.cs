@@ -123,7 +123,7 @@ public static class IdeasAutoRefineTests
             Check.Equal(1, ((JsonArray)status["queued"]!).Count, "it waits");
         });
 
-        r.Add("ideas.autoRefine: an eligible idea after the delay gets one low-priority chat with ask_user off", async () =>
+        r.Add("ideas.autoRefine: an eligible idea after the delay gets one background-priority chat with ask_user off", async () =>
         {
             var env = await new Env(agents: ["qwen"]).StartAsync();
             var fresh = env.Idea("Fresh", ageMinutes: 1);
@@ -135,7 +135,7 @@ public static class IdeasAutoRefineTests
             Check.Equal("running", env.State(id));
             Check.Equal("none", env.State(fresh));
             var session = env.Ctx.SessionsFake.GetSession(env.SessionOf(id))!;
-            Check.Equal("low", session.Meta![RunPriority.MetaKey]!.GetValue<string>());
+            Check.Equal("background", session.Meta![RunPriority.MetaKey]!.GetValue<string>());
             var off = ((JsonArray)session.Meta![SessionTools.MetaKey]!).Select(n => n!.GetValue<string>()).ToList();
             Check.True(off.Contains("ask_user") && off.Contains("write") && off.Contains("bash") && !off.Contains("ideas") && !off.Contains("todo_write"), "writing tools and ask_user off: " + string.Join(",", off));
             Check.Equal("qwen", env.Used.Single());

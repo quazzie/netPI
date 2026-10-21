@@ -267,7 +267,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         ["isolated"] = Prop("boolean", "Give the subagent its own worktree and branch, so its writes cannot reach yours"),
         ["priority"] = new JsonObject
         {
-            ["type"] = "string", ["enum"] = new JsonArray("low", "normal", "high"),
+            ["type"] = "string", ["enum"] = new JsonArray("background", "low", "normal", "high"),
             ["description"] = "Where it queues while its agent has no free instance (default: your own priority; never above it)",
         },
     };
@@ -291,7 +291,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             "agent: an id from agent_choices (required when agents are set up), or \"any\" for the first free one. model: only when no agents are set up (\"provider/model\"). " +
             "tools: by name, may include tools you lack; default: yours (the tools switched off in your chat stay off then; an explicit list is taken as it is, the chat's switches are not applied to it). instructions: extra system-prompt text. " +
             "maxUsd: the most the subagent may spend (USD, its own calls); a paid call that would go over is refused and it ends with \"stopped: its maxUsd is spent\". maxTurns: the most model calls per run. " +
-            "priority: low, normal or high, the order it queues in while its agent is busy (default: yours, and never above yours); low for background work that can wait.\n" +
+            "priority: background, low, normal or high, the order it queues in while its agent is busy (default: yours, and never above yours); low for work that can wait, background for work that should give its instance to any other waiting run.\n" +
             "workspace: a subagent that only reads shares yours; one that writes gets its own git worktree and branch (merge it yourself afterwards; " +
             "it comes back in the report). isolated: true or workspace: \"new\" forces one; pass the same workspace to subagents that must see each other's files.",
         Category = "agents",
@@ -404,7 +404,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         if (itemArgs.Str("priority") is { Length: > 0 } level)
         {
             priority = RunPriority.Parse(level);
-            if (priority is null || priority > RunPriority.High) return (null, $"priority \"{level}\": a subagent's priority is low, normal or high.");
+            if (priority is null || priority > RunPriority.High) return (null, $"priority \"{level}\": a subagent's priority is background, low, normal or high.");
         }
         var (workspace, isolated) = WorkspaceArgs(itemArgs);
 

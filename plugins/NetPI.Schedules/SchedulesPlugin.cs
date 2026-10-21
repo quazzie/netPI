@@ -133,11 +133,11 @@ public sealed class SchedulesPlugin : INetPiPlugin
             [RpcParam.Opt("id", RpcParamType.String, "one schedule's; all when omitted"), RpcParam.Opt("limit", RpcParamType.Integer)]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.History(req.Str("id"), Math.Clamp(req.Int("limit") ?? 50, 1, 500)).Select(d => (JsonNode)d)])));
 
-        ctx.Rpc.Register(new RpcMethod("schedules.add", "Add a schedule: { prompt, cadence, name?, projectId?, agent? (an agent key or \"any\"), priority? (low | normal (the default) | high | critical: the order its chats queue in while their agent is busy), enabled? (true), proposedBy? } → Schedule. The prompt starts a fresh chat on the project at each run. proposedBy (the schedules tool sets it: who proposed it) stores it paused, as a proposal the user enables in the Schedules tab",
+        ctx.Rpc.Register(new RpcMethod("schedules.add", "Add a schedule: { prompt, cadence, name?, projectId?, agent? (an agent key or \"any\"), priority? (background | low | normal (the default) | high | critical: the order its chats queue in while their agent is busy), enabled? (true), proposedBy? } → Schedule. The prompt starts a fresh chat on the project at each run. proposedBy (the schedules tool sets it: who proposed it) stores it paused, as a proposal the user enables in the Schedules tab",
             Params:
             [
                 RpcParam.Req("prompt"), RpcParam.Req("cadence", RpcParamType.Object), RpcParam.Opt("name"), RpcParam.Opt("projectId"),
-                RpcParam.Opt("agent"), RpcParam.Opt("priority", RpcParamType.String, "low | normal | high | critical"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
+                RpcParam.Opt("agent"), RpcParam.Opt("priority", RpcParamType.String, "background | low | normal | high | critical"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
             async (req, ct) =>
             {
@@ -174,7 +174,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
             Params:
             [
                 RpcParam.Req("id"), RpcParam.Opt("prompt"), RpcParam.Opt("cadence", RpcParamType.Object), RpcParam.Opt("name"),
-                RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("priority", RpcParamType.String, "low | normal | high | critical"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
+                RpcParam.Opt("projectId"), RpcParam.Opt("agent"), RpcParam.Opt("priority", RpcParamType.String, "background | low | normal | high | critical"), RpcParam.Opt("enabled", RpcParamType.Boolean), RpcParam.Opt("proposedBy"),
             ]),
             async (req, ct) =>
             {

@@ -84,7 +84,7 @@ internal sealed class SchedulesTool(IPluginContext ctx) : IAgentTool, IReadOnlyC
                 },
                 ["projectId"] = new JsonObject { ["type"] = "string", ["description"] = "add/update/list: a project id or name; add defaults to this chat's project; \"\" = none" },
                 ["agent"] = new JsonObject { ["type"] = "string", ["description"] = "add/update: an agent key, \"any\", or \"\" to clear" },
-                ["priority"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("low", "normal", "high", "critical"), ["description"] = "add/update: the order its chats queue in while their agent is busy (default normal)" },
+                ["priority"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("background", "low", "normal", "high", "critical"), ["description"] = "add/update: the order its chats queue in while their agent is busy (default normal)" },
                 ["enabled"] = new JsonObject { ["type"] = "boolean", ["description"] = "update: false pauses (enabling is the user's, in the Schedules tab)" },
                 ["limit"] = new JsonObject { ["type"] = "integer", ["description"] = "history: how many runs (default 20)" },
             },

@@ -58,8 +58,8 @@ public sealed class AgentSlotRequest
     /// <summary>Higher runs first: the run's level (<see cref="RunPriority"/>), plus <see cref="RunPriority.Resume"/> when it queues again after giving its slot away.</summary>
     public int Priority { get; set; }
     /// <summary>
-    /// The run may give its slot to a critical one (<see cref="RunPriority.Preempts"/>): system-started chats with a
-    /// priority stamp may yield; chats the user prioritized in the composer remain protected.
+    /// The run may give its slot to a higher run (<see cref="RunPriority.CanPreempt"/>): system-started chats with a
+    /// priority stamp may yield; chats the user prioritized in the composer remain protected, except background ones.
     /// </summary>
     public bool Pausable { get; set; }
     public string? Provider { get; init; }
@@ -146,13 +146,14 @@ public sealed class AgentSlots
 
 /// <summary>
 /// How urgent a chat's runs are: they queue for a slot by it, and a critical run takes the slot of a run below it that may
-/// be paused. A chat's level is <c>meta.priority</c> (<c>low</c>, <c>normal</c>, <c>high</c> or <c>critical</c>), set by
+/// be paused. A chat's level is <c>meta.priority</c> (<c>background</c>, <c>low</c>, <c>normal</c>, <c>high</c> or <c>critical</c>), set by
 /// what started the chat or by the user in the composer. System-started chats with a priority stamp may be paused;
-/// manually started chats remain protected even though they now have a priority.
+/// manually started chats remain protected even though they now have a priority, except background chats, which always yield (to any higher-priority waiter).
 /// </summary>
 public static class RunPriority
 {
     public const string MetaKey = "priority";
+    public const int Background = -200;
     public const int Low = -100;
     public const int Normal = 0;
     public const int High = 100;
@@ -163,11 +164,12 @@ public static class RunPriority
     /// </summary>
     public const int Resume = 50;
     /// <summary>The levels, lowest first.</summary>
-    public static readonly IReadOnlyList<string> Names = ["low", "normal", "high", "critical"];
+    public static readonly IReadOnlyList<string> Names = ["background", "low", "normal", "high", "critical"];
 
     /// <summary>The level a name stands for; null for anything else.</summary>
     public static int? Parse(string? name) => name?.Trim().ToLowerInvariant() switch
     {
+        "background" => Background,
         "low" => Low,
         "normal" => Normal,
         "high" => High,
@@ -177,7 +179,7 @@ public static class RunPriority
 
     /// <summary>The level a priority is in (a resuming run's included).</summary>
     public static string Name(int priority) =>
-        priority >= Critical ? "critical" : priority >= High ? "high" : priority >= Normal ? "normal" : "low";
+        priority >= Critical ? "critical" : priority >= High ? "high" : priority >= Normal ? "normal" : priority >= Low ? "low" : "background";
 
     /// <summary>The level of a chat's runs: its <c>meta.priority</c>, normal without one.</summary>
     public static int Of(SessionInfo? session) => Parse(Text(session)) ?? Normal;
@@ -185,8 +187,19 @@ public static class RunPriority
     /// <summary>A system-started chat carries a level and can be considered for pausing; manual chats are excluded by the runtime.</summary>
     public static bool Stamped(SessionInfo? session) => Parse(Text(session)) is not null;
 
-    /// <summary>A run at this priority takes the slot of a pausable run below it when none is free.</summary>
-    public static bool Preempts(int priority) => priority >= Critical;
+    /// <summary>
+    /// Whether a waiting run at <paramref name="waiter"/> may take the slot of a pausable run at <paramref name="holder"/>:
+    /// a critical waiter takes it from any run below critical, and any waiter above the background level takes it from a
+    /// background run (a resuming run counts by its level). A background waiter preempts nothing.
+    /// </summary>
+    public static bool CanPreempt(int waiter, int holder) =>
+        holder < waiter && holder < Critical && (waiter >= Critical || IsBackground(holder) && !IsBackground(waiter));
+
+    /// <summary>Whether a waiter could preempt some background run (cheap pre-filter for the scheduler).</summary>
+    public static bool CanPreemptAny(int waiter) => waiter >= Critical || !IsBackground(waiter);
+
+    /// <summary>In the background level, a resuming run included.</summary>
+    public static bool IsBackground(int priority) => priority < Low;
 
     private static string? Text(SessionInfo? session) =>
         session?.Meta?[MetaKey] is System.Text.Json.Nodes.JsonValue v && v.TryGetValue<string>(out var s) ? s : null;

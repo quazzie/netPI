@@ -55,7 +55,7 @@ internal sealed class IdeaRefine(IPluginContext ctx, IdeasRepository repo)
         try
         {
             var meta = new JsonObject { [SessionTools.MetaKey] = new JsonArray([.. off.Select(n => (JsonNode)n)]) };
-            if (start.Auto) meta[RunPriority.MetaKey] = RunPriority.Name(RunPriority.Low);   // the owner's chats win the slots
+            if (start.Auto) meta[RunPriority.MetaKey] = RunPriority.Name(RunPriority.Background);   // the owner's chats win the slots
             session = ctx.Sessions.CreateSession(new SessionInfo
             {
                 Title = Clip($"Refine idea: {title}", 80),

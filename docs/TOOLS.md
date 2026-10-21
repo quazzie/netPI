@@ -940,7 +940,7 @@ named agent's model, otherwise the catalog default. Turns, delegation and manual
 (a bare model id is normalized first); an explicit child effort wins. An unavailable selected model is reported,
 including during manual compaction, rather than silently replaced by the global default.
 
-`priority` (`low`, `normal`, `high`): the order the subagent queues in while its agent has no free instance (SETTINGS.md
+`priority` (`background`, `low`, `normal`, `high`): the order the subagent queues in while its agent has no free instance (SETTINGS.md
 "Priority"); default the caller's own, never above it (`critical` is refused: a subagent does not take instances from
 other runs, and a critical chat's subagents run at `high`). Work that can wait goes at `low`.
 
@@ -1053,7 +1053,7 @@ With no action: an id plus a change means update, an id alone means get, a promp
 
 - `list`: every schedule (or `projectId`'s), one plain-text line each — `id · name · when · enabled|proposed|paused|finished · next <local time> · last <status: reason> <ago>` —
   with `now` in the machine's local time and offset (a `once` time is computed from it). Capped at 100 lines.
-- `get`: one schedule plus its full prompt, project, agent and priority (`priority`: `low`, `normal`, `high` or `critical`, its chats' place in the queue; a change of it is a change of what runs, so an agent's waits for the user like any other).
+- `get`: one schedule plus its full prompt, project, agent and priority (`priority`: `background`, `low`, `normal`, `high` or `critical`, its chats' place in the queue; a change of it is a change of what runs, so an agent's waits for the user like any other).
 - `history`: a schedule's runs, newest first (`limit`, default 20): time · status · reason · chat.
 - `add`: `prompt` + `cadence` (`{ kind: once, at }` a future ISO 8601 time with its offset, or `Z` — one without is refused ·
   `{ kind: every, minutes }` · `{ kind: daily, time, tz? }` an IANA zone, default the machine's). The project defaults to

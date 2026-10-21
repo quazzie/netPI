@@ -301,13 +301,12 @@ means nothing runs**, never "any agent", which could be a paid one), `maxConcurr
   (`updatedAt`, so a half-written idea is left alone). Oldest first. The state writes (`SetAutoRefine`) change neither
   `updatedAt` nor any of the owner's text. An edit while a run is going leaves the run alone.
 - **Pace:** it keeps going until every eligible idea is refined, oldest first, at most `maxConcurrent` at once. The chats
-  run at low priority: a run keeps its slot until it ends, and the owner's chats take the next free slot before the next
-  refine. Tag an idea `no-refine` (the `ideas.autoRefine.skip` RPC,
+  run at background priority: a refine gives its slot to any waiting run of higher priority (at its next model call, or during a long tool batch) and resumes afterwards; the owner's chats also take the next free slot before the next refine. Tag an idea `no-refine` (the `ideas.autoRefine.skip` RPC,
   or by hand) to keep it out.
 - **The drain:** a timer (every minute) and every idea change run one pass; it does something only when enabled, with
   agents listed, fewer than `maxConcurrent` running. The agent is the
   next of `agents` in turn, preferring one with a free instance (`agents.list`; disabled/unavailable ones are not used).
-  The chat is as `ideas.refine`'s, plus `meta.priority = "low"` (the owner's chats win the slots), `ask_user` switched off,
+  The chat is as `ideas.refine`'s, plus `meta.priority = "background"` (the owner's chats win the slots, and take a running refine's), `ask_user` switched off,
   and a prompt saying nobody is watching: questions go into the idea's "Questions" section (kind `blocker`).
 - **Completion** is seen on `agent.status` events of those chats (idle/completed → `done`; failed/cancelled → `failed` with
   the error) and by a sweep on every pass, because bus events can be dropped. A run still marked running after a restart is
