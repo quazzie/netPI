@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetPI.Providers.Kit;
 
 namespace NetPI.Decide;
 
@@ -34,7 +35,9 @@ public sealed class DecidePlugin : INetPiPlugin
                     "A single short check (the guard's second opinion, the idea checks, loop hints) on a local model does not take an agent slot: NInfer answers decisions on its own lane ahead of agent work. Off: every decision waits for a slot like a chat. The decide tool always takes slots."),
             ],
         });
-        var http = context.Track(new HttpClient { Timeout = TimeSpan.FromSeconds(120) });
+        // The kit's client: a bare HttpClient sent the loopback AiGateway through the system proxy.
+        var http = context.Track(HttpFactory.Create());
+        http.Timeout = TimeSpan.FromSeconds(120);
         var client = new DecisionClient(context, http);
         context.Services.Register<IDecisionService>(client);
         context.Tools.Register(new DecideTool(context, client));
@@ -85,6 +88,18 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
     private readonly SemaphoreSlim _requests = new(Math.Clamp(ctx.Settings.Get("decide.parallel", 4), 1, 16));
     private readonly SemaphoreSlim _reuse = new(1, 1);
 
+    /// <summary>The request gate for the current <c>decide.parallel</c>: read per use, a change takes effect on the next request.
+    /// Requests already running finish against the gate they took.</summary>
+    private SemaphoreSlim RequestGate()
+    {
+        lock (_limitGate)
+        {
+            var limit = Math.Clamp(ctx.Settings.Get("decide.parallel", 4), 1, 16);
+            if (limit != _limit) { _requests = new SemaphoreSlim(limit); _limit = limit; }
+            return _requests;
+        }
+    }
+
     public async Task<JsonObject> EvaluateAsync(DecisionRequest request, CancellationToken ct) =>
         (await EvaluateAnswerAsync(request, ct).ConfigureAwait(false)).Answers;
 
@@ -114,7 +129,8 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
                 slot = scheduler is not null ? await scheduler.AcquireAsync(admission, ct).ConfigureAwait(false)
                     : await ResourceLeaseSlot.AcquireAsync(ctx.Services, ctx.Settings, model, admission, ct).ConfigureAwait(false);
             }
-            await _requests.WaitAsync(ct).ConfigureAwait(false);
+            var gate = RequestGate();
+            await gate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
                 var body = (JsonObject)request.Body.DeepClone();
