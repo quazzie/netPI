@@ -386,7 +386,7 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeaSna
             : ReadSnapshot(req.Required("path"));
         var mode = (req.Str("mode") ?? "merge").Trim().ToLowerInvariant();
         if (mode == "validate") return Task.FromResult<object?>(_snapshots.ValidateSnapshot(snapshot));
-        var report = _snapshots.ImportSnapshot(snapshot, mode);
+        var report = _snapshots.ImportSnapshot(snapshot, mode, _home);
         return Task.FromResult<object?>(report);
     });
 

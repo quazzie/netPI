@@ -240,6 +240,20 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas.import mode=replace takes the replaced ideas' image files with them", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var png = Convert.ToBase64String(new byte[] { 0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4 });
+            var shot = await env.Rpc("ideas.addImage", new JsonObject { ["data"] = png, ["mediaType"] = "image/png", ["name"] = "shot.png" });
+            await env.Rpc("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Old", ["images"] = new JsonArray { shot.DeepClone() } } });
+            var file = Path.Combine(env.Ctx.Paths.Home, shot["path"].Str()!.Replace('/', Path.DirectorySeparatorChar));
+            Check.True(File.Exists(file), "the image is stored");
+            var snapshot = new JsonObject { ["version"] = 1, ["format"] = "netpi.ideas.export", ["ideas"] = new JsonArray(new JsonObject { ["id"] = "idea-new0001", ["title"] = "New" }) };
+            await env.Rpc("ideas.import", new JsonObject { ["json"] = snapshot, ["mode"] = "replace" });
+            Check.False(File.Exists(file), "the replaced idea's image file is gone");
+        });
+
         r.Add("ideas: images attach to an idea, come back for the card, and go when it does", async () =>
         {
             var env = new Env();
