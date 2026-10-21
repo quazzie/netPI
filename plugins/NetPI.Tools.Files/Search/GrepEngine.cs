@@ -59,7 +59,9 @@ public static class GrepEngine
 
     private sealed class FileResult
     {
-        public required string Rel { get; init; }
+        public required string Full { get; init; }
+        /// <summary>The display path; set for files with matches only (the walk is lazy, a path per file searched is waste).</summary>
+        public string Rel { get; set; } = "";
         public int MatchCount { get; set; }
         /// <summary>Groups of contiguous lines (content mode).</summary>
         public List<List<OutLine>> Groups { get; } = [];
@@ -91,19 +93,14 @@ public static class GrepEngine
         // A whole-text pre-check is only equivalent to per-line matching without string anchors.
         var canPrecheck = !o.Multiline && !Regex.IsMatch(o.Literal ? "" : o.Pattern, @"\\[AzZG]");
 
-        // Collect candidate files.
-        List<(string Full, string Rel)> files;
-        if (File.Exists(target))
+        // Candidate files, walked lazily: a search that reaches its limit in the first directory never walks the rest.
+        IEnumerable<string> Candidates()
         {
-            files = [(Path.GetFullPath(target), PathDisplay.Relative(o.DisplayBase, Path.GetFullPath(target)))];
-        }
-        else
-        {
-            files = [];
+            if (File.Exists(target)) { yield return Path.GetFullPath(target); yield break; }
             foreach (var e in FileWalker.Walk(target, new WalkOptions { IncludeDirs = false, RespectIgnore = o.RespectIgnore }, ct: ct))
             {
                 if (o.Filter is { IsEmpty: false } f && !f.IsMatch(e.RelPath)) continue;
-                files.Add((e.FullPath, PathDisplay.Relative(o.DisplayBase, e.FullPath)));
+                yield return e.FullPath;
             }
         }
 
@@ -112,10 +109,13 @@ public static class GrepEngine
         var filesSearched = 0;
         var limitHit = false;
         const int chunk = 64;
-        for (var start = 0; start < files.Count && !limitHit; start += chunk)
+        using var walk = Candidates().GetEnumerator();
+        while (!limitHit)
         {
             ct.ThrowIfCancellationRequested();
-            var slice = files.GetRange(start, Math.Min(chunk, files.Count - start));
+            var slice = new List<string>(chunk);
+            while (slice.Count < chunk && walk.MoveNext()) slice.Add(walk.Current);
+            if (slice.Count == 0) break;
             var chunkResults = new FileResult?[slice.Count];
             // Every grep on the machine draws from these shared slots: the work in flight is the size of one search. A
             // search waiting for a slot awaits it, so k searches at once park no k × cores pool threads on the semaphore.
@@ -124,7 +124,7 @@ public static class GrepEngine
                 await Work.WaitAsync(token).ConfigureAwait(false);
                 var inFlight = Interlocked.Increment(ref _inFlight);
                 if (inFlight > PeakInFlight) PeakInFlight = inFlight;
-                try { chunkResults[i] = SearchFile(slice[i].Full, slice[i].Rel, regex, o, canPrecheck); }
+                try { chunkResults[i] = SearchFile(slice[i], regex, o, canPrecheck); }
                 finally
                 {
                     Interlocked.Decrement(ref _inFlight);
@@ -143,6 +143,7 @@ public static class GrepEngine
                     case "unreadable": unreadable++; continue;
                 }
                 if (r.MatchCount == 0) continue;
+                r.Rel = PathDisplay.Relative(o.DisplayBase, r.Full);
                 results.Add(r);
                 filesMatched++;
                 totalMatches += r.MatchCount;
@@ -200,7 +201,7 @@ public static class GrepEngine
         if (limitHit) truncated = true;
 
         // Skipped binaries/huge files only matter when they may explain a missing result.
-        var explain = results.Count == 0 || files.Count == 1;
+        var explain = results.Count == 0 || filesSearched == 1;
         if (binary > 0 && explain) notes.Add($"[{binary} binary file{(binary == 1 ? "" : "s")} skipped]");
         if (large > 0 && explain) notes.Add($"[{large} file{(large == 1 ? "" : "s")} larger than {PathDisplay.FormatSize(o.MaxFileSize)} skipped]");
         if (timedOut > 0) notes.Add($"[{timedOut} file{(timedOut == 1 ? "" : "s")} skipped: regex timed out (simplify the pattern)]");
@@ -218,9 +219,9 @@ public static class GrepEngine
         };
     }
 
-    private static FileResult SearchFile(string full, string rel, Regex regex, GrepOptions o, bool canPrecheck)
+    private static FileResult SearchFile(string full, Regex regex, GrepOptions o, bool canPrecheck)
     {
-        var result = new FileResult { Rel = rel };
+        var result = new FileResult { Full = full };
         byte[] bytes;
         try
         {
