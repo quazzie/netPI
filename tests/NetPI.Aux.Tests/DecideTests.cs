@@ -137,6 +137,20 @@ public static class DecideTests
             Check.Equal(0.9766, usage.GetProperty("cacheHitRate").GetDouble(), "12000 of 12288 prompt tokens came from its cache");
         });
 
+        r.Add("decide: a file is read only as far as decide.maxItems; its other lines are counted as skipped", async () =>
+        {
+            var seen = new List<JsonObject>();
+            await using var kev = await FakeKev(seen);
+            var env = new Env();
+            env.Ctx.SettingsFake.Set("decide.maxItems", JsonValue.Create(2));
+            await env.StartAsync(kev.Url);
+            File.WriteAllLines(Path.Combine(env.Dir, "long.log"), ["one", "", "two", "three", "four"]);
+            var res = await env.Run(new { file = "long.log", questions = new { a = "b" } });
+            Check.False(res.IsError, res.Content);
+            Check.Equal(2, seen.Count, "only the first two lines were decided");
+            Check.Contains(res.Content, "(2 more skipped: setting decide.maxItems)");
+        });
+
         r.Add("decide: a repeated item is decided once; with embeddings a near-identical one shares the answer too", async () =>
         {
             foreach (var withEmbeddings in new[] { false, true })
