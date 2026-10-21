@@ -98,7 +98,7 @@ internal sealed class SshJobTool(IPluginContext ctx, ISshLauncher launcher) : Ss
     /// <summary>output and wait only read; kill ends a process.</summary>
     internal override bool ReadOnlyFor(JsonElement args) => OpOf(args) != "kill";
 
-    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         var id = a.Str("id", "job", "job_id", "jobId")?.Trim();
@@ -146,7 +146,7 @@ internal sealed class SshGrepTool(IPluginContext ctx, ISshLauncher launcher) : S
         $"several separated by spaces or commas), ignoreCase, maxResults (default {DefaultMax}). .git and node_modules are skipped; " +
         "output is path:line: text, like grep.";
 
-    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         var pattern = a.Str("pattern", "regex", "query", "q");
@@ -228,7 +228,7 @@ internal sealed class SshFindTool(IPluginContext ctx, ISshLauncher launcher) : S
         return [.. pattern[(open + 1)..close].Split(',').Select(alt => pattern[..open] + alt + pattern[(close + 1)..])];
     }
 
-    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         var pattern = a.Str("pattern", "glob", "name", "query", "q");

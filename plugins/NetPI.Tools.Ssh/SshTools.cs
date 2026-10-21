@@ -137,20 +137,22 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
             o["direction"] = a.Str("action")!.Trim().ToLowerInvariant();
             args = JsonSerializer.SerializeToElement(o);
         }
-        return ExecuteWithNotesAsync(tool, context, args, ct);
+        // The settings and the ssh config are read once per call, here, and every step of the call uses these.
+        var read = SshOptions.Read(_ctx.Settings, _ctx.Paths.Home);
+        return ExecuteWithNotesAsync(tool, context, args, read, SshConfig.Read(read.Config), ct);
     }
 
     /// <summary>The action's result, with the host's note (<c>ssh.hostNotes</c>) added when this chat has not had it yet.</summary>
-    private async Task<ToolResult> ExecuteWithNotesAsync(SshToolBase tool, ToolContext context, JsonElement args, CancellationToken ct)
+    private async Task<ToolResult> ExecuteWithNotesAsync(SshToolBase tool, ToolContext context, JsonElement args, SshOptions read, List<SshHost> hosts, CancellationToken ct)
     {
         string? notes = null;
         if (tool is not SshHostsTool && new ToolArgs(args).Str("host", "server", "alias")?.Trim() is { Length: > 0 } name)
         {
             // only a real alias of the ssh config: the host the call resolves to
-            var alias = SshConfig.Read(SshOptions.Read(_ctx.Settings, _ctx.Paths.Home).Config).FirstOrDefault(h => h.Alias.Equals(name, StringComparison.OrdinalIgnoreCase))?.Alias;
+            var alias = hosts.FirstOrDefault(h => h.Alias.Equals(name, StringComparison.OrdinalIgnoreCase))?.Alias;
             if (alias is not null) notes = _notes.Take(context.SessionId, alias);
         }
-        var result = await tool.ExecuteAsync(context, args, ct).ConfigureAwait(false);
+        var result = await tool.ExecuteAsync(context, args, read, hosts, ct).ConfigureAwait(false);
         return notes is null ? result : new ToolResult { Content = result.Content + "\n\n" + notes, IsError = result.IsError, Images = result.Images, Details = result.Details, Wait = result.Wait };
     }
 
@@ -178,7 +180,8 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
     /// <summary>Whether this call only reads: the action's own flag unless the action has calls that differ (job: output and wait read, kill ends a process).</summary>
     internal virtual bool ReadOnlyFor(JsonElement args) => ReadOnly;
 
-    public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
+    /// <summary>The call with the settings and the ssh config already read by the dispatcher (once per call).</summary>
+    internal async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, SshOptions read, List<SshHost> hosts, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         // The control socket's directory must exist before ssh uses it (ssh will not make parent folders);
@@ -194,7 +197,7 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
         // before connection reuse, instead of failing on a control socket it cannot use. NetPI's own client on Windows
         // (OpenSSH_for_Windows) is such a client, so this is the normal case there, not an edge case. Asked once, and
         // only when a directory for the sockets exists at all.
-        var o = SshOptions.Read(ctx.Settings, ctx.Paths.Home);
+        var o = read;
         if (controlDir is not null && !SshClient.SupportsMultiplexing(o.Ssh, Path.Combine(controlDir, "netpi-probe")))
         {
             ctx.Logger.LogDebug("The ssh client at {Ssh} cannot multiplex connections: one handshake per call", o.Ssh);
@@ -205,7 +208,6 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
         if (this is not SshHostsTool)
         {
             var name = a.Str("host", "server", "alias")?.Trim();
-            var hosts = SshConfig.Read(o.Config);
             if (string.IsNullOrEmpty(name))
                 return ToolResult.Error($"ssh needs a host: one of {Names(hosts)}.");
             host = hosts.FirstOrDefault(h => h.Alias.Equals(name, StringComparison.OrdinalIgnoreCase));
@@ -214,14 +216,14 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher)
                     ? $"No hosts: {o.Config} has no Host entries. Add the host there first."
                     : $"Unknown host \"{name}\". The hosts are the aliases in {o.Config}: {Names(hosts)}.");
         }
-        try { return await RunAsync(context, a.Raw, o, host!, ct).ConfigureAwait(false); }
+        try { return await RunAsync(context, a.Raw, o, host!, hosts, ct).ConfigureAwait(false); }
         catch (System.ComponentModel.Win32Exception ex)
         {
             return ToolResult.Error($"Could not start {o.Ssh}: {ex.Message}. Install OpenSSH or set ssh.path in the settings.");
         }
     }
 
-    protected abstract Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct);
+    protected abstract Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct);
 
     private static string Names(List<SshHost> hosts) => hosts.Count == 0 ? "(none)" : string.Join(", ", hosts.Select(h => h.Alias));
 
@@ -270,9 +272,8 @@ internal sealed class SshHostsTool(IPluginContext ctx) : SshToolBase(ctx, new Pr
     internal override bool ReadOnly => true;
     internal override string Summary => "The remote hosts: the aliases in the user's ~/.ssh/config, with user and address.";
 
-    protected override Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
+    protected override Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct)
     {
-        var hosts = SshConfig.Read(o.Config);
         if (hosts.Count == 0) return Task.FromResult(ToolResult.Ok($"No hosts: {o.Config} has no Host entries.", new { hosts = Array.Empty<object>() }));
         var lines = hosts.Select(h => $"{h.Alias}: {(h.User is null ? "" : h.User + "@")}{h.HostName ?? h.Alias}{(h.Port is { } p ? $":{p}" : "")}");
         return Task.FromResult(ToolResult.Ok($"Hosts ({o.Config}):\n" + string.Join('\n', lines),
@@ -294,7 +295,7 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
         "120 s, max 1800) ends the whole remote process tree, and so does stopping the run. background: true starts the script " +
         "detached instead (no timeout, output to a log on the host) and returns a job id: follow it with the job action.";
 
-    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         var script = a.Str(ToolPathArgs.SshCommandNames);
@@ -495,7 +496,7 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
         $"Read a text file on a remote host, like read: at most {MaxLines} lines / {MaxChars / 1024}KB per " +
         "call; page with offset (1-based; negative counts from the end) and limit. Relative paths start at cwd or the home folder.";
 
-    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         var path = a.Str("path", "file", "file_path")?.Trim();
@@ -619,7 +620,7 @@ internal sealed class SshWriteTool(IPluginContext ctx, ISshLauncher launcher) : 
         "or half-written. Parent folders are created; an existing file keeps its owner and permissions; " +
         "append (cat >>) adds to the end instead of replacing.";
 
-    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         var path = a.Str("path", "file", "file_path")?.Trim();
@@ -667,7 +668,7 @@ internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : S
         "exactly once (replace_all replaces every match). Line endings (CRLF/LF) are kept. Fails without writing if the file " +
         "changed on the host while it was being edited.";
 
-    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         var path = a.Str("path", "file", "file_path")?.Trim();
@@ -764,7 +765,7 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
         "upload (from = local path, to = remote path) or download (from = remote, to = local). recursive for folders. " +
         "Use it for large or binary files.";
 
-    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
+    protected override async Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, List<SshHost> hosts, CancellationToken ct)
     {
         var a = new ToolArgs(args);
         var direction = ToolPathArgs.SshDirection(a) ?? "";
