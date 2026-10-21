@@ -478,6 +478,12 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `ideas.noticeFloor` | `0.6` | the commit notice names an open idea only when it is at least this close to the commit message |
 | `ideas.similarThreshold` | `0.80` | cosine (card to card) above which an existing idea is said to resemble a new one (0.5–0.99). 0.80 is about the top 7 % of each idea's nearest other idea in a 231-idea backlog with bge-base; the known duplicate pair scored 0.807-0.824 |
 | `ideas.commitNoticeDebounceSec` | `30` | seconds a run waits after a commit notice before it may get the next one (0–3600), so a burst of commits costs one notice instead of one each; 0 turns the debounce off and leaves only the per-run cap |
+| `ideas.autoRefine.enabled` | `false` | your own agents refine newly filed ideas in the background (the Refine button's task; docs/PLUGIN-IDEAS.md "Automatic refine"). Only ideas you filed yourself, still open, never refined (a manual refine counts), without the `no-refine` tag |
+| `ideas.autoRefine.agents` | `[]` | the agent keys that may run it, taken in turn (prefer free local ones). Empty: nothing runs; there is no "any agent", which could pick a paid one |
+| `ideas.autoRefine.maxConcurrent` | `1` | refines running at once (1–4); the chats are low priority, so yours win the slots |
+| `ideas.autoRefine.delayMinutes` | `10` | an idea is refined only once you have not created or edited it for this long (0–10080). With `perDay` it paces the first pass over an existing backlog |
+| `ideas.autoRefine.perDay` | `20` | at most this many automatic refines start in 24 hours (1–1000) |
+| `ideas.autoRefine.archiveWhenDone` | `true` | the finished chat is archived; it stays linked on the idea's card |
 
 ## Workspaces
 
