@@ -57,6 +57,7 @@ public sealed class ContextPlugin : INetPiPlugin
             if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id)
             {
                 prompts.Delete(id);
+                builder.Forget(id);
                 toolNotices.Forget(id);
             }
         });
@@ -122,10 +123,11 @@ public sealed class ContextPlugin : INetPiPlugin
             DeferredTools = deferred,
             Agent = agent,
         };
-        // Previewing must not freeze the prompt of a session that has not called a model yet.
+        // Previewing must not freeze the prompt of a session that has not called a model yet. A foreign builder has only
+        // BuildAsync, which freezes by contract, so its prompt is not previewed.
         var (prompt, frozen) = builder is SystemPromptBuilder ours
             ? await ours.PreviewAsync(pc, ct).ConfigureAwait(false)
-            : (await builder.BuildAsync(pc, ct).ConfigureAwait(false), false);
+            : ($"(The system prompt comes from {builder.GetType().Name}, which cannot preview it without freezing it.)", false);
 
         long chars = prompt.Length;
         var toolArr = new JsonArray();

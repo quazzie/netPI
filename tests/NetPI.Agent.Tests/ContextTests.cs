@@ -935,8 +935,31 @@ public static class ContextTests
         public ValueTask<string?> RenderAsync(PromptContext context, CancellationToken ct) => throw new InvalidOperationException("broken section");
     }
 
+    /// <summary>Throws on its first render only: a transient failure.</summary>
+    private sealed class FlakySection : IPromptSection
+    {
+        private int _calls;
+        public string Id => "flaky";
+        public int Order => 270;
+        public ValueTask<string?> RenderAsync(PromptContext context, CancellationToken ct) =>
+            Interlocked.Increment(ref _calls) == 1 ? throw new InvalidOperationException("transient") : ValueTask.FromResult<string?>("# Flaky\nRECOVERED");
+    }
+
     private static async Task PluginSectionAndFallback()
     {
+        // a section that fails at a session's first call does not freeze the shortened prompt: the next call renders again
+        await using (var hf = await TestHost.StartAsync())
+        {
+            hf.Services.Register<IPromptSection>(new FlakySection());
+            var sf = hf.NewSession();
+            await hf.SendAsync(sf.Id, "hi");
+            await hf.IdleAsync(sf.Id);
+            Check.NotContains(hf.Catalog.Requests.Last().SystemPrompt!, "RECOVERED");
+            await hf.SendAsync(sf.Id, "again");
+            await hf.IdleAsync(sf.Id);
+            Check.Contains(hf.Catalog.Requests.Last().SystemPrompt!, "RECOVERED", "re-rendered after the failure");
+        }
+
         await using (var h = await TestHost.StartAsync())
         {
             h.Services.Register<IPromptSection>(new ExtraSection());

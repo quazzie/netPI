@@ -27,6 +27,12 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
 {
     public const string SentEvent = "context.prompt";
 
+    // the last render of a session that lost a section (not frozen): the next call renders again instead of reusing it
+    private readonly ConcurrentDictionary<string, string> _partial = new(StringComparer.Ordinal);
+
+    /// <summary>A deleted session's entry.</summary>
+    public void Forget(string sessionId) => _partial.TryRemove(sessionId, out _);
+
     public async ValueTask<string> BuildAsync(PromptContext context, CancellationToken ct)
     {
         var sessionId = context.Session.Id;
@@ -38,10 +44,22 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
             prompts.Fork(fork.SessionId, sessionId, fork.Seq);
             if (prompts.Get(sessionId) is { } copied) return copied;
         }
-        var rendered = SessionPrompt.Fallback(context.Session) ?? await RenderAsync(context, ct).ConfigureAwait(false);
+        var fallback = SessionPrompt.Fallback(context.Session);
+        // the runtime records every prompt it sends as the session's fallback: a render that lost a section is not reused
+        if (fallback is not null && _partial.TryGetValue(sessionId, out var partial) && partial == fallback) fallback = null;
+        var (rendered, failed) = fallback is not null ? (fallback, 0) : await RenderCoreAsync(context, ct).ConfigureAwait(false);
         var current = ctx.Sessions.GetSession(sessionId);
         if (current is not null && SessionPrompt.Revision(current) != capturedRevision)
             throw new InvalidOperationException("The session identity changed while its prompt was rendered; render the current revision.");
+        if (failed > 0)
+        {
+            // A section failed: this render lacks its part. Freezing it would keep the shortened prompt for the whole
+            // session, so this call is sent it unfrozen and the next call renders again.
+            ctx.Logger.LogWarning("{Count} prompt section(s) failed for {Session}; the prompt is not frozen and renders again next call", failed, sessionId);
+            _partial[sessionId] = rendered;
+            return rendered;
+        }
+        _partial.TryRemove(sessionId, out _);
         var stored = prompts.Freeze(sessionId, rendered, capturedRevision);
         if (ReferenceEquals(stored, rendered) && (current is null || !SessionPrompt.Recorded(current, rendered)))
         {
@@ -64,8 +82,13 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
     public async ValueTask<(string Prompt, bool Frozen)> PreviewAsync(PromptContext context, CancellationToken ct) =>
         prompts.GetCompatible(context.Session) is { } frozen ? (frozen, true) : (await RenderAsync(context, ct).ConfigureAwait(false), false);
 
-    public async ValueTask<string> RenderAsync(PromptContext context, CancellationToken ct)
+    public async ValueTask<string> RenderAsync(PromptContext context, CancellationToken ct) =>
+        (await RenderCoreAsync(context, ct).ConfigureAwait(false)).Prompt;
+
+    /// <summary>The rendered prompt and how many sections threw (their parts are missing from it).</summary>
+    private async ValueTask<(string Prompt, int Failed)> RenderCoreAsync(PromptContext context, CancellationToken ct)
     {
+        var failed = 0;
         // GetAll returns highest registration priority first; OrderBy is stable, so equal orders keep that.
         var sections = ctx.Services.GetAll<IPromptSection>().OrderBy(s => s.Order).ToList();
         var parts = new List<string>(sections.Count);
@@ -84,11 +107,12 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
             catch (Exception ex)
             {
                 ctx.Logger.LogWarning(ex, "Prompt section {Section} failed", section.Id);
+                failed++;
                 continue;
             }
             if (!string.IsNullOrWhiteSpace(text)) parts.Add(text.Trim());
         }
-        return string.Join("\n\n", parts);
+        return (string.Join("\n\n", parts), failed);
     }
 }
 
@@ -320,6 +344,7 @@ internal sealed class PromptStore(IPluginContext ctx)
         _cache.TryRemove(sessionId, out _);
         _revisions.TryRemove(sessionId, out _);
         _tools.TryRemove(sessionId, out _);
+        _lastSent.TryRemove(sessionId, out _);
         try
         {
             _prompts.Delete(sessionId);
