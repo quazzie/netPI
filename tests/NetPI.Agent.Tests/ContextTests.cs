@@ -15,11 +15,11 @@ public static class ContextTests
         t.Add("context: the system prompt is frozen per session; settings changes reach new sessions", FrozenPrompt);
         t.Add("context: every system prompt a session is sent is kept with its tools (context.prompts, context.prompt event)", SentPrompts);
         t.Add("context: the sent prompt is recorded in the session row once; a later identical call rewrites nothing", PromptRecordedOnce);
-        t.Add("context: a changed tool schema revision arrives as a definition notice (the last-sent map is cached, read cold)", ToolRevisionNotices);
+        t.Add("context: a changed tool schema revision arrives as a definition notice (compared with the last-sent tools in the session meta)", ToolRevisionNotices);
         t.Add("context: a fork goes on with the prompt the original had at the fork point", ForkPrompt);
         t.Add("context: a fork whose first call races the copy of the fork point's prompts records it once", ForkPromptRace);
-        t.Add("context: a fork's first call does not record the prompt its own copy of the fork point already holds", ForkRecordInherited);
-        t.Add("context: an original with two prompt versions at the fork point gives the fork that history once, whichever side of the copy its first call lands", ForkTwoPrompts);
+        t.Add("context: the sent-prompt history in the session meta: provisional entries, final marking, tools by definition hash", SentHistoryRules);
+        t.Add("context: context.prompts pages the history and reads tool definitions from the shared store", PromptsPagingAndDefinitions);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
         t.Add("context: a tools notice keeps its cause in meta: unknown for a new plugin, plugin-reload for a reloaded plugin or a removed plugin folder", ToolChangeCauses);
@@ -82,7 +82,7 @@ public static class ContextTests
         var project = h.Sessions.CreateProject("Demo", h.Workspace);
         var s = h.NewSession(projectId: project.Id);
         var builder = h.Services.Get<ISystemPromptBuilder>()!;
-        var prompt = await builder.BuildAsync(Ctx(h, s, h.Tools.All.Select(t => t.Definition).ToList(), "You are \"w1\", a subagent."), CancellationToken.None);
+        var prompt = (await builder.BuildAsync(Ctx(h, s, h.Tools.All.Select(t => t.Definition).ToList(), "You are \"w1\", a subagent."), CancellationToken.None)).Text;
 
         int Idx(string s) { var i = prompt.IndexOf(s, StringComparison.Ordinal); Check.True(i >= 0, $"missing '{s}' in prompt:\n{prompt}"); return i; }
         var identity = Idx("coding agent running in NetPI");
@@ -106,7 +106,7 @@ public static class ContextTests
         Check.NotContains(prompt, "\n\n\n", "no empty sections");
 
         // no project, no tools: the bare base only
-        var bare = await builder.BuildAsync(Ctx(h, h.NewSession(), []), CancellationToken.None);
+        var bare = (await builder.BuildAsync(Ctx(h, h.NewSession(), []), CancellationToken.None)).Text;
         Check.NotContains(bare, "# Tools");
         Check.NotContains(bare, "# Agents");
         Check.NotContains(bare, "# Your role");
@@ -119,7 +119,7 @@ public static class ContextTests
         {
             await using var h = await TestHost.StartAsync(plugins: plugins);
             var tools = h.Tools.All.Select(t => t.Definition).ToList();
-            return (await h.Services.Get<ISystemPromptBuilder>()!.BuildAsync(Ctx(h, h.NewSession(), tools), CancellationToken.None), tools);
+            return ((await h.Services.Get<ISystemPromptBuilder>()!.BuildAsync(Ctx(h, h.NewSession(), tools), CancellationToken.None)).Text, tools);
         }
 
         var (noAgents, noAgentsTools) = await Build(TestHost.Plugins.All & ~TestHost.Plugins.Agents);
@@ -143,12 +143,12 @@ public static class ContextTests
         var s = h.NewSession(projectId: project.Id);
         var builder = h.Services.Get<ISystemPromptBuilder>()!;
         var ctx = Ctx(h, s, h.Tools.All.Select(t => t.Definition).ToList());
-        var first = await builder.BuildAsync(ctx, CancellationToken.None);
+        var first = (await builder.BuildAsync(ctx, CancellationToken.None)).Text;
         var now = DateTimeOffset.Now;
         foreach (var stamp in new[] { "yyyy-MM-dd", "dddd", "HH:mm" }.Select(f => now.ToString(f, System.Globalization.CultureInfo.InvariantCulture)))
             Check.NotContains(first, stamp, "no date or time in the prompt");
         Check.False(System.Text.RegularExpressions.Regex.IsMatch(first, @"(?im)^- (date|time)"), "no date line");
-        Check.Equal(first, await builder.BuildAsync(ctx, CancellationToken.None), "identical on the next turn");
+        Check.Equal(first, (await builder.BuildAsync(ctx, CancellationToken.None)).Text, "identical on the next turn");
     }
 
     private static List<ChatMessage> Notices(TestHost h, string sessionId, string kind) =>
@@ -376,9 +376,7 @@ public static class ContextTests
     }
 
     // A tool whose schema changed (its revision) is announced by a "tools" notice naming it updated — the model saw the
-    // old definition. The last-sent name→revision map the diff compares against is kept in the store's cache (one read
-    // when it is first needed, including for a restarted store), not re-read and re-parsed from context_sent on every
-    // model call (idea-l1o09d).
+    // old definition. The diff compares against the tools of the session's newest sent-prompt history entry.
     private static async Task ToolRevisionNotices()
     {
         await using var h = await TestHost.StartAsync();
@@ -407,24 +405,10 @@ public static class ContextTests
         Check.Equal(3, Notices(h, s.Id, "tools").Count, "the next change is announced again");
         Check.Equal("4", (string?)Notices(h, s.Id, "tools")[2].Meta!["revisions"]?["probe"]);
 
-        // a restarted store (empty cache) reads the last-sent map from context_sent: the same diff, cold
-        var cold = new PromptStore(new TestPluginContext(h, "netpi.context"));
-        cold.Initialize();
-        Check.Equal("1", cold.LastSentRevisions(s.Id)!["probe"], "the map of the tools the session was last sent");
-
-        // the store itself: RecordSent fills the map (a tool without a revision is not part of it), Delete forgets it
-        var own = new PromptStore(new TestPluginContext(h, "probe-store"));
-        own.Initialize();
-        Check.True(own.LastSentRevisions("ses_1")!.Count == 0, "nothing sent yet");
-        own.RecordSent("ses_1", "the prompt", [
-            new ToolDefinition { Name = "alpha", Description = "a", Revision = "7" },
-            new ToolDefinition { Name = "beta", Description = "b" },
-        ], 3);
-        var map = own.LastSentRevisions("ses_1")!;
-        Check.Equal("7", map["alpha"]);
-        Check.False(map.ContainsKey("beta"), "no revision: not part of the diff");
-        own.Delete("ses_1");
-        Check.True(own.LastSentRevisions("ses_1")!.Count == 0, "forgotten");
+        // the last-sent map the diff compares against is the session's own history: the tools of its newest entry
+        var last = SessionPrompt.LastSent(h.Sessions.GetSession(s.Id)!)!;
+        Check.Equal("1", last.Tools.Single(t => t.Name == "probe").Revision, "the revision the session was last sent");
+        Check.False(string.IsNullOrEmpty(last.Tools.Single(t => t.Name == "probe").Def), "named by its definition hash");
     }
 
     /// <summary>A probe tool the test "reloads" by registering a new instance with a new schema revision.</summary>
@@ -494,64 +478,69 @@ public static class ContextTests
         }
     }
 
-    // The interleaving a fork's first call loses to nothing: the copy of the fork point's prompts (session.forked) lands
-    // first and stores the inherited prompt as the fork's own, so the call's Freeze keeps that instance, cannot tell its
-    // text is the same one, and records it as a prompt the fork was sent. The fork then holds it twice.
-    private static async Task ForkRecordInherited()
+    // The sent-prompt history is the session's meta: a provisional prompt (a section failed) is recorded but is not the
+    // frozen prefix, the same text sent final marks it final, and equal consecutive prompts are one entry.
+    private static void SentHistoryRules()
     {
-        await using var h = await TestHost.StartAsync();
-        var store = new PromptStore(new TestPluginContext(h, "probe-fork"));
-        store.Initialize();
-        var original = h.NewSession();
-        var fork = h.NewSession();
-        store.Freeze(original.Id, "THE PROMPT", 0);
-        store.RecordSent(original.Id, "THE PROMPT", [new ToolDefinition { Name = "echo", Description = "e" }], 1);
-
-        store.Fork(original.Id, fork.Id, 1);                       // session.forked: the fork point's prompt is copied
-        Check.Equal(1, store.Sent(fork.Id).Count, "the fork holds the prompt it inherited");
-        store.Freeze(fork.Id, new string("THE PROMPT".ToCharArray()), 0);   // its first call, the same text, its own instance
-        var version = store.RecordSent(fork.Id, "THE PROMPT", [new ToolDefinition { Name = "echo", Description = "e" }], 2);
-        Check.Equal(1, store.Sent(fork.Id).Count, "and does not record it a second time");
-        Check.Equal(1, version, "the prompt it went on with is the one it inherited");
-
-        // a prompt the fork was not sent before is recorded as usual
-        store.Reset(fork.Id);
-        store.Freeze(fork.Id, "ANOTHER PROMPT", 1);
-        Check.Equal(2, store.RecordSent(fork.Id, "ANOTHER PROMPT", [], 3), "a new prompt is a new version");
-        Check.Equal(2, store.Sent(fork.Id).Count);
+        var session = new SessionInfo { Id = "ses_x", Meta = new JsonObject() };
+        var echo = new ToolDefinition { Name = "echo", Description = "e", Revision = "7" };
+        var plain = new ToolDefinition { Name = "plain", Description = "p" };
+        Check.Equal(echo.DefinitionHash, new ToolDefinition { Name = "echo", Description = "e", Revision = "8" }.DefinitionHash, "the hash covers name, description and parameters only");
+        Check.Equal(16, echo.DefinitionHash.Length);
+        SessionPrompt.RecordSent(session, "P", 0, 1, [echo, plain], final: false);
+        Check.True(SessionPrompt.Fallback(session) is null, "a provisional prompt is not frozen");
+        Check.False(SessionPrompt.Recorded(session, "P"));
+        SessionPrompt.RecordSent(session, "P", 0, 2, [echo, plain], final: false);
+        Check.Equal(1, SessionPrompt.History(session).Count, "the same provisional prompt is one entry");
+        SessionPrompt.RecordSent(session, "P", 0, 3, [echo, plain]);
+        var history = SessionPrompt.History(session);
+        Check.Equal(1, history.Count, "sent final: the entry is marked final, not repeated");
+        Check.False(history[0].Provisional);
+        Check.Equal("P", SessionPrompt.Fallback(session));
+        Check.True(SessionPrompt.Recorded(session, "P"));
+        Check.Equal("echo:7,plain:", string.Join(",", history[0].Tools.Select(t => $"{t.Name}:{t.Revision}")));
+        Check.True(history[0].CreatedAt is { Length: > 0 });
+        SessionPrompt.RecordSent(session, "Q", 0, 4, [], final: false);
+        Check.Equal("P", SessionPrompt.Fallback(session), "a provisional prompt leaves the frozen one");
+        Check.True(SessionPrompt.LastSent(session)!.Provisional);
+        Check.Equal(2, SessionPrompt.LastSent(session)!.Version);
     }
 
-    // The same race with an original that was sent two prompts before the fork point (a profile switch): the copy takes
-    // both rows, and the fork's first call - which goes on with the second one - leaves that history alone.
-    private static async Task ForkTwoPrompts()
+    // context.prompts reads tools with their parameters from the content-addressed context_tooldefs; sessions with the same
+    // tools share them; the page is the newest `limit` before `beforeVersion`.
+    private static async Task PromptsPagingAndDefinitions()
     {
         await using var h = await TestHost.StartAsync();
-        var store = new PromptStore(new TestPluginContext(h, "probe-fork-two"));
-        store.Initialize();
-        var original = h.NewSession();
-        var tools = new[] { new ToolDefinition { Name = "echo", Description = "e" } };
-        store.RecordSent(original.Id, "PROMPT ONE", tools, 1);
-        store.RecordSent(original.Id, "PROMPT TWO", tools, 3);
-        string Rows(string sessionId) => string.Join(" | ", store.Sent(sessionId).Select(p => $"{p.Version}:{p.Prompt}"));
-        string Text(string sessionId) => string.Join(" | ", store.Sent(sessionId).Select(p => p.Prompt));
-        const string Expected = "PROMPT ONE | PROMPT TWO";
+        var defs = new TestPluginContext(h, "netpi.context").Data.Collection("context_tooldefs", new CollectionSpec());
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+        var sent = h.Catalog.Requests.Last();
+        var count = defs.Find(new DataQuery()).Count;
+        Check.True(count >= sent.Tools.Count, "every tool of the prompt has its definition stored");
+        var s2 = h.NewSession();
+        await Turn(h, s2.Id, "hi");
+        Check.Equal(count, defs.Find(new DataQuery()).Count, "a second session with the same tools writes no new definitions");
+        var tools = (JsonArray)(await h.Rpc.CallAsync("context.prompts", new { sessionId = s2.Id }))!["prompts"]![0]!["tools"]!;
+        Check.Equal(sent.Tools[0].Parameters.ToJsonString(), tools[0]!["parameters"]!.ToJsonString(), "parameters come from the store");
 
-        // The copy lands first: the fork is sent the newest prompt at the fork point, and records nothing new.
-        var copyFirst = h.NewSession();
-        store.Fork(original.Id, copyFirst.Id, 3);
-        store.Freeze(copyFirst.Id, new string("PROMPT TWO".ToCharArray()), 0);   // its first call, the same text, its own instance
-        store.RecordSent(copyFirst.Id, "PROMPT TWO", tools, 4);
-        Check.Equal(Expected, Text(copyFirst.Id), "the copy first: the fork holds the fork point's prompts, in order, once");
-        Check.Equal("1:PROMPT ONE | 2:PROMPT TWO", Rows(copyFirst.Id), "the versions it inherited are the versions they were sent as");
-
-        // The call lands first: it records the prompt it rendered (version 1 of an empty history), and the copy that
-        // follows takes the fork point's rows over it.
-        var callFirst = h.NewSession();
-        store.Freeze(callFirst.Id, new string("PROMPT TWO".ToCharArray()), 0);
-        store.RecordSent(callFirst.Id, "PROMPT TWO", tools, 4);
-        store.Fork(original.Id, callFirst.Id, 3);
-        Check.Equal(Expected, Text(callFirst.Id), "the call first: the fork holds the fork point's prompts, in order, once");
-        Check.Equal("1:PROMPT ONE | 2:PROMPT TWO", Rows(callFirst.Id), "the call's own row did not survive beside the copied ones");
+        // a long history, paged
+        for (var i = 1; i <= 5; i++)
+            h.Sessions.UpdateSession(s.Id, x => { SessionPrompt.Invalidate(x); SessionPrompt.RecordSent(x, "PROMPT " + x.Meta![SessionPrompt.RevisionKey], SessionPrompt.Revision(x), 10 + SessionPrompt.Revision(x), [new ToolDefinition { Name = "gone", Description = "not stored" }]); });
+        async Task<JsonObject> Page(object args) => (JsonObject)(await h.Rpc.CallAsync("context.prompts", args))!;
+        string Versions(JsonObject page) => string.Join(",", ((JsonArray)page["prompts"]!).Select(p => p!["version"]!.GetValue<int>()));
+        var all = await Page(new { sessionId = s.Id });
+        Check.Equal("1,2,3,4,5,6", Versions(all));
+        Check.False(all["more"]!.GetValue<bool>());
+        var newest = await Page(new { sessionId = s.Id, limit = 2 });
+        Check.Equal("5,6", Versions(newest), "the newest page, oldest first");
+        Check.True(newest["more"]!.GetValue<bool>());
+        var older = await Page(new { sessionId = s.Id, limit = 2, beforeVersion = 5 });
+        Check.Equal("3,4", Versions(older));
+        var oldest = await Page(new { sessionId = s.Id, limit = 5, beforeVersion = 3 });
+        Check.Equal("1,2", Versions(oldest));
+        Check.False(oldest["more"]!.GetValue<bool>());
+        var missing = (JsonObject)((JsonArray)newest["prompts"]!)[1]!["tools"]![0]!;
+        Check.True(missing["parameters"] is null && (string?)missing["name"] == "gone", "an unknown definition is named only");
     }
 
     // Every prompt a session is sent is kept with its tools (context.prompts): the first, and one after each context.reset
@@ -574,7 +563,8 @@ public static class ContextTests
         Check.Equal(r1.Tools[0].Description, (string?)tools[0]["description"]);
         Check.Equal(r1.Tools[0].Parameters.ToJsonString(), tools[0]["parameters"]!.ToJsonString());
         var user = h.Messages(s.Id).First(m => m.Role == MessageRole.User);
-        Check.Equal(user.Seq, p[0]!["afterSeq"]!.GetValue<long>(), "sent after the first message");
+        Check.True(p[0]!["afterSeq"]!.GetValue<long>() >= user.Seq, "sent after the first message");
+        await h.Bus.DrainAsync();
         var ev = h.Bus.OfType("context.prompt").Single();
         Check.Equal(s.Id, ev.SessionId);
 
@@ -589,6 +579,7 @@ public static class ContextTests
         Check.Equal(r1.SystemPrompt, (string?)p[0]!["systemPrompt"], "the first one is kept");
         Check.True(((string?)p[1]!["systemPrompt"])!.EndsWith("AFTER THE SWITCH"), "the new one");
         Check.True(p[1]!["afterSeq"]!.GetValue<long>() > p[0]!["afterSeq"]!.GetValue<long>(), "later in the chat");
+        await h.Bus.DrainAsync();
         Check.Equal(2, h.Bus.OfType("context.prompt").Count);
 
         try
@@ -850,7 +841,7 @@ public static class ContextTests
             new FakeTool("mm_read", Ok, category: "files", guidelines: ["  Files line. ", ""]).Definition,
             new FakeTool("zz_run", Ok, category: "shell", guidelines: ["Shared shell line.", "Only zz_run."]).Definition,
         };
-        var prompt = await h.Services.Get<ISystemPromptBuilder>()!.BuildAsync(Ctx(h, h.NewSession(), tools), CancellationToken.None);
+        var prompt = (await h.Services.Get<ISystemPromptBuilder>()!.BuildAsync(Ctx(h, h.NewSession(), tools), CancellationToken.None)).Text;
         Check.Contains(prompt, "# Tools\n- Files line.\n- Shared shell line.\n- Only zz_run.\n- Any tool called with {\"help\": true} returns its full manual instead of running.\n\n");
         Check.Equal(1, prompt.Split("Shared shell line.").Length - 1, "a shared line once");
     }
@@ -859,7 +850,7 @@ public static class ContextTests
     {
         await using var h = await TestHost.StartAsync();
         var builder = h.Services.Get<ISystemPromptBuilder>()!;
-        async Task<string> Prompt() => await builder.BuildAsync(Ctx(h, h.NewSession(), []), CancellationToken.None);
+        async Task<string> Prompt() => (await builder.BuildAsync(Ctx(h, h.NewSession(), []), CancellationToken.None)).Text;
 
         var prompt = await Prompt();
         Check.Contains(prompt, "# Instruction files\nAGENTS.md and CLAUDE.md files reach you as notices.");
@@ -955,9 +946,20 @@ public static class ContextTests
             await hf.SendAsync(sf.Id, "hi");
             await hf.IdleAsync(sf.Id);
             Check.NotContains(hf.Catalog.Requests.Last().SystemPrompt!, "RECOVERED");
+            var partial = hf.Sessions.GetSession(sf.Id)!;
+            Check.True(SessionPrompt.Fallback(partial) is null, "a prompt that lost a section is not the session's frozen prefix");
+            Check.True(SessionPrompt.LastSent(partial)!.Provisional, "it is in the history, marked provisional");
+            // the guard is the session's meta, not memory: a builder that never saw the first call renders again too
+            var store = new PromptStore(new TestPluginContext(hf, "probe-restart"));
+            store.Initialize();
+            var restarted = await new SystemPromptBuilder(new TestPluginContext(hf, "probe-restart"), store).BuildAsync(Ctx(hf, partial, []), CancellationToken.None);
+            Check.True(restarted.Final && restarted.Text.Contains("RECOVERED"), "a new builder instance does not reuse the partial prompt");
             await hf.SendAsync(sf.Id, "again");
             await hf.IdleAsync(sf.Id);
             Check.Contains(hf.Catalog.Requests.Last().SystemPrompt!, "RECOVERED", "re-rendered after the failure");
+            var healed = hf.Sessions.GetSession(sf.Id)!;
+            Check.Equal(hf.Catalog.Requests.Last().SystemPrompt, SessionPrompt.Fallback(healed), "the complete prompt is frozen");
+            Check.Equal(2, SessionPrompt.History(healed).Count);
         }
 
         await using (var h = await TestHost.StartAsync())

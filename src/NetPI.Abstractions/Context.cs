@@ -28,8 +28,14 @@ public interface IPromptSection
     ValueTask<string?> RenderAsync(PromptContext context, CancellationToken ct);
 }
 
+/// <summary>
+/// A built system prompt. <paramref name="Final"/> false means "send it, but do not freeze it as the session's prefix"
+/// (a section failed, so the next call builds it again).
+/// </summary>
+public sealed record BuiltPrompt(string Text, bool Final = true);
+
 /// <summary>Builds the full system prompt (provided by the context plugin).</summary>
 public interface ISystemPromptBuilder
 {
-    ValueTask<string> BuildAsync(PromptContext context, CancellationToken ct);
+    ValueTask<BuiltPrompt> BuildAsync(PromptContext context, CancellationToken ct);
 }

@@ -40,6 +40,15 @@ public sealed class ToolDefinition
     /// garbage per turn for nothing.
     /// </summary>
     public int ParametersChars => _parametersChars < 0 ? _parametersChars = Parameters.ToJsonString().Length : _parametersChars;
+
+    private string? _definitionHash;
+    /// <summary>
+    /// Content address of the definition: the first 16 lowercase hex chars of SHA-256 over UTF-8 of
+    /// <c>Name + "\n" + Description + "\n" + Parameters as JSON</c>, worked out once. A session's sent-prompt history names its
+    /// tools by it, so equal definitions are stored once.
+    /// </summary>
+    public string DefinitionHash => _definitionHash ??= Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+        System.Text.Encoding.UTF8.GetBytes(Name + "\n" + Description + "\n" + Parameters.ToJsonString())))[..16];
 }
 
 /// <summary>
