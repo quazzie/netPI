@@ -910,10 +910,13 @@ acting on a foreign id is refused.
 
 ### `agent_choices` (read-only)
 
-The agents the user set up (`agents.<id>`) as an agent that delegates sees them: the budget line, then each agent (active
-first, then free before paid, cheapest first): id · model · busy/instances · "NOT ACTIVE: <why>" · local · price per Mtok
-· today's spend and cap · context window · images · the user's note, with who runs on it and who waits; then model calls
-without an agent that are running. Without agents: "No agents are set up", and a subagent runs on the caller's model.
+The agents the user set up (`agents.<id>`) as an agent that delegates sees them: the budget line, then the agents that can
+take work (free before paid, cheapest first): id · model · busy/instances · local · price per Mtok · today's spend and cap
+· context window · images · the user's note, with who runs on it and who waits; then model calls without an agent that
+are running. Switched-off agents and agents whose model isn't loaded or reachable are hidden (a spawn that tries anyway is
+refused with the reasons; their state stays in Settings → Agents and the Work tab). With agents set up but none that can
+take work: "Every agent is switched off or its model isn't loaded or reachable: no agent can take work right now." Without
+agents: "No agents are set up", and a subagent runs on the caller's model.
 `details: { agents: AgentSlots[], budget: BudgetStatus }`.
 
 ### `agent_spawn` (summary arg `name`)

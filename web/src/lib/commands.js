@@ -44,10 +44,15 @@ const BUILTIN = [
       if (!sessionId) return;
       if (!args) return ui?.openAgentPicker?.();
       const q = args.trim().toLowerCase();
-      const agents = agentList();
-      const a = agents.find((x) => x.key.toLowerCase() === q) ?? agents.find((x) => x.key.toLowerCase().includes(q) || (x.model ?? '').toLowerCase().includes(q));
-      if (!a) return toast(`No agent “${args}”`, 'warn');
-      if (await useAgent(sessionId, a.key)) toast(`Agent: ${a.key}${a.available ? '' : ` (${a.disabled ? 'switched off' : a.unavailable})`}`);
+      // like the picker: only agents that can take work are switched onto; a hidden one is named with why it is hidden
+      const agents = agentList().filter((x) => x.available && !x.disabled);
+      const match = (x) => x.key.toLowerCase() === q || x.key.toLowerCase().includes(q) || (x.model ?? '').toLowerCase().includes(q);
+      const a = agents.find(match);
+      if (!a) {
+        const hidden = agentList().find(match);
+        return hidden ? toast(`Agent “${hidden.key}”: ${hidden.disabled ? 'switched off' : hidden.unavailable}`, 'warn') : toast(`No agent “${args}”`, 'warn');
+      }
+      if (await useAgent(sessionId, a.key)) toast(`Agent: ${a.key}`);
     },
   },
   {

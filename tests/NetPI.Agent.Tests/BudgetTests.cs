@@ -432,9 +432,8 @@ public static class BudgetTests
         Check.Contains(listing, "Agents (pass the id to agent_spawn, or \"any\" for the first one with a free instance):");
         Check.Contains(listing, "- small · fake/local · 1/2 busy (one is you: free for your subagents while you wait) · local · free · 100k ctx · \"Free: searches and small edits.\"");
         Check.Contains(listing, "- big · cloud/big · 0/1 busy · $3 / $15 per Mtok in/out · $0.00 today (cap $1) · 200k ctx · \"Costly: hard problems only.\"");
-        Check.Contains(listing, "- solo · fake/solo · 0/1 busy · NOT ACTIVE: switched off by the user · local · free · 50k ctx");
+        Check.NotContains(listing, "- solo", "a switched-off agent is hidden from agent_choices (its model may still show in the shared capacity)");
         Check.True(listing!.IndexOf("- small", StringComparison.Ordinal) < listing.IndexOf("- big", StringComparison.Ordinal), "cheapest first");
-        Check.True(listing.IndexOf("- big", StringComparison.Ordinal) < listing.IndexOf("- solo", StringComparison.Ordinal), "active first");
         Check.Contains(listing, "You run on the agent small.");
         Check.Contains(refused, "agent_spawn needs an agent. The agents:");
         Check.Contains(refused, "- big · cloud/big · 0/1 busy · $3 / $15 per Mtok · \"Costly: hard problems only.\"");

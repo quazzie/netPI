@@ -7,9 +7,11 @@ namespace NetPI.Agents;
 
 /// <summary>
 /// <c>agent_choices</c>: the agents the user set up, as an agent that delegates sees them. First the budget, then the
-/// agents (active first, then cheapest: id, model, busy/instances, state, price, today's spend, context window, the user's
-/// note on when to use it), then other model calls in progress. Registered by the agents plugin, so it disappears (with
-/// the agents section of the system prompt) when the plugin is off.
+/// agents that can take work (free before paid, cheapest first: id, model, busy/instances, state, price, today's spend,
+/// context window, the user's note on when to use it), then other model calls in progress. Switched-off agents and
+/// agents whose model isn't loaded or reachable are hidden: they can't take work, so they are not a choice (their state
+/// stays visible in Settings → Agents and the Work tab, and a spawn that tries anyway is refused with the reasons).
+/// Registered by the agents plugin, so it disappears (with the agents section of the system prompt) when the plugin is off.
 /// </summary>
 internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) : IAgentTool
 {
@@ -18,9 +20,10 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         Name = "agent_choices",
         Label = "Agents",
         Description =
-            "List the agents the user set up to run subagents on: each is a model with a number of instances (runs at once), " +
-            "its state (active, busy, not loaded, switched off), a note on when to use it, its price and today's spend; and " +
-            "the budget. Pass an agent's id to agent_spawn, or \"any\" to let the first agent with a free instance take the subagent. Also shows who runs on them.",
+            "List the agents the user set up that can take work: each is a model with a number of instances (runs at once), " +
+            "its state (ready, busy), a note on when to use it, its price and today's spend; and the budget. Switched-off " +
+            "agents and agents whose model isn't loaded or reachable are not listed. Pass an agent's id to agent_spawn, or " +
+            "\"any\" to let the first agent with a free instance take the subagent. Also shows who runs on them.",
         ReadOnly = true,
         Category = "agents",
         Parameters = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() },
@@ -39,16 +42,28 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         foreach (var resource in scheduler.Resources())
             sb.Append("- ").Append(resource.Model ?? resource.Key).Append(": ").Append(resource.Capacity).Append(" total, ").Append(resource.Busy).Append(" running, ").Append(resource.Queued).Append(" queued\n");
         var agents = pools.Where(p => p.Configured)
-            .OrderBy(p => p.Available ? 0 : 1)
-            .ThenBy(p => p.Free ? 0 : p.PriceInput is null ? 2 : 1)
+            // switched off or the model isn't loaded/reachable: hidden, they can't take work (a spawn that tries is refused with the reasons)
+            .Where(p => p.Available)
+            .OrderBy(p => p.Free ? 0 : p.PriceInput is null ? 2 : 1)
             .ThenBy(p => (p.PriceInput ?? 0) + (p.PriceOutput ?? 0))
             .ThenBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var others = pools.Where(p => !p.Configured && (p.Busy > 0 || p.Queued > 0)).ToList();
+        var allConfigured = pools.Count(p => p.Configured);
         if (agents.Count > 0)
         {
             sb.Append(runtime is null ? "Configured agents (execution unavailable):\n" : "Agents (pass the id to agent_spawn, or \"any\" for the first one with a free instance):\n");
             foreach (var p in agents) Line(sb, p, withModels: false, Who, context.AgentId);
+            if (others.Count > 0)
+            {
+                sb.Append("\nOther model calls in progress (not agents):\n");
+                foreach (var p in others) Line(sb, p, withModels: true, Who, context.AgentId);
+            }
+        }
+        else if (allConfigured > 0)
+        {
+            // agents are set up but every one is hidden: say so without listing them; a spawn that tries gets the reasons
+            sb.Append("Every agent is switched off or its model isn't loaded or reachable: no agent can take work right now.\n");
             if (others.Count > 0)
             {
                 sb.Append("\nOther model calls in progress (not agents):\n");
@@ -63,7 +78,8 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         }
         if (scheduler.Unassigned() is { Count: > 0 } floating)
             sb.Append("\nWaiting for any free agent: ").Append(string.Join(", ", floating.Select(Who))).Append('\n');
-        if (runtime?.Get(context.AgentId)?.Agent is { } mine && agents.Any(p => p.Key == mine)) sb.Append("\nYou run on the agent ").Append(mine).Append('.');
+        // the caller's own agent line stays even while that agent is hidden (it may have been switched off mid-run)
+        if (runtime?.Get(context.AgentId)?.Agent is { } mine && pools.Any(p => p.Configured && p.Key == mine)) sb.Append("\nYou run on the agent ").Append(mine).Append('.');
         return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd(), new JsonObject
         {
             ["agents"] = NetPiJson.ToNode(pools),
@@ -80,7 +96,6 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         // the caller's own instance is free for its subagents while it waits
         if (p.Owners.Any(o => o.AgentId == you)) sb.Append(" (one is you: free for your subagents while you wait)");
         if (p.Queued > 0) sb.Append(", ").Append(p.Queued).Append(" queued");
-        if (p.Configured && !p.Available) sb.Append(" · NOT ACTIVE: ").Append(p.Disabled ? "switched off by the user" : p.Unavailable);
         var model = scheduler.ModelInfo(p.Model ?? (p.Models.Count == 1 ? p.Models[0] : null));
         if (model?.IsLocal == true) sb.Append(" · local");
         if (p.Free) sb.Append(" · free");
