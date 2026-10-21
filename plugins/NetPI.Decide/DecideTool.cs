@@ -70,12 +70,21 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         {
             file = context.ResolvePath(f);
             if (!File.Exists(file)) return ToolResult.Error($"No such file: {file}");
-            items.AddRange((await File.ReadAllLinesAsync(file, ct).ConfigureAwait(false)).Where(l => l.Trim().Length > 0));
         }
         items = items.Where(s => s.Trim().Length > 0).ToList();
+        // The file is streamed: at most max items are kept, the rest of its lines are only counted (for the skipped note).
+        var dropped = 0;
+        if (file is not null)
+        {
+            foreach (var line in File.ReadLines(file))
+            {
+                ct.ThrowIfCancellationRequested();
+                if (line.Trim().Length == 0) continue;
+                if (items.Count < max) items.Add(line); else dropped++;
+            }
+        }
         if (items.Count == 0) return ToolResult.Error("decide needs something to decide about: text, items or file.");
-        var dropped = Math.Max(0, items.Count - max);
-        if (dropped > 0) items = items.Take(max).ToList();
+        if (items.Count > max) { dropped += items.Count - max; items = items.Take(max).ToList(); }
 
         var minConf = a.TryGet(out var mc, "min_confidence") && mc.ValueKind == JsonValueKind.Number ? Math.Clamp(mc.GetDouble(), 0, 1) : DefaultMinConfidence;
         var model = a.TryGet(out var me, "model") && me.ValueKind == JsonValueKind.String ? me.GetString() : null;
