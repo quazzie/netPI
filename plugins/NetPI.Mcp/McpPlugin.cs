@@ -29,6 +29,7 @@ public sealed class McpPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Int("mcp.maxMessageChars", "Largest protocol message", 4_000_000, "Reject oversized frames and SSE events.", 4096, 16_000_000, "chars"),
+                SettingInfo.Int("mcp.maxArgumentChars", "Largest tool call arguments", 1_000_000, "Refuse a tool call whose serialized arguments are larger.", 1024, 16_000_000, "chars"),
                 SettingInfo.Int("mcp.maxCatalogTools", "Largest tool catalog", 10000, "Maximum tools discovered per server.", 1, 10000, "tools"),
                 SettingInfo.Int("mcp.maxCatalogChars", "Largest tool catalog data", 8_000_000, "Bound discovery memory per server.", 4096, 32_000_000, "chars"),
                 SettingInfo.Int("mcp.maxResourceEntries", "Largest resource catalog", 2000, "Maximum resources discovered per server.", 1, 20000, "resources"),
