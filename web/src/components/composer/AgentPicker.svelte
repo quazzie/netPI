@@ -1,9 +1,11 @@
 <script>
   /**
    * The chat's agent: chats run on agents (a model with instances, active while its model is loaded). The menu lists the
-   * agents with their state (ready, busy, not loaded, switched off) and filters as you type; "New agent…" picks a model,
-   * sets up an agent on it and runs this chat on it; "Manage agents" opens Settings → Agents & budget. agents.use sets
-   * the chat's agent and its model.
+   * agents that can take work (ready, busy, queued) with their state and filters as you type. Switched-off agents and
+   * agents whose model isn't loaded or reachable are hidden — their state stays visible in Settings → Agents & budget
+   * and the Work tab — but the chat's current agent still shows on the button even while it is hidden. "New agent…" picks
+   * a model, sets up an agent on it and runs this chat on it; "Manage agents" opens Settings → Agents & budget.
+   * agents.use sets the chat's agent and its model.
    */
   import { untrack } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
@@ -21,6 +23,9 @@
   let index = $state(0);
 
   const agents = $derived(agentList());
+  // The pickable agents: the ones that can take work now. A switched-off agent or one whose model isn't loaded or
+  // reachable is not an entry you could run on, so it is hidden here (Settings → Agents and the Work tab still show it).
+  const visible = $derived(agents.filter((p) => p.available && !p.disabled));
   const mine = $derived(agentOf(session));
   const current = $derived(mine.agent);
   const isAny = $derived(mine.any === true);
@@ -40,14 +45,15 @@
   );
   const filtered = $derived.by(() => {
     const query = q.trim().toLowerCase();
-    return agents.filter((p) => !query || p.key.toLowerCase().includes(query) || (p.model ?? '').toLowerCase().includes(query));
+    return visible.filter((p) => !query || p.key.toLowerCase().includes(query) || (p.model ?? '').toLowerCase().includes(query));
   });
 
   $effect(() => {
     if (!open) return;
     untrack(() => {
       q = '';
-      index = Math.max(0, agents.findIndex((p) => p.key === current?.key));
+      // a hidden current agent (switched off, not loaded) just starts the cursor at the first pickable one
+      index = Math.max(0, visible.findIndex((p) => p.key === current?.key));
     });
   });
 
@@ -106,8 +112,8 @@
 
 {#if open}
   <Popover anchor={btn} placement="top-start" width={320} onclose={() => (open = false)}>
-    <div class="agent-pop">
-      {#if agents.length > 3}
+    <div class="agent-pop" data-testid="agent-picker">
+      {#if visible.length > 3}
         <div class="head">
           <Icon name="search" size={13} />
           <input class="filter" placeholder="Filter agents" bind:value={q} oninput={() => (index = 0)} onkeydown={onKey} use:focus spellcheck="false" aria-label="Filter agents" />
@@ -138,7 +144,6 @@
             class="opt"
             class:active={i === index}
             class:current={p.key === current?.key}
-            class:inactive={!p.available}
             role="option"
             aria-selected={p.key === current?.key}
             data-agent={p.key}
@@ -149,7 +154,7 @@
             <span class="np-dot" data-status={st.dot}></span>
             <span class="name">
               <span class="np-ellipsis">{p.key}</span>
-              <span class="sub np-ellipsis">{nameOf(p)}{!p.available ? ` · ${st.text}` : p.queued ? ` · ${p.queued} waiting` : ''}</span>
+              <span class="sub np-ellipsis">{nameOf(p)}{p.queued ? ` · ${p.queued} waiting` : ''}</span>
             </span>
             <span class="meta np-mono">
               {#if p.available}<span title="Busy / instances">{p.busy}/{p.capacity}</span>{/if}
@@ -159,7 +164,10 @@
           </button>
         {:else}
           <div class="empty np-dim">
-            {#if agents.length}No agents match “{q}”.{:else}No agents yet. An agent is a model with a number of instances;
+            {#if q}No agents match “{q}”.
+              {:else if agents.length}All {agents.length} agent{agents.length === 1 ? '' : 's'} are switched off or unavailable —
+              New agent… or Manage agents below.
+            {:else}No agents yet. An agent is a model with a number of instances;
               chats and subagents run on agents.{/if}
           </div>
         {/each}
@@ -242,9 +250,6 @@
   }
   .opt.current {
     color: var(--accent);
-  }
-  .opt.inactive .name > span:first-child {
-    color: var(--fg-muted);
   }
   .name {
     flex: 1;

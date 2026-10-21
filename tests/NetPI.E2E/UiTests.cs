@@ -40,7 +40,7 @@ public static class UiTests
             RunUiScript(env, "work.mjs", 300), 330);
         // The script changes settings and changes them back; keepsSettings fails it when the document differs after. It
         // fails one profiles.list call on purpose (tapSocket.intercept).
-        r.Add("ui.settings", "ui journey: settings — a number saved, reset and refused out of range; an agent added from the model search, its instances set, removed after a confirm; a chat's profile picker stays open through a failed reload", () =>
+        r.Add("ui.settings", "ui journey: settings — a number saved, reset and refused out of range; an agent added from the model search, its instances set, hidden from the composer's agent picker while switched off, removed after a confirm; a chat's profile picker stays open through a failed reload", () =>
             RunUiScript(env, "settings.mjs", 300), 330);
         // The script makes its own chat.
         r.Add("ui.asks", "ui journey: what a chat asks the user — the ask_user card survives a page reload, an option answers it, so does an answer typed in the message box, and a two-question card is sent with its button; the run goes on with the answer", () =>

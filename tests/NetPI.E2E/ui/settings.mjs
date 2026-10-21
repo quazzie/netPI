@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Journey: a person changes their settings. In Settings → Runs they change a number, see it saved, reset it, and get a
 // value out of range refused; in Agents & budget they add an agent from the model search, give it one instance, and
-// remove it again after confirming. What the page saved is read back from the server (settings.get). And a chat's
-// profile picker stays open with its profiles while the settings change, even when the reload that follows fails (it
-// used to empty itself on any failed profiles.list and unmount the open picker). Everything it changes is changed back;
-// run's keepsSettings checks that it is.
+// remove it again after confirming. While it is switched off, the composer's agent picker hides it ("Any available"
+// stays), and switching it on brings it back. What the page saved is read back from the server (settings.get). And a
+// chat's profile picker stays open with its profiles while the settings change, even when the reload that follows fails
+// (it used to empty itself on any failed profiles.list and unmount the open picker). Everything it changes is changed
+// back; run's keepsSettings checks that it is.
 //
 //   node tests/NetPI.E2E/ui/settings.mjs --url http://127.0.0.1:7470 --token e2e-token --mock <url>
 import { run, check, shot, expectEventually, openApp, openSession, rpc, send, STAMP, composerOf, PROBE } from './lib.mjs';
@@ -76,6 +77,33 @@ await run('settings', async ({ page, socket }) => {
     await agentDialog.getByRole('textbox', { name: 'Instances' }).press('Tab'); // the field saves on change
     await expectEventually('its instances are saved', async () => (await settings()).agents?.[id]?.instances, { pass: (v) => v === 1 });
     await shot(page, 'ui-settings-02-agent');
+
+    // ---- the composer's agent picker hides the agent while it is switched off
+    await page.keyboard.press('Escape'); // the agent dialog, then the settings behind it
+    await page.keyboard.press('Escape');
+    const agentPick = composerOf(page).getByRole('button', { name: 'Agent', exact: true });
+    await agentPick.click();
+    // scoped to the picker's popover: the Work tab (and the settings' agents page) list agents with data-agent too
+    const pop = page.getByTestId('agent-picker');
+    const pickRow = () => pop.locator(`[data-agent="${id}"]`).count();
+    const serverDisabled = () => rpc('agents.list').then((l) => (l ?? []).find((a) => a.key === id)?.disabled);
+    await expectEventually("the new agent is in the composer's agent picker", pickRow, { pass: (n) => n === 1 });
+    await rpc('agents.setEnabled', { id, enabled: false });
+    // the server side first: quick off/on toggles coalesce into one agents.changed, and the UI may not see the middle
+    await expectEventually('the server has the agent off', serverDisabled, { pass: (v) => v === true });
+    await expectEventually('switching it off takes it out of the picker', pickRow, { pass: (n) => n === 0 });
+    check('“Any available” stays while every agent is hidden', (await pop.locator('[data-agent="any"]').count()) === 1);
+    await shot(page, 'ui-settings-03-picker-hidden');
+    await rpc('agents.setEnabled', { id, enabled: true });
+    await expectEventually('the server has the agent on', serverDisabled, { pass: (v) => v === false });
+    await expectEventually('switching it on brings it back', pickRow, { pass: (n) => n === 1 });
+    await page.keyboard.press('Escape'); // close the picker
+    await page.keyboard.press('Control+,'); // the dialog went with the earlier Escapes: back into the settings
+    await expectEventually('the settings dialog is open again', () => dialog.isVisible());
+    await dialog.locator('[data-page="agents"]').click();
+    await dialog.locator(`[data-agent="${id}"]`).click(); // the row opens its dialog
+    await expectEventually("the agent's row opens its dialog again", () => page.getByRole('dialog', { name: `Agent ${id}` }).count(), { pass: (n) => n === 1 });
+
     await agentDialog.getByTestId('remove-agent').click();
     await page.getByTestId('confirm').click();
     await expectEventually('removed after the confirm, it is gone from the settings', async () => Object.keys((await settings()).agents ?? {}), { pass: (keys) => !keys.includes(id) });

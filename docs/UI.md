@@ -400,9 +400,11 @@ Timings measured by the old mock walkthrough (headless Chromium):
   `{ mediaType, data }`.
 - The agent picker (`AgentPicker`, from `agents.list` / `agents.changed`: `app.slots`) shows the chat's agent with its
   state dot; a chat without one shows the agent it would take (the first on its model), or "Choose an agent". The menu
-  lists the agents (state: ready, busy, N waiting, not loaded, switched off; busy/instances; price), filters past three,
-  and ends with **New agent…** (`ModelMenu`: the model list grouped by provider with status, context and slots, also
-  behind every model field in the settings as `ModelSelect`; the new agent's id is a slug of the model, and the chat runs
+  lists the agents that can take work (state: ready, busy, N waiting; busy/instances; price) — a switched-off agent or
+  one whose model isn't loaded or reachable is hidden (its state stays in Settings → Agents & budget and the Work tab,
+  and the chat's own agent still shows on the button while it is hidden) — filters past three, and ends with **New agent…**
+  (`ModelMenu`: the model list grouped by provider with status, context and slots, also behind every model field in the
+  settings as `ModelSelect`; the new agent's id is a slug of the model, and the chat runs
   on it) and **Manage agents** (Settings → Agents & budget). Choosing one calls `agents.use` (the chat's `meta.agent` and
   model). New chats start on the agent chosen last while it is active, else the first active one. The effort picker offers "default" plus
   `model.reasoning.efforts` and calls `sessions.update { reasoning }`; `''` means the model default.
