@@ -271,6 +271,11 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
             sub.Completed = true;
             sub.Queue.Writer.TryComplete();   // the worker finishes what is queued, then exits
             lock (_subsLock) _subs = Array.FindAll(_subs, s => !ReferenceEquals(s, sub));
+            // A marker already queued behind a wedged handler is never passed once the line is detached: drop the line from
+            // every pending flush, or the flush (and its stale-flush warning) outlives the line forever.
+            FlushMarker[] pending;
+            lock (_flushLock) pending = [.. _flushes];
+            foreach (var m in pending) m.Drop(sub);
             lock (_debtLock)
             {
                 // A marker still owed to this line can never reach it now: ack it for every such marker, or the
