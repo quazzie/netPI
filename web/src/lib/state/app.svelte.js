@@ -455,6 +455,13 @@ export function closeTab(id) {
   if (i < 0) return;
   const chat = peekChat(id);
   chat?.saveDraft();
+  if (chat) {
+    // resubscribe() below drops the session, so the stream.end of a running chat never reaches this store: its partial
+    // stream would stay active (the LRU keeps it, a reopen would show it frozen). Settle it as the reconnect does and
+    // mark it stale, so the next showChat reloads it and catches a still-busy run up.
+    chat.stale = true;
+    chat.reconcile(false);
+  }
   app.openTabs.splice(i, 1);
   if (app.activeId === id) {
     const next = app.openTabs[i] ?? app.openTabs[i - 1] ?? null;
