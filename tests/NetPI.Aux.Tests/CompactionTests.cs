@@ -535,6 +535,25 @@ public static class CompactionTests
             Check.True(result.Summary!.Text.StartsWith("No earlier history.\n\n---\n\n**Turn Context (split turn):**\n\nPREFIX-SUMMARY"), result.Summary.Text);
         });
 
+        r.Add("compaction: a cut on a notice is a turn boundary, not a split turn", async () =>
+        {
+            var env = new Env();
+            env.Add(T.User("question"));
+            for (var i = 0; i < 8; i++)
+            {
+                env.Add(T.Assistant($"answer {i} " + new string('a', 6000)));
+                env.Add(ChatMessage.NoticeText($"Working directory changed {i}", "project"));
+            }
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "HISTORY-SUMMARY" }],
+            };
+            var result = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.True(result.Compacted, result.Message);
+            Check.Equal(1, env.Ctx.ModelsFake.Requests.Count(), "one summarizer call");
+            Check.NotContains(result.Summary!.Text, "split turn");
+        });
+
         r.Add("compaction: nothing but notices to summarize is nothing to compact", async () =>
         {
             var env = new Env();
