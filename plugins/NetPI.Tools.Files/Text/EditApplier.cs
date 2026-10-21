@@ -53,7 +53,7 @@ internal static class EditApplier
         if (files.Count == 0) throw new RpcException("bad_request", "No edits given.");
         if (files.Count > MaxFiles) throw new RpcException("bad_request", $"At most {MaxFiles} files per call.");
         var prepared = new List<Prepared>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(WorkspacePaths.Comparer);
         foreach (var file in files)
         {
             var full = Path.GetFullPath(Path.IsPathRooted(file.Path) ? file.Path : Path.Combine(root, file.Path));
