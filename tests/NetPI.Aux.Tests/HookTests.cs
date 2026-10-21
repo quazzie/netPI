@@ -80,7 +80,6 @@ public static class NudgeTests
                 "Next, I'll fix the parser",
                 "Let me check the file...",
                 "Now I’ll look at the other usages",
-                "The following files need changes:",
             };
             foreach (var text in announce)
             {
@@ -99,6 +98,9 @@ public static class NudgeTests
                 "I'll leave the rest to you.",
                 "Should I also update the docs?",
                 "The fix is in place and the build is green!",
+                // a lead-in ending in a colon is a final answer, not a stalled action
+                "The following files need changes:",
+                "## Summary:",
             };
             foreach (var text in fine)
             {
