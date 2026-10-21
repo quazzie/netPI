@@ -20,6 +20,8 @@ namespace NetPI.Webhooks;
 internal sealed class WebhookStore(IPluginData data)
 {
     public const int HistoryPerWebhook = 200;
+    /// <summary>The window of the safety fuse (webhooks.maxChatsPerHour).</summary>
+    public const int FuseWindowHours = 1;
     /// <summary>Delivery statuses: started (a chat began), appended (added to the open chat), duplicate (the same alert was just seen), skipped (filtered,
     /// disabled, over the fuse), failed, waiting (the conversation's chat cannot start yet; the alert is kept and tried again), hook (an action of the webhook's hooks ran, or failed).
     /// As an incident state, waiting is a conversation whose chat has not started yet.</summary>
@@ -81,8 +83,10 @@ internal sealed class WebhookStore(IPluginData data)
                 ["webhookId"] = id, ["atMs"] = ms, ["at"] = Iso(at), ["status"] = status, ["reason"] = reason,
                 ["sessionId"] = sessionId, ["key"] = key, ["summary"] = summary, ["from"] = from,
             });
+            // the history keeps the newest rows, but a start inside the fuse's window stays whatever the count: the fuse counts these rows
+            var windowStart = at.AddHours(-FuseWindowHours).ToUnixTimeMilliseconds();
             foreach (var old in _runs.Find(new DataQuery { Offset = HistoryPerWebhook }.Eq("webhookId", id).Order("atMs", descending: true)))
-                _runs.Delete(old.Key);
+                if (old.Doc["status"]?.GetValue<string>() != Started || old.Doc["atMs"]?.GetValue<long>() < windowStart) _runs.Delete(old.Key);
         });
     }
 

@@ -433,6 +433,19 @@ public static class WebhooksTests
             Check.Equal(0, (await env2.Incidents(S(added2["id"])!)).Count, "and the incident is closed");
         });
 
+        r.Add("webhooks: the history prune keeps every start inside the fuse's hour, so a fuse above the history size can still fire", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var store = env.Plugin.Store!;
+            var now = DateTimeOffset.UtcNow;
+            var n = WebhookStore.HistoryPerWebhook + 50;
+            for (var i = 0; i < n; i++) store.Record("w1", now.AddSeconds(-i * 0.01), WebhookStore.Started, null, "s" + i, null, null, null);
+            Check.Equal(n, store.StartedSince("w1", now.AddHours(-1)), "all starts of the hour are still counted");
+            store.Record("w1", now.AddHours(-3), WebhookStore.Started, null, "old", null, null, null);
+            store.Record("w1", now, WebhookStore.Skipped, null, null, null, null, null);
+            Check.Equal(n, store.StartedSince("w1", now.AddHours(-4)), "a start older than the hour is pruned past the history size");
+        });
+
         r.Add("webhooks: the safety fuse holds new chats back until the hour has room; it does not drop them", async () =>
         {
             var env = await new Env().StartAsync();
