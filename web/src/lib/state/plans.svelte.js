@@ -48,7 +48,7 @@ export function offerForCall(sessionId, callId) {
 }
 
 let loadSeq = 0;
-let inFlight = null; // { seq, events }: the plan.enter.* events that land while loadPlans is reading (its answer cannot have them)
+let inFlight = null; // { seq, events }: the plan.* events that land while loadPlans is reading (its answer cannot have them)
 
 /** On (re)connect: the plans that wait, and the offers. Without the plan plugin nothing does. */
 export async function loadPlans() {
@@ -91,7 +91,7 @@ function refresh(sessionId) {
 
 /** plan.changed, plan.enter.asked and plan.enter.closed (unscoped: every window hears of every chat's). */
 export function planEvent(type, d) {
-  if (inFlight && type.startsWith('plan.enter.')) {
+  if (inFlight) {
     inFlight.events.push([type, d]);
     return;
   }
