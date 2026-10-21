@@ -12,7 +12,7 @@ commit, a verifier); those checks were removed, and the record of how they did i
   `plugins/NetPI.Ideas/wwwroot/ui.js` (source in `plugins/NetPI.Ideas/ui/`) and is served at `/plugins/netpi.ideas/ui.js`.
 - Slash command: `{ name: "idea", argsHint: "<title>", rpc: "ideas.quickAdd" }`.
 - Settings: `ideas.tellAgentOnCommit`, `ideas.commitNoticesPerRun`, `ideas.commitNoticeDebounceSec`, `ideas.noticeFloor`,
-  `ideas.semantic`, `ideas.similarThreshold` (docs/SETTINGS.md).
+  `ideas.semantic`, `ideas.similarThreshold`, `ideas.autoRefine.*` (docs/SETTINGS.md).
 
 ## Where ideas are stored
 
@@ -80,12 +80,22 @@ One idea is one JSON object — the document stored under its id, and what an im
   "sessionIds": ["ses_…"],            // sessions that created or updated the idea
   "sessions": [                        // chats that worked on it (attach, refine)
     { "sessionId": "ses_…", "title": "…", "at": "2026-09-28T10:00:00Z", "note": "…" }
-  ]
+  ],
+  "autoRefine": {                      // absent = not refined yet; written by the plugin only (see "Automatic refine")
+    "state": "running",                // running | done | failed
+    "sessionId": "ses_…", "at": "…", "finishedAt": "…", "agent": "qwen",
+    "manual": true,                    // set by a manual ideas.refine (counts as refined, no badge)
+    "error": "…"                       // failed only
+  }
 }
 ```
 
 Ideas from earlier versions may also carry `commits` (commits the removed commit check recorded); the card still shows
 them.
+
+`autoRefine` is bookkeeping the plugin owns: an `ideas.update` patch and an import's extra fields cannot set it. An export
+carries it like any field; an idea imported with `state: running` is settled by the first sweep (no agent runs its chat).
+An existing idea simply has no field and counts as not refined.
 
 A snapshot export wraps ideas in a versioned document (`{ "version": 1, "format": "netpi.ideas.export", "ideas": [ … ],
 … }`), and an export is not a live file: editing it changes nothing in the backlog, and nothing is re-imported because a
@@ -278,6 +288,36 @@ notice stays first; added during a run, the agent reads it at its next model cal
 `ideas.refine` (the card's "Refine") starts a chat on the idea's project with the idea attached and an agent tasked to
 define it better, without changing any files; the chat is recorded on the idea's `sessions`.
 
+### Automatic refine (`ideas.autoRefine.*`)
+
+Off by default. When on, the owner's own agents refine newly filed ideas in the background through the same code as
+`ideas.refine` (one method, `IdeaRefine.StartAsync`), so each idea becomes a clear, checkable piece of work without the
+owner pressing Refine. Settings (docs/SETTINGS.md): `enabled` (false), `agents` (the agent keys that may run it; **empty
+means nothing runs**, never "any agent", which could be a paid one), `maxConcurrent` (1, 1–4), `delayMinutes` (10),
+`perDay` (20), `archiveWhenDone` (true).
+
+- **Which ideas:** status open, filed by the user (`createdBy: "user"`, not an agent), no `autoRefine` field yet (a manual
+  `ideas.refine` sets it too, so it counts), not tagged `no-refine`, and neither created nor edited for `delayMinutes`
+  (`updatedAt`, so a half-written idea is left alone). Oldest first. The state writes (`SetAutoRefine`) change neither
+  `updatedAt` nor any of the owner's text. An edit while a run is going leaves the run alone.
+- **Pace for an existing backlog:** the first pass over a backlog is not one big burst: at most `maxConcurrent` run at once
+  and at most `perDay` start in any 24 hours, taken oldest first. Tag an idea `no-refine` (the `ideas.autoRefine.skip` RPC,
+  or by hand) to keep it out.
+- **The drain:** a timer (every minute) and every idea change run one pass; it does something only when enabled, with
+  agents listed, fewer than `maxConcurrent` running and fewer than `perDay` started in the last 24 hours. The agent is the
+  next of `agents` in turn, preferring one with a free instance (`agents.list`; disabled/unavailable ones are not used).
+  The chat is as `ideas.refine`'s, plus `meta.priority = "low"` (the owner's chats win the slots), `ask_user` switched off,
+  and a prompt saying nobody is watching: questions go into the idea's "Questions" section (kind `blocker`).
+- **Completion** is seen on `agent.status` events of those chats (idle/completed → `done`; failed/cancelled → `failed` with
+  the error) and by a sweep on every pass, because bus events can be dropped. A run still marked running after a restart is
+  settled by the sweep from its chat (an answer from the agent → done, none → failed "interrupted"; a deleted chat → failed).
+  Then the chat is archived when `archiveWhenDone` (it stays linked under the card's Chats), and `ideas.changed` fires
+  (`reason: "auto-refine"`). A start that fails is `failed` with the reason and leaves no chat. A failed idea is not retried
+  by itself: the card's **retry** opens the normal refine.
+- `ideas.autoRefine.status` (read-only) `{}` → `{ enabled, agents, maxConcurrent, perDay, today, running: [{ id, title,
+  sessionId, at }], queued: [{ id, title, dueAt }] }`; `queued` is derived (eligible ideas, delay not counted), it is not a
+  stored state. `ideas.autoRefine.skip { id }` → the idea, with the `no-refine` tag added.
+
 ### `ideas.export`, `ideas.import`
 
 Moving the backlog between machines, or into a fresh home, is deliberate — there is no automatic reading of files:
@@ -385,6 +425,9 @@ the idea (`get`) and works from what it read. Invalid input comes back as an `is
 - Filters: search over title, summary, tags and sections (with embeddings, a ≈ toggle ranks by meaning); the project
   filter above; a status menu (**Active** = open, planned, in-progress; **All**; or one status) with counts; and a **#**
   tag menu (multi-select). Selected tags show as removable chips below the filters.
+- Automatic refine: while `ideas.autoRefine.enabled`, the header shows "Auto refine: N running, M waiting"; a card shows
+  *refining…* while its run goes, *auto-refined* (a link to the chat) when it is done and *refine failed* with a **retry**
+  (the normal refine dialog) when it failed.
 - Cards: a calm overview — **one line per idea, the title only**, plus a small priority mark (high ▲ / low ▼, medium
   none) and the section count. A low-priority title is dimmed. Nothing else is on the line, so the list reads as a list
   of titles; the summary, the status pill, the project badge, priority, tags and the time all appear when the card is

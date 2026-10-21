@@ -37,6 +37,9 @@
       title: idea.title,
       text: `Work on idea ${idea.id} (${idea.title}) — read it, then tell me what you plan to do.`,
     });
+  // The automatic refine (ideas.autoRefine.*): a quiet badge under the title while it runs, after it, and when it failed.
+  const ar = $derived(idea.autoRefine && !idea.autoRefine.manual ? idea.autoRefine : null);
+  const openChat = () => ar?.sessionId && ctx.app.openSession?.(ar.sessionId);
   const moreItems = $derived([
     ...STATUSES.map((s) => ({ label: `Status: ${s}`, checked: idea.status === s, onclick: () => s !== idea.status && api.update(idea.id, { status: s }) })),
     { divider: true },
@@ -80,6 +83,19 @@
     </span>
     {#if idea.summary}<span class="blurb">{idea.summary}</span>{/if}
   </button>
+  {#if ar?.state === 'running'}
+    <div class="ar" data-state="running"><span class="np-spinner"></span> refining…</div>
+  {:else if ar?.state === 'done'}
+    <div class="ar" data-state="done">
+      <Icon name="bot" size={11} />
+      {#if ar.sessionId}<button class="arlink" onclick={openChat} title="Open the chat that refined this idea">auto-refined</button>{:else}auto-refined{/if}
+    </div>
+  {:else if ar?.state === 'failed'}
+    <div class="ar" data-state="failed" title={ar.error ?? ''}>
+      <Icon name="alert" size={11} /> refine failed
+      <button class="arlink" onclick={refine}>retry</button>
+    </div>
+  {/if}
   <span class="more">
     <IconButton icon="play" title="Start a new chat on this idea" size="sm" onclick={start} />
     <Menu items={moreItems} minWidth={170}>
@@ -186,6 +202,26 @@
     line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
+  }
+  .ar {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 10px 6px 20px;
+    font-size: var(--fs-sm);
+    color: var(--fg-dim);
+  }
+  .ar[data-state='failed'] {
+    color: var(--err);
+  }
+  .arlink {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: underline;
   }
   .more {
     display: flex;

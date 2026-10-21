@@ -17,6 +17,7 @@ CompactionTests.Register(runner);
 WorkspaceTests.Register(runner);
 WorkspaceStoreTests.Register(runner);
 IdeasTests.Register(runner);
+IdeasAutoRefineTests.Register(runner);
 IdeasStorageTests.Register(runner);
 IdeasSnapshotTests.Register(runner);
 IdeasNoticeTests.Register(runner);

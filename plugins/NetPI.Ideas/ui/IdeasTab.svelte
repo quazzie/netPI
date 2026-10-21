@@ -46,10 +46,19 @@
     return () => clearTimeout(meaningTimer);
   });
 
+  /** The automatic refine drain's state (ideas.autoRefine.status): shown in the header only while it is enabled. */
+  let autoRefine = $state(null);
+  const autoRefineText = $derived(
+    autoRefine?.enabled
+      ? `Auto refine: ${autoRefine.running?.length ?? 0} running, ${autoRefine.queued?.length ?? 0} waiting`
+      : '',
+  );
+
   async function load() {
     try {
       [list, projects] = await Promise.all([ctx.rpc('ideas.list', {}), ctx.rpc('projects.list', {}).catch(() => [])]);
       error = '';
+      ctx.rpc('ideas.autoRefine.status', {}).then((r) => (autoRefine = r ?? null)).catch(() => (autoRefine = null));
       ctx.rpc('ideas.capabilities', {}).then((c) => (canMeaning = !!c?.embeddings)).catch(() => (canMeaning = false));
     } catch (e) {
       error = e?.message ?? String(e);
@@ -318,6 +327,11 @@
     {#if storage}
       <span class="file" title="The ideas backlog lives in the {storage.database} database ({storage.scope}, version {storage.schemaVersion}) - it is not a file you can edit"><Icon name="archive" size={12} /></span>
     {/if}
+    {#if autoRefineText}
+      <span class="arstat np-ellipsis" title="Your agents refine new ideas in the background ({autoRefine.today} of {autoRefine.perDay} today). Settings: Ideas.">
+        <Icon name="bot" size={12} /> {autoRefineText}
+      </span>
+    {/if}
     <IconButton icon="plus" title="New idea (Ctrl+I)" size="sm" onclick={newIdea} />
   </div>
 
@@ -460,6 +474,15 @@
   .badge .np-ellipsis {
     flex: 1 1 auto;
     text-align: left;
+  }
+  .arstat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    min-width: 0;
+    font-size: var(--fs-sm);
+    color: var(--fg-dim);
   }
   .file {
     display: inline-flex;

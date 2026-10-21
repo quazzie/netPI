@@ -23,24 +23,44 @@ internal sealed class IdeaRefine(IPluginContext ctx, IdeasRepository repo)
 
     private async Task<object?> RefineAsync(RpcRequest req, CancellationToken ct)
     {
-        var id = req.Required("id");
+        var started = await StartAsync(new RefineStart(req.Required("id"), req.Str("agent")?.Trim(), req.Str("hint")), ct).ConfigureAwait(false);
+        return new JsonObject { ["sessionId"] = started.SessionId, ["title"] = started.Title, ["agent"] = started.Agent };
+    }
+
+    /// <summary>What one refine is asked to do. <paramref name="Auto"/>: started by the drain, nobody watching.</summary>
+    internal sealed record RefineStart(string Id, string? Agent, string? Hint, bool Auto = false, Action<string>? OnCreated = null);
+
+    internal sealed record RefineStarted(string SessionId, string Title, string Agent);
+
+    /// <summary>
+    /// The one way a refine starts (the RPC and the automatic drain both come through here). An automatic one is a low-priority
+    /// chat with <c>ask_user</c> off too and a prompt that sends questions into the idea; a manual one marks the idea refined
+    /// once the task is sent. <see cref="RefineStart.OnCreated"/> gets the chat's id before the task is sent, so a status
+    /// event of the run can never arrive before the caller knows the chat.
+    /// </summary>
+    internal async Task<RefineStarted> StartAsync(RefineStart start, CancellationToken ct)
+    {
+        var id = start.Id;
         var idea = repo.Find(id)?.Doc ?? throw new RpcException("not_found", $"Idea {id} not found");
         var runtime = ctx.Services.Get<IAgentRuntime>() ?? throw new RpcException("unavailable", "No agent runtime is running, so no agent can take the task.");
-        var agent = req.Str("agent")?.Trim();
+        var agent = start.Agent;
         var title = IdeaOps.Str(idea["title"]) ?? id;
         var projectId = IdeaOps.Str(idea["project"]?["id"]);
         if (!string.IsNullOrEmpty(agent) && !string.Equals(agent, SessionAgent.Any, StringComparison.OrdinalIgnoreCase) && !ctx.Rpc.Exists("agents.use"))
             throw new RpcException("unavailable", "Agents cannot be chosen here: the Agents plugin is not running.");
+        var off = ToolsOff(start.Auto);
 
         ct.ThrowIfCancellationRequested();
         SessionInfo session;
         try
         {
+            var meta = new JsonObject { [SessionTools.MetaKey] = new JsonArray([.. off.Select(n => (JsonNode)n)]) };
+            if (start.Auto) meta[RunPriority.MetaKey] = RunPriority.Name(RunPriority.Low);   // the owner's chats win the slots
             session = ctx.Sessions.CreateSession(new SessionInfo
             {
                 Title = Clip($"Refine idea: {title}", 80),
                 ProjectId = projectId,
-                Meta = new JsonObject { [SessionTools.MetaKey] = new JsonArray([.. ToolsOff().Select(n => (JsonNode)n)]) },
+                Meta = meta,
             });
         }
         catch (KeyNotFoundException ex)
@@ -48,18 +68,20 @@ internal sealed class IdeaRefine(IPluginContext ctx, IdeasRepository repo)
             throw new RpcException("not_found", ex.Message);   // the idea's project is gone: say so instead of a bare 500
         }
 
+        var agentName = string.IsNullOrEmpty(agent) ? SessionAgent.Any : agent;
         try
         {
+            start.OnCreated?.Invoke(session.Id);
             // "any available agent" is the default: whichever agent has a free instance takes the run, and the chat's model follows it
             if (ctx.Rpc.Exists("agents.use"))
-                await ctx.Rpc.InvokeAsync("agents.use", new JsonObject { ["sessionId"] = session.Id, ["agent"] = string.IsNullOrEmpty(agent) ? SessionAgent.Any : agent }, ct).ConfigureAwait(false);
+                await ctx.Rpc.InvokeAsync("agents.use", new JsonObject { ["sessionId"] = session.Id, ["agent"] = agentName }, ct).ConfigureAwait(false);
             // the automatic profile's instructions and tools; what refining must not do stays off whatever the profile says
             if (ctx.Rpc.Exists("profiles.applyAuto"))
-                await ctx.Rpc.InvokeAsync("profiles.applyAuto", new JsonObject { ["sessionId"] = session.Id, ["toolsOff"] = new JsonArray([.. ToolsOff().Select(n => (JsonNode)n)]) }, ct).ConfigureAwait(false);
+                await ctx.Rpc.InvokeAsync("profiles.applyAuto", new JsonObject { ["sessionId"] = session.Id, ["toolsOff"] = new JsonArray([.. off.Select(n => (JsonNode)n)]) }, ct).ConfigureAwait(false);
             // the idea as a notice in the chat, and the chat on the idea's card under "Chats" (the user opens it from there)
             await ctx.Rpc.InvokeAsync("ideas.attach", new JsonObject { ["sessionId"] = session.Id, ["id"] = id }, ct).ConfigureAwait(false);
-            repo.AddSessionEntry(id, new JsonObject { ["sessionId"] = session.Id, ["title"] = session.Title, ["at"] = DateTimeOffset.UtcNow.ToString("O"), ["note"] = "Refining this idea" });
-            await runtime.SendAsync(session.Id, new UserInput { Text = Prompt(idea, req.Str("hint")) }, DeliveryMode.Auto, ct).ConfigureAwait(false);
+            repo.AddSessionEntry(id, new JsonObject { ["sessionId"] = session.Id, ["title"] = session.Title, ["at"] = DateTimeOffset.UtcNow.ToString("O"), ["note"] = start.Auto ? "Refining this idea (automatic)" : "Refining this idea" });
+            await runtime.SendAsync(session.Id, new UserInput { Text = Prompt(idea, start.Hint, start.Auto) }, DeliveryMode.Auto, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -67,21 +89,27 @@ internal sealed class IdeaRefine(IPluginContext ctx, IdeasRepository repo)
             try { ctx.Sessions.DeleteSession(session.Id); } catch { /* already gone */ }
             throw;
         }
-        return new JsonObject { ["sessionId"] = session.Id, ["title"] = session.Title, ["agent"] = string.IsNullOrEmpty(agent) ? SessionAgent.Any : agent };
+        // a manual refine counts as refined too, so the drain leaves the idea alone (a run of the drain's own keeps its state)
+        if (!start.Auto && repo.Find(id)?.Doc["autoRefine"]?["state"]?.GetValue<string>() != "running")
+            repo.SetAutoRefine(id, new JsonObject { ["state"] = "done", ["manual"] = true, ["sessionId"] = session.Id, ["at"] = IdeaOps.Now(), ["finishedAt"] = IdeaOps.Now() });
+        return new RefineStarted(session.Id, session.Title, agentName);
     }
 
     /// <summary>Every tool that can change something, except the few a refining chat needs: what is left reads the code and the web.</summary>
-    private List<string> ToolsOff() =>
-        [.. ctx.Tools.All.Where(t => !t.Definition.ReadOnly && !KeptTools.Contains(t.Definition.Name, StringComparer.OrdinalIgnoreCase)).Select(t => t.Definition.Name).Order(StringComparer.Ordinal)];
+    private List<string> ToolsOff(bool auto) =>
+        [.. ctx.Tools.All.Where(t => !t.Definition.ReadOnly && !KeptTools.Contains(t.Definition.Name, StringComparer.OrdinalIgnoreCase)).Select(t => t.Definition.Name)
+            .Concat(auto ? ["ask_user"] : []).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
 
     /// <summary>What the agent is asked to do. The idea itself reaches it as the notice <c>ideas.attach</c> adds; this is the task.</summary>
-    internal static string Prompt(JsonObject idea, string? hint)
+    internal static string Prompt(JsonObject idea, string? hint, bool auto = false)
     {
         var id = IdeaOps.Str(idea["id"]);
         var sb = new StringBuilder();
         sb.Append("Refine idea `").Append(id).Append("` (“").Append(IdeaOps.Str(idea["title"])).Append("”): define it better. ")
           .Append("The owner filed it quickly and it is attached above. Your job is to make it a clear, checkable piece of work that someone could pick up cold — not to do the work.\n\n");
         if (!string.IsNullOrWhiteSpace(hint)) sb.Append("The owner asks you to focus on: ").Append(hint.Trim()).Append("\n\n");
+        if (auto)
+            sb.Append("Nobody is watching this chat and nobody can answer you: you started on your own, and the question tool is switched off. Whatever only the owner can decide goes into the idea's section “Questions” (kind blocker); do not stop to ask.\n\n");
         sb.Append("1. Get the idea with the ideas tool (action get, id `").Append(id).Append("`) so you have its current text and section ids. Look at the other open ideas (action list) for duplicates and neighbours.\n")
           .Append("2. Research what it touches: read the code and docs that matter (grep, find, read, and the web where the idea needs it). Find where it lives (files, symbols), how it works today, what already exists, and what is unclear or risky.\n")
           .Append("3. Rewrite the idea with the ideas tool (action update). Keep the owner's intent and the owner's words: put their original text in a section titled “Original” (kind note) first if you change the summary. Then give it: a title that says it on one line, a summary of what and why in two to four sentences, and sections of the right kinds — research (what you found, with paths), plan (small ordered steps or the shape of the fix), requirements or design where a decision is made, and a section “Questions” (kind blocker) for what only the owner can decide. Add how it would be tested. Set priority and tags only when they are missing or plainly wrong.\n")

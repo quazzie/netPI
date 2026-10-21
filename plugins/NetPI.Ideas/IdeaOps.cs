@@ -21,7 +21,7 @@ public static class IdeaOps
     private static readonly HashSet<string> Protected = new(StringComparer.OrdinalIgnoreCase)
     {
         "id", "createdAt", "createdBy", "updatedAt", "sessionIds", "sections", "addSections", "updateSections", "removeSectionIds",
-        "title", "summary", "status", "priority", "tags", "project", "revision",
+        "title", "summary", "status", "priority", "tags", "project", "revision", "autoRefine",
     };
 
     public static string Now() => DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
