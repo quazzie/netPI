@@ -70,7 +70,7 @@
   const results = $derived.by(() => {
     const query = q.trim().toLowerCase();
     const all = entries();
-    if (!query) return all.filter((e) => e.group !== 'Sessions' || e.hint === 'open' || all.indexOf(e) < 40).slice(0, 60);
+    if (!query) return all.filter((e, i) => e.group !== 'Sessions' || e.hint === 'open' || i < 40).slice(0, 60);
     return all
       .map((e) => ({ e, s: score(e.label, query) }))
       .filter((x) => x.s > 0)
