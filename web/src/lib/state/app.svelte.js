@@ -594,6 +594,13 @@ function removeSessionLocal(id) {
   if (app.openTabs.includes(id)) closeTab(id);
   app.sessions = app.sessions.filter((s) => s.id !== id);
   dropChat(id);
+  // its unsent draft text (closeTab above just saved it), flags and view choice go with it
+  try {
+    localStorage.removeItem(`netpi.draft.${id}`);
+  } catch {}
+  app.unread.delete(id);
+  app.errored.delete(id);
+  openView(id, null);
   // drop the per-session bookkeeping that would otherwise keep an entry for this chat forever
   saidJustNow.delete(id);
   pruneSession(id);
