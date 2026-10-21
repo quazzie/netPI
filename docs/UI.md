@@ -433,12 +433,10 @@ Timings measured by the old mock walkthrough (headless Chromium):
   chars / 3.6) and the tools, with a line when the prompt is frozen. It fails soft: no Context plugin, and the rows
   say so. The popout's last lines open Diagnostics on the context view (`localStorage netpi.diag.view`, then
   `openPanelTab`), where the full prompt, tools, AGENTS.md and skills are.
-- **Compactions** in that popout are counted from the chat's own history: every compaction appends a summary message
-  (`role: summary`, `meta.kind: "compaction"`), so `chat.messages.filter((m) => m.role === 'summary' && m.meta?.kind === 'compaction')`
-  is the count — a summary folded into a later one stays in the history, so this counts compactions, not summaries.
-  While `chat.hasMore` is true older messages sit outside the window and the row reads `n+` with a title saying so
-  (and `—` when nothing is loaded). Under it, the newest compaction's own meta: `tokensBefore → tokensAfter · mode ·
-  time`. **Compact now** calls `compaction.run { sessionId }` (what `/compact` does) with a 5-minute deadline: the
+- **Compactions** in that popout are the exact count for the whole chat and its newest reading (`tokensBefore → tokensAfter ·
+  mode · time`), from `compaction.stats { sessionId }` — asked when the popout opens, again when the context reading
+  changes while it is open and after **Compact now**. Only when that RPC is missing (Compaction plugin off) does the row fall
+  back to the loaded history (`role: summary`, `meta.kind: "compaction"` messages; `n+` / `—` while `chat.hasMore`). **Compact now** calls `compaction.run { sessionId }` (what `/compact` does) with a 5-minute deadline: the
   button spins and is disabled while it runs, and it is hidden when the Compaction plugin is not loaded (`hasRpc`),
   **not** when `compaction.enabled` is off — that setting gates the auto hook only. It is disabled while the session's
   agent is running, queued or yielded, the states the server refuses with `busy`; its tooltip carries the server's own

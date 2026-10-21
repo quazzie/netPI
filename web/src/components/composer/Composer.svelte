@@ -43,7 +43,7 @@
   const win = $derived(ctxInfo?.window ?? model?.contextWindow ?? 0);
   // A Claude CLI session keeps its own conversation: the ring is the CLI's real context, and its popout carries the subscription's usage.
   const claudeCli = $derived(model?.provider === 'claude-cli');
-  // every compaction appends a summary message (meta.kind 'compaction'), so the loaded history is the count;
+  // fallback when compaction.stats is unavailable: the loaded history is the count (a summary message per compaction);
   // chat.hasMore means older messages sit outside the window, so the count is a lower bound
   const compactions = $derived(chat.messages.filter((m) => m.role === 'summary' && m.meta?.kind === 'compaction'));
   const executionAvailable = $derived(hasRpc('agent.send'));
