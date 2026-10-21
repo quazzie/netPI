@@ -296,14 +296,12 @@ public sealed class CompactionService(IPluginContext ctx)
     /// <summary>The largest chunk a roll builds (chars); beyond it the summarizer's window is the binding limit anyway.</summary>
     public const int MaxChunkChars = 4_000_000;
 
-    /// <summary>The summarizer's window, its output allowance for this budget and the room left for a chunk (no previous summary).</summary>
-    private static (int Window, int MaxOut, int BudgetChars) RollBudget(ModelInfo model, CompactionOptions o, int budget)
+    /// <summary>The summarizer's window and its output allowance for this budget.</summary>
+    private static (int Window, int MaxOut) RollBudget(ModelInfo model, CompactionOptions o, int budget)
     {
         var window = model.ContextWindow is > 0 and var w ? w : o.DefaultContextWindow;
         var maxOut = Math.Max(256, Math.Min(Math.Min(budget, model.MaxOutputTokens is > 0 and var mo ? mo : int.MaxValue), window / 4));
-        // Room for the fixed prompt, the summary so far (≤ maxOut) and the answer (maxOut).
-        var budgetTokens = (long)((window - 2L * maxOut - FixedPromptTokens) * HeadroomShare);
-        return (window, maxOut, (int)Math.Clamp(budgetTokens * 4, MinChunkTokens * 4, MaxChunkChars));
+        return (window, maxOut);
     }
 
     /// <summary>
@@ -314,7 +312,7 @@ public sealed class CompactionService(IPluginContext ctx)
     private async Task<(string Summary, int Calls)> RollAsync(List<ChatMessage> messages, string? previousSummary, bool turnPrefix,
         ModelInfo model, string? effort, CompactionRequest req, CompactionOptions o, int budget, CancellationToken ct)
     {
-        var (window, maxOut, _) = RollBudget(model, o, budget);
+        var (window, maxOut) = RollBudget(model, o, budget);
         string? summary = previousSummary;
         int calls = 0;
         // The previous summary is embedded in the request in full and was written for whatever summarizer produced it,

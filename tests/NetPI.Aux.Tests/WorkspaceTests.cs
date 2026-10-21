@@ -40,6 +40,7 @@ public static class WorkspaceTests
         t.Add("workspaces: an isolated write is refused while git cannot answer, and the failure is not remembered", UnverifiableRefused);
         t.Add("workspaces: a non-ASCII file is named as it is, not octal-escaped, in the probe's answers", NonAsciiNamedAsItIs);
         t.Add("workspaces: a hung git is ended at the deadline, and the timeout is the answer, not a hang", HungGitTimesOut);
+        t.Add("workspaces: the writer list names the file tools' real writers (write, edit), and no tool that is not registered", WriterNames);
         t.Add("workspaces: the guard reads arguments as the tools do: names, order, string-encoded arguments, an ssh download's destination", GuardArguments);
         t.Add("workspaces: a call the guard could not judge does not run; a read is not judged at all", GuardFailsClosed);
         t.Add("workspaces: ssh copy refuses a download into another checkout of the repository and allows one into the worker's own", SshDownloadRefused);
@@ -203,6 +204,14 @@ public static class WorkspaceTests
         Check.Equal("", TestGit.Out(env.ProjectPath, "status", "--porcelain") ?? "", "the primary checkout has pending changes");
         // The worktree's changes are its own, visible from its own status.
         Check.Contains(TestGit.Out(w.Binding.Root, "status", "--porcelain") ?? "", "only-here.txt");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>The guard's writer list is the file tools' registered writers: names of tools that do not exist give a false sense of coverage.</summary>
+    private static Task WriterNames()
+    {
+        Check.True(WorkspaceGuard.MutatingTools.SetEquals(["write", "edit"]), "MutatingTools is exactly the file tools' writers");
+        Check.True(WorkspaceGuard.MutatingTools.Contains("WRITE"), "matched case-insensitively, as the registry names tools");
         return Task.CompletedTask;
     }
 
