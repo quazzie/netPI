@@ -78,10 +78,12 @@ internal sealed class OpenRouterOptions
     public JsonObject? ModelOverride(string modelId) => Models.Obj(modelId);
 
     /// <summary>True when <see cref="Include"/> is empty or one of its ids/globs matches.</summary>
-    public bool IsIncluded(string modelId) => Include.Count == 0 || Include.Any(p => Glob(p).IsMatch(modelId));
+    public bool IsIncluded(string modelId) => Include.Count == 0 || (_globs ??= [.. Include.Select(Glob)]).Any(g => g.IsMatch(modelId));
 
     /// <summary>Listed by its exact id (then it is offered even without tool support).</summary>
     public bool IsListedExactly(string modelId) => Include.Any(p => string.Equals(p, modelId, StringComparison.OrdinalIgnoreCase));
+
+    private Regex[]? _globs; // compiled once per parsed options, not per catalog entry
 
     private static Regex Glob(string pattern) =>
         new("^" + Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
