@@ -28,7 +28,7 @@ internal sealed class WorkspaceGuard(IPluginContext ctx, IWorkspaceRepoProbe git
     /// <summary>Tools that write files. A tool not on this list is never blocked: reading another checkout is fine.</summary>
     internal static readonly HashSet<string> MutatingTools = new(StringComparer.OrdinalIgnoreCase)
     {
-        "write", "edit", "write_file", "edit_file", "notebook_edit", "patch",
+        "write", "edit", // the file tools' writers (plugins/NetPI.Tools.Files)
     };
 
     /// <summary>Shell tools: their cwd is checked, but the command is not parsed (nothing here is an OS sandbox).</summary>
