@@ -43,15 +43,17 @@ internal sealed class WebServer : IAsyncDisposable
     private readonly HostKernel _k;
     private readonly ILogger _log;
     private readonly WsHub _hub;
+    private readonly IDisposable _wsRegistration;
     private readonly CancellationTokenSource _stopping = new();
     private readonly byte[] _token;
     private WebApplication? _app;
     private int _disposed;
 
-    private WebServer(HostKernel kernel, WsHub hub)
+    private WebServer(HostKernel kernel, WsHub hub, IDisposable wsRegistration)
     {
         _k = kernel;
         _hub = hub;
+        _wsRegistration = wsRegistration;
         _log = kernel.LoggerFactory.CreateLogger("NetPI.Web");
         _token = Encoding.UTF8.GetBytes(kernel.Token);
     }
@@ -64,8 +66,8 @@ internal sealed class WebServer : IAsyncDisposable
         var desired = kernel.Options.Port ?? kernel.Settings.Get<int?>("server.port") ?? 7431;
         if (desired is < 0 or > 65535) desired = 7431;
         var hub = new WsHub(kernel);
-        kernel.Services.Register<IWsClients>(hub);
-        var server = new WebServer(kernel, hub);
+        var wsRegistration = kernel.Services.Register<IWsClients>(hub);
+        var server = new WebServer(kernel, hub, wsRegistration);
         try
         {
             try
@@ -513,6 +515,7 @@ internal sealed class WebServer : IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _stopping.Cancel();
+        _wsRegistration.Dispose();
         _hub.Dispose();
         if (_app is not null)
         {
