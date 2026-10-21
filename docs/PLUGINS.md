@@ -63,6 +63,10 @@ identifiers into their parts too), BM25 and the weighted reciprocal-rank fusion 
 references two plugins compiling the same kit with `InternalsVisibleTo` puts one under an alias (`Aliases="codesearch"`,
 `extern alias`), as `tests/NetPI.Tools.Tests` does for GitKit.
 
+`shared/ListenerKit/` is the HTTP listener plumbing of Phone and Webhooks (bind retry, stop grace, the `AddressList` CIDR
+gate, `FailureThrottle`); `shared/HttpKit/` holds `BodyReader.ReadCappedAsync`, the size-capped body read of Tools.Web and
+Tools.Media.
+
 The dialect keeps its own subclass and overrides only what differs (OpenRouter's reasoning_details, cost and
 generation id; AiProxy's `reasoning_content` and usage), so no shared class grows an `if (openrouter)` branch.
 
