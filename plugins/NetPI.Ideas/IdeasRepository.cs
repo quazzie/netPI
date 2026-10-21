@@ -325,6 +325,26 @@ public sealed class IdeasRepository
         return recorded;
     }
 
+    /// <summary>
+    /// Record (or, with null, clear) the idea's <c>autoRefine</c> state: <c>{ state: running|done|failed, sessionId?, at, finishedAt?, manual?, error? }</c>.
+    /// It is bookkeeping, not an edit: <c>updatedAt</c> stays, so the idea's delay before an automatic refine is the owner's.
+    /// </summary>
+    public bool SetAutoRefine(string id, JsonObject? state)
+    {
+        var set = _data.Transaction(() =>
+        {
+            if (Find(id) is not { } found) return false;
+            var storedId = IdeaOps.Str(found.Doc["id"]) ?? id;
+            var next = (JsonObject)found.Doc.DeepClone();
+            next.Remove("autoRefine");
+            if (state is not null) next["autoRefine"] = (JsonObject)state.DeepClone();
+            PutItem_(storedId, next, OrdOf(storedId), found.Revision + 1);
+            return true;
+        });
+        if (set) Announce("auto-refine");
+        return set;
+    }
+
     /// <summary>Add a conversation to an idea's provenance (the recall's "the user added this idea to that chat").</summary>
     public (JsonObject Doc, long Revision) AddSession(string id, string sessionId)
     {

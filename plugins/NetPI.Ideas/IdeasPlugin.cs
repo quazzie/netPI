@@ -17,6 +17,9 @@ public sealed class IdeasPlugin : INetPiPlugin
     /// <summary>The event a window listens for so it re-reads the backlog (published after a commit, never before).</summary>
     public const string ChangedEvent = "ideas.changed";
 
+    /// <summary>The automatic refine drain (<c>ideas.autoRefine.*</c>), once the plugin has started.</summary>
+    public IdeaAutoRefine? AutoRefine { get; private set; }
+
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         context.Rpc.Register(new RpcMethod("ideas.capabilities", "Availability of optional Ideas enhancements: → { embeddings } (meaning search)", ReadOnly: true, Params: []),
@@ -47,7 +50,11 @@ public sealed class IdeasPlugin : INetPiPlugin
         var rpc = new IdeasRpc(repo, locator, snapshots, context.Paths.Home);
         rpc.Register(context.Rpc);
         new IdeaAttach(context, repo).Register(context.Rpc);
-        new IdeaRefine(context, repo).Register(context.Rpc);
+        var refine = new IdeaRefine(context, repo);
+        refine.Register(context.Rpc);
+        AutoRefine = context.Track(new IdeaAutoRefine(context, repo, refine));
+        AutoRefine.Register(context.Rpc);
+        AutoRefine.Start();
         RegisterCommitNotice(context, repo, vectors);
         RegisterUi(context);
         return Task.CompletedTask;
@@ -71,6 +78,18 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "The commit notice names an open idea only when it is at least this close to the commit message (embeddings).", 0, 0.99),
                 SettingInfo.Int("ideas.commitNoticeDebounceSec", "Commit notice debounce", IdeaCommitNoticeHook.DefaultDebounceSec,
                     "Seconds a run waits after a commit notice before it may get the next one, so a burst of commits costs one notice instead of one each.", 0, 3600),
+                SettingInfo.Bool("ideas.autoRefine.enabled", "Automatic refine", false,
+                    "Your own agents refine newly filed ideas in the background (the same task as the Refine button), so each becomes a clear, checkable piece of work. Only the agents listed below run it; with none listed nothing runs. An idea is refined once: after a manual refine too."),
+                SettingInfo.List("ideas.autoRefine.agents", "Automatic refine: agents", [],
+                    "The agent keys that may run it, taken in turn (prefer free local ones). Empty: nothing runs. 'any' is not accepted on purpose: it could pick a paid agent.", "agent key"),
+                SettingInfo.Int("ideas.autoRefine.maxConcurrent", "Automatic refine: at once", IdeaAutoRefine.DefaultMaxConcurrent,
+                    "How many automatic refines may run at the same time. They queue behind your own chats (low priority).", 1, 4),
+                SettingInfo.Int("ideas.autoRefine.delayMinutes", "Automatic refine: delay", IdeaAutoRefine.DefaultDelayMinutes,
+                    "An idea is refined only after you have not created or edited it for this long, so a half-written idea is left alone. Together with the daily cap it also paces the first pass over an existing backlog.", 0, 10080, "min"),
+                SettingInfo.Int("ideas.autoRefine.perDay", "Automatic refine: per day", IdeaAutoRefine.DefaultPerDay,
+                    "At most this many automatic refines start in any 24 hours.", 1, 1000),
+                SettingInfo.Bool("ideas.autoRefine.archiveWhenDone", "Automatic refine: archive the chat", true,
+                    "The finished chat is archived; it stays linked on the idea's card."),
             ],
         });
 
