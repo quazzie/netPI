@@ -818,7 +818,7 @@ internal sealed class AgentListTool(IPluginContext plugin) : AgentToolBase(plugi
             var cost = await CostOfAsync(a, ct).ConfigureAwait(false);
             if (cost?.Text() is { } spent) sb.Append(", ").Append(spent);
             if (a.QueuedMessages > 0) sb.Append(", ").Append(a.QueuedMessages).Append(" queued messages");
-            if (!string.IsNullOrWhiteSpace(a.Task)) sb.Append("\n  task: ").Append(TextLimit.Head(a.Task.ReplaceLineEndings(" "), 160, "…"));
+            if (!string.IsNullOrWhiteSpace(a.Task)) sb.Append("\n  task: ").Append(TextLimit.Cut(a.Task.ReplaceLineEndings(" "), 160));
             sb.Append('\n');
             var d = Details(a);
             cost?.AddTo(d);

@@ -29,7 +29,7 @@ internal static class SectionUtil
         if (s.Length > max)
         {
             var dot = s.LastIndexOf(". ", max, StringComparison.Ordinal);
-            s = dot > 40 ? s[..(dot + 1)] : TextLimit.Head(s, max, "…");
+            s = dot > 40 ? s[..(dot + 1)] : TextLimit.Cut(s, max);
         }
         return s;
     }

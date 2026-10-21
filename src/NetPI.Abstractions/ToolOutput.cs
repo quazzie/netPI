@@ -100,6 +100,19 @@ public static class TextLimit
     }
 
     /// <summary>
+    /// The first <paramref name="max"/> characters (trailing whitespace trimmed) and a bare <paramref name="ellipsis"/> when
+    /// it was longer: a one-line label, where <see cref="Head"/>'s marker would break the line.
+    /// </summary>
+    public static string Cut(string? text, int max, string ellipsis = "…")
+    {
+        text ??= "";
+        if (text.Length <= max) return text;
+        var cut = max;
+        if (cut > 0 && char.IsHighSurrogate(text[cut - 1])) cut--;
+        return text[..cut].TrimEnd() + ellipsis;
+    }
+
+    /// <summary>
     /// The beginning and the end of text that outruns <paramref name="max"/>: the head gets
     /// <paramref name="headShare"/> shares of the budget (head = max · share / (share + 1)), the tail the rest, and
     /// <paramref name="marker"/> — the characters dropped and the total — stands in between.
