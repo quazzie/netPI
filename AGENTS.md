@@ -15,7 +15,7 @@
 ## Work and delivery
 
 - Follow `C:\AI\Projects\AGENTS.md`. Use your own worktree/branch; preserve others' edits; stage explicit paths.
-- One commit per piece. Merge into `master` from the main checkout, verify ancestry, remove your merged tree/branch.
+- One commit per piece. Merge into `master` from the main checkout and verify ancestry. A worker ends with `workspace { action: "retire" }`: its worktree and merged branch go when its run ends.
 - Plain builds use `artifacts/dev/app`; they must never touch the installed app.
 - After merging, publish yourself with `.\build.ps1 -Publish` — never leave it to the user. The script decides: plugins
   are staged in place and the running host reloads them itself when no agent run is active (its reload gate: at once when
