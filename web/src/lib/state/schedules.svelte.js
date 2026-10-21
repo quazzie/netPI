@@ -30,19 +30,42 @@ export function proposalIn(sessionId) {
   return null;
 }
 
+/** Ids of the chats with a schedule proposal waiting: one pass, for lookups over many chats. */
+export function proposalSessionIds(into = new Set()) {
+  for (const p of scheduleProposals.pending.values()) into.add(p.sessionId);
+  return into;
+}
+
 let loadSeq = 0;
+// The server read its proposals when the request went out: a schedule.proposed / schedule.decided that lands while the
+// answer is on its way is not in it, and the clear() below would drop it. Those events wait here and replay over the answer.
+let inFlight = null; // { seq, events: [[type, d]] }
 
 /** On (re)connect: the proposals that wait. Without the schedules plugin nothing does. */
 export async function loadScheduleProposals() {
   const seq = ++loadSeq;
-  const list = await rpc('schedules.proposals', {}).catch(() => []);
-  if (seq !== loadSeq) return;
-  scheduleProposals.pending.clear();
-  for (const p of list ?? []) if (p?.id) scheduleProposals.pending.set(p.id, p);
+  const events = [];
+  inFlight = { seq, events };
+  try {
+    const list = await rpc('schedules.proposals', {}).catch(() => []);
+    if (seq !== loadSeq) return;
+    scheduleProposals.pending.clear();
+    for (const p of list ?? []) if (p?.id) scheduleProposals.pending.set(p.id, p);
+  } finally {
+    // a load that started after this one holds the buffer now, and replays it over its own answer
+    if (inFlight?.seq === seq) {
+      inFlight = null;
+      for (const [type, d] of events) scheduleEvent(type, d);
+    }
+  }
 }
 
 /** schedule.proposed / schedule.decided (unscoped: every window hears of every chat's). */
 export function scheduleEvent(type, d) {
+  if (inFlight) {
+    inFlight.events.push([type, d]);
+    return;
+  }
   if (type === 'schedule.proposed') {
     if (d?.id) scheduleProposals.pending.set(d.id, d);
   } else if (type === 'schedule.decided') {

@@ -38,6 +38,14 @@ export function pendingIn(sessionId) {
   return first;
 }
 
+/** Ids of the chats with a question, an approval or a budget stop waiting: one pass, for lookups over many chats. */
+export function askingSessionIds(into = new Set()) {
+  for (const a of asks.pending.values()) into.add(a.sessionId);
+  for (const a of asks.approvals.values()) into.add(a.sessionId);
+  for (const id of asks.budget.keys()) into.add(id);
+  return into;
+}
+
 /** The question of this chat's tool call that waits for the user: the card knows the call, the question has the id. */
 export function pendingFor(sessionId, callId) {
   for (const a of asks.pending.values()) if (a.sessionId === sessionId && a.callId === callId) return a;

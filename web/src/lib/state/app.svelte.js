@@ -13,9 +13,9 @@ import { firstLine as firstLineOf } from '../format.js';
 import { BUSY } from '../runStatus.js';
 
 const firstLine = (text) => firstLineOf(text, 160); // notification bodies
-import { loadAsks, askEvent, pendingIn, approvalIn, budgetIn, budgetStop, pruneSession } from './asks.svelte.js';
-import { loadPlans, planEvent, planWaiting, offerWaiting, prunePlans } from './plans.svelte.js';
-import { loadScheduleProposals, scheduleEvent, pruneScheduleProposals, proposalIn } from './schedules.svelte.js';
+import { loadAsks, askEvent, askingSessionIds, budgetStop, pruneSession } from './asks.svelte.js';
+import { loadPlans, planEvent, planAskingSessionIds, prunePlans } from './plans.svelte.js';
+import { loadScheduleProposals, scheduleEvent, pruneScheduleProposals, proposalSessionIds } from './schedules.svelte.js';
 import { welcomeIdeas } from './welcomeIdeas.svelte.js';
 import { formatBytes, payloadBytes, sendBudget } from '../images.js';
 
@@ -57,6 +57,8 @@ class AppState {
     return m;
   });
   // session id -> tab-dot status, for the lists that show many sessions (see sessionStatus)
+  // the chats with something waiting for the user, collected once per change (a set lookup per session, not scans)
+  askingIds = $derived(proposalSessionIds(planAskingSessionIds(askingSessionIds())));
   statusById = $derived(new Map(this.sessions.map((s) => [s.id, computeStatus(s.id)])));
   activeSession = $derived(this.activeId ? (this.sessionsById.get(this.activeId) ?? null) : null);
   // the project the user last worked in (the active session's, kept while no session is active)
@@ -142,7 +144,7 @@ export function sessionStatus(sessionId) {
 }
 
 function computeStatus(sessionId) {
-  if (pendingIn(sessionId) || approvalIn(sessionId) || planWaiting(sessionId) || offerWaiting(sessionId) || proposalIn(sessionId) || budgetIn(sessionId)) return 'asking';
+  if (app.askingIds.has(sessionId)) return 'asking';
   const a = app.agents.get(sessionId);
   if (a) {
     if (a.status === 'running') return 'running';
@@ -455,6 +457,13 @@ export function closeTab(id) {
   if (i < 0) return;
   const chat = peekChat(id);
   chat?.saveDraft();
+  if (chat) {
+    // resubscribe() below drops the session, so the stream.end of a running chat never reaches this store: its partial
+    // stream would stay active (the LRU keeps it, a reopen would show it frozen). Settle it as the reconnect does and
+    // mark it stale, so the next showChat reloads it and catches a still-busy run up.
+    chat.stale = true;
+    chat.reconcile(false);
+  }
   app.openTabs.splice(i, 1);
   if (app.activeId === id) {
     const next = app.openTabs[i] ?? app.openTabs[i - 1] ?? null;
@@ -585,6 +594,13 @@ function removeSessionLocal(id) {
   if (app.openTabs.includes(id)) closeTab(id);
   app.sessions = app.sessions.filter((s) => s.id !== id);
   dropChat(id);
+  // its unsent draft text (closeTab above just saved it), flags and view choice go with it
+  try {
+    localStorage.removeItem(`netpi.draft.${id}`);
+  } catch {}
+  app.unread.delete(id);
+  app.errored.delete(id);
+  openView(id, null);
   // drop the per-session bookkeeping that would otherwise keep an entry for this chat forever
   saidJustNow.delete(id);
   pruneSession(id);

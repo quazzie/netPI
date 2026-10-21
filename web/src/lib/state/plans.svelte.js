@@ -33,6 +33,13 @@ export function offerWaiting(sessionId) {
   return null;
 }
 
+/** Ids of the chats with a plan awaiting a decision or an offer waiting: one pass, for lookups over many chats. */
+export function planAskingSessionIds(into = new Set()) {
+  for (const p of plans.byId.values()) if (p.status === 'awaiting') into.add(p.sessionId);
+  for (const o of plans.offers.values()) into.add(o.sessionId);
+  return into;
+}
+
 /** The offer of plan mode this tool call made, waiting or closed. */
 export function offerForCall(sessionId, callId) {
   for (const o of plans.offers.values()) if (o.sessionId === sessionId && o.callId === callId) return { ...o, status: 'waiting' };
@@ -41,7 +48,7 @@ export function offerForCall(sessionId, callId) {
 }
 
 let loadSeq = 0;
-let inFlight = null; // { seq, events }: the plan.enter.* events that land while loadPlans is reading (its answer cannot have them)
+let inFlight = null; // { seq, events }: the plan.* events that land while loadPlans is reading (its answer cannot have them)
 
 /** On (re)connect: the plans that wait, and the offers. Without the plan plugin nothing does. */
 export async function loadPlans() {
@@ -64,8 +71,10 @@ export async function loadPlans() {
   }
 }
 
+const gone = new Set(); // sessions pruned while a read of theirs may be in flight (bounded like the app's own)
 const pending = new Map(); // session id -> timer: a burst of plan.changed is one read
 function refresh(sessionId) {
+  gone.delete(sessionId);
   clearTimeout(pending.get(sessionId));
   pending.set(
     sessionId,
@@ -73,6 +82,7 @@ function refresh(sessionId) {
       pending.delete(sessionId);
       try {
         const list = await rpc('plan.list', { sessionId });
+        if (gone.has(sessionId)) return; // the session was deleted while the read was on its way
         for (const [id, p] of plans.byId) if (p.sessionId === sessionId) plans.byId.delete(id);
         for (const p of list ?? []) plans.byId.set(p.id, p);
       } catch {
@@ -84,7 +94,7 @@ function refresh(sessionId) {
 
 /** plan.changed, plan.enter.asked and plan.enter.closed (unscoped: every window hears of every chat's). */
 export function planEvent(type, d) {
-  if (inFlight && type.startsWith('plan.enter.')) {
+  if (inFlight) {
     inFlight.events.push([type, d]);
     return;
   }
@@ -102,6 +112,10 @@ export function planEvent(type, d) {
 
 /** The session went: its plans and offers go with it. */
 export function prunePlans(sessionId) {
+  clearTimeout(pending.get(sessionId));
+  pending.delete(sessionId);
+  gone.add(sessionId);
+  if (gone.size > 1024) gone.delete(gone.values().next().value);
   for (const [id, p] of plans.byId) if (p.sessionId === sessionId) plans.byId.delete(id);
   for (const [id, o] of plans.offers) if (o.sessionId === sessionId) plans.offers.delete(id);
   for (const [id, o] of plans.closedOffers) if (o.sessionId === sessionId) plans.closedOffers.delete(id);
