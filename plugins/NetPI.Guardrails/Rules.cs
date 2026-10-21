@@ -11,7 +11,11 @@ internal sealed record Verdict(GuardAction Action, string Rule, string Kind, str
 
 /// <summary>
 /// The rules of <c>guardrails.commands</c> and <c>guardrails.paths</c>, one per line: a line starting with <c>ask:</c>
-/// asks the user first, otherwise the rule blocks (<c>block:</c> may be written); <c>#</c> starts a comment line.
+/// asks the user first, otherwise the rule blocks (<c>block:</c> may be written); <c>#</c> starts a comment line. A command
+/// rule may name the tools it applies to before any prefix, one or several of the tools that run a command
+/// (<c>bash</c>, <c>pwsh</c>, <c>ssh</c>, <c>windows</c>), comma-separated and followed by a colon (<c>bash: ^…</c>,
+/// <c>bash, ssh: ask: ^…</c>): the rule then tries only on the commands of those tools, so one shell starting a program is
+/// not another shell running it (a <c>pwsh</c> started by the <c>pwsh</c> tool is not a <c>bash</c> <c>pwsh</c>).
 /// <para>Commands (bash, pwsh, ssh run) are split into parts at new lines, <c>;</c>, <c>&amp;&amp;</c>, <c>||</c>,
 /// <c>|</c> and <c>&amp;</c> (not the <c>&amp;</c> of a redirection such as <c>2&gt;&amp;1</c>), and each regular
 /// expression is tried on each part, ignoring case. A part is tried as written and with the decoration a shell ignores
@@ -46,6 +50,9 @@ internal sealed partial class RuleSet
         @"^:\(\)\s*\{",
         // Windows PowerShell 5.1 lacks what the scripts here use (&&, GetRelativePath, UTF-8 defaults): pwsh is PowerShell 7
         @"ask: ^(&\s*)?(\S*[\\/])?powershell(\.exe)?(\s|$)",
+        // pwsh (PowerShell 7) is the pwsh tool, not a program a bash command starts: bash may not start one (a script the
+        // pwsh tool runs may, and ssh may start the pwsh of its host)
+        @"bash: ^(&\s*)?(\S*[\\/])?pwsh(\.exe)?(\s|$)",
     ];
 
     /// <summary>NetPI's own home asks first; SSH keys and config stay untouched.</summary>
@@ -59,7 +66,7 @@ internal sealed partial class RuleSet
     // The names each tool reads its argument by, in the order it tries them, are the shared vocabulary (ToolPathArgs):
     // the first one present wins, so the guard takes the same one the tool will.
 
-    private sealed record CommandRule(string Text, Regex Pattern, GuardAction Action);
+    private sealed record CommandRule(string Text, Regex Pattern, GuardAction Action, string[]? Tools);
     private sealed record PathRule(string Text, string Root, string[] Spellings, GuardAction Action);
 
     private readonly List<CommandRule> _commands = [];
@@ -70,23 +77,72 @@ internal sealed partial class RuleSet
 
     public int Count => _commands.Count + _paths.Count;
 
+    /// <summary>The tools a command rule may be limited to: the tools <see cref="CommandOf"/> reads a command from.</summary>
+    private static readonly HashSet<string> ScopedTools = new(StringComparer.OrdinalIgnoreCase) { "bash", "pwsh", "ssh", "windows" };
+
+    /// <summary>
+    /// The optional front of a command rule: the tools it applies to — one or several of <see cref="ScopedTools"/>,
+    /// comma-separated, a colon after the last (<c>bash: ^…</c>, <c>bash, ssh: ask: ^…</c>). The colon ends the scope, so
+    /// the rest is the rule as before. <paramref name="bad"/> names a word in scope position that is no such tool, so a
+    /// misspelling is a problem, not a silent dead rule.
+    /// </summary>
+    private static bool Scope(string line, out string[]? tools, out string rest, out string? bad)
+    {
+        tools = null;
+        bad = null;
+        rest = line;
+        var names = new List<string>();
+        var i = 0;
+        while (true)
+        {
+            var start = i;
+            while (i < line.Length && (char.IsLetterOrDigit(line[i]) || line[i] is '-' or '_')) i++;
+            if (i == start || i >= line.Length || line[i] is not (':' or ',')) return false;
+            var name = line[start..i];
+            // the action prefixes are not tool names: "ask: ^x" is a prefix, not a scope (a scope, when there is one, goes first)
+            if (name.Equals("ask", StringComparison.OrdinalIgnoreCase) || name.Equals("block", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!ScopedTools.Contains(name))
+            {
+                // the C: of C:\… or C:/… is a drive letter, not a misspelled tool
+                if (line[i] == ':' && i + 1 < line.Length && line[i + 1] is '\\' or '/') return false;
+                bad = name;
+                return false;
+            }
+            names.Add(name);
+            i++;
+            if (line[i - 1] == ':') { tools = [.. names]; rest = line[i..]; return true; }
+            var j = i;
+            while (j < line.Length && line[j] is ' ' or '\t') j++;
+            if (j >= line.Length) return false;   // "bash,": a scope with no rule
+            i = j;
+        }
+    }
+
     public static RuleSet Parse(IEnumerable<string> commands, IEnumerable<string> paths, string home)
     {
         var set = new RuleSet();
-        foreach (var line in commands)
+        foreach (var raw in commands)
         {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            if (Scope(line, out var tools, out line, out var bad)) line = line.TrimStart();
+            else if (bad is { } tool) { set.Problems.Add($"guardrails.commands: {raw}: '{tool}' is not a tool a rule can be limited to (bash, pwsh, ssh, windows); the scope goes first, then an ask:/block: prefix"); continue; }
             if (!Line(line, out var action, out var text)) continue;
             try
             {
-                set._commands.Add(new CommandRule(line.Trim(), new Regex(text, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, MatchTimeout), action));
+                set._commands.Add(new CommandRule(raw.Trim(), new Regex(text, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, MatchTimeout), action, tools));
             }
             catch (ArgumentException ex)
             {
-                set.Problems.Add($"guardrails.commands: {line.Trim()}: {ex.Message}");
+                set.Problems.Add($"guardrails.commands: {raw}: {ex.Message}");
             }
         }
-        foreach (var line in paths)
+        foreach (var raw in paths)
         {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            if (Scope(line, out _, out _, out var bad)) { set.Problems.Add($"guardrails.paths: {raw}: a tool scope applies to command rules only (guardrails.commands)"); continue; }
+            if (bad is { } tool) { set.Problems.Add($"guardrails.paths: {raw}: '{tool}' is not a tool a rule can be limited to (bash, pwsh, ssh, windows)"); continue; }
             if (!Line(line, out var action, out var text)) continue;
             var root = Expand(text, home);
             if (root is null)
@@ -130,8 +186,12 @@ internal sealed partial class RuleSet
             {
                 var forms = Forms(part);
                 foreach (var r in _commands)
+                {
+                    // a scoped rule holds only for the tools it names (a bash pwsh is not a pwsh-tool pwsh)
+                    if (r.Tools is { Length: > 0 } scope && scope.All(t => !t.Equals(tool, StringComparison.OrdinalIgnoreCase))) continue;
                     if (forms.Any(f => IsMatch(r.Pattern, f)) && Note(new Verdict(r.Action, r.Text, "command", part)))
                         return new Verdict(r.Action, r.Text, "command", part);
+                }
             }
             // a local shell, or a program the windows tool starts here, may not name a protected path either
             if (LocalShellTools.Contains(tool) || tool.Equals("windows", StringComparison.OrdinalIgnoreCase))

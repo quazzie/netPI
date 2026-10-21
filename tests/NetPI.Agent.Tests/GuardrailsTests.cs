@@ -31,6 +31,7 @@ public static class GuardrailsTests
         t.Add("guardrails: a long wait in the same command never hides a blocked command or another ask (nor does allowing the wait allow them)", LongWaitBesideRules);
         t.Add("guardrails: an ssh download into a protected path is refused; an upload from it, and a download elsewhere, are not", SshDownload);
         t.Add("guardrails: a program the windows tool opens is a command: the command rules and the protected paths judge it", WindowsOpen);
+        t.Add("guardrails: a tool-scoped rule holds only for its tools (a bash pwsh is not a pwsh-tool pwsh); a misspelled scope is a problem", ToolScopes);
     }
 
     /// <summary>
@@ -49,10 +50,41 @@ public static class GuardrailsTests
         Check.True(Judge(rules, "windows", new { action = "open", app = "notepad", args = "notes.txt" }) is null, "an ordinary program runs");
         foreach (var c in (string[])["powershell -Command Get-Date", "powershell.exe -File a.ps1", "& powershell.exe -NoProfile", @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -c 1", "cd x && powershell -c 1"])
             Check.True(Judge(rules, "bash", new { command = c }) is { Action: GuardAction.Ask, Kind: "command" }, $"Windows PowerShell asks: {c}");
-        foreach (var c in (string[])["pwsh -NoProfile -File a.ps1", "grep powershell notes.txt", "echo powershell.exe", "Get-Help powershell"])
-            Check.True(Judge(rules, "bash", new { command = c }) is null, $"not Windows PowerShell: {c}");
+        Check.True(Judge(rules, "bash", new { command = "pwsh -NoProfile -File a.ps1" }) is { Action: GuardAction.Block, Kind: "command" }, "pwsh in bash: the pwsh tool, not a program bash starts");
+        foreach (var c in (string[])["grep powershell notes.txt", "echo powershell.exe", "Get-Help powershell", "echo pwsh", "grep pwsh notes.txt"])
+            Check.True(Judge(rules, "bash", new { command = c }) is null, $"not a shell start: {c}");
+        Check.True(Judge(rules, "pwsh", new { command = "pwsh -NoProfile -File a.ps1" }) is null, "a script the pwsh tool runs may start pwsh");
+        Check.True(Judge(rules, "ssh", new { action = "run", script = "pwsh -NoProfile -File a.ps1" }) is null, "an ssh host's pwsh is not bash's");
         Check.True(Judge(rules, "windows", new { action = "type", n = 3, text = "shutdown /s" }) is null, "typing text is not a command start");
         Check.Equal("calc /x", ToolPathArgs.WindowsOpenCommand("windows", ToolArgs.Parse("""{"action":"start","exe":"calc","args":"/x"}""")));
+        return Task.CompletedTask;
+    }
+
+    /// <summary>A rule may hold for some tools only: a <c>bash</c> <c>pwsh</c> is not a <c>pwsh</c> the <c>pwsh</c> tool runs, a
+    /// misspelled scope is a problem (not a silent dead rule), and a scope on a path rule is a problem too.</summary>
+    private static Task ToolScopes()
+    {
+        var rules = RuleSet.Parse(
+            ["bash: ^echo blocked", "pwsh: ask: ^git push", "bash, ssh: ^curl", "windows: ^notepad", "git: ^x", "bash: [("],
+            ["bash: ~/.netpi"], Home);
+        Check.True(rules.Problems.Any(p => p.Contains("'git' is not a tool")), "a misspelled scope is a problem, not a pattern");
+        Check.True(rules.Problems.Any(p => p.Contains("bash: [(")), "a scoped invalid regular expression is a problem");
+        Check.True(rules.Problems.Any(p => p.StartsWith("guardrails.paths") && p.Contains("tool scope")), "a scope on a path rule is a problem");
+        Check.Equal(0, RuleSet.Parse([], ["C:\\Users\\me\\.netpi"], Home).Problems.Count, "a drive-letter path is not a scope");
+        Check.Equal(4, rules.Count, "the usable rules");
+
+        Check.True(Judge(rules, "bash", new { command = "echo blocked" }) is { Action: GuardAction.Block, Kind: "command" }, "a scoped rule blocks its tool");
+        Check.True(Judge(rules, "Bash", new { command = "echo blocked" }) is { Action: GuardAction.Block }, "the scope, like the rest, ignores case");
+        Check.True(Judge(rules, "pwsh", new { command = "echo blocked" }) is null, "not the other tools");
+        Check.True(Judge(rules, "pwsh", new { command = "git push origin main" }) is { Action: GuardAction.Ask, Rule: "pwsh: ask: ^git push" }, "a scoped ask rule asks, by its line");
+        Check.True(Judge(rules, "bash", new { command = "git push origin main" }) is null, "a pwsh rule does not hold in bash");
+        foreach (var c in (string[])["curl x", "curl x 2>&1"])
+        {
+            Check.True(Judge(rules, "bash", new { command = c }) is { Action: GuardAction.Block }, $"several tools, bash: {c}");
+            Check.True(Judge(rules, "ssh", new { action = "run", script = c }) is { Action: GuardAction.Block }, $"several tools, ssh: {c}");
+        }
+        Check.True(Judge(rules, "windows", new { action = "open", app = "curl", args = "x" }) is null, "not the third tool");
+        Check.True(Judge(rules, "windows", new { action = "open", app = "notepad", args = "x" }) is { Action: GuardAction.Block }, "the windows scope");
         return Task.CompletedTask;
     }
 
@@ -421,7 +453,10 @@ public static class GuardrailsTests
         var s = h.NewSession();
         h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
             ? Reply.Text("ok")
-            : Reply.Tools(Reply.Call("bash", new { command = "cd build && rm -rf /" }), Reply.Call("bash", new { command = "git status --short" }));
+            : Reply.Tools(
+                Reply.Call("bash", new { command = "cd build && rm -rf /" }),
+                Reply.Call("bash", new { command = "git status --short" }),
+                Reply.Call("bash", new { command = "pwsh -NoProfile -File x.ps1" }));
         await h.SendAsync(s.Id, "clean up");
         await h.IdleAsync(s.Id);
         var results = Results(h, s.Id);
@@ -429,6 +464,8 @@ public static class GuardrailsTests
         Check.Contains(results[0].Content, "Blocked: `rm -rf /` matches the guardrail");
         Check.Contains(results[0].Content, "Nothing ran");
         Check.False(results[1].IsError, "a harmless command runs");
+        Check.True(results[2].IsError, "a bash pwsh does not run");
+        Check.Contains(results[2].Content, "run it with the pwsh tool", "the refusal says where pwsh goes");
         Check.Equal(1, ran.Count);
         Check.Contains(ran[0], "git status");
     }
@@ -942,6 +979,8 @@ public static class GuardrailsTests
             "rm -rf /", "sudo rm -rf / --no-preserve-root", "rm -rf ~", "rm -fr ~/", "rm -rf $HOME/*", "cd x && rm -rf /*",
             "rm -rf C:/", "rm -rf /c", "Remove-Item -Recurse -Force C:\\", "del /s /q C:\\", "mkfs.ext4 /dev/sda1",
             "dd if=/dev/zero of=/dev/sda bs=1M", "format C: /q", ":(){ :|:& };:",
+            "pwsh -NoProfile -File a.ps1", "pwsh -Command Get-Date", "pwsh.exe -NoProfile", "/usr/bin/pwsh -c 1",
+            "ls && pwsh -c 1", "pwsh -NoProfile -File a.ps1 2>&1",
         ];
         foreach (var c in blocked)
             Check.True(Bash(c) is { Action: GuardAction.Block, Kind: "command" }, $"blocked: {c}");
@@ -955,6 +994,8 @@ public static class GuardrailsTests
             "rm -rf build", "rm -rf ./node_modules /tmp/x", "rm -rf ~/project/bin", "git status --short && git diff", "grep -rn shutdown src",
             "dotnet format", "npm run build 2>&1 | tail -20", "dd if=/dev/urandom of=/dev/null bs=1M count=10", "echo 'rm -rf /' > notes.txt",
             "Remove-Item -Recurse -Force .\\bin", "ls -la /c/Users/me/source", "cat /etc/hostname",
+            "echo pwsh", "grep pwsh notes.txt", "dotnet tool install pwsh", "echo \"pwsh -NoProfile\"",
+            "bash -c \"pwsh -c 1\"",   // a command quoted as an argument is data: the guard is not a sandbox
         ];
         foreach (var c in fine)
             Check.True(Bash(c) is null, $"allowed: {c}");

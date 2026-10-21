@@ -35,7 +35,7 @@ public sealed class GuardrailsPlugin : INetPiPlugin
             [
                 SettingInfo.Bool("guardrails.enabled", "Check tool calls", true, "Before a tool runs, against the rules below. Fast: patterns and paths only."),
                 SettingInfo.List("guardrails.commands", "Blocked commands", RuleSet.DefaultCommands,
-                    "Regular expressions, tried on each part of a bash, pwsh or ssh run command (split at new lines, ; && || | &), ignoring case. Start a line with ask: to ask you first instead of blocking."),
+                    "Regular expressions, tried on each part of a bash, pwsh or ssh run command (split at new lines, ; && || | &), ignoring case. Start a line with ask: to ask you first instead of blocking. Start a line with the tools it applies to — bash, pwsh, ssh, windows, comma-separated, a colon after (bash: ^…, before any ask:/block:) to limit it to those: a pwsh started by the pwsh tool is not a bash pwsh."),
                 SettingInfo.List("guardrails.paths", "Protected paths", RuleSet.DefaultPaths,
                     "Files and folders the agent may not change: write and edit refuse them, and so do bash and pwsh commands that name them (the read tool still reads them). ~ is your home. Start a line with ask: to ask you first."),
                 SettingInfo.Number("guardrails.maxSleepSeconds", "Longest deliberate wait", Sleeps.DefaultMaxSeconds,
@@ -350,12 +350,19 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
         "sleep" => $"`{v.Subject}` waits {v.Detail} (guardrails.maxSleepSeconds). Run the work itself with a matching " +
             "`timeout` \u2014 the call returns the moment it finishes \u2014 or start it with `background: true` and wait for it with `process wait`.",
         "command" => $"`{v.Subject}` matches the guardrail `{v.Rule}` (guardrails.commands)." +
-            (IsWindowsPowerShell(v.Subject) ? " Windows PowerShell 5.1 is not used here: run it with `pwsh` (PowerShell 7) or the pwsh tool." : ""),
+            (IsWindowsPowerShell(v.Subject)
+                ? " Windows PowerShell 5.1 is not used here: run it with `pwsh` (PowerShell 7) or the pwsh tool."
+                : IsPwsh(v.Subject) ? " PowerShell 7 is a tool here, not a program a shell command starts: run it with the pwsh tool."
+                : ""),
         _ => $"{v.Subject} is protected by the guardrail `{v.Rule}` (guardrails.paths).",
     };
 
     private static bool IsWindowsPowerShell(string command) =>
         System.Text.RegularExpressions.Regex.IsMatch(command, @"^\W*(\S*[\\/])?powershell(\.exe)?(\s|$)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    private static bool IsPwsh(string command) =>
+        System.Text.RegularExpressions.Regex.IsMatch(command, @"^\W*(\S*[\\/])?pwsh(\.exe)?(\s|$)",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     private static string Resolve(AgentRunContext run, ToolCallPart call, string path) => new ToolContext
