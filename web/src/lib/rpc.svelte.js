@@ -213,8 +213,15 @@ export function rpc(m, p, opts = {}) {
     const id = nextId++;
     const frame = JSON.stringify({ t: 'rpc', id, m, p: p ?? {} });
     const entry = { resolve, reject, m, sent: false, timer: 0, deadline: Date.now() + timeout };
+    let item = null; // the queued frame, while the socket is down
     entry.timer = setTimeout(() => {
       pending.delete(id);
+      if (item) {
+        // a frame that never went out must not be sent after its caller was told it timed out
+        clearTimeout(item.fallbackTimer);
+        const idx = outbox.indexOf(item);
+        if (idx >= 0) outbox.splice(idx, 1);
+      }
       reject(timeoutError(m));
     }, timeout);
     pending.set(id, entry);
@@ -223,7 +230,7 @@ export function rpc(m, p, opts = {}) {
       entry.sent = true;
       return;
     }
-    const item = { id, frame, fallbackTimer: 0 };
+    item = { id, frame, fallbackTimer: 0 };
     if (opts.fallback !== false) {
       item.fallbackTimer = setTimeout(() => {
         const idx = outbox.indexOf(item);
