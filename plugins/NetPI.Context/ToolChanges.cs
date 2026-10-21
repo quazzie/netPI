@@ -37,11 +37,24 @@ internal sealed class ToolChanges(IPluginContext ctx)
             while (_remote.Count > 10000) _remote.Remove(_remote.First().Key);
         }
     }
-    public Change RemoteCause(IReadOnlyList<string> names)
+    // per session, the (tool, event time) evidence that already explained one of its changes: the name map is process-wide,
+    // so without this one catalog refresh kept explaining every later change of the same name for the whole window
+    private readonly Dictionary<string, HashSet<(string Name, DateTimeOffset Time)>> _used = new(StringComparer.Ordinal);
+
+    public Change RemoteCause(IReadOnlyList<string> names, string? sessionId = null)
     {
         lock (_gate)
         {
-            var evidence = names.Where(_remote.ContainsKey).Select(n => _remote[n]).Where(r => DateTimeOffset.UtcNow - r.Time <= Keep).FirstOrDefault();
+            HashSet<(string Name, DateTimeOffset Time)>? used = null;
+            if (sessionId is not null && !_used.TryGetValue(sessionId, out used)) _used[sessionId] = used = [];
+            var fresh = names.Where(_remote.ContainsKey).Select(n => (Name: n, Ev: _remote[n]))
+                .Where(x => DateTimeOffset.UtcNow - x.Ev.Time <= Keep && used?.Contains((x.Name, x.Ev.Time)) != true).ToList();
+            var evidence = fresh.Select(x => x.Ev).FirstOrDefault();
+            if (used is not null)
+            {
+                foreach (var x in fresh) used.Add((x.Name, x.Ev.Time));
+                used.RemoveWhere(u => DateTimeOffset.UtcNow - u.Time > Keep);
+            }
             return evidence.Server is null ? Change.Unknown :
                 new Change(RemoteServer, ["netpi.mcp"], "MCP server " + evidence.Server + " " + evidence.Reason);
         }
@@ -163,6 +176,7 @@ internal sealed class ToolChanges(IPluginContext ctx)
     {
         _owners.TryRemove(sessionId, out _);
         _pending.TryRemove(sessionId, out _);
+        lock (_gate) _used.Remove(sessionId);
     }
 
     /// <summary>
@@ -181,7 +195,7 @@ internal sealed class ToolChanges(IPluginContext ctx)
         if (context.LastOrDefault(m => m.Role == MessageRole.Notice) is { } notice && notice.MetaString("kind") == ProfileNotice)
             return Change.Profile;
 
-        var remote = RemoteCause(added.Concat(removed).ToList());
+        var remote = RemoteCause(added.Concat(removed).ToList(), sessionId);
         if (remote.Cause != Unknown) return remote;
 
         var ids = added.Concat(removed)
