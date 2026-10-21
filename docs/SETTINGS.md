@@ -620,6 +620,7 @@ milliseconds; anything unexpected answers "not supported", so a call never fails
 | Setting | Default | Purpose |
 | --- | ---: | --- |
 | `mcp.maxMessageChars` | 4000000 | Protocol frame/SSE event limit |
+| `mcp.maxArgumentChars` | 1000000 | Serialized arguments of one tool call (1024–16M); a larger call is refused before it is validated or sent |
 | `mcp.maxCatalogTools` | 10000 | Tools per server |
 | `mcp.maxCatalogChars` | 8000000 | Catalog data per server |
 | `mcp.maxResourceEntries` | 2000 | Resources per server |
