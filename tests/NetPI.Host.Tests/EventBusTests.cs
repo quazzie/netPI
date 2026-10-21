@@ -175,6 +175,22 @@ public static class EventBusTests
             Check.Equal("t.one,t.two", string.Join(",", received.Take(2)), "the events published before the flush were delivered, in order");
         });
 
+        r.Add("bus: detaching a wedged subscriber completes the flushes waiting for it", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance);
+            var wedged = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            var sub = bus.Subscribe("t", e => { wedged.Set(); release.Wait(10_000); });
+            bus.Publish("t");
+            Check.True(wedged.Wait(5000), "the line is inside its handler");
+            var flush = bus.FlushAsync();    // its marker is queued behind the wedged handler
+            await Task.Delay(100);
+            Check.False(flush.IsCompleted, "the wedged line holds the flush");
+            sub.Dispose();
+            await flush.WaitAsync(TimeSpan.FromSeconds(5));   // the detached line no longer holds it
+            release.Set();
+        });
+
         r.Add("bus: a steady publisher does not keep a flush out of a busy line: its owed marker takes the room the line makes first", async () =>
         {
             await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 1);

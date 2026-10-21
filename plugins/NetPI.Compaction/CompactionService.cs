@@ -240,7 +240,7 @@ public sealed class CompactionService(IPluginContext ctx)
 
         // a split turn: the first kept message is not the start of a turn, and that turn's user message is summarized
         var turnStart = -1;
-        if (plan.CutIndex < plan.Messages.Count && plan.Messages[plan.CutIndex].Role != MessageRole.User)
+        if (plan.CutIndex < plan.Messages.Count && plan.Messages[plan.CutIndex].Role is not (MessageRole.User or MessageRole.Notice))
             turnStart = fresh.FindLastIndex(m => m.Role == MessageRole.User);
         var history = turnStart >= 0 ? fresh[..turnStart] : fresh;
         var prefix = turnStart >= 0 ? fresh[turnStart..] : [];
