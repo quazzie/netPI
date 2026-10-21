@@ -66,12 +66,16 @@ internal static class ProcessRunner
                 catch { /* the process was killed */ }
             });
 
-            try
+            // written on its own task: a CLI that answers before it has read a large prompt must not deadlock us
+            var inTask = Task.Run(async () =>
             {
-                await proc.StandardInput.WriteAsync(call.Stdin).ConfigureAwait(false);
-                proc.StandardInput.Close();
-            }
-            catch (IOException) { /* the CLI exited before reading its input: its output says why */ }
+                try
+                {
+                    await proc.StandardInput.WriteAsync(call.Stdin).ConfigureAwait(false);
+                    proc.StandardInput.Close();
+                }
+                catch (Exception) { /* the CLI exited before reading its input: its output says why */ }
+            });
 
             var any = false;
             while (true)
@@ -88,13 +92,15 @@ internal static class ProcessRunner
             try { await proc.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false); }
             catch (TimeoutException) { try { proc.Kill(true); } catch { /* gone */ } }
             await errTask.ConfigureAwait(false);
+            await inTask.ConfigureAwait(false);
 
             ct.ThrowIfCancellationRequested();
             string err; lock (stderr) err = stderr.ToString().Trim();
             if (cts.IsCancellationRequested)
                 throw new ModelException($"Claude CLI ran longer than {call.Timeout.TotalSeconds:0}s and was stopped (providers.claudeCli.timeoutSeconds).", false, null, "timeout");
-            if (!any && proc.ExitCode != 0)
-                throw new ModelException($"Claude CLI exited with code {proc.ExitCode} and no output. {J.Truncate(err, 800)}".TrimEnd(), false, null, "cli_failed");
+            var exit = SafeExitCode(proc);
+            if (!any && exit != 0)
+                throw new ModelException($"Claude CLI exited with code {(exit?.ToString() ?? "unknown")} and no output. {J.Truncate(err, 800)}".TrimEnd(), false, null, "cli_failed");
             // what the CLI said on stderr goes to the stream as a last line: the provider adds it when the run ended without a result
             if (err.Length > 0) yield return new System.Text.Json.Nodes.JsonObject { ["type"] = StderrLine, ["text"] = J.Truncate(err, 1500) }.ToJsonString();
         }
@@ -103,6 +109,12 @@ internal static class ProcessRunner
             // waited for, so the chat's next call (ChatLocks) never starts beside a CLI that is still going down
             try { if (!proc.HasExited) { proc.Kill(entireProcessTree: true); proc.WaitForExit(5000); } } catch { /* already gone */ }
         }
+    }
+
+    static int? SafeExitCode(Process p)
+    {
+        try { p.WaitForExit(2000); return p.HasExited ? p.ExitCode : null; }
+        catch (InvalidOperationException) { return null; }
     }
 
     /// <summary>The <c>type</c> of the synthetic last line that carries the CLI's stderr.</summary>
