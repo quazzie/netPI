@@ -468,9 +468,13 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         try
         {
             instance = (INetPiPlugin)Activator.CreateInstance(e.Load.PluginType!)!;
-            using var startCts = CancellationTokenSource.CreateLinkedTokenSource(ct, stopping.Token, _shutdown.Token);
+            // Not `using`: on a timeout the start task may still be running with this token, so the source is disposed
+            // when the start task completes.
+            var startCts = CancellationTokenSource.CreateLinkedTokenSource(ct, stopping.Token, _shutdown.Token);
             startCts.CancelAfter(StartTimeout);
-            await instance.StartAsync(context, startCts.Token).WaitAsync(StartTimeout, ct).ConfigureAwait(false);
+            var startTask = instance.StartAsync(context, startCts.Token);
+            _ = startTask.ContinueWith(_ => startCts.Dispose(), TaskScheduler.Default);
+            await startTask.WaitAsync(StartTimeout, ct).ConfigureAwait(false);
             e.Load = e.Load with { Instance = instance, Scope = scope, Stopping = stopping };
             e.State = "running";
             e.Error = null;
