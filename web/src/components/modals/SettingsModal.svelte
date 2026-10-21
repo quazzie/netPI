@@ -12,6 +12,7 @@
   import ProvidersPanel from './ProvidersPanel.svelte';
   import { prefs, savePrefs, toast } from '../../lib/state/ui.svelte.js';
   import { app } from '../../lib/state/app.svelte.js';
+  import { settingsDoc } from '../../lib/state/settingsDoc.svelte.js';
   import { rpc, conn } from '../../lib/rpc.svelte.js';
   import { bus } from '../../lib/bus.js';
   import { pagesOf, getAt, settingDefault, sectionState } from '../../lib/settings.js';
@@ -23,7 +24,7 @@
 
   // host settings as controls: the schema (host + plugins) and the document; the agents' states are app.slots
   let schema = $state([]);
-  let doc = $state({});
+  const doc = $derived(settingsDoc.doc);
   const layout = $derived(pagesOf(schema));
   const page = $derived(layout.pages.find((p) => p.id === section) ?? null);
   // Models and Tools list their sections as rows; each opens its own dialog
@@ -39,16 +40,11 @@
       badges: [off ? { text: 'off', tone: 'warn' } : null, changed ? { text: `${changed} changed` } : null],
     };
   }
-  async function loadDoc() {
-    try {
-      doc = (await rpc('settings.get'))?.settings ?? {};
-    } catch {}
-  }
+  $effect(() => settingsDoc.follow());
   $effect(() => {
     rpc('settings.schema')
       .then((s) => (schema = s ?? []))
       .catch(() => (schema = []));
-    loadDoc();
     const offs = [bus.on('plugins.changed', () => rpc('settings.schema').then((s) => (schema = s ?? [])))];
     return () => offs.forEach((off) => off());
   });
@@ -59,13 +55,16 @@
   let saving = $state(false);
   let loadError = $state('');
 
+  function fill() {
+    path = settingsDoc.path;
+    raw = original = JSON.stringify(settingsDoc.doc ?? {}, null, 2);
+  }
   async function load() {
     loading = true;
     loadError = '';
     try {
-      const res = await rpc('settings.get');
-      path = res?.path ?? '';
-      raw = original = JSON.stringify(res?.settings ?? {}, null, 2);
+      if (!settingsDoc.loaded) await settingsDoc.refresh();
+      fill();
     } catch (e) {
       loadError = e.message;
     } finally {
@@ -104,6 +103,7 @@
       // conflict instead of silently clobbering the other change.
       await rpc('settings.replace', { settings: JSON.parse(raw), base: JSON.parse(original) });
       original = raw = JSON.stringify(JSON.parse(raw), null, 2);
+      settingsDoc.refresh();
       toast('Settings saved');
     } catch (e) {
       toast(`Save failed: ${e.message}`, 'error');
@@ -148,13 +148,13 @@
   }
 
   // settings.json changed elsewhere (another client, an editor, a plugin): show it unless there are unsaved edits here
-  let seenVersion = app.settingsVersion;
+  // settings.json changed elsewhere (another client, an editor, a plugin): show it unless there are unsaved edits here
+  let seenVersion = settingsDoc.version;
   $effect(() => {
-    const v = app.settingsVersion;
+    const v = settingsDoc.version;
     if (v === seenVersion) return;
     seenVersion = v;
-    loadDoc();
-    if (original && raw === original && !saving && !loading) load();
+    if (original && raw === original && !saving && !loading) fill();
   });
 </script>
 

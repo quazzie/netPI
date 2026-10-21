@@ -497,7 +497,7 @@ the same Esc stack, `escLayer()` in `lib/kit/Modal.svelte`).
 width (normal 900px, wide 1200px, full; the `--chat-max` token), zoom and spellcheck in the message box. Zoom: in the
 desktop app the buttons call `desktop.zoom` and the shell remembers the factor (Ctrl + wheel and Ctrl + / − / 0 too);
 in a browser its own per-site zoom does that. **settings.json** edits the host settings as JSON and reloads when the
-file changes elsewhere while it has no unsaved edits.
+file changes elsewhere while it has no unsaved edits. Every dialog reads the document through one store (`lib/state/settingsDoc.svelte.js`: one `settings.get`, refetched when `app.settingsVersion` moves).
 
 ## Plugin tabs
 
