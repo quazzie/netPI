@@ -119,6 +119,53 @@ public static class CompactionTests
             await env.Service.CompactAsync(new CompactionRequest { SessionId = subagent.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
             Check.Equal(1, Locks(env.Service), "still just the live chat");
         });
+        r.Add("compaction: compaction.stats counts every compaction over more than one page, read-only, and follows a new one", async () =>
+        {
+            var env = new Env();
+            await new CompactionPlugin().StartAsync(env.Ctx, CancellationToken.None);
+            Check.True(env.Ctx.RpcFake.ReadOnly["compaction.stats"], "declared read-only");
+            async Task<JsonObject> Stats() => (JsonObject)(await env.Ctx.RpcFake.Call("compaction.stats", new JsonObject { ["sessionId"] = env.Session.Id }))!;
+
+            var empty = await Stats();
+            Check.Equal(0, empty["count"]!.GetValue<int>());
+            Check.True(empty["last"] is null, "no compaction yet");
+
+            // 3 compactions, the first buried under well over one page (200) of later messages
+            void Summary(int before, int after)
+            {
+                var m = T.User("summary");
+                m.Role = MessageRole.Summary;
+                m.Meta = new JsonObject { ["kind"] = "compaction", ["tokensBefore"] = before, ["tokensAfter"] = after, ["mode"] = "auto" };
+                env.Add(m);
+            }
+            Summary(1000, 100);
+            env.Conversation(30, "a"); // 120 messages
+            Summary(2000, 200);
+            env.Conversation(60, "b"); // 240 messages
+            Summary(3000, 300);
+            env.Conversation(1, "c");
+            var s1 = await Stats();
+            Check.Equal(3, s1["count"]!.GetValue<int>(), "all three, though the oldest is outside one page");
+            Check.Equal(3000, s1["last"]!["tokensBefore"]!.GetValue<int>());
+            Check.Equal(300, s1["last"]!["tokensAfter"]!.GetValue<int>());
+            Check.Equal("auto", s1["last"]!["mode"]!.GetValue<string>());
+            Check.True(s1["last"]!["seq"]!.GetValue<long>() > 0 && s1["last"]!["createdAt"] is not null, "seq and time");
+
+            // a repeat with nothing new answers the same
+            Check.Equal(3, (await Stats())["count"]!.GetValue<int>());
+
+            // a compaction the plugin runs itself shows up on the next read
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "## Task\nsummary" }] };
+            var res = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.True(res.Compacted, "compacted");
+            var s2 = await Stats();
+            Check.Equal(4, s2["count"]!.GetValue<int>(), "the new compaction counts");
+            Check.Equal("manual", s2["last"]!["mode"]!.GetValue<string>());
+            Check.Equal(res.TokensAfter, s2["last"]!["tokensAfter"]!.GetValue<long>());
+
+            // deleting the session drops its cache
+            env.Ctx.Events.Publish(EventTypes.SessionDeleted, new JsonObject { ["id"] = env.Session.Id });
+        });
         r.Add("compaction: resolve the effective named-agent model without silently switching models", async () =>
         {
             var e = new Env();

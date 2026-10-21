@@ -11,8 +11,8 @@
    * Context usage ring: used / window tokens. Hover for the one-line reading, press for the breakdown
    * (what the prompt is made of, from context.preview), how often this chat was compacted, a way to compact it
    * now and a way into the Diagnostics context view.
-   *   compactions       the chat's compaction summaries (role summary, meta.kind compaction), oldest first
-   *   historyTruncated  older messages are not loaded, so the count is a lower bound
+   *   compactions       the chat's compaction summaries among the loaded messages, oldest first (only used while compaction.stats is unavailable)
+   *   historyTruncated  older messages are not loaded, so that fallback count is a lower bound
    *   ownContext        the model's backend keeps and compacts the conversation itself (a Claude CLI session): the reading is
    *                     the backend's own, NetPI's compaction and prompt breakdown do not describe it, and the popout adds
    *                     the subscription's usage when `claudeUsage` is set
@@ -95,25 +95,49 @@
   const free = $derived(win ? Math.max(0, win - used) : 0);
 
   // ------------------------------------------------------------------ compactions
-  // Every compaction appends a summary message (meta.kind 'compaction'), so the loaded history says how many ran.
-  // A summary folded into a later one stays in the history (dimmed), so this counts compactions, not summaries
-  // that still count for the model.
-  const count = $derived(compactions.length);
-  const countText = $derived(count === 0 ? (historyTruncated ? '—' : '0') : `${count}${historyTruncated ? '+' : ''}`);
+  // The exact count and the newest reading come from compaction.stats (the whole chat, however much is loaded here).
+  // Only when that RPC is not there (the Compaction plugin is off) does the loaded history stand in: every compaction
+  // appends a summary message (meta.kind 'compaction') and one folded into a later summary stays in the history, so the
+  // loaded summaries are a count of compactions, a lower bound while older messages are not loaded.
+  let stats = $state.raw(null); // { count, last } of the latest answer
+  const useStats = $derived(hasRpc('compaction.stats'));
+  let statsSeq = 0; // an older answer must not overwrite a newer one
+  async function loadStats() {
+    const id = sessionId;
+    if (!id || !hasRpc('compaction.stats')) return;
+    const seq = ++statsSeq;
+    try {
+      const res = await rpc('compaction.stats', { sessionId: id }, { timeout: 15000 });
+      if (seq === statsSeq && id === sessionId) stats = res;
+    } catch {
+      // keep what is shown
+    }
+  }
+  // opening reads it; the context reading changing while it is open (every compaction publishes one) reads it again
+  $effect(() => {
+    void used;
+    if (open && !ownContext) loadStats();
+  });
+  const exact = $derived(useStats && stats != null);
+  const count = $derived(exact ? stats.count : compactions.length);
+  const countText = $derived(exact ? String(count) : useStats ? '…' : count === 0 ? (historyTruncated ? '—' : '0') : `${count}${historyTruncated ? '+' : ''}`);
   const countTitle = $derived(
-    historyTruncated
-      ? 'The older messages of this chat are not loaded, so an earlier compaction can sit outside the window.'
-      : 'How many times older messages of this chat were summarized away.',
+    exact || useStats
+      ? 'How many times older messages of this chat were summarized away, over its whole history.'
+      : historyTruncated
+        ? 'The older messages of this chat are not loaded, so an earlier compaction can sit outside the window.'
+        : 'How many times older messages of this chat were summarized away.',
   );
-  const lastCompaction = $derived(compactions.at(-1));
-  /** What the newest compaction did, in the words its own summary carries: "41k → 18k · auto · 14:32". */
+  /** What the newest compaction did: "41k → 18k · auto · 14:32". */
   const lastReading = $derived.by(() => {
-    const m = lastCompaction?.meta;
+    const lastC = compactions.at(-1);
+    const m = exact ? stats.last : lastC?.meta;
     if (!m) return '';
     const parts = [];
     if (m.tokensBefore != null && m.tokensAfter != null) parts.push(`${tokens(m.tokensBefore)} → ${tokens(m.tokensAfter)}`);
     if (m.mode) parts.push(m.mode);
-    const at = lastCompaction?.createdAt ? stamp(lastCompaction.createdAt) : '';
+    const when = exact ? m.createdAt : lastC?.createdAt;
+    const at = when ? stamp(when) : '';
     if (at) parts.push(at);
     return parts.join(' · ');
   });
@@ -133,7 +157,9 @@
       // the long operations pass their own deadline; the service narrates the run over agent.notice meanwhile
       const res = await rpc('compaction.run', { sessionId }, { timeout: 300_000 });
       toast(res ?? 'Compaction finished.', 'info');
+      loadStats();
     } catch (e) {
+      loadStats(); // a timeout may still have compacted on the server
       // 'busy', 'no_model', a failed summary, or a timeout that may still have compacted on the server: all of
       // them carry the sentence to read, so the failure is never a silent no-op.
       toast(e?.message ?? String(e), 'warn');

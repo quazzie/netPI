@@ -35,6 +35,10 @@ public sealed class CompactionPlugin : INetPiPlugin
         context.Rpc.Register(new RpcMethod("compaction.run", "Summarize older messages of a session: { sessionId, args? } → status string", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("args", RpcParamType.String, "/compact's text: instructions for the summary"), RpcParam.Opt("instructions")]),
             (req, rpcCt) => RunAsync(context, service, req, rpcCt));
 
+        var stats = new CompactionStats(context);
+        context.Rpc.Register(new RpcMethod("compaction.stats", "How often a chat was compacted, over its whole history: { sessionId } → { count, last: { tokensBefore, tokensAfter, mode, createdAt, seq } | null }", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
+            (req, _) => Task.FromResult<object?>(stats.Get(context.Sessions.Require(req.Required("sessionId")).Id)));
+
         context.Ui.AddCommand(new SlashCommandInfo
         {
             Name = "compact",
