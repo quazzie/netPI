@@ -241,7 +241,7 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
                 var liveNow = new HashSet<string>(_services.GetAll<IModelProvider>().Select(p => p.Id), StringComparer.OrdinalIgnoreCase);
                 all = all.Where(m => liveNow.Contains(m.Provider)).ToList();
                 foreach (var stale in _lastByProvider.Keys.Where(k => !liveNow.Contains(k)).ToList()) _lastByProvider.Remove(stale);
-                signature = Signature(all);
+                signature = ModelSignature.Of(all);
                 changed = signature != _signature;
                 _signature = signature;
                 _cached = all.AsReadOnly();
@@ -283,32 +283,6 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
             else _log.LogWarning("Model provider '{Provider}' failed to list models: {Error}", provider.Id, ex.Message);
             lock (_gate) return _lastByProvider.GetValueOrDefault(provider.Id) ?? [];
         }
-    }
-
-    /// <summary>
-    /// What <c>models.changed</c> is about: every listed fact of every model. The slot count is in it because the
-    /// agents read their shared capacity from the cache on that event (a backend that adds a slot with the status
-    /// unchanged was silent), and the limits, modalities and reasoning because the UI and the callers re-read the list on it.
-    /// </summary>
-    private static string Signature(List<ModelInfo> models)
-    {
-        var sb = new StringBuilder();
-        foreach (var m in models)
-        {
-            sb.Append(m.Ref).Append('|').Append(m.Status).Append('|').Append(m.ContextWindow).Append('|').Append(m.DisplayName)
-                .Append('|').Append(m.MaxOutputTokens).Append('|').Append(m.Concurrency).Append('|');
-            if (m.InputModalities is { } modalities)   // a provider's own object: defensive about a null it should not hand over
-                foreach (var modality in modalities) sb.Append(modality).Append(',');
-            sb.Append('|');
-            if (m.Reasoning is { } reasoning)
-            {
-                sb.Append(reasoning.Supported ? "reasoning:" : "no-reasoning:").Append(reasoning.Default).Append(':');
-                if (reasoning.Efforts is { } efforts)
-                    foreach (var effort in efforts) sb.Append(effort).Append(',');
-            }
-            sb.Append('|').Append(m.IsLocal).Append('|').Append(m.Extra?.ToJsonString()).Append('\n');
-        }
-        return sb.ToString();
     }
 
     public void Dispose()

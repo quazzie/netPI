@@ -125,8 +125,6 @@ internal sealed class ProviderOptions
 /// <summary>Maps a requested reasoning effort onto what the model supports.</summary>
 internal static class EffortMap
 {
-    private static readonly string[] Scale = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-
     /// <summary>
     /// Null when nothing should be sent (no effort requested, "default"/"auto", or reasoning explicitly unsupported).
     /// When the catalog lists efforts and the requested one is missing, the nearest supported value is used
@@ -140,19 +138,7 @@ internal static class EffortMap
         if (info is null) return r;
         if (!info.Supported) return null;
         if (info.Efforts.Count == 0) return r;
-        foreach (var e in info.Efforts)
-            if (string.Equals(e, r, StringComparison.OrdinalIgnoreCase)) return e;
-
-        var ri = Array.IndexOf(Scale, r);
-        if (ri < 0) return info.Default; // unknown value: let the backend default apply
-        string? best = null; var bestDist = int.MaxValue; var bestRank = -1;
-        foreach (var e in info.Efforts)
-        {
-            var ei = Array.IndexOf(Scale, e.ToLowerInvariant());
-            if (ei < 0) continue;
-            var dist = Math.Abs(ei - ri);
-            if (dist < bestDist || (dist == bestDist && ei > bestRank)) { best = e; bestDist = dist; bestRank = ei; }
-        }
-        return best;
+        if (!EffortScale.IsKnown(r)) return info.Default; // unknown value: let the backend default apply
+        return EffortScale.Nearest(r, info.Efforts);
     }
 }

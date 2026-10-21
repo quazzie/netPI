@@ -172,7 +172,7 @@ internal sealed partial class ServerManager : IAsyncDisposable
             state.Connection = candidate; state.Disconnected = false; state.Generation++;
             Apply(state, raw, resources, reason);
             SetStatus(state, "connected", null);
-            if (old is not null) await old.DisposeAsync().ConfigureAwait(false);
+            if (old is not null) { await WaitIdleAsync(state).ConfigureAwait(false); await old.DisposeAsync().ConfigureAwait(false); }
         }
         catch { await candidate.DisposeAsync().ConfigureAwait(false); throw; }
     }
@@ -460,6 +460,9 @@ internal sealed partial class ServerManager : IAsyncDisposable
     internal JsonElement Prepare(RemoteTool tool, JsonObject args)
     {
         var schema = tool.Definition.Parameters;
+        var budget = Limit("mcp.maxArgumentChars", 1_000_000, 1024, 16_000_000);
+        if (args.ToJsonString().Length > budget)
+            throw new McpException("Tool arguments exceed " + budget + " characters (mcp.maxArgumentChars). Send less data, e.g. write it to a file first.");
         try { Schema.Validate(schema, args); return NetPiJson.ToElement(args); }
         catch (McpException error)
         {
@@ -527,10 +530,15 @@ internal sealed partial class ServerManager : IAsyncDisposable
         catch (Exception ex) { return ToolResult.Error("MCP " + resource.ServerId + " " + resource.Uri + ": " + state.Config.Redact(ex.Message)); }
         finally { lock (_gate) if (--state.Calls == 0) state.Idle.TrySetResult(); }
     }
+    /// <summary>Grace for in-flight calls before a connection is closed under them.</summary>
+    private static async Task WaitIdleAsync(State state)
+    {
+        try { await state.Idle.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); } catch { }
+    }
     private async Task RetireAsync(State state)
     {
         lock (_gate) state.Closed = true;
-        try { await state.Idle.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); } catch { }
+        await WaitIdleAsync(state).ConfigureAwait(false);
         state.Stop.Cancel(); state.Commands.Writer.TryComplete();
         if (state.Connection is not null) await state.Connection.DisposeAsync().ConfigureAwait(false);
         try { await state.Worker.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); } catch { }

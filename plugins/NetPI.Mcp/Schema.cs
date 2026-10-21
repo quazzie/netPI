@@ -128,7 +128,10 @@ internal static class Schema
         {
             if (Below(schema, "minItems", array.Count) || Above(schema, "maxItems", array.Count)) return path + ": item count out of range.";
             if (schema["uniqueItems"]?.GetValue<bool>() == true)
-                for (var i = 0; i < array.Count; i++) for (var j = 0; j < i; j++) if (JsonNode.DeepEquals(array[i], array[j])) return path + ": items must be unique.";
+            {
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var item in array) if (!seen.Add(Canonical(item))) return path + ": items must be unique.";
+            }
             var prefix = schema["prefixItems"] as JsonArray ?? schema["items"] as JsonArray;
             for (var i = 0; i < array.Count; i++)
             {
@@ -175,6 +178,29 @@ internal static class Schema
         JsonValue v when v.TryGetValue<string>(out _) => "string",
         _ => "number",
     };
+    /// <summary>Equal JSON values (object key order and number spelling aside) give equal strings.</summary>
+    private static string Canonical(JsonNode? node)
+    {
+        var text = new System.Text.StringBuilder();
+        Write(node, text);
+        return text.ToString();
+        static void Write(JsonNode? n, System.Text.StringBuilder sb)
+        {
+            switch (n)
+            {
+                case JsonObject o:
+                    sb.Append('{');
+                    foreach (var (k, v) in o.OrderBy(p => p.Key, StringComparer.Ordinal)) { sb.Append(JsonValue.Create(k)!.ToJsonString()).Append(':'); Write(v, sb); sb.Append(','); }
+                    sb.Append('}'); break;
+                case JsonArray a:
+                    sb.Append('[');
+                    foreach (var v in a) { Write(v, sb); sb.Append(','); }
+                    sb.Append(']'); break;
+                case JsonValue v when v.TryGetValue<double>(out var d): sb.Append('n').Append(d.ToString("R", System.Globalization.CultureInfo.InvariantCulture)); break;
+                default: sb.Append(n is null ? "null" : n.ToJsonString()); break;
+            }
+        }
+    }
     private static bool Below(JsonObject schema, string key, double value) => schema[key] is { } n && value < n.GetValue<double>();
     private static bool Above(JsonObject schema, string key, double value) => schema[key] is { } n && value > n.GetValue<double>();
     private static bool Matches(string type, JsonNode? value) => type switch

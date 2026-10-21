@@ -174,7 +174,10 @@ public sealed class McpPlugin : INetPiPlugin
             var id = req.Required("id");
             var config = req.Params.TryGetProperty("config", out var node) && node.ValueKind == JsonValueKind.Object
                 ? JsonNode.Parse(node.GetRawText())!.AsObject() : throw new RpcException("bad_request", "config must be an object.");
-            map[id] = ServerConfig.Parse(id, config, ctx.Paths.DefaultWorkspace).Json();
+            // validated by Parse; the known keys are written over the original so keys this version does not know survive
+            var known = ServerConfig.Parse(id, config, ctx.Paths.DefaultWorkspace).Json();
+            foreach (var (key, value) in known) config[key] = value?.DeepClone();
+            map[id] = config;
         }, token), "Save one server configuration: {id,config}", false, serverArg, RpcParam.Req("config", RpcParamType.Object, "the whole configuration"));
         Rpc("mcp.remove", (req, token) => Write(req, map => map.Remove(req.Required("id")), token), "Remove an MCP server: {id}", false, serverArg);
         Rpc("mcp.setEnabled", (req, token) => Write(req, map =>

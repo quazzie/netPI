@@ -93,7 +93,8 @@ internal sealed class StdioTransport : IMcpTransport
         Exception failure = new McpException("MCP server closed stdout.");
         try
         {
-            while (!_stop.IsCancellationRequested && await Protocol.ReadLineAsync(_process.StandardOutput, _limit, _stop.Token).ConfigureAwait(false) is { } line)
+            var lines = new LineReader(_process.StandardOutput, _limit);
+            while (!_stop.IsCancellationRequested && await lines.ReadLineAsync(_stop.Token).ConfigureAwait(false) is { } line)
             {
                 if (line.Length == 0) continue;
                 var m = Protocol.Parse(line, _limit);

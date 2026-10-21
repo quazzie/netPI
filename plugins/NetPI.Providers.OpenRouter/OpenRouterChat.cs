@@ -56,8 +56,6 @@ internal static class OpenRouterChat
         return Math.Min(ModelMessages.ClampMaxTokens(req, value), cap);
     }
 
-    private static readonly string[] Scale = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-
     /// <summary>
     /// The unified <c>reasoning</c> object for the session's effort. Nothing for the model default (no effort chosen) or
     /// a model without reasoning; "none" only where reasoning can be turned off; an effort the model does not list maps
@@ -88,25 +86,7 @@ internal static class OpenRouterChat
         if (efforts is null) return new JsonObject { ["effort"] = r };
         var levels = efforts.Where(e => e != "none").ToList();
         if (levels.Count == 0) return new JsonObject { ["enabled"] = true };
-        return Nearest(r, levels) is { } e ? new JsonObject { ["effort"] = e } : new JsonObject { ["enabled"] = true };
-    }
-
-    /// <summary>The listed effort closest to <paramref name="requested"/> on the none…max scale (ties prefer the higher).</summary>
-    public static string? Nearest(string requested, IReadOnlyList<string> efforts)
-    {
-        foreach (var e in efforts)
-            if (string.Equals(e, requested, StringComparison.OrdinalIgnoreCase)) return e;
-        var ri = Array.IndexOf(Scale, requested);
-        if (ri < 0) return null;
-        string? best = null; var bestDist = int.MaxValue; var bestRank = -1;
-        foreach (var e in efforts)
-        {
-            var ei = Array.IndexOf(Scale, e.ToLowerInvariant());
-            if (ei < 0) continue;
-            var dist = Math.Abs(ei - ri);
-            if (dist < bestDist || (dist == bestDist && ei > bestRank)) { best = e; bestDist = dist; bestRank = ei; }
-        }
-        return best;
+        return EffortScale.Nearest(r, levels) is { } e ? new JsonObject { ["effort"] = e } : new JsonObject { ["enabled"] = true };
     }
 
     public static JsonArray BuildMessages(ModelRequest req, OpenRouterOptions o, string providerId) =>
