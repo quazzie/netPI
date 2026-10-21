@@ -42,7 +42,9 @@ public sealed class WorkspacePlugin : INetPiPlugin
         context.Services.Register<IAgentHook>(new WorkspaceGuard(context, git));
         // Applied before every other hook: a deferred switch has to settle the root before anything reads it.
         context.Services.Register<IAgentHook>(new WorkspaceSwitchApplier(context, resolver));
-        context.Tools.Register(new WorkspaceTool(context, resolver));
+        var retirement = new WorkspaceRetirement(context, store, provisioner);
+        context.Services.Register(retirement);
+        context.Tools.Register(new WorkspaceTool(context, resolver, retirement));
         context.Services.Register<IAgentHook>(new WorkspaceNotices(context, resolver));
 
         context.Services.Register(new SettingsSection
@@ -61,12 +63,26 @@ public sealed class WorkspacePlugin : INetPiPlugin
             ],
         });
 
-        RegisterRpcs(context, store, resolver, provisioner, git);
+        RegisterRpcs(context, store, resolver, provisioner, git, retirement);
+        // A run that ends may free a workspace that was asked to go when its work was done; so may a restart (the run ended
+        // while this plugin was not there).
+        context.Events.Subscribe(EventTypes.AgentStatus, e =>
+        {
+            var agent = e.As<JsonObject>()?["agent"];
+            if (agent?["sessionId"]?.GetValue<string>() is not { Length: > 0 } sessionId) return;
+            if (agent["status"]?.GetValue<string>()?.ToLowerInvariant() is "running" or "queued" or "yielded") return;
+            _ = Task.Run(async () =>
+            {
+                try { await retirement.OnSessionIdleAsync(sessionId).ConfigureAwait(false); }
+                catch (Exception ex) { context.Logger.LogWarning(ex, "Retiring the workspace of {Session} failed", sessionId); }
+            });
+        });
+        _ = Task.Run(retirement.TryPendingAsync);
         context.Logger.LogInformation("Workspaces ready (isolation {Isolation})", provisioner.IsolationEnabled);
         return Task.CompletedTask;
     }
 
-    private static void RegisterRpcs(IPluginContext ctx, WorkspaceStore store, WorkspaceResolver resolver, WorkspaceProvisioner provisioner, GitProbe git)
+    private static void RegisterRpcs(IPluginContext ctx, WorkspaceStore store, WorkspaceResolver resolver, WorkspaceProvisioner provisioner, GitProbe git, WorkspaceRetirement retirement)
     {
         ctx.Rpc.Register(new RpcMethod("workspaces.list", "Workspaces, newest first: { projectId? } → WorkspaceInfo[]", ReadOnly: true, Params: [RpcParam.Opt("projectId")]),
             (req, _) => Task.FromResult<object?>(store.ListWorkspaces(req.Str("projectId"))));
@@ -89,11 +105,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
 
         // A directory is busy when a process the shell registry knows about is running in it: a background process keeps
         // its workspace's ownership, and a workspace with a live process in it is not one to delete under it.
-        Func<string, bool>? busy = path =>
-        {
-            try { return ctx.Services.Get<IWorkspaceProcesses>()?.IsBusyIn(path) == true; }
-            catch { return false; }
-        };
+        Func<string, bool>? busy = WorkspaceRetirement.BusyIn(ctx);
 
         ctx.Rpc.Register(new RpcMethod("workspaces.resolve", "What a session's workspace resolves to: { sessionId } → { workspaceId, root, branch, baseCommit, kind, isolated, ownerSessionId, identity, projectId, available, error? }", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
             (req, _) =>
@@ -167,12 +179,22 @@ public sealed class WorkspacePlugin : INetPiPlugin
             return Task.FromResult<object?>(store.GetWorkspace(outcome.Binding!.WorkspaceId) is { } made ? Describe(made) : Describe(outcome.Binding!));
         });
 
-        ctx.Rpc.Register(new RpcMethod("workspaces.delete", "Remove a managed workspace whose work is merged or durable and that nothing is using: { id } → { id, removed } " +
-           "(an attached or dirty or unmerged worktree is refused, never deleted)", ReadOnly: false, Params: [RpcParam.Req("id")]),
+        ctx.Rpc.Register(new RpcMethod("workspaces.delete", "Remove a managed workspace whose work is merged or durable and that nothing is using: { id, whenDone? } → { id, removed } " +
+           "(an attached or dirty or unmerged worktree is refused, never deleted; whenDone: true only asks for the removal once no session bound to it runs any more → " +
+           "{ id, removed, pending, problems }, the merged branch goes with it)", ReadOnly: false, Params: [RpcParam.Req("id"), RpcParam.Opt("whenDone", RpcParamType.Boolean)]),
             async (req, ct) =>
         {
             var id = req.Required("id");
             var workspace = store.GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
+            if (req.Bool("whenDone") == true)
+            {
+                if (!workspace.Managed)
+                    throw new RpcException("workspace_busy", $"{workspace.Name} was attached, not created by NetPI: remove it yourself when it is no longer needed.");
+                retirement.Request(workspace, null);
+                // Nothing running in it right now: it may go at once (the kept reason, if any, is in problems).
+                var (status, reason) = await retirement.TryRetireAsync(id, ct).ConfigureAwait(false);
+                return (object?)new { id, removed = status == "retired", pending = status != "retired", status, problems = reason is null ? Array.Empty<string>() : new[] { reason } };
+            }
             var (ok, error) = await provisioner.RetireAsync(workspace, busy, ct).ConfigureAwait(false);
             if (!ok) throw new RpcException("workspace_busy", error!);
             return (object?)new { id, removed = true };
