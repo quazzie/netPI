@@ -218,8 +218,6 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
     {
         if (context.Services.Get<IAgentRuntime>()?.Get(context.AgentId)?.IsSubagent == true)
             return Task.FromResult(ToolResult.Error("Only the main agent can propose plan mode: nobody watches a subagent's chat."));
-        if (PlanMode.Active(ctx.Sessions.GetSession(context.SessionId)))
-            return Task.FromResult(ToolResult.Error("This chat is already in plan mode."));
         return Task.FromResult(ToolResult.WaitForUser(new UserWait
         {
             Id = "planq_" + Ids.Short(12),
