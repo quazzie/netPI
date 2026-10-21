@@ -1,6 +1,6 @@
 <script>
   import Icon from '../../lib/kit/Icon.svelte';
-  import { copyText } from '../../lib/markdown.js';
+  import { copyText, renderMarkdown, highlight } from '../../lib/markdown.js';
   import { stamp } from '../../lib/format.js';
 
   /** msg: ChatMessage (role user, or a steer notice) — or the optimistic { text, images } while sending */
@@ -13,7 +13,12 @@
     msg.text ?? (msg.parts ?? []).filter((p) => p.type === 'text').map((p) => p.text).join('\n'),
   );
   const images = $derived(msg.images ?? (msg.parts ?? []).filter((p) => p.type === 'image'));
-  const html = $derived(esc(text).replace(/(^|[\s(])(@[^\s@)]+)/g, '$1<span class="mention">$2</span>'));
+  // a message an agent or an automation sent (meta.source: agent:<id>, system) is markdown, as the assistant's text is;
+  // the person's own typed message stays plain text with its @mentions
+  const fromAgent = $derived(!!msg.meta?.source && msg.meta.source !== 'user');
+  const html = $derived(
+    fromAgent ? renderMarkdown(text) : esc(text).replace(/(^|[\s(])(@[^\s@)]+)/g, '$1<span class="mention">$2</span>'),
+  );
   const tag = $derived(
     msg.meta?.kind === 'steer' || msg.meta?.delivery === 'steer' || msg.meta?.mode === 'steer'
       ? 'steered'
@@ -57,7 +62,15 @@
         {/each}
       </div>
     {/if}
-    {#if text}<div class="text">{@html html}</div>{/if}
+    {#if text}
+      {#if fromAgent}
+        {#key html}
+          <div class="md" use:highlight>{@html html}</div>
+        {/key}
+      {:else}
+        <div class="text">{@html html}</div>
+      {/if}
+    {/if}
   </div>
 </div>
 
@@ -83,6 +96,15 @@
   .text {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+  /* markdown from an agent: headings at the bubble's size; code blocks scroll inside the bubble */
+  .md :global(h1),
+  .md :global(h2),
+  .md :global(h3) {
+    font-size: 1.07em;
+  }
+  .md :global(.code-block) {
+    max-width: 100%;
   }
   .text :global(.mention) {
     color: var(--accent);

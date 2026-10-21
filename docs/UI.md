@@ -225,7 +225,7 @@ into locals first, because after the parent clears the modal state or the row re
    instead: new messages then only increase a counter. **Load newer** pages forward from the window's newest
    message with `afterSeq` (dropping the oldest past 200, so **Load earlier** comes back), and **Jump to latest**
    reloads the tail.
-2. **Items** (`lib/chatItems.js`). The messages become render items: `user`, `text` (assistant markdown),
+2. **Items** (`lib/chatItems.js`). The messages become render items: `user` (the person's text as plain text with @mentions; a message an agent or automation sent, `meta.source` other than `user`, as markdown), `text` (assistant markdown),
    `steps`, `notice`, `prompt` (a system prompt the chat was sent), `status` (error/aborted/length) and `images`. Consecutive thinking and tool_call parts,
    even across several assistant messages, form one **steps** group. Tool results from `tool` messages are
    paired with their calls by `callId`. Messages are immutable objects, and an item keeps its identity while
