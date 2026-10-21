@@ -402,7 +402,8 @@ internal sealed class AgentRuntime : IAgentRuntime
                         _ = Task.Delay((int)(StatusThrottleMs - elapsed)).ContinueWith(_ =>
                         {
                             lock (s.Gate) s.StatusTimerArmed = false;
-                            PublishStatus(s);
+                            // a generation that is stopping publishes nothing: its bus is retired, the next one owns the status
+                            if (!_stopping) PublishStatus(s);
                         }, TaskScheduler.Default);
                     }
                     return;
