@@ -123,9 +123,9 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
         var flagged = retirement.Request(target, context.SessionId);
         var problems = retirement.Problems(flagged, context.SessionId);
         var text = problems.Count == 0
-            ? $"Retirement of {target.Name} requested: its worktree{(target.Branch is { Length: > 0 } b ? $" and branch {b} (if merged)" : "")} will be removed when this run ends, " +
+            ? $"Retirement of {target.Name} ({target.Path}) requested{(id is null or "" ? " (your own workspace)" : "")}: its worktree{(target.Branch is { Length: > 0 } b ? $" and branch {b} (if merged)" : "")} will be removed when this run ends, " +
               "and this session works in the project folder again. Nothing else is in the way now."
-            : $"Retirement of {target.Name} requested, but it would be kept as things stand:\n- " + string.Join("\n- ", problems) +
+            : $"Retirement of {target.Name} ({target.Path}) requested{(id is null or "" ? " (your own workspace)" : "")}, but it would be kept as things stand:\n- " + string.Join("\n- ", problems) +
               "\nFix that before you finish; it is checked again when this run ends, and you are told in this chat if it stays.";
         return ToolResult.Ok(text, new JsonObject
         {
