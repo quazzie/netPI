@@ -63,6 +63,14 @@ public static class ReservationTests
         Check.Equal(0.35, Math.Round(after["withSubagentsUsd"]!.GetValue<double>() - after["reservedUsd"]!.GetValue<double>(), 6), "the chat's settled cost stands");
         h.Settings.SetQuiet("budget.keepCallsDays", JsonValue.Create(0));
         Check.Equal(0, rebuilt.PruneCalls(), "0 keeps every row");
+        h.Settings.SetQuiet("budget.keepCallsDays", JsonValue.Create(Ledger.DefaultKeepCallsDays));
+
+        // the process that reserved it died: a start sweeps the reservation older than the process to a terminal estimate
+        Check.Equal(1, rebuilt.SweepAbandoned(DateTimeOffset.Now.ToUnixTimeMilliseconds()), "the dead reservation is swept");
+        Check.Equal(1L, calls.Count(new DataQuery().Eq("costSource", "interrupted-estimate")));
+        Check.Equal(0.0, rebuilt.SessionCost(parent.Id)["reservedUsd"]!.GetValue<double>(), "no longer counted as in flight");
+        Check.Equal(1, rebuilt.PruneCalls(), "and it is pruned like a settled row");
+        Check.Equal(0, rebuilt.SweepAbandoned(DateTimeOffset.Now.ToUnixTimeMilliseconds()), "idempotent");
     }
 
     // The figures jumped by a whole reservation at every call and back at its settlement: 0.22 -> 0.6 -> 0.22 (idea-qbi2fv).

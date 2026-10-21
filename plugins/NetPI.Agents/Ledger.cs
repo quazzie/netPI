@@ -7,7 +7,8 @@ namespace NetPI.Agents;
 
 // The ledger's storage (ctx.Data, plugin "netpi.agents"). Document shapes, kept here for the one-off store migration:
 //
-// usage_calls — one document per model call: reserved when the call starts, settled in place when it ends.
+// usage_calls — one document per model call: reserved when the call starts, settled in place when it ends (a reservation
+//   of a process that died before settling becomes "interrupted-estimate" at the next start: Ledger.SweepAbandoned).
 //   key:   the call id, a decimal string allocated from the "usage_calls" counter in "counters" (never reused;
 //          migrate the old ids, and set the counter to the old maximum)
 //   doc:   { ts, day, period, sessionId?, rootSessionId?, agentId?, lane?, provider, model, purpose,
@@ -153,6 +154,7 @@ internal sealed partial class Ledger
         try
         {
             if (_calls is not null && _sessionUsage is not null && _counters is not null) _ctx.Data.Transaction(CatchUpSessionUsage);
+            SweepAbandoned(ProcessStartMs());
             PruneCalls();
         }
         catch (Exception ex) { _ctx.Logger.LogWarning(ex, "The chats' usage roll-up could not be built; old call rows are kept"); }
@@ -187,6 +189,38 @@ internal sealed partial class Ledger
         _sessionUsage!.DeleteWhere(new DataQuery());
         foreach (var (key, doc) in totals) _sessionUsage.Put(key, doc);
         _counters.Put("session_usage", new JsonObject { ["built"] = true });
+    }
+
+    private static long ProcessStartMs()
+    {
+        using var self = System.Diagnostics.Process.GetCurrentProcess();
+        return new DateTimeOffset(self.StartTime).ToUnixTimeMilliseconds();
+    }
+
+    /// <summary>
+    /// A reservation recorded before <paramref name="beforeMs"/> (this process's start) belongs to a process that died
+    /// between reserve and settle: nothing will ever settle it. It becomes a terminal <c>interrupted-estimate</c> at its
+    /// reserved cost (still counted: what the dead call was billed is unknown, so the estimate stays conservative), leaves
+    /// the chats' reserved figures, and is pruned like any settled row. A reservation of an earlier plugin generation in
+    /// this process is younger than the process and is left to settle. The number swept.
+    /// </summary>
+    public int SweepAbandoned(long beforeMs)
+    {
+        if (_calls is null) return 0;
+        return _ctx.Data.Transaction(() =>
+        {
+            var stale = _calls.Find(new DataQuery().Lt("ts", beforeMs).Eq("costSource", "reserved"));
+            foreach (var d in stale)
+            {
+                var cost = D(d.Doc["costUsd"]);
+                d.Doc["costSource"] = "interrupted-estimate";
+                _calls.Put(d.Key, d.Doc);
+                SessionUsageAdd(d.Doc["sessionId"]?.GetValue<string>(), d.Doc["rootSessionId"]?.GetValue<string>(), 0, 0, -cost);
+            }
+            if (stale.Count > 0)
+                _ctx.Logger.LogInformation("Usage: {Count} reservations of an earlier process were never settled; kept as interrupted estimates", stale.Count);
+            return stale.Count;
+        });
     }
 
     /// <summary>
