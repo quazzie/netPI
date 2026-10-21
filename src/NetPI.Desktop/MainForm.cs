@@ -249,7 +249,7 @@ internal sealed class MainForm : Form
             SavePlacement();
         };
         _zoomRpc ??= server.Rpc.Register("desktop.zoom",
-            (req, _) => ZoomAsync(req.Prop("factor") is { ValueKind: System.Text.Json.JsonValueKind.Number } f ? f.GetDouble() : null),
+            (req, ct) => ZoomAsync(req.Prop("factor") is { ValueKind: System.Text.Json.JsonValueKind.Number } f ? f.GetDouble() : null, ct),
             "The desktop window's zoom (desktop app only): { factor? (0.5–3) } → { factor }");
         core.NavigationCompleted += (_, e) =>
         {
@@ -283,7 +283,7 @@ internal sealed class MainForm : Form
     // ---------------------------------------------------------------- zoom (desktop.zoom)
 
     /// <summary>Sets the WebView zoom when <paramref name="factor"/> is given; returns the current one. UI thread.</summary>
-    private Task<object?> ZoomAsync(double? factor)
+    private Task<object?> ZoomAsync(double? factor, CancellationToken ct)
     {
         var tcs = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
@@ -304,7 +304,7 @@ internal sealed class MainForm : Form
             }));
         }
         catch (Exception ex) { tcs.TrySetException(ex); }
-        return tcs.Task;
+        return tcs.Task.WaitAsync(TimeSpan.FromSeconds(15), ct);
     }
 
     // ---------------------------------------------------------------- window capture (desktop.capture)
