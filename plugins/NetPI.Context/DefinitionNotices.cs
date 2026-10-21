@@ -10,8 +10,8 @@ internal static class DefinitionNotices
         var sessionId = turn.Run.Session.Id;
         var context = ctx.Sessions.GetContextMessages(sessionId);
         var known = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (store.LastSentRevisions(sessionId) is { } sent)   // in memory: PromptStore keeps the last-sent name→revision (idea-l1o09d)
-            foreach (var (name, revision) in sent) known[name] = revision;
+        if (ctx.Sessions.GetSession(sessionId) is { } own && SessionPrompt.LastSent(own) is { } sent)   // the session's own last-sent tools
+            foreach (var t in sent.Tools) if (t.Revision is { } revision) known[t.Name] = revision;
         foreach (var message in context)
             if (message.Meta?["revisions"] is JsonObject revisions)
                 foreach (var (name, revision) in revisions) if (revision is not null) known[name] = revision.GetValue<string>();

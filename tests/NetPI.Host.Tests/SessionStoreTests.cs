@@ -275,10 +275,10 @@ public static class SessionStoreTests
             await using var f = new Fixture();
             var s = f.Store.CreateSession(new SessionInfo());
             f.Store.AppendMessage(s.Id, ChatMessage.UserText("first"));
-            f.Store.UpdateSession(s.Id, x => SessionPrompt.RecordSent(x, "prefix A", 0, 1));
+            f.Store.UpdateSession(s.Id, x => SessionPrompt.RecordSent(x, "prefix A", 0, 1, []));
             f.Store.AppendMessage(s.Id, Assistant("first response"));
             f.Store.AppendMessage(s.Id, ChatMessage.UserText("second"));
-            f.Store.UpdateSession(s.Id, x => { SessionPrompt.Invalidate(x); SessionPrompt.RecordSent(x, "prefix B", 1, 3); });
+            f.Store.UpdateSession(s.Id, x => { SessionPrompt.Invalidate(x); SessionPrompt.RecordSent(x, "prefix B", 1, 3, []); });
             using var freshStorage = Fixture.Open(f.Dir);
             var fresh = new SessionService(freshStorage, f.Bus, Path.Combine(f.Dir, "workspace"));
             var current = fresh.GetSession(s.Id)!;

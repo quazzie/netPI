@@ -97,8 +97,6 @@ public static class SessionStateTests
         }
         var goals = File.ReadAllText(Path.Combine(T.RepoRoot, "plugins", "NetPI.Goal", "GoalPlugin.cs"));
         Check.Contains(goals, "EventTypes.SessionDeleted", "the goal plugin releases its per-session state on deletion");
-        var prompts = File.ReadAllText(Path.Combine(T.RepoRoot, "plugins", "NetPI.Context", "SystemPromptBuilder.cs"));
-        Check.Contains(prompts, "_reset.TryRemove", "deleting a session drops the reset counter Reset only ever writes");
         return Task.CompletedTask;
     }
 }

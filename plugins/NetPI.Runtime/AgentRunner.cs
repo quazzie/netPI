@@ -114,7 +114,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             {
                 Run = rc,
                 TurnIndex = turnIndex,
-                SystemPrompt = prompt,
+                SystemPrompt = prompt.Text,
                 Messages = [.. Ctx.Sessions.GetContextMessages(SessionId)],
                 Tools = defs,
                 DeferredTools = deferred,
@@ -146,7 +146,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             // 4. model call
             var beforeCall = Ctx.Sessions.GetSession(SessionId);
             if (beforeCall is null || SessionPrompt.Revision(beforeCall) != promptRevision) continue;
-            var call = await CallModelWithRecoveryAsync(turn, model, session, beforeCall, promptRevision, retries, ct).ConfigureAwait(false);
+            var call = await CallModelWithRecoveryAsync(turn, model, session, beforeCall, promptRevision, prompt.Final, retries, ct).ConfigureAwait(false);
             if (call.Assistant is not { } assistant)
             {
                 retries++;
@@ -227,7 +227,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         {
             Run = rc,
             TurnIndex = turnIndex,
-            SystemPrompt = prompt,
+            SystemPrompt = prompt.Text,
             Messages = [.. Ctx.Sessions.GetContextMessages(SessionId)],
             Tools = defs,
             DeferredTools = deferred,
@@ -358,7 +358,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     /// <summary>The call itself, and what its failure means: a model-error hook that asks for a retry hands back no
     /// assistant (the loop runs the turn again), anything else fails the run.</summary>
     private async Task<ModelCallOutcome> CallModelWithRecoveryAsync(AgentTurnContext turn, ModelInfo model, SessionInfo session,
-        SessionInfo beforeCall, long promptRevision, int retries, CancellationToken ct)
+        SessionInfo beforeCall, long promptRevision, bool final, int retries, CancellationToken ct)
     {
         try
         {
@@ -366,10 +366,10 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             // rewrite the session row and broadcast session.updated with the prompt in its meta on every model call
             // (idea-l1o09d). The prompt a revision was sent with is stored once, when it first is. Recorded also
             // covers the built-in prompt builder, which writes the meta without the history entry RecordSent keeps.
-            if (!SessionPrompt.Recorded(beforeCall, turn.SystemPrompt))
+            if (final ? !SessionPrompt.Recorded(beforeCall, turn.SystemPrompt) : SessionPrompt.LastSent(beforeCall)?.Prompt != turn.SystemPrompt)
             {
                 var afterSeq = Ctx.Sessions.GetMessages(SessionId, null, 1).LastOrDefault()?.Seq ?? 0;
-                Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq));
+                Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq, turn.Tools, final));
             }
             var (assistant, contextTokens) = await new ModelCall(rt, state, run).RunAsync(turn, model, session, ct).ConfigureAwait(false);
             return new ModelCallOutcome(assistant, contextTokens);
@@ -594,7 +594,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
     // ---------------------------------------------------------------- prompt
 
-    private async Task<string> BuildPromptAsync(SessionInfo session, ProjectInfo? project, string cwd, ModelInfo model,
+    private async Task<BuiltPrompt> BuildPromptAsync(SessionInfo session, ProjectInfo? project, string cwd, ModelInfo model,
         IReadOnlyList<ToolDefinition> defs, IReadOnlyList<ToolDefinition> deferred, CancellationToken ct)
     {
         var capturedRevision = SessionPrompt.Revision(session);
@@ -615,12 +615,12 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             try
             {
                 var prompt = await builder.BuildAsync(pc, ct).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(prompt)) return prompt;
+                if (!string.IsNullOrWhiteSpace(prompt.Text)) return prompt;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex) { Ctx.Logger.LogWarning(ex, "System prompt builder failed; using the built-in prompt"); }
         }
-        return await FallbackPromptBuilder.BuildAsync(Ctx, pc, capturedRevision, ct).ConfigureAwait(false);
+        return new BuiltPrompt(await FallbackPromptBuilder.BuildAsync(Ctx, pc, capturedRevision, ct).ConfigureAwait(false));
     }
 
     /// <summary>

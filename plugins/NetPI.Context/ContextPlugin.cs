@@ -11,7 +11,7 @@ namespace NetPI.Context;
 /// <para>Settings: <c>context.customPrompt</c> (replaces the identity section), <c>context.appendPrompt</c>.</para>
 /// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, frozen, tools: [{name, description, chars, schemaChars}], estimatedTokens }</c>;
 /// <c>context.reset { sessionId }</c> (forgets the prompt and tool baseline, so the next call renders them again);
-/// <c>context.prompts { sessionId }</c> → every prompt the session was sent, with its tools (the chat shows them). Event
+/// <c>context.prompts { sessionId, limit?, beforeVersion? }</c> → the newest prompts the session was sent (from its meta), with their tools (the chat shows them). Event
 /// <c>context.prompt { sessionId, version, afterSeq }</c> when a session is sent a new prompt; <c>context.toolsets</c> →
 /// its tools now and every change with its cause (a "tools" notice is what told it).</para>
 /// </summary>
@@ -57,7 +57,6 @@ public sealed class ContextPlugin : INetPiPlugin
             if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id)
             {
                 prompts.Delete(id);
-                builder.Forget(id);
                 toolNotices.Forget(id);
             }
         });
@@ -65,8 +64,20 @@ public sealed class ContextPlugin : INetPiPlugin
         context.Events.Subscribe(EventTypes.SessionForked, e =>
         {
             var d = e.As<JsonObject>();
-            if (d?["sessionId"]?.GetValue<string>() is { Length: > 0 } to && d["fromSessionId"]?.GetValue<string>() is { Length: > 0 } from)
-                prompts.Fork(from, to, d["upToSeq"]?.GetValue<long>() ?? 0);
+            if (d?["sessionId"]?.GetValue<string>() is { Length: > 0 } to) prompts.Fork(to);
+        });
+        // the runtime records every prompt it sends in the session's meta: that is the new-prompt event
+        context.Events.Subscribe(EventTypes.SessionChanged, e =>
+        {
+            var d = e.As<JsonObject>();
+            if (d?["sessionId"]?.GetValue<string>() is not { Length: > 0 } id
+                || d["keys"] is not JsonArray keys || !keys.Any(k => k?.GetValue<string>() == SessionPrompt.HistoryKey)) return;
+            if (context.Sessions.GetSession(id) is not { } session || SessionPrompt.LastSent(session) is not { } last) return;
+            context.Events.Publish(new BusEvent
+            {
+                Type = SystemPromptBuilder.SentEvent, SessionId = id,
+                Data = new JsonObject { ["sessionId"] = id, ["version"] = last.Version, ["afterSeq"] = last.AfterSeq },
+            });
         });
 
         context.Rpc.Register(new RpcMethod("context.preview", "The system prompt and tools a session is sent: { sessionId } → { systemPrompt, frozen, tools, estimatedTokens }", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
@@ -86,9 +97,10 @@ public sealed class ContextPlugin : INetPiPlugin
             return Task.FromResult<object?>(true);
         });
 
-        context.Rpc.Register(new RpcMethod("context.prompts", "The system prompts a session was sent, with their tools: { sessionId } → { prompts: [{ version, afterSeq, createdAt, systemPrompt, tools: [{ name, description, parameters? }] }] }", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
+        context.Rpc.Register(new RpcMethod("context.prompts", "The newest system prompts a session was sent, with their tools, oldest first within the page: { sessionId, limit?, beforeVersion? } → { prompts: [{ version, afterSeq, createdAt, systemPrompt, provisional?, tools: [{ name, description, parameters, revision? }] }], more }", ReadOnly: true,
+            Params: [RpcParam.Req("sessionId"), RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("beforeVersion", RpcParamType.Integer)]),
             (req, _) =>
-            Task.FromResult<object?>(PromptsJson(context, prompts, req.Required("sessionId"))));
+            Task.FromResult<object?>(PromptsJson(context, prompts, req.Required("sessionId"), int.TryParse(req.Str("limit"), out var limit) ? limit : null, int.TryParse(req.Str("beforeVersion"), out var before) ? before : null)));
 
         context.Rpc.Register(new RpcMethod("context.toolsets", "A session's tools now and every change since its first model call, with the cause: { sessionId } → { sessionId, tools, baseline: { tools, sinceSeq } | null, changes: [{ seq, time, added, removed, cause: plugin-reload|profile|user|settings|unknown, plugins, text }], reloads: [{ ids, time, kind }] }", ReadOnly: true, Params: [RpcParam.Req("sessionId")]),
             (req, _) =>
@@ -149,29 +161,39 @@ public sealed class ContextPlugin : INetPiPlugin
     }
 
     /// <summary>
-    /// What <c>context.prompts</c> returns: every prompt the session was sent, oldest first. A session frozen before these were
-    /// kept has its current prompt only, as version 1, with the names of its first tools.
+    /// What <c>context.prompts</c> returns: a page of the prompts the session was sent (from its meta history), the newest
+    /// <paramref name="limit"/> (default 50, at most 200) before <paramref name="beforeVersion"/>, oldest first. A tool whose
+    /// definition is not stored is named only.
     /// </summary>
-    internal static JsonObject PromptsJson(IPluginContext ctx, PromptStore prompts, string sessionId)
+    internal static JsonObject PromptsJson(IPluginContext ctx, PromptStore prompts, string sessionId, int? limit = null, int? beforeVersion = null)
     {
-        ctx.Sessions.Require(sessionId);
+        var history = SessionPrompt.History(ctx.Sessions.Require(sessionId));
+        var take = Math.Clamp(limit ?? 50, 1, 200);
+        var older = history.Where(p => beforeVersion is null || p.Version < beforeVersion).ToList();
+        var page = older.Skip(Math.Max(0, older.Count - take)).ToList();
         var list = new JsonArray();
-        foreach (var p in prompts.Sent(sessionId))
+        foreach (var p in page)
         {
-            JsonNode? tools;
-            try { tools = JsonNode.Parse(p.ToolsJson); } catch { tools = new JsonArray(); }
-            list.Add(new JsonObject
+            var tools = new JsonArray();
+            foreach (var t in p.Tools)
             {
-                ["version"] = p.Version, ["afterSeq"] = p.AfterSeq, ["createdAt"] = p.CreatedAt, ["systemPrompt"] = p.Prompt, ["tools"] = tools,
-            });
+                var item = new JsonObject { ["name"] = t.Name };
+                if (prompts.Definition(t.Def) is { } def)
+                {
+                    item["description"] = def["description"]?.DeepClone();
+                    item["parameters"] = def["parameters"]?.DeepClone();
+                }
+                if (t.Revision is not null) item["revision"] = t.Revision;
+                tools.Add(item);
+            }
+            var entry = new JsonObject { ["version"] = p.Version, ["afterSeq"] = p.AfterSeq };
+            if (p.CreatedAt is not null) entry["createdAt"] = p.CreatedAt;
+            entry["systemPrompt"] = p.Prompt;
+            if (p.Provisional) entry["provisional"] = true;
+            entry["tools"] = tools;
+            list.Add(entry);
         }
-        if (list.Count == 0 && prompts.Get(sessionId) is { } frozen)
-            list.Add(new JsonObject
-            {
-                ["version"] = 1, ["afterSeq"] = 0, ["systemPrompt"] = frozen,
-                ["tools"] = new JsonArray([.. (prompts.GetTools(sessionId)?.Names ?? []).Select(n => (JsonNode?)new JsonObject { ["name"] = n })]),
-            });
-        return new JsonObject { ["prompts"] = list };
+        return new JsonObject { ["prompts"] = list, ["more"] = older.Count > page.Count };
     }
 
     private static ModelInfo PlaceholderModel(string? modelRef)
