@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Phone;
 
 /// <summary>
-/// The phone companion: a mobile page on the plugin's own small listener (<see cref="PhoneListener"/>), apart from NetPI's API, which stays
+/// The phone companion: a mobile page on the plugin's own small listener (<see cref="PluginListener"/>), apart from NetPI's API, which stays
 /// on loopback with its per-run token. A phone pairs once with a code the desktop shows and then lists chats, reads them live, starts new
 /// ones, sends / queues / steers / stops, and answers questions and approvals — through an allow-list of the host's own RPCs
 /// (<see cref="PhoneApi"/>). Off until <c>phone.enabled</c>; how the phone reaches the listener (LAN, a VPN, a port forward, a reverse proxy)
@@ -19,7 +19,7 @@ public sealed class PhonePlugin : INetPiPlugin
     private readonly TimeProvider _time;
     private readonly bool _listen;
     private IPluginContext? _ctx;
-    private PhoneListener? _listener;
+    private PluginListener? _listener;
     private string? _listenerKey;
     private string? _listenerError;
     private AddressList _allow = new([]);
@@ -124,7 +124,7 @@ public sealed class PhonePlugin : INetPiPlugin
             if (!IPAddress.TryParse(bind, out var address)) { _listenerError = $"“{bind}” is not an IP address"; ctx.Logger.LogWarning("Phone: {Error}", _listenerError); return; }
             try
             {
-                _listener = await PhoneListener.StartAsync(address, port, Api!.HandleAsync, ctx.Logger, ct).ConfigureAwait(false);
+                _listener = await PluginListener.StartAsync("Phone", address, port, PhoneApi.MaxBody, Api!.HandleAsync, ctx.Logger, ct).ConfigureAwait(false);
                 _listenerKey = key;
                 ctx.Logger.LogInformation("Phone: serving http://{Address}:{Port}/", address, _listener.Port);
             }

@@ -16,6 +16,8 @@ namespace NetPI.Phone;
 /// </summary>
 internal sealed class PhoneApi : IDisposable
 {
+    /// <summary>The throttle's limit, for the tests (the throttle type itself is shared source, one per plugin assembly).</summary>
+    internal const int FailureLimit = FailureThrottle.Limit;
     public const int MaxBody = 12 * 1024 * 1024;
     public const string Cookie = "netpi_phone";
 
