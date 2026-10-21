@@ -498,7 +498,9 @@ A subagent's checkout is decided before it starts, and a failure stops the spawn
 checkout:
 
 - `workspace`: an existing workspace to work in (id or name; pass the same one to two subagents and they see each
-  other's files);
+  other's files). It is bound exactly as named — the isolation setting and an isolated parent never turn it into a fresh
+  worktree. A workspace of another project is refused (the message names that project: a subagent works in its parent's
+  project), and so is `workspace` together with `isolated: true`;
 - `isolated: true` (or `workspace: "new"`): a writing worker gets its own git worktree and branch, so its commits land
   on that branch, never on the caller's (the branch name comes back in the report; merge it into the project's branch
   with `workspaces.integrate`, or by hand);
