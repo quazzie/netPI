@@ -195,6 +195,17 @@ public static class PhoneTests
             Check.False(lines[1].Contains("AAAA"), "the image does not ride the stream");
         });
 
+        r.Add("phone: a full event queue never blocks the publisher and is marked for a resync frame", () =>
+        {
+            var q = new PhoneApi.EventStream();
+            for (var i = 0; i < 2000; i++) q.Offer("x");
+            Check.False(q.TakeResync(), "not full yet: no resync");
+            q.Offer("overflow");   // returns at once
+            Check.True(q.TakeResync(), "the overflow marks the stream for a resync");
+            Check.False(q.TakeResync(), "and only once");
+            return Task.CompletedTask;
+        });
+
         r.Add("phone: the Agents view's snapshot is allowed, and the events that make it re-read carry no body", () =>
         {
             Check.True(PhoneApi.Allowed.ContainsKey("work.snapshot"), "work.snapshot is allowed");
