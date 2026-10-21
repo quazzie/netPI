@@ -106,25 +106,7 @@ internal sealed class ModelListCache(string providerId, ILogger log, IEventBus? 
 
     private void PublishIfChanged(IReadOnlyList<ModelInfo> models)
     {
-        // The same fields as the host catalog's signature (ModelCatalog.Signature): a change either one sees is a
-        // change both see, so the provider's models.changed and the catalog's agree.
-        var sb = new StringBuilder();
-        foreach (var m in models)
-        {
-            sb.Append(m.Ref).Append('|').Append(m.Status).Append('|').Append(m.ContextWindow).Append('|').Append(m.DisplayName)
-                .Append('|').Append(m.MaxOutputTokens).Append('|').Append(m.Concurrency).Append('|');
-            if (m.InputModalities is { } modalities)
-                foreach (var modality in modalities) sb.Append(modality).Append(',');
-            sb.Append('|');
-            if (m.Reasoning is { } reasoning)
-            {
-                sb.Append(reasoning.Supported ? "reasoning:" : "no-reasoning:").Append(reasoning.Default).Append(':');
-                if (reasoning.Efforts is { } efforts)
-                    foreach (var effort in efforts) sb.Append(effort).Append(',');
-            }
-            sb.Append('|').Append(m.IsLocal).Append('|').Append(m.Extra?.ToJsonString()).Append('\n');
-        }
-        var sig = sb.ToString();
+        var sig = ModelSignature.Of(models);
         if (sig == _signature) return;
         var first = _signature is null;
         _signature = sig;
