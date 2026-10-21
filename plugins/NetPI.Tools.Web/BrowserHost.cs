@@ -60,6 +60,7 @@ internal sealed class BrowserHost : IAsyncDisposable
         {
             if (tab.IsOpen && (!create || tab.Attached == (where == "chrome"))) return _lastTab = tab;
             _tabs.TryRemove(sessionId, out _);
+            ReleaseDownloads(tab);
             if (tab.IsOpen) await tab.CloseAsync().ConfigureAwait(false);  // moving to the other browser
         }
         if (!create) return null;
@@ -82,6 +83,7 @@ internal sealed class BrowserHost : IAsyncDisposable
     public async Task<string?> CloseTabAsync(string sessionId)
     {
         if (!_tabs.TryRemove(sessionId, out var tab)) return null;
+        ReleaseDownloads(tab);
         await tab.CloseAsync().ConfigureAwait(false);
         TabChanged?.Invoke(sessionId);
         return tab.Shared ? "Let go of the tab the user shared; it stays open in their Chrome." : "Closed the browser tab.";
@@ -93,6 +95,7 @@ internal sealed class BrowserHost : IAsyncDisposable
         if (!_tabs.TryGetValue(sessionId, out var tab) || !tab.IsOpen) return null;
         if (!tab.Attached) return "This tab is in the agents' own browser: use action show to put it in front of the user (the chat's Browser view), or tell them the result.";
         _tabs.TryRemove(sessionId, out _);
+        ReleaseDownloads(tab);
         var (url, title) = await tab.LeaveAsync(ct).ConfigureAwait(false);
         TabChanged?.Invoke(sessionId);
         return $"Left the tab open for the user in their Chrome: {title} — {url}. The chat has no tab now; open starts a new one.";
@@ -164,6 +167,7 @@ internal sealed class BrowserHost : IAsyncDisposable
             if (t.Shared && t.TargetId == tabId.ToString(System.Globalization.CultureInfo.InvariantCulture))
             {
                 _tabs.TryRemove(sid, out _);
+                ReleaseDownloads(t);
                 await t.CloseAsync().ConfigureAwait(false);
                 TabChanged?.Invoke(sid);
             }
@@ -182,7 +186,11 @@ internal sealed class BrowserHost : IAsyncDisposable
     {
         if (!Relay.IsOpen) throw new BrowserUnavailableException("The NetPI extension is not connected, so the user's shared tabs can't be reached.");
         _pool.TryRemove(tabId, out _);
-        if (_tabs.TryRemove(sessionId, out var old) && old.IsOpen) await old.CloseAsync().ConfigureAwait(false);
+        if (_tabs.TryRemove(sessionId, out var old))
+        {
+            ReleaseDownloads(old);
+            if (old.IsOpen) await old.CloseAsync().ConfigureAwait(false);
+        }
         var tab = await BrowserTab.AttachAsync(Relay, tabId.ToString(System.Globalization.CultureInfo.InvariantCulture), ct, shared: true).ConfigureAwait(false);
         tab.Note("The user shared this tab with the chat (it is theirs: close only lets go of it).");
         Bind(sessionId, tab);
@@ -198,6 +206,7 @@ internal sealed class BrowserHost : IAsyncDisposable
             if (t.Shared && t.TargetId == id)
             {
                 _tabs.TryRemove(sid, out _);
+                ReleaseDownloads(t);
                 await t.CloseAsync().ConfigureAwait(false);
                 TabChanged?.Invoke(sid);
             }
@@ -215,7 +224,7 @@ internal sealed class BrowserHost : IAsyncDisposable
     {
         _pool.Clear();
         foreach (var (sid, t) in _tabs)
-            if (t.Kind == "extension") { t.Gone(); _tabs.TryRemove(sid, out _); TabChanged?.Invoke(sid); }
+            if (t.Kind == "extension") { t.Gone(); _tabs.TryRemove(sid, out _); ReleaseDownloads(t); TabChanged?.Invoke(sid); }
     }
 
     // ------------------------------------------------------------------ the agents' own browser
@@ -297,7 +306,7 @@ internal sealed class BrowserHost : IAsyncDisposable
         {
             // the user closed the tab: the chat's next call opens a new one
             foreach (var (key, tab) in _tabs)
-                if (tab.TargetId == gone.GetString()) { tab.Gone(); _tabs.TryRemove(key, out _); TabChanged?.Invoke(key); }
+                if (tab.TargetId == gone.GetString()) { tab.Gone(); _tabs.TryRemove(key, out _); ReleaseDownloads(tab); TabChanged?.Invoke(key); }
             if (int.TryParse(gone.GetString(), out var pooled)) _pool.TryRemove(pooled, out _);
             return;
         }
@@ -305,7 +314,7 @@ internal sealed class BrowserHost : IAsyncDisposable
         {
             // the user cancelled the extension's debugging bar, or the browser dropped the tab
             foreach (var (key, tab) in _tabs)
-                if (tab.SessionId == detached.GetString()) { tab.Gone(); _tabs.TryRemove(key, out _); TabChanged?.Invoke(key); }
+                if (tab.SessionId == detached.GetString()) { tab.Gone(); _tabs.TryRemove(key, out _); ReleaseDownloads(tab); TabChanged?.Invoke(key); }
             return;
         }
         if (method == "Browser.downloadWillBegin" && p.TryGetProperty("guid", out var guid))
@@ -315,7 +324,7 @@ internal sealed class BrowserHost : IAsyncDisposable
             // with two chats browsing, the note went to the wrong one (idea-ic4fr9); a frame of its own falls back
             var frame = p.TryGetProperty("frameId", out var fid) ? fid.GetString() : null;
             var owner = (frame is null ? null : _tabs.Values.FirstOrDefault(t => t.IsOpen && t.TargetId == frame)) ?? _lastTab;
-            if (owner is null) return;
+            if (owner is null || !owner.IsOpen) return;  // a tab that is gone takes no download
             owner.DownloadStarted();
             _downloads[guid.GetString()!] = (owner, name);
             return;
@@ -355,17 +364,27 @@ internal sealed class BrowserHost : IAsyncDisposable
         finally { _launch.Release(); }
     }
 
+    /// <summary>
+    /// A tab that is gone (closed, detached, its browser dropped): a download it started will not report back here, so
+    /// its entries go with it, and its active count drops with them (the idle sweep and the action wait both read it).
+    /// </summary>
+    private void ReleaseDownloads(BrowserTab tab)
+    {
+        foreach (var (guid, d) in _downloads)
+            if (d.Tab == tab && _downloads.TryRemove(guid, out _)) tab.DownloadEnded();
+    }
+
     /// <summary>Drops the connection to the user's Chrome (Chrome's automation banner goes with it); its tabs stay open.</summary>
     private async Task DisconnectChromeAsync()
     {
-        foreach (var (key, tab) in _tabs) if (tab.Kind == "chrome") { _tabs.TryRemove(key, out _); TabChanged?.Invoke(key); }
+        foreach (var (key, tab) in _tabs) if (tab.Kind == "chrome") { _tabs.TryRemove(key, out _); ReleaseDownloads(tab); TabChanged?.Invoke(key); }
         var cdp = _chrome; _chrome = null;
         if (cdp is not null) await cdp.DisposeAsync().ConfigureAwait(false);
     }
 
     private async Task StopOwnAsync()
     {
-        foreach (var (key, tab) in _tabs) if (tab.Kind == "own") { _tabs.TryRemove(key, out _); TabChanged?.Invoke(key); }
+        foreach (var (key, tab) in _tabs) if (tab.Kind == "own") { _tabs.TryRemove(key, out _); ReleaseDownloads(tab); TabChanged?.Invoke(key); }
         var cdp = _own; _own = null;
         if (cdp is not null) await cdp.DisposeAsync().ConfigureAwait(false);
         var process = _ownProcess; _ownProcess = null;

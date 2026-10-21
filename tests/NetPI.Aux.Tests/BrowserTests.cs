@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -378,6 +379,49 @@ public static class BrowserTests
                 Check.Contains(r.CloseStatusDescription ?? "", "too large");
             }
             finally { env.Ctx.Unload(); }
+        });
+
+        r.Add("browser: a download whose tab goes (closed, or its browser dropped) is let go with it; the tab's active count drops to zero", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            await using var host = new BrowserHost(env.Ctx);
+            var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var downloads = (System.Collections.IDictionary)typeof(BrowserHost).GetField("_downloads", flags)!.GetValue(host)!;
+            void Event(string method, object p) => typeof(BrowserHost).GetMethod("OnEvent", flags)!.Invoke(host, [method, JsonDocument.Parse(JsonSerializer.Serialize(p)).RootElement.Clone(), null]);
+            int Active(BrowserTab tab) => (int)typeof(BrowserTab).GetField("_downloadsActive", flags)!.GetValue(tab)!;
+
+            var cdp = new FollowFakeCdp();
+            var tab = await BrowserTab.AttachAsync(cdp, "tab-1", CancellationToken.None);
+            typeof(BrowserHost).GetMethod("Bind", flags)!.Invoke(host, ["ses-chat", tab]);
+
+            Event("Browser.downloadWillBegin", new { guid = "g1", frameId = "tab-1", suggestedFilename = "a.zip" });
+            Event("Browser.downloadWillBegin", new { guid = "g2", frameId = "tab-1", suggestedFilename = "b.zip" });
+            Check.Equal(2, downloads.Count, "two downloads in progress");
+            Check.Equal(2, Active(tab));
+            Event("Browser.downloadProgress", new { guid = "g1", state = "completed" });
+            Check.Equal(1, downloads.Count, "a finished download is forgotten");
+            Check.Equal(1, Active(tab));
+
+            // the user closes the tab: its download is killed and never reports back
+            Event("Target.targetDestroyed", new { targetId = "tab-1" });
+            Check.Equal(0, downloads.Count, "the closed tab's download is dropped");
+            Check.Equal(0, Active(tab), "the tab's active count drops with it");
+
+            // a late event for the dropped download does nothing; a download from a gone tab is not tracked
+            Event("Browser.downloadProgress", new { guid = "g2", state = "canceled" });
+            Event("Browser.downloadWillBegin", new { guid = "g3", frameId = "tab-1", suggestedFilename = "c.zip" });
+            Check.Equal(0, downloads.Count, "nothing is tracked for a gone tab");
+
+            // a browser that drops its connection takes its tabs' downloads with it
+            var again = await BrowserTab.AttachAsync(new FollowFakeCdp(), "tab-2", CancellationToken.None);
+            typeof(BrowserHost).GetMethod("Bind", flags)!.Invoke(host, ["ses-other", again]);
+            Event("Browser.downloadWillBegin", new { guid = "g4", frameId = "tab-2", suggestedFilename = "d.zip" });
+            Check.Equal(1, downloads.Count);
+            await (Task)typeof(BrowserHost).GetMethod("StopOwnAsync", flags)!.Invoke(host, null)!;
+            Check.Equal(0, downloads.Count, "the dropped browser's download is let go");
+            Check.Equal(0, Active(again));
+            env.Ctx.Unload();
         });
 
         r.Add("browser: a follow of a new tab that fails after the attach puts the tab back and tells the model", async () =>
