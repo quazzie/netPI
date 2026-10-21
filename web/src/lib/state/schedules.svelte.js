@@ -30,6 +30,12 @@ export function proposalIn(sessionId) {
   return null;
 }
 
+/** Ids of the chats with a schedule proposal waiting: one pass, for lookups over many chats. */
+export function proposalSessionIds(into = new Set()) {
+  for (const p of scheduleProposals.pending.values()) into.add(p.sessionId);
+  return into;
+}
+
 let loadSeq = 0;
 
 /** On (re)connect: the proposals that wait. Without the schedules plugin nothing does. */

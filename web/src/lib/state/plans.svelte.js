@@ -33,6 +33,13 @@ export function offerWaiting(sessionId) {
   return null;
 }
 
+/** Ids of the chats with a plan awaiting a decision or an offer waiting: one pass, for lookups over many chats. */
+export function planAskingSessionIds(into = new Set()) {
+  for (const p of plans.byId.values()) if (p.status === 'awaiting') into.add(p.sessionId);
+  for (const o of plans.offers.values()) into.add(o.sessionId);
+  return into;
+}
+
 /** The offer of plan mode this tool call made, waiting or closed. */
 export function offerForCall(sessionId, callId) {
   for (const o of plans.offers.values()) if (o.sessionId === sessionId && o.callId === callId) return { ...o, status: 'waiting' };
