@@ -38,9 +38,10 @@
     openId = c.id;
     detail = null;
     try {
-      detail = await ctx.rpc('diag.call', { id: c.id });
+      const d = await ctx.rpc('diag.call', { id: c.id });
+      if (openId === c.id) detail = d;
     } catch (e) {
-      detail = { error: e.message };
+      if (openId === c.id) detail = { error: e.message };
     }
   }
 
