@@ -47,17 +47,35 @@ internal static class Protocol
     public static string Id(JsonNode? id) => id?.ToJsonString() ?? "";
     /// <summary>The reply to a server's <c>ping</c> request: an empty result, as the protocol requires.</summary>
     public static JsonObject Pong(JsonObject request) => new() { ["jsonrpc"] = "2.0", ["id"] = request["id"]!.DeepClone(), ["result"] = new JsonObject() };
-    public static async Task<string?> ReadLineAsync(TextReader reader, int limit, CancellationToken ct)
+    public static Task<string?> ReadLineAsync(TextReader reader, int limit, CancellationToken ct) => new LineReader(reader, limit).ReadLineAsync(ct);
+}
+
+/// <summary>Reads protocol lines with block reads; the buffer lives as long as the reader's loop.</summary>
+internal sealed class LineReader(TextReader reader, int limit)
+{
+    private readonly char[] _buf = new char[4096];
+    private int _pos, _len;
+    private readonly System.Text.StringBuilder _line = new();
+    public async Task<string?> ReadLineAsync(CancellationToken ct)
     {
-        var text = new System.Text.StringBuilder();
-        var buffer = new char[1];
-        while (await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false) != 0)
+        _line.Clear();
+        while (true)
         {
-            if (buffer[0] == '\n') return text.ToString().TrimEnd('\r');
-            if (text.Length >= limit) throw new McpException("MCP line exceeds the configured size limit.");
-            text.Append(buffer[0]);
+            if (_pos == _len)
+            {
+                _len = await reader.ReadAsync(_buf.AsMemory(), ct).ConfigureAwait(false);
+                _pos = 0;
+                if (_len == 0) return _line.Length == 0 ? null : _line.ToString();
+            }
+            var span = _buf.AsSpan(_pos, _len - _pos);
+            var end = span.IndexOf('\n');
+            var take = end < 0 ? span.Length : end;
+            if (_line.Length + take > limit) throw new McpException("MCP line exceeds the configured size limit.");
+            _line.Append(span[..take]);
+            if (end < 0) { _pos = _len; continue; }
+            _pos += end + 1;
+            return _line.ToString().TrimEnd('\r');
         }
-        return text.Length == 0 ? null : text.ToString();
     }
 }
 

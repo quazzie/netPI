@@ -137,7 +137,8 @@ internal sealed class HttpTransport : IMcpTransport
         var data = new StringBuilder();
         var subscription = new Subscription();
         var count = 0; var since = DateTime.UtcNow;
-        while (await Protocol.ReadLineAsync(reader, _limit, ct).ConfigureAwait(false) is { } line)
+        var lines = new LineReader(reader, _limit);
+        while (await lines.ReadLineAsync(ct).ConfigureAwait(false) is { } line)
         {
             if (line.Length == 0)
             {
