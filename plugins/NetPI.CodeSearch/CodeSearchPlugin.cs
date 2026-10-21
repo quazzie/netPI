@@ -36,7 +36,7 @@ public sealed class CodeSearchPlugin : INetPiPlugin
         context.Tools.Register(new CodeSearchTool(context, searcher));
 
         var scope = new[] { RpcParam.Opt("sessionId"), RpcParam.Opt("root") };
-        context.Rpc.Register(new RpcMethod("codesearch.search", "Passages of a workspace closest to a query: { query, sessionId? | root?, limit? (8), path? } → { root, meaning, indexing, passages: [{ path, start, end, signature, text, score, words }], returnedTokens, fileTokens, ms }", ReadOnly: true,
+        context.Rpc.Register(new RpcMethod("codesearch.search", "Passages of a workspace closest to a query: { query, sessionId? | root?, limit? (8), path? } → { root, meaning, indexing, passages: [{ path, start, end, signature, text, score, words }], returnedTokens, fileTokens, ms }", ReadOnly: false, // a search refreshes the index and spends embedding calls: it writes
             Params: [RpcParam.Req("query"), .. scope, RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("path")]),
             async (r, rct) =>
             {
