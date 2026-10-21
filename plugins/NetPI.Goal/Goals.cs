@@ -605,9 +605,7 @@ internal sealed class Goals(IPluginContext ctx)
         if (rt is null) { Unavailable(sid, goal); return; }
         // queued input starts the next run by itself, and a running subagent's report does too: their ends decide again
         if (rt.GetQueue(sid).Count > 0) return;
-        var working = run.Agent.Children.Select(rt.Get)
-            .Where(a => a is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })
-            .Select(a => string.IsNullOrWhiteSpace(a!.Name) ? a.Id : a.Name).ToList();
+        var working = GoalReview.WorkingSubagents(rt, run.Agent.Children);
         if (working.Count > 0)
         {
             // goal.whileSubagentsRun: "wait" lets their reports start the next run; "continue" (the default) starts it
