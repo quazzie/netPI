@@ -6,22 +6,13 @@
   import { untrack } from 'svelte';
   import AgentDialog from './AgentDialog.svelte';
   import { app } from '../../lib/state/app.svelte.js';
-  import { rpc } from '../../lib/rpc.svelte.js';
+  import { settingsDoc } from '../../lib/state/settingsDoc.svelte.js';
 
   let { id: startId, onclose } = $props();
 
   let id = $state(untrack(() => startId));
-  let doc = $state.raw({});
-
-  async function load() {
-    try {
-      doc = (await rpc('settings.get'))?.settings ?? {};
-    } catch {}
-  }
-  $effect(() => {
-    app.settingsVersion;
-    load();
-  });
+  const doc = $derived(settingsDoc.doc);
+  $effect(() => settingsDoc.follow());
 </script>
 
 <AgentDialog
