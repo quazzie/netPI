@@ -83,9 +83,9 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                 doc = d;
             }
             Announce(PlanMode.Set(ctx.Sessions, sessionId, null));
-            if (doc is not null) await ResolvePlanAsync(doc, new PlanDecision("cancel"), CancellationToken.None).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
+        if (doc is not null) await ResolvePlanAsync(doc, new PlanDecision("cancel"), CancellationToken.None).ConfigureAwait(false);
         Changed(sessionId, doc, "off");
         return true;
     }
@@ -278,10 +278,18 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
     /// </summary>
     public async Task<JsonObject> AnswerAsync(string planId, string decision, string? feedback, bool newChat, CancellationToken ct)
     {
+        // The gate guards the store and plan mode only: the claim below keeps a second answer out while this one makes its
+        // RPCs, creates a session or starts a run (which may wait for a host reload), none of it under the gate.
+        JsonObject doc;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var doc = store.Get(planId) ?? throw new RpcException("not_found", $"No plan {planId}.");
+            doc = store.Get(planId) ?? throw new RpcException("not_found", $"No plan {planId}.");
+            if (!_deciding.Add(planId)) throw new RpcException("bad_request", "This plan is being decided right now.");
+        }
+        finally { _gate.Release(); }
+        try
+        {
             var sessionId = doc["sessionId"]!.GetValue<string>();
             var status = doc["status"]!.GetValue<string>();
             var result = new JsonObject { ["planId"] = planId };
@@ -290,7 +298,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                 case "save":
                     {
                         var idea = await SaveIdeaAsync(doc, "open", ct).ConfigureAwait(false);
-                        store.Put(doc);
+                        await LockedAsync(() => store.Put(doc)).ConfigureAwait(false);
                         result["ideaId"] = idea;
                         break;
                     }
@@ -298,7 +306,7 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                     {
                         if (doc["plan"] is null) throw new RpcException("bad_request", "This plan has no content yet.");
                         result["path"] = await SaveFileAsync(doc, ct).ConfigureAwait(false);
-                        store.Put(doc);
+                        await LockedAsync(() => store.Put(doc)).ConfigureAwait(false);
                         break;
                     }
                 case "approve":
@@ -307,16 +315,19 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                         var session = ctx.Sessions.Require(sessionId);
                         var body = PlanStore.Body(doc);
                         var ideaId = await SaveIdeaAsync(doc, "planned", ct).ConfigureAwait(false);
-                        store.Put(doc); // the idea is remembered even if what follows fails: a retry follows it instead of saving another
+                        await LockedAsync(() => store.Put(doc)).ConfigureAwait(false); // the idea is remembered even if what follows fails: a retry follows it instead of saving another
                         string? newId = null;
                         var todos = false;
                         if (newChat) newId = await CreateReplacementAsync(session, doc, body, ideaId, ct).ConfigureAwait(false);
                         else todos = ctx.Settings.Get("plan.seedTodos", true) && SeedTodos(sessionId, body);
-                        doc["status"] = PlanStore.Approved;
-                        if (newId is not null) doc["newSessionId"] = newId;
-                        store.Put(doc);
-                        PlanMode.Set(ctx.Sessions, sessionId, PlanMode.Approved, planId, body.Title, newId);
-                        if (newId is not null) ctx.Sessions.UpdateSession(sessionId, s => s.Archived = true);
+                        await LockedAsync(() =>
+                        {
+                            doc["status"] = PlanStore.Approved;
+                            if (newId is not null) doc["newSessionId"] = newId;
+                            store.Put(doc);
+                            PlanMode.Set(ctx.Sessions, sessionId, PlanMode.Approved, planId, body.Title, newId);
+                            if (newId is not null) ctx.Sessions.UpdateSession(sessionId, s => s.Archived = true);
+                        }).ConfigureAwait(false);
                         var d = new PlanDecision(newChat ? "approve-new" : "approve", feedback?.Trim() is { Length: > 0 } f ? f : null, newId, ideaId, todos);
                         await DeliverAsync(doc, d, ct).ConfigureAwait(false);
                         result["ideaId"] = ideaId;
@@ -329,19 +340,25 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
                         Require(status, PlanStore.Awaiting, "revised");
                         var text = feedback?.Trim();
                         if (string.IsNullOrEmpty(text)) throw new RpcException("bad_request", "Say what to change: a revision needs feedback.");
-                        PlanStore.NoteFeedback(doc, text);
-                        doc["status"] = PlanStore.Revising;
-                        store.Put(doc);
-                        PlanMode.Set(ctx.Sessions, sessionId, PlanMode.Planning);
+                        await LockedAsync(() =>
+                        {
+                            PlanStore.NoteFeedback(doc, text);
+                            doc["status"] = PlanStore.Revising;
+                            store.Put(doc);
+                            PlanMode.Set(ctx.Sessions, sessionId, PlanMode.Planning);
+                        }).ConfigureAwait(false);
                         await DeliverAsync(doc, new PlanDecision("revise", text), ct).ConfigureAwait(false);
                         break;
                     }
                 case "cancel":
                     {
                         if (status is not (PlanStore.Awaiting or PlanStore.Revising)) throw new RpcException("bad_request", $"This plan is {status}: nothing to cancel.");
-                        doc["status"] = PlanStore.Cancelled;
-                        store.Put(doc);
-                        PlanMode.Set(ctx.Sessions, sessionId, null);
+                        await LockedAsync(() =>
+                        {
+                            doc["status"] = PlanStore.Cancelled;
+                            store.Put(doc);
+                            PlanMode.Set(ctx.Sessions, sessionId, null);
+                        }).ConfigureAwait(false);
                         await DeliverAsync(doc, new PlanDecision("cancel"), ct).ConfigureAwait(false);
                         break;
                     }
@@ -352,6 +369,16 @@ internal sealed class PlanService(IPluginContext ctx, PlanStore store)
             Changed(sessionId, doc, ctx.Sessions.GetSession(sessionId) is { } s2 ? PlanMode.State(s2) ?? "off" : "off");
             return result;
         }
+        finally { await LockedAsync(() => _deciding.Remove(planId)).ConfigureAwait(false); }
+    }
+
+    private readonly HashSet<string> _deciding = [];
+
+    /// <summary>A short store/plan-mode mutation under the gate (never an RPC, a session start or a run).</summary>
+    private async Task LockedAsync(Action mutate)
+    {
+        await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try { mutate(); }
         finally { _gate.Release(); }
     }
 
