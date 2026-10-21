@@ -133,9 +133,15 @@ internal static class GoalReview
         return rest.Length == 0 ? "The review found gaps but did not name them." : Cut(rest, 2000);
     }
 
+    /// <summary>The names (else the ids) of the children still working: a completion or a continuation waits for them.</summary>
+    internal static List<string> WorkingSubagents(IAgentRuntime rt, IEnumerable<string> children) =>
+        children.Select(rt.Get)
+            .Where(a => a is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })
+            .Select(a => string.IsNullOrWhiteSpace(a!.Name) ? a.Id : a.Name).ToList();
+
     private static string OneLine(string s, int max) => Cut(s.Replace("\r", "").Replace('\n', ' ').Trim(), max);
-    private static string Cut(string s, int max) => s.Length <= max ? s : s[..max] + "…";
-    private static string Tail(string s, int max) => s.Length <= max ? s : "…" + s[^max..];
+    private static string Cut(string s, int max) => TextLimit.Head(s, max, "…");
+    private static string Tail(string s, int max) => TextLimit.HeadTail(s, max, 0, (_, _) => "…");   // no head: the "…" + the last max characters
 }
 
 internal sealed class GoalsReview(IPluginContext ctx, Goals goals)
@@ -151,9 +157,7 @@ internal sealed class GoalsReview(IPluginContext ctx, Goals goals)
         // Cheap, and no model needed: work handed to subagents is not done while they are still doing it.
         var rt = ctx.Services.Get<IAgentRuntime>();
         var me = rt?.Get(tc.AgentId);
-        var working = me?.Children.Select(rt!.Get)
-            .Where(a => a is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })
-            .Select(a => string.IsNullOrWhiteSpace(a!.Name) ? a.Id : a.Name).ToList() ?? [];
+        var working = me is null ? [] : GoalReview.WorkingSubagents(rt!, me.Children);
         if (working.Count > 0)
             return (ToolResult.Error($"Not complete yet: {working.Count} of your subagents {(working.Count == 1 ? "is" : "are")} still working " +
                 $"({string.Join(", ", working)}). Wait for their reports (agent with action wait), check what they did, then complete the goal."), null);

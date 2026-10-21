@@ -110,6 +110,14 @@ public static class MediaTests
                     var chunk = new byte[1024];
                     for (var i = 0; i < 300; i++) await ctx.Response.Body.WriteAsync(chunk); // ~300 KB, length unknown
                 });
+                app.MapGet("/chunked-exact", async ctx =>
+                {
+                    // Exactly media.maxBytes: within the limit, so it is shown (the cut is only for a body past it).
+                    ctx.Response.ContentType = "image/png";
+                    var exact = new byte[100_000];
+                    png.CopyTo(exact, 0);
+                    await ctx.Response.Body.WriteAsync(exact);
+                });
                 app.MapGet("/chunked-small", async ctx =>
                 {
                     ctx.Response.ContentType = "image/png";
@@ -119,6 +127,8 @@ public static class MediaTests
             var small = await env.Run(new { source = web.Url + "/chunked-small" });
             Check.False(small.IsError, small.Content);
             Check.Equal("image/png", D(small).GetProperty("mediaType").GetString());
+            var exact = await env.Run(new { source = web.Url + "/chunked-exact" });
+            Check.False(exact.IsError, exact.Content);
             var huge = await env.Run(new { source = web.Url + "/chunked-huge" });
             Check.True(huge.IsError);
             Check.Contains(huge.Content, "larger than the");

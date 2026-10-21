@@ -8,5 +8,8 @@
     <!-- Shared SOURCE, not a shared assembly (docs/PLUGINS.md): job objects for child processes. -->
     <Compile Include="$(RepoRoot)shared/ProcessKit/*.cs" LinkBase="ProcessKit" />
     <Using Include="NetPI.ProcessKit" />
+    <!-- Shared SOURCE, not a shared assembly (docs/PLUGINS.md): bounded HTTP body reads. -->
+    <Compile Include="$(RepoRoot)shared/HttpKit/*.cs" LinkBase="HttpKit" />
+    <Using Include="NetPI.HttpKit" />
   </ItemGroup>
 </Project>

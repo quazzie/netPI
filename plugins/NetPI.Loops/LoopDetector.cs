@@ -119,7 +119,7 @@ internal static class LoopDetector
         catch (JsonException) { }
         main ??= args;
         main = main.ReplaceLineEndings(" ");
-        if (main.Length > 80) main = main[..80] + "…";
+        main = TextLimit.Head(main, 80, "…");
         return $"{tool} `{main}`";
     }
 }
