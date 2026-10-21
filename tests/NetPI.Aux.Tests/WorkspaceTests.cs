@@ -34,6 +34,11 @@ public static class WorkspaceTests
         t.Add("workspaces: a gated integrate merges the base first, runs verify in the worktree, and moves the base only when it passes", IntegrateGated);
         t.Add("workspaces: cleanup refuses a dirty, unbound or running worktree and removes a merged one", CleanupSafety);
         t.Add("workspaces: retirement ignores an archived bound session; a live one still blocks", RetirementIgnoresArchived);
+        t.Add("workspaces: retire asked mid-run removes the worktree and its merged branch when the run ends", RetireAfterRun);
+        t.Add("workspaces: retire waits while a run or a user's answer is pending, and keeps a dirty or unmerged worktree with a notice", RetireKept);
+        t.Add("workspaces: retire refuses an attached workspace, and reports what would still block", RetireRefusals);
+        t.Add("workspaces: workspaces.delete whenDone flags and retires once nothing runs; a pending flag is tried at start", RetireWhenDoneRpc);
+        t.Add("workspaces: a worker re-tasked after its workspace was retired gets a fresh one or the project root", RetaskAfterRetire);
         t.Add("workspaces: the guard is per spelling: relative, absolute, .. and a symlink into another checkout", GuardSpellings);
         t.Add("workspaces: a junction in an intermediate parent is the same place, so the write is refused", JunctionInIntermediateParent);
         t.Add("workspaces: a long-path, admin-share or device spelling is the same local path, and a remote share is another place", SpellingsArePlaces);
@@ -748,6 +753,214 @@ public static class WorkspaceTests
         Check.Contains(why2!, "still bound");
         Check.Contains(why2, live.Id);
         Check.Contains(why2, "Archived");
+    }
+
+    // ------------------------------------------------------------------ retire when done
+
+    private sealed class WaitingRuntime : IAgentRuntime
+    {
+        public FakeAgentRuntime Inner { get; } = new();
+        public List<WaitingCall> Pending { get; } = [];
+        public IReadOnlyList<AgentInfo> List(bool includeFinished = true) => Inner.List(includeFinished);
+        public AgentInfo? Get(string agentId) => Inner.Get(agentId);
+        public AgentInfo? GetBySession(string sessionId) => Inner.GetBySession(sessionId);
+        public Task<AgentInfo> SendAsync(string sessionId, UserInput input, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<AgentWaitResult> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true, TimeSpan? timeout = null, CancellationToken ct = default, bool any = false) => throw new NotSupportedException();
+        public Task<bool> AbortAsync(string agentOrSessionId) => Task.FromResult(false);
+        public Task<bool> MessageAsync(string fromAgentId, string toAgentId, string text, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => Task.FromResult(false);
+        public IReadOnlyList<QueuedInput> GetQueue(string sessionId) => [];
+        public bool RemoveQueued(string sessionId, string inputId) => false;
+        public IReadOnlyList<WaitingCall> Waits(string? sessionId = null, string? kind = null) =>
+            Pending.Where(w => sessionId is null || w.SessionId == sessionId).ToList();
+        public void SetStatus(string sessionId, AgentStatus status)
+        {
+            var a = Inner.Agents.FirstOrDefault(x => x.SessionId == sessionId);
+            if (a is null) Inner.Agents.Add(a = new AgentInfo { Id = "agt_" + sessionId, SessionId = sessionId });
+            a.Status = status;
+        }
+    }
+
+    /// <summary>A worker that committed and merged its work, bound to its own worktree (its session running).</summary>
+    private static async Task<(WorkspaceInfo W, SessionInfo S, WaitingRuntime Rt)> MergedWorker(Env env, string name, bool merge = true)
+    {
+        var rt = new WaitingRuntime();
+        env.Ctx.ServicesFake.Register<IAgentRuntime>(rt);
+        var session = env.Session(name);
+        var binding = env.Provision(name, session.Id).Binding!;
+        env.Store.SetSessionWorkspace(session.Id, binding.WorkspaceId);
+        env.Write(binding.Root, name + ".txt", "work");
+        TestGit.Run(binding.Root, "add", "-A");
+        TestGit.Run(binding.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", name);
+        var record = env.Store.GetWorkspace(binding.WorkspaceId)!;
+        if (merge) Check.True((await env.Provisioner.IntegrateAsync(record)).Ok);
+        rt.SetStatus(session.Id, AgentStatus.Running);
+        return (record, session, rt);
+    }
+
+    private static ChatMessage[] RetireNotices(Env env, string sessionId) =>
+        env.Ctx.SessionsFake.GetContextMessages(sessionId).Where(m => m.MetaString("kind") == WorkspaceRetirement.NoticeKind).ToArray();
+
+    private static string Branches(Env env) => TestGit.Out(env.ProjectPath, "branch", "--list") ?? "";
+
+    private static async Task EndRun(Env env, WaitingRuntime rt, SessionInfo session, AgentStatus status = AgentStatus.Idle)
+    {
+        rt.SetStatus(session.Id, status);
+        env.Ctx.Events.Publish(EventTypes.AgentStatus, new { agent = rt.GetBySession(session.Id) });
+        await Task.Delay(50);
+    }
+
+    private static async Task RetireAfterRun()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("retire after run"); }
+        var (w, session, rt) = await MergedWorker(env, "done");
+        var branch = w.Branch!;
+        Check.Contains(Branches(env), branch);
+        var tool = new WorkspaceTool(env.Ctx, env.Resolver, env.Ctx.Services.Get<WorkspaceRetirement>()!);
+        var context = env.Context(session, env.Resolver.Bind(w));
+        var answer = await tool.ExecuteAsync(context, Json(new { action = "retire" }), CancellationToken.None);
+        Check.False(answer.IsError, answer.Content);
+        Check.Contains(answer.Content, "Nothing else is in the way");
+        Check.True(Directory.Exists(w.Path), "removed while the run was still going");
+        Check.True(WorkspaceRetirement.IsFlagged(env.Store.GetWorkspace(w.Id)!));
+
+        // A status event of a run that goes on changes nothing.
+        env.Ctx.Events.Publish(EventTypes.AgentStatus, new { agent = rt.GetBySession(session.Id) });
+        await Task.Delay(100);
+        Check.True(Directory.Exists(w.Path));
+
+        await EndRun(env, rt, session);
+        await Wait.Until(() => env.Store.GetWorkspace(w.Id) is null, "the worktree to be removed");
+        Check.Equal(null, env.Store.GetWorkspace(w.Id));
+        Check.Equal(null, SessionWorkspace.Of(env.Ctx.SessionsFake.GetSession(session.Id)), "the session stays bound to the removed workspace");
+        Check.False(Branches(env).Contains(branch), "the merged branch was not deleted");
+    }
+
+    private static async Task RetireKept()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("retire kept"); }
+        var retirement = env.Ctx.Services.Get<WorkspaceRetirement>()!;
+
+        // A user's answer is pending: no run, but not done.
+        var (w, session, rt) = await MergedWorker(env, "asks");
+        retirement.Request(w, session.Id);
+        rt.SetStatus(session.Id, AgentStatus.Idle);
+        rt.Pending.Add(new WaitingCall { Id = "w1", Kind = "ask", SessionId = session.Id, AgentId = "a", CallId = "c", Tool = "ask_user" });
+        Check.Equal("waiting", (await retirement.TryRetireAsync(w.Id, default)).Status);
+        Check.True(Directory.Exists(w.Path));
+        rt.Pending.Clear();
+
+        // Dirty at the end of the run: kept, flag stays, the owner is told.
+        env.Write(w.Path, "wip.txt", "uncommitted");
+        await EndRun(env, rt, session);
+        await Wait.Until(() => RetireNotices(env, session.Id).Length > 0, "the notice about the kept worktree");
+        Check.True(Directory.Exists(w.Path), "a dirty worktree was removed");
+        Check.True(WorkspaceRetirement.IsFlagged(env.Store.GetWorkspace(w.Id)!), "the flag was cleared");
+        Check.Equal(w.Id, SessionWorkspace.Of(env.Ctx.SessionsFake.GetSession(session.Id)), "the session was unbound though the workspace stays");
+        var notice = RetireNotices(env, session.Id).Last();
+        Check.Contains(((TextPart)notice.Parts[0]).Text, "uncommitted changes");
+        // Same reason again: no second notice.
+        await retirement.TryRetireAsync(w.Id, default);
+        Check.Equal(1, RetireNotices(env, session.Id).Length);
+        // Cleaned up: the next run end removes it.
+        File.Delete(Path.Combine(w.Path, "wip.txt"));
+        await EndRun(env, rt, session);
+        await Wait.Until(() => env.Store.GetWorkspace(w.Id) is null, "the cleaned worktree to be removed");
+
+        // Unmerged: kept, branch too.
+        var (u, us, urt) = await MergedWorker(env, "unmerged", merge: false);
+        env.Ctx.Services.Get<WorkspaceRetirement>()!.Request(u, us.Id);
+        await EndRun(env, urt, us);
+        await Wait.Until(() => RetireNotices(env, us.Id).Length > 0, "the notice about the unmerged worktree");
+        Check.True(Directory.Exists(u.Path), "an unmerged worktree was removed");
+        Check.Contains(Branches(env), u.Branch!);
+        var n = RetireNotices(env, us.Id).Last();
+        Check.Contains(((TextPart)n.Parts[0]).Text, "not merged");
+    }
+
+    private static async Task RetireRefusals()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("retire refusals"); }
+        var tool = new WorkspaceTool(env.Ctx, env.Resolver, env.Ctx.Services.Get<WorkspaceRetirement>()!);
+
+        var dir = Path.Combine(env.Root, "attached");
+        Directory.CreateDirectory(dir);
+        var attached = env.Provisioner.Attach(dir, env.Project.Id, "attached").Binding!;
+        var session = env.Session("a", attached.WorkspaceId);
+        var refused = await tool.ExecuteAsync(env.Context(session, attached), Json(new { action = "retire" }), CancellationToken.None);
+        Check.True(refused.IsError);
+        Check.Contains(refused.Content, "attached");
+        Check.False(WorkspaceRetirement.IsFlagged(env.Store.GetWorkspace(attached.WorkspaceId)!));
+
+        // Not bound, no id: nothing to retire.
+        var none = await tool.ExecuteAsync(env.Context(env.Session("n")), Json(new { action = "retire" }), CancellationToken.None);
+        Check.True(none.IsError);
+
+        // Dirty, unmerged and shared with another live session: requested, and all of it reported at once.
+        var (w, own, _) = await MergedWorker(env, "blocked", merge: false);
+        env.Write(w.Path, "wip.txt", "x");
+        var other = env.Session("other", w.Id);
+        var answer = await tool.ExecuteAsync(env.Context(own, env.Resolver.Bind(w)), Json(new { action = "retire" }), CancellationToken.None);
+        Check.False(answer.IsError, answer.Content);
+        Check.Contains(answer.Content, "uncommitted changes");
+        Check.Contains(answer.Content, "not merged");
+        Check.Contains(answer.Content, other.Id);
+        Check.NotContains(answer.Content, own.Id + ",");
+        Check.True(WorkspaceRetirement.IsFlagged(env.Store.GetWorkspace(w.Id)!));
+    }
+
+    private static async Task RetireWhenDoneRpc()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("whenDone"); }
+        var (w, session, rt) = await MergedWorker(env, "child");
+        Func<object, CancellationToken, Task<object?>> delete = (a, ct) => env.Ctx.RpcFake.InvokeAsync("workspaces.delete", a, ct);
+
+        // The child still runs: flagged, nothing removed.
+        var pending = JsonSerializer.SerializeToNode(await delete(new { id = w.Id, whenDone = true }, CancellationToken.None))!;
+        Check.False(pending["removed"]!.GetValue<bool>());
+        Check.True(pending["pending"]!.GetValue<bool>());
+        Check.True(Directory.Exists(w.Path));
+        Check.True(WorkspaceRetirement.IsFlagged(env.Store.GetWorkspace(w.Id)!));
+
+        // A restart after the run ended: the flag survived, and the plugin's start retires it.
+        rt.SetStatus(session.Id, AgentStatus.Completed);
+        await new WorkspaceRetirement(env.Ctx, env.Store, env.Provisioner).TryPendingAsync();
+        Check.False(Directory.Exists(w.Path), "the pending flag was not tried");
+        Check.False(Branches(env).Contains(w.Branch!));
+
+        // An idle worker: removed at once. An attached one is refused.
+        var (w2, s2, rt2) = await MergedWorker(env, "idle");
+        rt2.SetStatus(s2.Id, AgentStatus.Idle);
+        var now = JsonSerializer.SerializeToNode(await delete(new { id = w2.Id, whenDone = true }, CancellationToken.None))!;
+        Check.True(now["removed"]!.GetValue<bool>());
+        Check.False(Directory.Exists(w2.Path));
+        var dir = Path.Combine(env.Root, "att");
+        Directory.CreateDirectory(dir);
+        var att = env.Provisioner.Attach(dir, env.Project.Id, "att").Binding!;
+        await Check.ThrowsAsync<RpcException>(async () => await delete(new { id = att.WorkspaceId, whenDone = true }, CancellationToken.None));
+    }
+
+    private static async Task RetaskAfterRetire()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("re-task"); }
+        var (w, session, rt) = await MergedWorker(env, "again");
+        env.Ctx.Services.Get<WorkspaceRetirement>()!.Request(w, session.Id);
+        await EndRun(env, rt, session);
+        await Wait.Until(() => env.Store.GetWorkspace(w.Id) is null, "the retirement");
+
+        // Unbound: it works in the project folder, as any unbound session.
+        var after = env.Ctx.SessionsFake.GetSession(session.Id)!;
+        Check.Equal(env.ProjectPath, env.Resolver.CwdOf(after));
+        // Asked for an isolated one again (same worker, same name): a fresh worktree, no clash with the removed one.
+        var again = env.Provision("again", session.Id);
+        Check.True(again.Ok, again.Error ?? "");
+        Check.True(Directory.Exists(again.Binding!.Root));
+        Check.Differs(w.Id, again.Binding.WorkspaceId);
     }
 
     private static Task GuardSpellings()

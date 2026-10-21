@@ -22,7 +22,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.CodeSearch` | `netpi.codesearch` | `code_search` | `codesearch.search`, `codesearch.status`, `codesearch.reindex` |
 | `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy` `job` `grep` `find`) | – |
-| `plugins/NetPI.Workspaces` | `netpi.workspaces` | `workspace` (actions `info` `list` `switch`) | `workspaces.*` (see `docs/PROTOCOL.md`) |
+| `plugins/NetPI.Workspaces` | `netpi.workspaces` | `workspace` (actions `info` `list` `switch` `retire`) | `workspaces.*` (see `docs/PROTOCOL.md`) |
 | `plugins/NetPI.Coordinator` | `netpi.coordinator` | – (for outside coordinators: the RPC/CLI only) | `sessions.dispatch`, `runs.result` |
 
 The file and shell tools start at `Order = 20`. Tests live in `tests/NetPI.Tools.Tests`, a console app with no test framework:
@@ -459,7 +459,7 @@ project's folder exactly as before. Settings `workspaces.*` in `docs/SETTINGS.md
 
 ### `workspace` (summary arg `action`)
 
-`{ action?: 'info'|'list'|'switch', id? }` — the checkout this session works in, what else exists, and a switch to
+`{ action?: 'info'|'list'|'switch'|'retire', id? }` — the checkout this session works in, what else exists, and a switch to
 another.
 
 - **`info`**: where relative paths resolve (the workspace's root, or the project's folder when unbound), its kind,
@@ -472,11 +472,24 @@ disk". When there are none: this session works in the project's folder.
   so a tool that already resolved a path against the old root cannot land a write in the old tree after the root moved.
   A target that does not exist, is missing on disk or belongs to another project is refused rather than ignored. A call
   without `id` unbinds — the explicit way back to the project's folder.
+- **`retire { id? }`** (default: the caller's own workspace): the last call of a worker that merged its branch. A session
+  cannot remove the worktree it is bound to and running in, so this only **asks**: the workspace record gets
+  `meta.retireWhenDone` (`{ by, at }`), and the Workspaces plugin carries it out when no session bound to the workspace
+  has a run (or a pending user answer) any more: those sessions are unbound (they work in the project folder again), the
+  worktree is removed and its branch deleted with `git branch -d` (only when fully merged, never `-D`). The answer
+  lists at once what would still stop it besides the caller's own binding — uncommitted changes, unmerged or unpushed
+  commits, a running process in it, other live sessions bound — so it can be fixed first; those do not refuse the
+  request. If it still cannot go at the end of the run, the workspace and the flag stay, the owner's chat gets a notice
+  with the reason (once per reason), and `workspace.retire { workspaceId, status: 'requested'|'retired'|'kept', reason?,
+  sessionId? }` is published; it is tried again at every later run end and at plugin start. An attached (not NetPI-made)
+  workspace is refused. A worker re-tasked after its workspace went works in the project folder, or gets a fresh
+  isolated worktree when `agent_spawn` asks for one (a new branch; the retired one is gone).
 
 ```ts
 details: info:   { workspaceId, root, branch, isolated, pending? }
          list:   { workspaces: { workspaceId, name, path, branch, kind }[] }
          switch: { workspaceId, name, path, branch, kind, isolated }
+         retire: { workspaceId, requested, problems: string[] }
 ```
 
 ### Subagents' workspaces (`agent_spawn`)

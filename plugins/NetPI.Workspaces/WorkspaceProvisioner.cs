@@ -184,24 +184,49 @@ public sealed class WorkspaceProvisioner(
     /// running in it, it has no uncommitted changes, and its commits are already merged or otherwise durable. A dirty,
     /// unfamiliar or unmerged worktree is never deleted, and the reason comes back so the caller can say what to do.
     /// </summary>
-    public (bool Ok, string? Reason) CanRetire(WorkspaceInfo workspace, Func<string, bool>? isDirectoryBusy = null)
+    public (bool Ok, string? Reason) CanRetire(WorkspaceInfo workspace, Func<string, bool>? isDirectoryBusy = null,
+        IReadOnlySet<string>? ignoreSessions = null)
     {
+        var problems = RetireProblems(workspace, isDirectoryBusy, ignoreSessions, firstOnly: true);
+        return problems.Count == 0 ? (true, null) : (false, problems[0]);
+    }
+
+    /// <summary>
+    /// Everything that keeps a workspace from being removed (the reasons <see cref="CanRetire"/> gives, all of them, in its
+    /// order). <paramref name="ignoreSessions"/> are sessions that would be unbound first (the caller's own, when an agent
+    /// retires its own workspace), so their binding is not a problem.
+    /// </summary>
+    public List<string> RetireProblems(WorkspaceInfo workspace, Func<string, bool>? isDirectoryBusy = null,
+        IReadOnlySet<string>? ignoreSessions = null, bool firstOnly = false)
+    {
+        var problems = new List<string>();
         if (!workspace.Managed)
-            return (false, $"{workspace.Name} was attached, not created by NetPI: remove it yourself when it is no longer needed.");
-        if (!Directory.Exists(workspace.Path))
-            return (true, null);   // already gone: nothing to delete
-        var bound = SessionsUsing(workspace.Id);
+        {
+            problems.Add($"{workspace.Name} was attached, not created by NetPI: remove it yourself when it is no longer needed.");
+            return problems;
+        }
+        if (!Directory.Exists(workspace.Path)) return problems;   // already gone: nothing to delete
+        var bound = SessionsUsing(workspace.Id).Where(s => ignoreSessions is null || !ignoreSessions.Contains(s)).ToList();
         if (bound.Count > 0)
-            return (false, $"{workspace.Name} is still bound to {bound.Count} live session(s): {string.Join(", ", bound)}. Unbind them first. " +
-                           "Archived sessions do not count: they are not working in the workspace, and retiring it unbinds them.");
+        {
+            problems.Add($"{workspace.Name} is still bound to {bound.Count} live session(s): {string.Join(", ", bound)}. Unbind them first. " +
+                         "Archived sessions do not count: they are not working in the workspace, and retiring it unbinds them.");
+            if (firstOnly) return problems;
+        }
         if (isDirectoryBusy?.Invoke(workspace.Path) == true)
-            return (false, $"{workspace.Name} still has a running process working in it. Stop it first.");
+        {
+            problems.Add($"{workspace.Name} still has a running process working in it. Stop it first.");
+            if (firstOnly) return problems;
+        }
         var changes = git.DescribeChanges(workspace.Path);
         if (changes.Length > 0)
-            return (false, $"{workspace.Name} has uncommitted changes ({changes}); commit them, or keep the worktree.");
+        {
+            problems.Add($"{workspace.Name} has uncommitted changes ({changes}); commit them, or keep the worktree.");
+            if (firstOnly) return problems;
+        }
         if (!WorkIsDurable(workspace))
-            return (false, $"{workspace.Name} holds commits on {workspace.Branch} that are not merged or pushed anywhere yet. Merge them first, or keep the worktree.");
-        return (true, null);
+            problems.Add($"{workspace.Name} holds commits on {workspace.Branch} that are not merged or pushed anywhere yet. Merge them first, or keep the worktree.");
+        return problems;
     }
 
     /// <summary>Remove a managed worktree's checkout (only after <see cref="CanRetire"/> allowed it) and its record.</summary>
@@ -222,6 +247,13 @@ public sealed class WorkspaceProvisioner(
                     {
                         try { Directory.Delete(workspace.Path, recursive: true); }
                         catch (Exception ex) { return (false, $"git worktree remove failed ({output.Trim()}); deleting the folder failed too: {ex.Message}"); }
+                    }
+                    // The branch goes with the worktree, only when it is fully merged (-d, never -D): git refuses otherwise and it stays.
+                    if (workspace.Branch is { Length: > 0 } branch)
+                    {
+                        await git.ExecAsync(main, ct, "worktree", "prune").ConfigureAwait(false);
+                        var (bCode, bOut) = await git.ExecAsync(main, ct, "branch", "-d", branch).ConfigureAwait(false);
+                        if (bCode != 0) ctx.Logger.LogInformation("Branch {Branch} of the retired workspace {Name} was kept: {Output}", branch, workspace.Name, bOut.Trim());
                     }
                 }
             }

@@ -9,7 +9,7 @@ namespace NetPI.Workspaces;
 /// model call, so a tool that already resolved a path against the old root cannot land a write in the old tree after the
 /// root changed under it.
 /// </summary>
-internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolver) : IAgentTool
+internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolver, WorkspaceRetirement retirement) : IAgentTool
 {
     public const string Name = "workspace";
 
@@ -25,13 +25,17 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
         Label = "Workspace",
         Category = "general",
         SummaryArg = "action",
-        Description = "The checkout this session works in: info (where you are), list (workspaces of the project), switch {id} (at the next safe boundary).",
+        Description = "The checkout this session works in: info (where you are), list (workspaces of the project), switch {id} (at the next safe boundary), retire {id?} (remove your finished worktree and its merged branch when this run ends).",
         Help =
             "info: where relative paths resolve — the workspace root, its branch, and whether it is your own checkout.\n" +
             "list: the project's workspaces with their branches and owners.\n" +
             "switch {id}: work in another workspace from the next model call on. The switch is applied at a safe boundary, " +
             "after the tools of the current batch have finished, and a target that does not exist or belongs to another " +
             "repository is refused rather than ignored.\n" +
+            "retire {id?}: when your work is done and merged, call this last (default: your own workspace). Nothing is removed now: " +
+            "when your run ends the worktree and its branch (only if fully merged) are removed and you are back in the project folder. " +
+            "The answer lists what would still keep it (uncommitted changes, unmerged commits, other sessions bound); fix it first, " +
+            "or it stays and you are told in this chat. An attached checkout is refused.\n" +
             "A workspace you got with agent_spawn is yours: commit your work on its branch and tell the parent the branch name, " +
             "so it can be merged. Your workspace is not the project's folder: a write that resolves to another checkout of " +
             "the same repository is refused.",
@@ -40,8 +44,8 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["action"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("info", "list", "switch") },
-                ["id"] = new JsonObject { ["type"] = "string", ["description"] = "Workspace id or name (for switch)" },
+                ["action"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("info", "list", "switch", "retire") },
+                ["id"] = new JsonObject { ["type"] = "string", ["description"] = "Workspace id or name (for switch; for retire: default your own workspace)" },
             },
         },
     };
@@ -54,6 +58,7 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
         {
             "list" => List(session),
             "switch" => Switch(context, args, session),
+            "retire" => Retire(context, args),
             _ => Info(context, session),
         });
     }
@@ -88,6 +93,44 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
             ["branch"] = binding?.Branch,
             ["isolated"] = binding?.Isolated ?? false,
             ["pending"] = pending is null ? null : JsonValue.Create(pending),
+        });
+    }
+
+    /// <summary>
+    /// Ask for the removal of a worktree (default: this session's own) once the run ends: the session cannot remove what it is
+    /// bound to and running in, so the Workspaces plugin does it when nothing runs in it any more. Answers at once with what
+    /// would still stop it, so the agent can fix that before it finishes.
+    /// </summary>
+    private ToolResult Retire(ToolContext context, JsonElement args)
+    {
+        var id = new ToolArgs(args).Str("id", "workspaceId", "workspace", "name")?.Trim();
+        var store = ctx.Services.Get<IWorkspaceStore>();
+        WorkspaceInfo? target;
+        if (id is null or "")
+        {
+            var own = context.Workspace()?.WorkspaceId;
+            if (own is null) return ToolResult.Error("This session is not bound to a workspace, so there is nothing of its own to retire. Pass id to name one.");
+            target = store?.GetWorkspace(own);
+        }
+        else
+        {
+            target = store?.ListWorkspaces().FirstOrDefault(w =>
+                string.Equals(w.Id, id, StringComparison.Ordinal) || string.Equals(w.Name, id, StringComparison.OrdinalIgnoreCase));
+        }
+        if (target is null) return ToolResult.Error($"No workspace \"{id}\". Call workspace with action list to see them.");
+        if (!target.Managed)
+            return ToolResult.Error($"{target.Name} was attached, not created by NetPI, so it is not retired automatically: remove it yourself when it is no longer needed.");
+        var flagged = retirement.Request(target, context.SessionId);
+        var problems = retirement.Problems(flagged, context.SessionId);
+        var text = problems.Count == 0
+            ? $"Retirement of {target.Name} requested: its worktree{(target.Branch is { Length: > 0 } b ? $" and branch {b} (if merged)" : "")} will be removed when this run ends, " +
+              "and this session works in the project folder again. Nothing else is in the way now."
+            : $"Retirement of {target.Name} requested, but it would be kept as things stand:\n- " + string.Join("\n- ", problems) +
+              "\nFix that before you finish; it is checked again when this run ends, and you are told in this chat if it stays.";
+        return ToolResult.Ok(text, new JsonObject
+        {
+            ["workspaceId"] = target.Id, ["requested"] = true,
+            ["problems"] = new JsonArray([.. problems.Select(p => (JsonNode)JsonValue.Create(p)!)]),
         });
     }
 
