@@ -195,6 +195,7 @@
   <label class="fld">
     <span class="f-label">Priority</span>
     <select class="np-input" bind:value={f.priority} title="The order its chats queue in while their agent is busy">
+      <option value="background">Background: yields to any other work</option>
       <option value="low">Low: after other queued work</option>
       <option value="normal">Normal</option>
       <option value="high">High: first in the queue</option>

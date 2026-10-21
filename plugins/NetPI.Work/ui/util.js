@@ -1,12 +1,12 @@
 export const ACTIVE = new Set(['running', 'queued', 'yielded']);
 
 /**
- * The level a run's priority is in: NetPI's RunPriority (low -100, normal 0, high 100, critical 200), a run that queues
+ * The level a run's priority is in: NetPI's RunPriority (background -200, low -100, normal 0, high 100, critical 200), a run that queues
  * again after giving its slot away being 50 above its level.
  */
 export function priorityLevel(p) {
   const n = Number(p) || 0;
-  return n >= 200 ? 'critical' : n >= 100 ? 'high' : n >= 0 ? 'normal' : 'low';
+  return n >= 200 ? 'critical' : n >= 100 ? 'high' : n >= 0 ? 'normal' : n >= -100 ? 'low' : 'background';
 }
 export function upsert(list, item, key = 'id') {
   if (!item) return list;

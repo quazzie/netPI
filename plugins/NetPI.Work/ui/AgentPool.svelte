@@ -273,6 +273,10 @@
   .slot[data-prio='critical'] {
     border-left: 3px solid var(--err);
   }
+  .slot[data-prio='background'] {
+    border-left: 3px dotted var(--fg-dim);
+    opacity: 0.8;
+  }
   .slot[data-prio='low'] {
     border-left: 3px dotted var(--fg-dim);
   }

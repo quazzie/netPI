@@ -183,12 +183,13 @@
   <label class="fld">
     <span class="f-label">Priority</span>
     <select class="np-input" bind:value={f.priority}>
+      <option value="background">Background: yields to any other work</option>
       <option value="low">Low: after other queued work</option>
       <option value="normal">Normal</option>
       <option value="high">High: first in the queue</option>
       <option value="critical">Critical: takes an instance from lower work</option>
     </select>
-    <span class="np-small np-dim">The order its chats queue in while their agent is busy. A critical chat takes the instance of a lower chat started for you (never one of your own chats) at its next model call, or once its tool has run a minute.</span>
+    <span class="np-small np-dim">The order its chats queue in while their agent is busy. A background chat gives its instance to any waiting higher chat. A critical chat takes the instance of a lower chat started for you (never one of your own chats) at its next model call, or once its tool has run a minute.</span>
   </label>
 
   <div class="fld">
