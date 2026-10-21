@@ -665,6 +665,33 @@ internal sealed class BrowserTab
         catch (InvalidOperationException) { return null; }  // a navigation replaced the context
     }
 
+    /// <summary>
+    /// "1" when the text is on the page (visible text, or a label, title, placeholder, alt or value, in this document and the
+    /// frames it can read), "0" when it is not, "?" when this cannot say (a cross-origin frame, a dialog, a script error).
+    /// </summary>
+    private async Task<string> ProbeTextAsync(string text, CancellationToken ct)
+    {
+        var needle = JsonSerializer.Serialize(text.ToLowerInvariant());
+        var script = "(()=>{const n=" + needle + ";let opaque=false;" +
+            "const scan=d=>{const b=d.body;if(!b)return false;if((b.innerText||'').toLowerCase().includes(n))return true;" +
+            "for(const e of d.querySelectorAll('[aria-label],[title],[placeholder],[alt],[value]'))" +
+            "for(const a of ['aria-label','title','placeholder','alt','value']){const v=e.getAttribute(a)||(a==='value'?e.value:'');if(typeof v==='string'&&v.toLowerCase().includes(n))return true;}" +
+            "for(const f of d.querySelectorAll('iframe,frame')){let c=null;try{c=f.contentDocument}catch(_){}if(!c){opaque=true;continue}if(scan(c))return true;}return false;};" +
+            "const r=scan(document);return r?'1':(opaque?'?':'0');})()";
+        try
+        {
+            var eval = Send("Runtime.evaluate", new { expression = script, returnByValue = true }, ct, 10);
+            if (await Task.WhenAny(eval, _dialogOpened.Task).ConfigureAwait(false) != eval)
+            {
+                _ = eval.ContinueWith(t => _ = t.Exception, TaskScheduler.Default);
+                return "?";
+            }
+            var r = await eval.ConfigureAwait(false);
+            return r.TryGetProperty("result", out var res) && res.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "?" : "?";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or TimeoutException) { return "?"; }
+    }
+
     private async Task<Outcome> WaitAsync(ToolArgs a, WebOptions o, CancellationToken ct)
     {
         var text = a.Str("text", "for", "until")?.Trim();
@@ -680,9 +707,15 @@ internal sealed class BrowserTab
         var until = DateTime.UtcNow.AddSeconds(timeout);
         while (true)
         {
-            var snap = await SnapshotAsync(ct).ConfigureAwait(false);
-            var present = snap.Controls.Any(c => c.Text.Contains(text, StringComparison.OrdinalIgnoreCase));
-            if (present != gone) return new Outcome(gone ? $"\"{text}\" is gone." : $"\"{text}\" is there.");
+            // a cheap in-page probe decides when the full snapshot (accessibility tree, DOM, layout, frames) is worth taking:
+            // only when the probe says the wait may be over, or cannot tell (a frame it cannot read, a script that fails)
+            var probe = await ProbeTextAsync(text, ct).ConfigureAwait(false);
+            if (probe == "?" || (probe == "1") != gone)
+            {
+                var snap = await SnapshotAsync(ct).ConfigureAwait(false);
+                var present = snap.Controls.Any(c => c.Text.Contains(text, StringComparison.OrdinalIgnoreCase));
+                if (present != gone) return new Outcome(gone ? $"\"{text}\" is gone." : $"\"{text}\" is there.");
+            }
             if (DateTime.UtcNow >= until)
                 return new Outcome(gone ? $"\"{text}\" was still there after {timeout:0.#} s." : $"\"{text}\" did not appear within {timeout:0.#} s.", Error: true);
             await Task.Delay(250, ct).ConfigureAwait(false);
