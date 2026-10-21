@@ -77,6 +77,8 @@ internal sealed class MemoryIndex : IDisposable
     private readonly Lock _gate = new();
     private Dictionary<string, Entry>? _cache;
     private Timer? _timer;
+    /// <summary>The timer's sweep in flight: Dispose waits for it (bounded) so no write lands after the plugin is gone.</summary>
+    private Task? _inFlight;
 
     /// <summary>
     /// One chat: its pieces' texts, their content hashes (a piece whose text is unchanged keeps its vector), vectors (none
@@ -100,7 +102,16 @@ internal sealed class MemoryIndex : IDisposable
     public void Start()
     {
         // The first sweep a little after start (the other plugins come up first), then every five minutes.
-        _timer = new Timer(_ => _ = Task.Run(SweepSafeAsync), null, TimeSpan.FromSeconds(30), Every);
+        _timer = new Timer(_ => Fire(), null, TimeSpan.FromSeconds(30), Every);
+    }
+
+    private void Fire()
+    {
+        lock (_gate)
+        {
+            if (_stop.IsCancellationRequested) return;
+            _inFlight = Task.Run(SweepSafeAsync);
+        }
     }
 
     private async Task SweepSafeAsync()
@@ -396,8 +407,16 @@ internal sealed class MemoryIndex : IDisposable
 
     public void Dispose()
     {
-        _stop.Cancel();
+        Task? sweep;
+        lock (_gate)
+        {
+            _stop.Cancel();
+            sweep = _inFlight;
+        }
         _timer?.Dispose();
+        // A sweep writes to the chats collection; give it a moment to finish instead of racing the unload.
+        try { sweep?.Wait(TimeSpan.FromSeconds(2)); }
+        catch (AggregateException) { }
     }
 }
 
