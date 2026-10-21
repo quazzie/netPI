@@ -20,13 +20,13 @@ public static class DeferredToolsTests
         public ValueTask OnAfterToolCallAsync(AgentTurnContext turn, ToolCallPart call, ToolResultPart result) { After.Add(call.Name);return ValueTask.CompletedTask; }
     }
     /// <summary>A plain deferred tool of some plugin: what tool_search finds and loads.</summary>
-    private sealed class Deferred(string name, string description, bool deferred = true) : IAgentTool
+    private sealed class Deferred(string name, string description, bool deferred = true, string? schema = null) : IAgentTool
     {
         public readonly List<string> Calls = [];
         public ToolDefinition Definition { get; } = new()
         {
             Name = name, Description = description, Deferred = deferred,
-            Parameters = JsonNode.Parse("""{"type":"object","properties":{"city":{"type":"string","description":"The city"}}}""")!.AsObject(),
+            Parameters = JsonNode.Parse(schema ?? """{"type":"object","properties":{"city":{"type":"string","description":"The city"}}}""")!.AsObject(),
         };
         public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
         {
@@ -254,6 +254,38 @@ public static class DeferredToolsTests
             var notices=h.Messages(session.Id).Where(m=>m.Meta?["updated"] is JsonArray a && a.Count>0).ToList();
             Check.Equal(0,notices.Count,"the tool is not in the request: nothing to tell the model");
             await manager.DisposeAsync();ctx.Unload();
+        });
+        t.Add("deferred: a model that writes call_tool's envelope twice still reaches the tool; a shape it cannot prove is answered with the shape", async () => {
+            await using var h = await TestHost.StartAsync();
+            var ctx = new TestPluginContext(h, "netpi.test");
+            var weather = new Deferred("weather_lookup", "Current weather and forecast for a city.");
+            var proxy = new Deferred("rpc_proxy", "Call a remote tool by name.",
+                schema: """{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"object"}},"required":["name","arguments"]}""");
+            ctx.Tools.Register(weather); ctx.Tools.Register(proxy);
+            var session = h.NewSession(); var stage = 0;
+            h.Catalog.Handler = (r, ct) => stage++ switch
+            {
+                // the envelope written twice: the tool inside is the one the model meant, at both levels
+                0 => Reply.Tools(Reply.Call("call_tool", new { name = "weather_lookup", arguments = new { name = "weather_lookup", arguments = new { city = "Oslo" } } })),
+                1 => Reply.Tools(Reply.Call("call_tool", new { name = "call_tool", arguments = new { name = "weather_lookup", arguments = new { city = "Bergen" } } })),
+                // the envelope one level deep, with no name of its own
+                2 => Reply.Tools(Reply.Call("call_tool", new { arguments = new { name = "weather_lookup", arguments = new { city = "Turin" } } })),
+                // not a repeat: the inner name is another tool, so nothing is proved and the tool answers with its shape
+                3 => Reply.Tools(Reply.Call("call_tool", new { name = "weather_lookup", arguments = new { name = "rpc_proxy", arguments = new { city = "Gdynia" } } })),
+                // a tool that really takes a name and an arguments object: its own pair is left alone
+                4 => Reply.Tools(Reply.Call("call_tool", new { name = "rpc_proxy", arguments = new { name = "remote_tool", arguments = new { city = "Oslo" } } })),
+                _ => Reply.Text("done"),
+            };
+            await h.SendAsync(session.Id, "weather?"); await h.IdleAsync(session.Id);
+            var results = h.Messages(session.Id).SelectMany(m => m.ToolResults).ToList();
+            Check.Equal("""{"city":"Oslo"}|{"city":"Bergen"}|{"city":"Turin"}""", string.Join("|", weather.Calls), "each nested envelope ran the tool");
+            Check.True(results[3].IsError, results[3].Content);
+            Check.Contains(results[3].Content, "was reached with call_tool's own envelope");
+            Check.Contains(results[3].Content, """call_tool {"name": "weather_lookup", "arguments": {"city": …}}""", results[3].Content);
+            Check.Equal(3, weather.Calls.Count, "the answered call did not run");
+            Check.False(results[4].IsError, results[4].Content);
+            Check.Equal("""{"name":"remote_tool","arguments":{"city":"Oslo"}}""", proxy.Calls.Single(), "its own name/arguments pair");
+            ctx.Unload();
         });
     }
 }

@@ -1412,6 +1412,15 @@ never compare that name: C# uses `ToolCalls` (`src/NetPI.Contracts/ToolCalls.cs`
 arguments, `Index`/`EffectiveName(result, calls)` to name a result by its call), `CallTool.TryUnwrap` uses the same
 parsing; the web UI applies `effectiveCall` (`web/src/lib/tools.js`) once where chat items are built, so cards, views,
 artifact chips and step counts all see the inner tool (`via: 'call_tool'` marks it). A call to an unknown tool, to `call_tool` or to `tool_search` is an error result that says what to do.
+
+**The local models write the envelope twice** (2026-10-21: a webhook chat's six lost web searches; the same shape in chats
+since 2026-10-18): `{"name": X, "arguments": {"name": X, "arguments": {…}}}`, once as `{"arguments": {…}}` with no name of
+its own. `CallTool.TryUnwrap` follows the envelope while it names the tool it already is inside (at most `MaxNesting`
+levels) and reads the nameless variant; a pair naming another tool is left alone, and so is a tool that declares a `name`
+and an `arguments` parameter of its own (an rpc proxy), where the pair is the call. A call_tool naming `call_tool` or
+`tool_search` runs the call inside it: those two are never a call's arguments. What is left and arrives at a tool is
+answered by `ToolEnvelope` with the call's own shape, because a tool's "needs a query." cannot be reconciled with a query
+that is one bracket deeper, and the model repeats the call unchanged.
 A deferred tool called directly by name still runs where the backend produces such a call (a local backend may refuse a name
 it was not sent, or force it into another tool: the prompt therefore names `call_tool`). Nothing is stored in the chat, no
 `tools` notice is written and there is no cap on how many tools a chat can use.

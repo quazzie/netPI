@@ -66,7 +66,8 @@ internal sealed class ToolSearchTool(IPluginContext ctx, AgentRuntime runtime) :
     {
         var sb = new StringBuilder();
         sb.Append("Found ").Append(tools.Count).Append(tools.Count == 1 ? " tool" : " tools")
-          .Append(". Run one with call_tool { \"name\": ..., \"arguments\": { ... } }; the arguments follow its schema.");
+          .Append(". Run one with call_tool { \"name\": ..., \"arguments\": { ... } }; the arguments follow its schema, and are")
+          .Append(" that tool's own arguments — not another { \"name\": ..., \"arguments\": ... }.");
         var left = new List<ToolDefinition>();
         var shown = 0;
         foreach (var d in tools)

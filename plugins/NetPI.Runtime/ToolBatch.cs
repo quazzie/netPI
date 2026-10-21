@@ -344,6 +344,10 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             prepared.Args = ParseArgs(call.Arguments);
             if (ToolHelp.Asked(prepared.Tool.Definition, prepared.Args))
                 prepared.Early = ToolResult.Ok(ToolHelp.Text(prepared.Tool.Definition));
+            // the call_tool envelope reached the tool itself (CallTool.TryUnwrap proved what it could): say the shape, the
+            // tool's own "needs a query" cannot be reconciled with a query that is one bracket deeper
+            else if (ToolEnvelope.Check(prepared.Tool.Definition, prepared.Args) is { } envelope)
+                prepared.Early = ToolResult.Error(envelope);
         }
         catch (JsonException ex) { prepared.Early = ToolResult.Error(InvalidJson(call.Name, ex, _outputLimit)); }
         return (prepared, changed);
