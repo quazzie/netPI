@@ -72,7 +72,18 @@
       return;
     }
     if (!(await setSetting(`agents.${next}`, $state.snapshot(agent)))) return;
-    await setSetting(`agents.${id}`, null);
+    if (!(await setSetting(`agents.${id}`, null))) {
+      // the old agent stays: roll the copy back, or two identical agents would be left
+      const undone = await setSetting(`agents.${next}`, null);
+      toast(
+        undone
+          ? `Renaming failed: “${id}” could not be removed, so “${next}” was not created`
+          : `Renaming half-failed: “${id}” could not be removed and the copy “${next}” stays; remove one by hand`,
+        'error',
+      );
+      input.value = id;
+      return;
+    }
     onrename?.(next);
   }
 
