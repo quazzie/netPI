@@ -217,6 +217,8 @@
         if (seq === searchSeq && gen === scopeKey) searching = false;
       }
     }, 140);
+    // a pending search must not fire after the tab is gone (or the query changed again)
+    return () => clearTimeout(searchTimer);
   });
 
   // ------------------------------------------------------------------ tree

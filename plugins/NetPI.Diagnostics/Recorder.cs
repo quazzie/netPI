@@ -254,9 +254,10 @@ public sealed class Recorder
             }
     }
 
+    /// <summary>The tool calls, newest first, as copies: a record keeps changing (tool.end) under the lock, a copy does not.</summary>
     public IReadOnlyList<ToolRecord> Tools()
     {
-        lock (_gate) return [.. _tools];
+        lock (_gate) return [.. _tools.Select(t => t.Snapshot())];
     }
 
     public IReadOnlyList<JournalEntry> Journal()
@@ -571,6 +572,13 @@ public sealed class ToolRecord
     public bool IsError { get; set; }
     /// <summary>Why the call ended without its result (aborted, failed, reset, run ended), or null when it ended normally.</summary>
     public string? Interrupted { get; set; }
+
+    /// <summary>A copy of the record as it is now. Called under the recorder's lock, so the copy is never torn.</summary>
+    internal ToolRecord Snapshot() => new()
+    {
+        CallId = CallId, Name = Name, SessionId = SessionId, RunId = RunId, StartedAt = StartedAt, Arguments = Arguments,
+        EndedAt = EndedAt, DurationMs = DurationMs, IsError = IsError, Interrupted = Interrupted,
+    };
 
     public JsonObject ToJson()
     {
