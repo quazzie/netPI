@@ -218,7 +218,7 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
         using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
         var final = res.RequestMessage?.RequestUri ?? uri;
         var mediaType = res.Content.Headers.ContentType?.MediaType?.ToLowerInvariant() ?? "";
-        var (bytes, cut) = await ReadCappedAsync(res.Content, o.FetchMaxBytes, timeout.Token).ConfigureAwait(false);
+        var (bytes, cut) = await BodyReader.ReadCappedAsync(res.Content, o.FetchMaxBytes, timeout.Token).ConfigureAwait(false);
         var status = (int)res.StatusCode;
 
         if (mediaType.StartsWith("image/", StringComparison.Ordinal) && !mediaType.Contains("svg"))
@@ -250,25 +250,6 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
             catch (JsonException) { }
         }
         return new FetchedPage(uri.ToString(), final.ToString(), status, mediaType, title, text.Trim(), bytes.Length, cut, null);
-    }
-
-    private static async Task<(byte[] Bytes, bool Cut)> ReadCappedAsync(HttpContent content, long max, CancellationToken ct)
-    {
-        await using var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        using var ms = new MemoryStream();
-        var buffer = new byte[81920];
-        while (true)
-        {
-            var n = await stream.ReadAsync(buffer, ct).ConfigureAwait(false);
-            if (n == 0) return (ms.ToArray(), false);
-            var room = max - ms.Length;
-            if (n > room)
-            {
-                ms.Write(buffer, 0, (int)room);
-                return (ms.ToArray(), true);
-            }
-            ms.Write(buffer, 0, n);
-        }
     }
 
     private static bool IsText(string mediaType, byte[] bytes)

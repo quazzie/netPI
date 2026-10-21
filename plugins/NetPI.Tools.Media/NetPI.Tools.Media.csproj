@@ -1,5 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <InternalsVisibleTo Include="NetPI.Aux.Tests" />
+    <!-- Shared SOURCE, not a shared assembly (docs/PLUGINS.md): bounded HTTP body reads. -->
+    <Compile Include="$(RepoRoot)shared/HttpKit/*.cs" LinkBase="HttpKit" />
+    <Using Include="NetPI.HttpKit" />
   </ItemGroup>
 </Project>
