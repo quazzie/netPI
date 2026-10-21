@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   import Icon from '../lib/kit/Icon.svelte';
   import TimeAgo from '../lib/kit/TimeAgo.svelte';
   import { app, newSession, openSession, projectOf } from '../lib/state/app.svelte.js';
@@ -56,7 +57,10 @@
   });
   // One read per window, for the project the screen targets; ideas.changed moves it (welcomeIdeas.changed).
   $effect(() => {
-    if (app.ready) welcomeIdeas.load(target?.id ?? undefined);
+    if (!app.ready) return;
+    const id = target?.id ?? undefined;
+    // load() reads and writes the store's own loaded/projectId: only the project may re-run this
+    untrack(() => welcomeIdeas.load(id));
   });
 </script>
 
