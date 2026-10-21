@@ -7,7 +7,7 @@ namespace NetPI.Webhooks;
 
 /// <summary>
 /// Inbound webhooks (idea-wmpsrw, from the Checkmk rollout): another system POSTs to <c>/hook/{id}</c> on the plugin's own
-/// receiver (<see cref="WebhookListener"/>) with the webhook's bearer token, and the payload starts a fresh chat on a project —
+/// receiver (<see cref="PluginListener"/>) with the webhook's bearer token, and the payload starts a fresh chat on a project —
 /// on a named agent, <c>any</c> agent with a free instance, the first <c>free</c>-priced agent, or the first of a list — with a
 /// prompt filled in from the payload. Payloads are grouped into conversations by a key the Before command names (say the host): the first starts its chat at once,
 /// and later ones are appended to the chat that handles the incident — nothing is dropped, and a storm becomes one conversation per incident instead of a pile of chats.
@@ -20,7 +20,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
     private readonly TimeProvider _time;
     private readonly bool _listen;
     private IPluginContext? _ctx;
-    private WebhookListener? _listener;
+    private PluginListener? _listener;
     private string? _listenerKey;
     private string? _listenerError;
     private AddressList _allow = new([]);
@@ -165,7 +165,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
             if (!IPAddress.TryParse(bind, out var address)) { _listenerError = $"“{bind}” is not an IP address"; ctx.Logger.LogWarning("Webhooks: {Error}", _listenerError); return; }
             try
             {
-                _listener = await WebhookListener.StartAsync(address, port, HandleAsync, ctx.Logger, ct).ConfigureAwait(false);
+                _listener = await PluginListener.StartAsync("Webhooks", address, port, 1024 * 1024, HandleAsync, ctx.Logger, ct).ConfigureAwait(false);
                 _listenerKey = key;
                 ctx.Logger.LogInformation("Webhooks: receiving on http://{Address}:{Port}/hook/{{id}} from {Allow}", address, _listener.Port, string.Join(", ", allow));
             }
@@ -247,6 +247,11 @@ public sealed class WebhooksPlugin : INetPiPlugin
         };
     }
 
+    /// <summary>The throttle's limit and window, for the tests (the throttle type itself is shared source, one per plugin assembly).</summary>
+    internal const int FailureLimit = FailureThrottle.Limit;
+    internal static readonly TimeSpan FailureWindow = FailureThrottle.Window;
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(2);
+
     private async Task HandleAsync(HttpContext http)
     {
         http.Response.Headers.XContentTypeOptions = "nosniff";
@@ -258,8 +263,12 @@ public sealed class WebhooksPlugin : INetPiPlugin
             var auth = http.Request.Headers.Authorization.ToString();
             if (auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) bearer = auth[7..].Trim();
             else if (http.Request.Headers.TryGetValue("X-Webhook-Token", out var h)) bearer = h.ToString().Trim();
+            // Only the body read follows the sender: a sender that hangs up after its payload arrived must not cancel the start half way
+            // (the chat would be deleted by a cancellation the filter lets through, and the payload neither kept nor deferred).
+            using var work = CancellationTokenSource.CreateLinkedTokenSource(_life?.Token ?? CancellationToken.None);
+            work.CancelAfter(RequestTimeout);
             answer = await ReceiveAsync(http.Request.Path.Value ?? "/", http.Request.Method, http.Connection.RemoteIpAddress, http.Request.ContentType,
-                max => Body.ReadAsync(http.Request, max, http.RequestAborted), bearer, http.RequestAborted).ConfigureAwait(false);
+                max => Body.ReadAsync(http.Request, max, http.RequestAborted), bearer, work.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { return; }
         catch (Exception ex)

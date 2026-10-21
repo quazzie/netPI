@@ -248,13 +248,15 @@ function renderNew() {
   mount(header('New chat', null, goBack), el('main', {}, el('div', { class: 'pair' }, project, model, text, go, err)));
 }
 
+let chatObserver = null;   // one observer for the open chat: a re-render lets go of the last one
 function renderChat() {
+  chatObserver?.disconnect();
   mount(el('div', { id: 'hdrbox' }), el('main', { id: 'scroll' }, el('div', { class: 'msgs', id: 'msgs' })), el('div', { id: 'cards' }), el('div', { id: 'composer', class: 'composer' }));
   state.stick = true; state.cardsSig = null; comp = null;
   const sc = document.getElementById('scroll');
   // "following" = the reader is at the bottom; a scroll up lets go, a scroll back down picks it up again. Layout growth never lets go.
   sc.addEventListener('scroll', () => { state.stick = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80; }, { passive: true });
-  const ro = new ResizeObserver(() => { if (state.stick) pin(); });   // a taller message, a growing composer, the keyboard, a picture that loaded
+  const ro = chatObserver = new ResizeObserver(() => { if (state.stick) pin(); });   // a taller message, a growing composer, the keyboard, a picture that loaded
   ro.observe(sc); ro.observe(document.getElementById('msgs'));
   renderHeader(); renderMessages(true); renderCards(); renderComposer();
 }

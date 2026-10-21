@@ -116,12 +116,12 @@ public static class PhoneTests
         r.Add("phone: wrong codes are throttled per address, and the proxy's X-Forwarded-For is believed only with phone.trustProxy", async () =>
         {
             await using var env = await new Env().StartAsync();
-            for (var i = 0; i < FailureThrottle.Limit; i++) await env.Post("/api/pair", new { code = "NOPE" + i });
+            for (var i = 0; i < PhoneApi.FailureLimit; i++) await env.Post("/api/pair", new { code = "NOPE" + i });
             Check.Equal(HttpStatusCode.TooManyRequests, (await env.Post("/api/pair", new { code = "NOPE" })).StatusCode, "blocked after the limit");
             Check.Equal(HttpStatusCode.TooManyRequests, (await env.Post("/api/pair", new { code = "NOPE" }, tweak: q => q.Headers.Add("X-Forwarded-For", "9.9.9.9"))).StatusCode, "the header is ignored without trustProxy");
 
             await using var proxied = await new Env(trustProxy: true).StartAsync();
-            for (var i = 0; i < FailureThrottle.Limit; i++) await proxied.Post("/api/pair", new { code = "NOPE" + i }, tweak: q => q.Headers.Add("X-Forwarded-For", "evil, 203.0.113.7"));
+            for (var i = 0; i < PhoneApi.FailureLimit; i++) await proxied.Post("/api/pair", new { code = "NOPE" + i }, tweak: q => q.Headers.Add("X-Forwarded-For", "evil, 203.0.113.7"));
             Check.Equal(HttpStatusCode.TooManyRequests, (await proxied.Post("/api/pair", new { code = "NOPE" }, tweak: q => q.Headers.Add("X-Forwarded-For", "x, 203.0.113.7"))).StatusCode, "that client is blocked (the proxy's last hop counts)");
             Check.Equal(HttpStatusCode.Unauthorized, (await proxied.Post("/api/pair", new { code = "NOPE" }, tweak: q => q.Headers.Add("X-Forwarded-For", "198.51.100.2"))).StatusCode, "another client is not");
         });
@@ -193,6 +193,17 @@ public static class PhoneTests
             Check.Equal("message.added", S(second["type"]));
             Check.Equal(7, second["data"]!["seq"]!.GetValue<int>());
             Check.False(lines[1].Contains("AAAA"), "the image does not ride the stream");
+        });
+
+        r.Add("phone: a full event queue never blocks the publisher and is marked for a resync frame", () =>
+        {
+            var q = new PhoneApi.EventStream();
+            for (var i = 0; i < 2000; i++) q.Offer("x");
+            Check.False(q.TakeResync(), "not full yet: no resync");
+            q.Offer("overflow");   // returns at once
+            Check.True(q.TakeResync(), "the overflow marks the stream for a resync");
+            Check.False(q.TakeResync(), "and only once");
+            return Task.CompletedTask;
         });
 
         r.Add("phone: the Agents view's snapshot is allowed, and the events that make it re-read carry no body", () =>

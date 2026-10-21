@@ -16,6 +16,8 @@ namespace NetPI.Phone;
 /// </summary>
 internal sealed class PhoneApi : IDisposable
 {
+    /// <summary>The throttle's limit, for the tests (the throttle type itself is shared source, one per plugin assembly).</summary>
+    internal const int FailureLimit = FailureThrottle.Limit;
     public const int MaxBody = 12 * 1024 * 1024;
     public const string Cookie = "netpi_phone";
 
@@ -68,7 +70,7 @@ internal sealed class PhoneApi : IDisposable
     private readonly Func<AddressList> _allow;
     private readonly Func<bool> _trustProxy;
     private readonly string _root;
-    private readonly Dictionary<Guid, Channel<string>> _streams = [];
+    private readonly Dictionary<Guid, EventStream> _streams = [];
     private readonly IDisposable _subscription;
     private readonly CancellationToken _stopping;
 
@@ -89,7 +91,7 @@ internal sealed class PhoneApi : IDisposable
     public void Dispose()
     {
         _subscription.Dispose();
-        lock (_streams) foreach (var c in _streams.Values) c.Writer.TryComplete();
+        lock (_streams) foreach (var c in _streams.Values) c.Channel.Writer.TryComplete();
     }
 
     // ---------------------------------------------------------------- requests
@@ -221,9 +223,10 @@ internal sealed class PhoneApi : IDisposable
         res.ContentType = "text/event-stream";
         res.Headers.CacheControl = "no-cache";
         res.Headers["X-Accel-Buffering"] = "no";   // a reverse proxy must not hold the stream back
-        var channel = Channel.CreateBounded<string>(new BoundedChannelOptions(2000) { FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true });
+        var stream = new EventStream();
+        var channel = stream.Channel;
         var id = Guid.NewGuid();
-        lock (_streams) _streams[id] = channel;
+        lock (_streams) _streams[id] = stream;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(http.RequestAborted, _stopping);
         var ct = linked.Token;
         try
@@ -232,6 +235,12 @@ internal sealed class PhoneApi : IDisposable
             await res.Body.FlushAsync(ct).ConfigureAwait(false);
             while (!ct.IsCancellationRequested)
             {
+                if (stream.TakeResync())
+                {
+                    while (channel.Reader.TryRead(out _)) { }   // the backlog is stale: the page re-reads everything on resync
+                    await res.WriteAsync("data: {\"type\":\"resync\"}\n\n", ct).ConfigureAwait(false);
+                    await res.Body.FlushAsync(ct).ConfigureAwait(false);
+                }
                 using var tick = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 tick.CancelAfter(TimeSpan.FromSeconds(15));
                 string? line;
@@ -253,10 +262,19 @@ internal sealed class PhoneApi : IDisposable
         string line;
         try { line = Frame(e).ToJsonString(); }
         catch (Exception ex) { _ctx.Logger.LogDebug(ex, "Phone: could not frame {Type}", e.Type); return; }
-        List<Channel<string>> all;
+        List<EventStream> all;
         lock (_streams) all = [.. _streams.Values];
         foreach (var c in all)
-            if (!c.Writer.TryWrite(line)) c.Writer.TryWrite("{\"type\":\"resync\"}");   // a client too slow for its backlog re-reads instead of showing a gap
+            c.Offer(line);   // a client too slow for its backlog gets a resync frame instead of a gap
+    }
+
+    /// <summary>One phone's event queue. Full: the publisher never waits; the stream is marked and the writer loop drops the backlog and sends the resync frame itself.</summary>
+    internal sealed class EventStream
+    {
+        private int _resync;
+        public Channel<string> Channel { get; } = System.Threading.Channels.Channel.CreateBounded<string>(new BoundedChannelOptions(2000) { FullMode = BoundedChannelFullMode.Wait, SingleReader = true });
+        public void Offer(string line) { if (!Channel.Writer.TryWrite(line)) Interlocked.Exchange(ref _resync, 1); }
+        public bool TakeResync() => Interlocked.Exchange(ref _resync, 0) == 1;
     }
 
     /// <summary>One event as the phone gets it. A stored message is only announced (its session and seq): the page reads the message itself, so an image never rides the stream.</summary>

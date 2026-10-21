@@ -1,7 +1,5 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
-using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -11,34 +9,36 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace NetPI.Phone;
+namespace NetPI.ListenerKit;
 
 /// <summary>
-/// The phone listener: its own small Kestrel listener, apart from the host's API. The host's server listens on loopback
-/// only, with a per-run token — right for a UI, impossible for a phone — and widening it would widen the
-/// whole API. It serves the phone page, the pairing call and an allow-listed RPC proxy with an event stream, answers only addresses on the
-/// allow list, needs a paired device's token, and is off until the user switches <c>phone.enabled</c> on.
+/// A plugin's own small Kestrel listener, apart from the host's API (which listens on loopback only, with a per-run token: right
+/// for a UI, impossible for a phone or a monitoring system, and widening it would widen the whole API). Shared SOURCE compiled into the
+/// plugins that expose one (Webhooks, Phone); the address gate (<see cref="AddressList"/>) and the wrong-token throttle
+/// (<see cref="FailureThrottle"/>) live here so the security-relevant part exists once.
 /// </summary>
-internal sealed class PhoneListener : IAsyncDisposable
+internal sealed class PluginListener : IAsyncDisposable
 {
     private readonly WebApplication _app;
     public int Port { get; }
     public string Address { get; }
 
-    private PhoneListener(WebApplication app, string address, int port) { _app = app; Address = address; Port = port; }
+    private PluginListener(WebApplication app, string address, int port) { _app = app; Address = address; Port = port; }
 
     /// <summary>Start listening; an address that is still held by the previous generation of the plugin (a hot reload: the host stops the old generation after starting the new one) is retried every second for 90 s.</summary>
-    public static async Task<PhoneListener> StartAsync(IPAddress address, int port, Func<HttpContext, Task> handler, ILogger log, CancellationToken ct)
+    /// <param name="name">The plugin's name, for the application name and the log.</param>
+    /// <param name="maxBody">The hard stop for a request body (the handler enforces its own, smaller limit).</param>
+    public static async Task<PluginListener> StartAsync(string name, IPAddress address, int port, long maxBody, Func<HttpContext, Task> handler, ILogger log, CancellationToken ct)
     {
         for (var attempt = 0; ; attempt++)
         {
-            var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions { ApplicationName = "NetPI.Phone", EnvironmentName = Environments.Production });
+            var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions { ApplicationName = "NetPI." + name, EnvironmentName = Environments.Production });
             builder.Logging.ClearProviders();
             builder.WebHost.UseKestrelCore().ConfigureKestrel(o =>
             {
                 o.Listen(address, port);
                 o.AddServerHeader = false;
-                o.Limits.MaxRequestBodySize = PhoneApi.MaxBody;   // the hard stop
+                o.Limits.MaxRequestBodySize = maxBody;
                 o.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(10);
                 o.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(20);
             });
@@ -49,11 +49,11 @@ internal sealed class PhoneListener : IAsyncDisposable
                 await app.StartAsync(ct).ConfigureAwait(false);
                 var bound = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses.FirstOrDefault();
                 var actual = bound is not null && Uri.TryCreate(bound, UriKind.Absolute, out var uri) ? uri.Port : port;
-                return new PhoneListener(app, address.ToString(), actual);
+                return new PluginListener(app, address.ToString(), actual);
             }
             catch (Exception ex) when (attempt < 90 && (ex is IOException || ex is SocketException || ex.InnerException is SocketException) && !ct.IsCancellationRequested)
             {
-                log.LogInformation("Phone: {Address}:{Port} is busy ({Error}); retrying", address, port, ex.Message);
+                log.LogInformation("{Name}: {Address}:{Port} is busy ({Error}); retrying", name, address, port, ex.Message);
                 await app.DisposeAsync().ConfigureAwait(false);
                 await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
             }

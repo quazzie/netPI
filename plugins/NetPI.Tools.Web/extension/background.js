@@ -6,7 +6,36 @@
 // The Target.* methods NetPI uses at browser level are answered here with chrome.tabs.
 
 const attached = new Set(); // tabs with the debugger attached
-const known = new Set(); // tabs NetPI opened or the user shared: their closing is reported
+// Tabs NetPI opened or the user shared: their closing is reported, and only these may be attached. The worker is recycled when idle,
+// and a module-scope set would forget NetPI's own tabs (the shared list comes back from NetPI, those it opened do not): the set is kept in
+// chrome.storage.session (it lives as long as the browser run, like the tabs' ids) and loaded before the first request is handled.
+class KnownTabs extends Set {
+  add(id) {
+    const had = super.has(id);
+    super.add(id);
+    if (!had) this.save();
+    return this;
+  }
+  delete(id) {
+    const had = super.delete(id);
+    if (had) this.save();
+    return had;
+  }
+  save() {
+    chrome.storage.session.set({ knownTabs: [...this] }).catch(() => {});
+  }
+}
+const known = new KnownTabs();
+const loaded = (async () => {
+  try {
+    const { knownTabs } = await chrome.storage.session.get('knownTabs');
+    const open = new Set((await chrome.tabs.query({})).map((t) => t.id));
+    for (const id of knownTabs ?? []) if (open.has(id)) Set.prototype.add.call(known, id); // a tab closed meanwhile is dropped
+    known.save();
+  } catch {
+    /* no session storage: the set stays in memory */
+  }
+})();
 let ws = null;
 let config = null;
 let connecting = false;
@@ -27,6 +56,7 @@ async function connect() {
   if (connecting || (ws && ws.readyState <= 1)) return;
   connecting = true;
   try {
+    await loaded;
     config = await readConfig();
     const base = (config?.url ?? 'http://127.0.0.1:7431').replace(/^http/, 'ws').replace(/\/+$/, '');
     const socket = new WebSocket(`${base}/api/p/netpi.tools.web/extension?key=${encodeURIComponent(config?.key ?? '')}`);
@@ -190,7 +220,8 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   send({ method: 'Target.detachedFromTarget', params: { sessionId: `tab-${source.tabId}`, reason } });
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await loaded;
   attached.delete(tabId);
   if (known.delete(tabId)) send({ method: 'Target.targetDestroyed', params: { targetId: String(tabId) } });
 });

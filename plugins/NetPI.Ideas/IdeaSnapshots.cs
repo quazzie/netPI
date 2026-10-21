@@ -54,17 +54,22 @@ public sealed class IdeaSnapshots(IdeasRepository repo)
     /// <summary>
     /// Take a snapshot in. <paramref name="mode"/> is "merge" (default: ideas that are not here yet are added,
     /// everything that is here stays) or "replace" (the backlog is emptied first — an explicit, deliberate
-    /// act, which is why it says so in its answer).
+    /// act, which is why it says so in its answer). With <paramref name="home"/>, the replaced ideas' image files are deleted too.
     /// </summary>
-    public JsonObject ImportSnapshot(JsonObject snapshot, string mode = "merge")
+    public JsonObject ImportSnapshot(JsonObject snapshot, string mode = "merge", string? home = null)
     {
         if (mode is not ("merge" or "replace")) throw new RpcException("bad_request", "mode must be \"merge\" or \"replace\"");
         var report = ValidateSnapshot(snapshot);
         var ideas = (snapshot["ideas"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+        var replaced = new List<JsonObject>();
         _repo.Transaction(r =>
         {
             if (mode == "replace")
-                foreach (var idea in r.All()) r.Delete(IdeaOps.Str(idea["id"]));
+                foreach (var idea in r.All())
+                {
+                    r.Delete(IdeaOps.Str(idea["id"]));
+                    replaced.Add(idea);
+                }
             foreach (var idea in ideas)
             {
                 if (IdeaOps.Str(idea["id"]) is not { Length: > 0 }) continue;
@@ -76,6 +81,12 @@ public sealed class IdeaSnapshots(IdeasRepository repo)
                 new JsonObject { ["ideas"] = ideas.Count, ["mode"] = mode });
             return 0;
         });
+        // the replaced ideas' images go with them, once the transaction has landed (the delete RPC's order); an idea the snapshot brings back keeps its files
+        if (home is not null)
+        {
+            var back = ideas.Select(i => IdeaOps.Str(i["id"])).ToHashSet();
+            foreach (var gone in replaced.Where(i => !back.Contains(IdeaOps.Str(i["id"])))) IdeaImages.DeleteAll(home, gone);
+        }
         report["mode"] = mode;
         report["imported"] = new JsonObject { ["ideas"] = ideas.Count };
         return report;

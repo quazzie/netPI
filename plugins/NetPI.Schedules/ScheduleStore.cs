@@ -119,8 +119,10 @@ internal sealed class ScheduleStore(IPluginData data)
         {
             ["scheduleId"] = scheduleId, ["atMs"] = ms, ["at"] = Iso(at), ["status"] = status, ["reason"] = reason, ["sessionId"] = sessionId,
         });
+        // the history keeps the newest rows, but a run inside the daily cap's 24 hours stays whatever the count: the cap counts these rows
+        var windowStart = at.AddDays(-1).ToUnixTimeMilliseconds();
         foreach (var old in _runs.Find(new DataQuery { Offset = HistoryPerSchedule }.Eq("scheduleId", scheduleId).Order("atMs", descending: true)))
-            _runs.Delete(old.Key);
+            if (old.Doc["status"]?.GetValue<string>() != ScheduleRunner.Ran || old.Doc["atMs"]?.GetValue<long>() < windowStart) _runs.Delete(old.Key);
     });
 
     /// <summary>A schedule's runs (or every schedule's), newest first.</summary>

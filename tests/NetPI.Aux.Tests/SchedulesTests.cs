@@ -321,6 +321,19 @@ public static class SchedulesTests
             await Check.ThrowsAsync<RpcException>(() => env.Add(new { kind = "every", minutes = 60 }, extra: new { agent = "nobody" }));
         });
 
+        r.Add("schedules: the history prune keeps every run inside the daily cap's 24 hours, so a cap above the history size can still fire", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var store = env.Plugin.Store!;
+            var now = env.Time.Now;
+            var n = ScheduleStore.HistoryPerSchedule + 30;
+            for (var i = 0; i < n; i++) store.Record("s1", now.AddSeconds(-i), ScheduleRunner.Ran, null, "c" + i);
+            Check.Equal(n, store.StartedSince("s1", now.AddDays(-1)), "all runs of the day are still counted");
+            store.Record("s1", now.AddDays(-3), ScheduleRunner.Ran, null, "old");
+            store.Record("s1", now, "skipped", null, null);
+            Check.Equal(n, store.StartedSince("s1", now.AddDays(-5)), "a run older than a day is pruned past the history size");
+        });
+
         r.Add("schedules: a run that cannot start is failed and its chat is removed; the daily cap skips", async () =>
         {
             var env = await new Env().StartAsync();

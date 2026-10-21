@@ -2,4 +2,9 @@
   <ItemGroup>
     <InternalsVisibleTo Include="NetPI.Aux.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Shared SOURCE, not a shared assembly (docs/PLUGINS.md): the plugin listener, its address allow list and its wrong-token throttle. -->
+    <Compile Include="$(RepoRoot)shared/ListenerKit/*.cs" LinkBase="ListenerKit" />
+    <Using Include="NetPI.ListenerKit" />
+  </ItemGroup>
 </Project>
