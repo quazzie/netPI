@@ -286,17 +286,19 @@ where a chat runs, the profile who it is.
   tab): the queue has no cap and no time limit (`agents.queueMax` and `agents.queueTimeoutSeconds` are gone; left in a
   settings file they do nothing). Queued calls across agents and unassigned runs are admitted by priority, then arrival
   order; a pool at its own instance limit does not hold up another eligible pool.
-- **Priority:** a chat's runs queue at its `meta.priority` — `low`, `normal`, `high` or `critical` (-100, 0, 100, 200).
+- **Priority:** a chat's runs queue at its `meta.priority` — `background`, `low`, `normal`, `high` or `critical` (-200, -100, 0, 100, 200).
   New chats started manually default to `high`; the composer selector can change a chat's priority, including while it is
   queued. System-started chats use their caller's priority: a webhook's or schedule's `priority`, or `agent_spawn`'s
   `priority` (a subagent's default is its parent's, never above it nor above `high`). Manual chats are marked with
-  `meta.prioritySource: "manual"` and are never paused, regardless of level.
+  `meta.prioritySource: "manual"` and are never paused, except at `background`: a chat the user sets to background yields to everything.
   A run that queues again after giving its instance away (a wait for its subagents, a pause) gets +50: first among its
   own level, still behind the levels above. **Critical** goes further: when no instance it could use is free, it takes
   one from an eligible lower priority system-started run (one with a `meta.priority`), never a manual chat or another
-  critical one. That run gives its instance up at its next model call (active
+  critical one. **Background** is the lowest level: a background run (pausable even when set by hand) gives its instance
+  to *any* waiting run of a higher level (low, normal, high, critical), the same way and at the same points; a background
+  waiter never preempts. A low run is still only preempted by critical. That run gives its instance up at its next model call (active
   inference is never cut off), or as soon as a tool call of it has run for a minute: the tool keeps running, and its
-  result reaches the model as usual once the run has an instance again. A paused run shows "paused for a critical run".
+  result reaches the model as usual once the run has an instance again. A paused run shows "paused for a higher-priority run".
   On a local model the paused run will likely read its context in again when it goes on (its cache on the instance is
   gone).
 - **With no agents at all** (a settings file without any) every model call gets a slot per model:
@@ -480,7 +482,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `ideas.commitNoticeDebounceSec` | `30` | seconds a run waits after a commit notice before it may get the next one (0–3600), so a burst of commits costs one notice instead of one each; 0 turns the debounce off and leaves only the per-run cap |
 | `ideas.autoRefine.enabled` | `false` | your own agents refine newly filed ideas in the background (the Refine button's task; docs/PLUGIN-IDEAS.md "Automatic refine"). Only ideas you filed yourself, still open, never refined (a manual refine counts), without the `no-refine` tag |
 | `ideas.autoRefine.agents` | `[]` | the agent keys that may run it, taken in turn (prefer free local ones). Empty: nothing runs; there is no "any agent", which could pick a paid one |
-| `ideas.autoRefine.maxConcurrent` | `1` | refines running at once (1–4); the chats are low priority, so yours win the slots |
+| `ideas.autoRefine.maxConcurrent` | `1` | refines running at once (1–4); the chats are background priority, so yours win and they give up their slots the slots |
 | `ideas.autoRefine.delayMinutes` | `1` | an idea is refined only once you have not created or edited it for this long, so one you are still writing is left alone (0–10080; 0: at once). The drain then keeps going until every eligible idea is refined |
 | `ideas.autoRefine.archiveWhenDone` | `true` | the finished chat is archived; it stays linked on the idea's card |
 
