@@ -262,7 +262,7 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
             var n = await stream.ReadAsync(buffer, ct).ConfigureAwait(false);
             if (n == 0) return (ms.ToArray(), false);
             var room = max - ms.Length;
-            if (n >= room)
+            if (n > room)
             {
                 ms.Write(buffer, 0, (int)room);
                 return (ms.ToArray(), true);

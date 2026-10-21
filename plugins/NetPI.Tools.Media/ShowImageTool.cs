@@ -156,9 +156,9 @@ internal sealed class ShowImageTool(IPluginContext ctx, HttpClient http) : IAgen
             var n = await stream.ReadAsync(buffer, ct).ConfigureAwait(false);
             if (n == 0) return (ms.ToArray(), false);
             var room = max - ms.Length;
-            if (n >= room)
+            if (n > room)
             {
-                ms.Write(buffer, 0, (int)Math.Max(0, room));
+                ms.Write(buffer, 0, (int)room);
                 return (ms.ToArray(), true);
             }
             ms.Write(buffer, 0, n);
