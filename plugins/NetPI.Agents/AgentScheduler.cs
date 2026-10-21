@@ -217,6 +217,14 @@ internal sealed class AgentScheduler : IAgentScheduler
         if (!pool.Models.Contains(model.Ref, StringComparer.OrdinalIgnoreCase)) pool.Models.Add(model.Ref);
     }
 
+    /// <summary>An agent's pool as its settings describe it, not kept (a read of an agent without a live pool).</summary>
+    private Pool Scratch(AgentConfig a)
+    {
+        var pool = new Pool(a.Id);
+        ApplyAgent(pool, a);
+        return pool;
+    }
+
     private void ApplyAgent(Pool pool, AgentConfig a)
     {
         var model = _models.GetValueOrDefault(a.Model);
@@ -319,8 +327,9 @@ internal sealed class AgentScheduler : IAgentScheduler
             if (model is not null) _models[model.Ref] = model;
             var ranked = matching.Select(a =>
             {
-                var pool = GetOrCreate(a.Id);
-                ApplyAgent(pool, a);
+                // A read: the agent's live pool as Resolve/Refresh keep it, or (before its first call) a scratch pool
+                // from its settings that is not kept. Pools are only written where a capacity change can Pump.
+                var pool = _pools.TryGetValue(a.Id, out var live) && live.Configured ? live : Scratch(a);
                 var (available, reason) = AvailabilityOf(pool);
                 return (a.Id, Available: available, Reason: reason, Free: available && CanGrant(pool) && pool.Waiters.Count == 0,
                     Preferred: string.Equals(a.Id, preferred, StringComparison.OrdinalIgnoreCase), Load: pool.Owners.Count + pool.Waiters.Count);
