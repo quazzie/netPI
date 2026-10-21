@@ -247,6 +247,8 @@ public sealed class WebhooksPlugin : INetPiPlugin
         };
     }
 
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(2);
+
     private async Task HandleAsync(HttpContext http)
     {
         http.Response.Headers.XContentTypeOptions = "nosniff";
@@ -258,8 +260,12 @@ public sealed class WebhooksPlugin : INetPiPlugin
             var auth = http.Request.Headers.Authorization.ToString();
             if (auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) bearer = auth[7..].Trim();
             else if (http.Request.Headers.TryGetValue("X-Webhook-Token", out var h)) bearer = h.ToString().Trim();
+            // Only the body read follows the sender: a sender that hangs up after its payload arrived must not cancel the start half way
+            // (the chat would be deleted by a cancellation the filter lets through, and the payload neither kept nor deferred).
+            using var work = CancellationTokenSource.CreateLinkedTokenSource(_life?.Token ?? CancellationToken.None);
+            work.CancelAfter(RequestTimeout);
             answer = await ReceiveAsync(http.Request.Path.Value ?? "/", http.Request.Method, http.Connection.RemoteIpAddress, http.Request.ContentType,
-                max => Body.ReadAsync(http.Request, max, http.RequestAborted), bearer, http.RequestAborted).ConfigureAwait(false);
+                max => Body.ReadAsync(http.Request, max, http.RequestAborted), bearer, work.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { return; }
         catch (Exception ex)
