@@ -85,7 +85,9 @@ internal sealed record DecisionAnswer(JsonObject Answers, string Model, double M
 /// <summary>POST /v1/systemone through the configured server; errors keep the server's code and request id.</summary>
 internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDecisionService
 {
-    private readonly SemaphoreSlim _requests = new(Math.Clamp(ctx.Settings.Get("decide.parallel", 4), 1, 16));
+    private readonly Lock _limitGate = new();
+    private SemaphoreSlim _requests = new(Math.Clamp(ctx.Settings.Get("decide.parallel", 4), 1, 16));
+    private int _limit = Math.Clamp(ctx.Settings.Get("decide.parallel", 4), 1, 16);
     private readonly SemaphoreSlim _reuse = new(1, 1);
 
     /// <summary>The request gate for the current <c>decide.parallel</c>: read per use, a change takes effect on the next request.
@@ -145,7 +147,7 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
                 var questions = body["questions"] ?? throw new DecisionException("bad_request", "Missing questions");
                 return await AskAsync(wireModel, NetPiJson.ToElement(state), DecideTool.NormalizeQuestions(NetPiJson.ToElement(questions)), ct).ConfigureAwait(false);
             }
-            finally { _requests.Release(); }
+            finally { gate.Release(); }
         }
         finally { slot?.Dispose(); if (reuse) _reuse.Release(); }
     }
