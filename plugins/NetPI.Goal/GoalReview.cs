@@ -140,8 +140,8 @@ internal static class GoalReview
             .Select(a => string.IsNullOrWhiteSpace(a!.Name) ? a.Id : a.Name).ToList();
 
     private static string OneLine(string s, int max) => Cut(s.Replace("\r", "").Replace('\n', ' ').Trim(), max);
-    private static string Cut(string s, int max) => s.Length <= max ? s : s[..max] + "…";
-    private static string Tail(string s, int max) => s.Length <= max ? s : "…" + s[^max..];
+    private static string Cut(string s, int max) => TextLimit.Head(s, max, "…");
+    private static string Tail(string s, int max) => TextLimit.HeadTail(s, max, 0, (_, _) => "…");   // no head: the "…" + the last max characters
 }
 
 internal sealed class GoalsReview(IPluginContext ctx, Goals goals)
