@@ -40,6 +40,7 @@ public sealed class RuntimePlugin : INetPiPlugin
         // start takes the registered instance; a reload of this plugin finds the agents plugin's registration the same way).
         // A plain class in the shared contracts, so the instance is safe to hold across either plugin's reload.
         var leases = context.Services.Get<IResourceLeases>() as ResourceLeases ?? new ResourceLeases(context.Events);
+        leases.Rebind(context.Events);
         context.Services.Register<IResourceLeases>(leases);
         var runtime = new AgentRuntime(context);
         runtime.Initialize();

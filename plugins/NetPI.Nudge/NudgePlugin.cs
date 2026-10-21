@@ -127,7 +127,7 @@ public sealed partial class NudgeHook(Func<ISettings?> settings) : IAgentHook
         if (tail.Length > 300) tail = tail[^300..];
         // Ignore trailing markdown emphasis/quotes around the last sentence.
         var trimmed = tail.TrimEnd('*', '_', '`', '"', '\'', ')', ' ');
-        if (trimmed.EndsWith(':')) return true;
+        // a colon alone is a lead-in ("The following files need changes:"): only an announced action counts, colon or not
         return AnnounceRegex().IsMatch(trimmed);
     }
 
