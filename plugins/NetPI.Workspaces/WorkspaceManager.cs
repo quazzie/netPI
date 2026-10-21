@@ -78,10 +78,8 @@ public sealed class WorkspaceManager(
     }
 
     /// <summary>The tools that make a worker a writer: without one of these its writes cannot reach the checkout.</summary>
-    private static readonly HashSet<string> WriteTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "write", "edit", "write_file", "edit_file", "notebook_edit", "patch", "bash", "pwsh", "shell",
-    };
+    private static readonly HashSet<string> WriteTools =
+        new(WorkspaceGuard.MutatingTools.Concat(WorkspaceGuard.ShellTools), StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Whether this worker gets a checkout of its own: asked for, or able to write while the setting says writers should be
