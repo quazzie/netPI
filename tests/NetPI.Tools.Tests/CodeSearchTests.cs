@@ -131,6 +131,15 @@ public static class CodeSearchTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("codesearch rpc: codesearch.search is not marked read-only (it refreshes the index and embeds); codesearch.status is", async () =>
+        {
+            using var ctx = Context(T.TempDir("cs-rpc"), null);
+            await new CodeSearchPlugin().StartAsync(ctx, CancellationToken.None);
+            var flags = ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
+            Check.False(flags["codesearch.search"], "codesearch.search writes the index");
+            Check.True(flags["codesearch.status"], "codesearch.status only reads");
+        });
+
         r.Add("codesearch chunker: C# is cut at its type and members, comments and attributes go with them, the class names its members' signatures", () =>
         {
             var chunks = Chunker.Split("Demo/RadioQueue.cs", CSharp, 80, 8000);
