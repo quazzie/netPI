@@ -10,8 +10,8 @@
   import { duration } from '../../lib/format.js';
 
   /**
-   * Consecutive thinking/tool rows, folded by the "Steps" preference: 'open' never folds; 'done' (default) shows every
-   * row while the run is live and folds every group into "N steps · time" once it ends; 'folded' folds
+   * Consecutive thinking/tool rows, folded by the "Steps" preference: 'open' never folds; 'done' (default) folds a group once something
+   * follows it (text, the next message, the run's end), never the one the agent is adding to; 'folded' folds
    * from the first step on, live too, so adding a second step cannot shrink an open row into a folded head line.
    * Per-group overrides are remembered in chat.expanded. `active` = the group the agent is
    * adding to right now: folded, its line shows the latest step.
@@ -23,7 +23,7 @@
   const resultOf = (s) => s.result ?? chat.live.get(s.call.id)?.result ?? null;
   // a tool call that waits for the user's OK (a guardrail) keeps its group open, so its Allow / No can be seen
   const approving = $derived(item.steps.some((s) => s.kind === 'tool' && !resultOf(s) && approvalFor(chat.id, s.call.id)));
-  const collapsible = $derived(approving ? false : prefs.steps === 'folded' ? n > 0 : prefs.steps === 'done' ? !live : false);
+  const collapsible = $derived(approving ? false : prefs.steps === 'folded' ? n > 0 : prefs.steps === 'done' ? !active : false);
   const open = $derived(collapsible ? (chat.expanded.get(item.key) ?? false) : true);
   const span = $derived(Number.isFinite(item.startMs) && item.endMs > item.startMs ? item.endMs - item.startMs : null);
   const counts = $derived(collapsible ? stepCounts(item.steps) : null);
