@@ -335,31 +335,36 @@
     <IconButton icon="plus" title="New idea (Ctrl+I)" size="sm" onclick={newIdea} />
   </div>
 
-  <div class="filters np-line">
-    <SearchInput bind:value={q} placeholder={byMeaning ? 'Search by meaning' : 'Search ideas'} class="np-grow" />
-    {#if canMeaning}
-      <button class="np-chip fchip meaning" aria-pressed={byMeaning} onclick={() => (byMeaning = !byMeaning)}
-        title={byMeaning ? 'Searching by meaning (embeddings): click for word search' : 'Search by meaning instead of words (embeddings)'}>≈</button>
-    {/if}
-    <Menu items={statusItems} minWidth={170}>
-      {#snippet trigger({ toggle, open })}
-        <button class="np-chip fchip" aria-pressed={statusFilter !== 'active'} aria-expanded={open} onclick={toggle} title="Status filter">
-          <span class="cap">{statusLabel}</span>
-          <span class="n">{counts[statusFilter] ?? 0}</span>
-          <Icon name="chevron-down" size={11} />
-        </button>
-      {/snippet}
-    </Menu>
-    {#if allTags.length}
-      <Menu items={tagItems} minWidth={160}>
+  <div class="filters">
+    <!-- the search and its ≈ mode share a row; the status and tag filters sit on the row below -->
+    <div class="np-line">
+      <SearchInput bind:value={q} placeholder={byMeaning ? 'Search by meaning' : 'Search ideas'} class="np-grow" />
+      {#if canMeaning}
+        <button class="np-chip fchip meaning" aria-pressed={byMeaning} onclick={() => (byMeaning = !byMeaning)}
+          title={byMeaning ? 'Searching by meaning (embeddings): click for word search' : 'Search by meaning instead of words (embeddings)'}>≈</button>
+      {/if}
+    </div>
+    <div class="np-line">
+      <Menu items={statusItems} minWidth={170}>
         {#snippet trigger({ toggle, open })}
-          <button class="np-chip fchip" aria-pressed={tagFilter.size > 0} aria-expanded={open} onclick={toggle} title="Filter by tag">
-            #{#if tagFilter.size}<span class="n">{tagFilter.size}</span>{/if}
+          <button class="np-chip fchip" aria-pressed={statusFilter !== 'active'} aria-expanded={open} onclick={toggle} title="Status filter">
+            <span class="cap">{statusLabel}</span>
+            <span class="n">{counts[statusFilter] ?? 0}</span>
             <Icon name="chevron-down" size={11} />
           </button>
         {/snippet}
       </Menu>
-    {/if}
+      {#if allTags.length}
+        <Menu items={tagItems} minWidth={160}>
+          {#snippet trigger({ toggle, open })}
+            <button class="np-chip fchip" aria-pressed={tagFilter.size > 0} aria-expanded={open} onclick={toggle} title="Filter by tag">
+              #{#if tagFilter.size}<span class="n">{tagFilter.size}</span>{/if}
+              <Icon name="chevron-down" size={11} />
+            </button>
+          {/snippet}
+        </Menu>
+      {/if}
+    </div>
   </div>
   {#if tagFilter.size}
     <div class="tags">
@@ -489,7 +494,10 @@
     line-height: 20px;
     color: var(--fg-dim);
   }
+  /* two rows: the search with its ≈ mode, then the status and tag filters */
   .filters {
+    display: flex;
+    flex-direction: column;
     gap: 5px;
     padding: 4px 10px 4px 12px;
   }
