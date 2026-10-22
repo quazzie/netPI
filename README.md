@@ -42,7 +42,8 @@ See [the plan that made it so](docs/archive/2026-10-02-replaceable-parts.md).
 - **Forks.** Fork a chat from any message into a new one (the conversation up to there, and the prompt it was sent,
   so the backend's cache still applies); forking before one of your messages puts it in the box to change and resend.
 - **Steering and queueing.** While an agent runs, *Enter* steers it (delivered after the current tool call) and
-  *Alt+Enter* queues a follow-up; *Esc* stops.
+  *Alt+Enter* queues a follow-up; *Esc* stops the run — its subagents keep working, and their reports still wake it
+  (*Shift+Esc* or `/abort-all` stops the run and everything under it).
 - **Goals.** `/goal <what must be true>` keeps the agent working: after every run it is started again until it marks
   the goal complete (`goal_update`) or needs you; stopping, a failure, runs without progress and limits pause it.
 - **Tools as plugins:** `read`, `write`, `edit` (multi-edit, replace-all), `grep`, `find`, `ls` — all CRLF/LF
@@ -112,8 +113,8 @@ Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized 
 | | |
 |---|---|
 | *Enter* / *Shift+Enter* | send / newline |
-| *Enter* while running · *Alt+Enter* · *Esc* | steer · queue a follow-up · stop |
-| `/` | commands: `/new /rename /agent /project /goal /plan /compact /idea /reload /settings /help /abort`, `/skill:name` |
+| *Enter* while running · *Alt+Enter* · *Esc* | steer · queue a follow-up · stop the run (its subagents keep going; *Shift+Esc* or `/abort-all` stops them too) |
+| `/` | commands: `/new /rename /agent /project /goal /plan /compact /idea /reload /settings /help /abort /abort-all`, `/skill:name` |
 | `@` | mention a file of the session's workspace |
 | *Ctrl+T*, *Ctrl+W*, *Ctrl+Tab*, *Ctrl+1…8* / *Ctrl+9* | new, close, cycle, pick session tabs / the last one |
 | *Ctrl+B* / *Ctrl+Alt+B* | toggle left / right panel · *Ctrl+K* command palette · *Ctrl+I* new idea · *Ctrl+/* help |
