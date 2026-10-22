@@ -43,6 +43,13 @@
     return -1;
   });
 
+  // the item the agent is adding to: the last one that is shown while the run is live (the artifacts chips of a turn that
+  // wrote files sit after its steps group but stay hidden until the run ends, so they must not end the group)
+  const tailIdx = $derived.by(() => {
+    for (let i = items.length - 1; i >= 0; i--) if (items[i].kind !== 'artifacts') return i;
+    return -1;
+  });
+
   let scroller = $state();
   let content = $state();
   let stick = true; // follow the bottom while new content arrives (plain var: no re-render on scroll)
@@ -197,7 +204,7 @@
         {:else if item.kind === 'text'}
           <AssistantText {item} onfork={forkable && item.msg?.seq ? () => forkAfter(item.msg) : null} />
         {:else if item.kind === 'steps'}
-          <StepsGroup {item} {chat} {base} live={running && i > lastUserIdx} active={running && i === items.length - 1} />
+          <StepsGroup {item} {chat} {base} live={running && i > lastUserIdx} active={running && i === tailIdx} />
         {:else if item.kind === 'notice'}
           <NoticeRow msg={item.msg} {chat} />
         {:else if item.kind === 'prompt'}

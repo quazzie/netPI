@@ -243,6 +243,9 @@ export function createItemBuilder() {
 export function withStream(items, stream, live = null) {
   if (!stream?.active || (!stream.thinking && !stream.text.trim() && !stream.tools.length)) return items;
   const out = items.slice();
+  // the artifacts chips after the last steps group are hidden while the run is live: they must not keep the stream's
+  // steps from joining that group (they come back when the message is stored)
+  if (out.at(-1)?.kind === 'artifacts' && out.at(-2)?.kind === 'steps') out.pop();
   let group = out.at(-1)?.kind === 'steps' ? out.pop() : null;
   let groups = 0; // groups the stream opens: thinking, then text, then tool calls makes two
   const push = (step) => {
