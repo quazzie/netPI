@@ -45,7 +45,7 @@ Every request carries the active tools (the highest-priority registration per na
   `tools` notice tells it ("The user switched off for this session: bash.");
 - deferred tools (see [Deferred tools](#tool_search-deferred-tools)): an MCP server's unpinned
   tools (`ToolDefinition.Deferred`) and the built-in tools `tools.deferred` names, and deferred-tool infrastructure
-  (`tool_search`, `call_tool`) when the chat has no deferred tool it could reach;
+  (`tool_search`, `call_tool`) when the chat has no deferred tool it could reach (the chat's off-list and an agent's allowlist never remove them while something is deferred);
 - for a subagent: the tools its owner chose. With an `agent_spawn` `tools` list exactly those, even tools the owner
   does not have (a limited orchestrator can dispatch an agent with the `ssh` tool; unknown names get the list of
   tools); without one the owner's tools (its allowlist, and its session's switched-off tools, copied to the subagent's

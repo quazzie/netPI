@@ -202,6 +202,10 @@ public static class DeferredToolsTests
             await h.SendAsync(session.Id,"again");await h.IdleAsync(session.Id);
             Check.True(h.Messages(session.Id).SelectMany(m=>m.ToolResults).Last().IsError);
             Check.False(h.Catalog.Requests.Last().Tools.Any(d=>d.Name==target.Definition.Name));
+            // the infrastructure ignores the off-list: switching it off must not strand the deferred tools
+            await h.Rpc.CallAsync("agent.setTools",new {sessionId=session.Id,off=new[]{"call_tool","tool_search"}});
+            await h.SendAsync(session.Id,"third");await h.IdleAsync(session.Id);
+            Check.True(h.Catalog.Requests.Last().Tools.Any(d=>d.Name=="call_tool") && h.Catalog.Requests.Last().Tools.Any(d=>d.Name=="tool_search"));
             await manager.DisposeAsync();ctx.Unload();
         });
         t.Add("deferred: hidden changes stay silent and a pinned removal is announced only once", async () => {

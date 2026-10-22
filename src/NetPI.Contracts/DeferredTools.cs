@@ -36,12 +36,12 @@ public static class ToolSelection
         bool Allowed(IAgentTool tool, bool infrastructure = false)
         {
             var d = tool.Definition;
-            if (ToolLists.Names(off, d.Name, names)) return false;
+            if (!infrastructure && ToolLists.Names(off, d.Name, names)) return false;
             if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent") return false;
             return infrastructure || agent?.ToolAllowlist is not { } allow || ToolLists.Names(allow, d.Name, names);
         }
         var selected = all.Where(t => Allowed(t)).ToList();
-        // A deferred tool that is selected brings the infrastructure that reaches it (tool_search), even past an allowlist.
+        // A deferred tool that is selected brings the infrastructure that reaches it (tool_search), even past an allowlist and the chat's off-list (a chat that could find a deferred tool but not run it is stuck).
         foreach (var tool in all)
             if (tool is IDeferredToolInfrastructure infra && Allowed(tool, infrastructure: true)
                 && selected.Any(t => exposure.IsDeferred(t.Definition) && infra.Supports(t.Definition))

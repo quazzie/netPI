@@ -97,7 +97,7 @@ internal sealed class IdeaRefine(IPluginContext ctx, IdeasRepository repo)
 
     /// <summary>Every tool that can change something, except the few a refining chat needs: what is left reads the code and the web.</summary>
     private List<string> ToolsOff(bool auto) =>
-        [.. ctx.Tools.All.Where(t => !t.Definition.ReadOnly && !KeptTools.Contains(t.Definition.Name, StringComparer.OrdinalIgnoreCase)).Select(t => t.Definition.Name)
+        [.. ctx.Tools.All.Where(t => !t.Definition.ReadOnly && !ToolExposure.IsInfrastructure(t.Definition.Name) && !KeptTools.Contains(t.Definition.Name, StringComparer.OrdinalIgnoreCase)).Select(t => t.Definition.Name)
             .Concat(auto ? ["ask_user"] : []).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
 
     /// <summary>What the agent is asked to do. The idea itself reaches it as the notice <c>ideas.attach</c> adds; this is the task.</summary>
