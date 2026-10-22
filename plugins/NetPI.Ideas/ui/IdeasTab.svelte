@@ -344,7 +344,7 @@
           title={byMeaning ? 'Searching by meaning (embeddings): click for word search' : 'Search by meaning instead of words (embeddings)'}>≈</button>
       {/if}
     </div>
-    <div class="np-line">
+    <div class="np-line chips">
       <Menu items={statusItems} minWidth={170}>
         {#snippet trigger({ toggle, open })}
           <button class="np-chip fchip" aria-pressed={statusFilter !== 'active'} aria-expanded={open} onclick={toggle} title="Status filter">
@@ -508,6 +508,19 @@
   }
   .cap {
     text-transform: capitalize;
+  }
+  /* the status filter fills its row (its Menu trigger sits in an .np-menu-anchor, grown as the project badge is in
+     .scope), so the tag filter sits on the right; the label stretches, the count and chevron sit at the right edge */
+  .chips > :global(.np-menu-anchor:first-child) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .chips .fchip {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .chips .cap {
+    flex: 1 1 auto;
   }
   .n {
     color: var(--fg-dim);
