@@ -314,9 +314,11 @@ into locals first, because after the parent clears the modal state or the row re
      `Schedule · name · when → allowed | discarded | not decided…`. A notification says the chat has a new schedule waiting.
    - **Guardrails.** A tool call that waits for the user's OK (a guardrails `ask:` rule; `asks.approvals` from
      `guard.pending`, `guard.asked`, `guard.closed`) shows "needs your OK" on its row, with a bar under it: why (the
-     rule; for a path, the path) and **No** / **Allow in this chat** / **Allow** (`guard.answer`, scope `session` or
-     `once`); a call that runs because its rule was allowed in this chat reads "allowed in this chat" (`guard.cleared`
-     `by: 'session'`), one the second opinion cleared reads "checked". Its steps group stays open while it waits. A
+     rule; for a path, the path) and **No** / **Allow in this chat** / **Always for …** / **Allow** (`guard.answer`, scope
+     `session`, `always` or `once`; *Always for your chats* — or the schedule or webhook the chat works for — only while the
+     Autonomy plugin runs, from the question's `grantTo`); a call that runs because its rule was allowed in this chat reads
+     "allowed in this chat" (`guard.cleared` `by: 'session'`), one a standing grant let through "allowed for your chats"
+     (`by: 'grant'`), one the second opinion cleared reads "checked". Its steps group stays open while it waits. A
      call that a hook blocked reads "blocked" (the ban icon), like a skipped one: it never ran. The tab dot is `asking`,
      the run status line says "Waiting for your OK", and a Windows toast says what it wants to run or change.
    - **Model turns.** Under the last step of each model turn (an assistant message that ended in tool calls; under its
@@ -649,6 +651,16 @@ shown once, with a ready `curl` line. The form is deliberately small: name, URL 
 `webhooks.changed`, `settings.changed` and a 30 s poll.
 
 **Phone** (`netpi.phone`, left, order 27). The phone listener's state (off / listening on an address / why it could not start), **Pair** (a one-time code with a countdown, its link and a QR code made in the tab itself, `ui/qr.js`) and the paired phones with a two-step unpair. Reads `phone.status` / `phone.devices`; refreshes on `phone.changed`, `settings.changed` and a 30 s poll. The phone's own page is `wwwroot/phone/` (a Chats / Agents switch — *Agents* is a compact Work tab: the agent pool, running and finished runs with Stop, processes, today's spend; the address holds the view: `#chat=ID`, `#new`, `#agents`; chats list with *Needs you / Running / Chats* groups, chat with live streaming, Queue / Steer / Stop, picture attach, new-chat sheet, approval and question cards); it is not part of the web UI.
+
+**Autonomy** (`netpi.autonomy`, right, order 60). For chats nobody watches: a header with the changes of the last hour and
+**Pause**/**Resume** (`autonomy.pause`; paused, a line under it says so), then three views. *Refused* (the count is the
+grantable ones still open): each refusal's tool and command or path, who it worked for and when, why (the rule that asks,
+or "read outside text"), **Allow for …** (`autonomy.grant`) or "never after outside text", and a link to the chat.
+*Changes*: the journal (`autonomy.journal`, newest 150), each row the tool and what it ran or wrote, who and when, a
+failed one marked, and **Undo** where a file copy was kept (`autonomy.undo`; a file changed again since asks once more
+before it is forced). *Grants*: each rule, who it is for, how often and when it last let something through, and a two-step
+Remove (`autonomy.revoke`). Refreshes on `autonomy.changed` and a 60 s poll. Nothing in it is pushed: the one notification
+is `autonomy.braked` (a schedule's or webhook's chats hit `autonomy.maxChangesPerHour`), shown by the host UI.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds the agents block and the collapsible sections (Off, Queued,
 Background, Finished). The open or closed state of each section is remembered (`storageKey`, versioned `work.v2.*` so the

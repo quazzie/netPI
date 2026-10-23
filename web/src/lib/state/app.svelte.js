@@ -973,6 +973,10 @@ function onEvent(d, env) {
       scheduleEvent(type, d);
       if (type === 'schedule.proposed') scheduleNotification(d);
       break;
+    case 'autonomy.braked':
+      // a schedule's or webhook's chats hit their hourly cap of changes (plugins/NetPI.Autonomy): the one thing it tells unasked
+      if (d?.sessionId) notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Stopped: ${d.label ?? 'a chat'} made ${d.limit} changes in an hour`);
+      break;
     case 'ui.open':
       // a plugin shows the user one of its session views in a chat (e.g. the agent's browser): there now, and a
       // notification when the chat is not the one in front

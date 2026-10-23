@@ -22,6 +22,7 @@
     <Project Path="plugins/NetPI.Providers.ClaudeCli/NetPI.Providers.ClaudeCli.csproj" />
     <Project Path="plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.csproj" />
     <Project Path="plugins/NetPI.Retry/NetPI.Retry.csproj" />
+    <Project Path="plugins/NetPI.Autonomy/NetPI.Autonomy.csproj" />
     <Project Path="plugins/NetPI.Schedules/NetPI.Schedules.csproj" />
     <Project Path="plugins/NetPI.Phone/NetPI.Phone.csproj" />
     <Project Path="plugins/NetPI.Webhooks/NetPI.Webhooks.csproj" />

@@ -535,6 +535,30 @@ tools read them: names ignoring case, `_`, `-` and spaces; the first name the to
 an array is its lines; a string-encoded arguments object is unwrapped. The workspace guard reads its paths the same way, and also
 refuses an `ssh` download into another checkout of the repository.
 
+## Autonomy
+
+`plugins/NetPI.Autonomy`: chats nobody watches — started by a schedule or a webhook, or a subagent — keep working as you
+without waiting for answers. The guardrails ask it before they ask you (`IToolGrants`): a **grant** (an `ask:` rule you
+allowed for good for one origin: "your chats", "webhook Checkmk", "schedule nightly") lets the call through; in a chat
+nobody watches, an ask with no grant is **refused** instead of waiting, and listed in the Autonomy tab, where "Allow for …"
+turns it into a grant. The question card in your own chats has "Always for your chats" next to "Allow in this chat". For
+the chats of schedules and webhooks (and their subagents) the plugin also keeps a **journal** of every call that may
+change something (any call its tool does not mark read-only), with a copy of each file a `write` or `edit` changed (Undo
+in the tab), and applies the **brakes** below. Your own chats are never journaled or braked. Disabled, none of it runs: the
+guardrails ask as before, and grants and journal wait in the plugin's data. Its settings are in Settings → Safety, beside
+the guardrails.
+
+| key | default | |
+|---|---|---|
+| `autonomy.paused` | `false` | every change by a schedule's or webhook's chat is refused (they still read) until it is off; the tab's Pause button sets it |
+| `autonomy.unattendedAsks` | `"refuse"` | `refuse`: in a chat nobody watches, a guardrail's question is refused and listed for a grant. `wait`: it waits for your answer as before (a subagent's is refused either way: nobody watches its chat) |
+| `autonomy.maxChangesPerHour` | `120` | chats of one schedule or webhook that made this many changes in the last hour are refused the next one, with one Windows notification per origin per hour (`autonomy.braked`): the only thing the plugin tells you unasked. 0 switches it off |
+| `autonomy.keepDays` | `30` | journal rows, refusals and file copies older than this are dropped (swept at start and every six hours) |
+| `autonomy.grantUnusedDays` | `60` | a grant that let nothing through for this long is dropped; 0 keeps them. A grant names its rule by its text: an edited rule is a new rule, and the old grant ages out |
+| `autonomy.maxCheckpointKb` | `4096` | a file larger than this is changed without a copy (no undo; the journal row says so) |
+| `autonomy.externalTools` | `["web_fetch", "web_search", "browser", "mcp_resource", "plugin:netpi.mcp"]` | after a call of one of these, a schedule's chat has read outside text (**tainted**, `meta.autonomy.tainted`, inherited by its subagents); a webhook's chat is tainted from the start (its payload). `plugin:<id>` names every tool a plugin registers |
+| `autonomy.taintedBlocked` | browser and desktop actions, `schedules: add, update, run`, `webhooks: test, pause` | what a tainted chat of a schedule or webhook may never do, whatever is granted: a tool, or `tool: action, action` (the `action` argument). The default: `browser: click, type, key, upload, dialog, eval, steps` and `windows: open, click, type, key, toggle, expand, collapse, select, focus, steps`, so an alert's or a page's text cannot make it act as you in your signed-in browser or on the desktop. Refused calls are listed in the tab, not grantable |
+
 ## Web tools
 
 | key | default | |

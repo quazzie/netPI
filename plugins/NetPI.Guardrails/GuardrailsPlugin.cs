@@ -54,15 +54,14 @@ public sealed class GuardrailsPlugin : INetPiPlugin
         });
         var outcomes = new GuardOutcomes(context.Data, context.Logger);
         var approvals = new Approvals(context, outcomes);
-        context.Rpc.Register(new RpcMethod("guard.outcomes", "What became of the guard questions: { result? (cleared|session|allowed|allowed-session|denied|steered|cancelled|stopped|subagent|reflect), limit? (50) } → { summary: { result: count }, rows: [{ at, result, sessionId, tool, kind, rule, subject, opinion? }] } (newest first)", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("result")]),
+        context.Rpc.Register(new RpcMethod("guard.outcomes", "What became of the guard questions: { result? (cleared|session|grant|refused|allowed|allowed-session|allowed-always|denied|steered|cancelled|stopped|subagent|reflect), limit? (50) } → { summary: { result: count }, rows: [{ at, result, sessionId, tool, kind, rule, subject, opinion? }] } (newest first)", ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer), RpcParam.Opt("result")]),
             (req, _) => Task.FromResult<object?>(outcomes.Read(req.Str("result"), req.Int("limit") ?? 50)));
         context.Services.Register<IAgentHook>(new GuardHook(context, approvals, new SecondOpinion(context)));
         context.Rpc.Register(new RpcMethod("guard.pending", "Tool calls waiting for the user's OK (guardrails ask rules): { sessionId? } → { approvalId, sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }[]", ReadOnly: true, Params: [RpcParam.Opt("sessionId")]),
             (req, _) => Task.FromResult<object?>(approvals.List(req.Str("sessionId"))));
-        context.Rpc.Register(new RpcMethod("guard.answer", "Allow or refuse a tool call that waits for the user's OK: { approvalId, allow, scope?: \"once\" | \"session\" } → true; scope session (with allow) " +
-            "allows the rule that asked for the rest of that chat, and the other calls of that chat waiting on the same rule", ReadOnly: false, Params: [RpcParam.Req("approvalId"), RpcParam.Opt("allow", RpcParamType.Boolean), RpcParam.Opt("scope")]),
-            async (req, ct) => await approvals.AnswerAsync(req.Required("approvalId"), req.Bool("allow") ?? false,
-                forSession: string.Equals(req.Str("scope"), "session", StringComparison.OrdinalIgnoreCase), ct).ConfigureAwait(false));
+        context.Rpc.Register(new RpcMethod("guard.answer", "Allow or refuse a tool call that waits for the user's OK: { approvalId, allow, scope?: \"once\" | \"session\" | \"always\" } → true; scope session (with allow) " +
+            "allows the rule that asked for the rest of that chat, always grants it to the chat's origin for good (the Autonomy plugin), and either lets the other calls of that chat waiting on the same rule run", ReadOnly: false, Params: [RpcParam.Req("approvalId"), RpcParam.Opt("allow", RpcParamType.Boolean), RpcParam.Opt("scope")]),
+            async (req, ct) => await approvals.AnswerAsync(req.Required("approvalId"), req.Bool("allow") ?? false, req.Str("scope"), ct).ConfigureAwait(false));
         // the cards, from the runtime's waits of this kind (sync handlers: an async one left alive roots this load context)
         context.Events.Subscribe(EventTypes.AgentWaiting, e =>
         {
@@ -91,7 +90,7 @@ internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = nu
     public GuardOutcomes? Outcomes => outcomes;
 
     /// <summary>The wait a call makes to ask before it runs: its card's data, and what the call reads when it does not run.</summary>
-    public static UserWait Wait(ToolCallPart call, Verdict verdict, Opinion? opinion, string? reason = null) => new()
+    public static UserWait Wait(ToolCallPart call, Verdict verdict, Opinion? opinion, string? reason = null, string? grantTo = null) => new()
     {
         Id = Guid.NewGuid().ToString("N"),
         Kind = Kind,
@@ -99,7 +98,7 @@ internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = nu
         Data = new JsonObject
         {
             ["tool"] = call.Name, ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["opinion"] = opinion?.ToJson(),
-            ["reason"] = reason,
+            ["reason"] = reason, ["grantTo"] = grantTo,
         },
         IfSteered = ToolResult.Error("Blocked: the user wrote a new message instead of answering whether it may run; the message follows. Nothing ran."),
         IfCancelled = ToolResult.Error("Blocked: the chat was stopped before the user answered whether it may run. Nothing ran."),
@@ -132,36 +131,46 @@ internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = nu
 
     /// <summary>
     /// The user's OK, or no: allowed, the call runs in the run that goes on (the hook lets that rule through for it); refused,
-    /// it is blocked. With <paramref name="forSession"/> the rule is allowed for the rest of the chat, and so are that
-    /// chat's other calls waiting on it.
+    /// it is blocked. <paramref name="scope"/> <c>session</c> allows the rule for the rest of the chat, <c>always</c> grants it
+    /// to the chat's origin for good (<see cref="IToolGrants"/>, the Autonomy plugin); either way the chat's other calls
+    /// waiting on that rule run too.
     /// </summary>
-    public async Task<bool> AnswerAsync(string approvalId, bool allow, bool forSession, CancellationToken ct)
+    public async Task<bool> AnswerAsync(string approvalId, bool allow, string? scope, CancellationToken ct)
     {
-        forSession &= allow;
+        var forSession = allow && string.Equals(scope, "session", StringComparison.OrdinalIgnoreCase);
+        var always = allow && string.Equals(scope, "always", StringComparison.OrdinalIgnoreCase);
         var w = Waiting(null).FirstOrDefault(x => x.Id == approvalId)
                 ?? throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its chat moved on).");
         var rule = (string?)w.Data?["rule"] ?? "";
+        if (always)
+        {
+            var grants = ctx.Services.Get<IToolGrants>()
+                         ?? throw new RpcException("unavailable", "Allowing for good needs the Autonomy plugin, which is not running.");
+            grants.Grant(new GuardAsk(w.SessionId, (string?)w.Data?["tool"] ?? w.Tool, (string?)w.Data?["kind"] ?? "", rule, (string?)w.Data?["subject"] ?? ""));
+        }
         if (forSession) AllowInSession(w.SessionId, rule);
         var resolution = allow
             ? WaitResolution.Allow()
             : WaitResolution.Answer(ToolResult.Error($"Blocked: the user said no to {Subject((string?)w.Data?["kind"], (string?)w.Data?["subject"])}. Nothing ran."));
         if (!await Runtime.ResolveAsync(w.Id, resolution, ct).ConfigureAwait(false))
             throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its chat moved on).");
-        Closed(w.Id, w.SessionId, w.CallId, w.Tool, w.Data, allow ? "allowed" : "denied", forSession);
-        if (forSession)
+        var kept = always ? "always" : forSession ? "session" : null;
+        Closed(w.Id, w.SessionId, w.CallId, w.Tool, w.Data, allow ? "allowed" : "denied", kept);
+        if (kept is not null)
             foreach (var other in Waiting(w.SessionId).Where(o => (string?)o.Data?["rule"] == rule).ToList())
                 if (await Runtime.ResolveAsync(other.Id, WaitResolution.Allow(), ct).ConfigureAwait(false))
-                    Closed(other.Id, other.SessionId, other.CallId, other.Tool, other.Data, "allowed", forSession: true);
+                    Closed(other.Id, other.SessionId, other.CallId, other.Tool, other.Data, "allowed", kept);
         return true;
     }
 
-    /// <summary>A wait stopped: <paramref name="status"/> is allowed | denied | steered | cancelled. The card closes, the outcome is kept.</summary>
-    public void Closed(string approvalId, string sessionId, string? callId, string tool, JsonObject? data, string status, bool forSession = false)
+    /// <summary>A wait stopped: <paramref name="status"/> is allowed | denied | steered | cancelled; <paramref name="scope"/> session | always
+    /// when the OK was kept. The card closes, the outcome is kept.</summary>
+    public void Closed(string approvalId, string sessionId, string? callId, string tool, JsonObject? data, string status, string? scope = null)
     {
         var closed = new JsonObject { ["approvalId"] = approvalId, ["sessionId"] = sessionId, ["callId"] = callId, ["status"] = status };
-        if (forSession) closed["scope"] = "session";
+        if (scope is not null) closed["scope"] = scope;
         ctx.Events.Publish("guard.closed", closed);
-        outcomes?.Record(status == "allowed" && forSession ? "allowed-session" : status, sessionId, tool,
+        outcomes?.Record(status == "allowed" && scope is not null ? "allowed-" + scope : status, sessionId, tool,
             (string?)data?["kind"] ?? "", (string?)data?["rule"] ?? "", (string?)data?["subject"] ?? "", data?["opinion"] as JsonObject);
     }
 
@@ -179,6 +188,7 @@ internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = nu
         ["askedAt"] = wait["since"]?.DeepClone(),
         ["opinion"] = wait["data"]?["opinion"]?.DeepClone(),
         ["reason"] = wait["data"]?["reason"]?.DeepClone(),
+        ["grantTo"] = wait["data"]?["grantTo"]?.DeepClone(),
     };
 
     internal static string Subject(string? kind, string? subject) => kind == "path" ? $"changing {subject}" : $"`{subject}`";
@@ -267,6 +277,20 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             approvals.Outcomes?.Record("session", run.Session.Id, call.Name, verdict, null);
             return null;
         }
+        // A standing grant for the chat's origin (IToolGrants, the Autonomy plugin; none without it).
+        var grants = ctx.Services.Get<IToolGrants>();
+        var ask = new GuardAsk(run.Session.Id, call.Name, verdict.Kind, verdict.Rule, verdict.Subject);
+        if (grants?.Find(ask) is { } grant)
+        {
+            ctx.Events.Publish("guard.cleared", new JsonObject
+            {
+                ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
+                ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["by"] = "grant",
+                ["grantId"] = grant.Id, ["origin"] = grant.OriginLabel,
+            });
+            approvals.Outcomes?.Record("grant", run.Session.Id, call.Name, verdict, null);
+            return null;
+        }
         // An ask rule on a command: a decision model may clear a confidently read-only one (SecondOpinion). Neither a
         // path verdict nor a long sleep is one: a path ask is about where the call writes, which the model does not
         // read, and a long wait is a deliberate sleep the rule has already priced.
@@ -284,6 +308,12 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
                 approvals.Outcomes?.Record("cleared", run.Session.Id, call.Name, verdict, opinion);
                 return null;
             }
+        }
+        // Nobody would answer in this chat (started by a schedule or a webhook, or a subagent): refused, and kept for a grant.
+        if (grants?.Refuse(ask) is { } refused)
+        {
+            approvals.Outcomes?.Record("refused", run.Session.Id, call.Name, verdict, opinion);
+            return Block(Why(verdict) + " " + refused);
         }
         if (run.Agent.IsSubagent)
         {
@@ -310,7 +340,7 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             reason = ReasonOf(turn.LatestAssistant);
         }
         // ask: the call waits for the user's OK (the run ends at it; guard.answer goes on with it, allowed or blocked)
-        return new ToolCallDecision { Wait = Approvals.Wait(call, verdict, opinion, reason) };
+        return new ToolCallDecision { Wait = Approvals.Wait(call, verdict, opinion, reason, grants?.OriginLabel(run.Session.Id)) };
     }
 
     private readonly Reflections _reflected = new();
