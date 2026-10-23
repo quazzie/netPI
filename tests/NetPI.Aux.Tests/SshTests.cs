@@ -832,10 +832,28 @@ public static class SshTests
             Check.Equal("./data.bin nuc:/tmp/in/", string.Join(" ", call.Args.TakeLast(2)));
             Check.True(call.Args.Contains("-p") && call.Args.Contains("BatchMode=yes") && !call.Args.Contains("-r"));
 
+            // a download comes into a side file (scp truncates its target as it opens it) and replaces the old file only when whole
+            var got = Path.Combine(env.Dir, "got");
+            Directory.CreateDirectory(got);
+            File.WriteAllText(Path.Combine(got, "hostname.txt"), "old");
+            env.Fake.Reply = (args, _) => { File.WriteAllText(Path.Combine(got, args[^1][2..]), "new"); return new SshExec(0, "", "", false, false); };
             var down = await env.Run("ssh_copy", new { host = "nuc", direction = "download", from = "/etc/hostname", to = "got/hostname.txt" });
             Check.False(down.IsError, down.Content);
-            Check.Equal(Path.Combine(env.Dir, "got"), env.Fake.Calls[^1].WorkDir);
-            Check.Equal("nuc:/etc/hostname ./hostname.txt", string.Join(" ", env.Fake.Calls[^1].Args.TakeLast(2)));
+            Check.Equal(got, env.Fake.Calls[^1].WorkDir);
+            Check.Equal("nuc:/etc/hostname ./hostname.txt.netpi.part", string.Join(" ", env.Fake.Calls[^1].Args.TakeLast(2)));
+            Check.Equal("new", File.ReadAllText(Path.Combine(got, "hostname.txt")));
+            Check.False(File.Exists(Path.Combine(got, "hostname.txt.netpi.part")), "the side file is gone");
+
+            foreach (var broken in new[] { new SshExec(0, "", "", true, false), new SshExec(0, "", "", false, true), new SshExec(1, "", "connection lost", false, false) })
+            {
+                File.WriteAllText(Path.Combine(got, "hostname.txt"), "old");
+                env.Fake.Reply = (args, _) => { File.WriteAllText(Path.Combine(got, args[^1][2..]), "half"); return broken; };
+                var failed = await env.Run("ssh_copy", new { host = "nuc", direction = "download", from = "/etc/hostname", to = "got/hostname.txt" });
+                Check.True(failed.IsError, failed.Content);
+                Check.Contains(failed.Content, "unchanged");
+                Check.Equal("old", File.ReadAllText(Path.Combine(got, "hostname.txt")));
+                Check.False(File.Exists(Path.Combine(got, "hostname.txt.netpi.part")), "the half file is removed");
+            }
 
             Directory.CreateDirectory(Path.Combine(env.Dir, "folder"));
             Check.Contains((await env.Run("ssh_copy", new { host = "nuc", direction = "upload", from = "folder", to = "/tmp/" })).Content, "set recursive");
@@ -1056,6 +1074,13 @@ public static class SshTests
             ("scp ./a.txt nas:/tmp/", "nas"),
             ("scp -P 2222 admin@web1:/var/log/x.log .", "web1"),
             ("sftp -b batch.txt nas", "nas"),
+            ("for i in 1 2; do ssh nas uptime; done", "nas"),
+            ("if ssh nas test -f x; then echo y; fi", "nas"),
+            ("out=$(ssh nas uptime)", "nas"),
+            ("echo $(ssh nas uptime)", "nas"),
+            ("(ssh nas uptime)", "nas"),
+            ("x=`ssh nas uptime`", "nas"),
+            ("! ssh nas false", "nas"),
         })
         {
             var hit = F(command);

@@ -262,7 +262,8 @@ internal static class AxSnapshot
     public static ToolResult Changes(string action, string result, Snapshot s, List<BrowserControl> before, ISet<int> seen, int max)
     {
         static string Clean(string text) => text.Replace(" (focused)", "", StringComparison.Ordinal);
-        var had = before.ToDictionary(c => c.Number, c => Clean(c.Text));
+        var had = new Dictionary<int, string>();
+        foreach (var c in before) had.TryAdd(c.Number, Clean(c.Text));  // a number is unique by construction; a duplicate must not throw
         var now = s.Controls.Select(c => c.Number).ToHashSet();
         var fresh = s.Controls.Where(c => !had.ContainsKey(c.Number)).ToList();
         var changed = s.Controls.Where(c => had.TryGetValue(c.Number, out var t) && t != Clean(c.Text)).ToList();

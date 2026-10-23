@@ -577,6 +577,82 @@ public static class BrowserTests
                 env.Ctx.Unload();
             }
         });
+
+        r.Add("browser: the Browser view lets go of the tab's screencast when its socket closes, even with the tab changing under it", async () =>
+        {
+            if (NoBrowser()) Check.Skip("no Edge/Chrome/Chromium: view close");
+            var ctx = new FakePluginContext(T.TempDir("browser-view-home"));
+            ctx.SettingsFake.Set("browser.profile", JsonValue.Create("temp"));
+            ctx.SettingsFake.Set("browser.target", JsonValue.Create("own"));
+            await using var host = new BrowserHost(ctx);
+            new BrowserView(ctx, host).Register();
+            var http = (FakeHttp)ctx.Http;
+            await using var web = await LocalWeb.StartAsync(app =>
+            {
+                app.UseWebSockets();
+                app.Map("/api/p/netpi.tools.web/{**rest}", (HttpContext c) => http.Routes[c.Request.RouteValues["rest"]!.ToString()!].Handler(c));
+                app.MapGet("/blank", () => Results.Content("<!doctype html><title>Blink</title><body>blink<script>setInterval(() => document.body.style.background = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'), 50)</script></body>", "text/html"));  // repaints, so the screencast keeps sending frames
+            });
+            try
+            {
+                async Task<(ClientWebSocket Ws, ConcurrentQueue<JsonObject> Inbox)> ViewAsync()
+                {
+                    var ws = new ClientWebSocket();
+                    await ws.ConnectAsync(new Uri(web.Url.Replace("http://", "ws://") + "/api/p/netpi.tools.web/view?session=ses_r"), CancellationToken.None);
+                    var inbox = new ConcurrentQueue<JsonObject>();
+                    _ = Task.Run(async () =>
+                    {
+                        var buffer = new byte[1 << 20];
+                        using var ms = new MemoryStream();
+                        try
+                        {
+                            while (ws.State == WebSocketState.Open)
+                            {
+                                var res = await ws.ReceiveAsync(buffer, CancellationToken.None);
+                                if (res.MessageType == WebSocketMessageType.Close) break;
+                                ms.Write(buffer, 0, res.Count);
+                                if (!res.EndOfMessage) continue;
+                                inbox.Enqueue(JsonNode.Parse(ms.ToArray())!.AsObject());
+                                ms.SetLength(0);
+                            }
+                        }
+                        catch (Exception) { }
+                    });
+                    return (ws, inbox);
+                }
+                static bool Has(ConcurrentQueue<JsonObject> inbox, string type) => inbox.Any(m => m["type"]?.GetValue<string>() == type);
+
+                var tab = (await host.TabAsync("ses_r", create: true, "own", CancellationToken.None))!;
+                await tab.NavigateAsync(web.Url + "/blank", CancellationToken.None);
+                for (var round = 0; round < 4; round++)
+                {
+                    var (ws, inbox) = await ViewAsync();
+                    await Wait.Until(() => tab.HasViewers, $"round {round}: the view holds the screencast");
+                    await tab.NavigateAsync(web.Url + "/blank?round=" + round, CancellationToken.None);  // a new page is a frame for sure
+                    await Wait.Until(() => Has(inbox, "frame"), $"round {round}: the view streams the tab");
+                    // the socket drops while the tab's own events keep binding the view
+                    var closing = Task.Run(() => ws.Abort());
+                    var churn = Task.Run(async () =>
+                    {
+                        for (var k = 0; k < 5; k++) await tab.NavigateAsync(web.Url + "/blank?k=" + k, CancellationToken.None);
+                    });
+                    await closing;
+                    await churn;
+                    ws.Dispose();
+                    await Wait.Until(() => !tab.HasViewers, $"round {round}: nothing holds a screencast open after the view is gone");
+                }
+                // a count that went below zero would keep the next view from ever starting the screencast
+                var (last, lastInbox) = await ViewAsync();
+                await Wait.Until(() => tab.HasViewers, "the new view holds the screencast");
+                await tab.NavigateAsync(web.Url + "/blank?last", CancellationToken.None);
+                await Wait.Until(() => Has(lastInbox, "frame"), "a new view still gets frames", 15_000);
+                Check.True(tab.HasViewers);
+                last.Abort();
+                last.Dispose();
+                await Wait.Until(() => !tab.HasViewers, "the last view lets go");
+            }
+            finally { ctx.Unload(); }
+        });
     }
 
     /// <summary>
