@@ -12,7 +12,7 @@ export const CAP = 200; // max messages kept in the window (≈ DOM cap)
 const SLACK = 20; // trim only when this far over the cap (avoids trimming on every message)
 const OUTPUT_CAP = 200_000; // live tool output kept per call (tail)
 const OUTPUT_SLACK = 64_000; // trimmed only once it exceeds the cap by this much, so a chunk does not copy the buffer each time
-const LRU_MAX = 5;
+export const LRU_MAX = 5;
 const HELD_COALESCE = 500; // catchUpStream: held events past this many get their stream deltas and tool output chunks merged
 
 /** Live state of a running (or just finished) tool call, fed by tool.start/output/result/end. */
