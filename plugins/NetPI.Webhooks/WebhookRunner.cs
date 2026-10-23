@@ -375,10 +375,18 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // the sender hung up, the receiver's timeout passed or the plugin reloads mid-start: the chat may already run, so it
-            // is not deleted; the batch is kept to be tried again instead of being dropped (the token is spent: bookkeeping runs without it)
-            ctx.Logger.LogWarning("Webhook {Webhook}: cancelled while starting {Session}; the batch waits to be retried", id, session.Id);
-            return await DeferAsync(hook, batch, now, "the start was cancelled", stored, CancellationToken.None).ConfigureAwait(false);
+            // the sender hung up, the receiver's timeout passed or the plugin reloads mid-start. The token only reaches the steps
+            // before the run exists (agents.use, the profile, the runtime's gate), so normally the chat is still empty: it goes, and the
+            // batch is kept to be tried again instead of being dropped (the token is spent: bookkeeping runs without it). A chat that
+            // already runs or holds messages is kept and counts as started below
+            if (runtime.GetBySession(session.Id) is not { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded }
+                && ctx.Sessions.GetMessages(session.Id, limit: 1).Count == 0)
+            {
+                try { ctx.Sessions.DeleteSession(session.Id); } catch { /* already gone */ }
+                ctx.Logger.LogWarning("Webhook {Webhook}: cancelled while starting {Session}; the batch waits to be retried", id, session.Id);
+                return await DeferAsync(hook, batch, now, "the start was cancelled", stored, CancellationToken.None).ConfigureAwait(false);
+            }
+            ctx.Logger.LogWarning("Webhook {Webhook}: cancelled while starting {Session}, which already runs; it is kept", id, session.Id);
         }
         catch (Exception ex)
         {

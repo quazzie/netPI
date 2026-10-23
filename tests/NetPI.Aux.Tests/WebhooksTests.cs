@@ -511,7 +511,7 @@ public static class WebhooksTests
             Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count);
         });
 
-        r.Add("webhooks: a start cancelled by the caller is reported, not swallowed, and does not delete the chat it was starting", async () =>
+        r.Add("webhooks: a start cancelled by the caller is reported, not swallowed, and leaves no empty chat behind; a chat that already runs is kept and counts as started", async () =>
         {
             var env = await new Env().StartAsync();
             var added = await env.Add();
@@ -521,7 +521,22 @@ public static class WebhooksTests
                 max => Task.FromResult<string?>(JsonSerializer.Serialize(Alert())), S(added["token"])!, cts.Token);
             Check.Equal("failed", S(body["status"]), "an ungrouped alert has no conversation to wait under: it is told at once");
             Check.Contains(S(body["reason"]), "cancelled");
-            Check.Equal(1, env.Ctx.SessionsFake.Sessions.Count, "a sender hang-up must not delete a chat that may already run");
+            Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count, "the half-made chat is deleted, or every retry would add another empty one");
+            Check.Equal(0, env.Runtime.Sent.Count, "and nothing was sent");
+
+            // the run exists by the time the cancel lands: the chat stays and the alert counts as started
+            var running = await env.Add(extra: new { name = "running" });
+            using var cts2 = new CancellationTokenSource();
+            env.Ctx.Rpc.Register("profiles.applyAuto", (req, _) =>
+            {
+                env.Runtime.Agents.Add(new AgentInfo { Id = "agt_x", SessionId = req.Str("sessionId")!, Status = AgentStatus.Running });
+                cts2.Cancel();
+                throw new OperationCanceledException(cts2.Token);
+            });
+            var (_, body2) = await env.Plugin.ReceiveAsync("/hook/" + S(running["id"]), "POST", IPAddress.Parse("127.0.0.1"), "application/json",
+                max => Task.FromResult<string?>(JsonSerializer.Serialize(Alert("b"))), S(running["token"])!, cts2.Token);
+            Check.Equal("started", S(body2["status"]), "a chat that runs is the incident's chat");
+            Check.Equal(1, env.Ctx.SessionsFake.Sessions.Count, "and is not deleted");
         });
 
         r.Add("webhooks: a webhook's own profile is applied to its chats (the automatic one has no ssh); unknown ones are refused; a deleted one fails clearly", async () =>
