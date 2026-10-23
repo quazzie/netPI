@@ -22,7 +22,9 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
     private readonly ILogger _log;
     private readonly string? _dumpDir;
     private readonly ModelListCache _models;
-    /// <summary>Models whose catalog entry reported input_modalities: id → accepts images.</summary>
+    /// <summary>Models whose catalog entry reported input_modalities: id → accepts images. Kept apart from
+    /// <c>ModelInfo.SupportsImages</c> on purpose: a model absent here is "unknown" and gets images, while ModelInfo
+    /// cannot say "unknown" (no modalities becomes ["text"], so SupportsImages is false).</summary>
     private volatile Dictionary<string, bool> _imageSupport = new(StringComparer.Ordinal);
 
     public OpenAiCompatibleProvider(string id, string displayName, HttpClient http, Func<JsonObject?> config,
