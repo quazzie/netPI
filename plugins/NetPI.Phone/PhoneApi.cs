@@ -32,7 +32,7 @@ internal sealed class PhoneApi : IDisposable
         ["sessions.messages"] = ["id", "beforeSeq", "afterSeq", "limit"],
         ["sessions.update"] = ["id", "title", "archived", "pinned"],
         ["agent.send"] = ["sessionId", "text", "images", "mode"],
-        ["agent.abort"] = ["sessionId"],
+        ["agent.abort"] = ["sessionId", "subagents"],
         ["runs.list"] = ["includeFinished"],
         ["work.snapshot"] = [],
         ["agent.get"] = ["id", "sessionId"],

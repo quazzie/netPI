@@ -33,7 +33,7 @@ public static class PhoneTests
             if (allowFrom is not null) Ctx.SettingsFake.SetQuiet("phone.allowFrom", new JsonArray(allowFrom));
             if (trustProxy) Ctx.SettingsFake.SetQuiet("phone.trustProxy", true);
             Plugin = new PhonePlugin(Time, listen: true);
-            foreach (var m in new[] { "sessions.list", "agent.send", "sessions.create", "guard.answer" })
+            foreach (var m in new[] { "sessions.list", "agent.send", "sessions.create", "guard.answer", "agent.abort" })
                 Ctx.Rpc.Register(m, (req, _) => { Calls.Add((req.Method, JsonNode.Parse(req.Params.GetRawText())!.AsObject())); return Task.FromResult<object?>(new JsonObject { ["called"] = req.Method }); });
         }
 
@@ -140,6 +140,9 @@ public static class PhoneTests
             Check.Equal(HttpStatusCode.Forbidden, (await env.Post("/api/rpc/phone.pair", new { }, token)).StatusCode, "a phone cannot pair another phone");
             Check.Equal(HttpStatusCode.BadRequest, (await env.Post("/api/rpc/sessions.create", new { title = "t", meta = new { cwd = "C:/" } }, token)).StatusCode, "meta is not a parameter from here");
             Check.Equal(HttpStatusCode.BadRequest, (await env.Post("/api/rpc/guard.answer", new { approvalId = "a", allow = true, evil = 1 }, token)).StatusCode);
+            var stop = await env.Post("/api/rpc/agent.abort", new { sessionId = "s", subagents = false }, token);
+            Check.Equal(HttpStatusCode.OK, stop.StatusCode, "the Agents view's Stop (this run alone) reaches the host");
+            Check.False(env.Calls.Last().Args["subagents"]!.GetValue<bool>(), "with subagents:false as sent");
             Check.Equal(HttpStatusCode.Unauthorized, (await env.Post("/api/rpc/sessions.list", new { })).StatusCode, "no cookie");
             Check.False(env.Calls.Any(c => c.Method is "settings.get" or "sessions.delete" or "phone.pair"), "none of the refused calls reached the host");
         });
