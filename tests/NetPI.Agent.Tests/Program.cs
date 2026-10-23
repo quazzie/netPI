@@ -4,7 +4,7 @@ using NetPI.Agent.Tests;
 if (args.FirstOrDefault() == "--mcp-fixture") return await NetPI.Aux.Tests.McpFixture.RunAsync(args.Skip(1).ToArray());
 TestHost.Verbose = args.Contains("-v");
 var filters = args.Where(a => a != "-v").ToArray();
-var runner = new TestRunner { Name = "Agent", RunOnThreadPool = true };
+var runner = new TestRunner { Name = "Agent" };
 DeferredToolsTests.Register(runner);
 CodeModeTests.Register(runner);
 LoopTests.Register(runner);

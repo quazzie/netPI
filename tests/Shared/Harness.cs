@@ -75,7 +75,8 @@ public static class Check
     public static void NotContains(string? haystack, string needle, string? message = null)
     {
         Count();
-        if (haystack is not null && haystack.Contains(needle, StringComparison.Ordinal))
+        if (haystack is null) throw new AssertException($"{message ?? "no text to look in"}: {Show(needle)} (the text is null)");
+        if (haystack.Contains(needle, StringComparison.Ordinal))
             throw new AssertException($"{message ?? "unexpected substring"}: {Show(needle)}\n      in: {Show(haystack)}");
     }
 
@@ -118,9 +119,14 @@ public sealed class TestRunner
     /// <summary>Per-test timeout. The suites that start real servers give theirs more room.</summary>
     public int TimeoutSeconds { get; init; } = 60;
 
-    /// <summary>Run the body on a thread pool thread (the Agent suite): a body that blocks synchronously then times
-    /// out the test instead of hanging the runner.</summary>
-    public bool RunOnThreadPool { get; init; }
+    /// <summary>How long a timed-out body gets to end after it was cancelled, before the runner gives up on it.</summary>
+    private const int AbandonGraceSeconds = 5;
+
+    private static readonly AsyncLocal<CancellationToken> Current = new();
+
+    /// <summary>Cancelled when the running test times out: a body that waits on something long can pass it on, so it
+    /// ends with the test instead of running into the next one.</summary>
+    public static CancellationToken Cancelled => Current.Value;
 
     private readonly List<(string Name, Func<Task> Body)> _tests = [];
 
@@ -162,20 +168,42 @@ public sealed class TestRunner
         int passed = 0, failed = 0, skipped = 0;
         var failures = new List<string>();
         var results = new List<(string Name, string Result, long Ms)>();
+        var unchecked_ = new List<string>();
         var total = Stopwatch.StartNew();
+        string? stuck = null;
         foreach (var (name, body) in selected)
         {
+            if (stuck is not null)
+            {
+                // the body that timed out is still running and may touch what this test uses: not run, and said so
+                failed++;
+                var why = $"not run: '{stuck}' timed out and is still running";
+                failures.Add($"{name}: {why}");
+                results.Add((name, "failed", 0));
+                Console.WriteLine($"  FAIL  {name} (0ms)\n        {why}");
+                continue;
+            }
             var sw = Stopwatch.StartNew();
+            using var cts = new CancellationTokenSource();
+            var counter = new int[1];
             try
             {
-                Func<Task> run = RunOnThreadPool ? () => Task.Run(body) : body;
-                var task = run();
-                if (await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(TimeoutSeconds))) != task)
-                    throw new AssertException($"test timed out after {TimeoutSeconds}s");
+                // Always off the calling thread: a body that blocks synchronously then times out instead of hanging the runner.
+                var task = Task.Run(() => { Check.Attach(counter); Current.Value = cts.Token; return body(); });
+                using var timer = new CancellationTokenSource();
+                if (await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(TimeoutSeconds), timer.Token)) != task)
+                {
+                    cts.Cancel();
+                    var ended = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(AbandonGraceSeconds))) == task;
+                    if (!ended) stuck = name;
+                    throw new AssertException($"test timed out after {TimeoutSeconds}s{(ended ? "" : $" and did not stop within {AbandonGraceSeconds}s of being cancelled")}");
+                }
+                timer.Cancel();
                 await task;
                 passed++;
                 results.Add((name, "passed", sw.ElapsedMilliseconds));
-                Console.WriteLine($"  PASS  {name} ({sw.ElapsedMilliseconds}ms)");
+                if (counter[0] == 0) unchecked_.Add(name);
+                Console.WriteLine($"  PASS  {name} ({sw.ElapsedMilliseconds}ms{(counter[0] == 0 ? ", no checks" : "")})");
             }
             catch (SkipException ex)
             {
@@ -196,6 +224,7 @@ public sealed class TestRunner
         var nothing = selected.Count == 0;
         if (nothing) Console.WriteLine("No test matches the filter.");
         Console.WriteLine($"{passed} passed, {failed} failed, {skipped} skipped, {selected.Count} total in {total.Elapsed.TotalSeconds:0.0}s");
+        if (unchecked_.Count > 0) Console.WriteLine($"{unchecked_.Count} passed without a single check (a test that asserts nothing proves nothing): {string.Join(", ", unchecked_)}");
         if (failed > 0)
         {
             Console.WriteLine("Failures:");
@@ -310,13 +339,7 @@ public static class TestGit
     {
         var p = Start(cwd, args);
         if (p is null) return false;
-        using (p)
-        {
-            p.StandardOutput.ReadToEnd();
-            p.StandardError.ReadToEnd();
-            p.WaitForExit();
-            return p.ExitCode == 0;
-        }
+        using (p) return Finish(p) is not null;
     }
 
     /// <summary>Run git and return its trimmed stdout, or null when it failed (or git is missing).</summary>
@@ -324,13 +347,23 @@ public static class TestGit
     {
         var p = Start(cwd, args);
         if (p is null) return null;
-        using (p)
+        using (p) return Finish(p)?.Trim();
+    }
+
+    /// <summary>Both pipes drained at once (git can fill either before it exits) and a git that never exits is killed
+    /// after a minute: stdout on success, null on a failure or a kill.</summary>
+    private static string? Finish(Process p)
+    {
+        var stdout = p.StandardOutput.ReadToEndAsync();
+        var stderr = p.StandardError.ReadToEndAsync();
+        if (!p.WaitForExit(60_000))
         {
-            var stdout = p.StandardOutput.ReadToEnd();
-            p.StandardError.ReadToEnd();
-            p.WaitForExit();
-            return p.ExitCode == 0 ? stdout.Trim() : null;
+            try { p.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            return null;
         }
+        stdout.Wait();
+        stderr.Wait();
+        return p.ExitCode == 0 ? stdout.Result : null;
     }
 
     public static async Task<bool> RunAsync(string cwd, params string[] args)

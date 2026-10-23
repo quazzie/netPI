@@ -102,9 +102,11 @@ public static class BuildTests
         };
         foreach (var a in new[] { "msbuild", project, $"-getProperty:{property}", "-nologo" }.Concat(extraArgs)) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi) ?? throw new AssertException("dotnet msbuild did not start");
-        var outText = await p.StandardOutput.ReadToEndAsync();
+        var outTask = p.StandardOutput.ReadToEndAsync();
+        var errTask = p.StandardError.ReadToEndAsync();
         await p.WaitForExitAsync();
-        if (p.ExitCode != 0) throw new AssertException($"msbuild -getProperty:{property} failed: {await p.StandardError.ReadToEndAsync()}");
+        var outText = await outTask;
+        if (p.ExitCode != 0) throw new AssertException($"msbuild -getProperty:{property} failed: {await errTask}");
         return outText.Trim();
     }
 
@@ -382,9 +384,10 @@ Write-Output 'LOCK-OK'
                 UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
             };
             using var p = Process.Start(psi)!;
-            var errors = p.StandardError.ReadToEnd() + p.StandardOutput.ReadToEnd();
-            p.WaitForExit(30_000);
-            return (p.ExitCode, errors.Trim());
+            var outTask = p.StandardOutput.ReadToEndAsync();
+            var errTask = p.StandardError.ReadToEndAsync();
+            if (!p.WaitForExit(30_000)) { p.Kill(entireProcessTree: true); return (-1, "timed out after 30 s"); }
+            return (p.ExitCode, (errTask.Result + outTask.Result).Trim());
         }
 
         /// <summary>Run a script file (not an inline command): arguments stay unquoted, and the output is drained while

@@ -19,6 +19,7 @@ public static class RunnerTests
         r.Add("tests: the Providers suite's own runner carries the exit-2 rule too", EveryRunnerHasTheRule);
         r.Add("tests: a skip is counted apart from the passes, says why, and does not fail the run", SkipIsNotAPass);
         r.Add("tests: the Providers suite's own runner carries the skip rule too, and no test prints a bare skip line", EveryRunnerHasTheSkipRule);
+        r.Add("tests: a timed-out body is cancelled and ends before the next test starts, a test with no check is named, and NotContains fails on null", TimeoutAndZeroChecks);
         r.Add("tests: every suite loads the built plugins from artifacts/dev/app, never the installed app", EverySuiteLoadsTheDevTree);
         r.Add("tests: test.ps1 counts the skips, fails only when the filter matched nowhere, and names the suites", TestScriptHonesty);
     }
@@ -110,6 +111,40 @@ public static class RunnerTests
         Check.Equal(0, code, "a skip is not a failure");
         Check.Contains(output, "SKIP  runner: skipped (no git on PATH)", "the line names the test and the reason");
         Check.Contains(output, "1 passed, 0 failed, 1 skipped, 2 total", "and the summary counts it apart from the passes");
+    }
+
+    /// <summary>A timeout used to abandon the body running (the next test then ran beside it); a test that asserted nothing
+    /// passed without a word.</summary>
+    private static async Task TimeoutAndZeroChecks()
+    {
+        var real = Console.Out;
+        var captured = new StringWriter();
+        Console.SetOut(captured);
+        var cancelled = false;
+        var ended = false;
+        int code;
+        try
+        {
+            var runs = new TestRunner { TimeoutSeconds = 1 };
+            runs.Add("runner: hangs", async () =>
+            {
+                try { await Task.Delay(Timeout.Infinite, TestRunner.Cancelled); }
+                catch (OperationCanceledException) { cancelled = true; throw; }
+                finally { ended = true; }
+            });
+            runs.Add("runner: asserts nothing", () => { });
+            code = await runs.RunAsync(["runner:"]);
+        }
+        finally { Console.SetOut(real); }
+
+        var output = captured.ToString();
+        Check.Equal(1, code, "the timeout fails the run");
+        Check.Contains(output, "FAIL  runner: hangs");
+        Check.Contains(output, "test timed out after 1s");
+        Check.True(cancelled && ended, "the timed-out body was cancelled and had ended by the time the next test started");
+        Check.Contains(output, "PASS  runner: asserts nothing", "the next test ran");
+        Check.Contains(output, ", no checks)", "and is named as one that checked nothing");
+        Check.Throws<AssertException>(() => Check.NotContains(null, "x"), "a missing text does not satisfy NotContains");
     }
 
     /// <summary>The same rule in every runner, and no site left printing a skip by hand (it would pass again).</summary>
