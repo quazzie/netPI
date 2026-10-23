@@ -154,7 +154,7 @@ by type:
   `stopReason: 'error'`) gives the tab the *error* dot. `session.context` feeds the context ring.
   `models.changed`, `ui.changed` and `plugins.changed` refetch.
 
-Plugin tabs attach to the same bus through `ctx.on`.
+Plugin tabs attach to the same bus through `ctx.on`; `ctx.app.onReconnect(cb)` runs after every reconnect of the socket, and `useRefresh` reloads on it.
 
 ### Stores
 

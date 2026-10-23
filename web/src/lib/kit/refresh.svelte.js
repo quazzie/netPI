@@ -8,7 +8,7 @@
 // `events` are coalesced into one load (delayMs). While the tab is hidden they only mark it stale, and the next time it is
 // shown it loads once. `visible: () => visible` reads a visibility the parent already holds — a view inside a tab that
 // passes it down — instead of the helper's own. A load that throws is the tab's own error to show; here it only ends the
-// request. Subscriptions go through ctx, so ctx.dispose() takes them with it, and the timers stop on destroy.
+// request. A reconnect of the host socket is one more load (a tab cannot know what changed while the socket was down). Subscriptions go through ctx, so ctx.dispose() takes them with it, and the timers stop on destroy.
 import { onDestroy, onMount } from 'svelte';
 
 export function useRefresh(ctx, { load, events = [], pollMs = 0, delayMs = 300, visible: parent = null } = {}) {
@@ -80,6 +80,7 @@ export function useRefresh(ctx, { load, events = [], pollMs = 0, delayMs = 300, 
 
   onMount(() => {
     const offs = events.map((e) => ctx.on(e, () => schedule()));
+    if (ctx.app?.onReconnect) offs.push(ctx.app.onReconnect(() => schedule(0)));
     refresh();
     if (pollMs) poll();
     return () => offs.forEach((off) => off());

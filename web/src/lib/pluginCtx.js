@@ -1,5 +1,5 @@
 // The `ctx` object handed to plugin tab modules: mount(el, ctx). See docs/PROTOCOL.md and docs/UI.md.
-import { rpc } from './rpc.svelte.js';
+import { rpc, onOpen } from './rpc.svelte.js';
 import { bus } from './bus.js';
 import { app, openSession, newSession, sendMessage, hasRpc, workspaceOf } from './state/app.svelte.js';
 import { composer, toast, modals, openView, openIdeaDialog } from './state/ui.svelte.js';
@@ -86,6 +86,10 @@ export function createPluginCtx(tab, sessionId = null) {
       onChange(cb) {
         appListeners.add(cb);
         return track(() => appListeners.delete(cb));
+      },
+      /** Called after every reconnect of the host socket (not the first connect): a tab refetches what it shows, since it cannot know what changed while the socket was down. */
+      onReconnect(cb) {
+        return track(onOpen((o) => o?.reconnect && cb()));
       },
       openSession: (id) => {
         openSession(id);
