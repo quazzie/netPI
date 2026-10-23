@@ -57,7 +57,7 @@ internal sealed class PlanHook(IPluginContext ctx) : IAgentHook
             if (tool?.Definition is { Category: "mcp", ReadOnly: false } def)
                 mcp = await McpInfoAsync(def.Name, run.CancellationToken).ConfigureAwait(false);
             if (PlanPolicy.Block(call.Name, tool?.Definition, readOnlyCall, mcp, allow) is { } reason) return new ToolCallDecision { Block = true, Reason = reason };
-            if (call.Name == "agent_spawn" && ctx.Settings.Get("plan.subagentsReadOnly", true))
+            if (call.Name.Equals("agent_spawn", StringComparison.OrdinalIgnoreCase) && ctx.Settings.Get("plan.subagentsReadOnly", true))
                 return new ToolCallDecision { Arguments = PlanPolicy.RewriteSpawn(call.Arguments, PlanPolicy.ChildTools(ctx.Tools.All)) };
             return null;
         }

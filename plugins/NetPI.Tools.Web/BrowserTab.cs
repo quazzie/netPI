@@ -351,7 +351,7 @@ internal sealed class BrowserTab
                 for (var k = 0; k < list.Count; k++)
                 {
                     var step = new ToolArgs(list[k]);
-                    var name = Normalize(step.Str("action", "verb") ?? "");
+                    var name = ToolPathArgs.BrowserStepAction(step.Str("action", "verb"));
                     if (name is "snapshot" or "find" or "read" or "screenshot" or "steps" || !Actions.Contains(name))
                         return await FinishAsync("steps", string.Join("\n", lines.Append($"Step {k + 1}: \"{name}\" can't be a step (one of click, hover, type, key, scroll, wait, back, forward, reload, eval, upload, dialog, open). Stopped there.")), before, o, ct, error: true).ConfigureAwait(false);
                     var outcome = await StepAsync(name, list[k], o, tool, ct).ConfigureAwait(false);
@@ -369,21 +369,6 @@ internal sealed class BrowserTab
                 all: action == "snapshot" && new ToolArgs(args).Bool("all", "full") == true).ConfigureAwait(false);
         }
         finally { _busy.Release(); }
-    }
-
-    internal static string Normalize(string action)
-    {
-        action = action.Trim().ToLowerInvariant();
-        return action switch
-        {
-            "navigate" or "goto" or "go" => "open",
-            "press" => "key",
-            "fill" => "type",
-            "js" or "evaluate" or "script" => "eval",
-            "refresh" => "reload",
-            "batch" => "steps",
-            _ => action,
-        };
     }
 
     /// <summary>What a step did: its line, whether it failed (Refuse: before anything happened, so no page follows), or a whole result of its own.</summary>

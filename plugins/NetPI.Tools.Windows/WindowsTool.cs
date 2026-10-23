@@ -82,11 +82,7 @@ internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAge
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
         var a = new ToolArgs(args);
-        var action = (a.Str(ToolPathArgs.WindowsActionNames) ?? "").Trim().ToLowerInvariant();
-        if (action is "attach" or "switch") action = "use";
-        if (action is "launch" or "start" or "run") action = "open";
-        if (action is "press") action = "key";
-        if (action is "windows" or "ls") action = "list";
+        var action = ToolPathArgs.WindowsAction(a.Str(ToolPathArgs.WindowsActionNames));
         if (action.Length == 0) return ToolResult.Error("Give an action: list, open, use, snapshot, click, type, key, … (see the tool's help).");
         if (action == "screenshot" && context.Model?.InputModalities is { Count: > 0 } mods && !mods.Contains("image"))
             return ToolResult.Error($"The current model ({context.Model.Id}) can't see images: use snapshot or read.");

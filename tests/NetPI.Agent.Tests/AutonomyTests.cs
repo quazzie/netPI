@@ -16,6 +16,7 @@ public static class AutonomyTests
         t.Add("autonomy: reads, and the owner's own chats, are never journaled or braked", ReadsAndOwnChats);
         t.Add("autonomy: brakes: paused refuses changes but not reads; the hourly cap stops a loop with one notice", Brakes);
         t.Add("autonomy: a scheduled chat that read outside text may not act in the browser; a webhook's is tainted from the start", Taint);
+        t.Add("autonomy: a call the provider ran itself (the Claude CLI) is journaled after the fact, a read of it is not; undo does not recreate a folder that is gone", ProviderRunAndUndoFolder);
         t.Add("autonomy: origin: a subagent works for its parent's origin, and inherits its taint", Origins);
     }
 
@@ -317,6 +318,10 @@ public static class AutonomyTests
         Check.Equal(3, ran.Count, "an action not listed runs");
         await Run(h, s.Id, "browser", new { action = "click", n = 1 });
         Check.Equal(3, ran.Count, "a listed one does not");
+        await Run(h, s.Id, "browser", new { action = "js", script = "1" });
+        await Run(h, s.Id, "windows", new { verb = "launch", app = "calc" });
+        Check.Equal(3, ran.Count, "a synonym of a listed action does not get past it either");
+        Check.Equal(0, (await h.Rpc.CallAsync("autonomy.state"))!["refusals"]!.GetValue<int>(), "tainted refusals are not grantable, so not counted as waiting");
         var refusal = (await Rpc(h, "autonomy.refusals"))[0]!;
         Check.Equal("tainted", (string?)refusal["why"]);
         Check.False(refusal["grantable"]!.GetValue<bool>(), "never grantable");
@@ -332,6 +337,52 @@ public static class AutonomyTests
         await Run(h, mine.Id, "browser", new { action = "click", n = 1 });
         Check.Equal(5, ran.Count);
         Check.True(h.Sessions.GetSession(mine.Id)!.Meta?["autonomy"] is null, "nothing written on the owner's chat");
+    }
+
+    private static async Task ProviderRunAndUndoFolder()
+    {
+        await using var h = await StartAsync();
+        h.AddTool(Recorder("read", [], readOnly: true));
+        var s = Chat(h, Webhook());
+        h.Catalog.Handler = (r, ct) =>
+        {
+            var bash = Reply.Call("Bash", new { command = "systemctl restart x" }, id: "tu_b");
+            bash.ProviderData = new JsonObject
+            {
+                [ToolCallPart.ExecutedKey] = true, [ToolCallPart.AsKey] = "bash",
+                [ToolCallPart.ResultKey] = new JsonObject { ["content"] = "ok", ["isError"] = false },
+            };
+            var read = Reply.Call("Read", new { path = "a.txt" }, id: "tu_r");
+            read.ProviderData = new JsonObject
+            {
+                [ToolCallPart.ExecutedKey] = true, [ToolCallPart.AsKey] = "read",
+                [ToolCallPart.ResultKey] = new JsonObject { ["content"] = "x", ["isError"] = false },
+            };
+            return Reply.Stream(Reply.Message(bash, read, new TextPart { Text = "done" }));
+        };
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        var rows = await Rpc(h, "autonomy.journal");
+        Check.Equal(1, rows.Count, "the shell call is a journal row, the read is not");
+        Check.Equal("bash", (string?)rows[0]!["tool"]);
+        Check.Equal("systemctl restart x", (string?)rows[0]!["subject"]);
+        Check.Contains((string?)rows[0]!["note"] ?? "", "own tools");
+
+        // undo does not make a folder again: the workspace it lived in is gone
+        await using var h2 = await StartAsync();
+        h2.AddTool(Writer());
+        Scripted(h2);
+        var dir = TestShared.T.TempDir("autonomy-undo-gone");
+        var sub = Path.Combine(dir, "ws");
+        Directory.CreateDirectory(sub);
+        var file = Path.Combine(sub, "app.conf");
+        File.WriteAllText(file, "port=1");
+        var w = Chat(h2, Webhook());
+        await Run(h2, w.Id, "write", new { path = file, content = "port=2" });
+        var row = (await Rpc(h2, "autonomy.journal"))[0]!;
+        Directory.Delete(sub, true);
+        Check.Equal("conflict", (await Check.ThrowsAsync<RpcException>(() => h2.Rpc.InvokeAsync("autonomy.undo", new { id = (string)row["id"]!, force = true }))).Code);
+        Check.False(Directory.Exists(sub), "nothing was recreated");
     }
 
     private static async Task Origins()

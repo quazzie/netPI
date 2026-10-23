@@ -534,7 +534,7 @@ judges in the first place.
 A plain "not a repository" still decides the ordinary outside, and a session that is bound but not isolated keeps the
 old behavior: nothing there is guarded by the repository question.
 
-- The native writing tools (`write`, `edit`, `write_file`, `edit_file`, `notebook_edit`, `patch`) refuse a path argument
+- The native writing tools (`write`, `edit`, and an `ssh` download's local target) refuse a path argument
   that resolves into another checkout of the same repository: another worker's tree, or the primary checkout the worker
   was branched from. The refusal says which workspace the session is in and which checkout it aimed at.
 - A shell call's `cwd` is checked the same way (an explicit `cwd` into another checkout is refused; the default `cwd` is

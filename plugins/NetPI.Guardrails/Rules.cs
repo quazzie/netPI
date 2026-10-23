@@ -206,7 +206,7 @@ internal sealed partial class RuleSet
         {
             string full;
             try { full = resolve(path); }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return ask; }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { continue; } // the tool refuses this path too; the other files are still judged
             foreach (var r in _paths)
                 if (Under(full, r.Root) && Note(new Verdict(r.Action, r.Text, "path", full)))
                     return new Verdict(r.Action, r.Text, "path", full);
@@ -220,7 +220,7 @@ internal sealed partial class RuleSet
         CommandTools.Contains(tool) ? ToolPathArgs.CommandOf(tool, args) : ToolPathArgs.WindowsOpenCommand(tool, args);
 
     /// <summary>The host an ssh call runs on, when it names one.</summary>
-    internal static string? HostOf(ToolArgs args) => args.Str("host", "server", "alias");
+    internal static string? HostOf(ToolArgs args) => args.Str(ToolPathArgs.SshHostNames);
 
     /// <summary>
     /// The local paths a call writes: the file of write and edit (every <c>files[].path</c> of an edit of several files,

@@ -32,6 +32,63 @@ public static class ToolPathArgs
     public static readonly string[] WindowsAppNames = ["app", "program", "exe", "path", "uri"];
     public static readonly string[] WindowsArgsNames = ["args", "arguments"];
 
+    /// <summary>The names <c>ssh</c> reads the host (an alias of the ssh config) by.</summary>
+    public static readonly string[] SshHostNames = ["host", "server", "alias"];
+
+    /// <summary>
+    /// The action of a <c>browser</c> step as the tool runs it: its synonyms folded to the one name the tool switches on
+    /// (a lowercase, trimmed word; empty when there is none).
+    /// </summary>
+    public static string BrowserStepAction(string? action)
+    {
+        action = (action ?? "").Trim().ToLowerInvariant();
+        return action switch
+        {
+            "navigate" or "goto" or "go" => "open",
+            "press" => "key",
+            "fill" => "type",
+            "js" or "evaluate" or "script" => "eval",
+            "refresh" => "reload",
+            "batch" => "steps",
+            _ => action,
+        };
+    }
+
+    /// <summary>The action of a <c>browser</c> call as the tool runs it: <see cref="BrowserStepAction"/> and the hand-over and show synonyms.</summary>
+    public static string BrowserAction(string? action) => BrowserStepAction(action) switch
+    {
+        "handover" or "hand_over" or "done" => "leave",
+        "view" or "watch" or "login" => "show",
+        var other => other,
+    };
+
+    /// <summary>The action of a <c>windows</c> call as the tool runs it (synonyms folded; empty when there is none).</summary>
+    public static string WindowsAction(string? action)
+    {
+        action = (action ?? "").Trim().ToLowerInvariant();
+        return action switch
+        {
+            "attach" or "switch" => "use",
+            "launch" or "start" or "run" => "open",
+            "press" => "key",
+            "windows" or "ls" => "list",
+            _ => action,
+        };
+    }
+
+    /// <summary>
+    /// The action a call to <c>browser</c> or <c>windows</c> runs, as the tool reads it, or the plain lowercase action
+    /// argument of any other tool (null without one). A guard that matches actions by name sees what the tool runs, not
+    /// the synonym the call used.
+    /// </summary>
+    public static string? ActionOf(string tool, ToolArgs args)
+    {
+        if (args.Str(WindowsActionNames) is not { } raw) return null;
+        if (tool.Equals("browser", StringComparison.OrdinalIgnoreCase)) return BrowserAction(raw);
+        if (tool.Equals("windows", StringComparison.OrdinalIgnoreCase)) return WindowsAction(raw);
+        return raw.Trim().ToLowerInvariant();
+    }
+
     /// <summary>
     /// The command line a <c>windows</c> open starts (the program and its arguments, as the tool reads them), or null for any
     /// other call. Starting a program is running a command like the shell's, so the command rules judge it too: a program
@@ -40,7 +97,7 @@ public static class ToolPathArgs
     public static string? WindowsOpenCommand(string tool, ToolArgs args)
     {
         if (!tool.Equals("windows", StringComparison.OrdinalIgnoreCase)) return null;
-        if ((args.Str(WindowsActionNames) ?? "").Trim().ToLowerInvariant() is not ("open" or "launch" or "start" or "run")) return null;
+        if (WindowsAction(args.Str(WindowsActionNames)) != "open") return null;
         if (NonBlank(args.Str(WindowsAppNames)) is not { } app) return null;
         return NonBlank(args.Str(WindowsArgsNames)) is { } rest ? app + " " + rest : app;
     }

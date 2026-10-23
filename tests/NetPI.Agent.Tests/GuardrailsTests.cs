@@ -858,6 +858,9 @@ public static class GuardrailsTests
         Check.Equal("denied", (string?)newest["result"]);
         Check.Equal("git status", (string?)newest["subject"]);
         Check.Equal(0.02, (double?)newest["opinion"]!["p"]!["remote_change"]);
+        var onlyDenied = (await h.Rpc.CallAsync("guard.outcomes", new { result = "denied" }))!.AsObject();
+        Check.Equal(1, onlyDenied["rows"]!.AsArray().Count, "filtered by result");
+        Check.Equal(1, (int?)onlyDenied["summary"]!["allowed"], "the summary counts every result");
 
         Check.True(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.85, ["destructive"] = 0.1, ["stops_process"] = 0.1, ["remote_change"] = 0.19 }, 0.2));
         Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.85, ["destructive"] = 0.1, ["stops_process"] = 0.1, ["remote_change"] = 0.2 }, 0.2), "a risk at the threshold");

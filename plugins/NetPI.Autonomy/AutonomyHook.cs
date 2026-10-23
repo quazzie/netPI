@@ -18,12 +18,14 @@ internal sealed class AutonomyHook(IPluginContext ctx, Chats chats, AutonomyStor
 {
     public int Order => 10_100;
 
-    /// <summary>File copies taken before a call ran, by call id, until its result is journaled.</summary>
+    /// <summary>File copies taken before a call ran, by chat and call id (two chats' providers may reuse an id), until its result is journaled.</summary>
     private readonly ConcurrentDictionary<string, Pending> _pending = new();
     /// <summary>Origins whose cap tripped, and when: one notice per origin per hour.</summary>
     private readonly ConcurrentDictionary<string, long> _braked = new();
 
     private sealed record Pending(long AtMs, List<JsonObject> Checkpoints, string? Note);
+
+    private static string PendingKey(AgentRunContext run, ToolCallPart call) => run.Session.Id + "\0" + call.Id;
 
     public ValueTask<ToolCallDecision?> OnBeforeToolCallAsync(AgentTurnContext turn, ToolCallPart call)
     {
@@ -35,7 +37,7 @@ internal sealed class AutonomyHook(IPluginContext ctx, Chats chats, AutonomyStor
         var args = ToolArgs.Parse(raw);
         if (ReadOnly(name, raw)) return ValueTask.FromResult<ToolCallDecision?>(null);
 
-        if (chats.Tainted(session) && options.TaintedRule(name, Action(args)) is { } line)
+        if (chats.Tainted(session) && options.TaintedRule(name, ToolPathArgs.ActionOf(name, args)) is { } line)
         {
             store.Refused(origin, session, name, "tainted", Subject(name, args), rule: line);
             Changed("refusal");
@@ -54,7 +56,7 @@ internal sealed class AutonomyHook(IPluginContext ctx, Chats chats, AutonomyStor
                              "Nothing ran. Stop changing things, and say in your report what you were doing.");
             }
         }
-        _pending[call.Id] = Checkpoint(run, call, name, args);
+        _pending[PendingKey(run, call)] = Checkpoint(run, call, name, args);
         return ValueTask.FromResult<ToolCallDecision?>(null);
     }
 
@@ -65,11 +67,23 @@ internal sealed class AutonomyHook(IPluginContext ctx, Chats chats, AutonomyStor
             var run = turn.Run;
             var (name, raw) = ToolCalls.Effective(call);
             var session = chats.Get(run.Session.Id) ?? run.Session;
-            if (IsExternal(name) && !chats.OriginOf(session).IsUser && !chats.Tainted(session)) chats.Taint(session.Id, name);
-            _pending.TryRemove(call.Id, out var pending);
-            if (pending is null) { Sweep(); return ValueTask.CompletedTask; }
+            var origin = chats.OriginOf(session);
+            if (IsExternal(name) && !origin.IsUser && !chats.Tainted(session)) chats.Taint(session.Id, name);
+            _pending.TryRemove(PendingKey(run, call), out var pending);
+            if (pending is null)
+            {
+                // a call the provider ran itself (the Claude CLI's own tools) was never asked here, so no brake or copy stood before
+                // it: the journal still says what it changed, and counts toward the hourly cap of the calls after it
+                if (!origin.IsUser && result.Details?["providerExecuted"] is JsonValue ran && ran.TryGetValue<bool>(out var executed) && executed && !ReadOnly(name, raw))
+                {
+                    store.Record(origin, session, name, Subject(name, ToolArgs.Parse(raw)), result.IsError, null, "run by the model's own tools: no copy, no brake");
+                    Changed("journal");
+                }
+                Sweep();
+                return ValueTask.CompletedTask;
+            }
             foreach (var c in pending.Checkpoints) c["afterHash"] = Hash(c["path"]!.GetValue<string>());
-            store.Record(chats.OriginOf(session), session, name, Subject(name, ToolArgs.Parse(raw)), result.IsError,
+            store.Record(origin, session, name, Subject(name, ToolArgs.Parse(raw)), result.IsError,
                 pending.Checkpoints.Count switch { 0 => null, 1 => pending.Checkpoints[0], _ => new JsonObject { ["files"] = new JsonArray([.. pending.Checkpoints]) } },
                 pending.Note);
             Changed("journal");
@@ -153,15 +167,13 @@ internal sealed class AutonomyHook(IPluginContext ctx, Chats chats, AutonomyStor
     {
         if (ToolPathArgs.WindowsOpenCommand(name, args) is { } open) return open;
         if (ToolPathArgs.CommandOf(name, args) is { Length: > 0 } command)
-            return name.Equals("ssh", StringComparison.OrdinalIgnoreCase) && args.Str("host", "target", "server") is { Length: > 0 } host ? $"{host}: {command}" : command;
+            return name.Equals("ssh", StringComparison.OrdinalIgnoreCase) && args.Str(ToolPathArgs.SshHostNames) is { Length: > 0 } host ? $"{host}: {command}" : command;
         if (name.Equals("write", StringComparison.OrdinalIgnoreCase) || name.Equals("edit", StringComparison.OrdinalIgnoreCase))
             return string.Join(", ", ToolPathArgs.WriteTargets(name, args));
-        var action = Action(args);
+        var action = ToolPathArgs.ActionOf(name, args);
         var detail = args.Str("host", "path", "url", "app", "name", "id");
         return string.Join(" ", new[] { action, detail }.Where(s => !string.IsNullOrEmpty(s)));
     }
-
-    private static string? Action(ToolArgs args) => args.Str(ToolPathArgs.WindowsActionNames)?.Trim().ToLowerInvariant();
 
     internal static string Hash(string path)
     {

@@ -85,9 +85,7 @@ internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host, PageShot
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
         var a = new ToolArgs(args);
-        var action = BrowserTab.Normalize(a.Str("action", "verb", "command") ?? "");
-        if (action is "handover" or "hand_over" or "done") action = "leave";
-        if (action is "view" or "watch" or "login") action = "show";
+        var action = ToolPathArgs.BrowserAction(a.Str(ToolPathArgs.WindowsActionNames));
         if (action.Length == 0) return ToolResult.Error("Give an action: open, snapshot, click, type, key, scroll, find, read, wait, steps, show, … (see the tool's help).");
         if (action == "screenshot" && context.Model?.InputModalities is { Count: > 0 } mods && !mods.Contains("image"))
             return ToolResult.Error($"The current model ({context.Model.Id}) can't see images: use snapshot or read.");

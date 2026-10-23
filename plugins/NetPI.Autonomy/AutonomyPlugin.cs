@@ -84,7 +84,7 @@ public sealed class AutonomyPlugin : INetPiPlugin
                 ["paused"] = options.Paused,
                 ["changesLastHour"] = store.ChangesSince(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 3_600_000),
                 ["grants"] = store.Grants().Count,
-                ["refusals"] = store.Refusals(1000).Count(r => r["grantedMs"] is null),
+                ["refusals"] = store.Refusals(1000).Count(r => r["grantable"]?.GetValue<bool>() == true && r["grantedMs"] is null),
             }));
         ctx.Rpc.Register(new RpcMethod("autonomy.journal",
                 "What chats started by a schedule or a webhook changed, newest first: { origin?, sessionId?, beforeMs?, limit? (100, max 500) } → " +
@@ -146,6 +146,10 @@ public sealed class AutonomyPlugin : INetPiPlugin
         var copies = files.Select(f => (File: f, Copy: store.Checkpoint((string)f["id"]!))).ToList();
         if (copies.FirstOrDefault(c => c.Copy is null) is { File: not null } gone)
             throw new RpcException("not_found", $"The copy of {gone.File["path"]} is gone (dropped after its keep time).");
+        // a folder that is gone (a retired worktree, a deleted checkout) is not recreated: that would write files into a place nobody works in
+        foreach (var (f, copy) in copies)
+            if (copy!["existed"]?.GetValue<bool>() == true && Path.GetDirectoryName((string)f["path"]!) is { Length: > 0 } dir && !Directory.Exists(dir))
+                throw new RpcException("conflict", $"The folder of {f["path"]} no longer exists (a retired workspace?): nothing was restored.");
         if (!force)
             foreach (var (f, _) in copies)
                 if (AutonomyHook.Hash((string)f["path"]!) != (string?)f["afterHash"])
@@ -156,7 +160,6 @@ public sealed class AutonomyPlugin : INetPiPlugin
             var path = (string)f["path"]!;
             if (copy!["existed"]?.GetValue<bool>() == true)
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 File.WriteAllBytes(path, Convert.FromBase64String((string?)copy["content"] ?? ""));
             }
             else if (File.Exists(path)) File.Delete(path);

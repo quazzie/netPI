@@ -612,6 +612,22 @@ public static class PlanTests
         await h.SendAsync(s2.Id, "research again");
         await h.IdleAsync(s2.Id, 15_000);
         Check.True(ran.Contains("write"), "the user's choice: that child may write");
+
+        // the tool name is matched as the runner does, ignoring case: a spawn spelled Agent_Spawn is still held to reading
+        h.Settings.Set("plan.subagentsReadOnly", true);
+        var before = h.Runtime.List().Where(a => a.IsSubagent).Select(a => a.SessionId).ToHashSet();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r)) return Reply.Text("REPORT");
+            var done = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Count();
+            return done switch { 0 => Reply.Tool("Agent_Spawn", spawn), 1 => Reply.Tool("agent", new { action = "wait", all = true }), _ => Reply.Text("parent done") };
+        };
+        var s3 = h.NewSession();
+        await h.Rpc.InvokeAsync("plan.enter", new { sessionId = s3.Id });
+        await h.SendAsync(s3.Id, "research once more");
+        await h.IdleAsync(s3.Id, 15_000);
+        var late = h.Runtime.List().Single(a => a.IsSubagent && !before.Contains(a.SessionId));
+        Check.False(late.ToolAllowlist!.Contains("write") || late.ToolAllowlist.Contains("bash"), "a differently cased spawn is rewritten too");
     }
 
     private static async Task ChildBound()
