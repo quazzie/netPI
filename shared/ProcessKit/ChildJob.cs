@@ -6,8 +6,10 @@ namespace NetPI.ProcessKit;
 /// <summary>
 /// A Windows job object that kills every process in it when the last handle closes, which is when NetPI exits for any reason.
 /// Children that must not outlive NetPI join it (the Claude CLI, language servers, the agents' browser, whose launcher hands
-/// the browser to a process of its own). Shared SOURCE compiled into each plugin (plugins do not share assemblies). Other
-/// platforms: no-op (their children get SIGHUP with the parent's terminal, and a service manager kills the group).
+/// the browser to a process of its own). Shared SOURCE compiled into each plugin (plugins do not share assemblies), so each
+/// plugin load has a job of its own, and its handle is never closed on purpose: closing it on unload would kill the children
+/// the plugin's next generation or a still-running call needs. A replaced generation's job (one kernel handle) lives until
+/// the process exits, which ends whatever is left in it. Other platforms: no-op (their children get SIGHUP with the parent's terminal, and a service manager kills the group).
 /// </summary>
 internal static class ChildJob
 {

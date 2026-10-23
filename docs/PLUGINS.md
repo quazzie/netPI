@@ -55,7 +55,7 @@ message assembler, secret resolution, the Chat Completions parser and message bu
 it changes all three, in one place, with no copies to fall out of step. A copy under `plugins/` instead is a bug
 waiting to happen: `tests/NetPI.Providers.Tests` fails on one.
 
-`shared/ProcessKit/` is compiled into the plugins that start child processes (Claude CLI, Lsp, Tools.Web, Tools.Shell, Mcp, Webhooks):
+`shared/ProcessKit/` is compiled into the plugins that start child processes (Claude CLI, Lsp, Tools.Web, Tools.Shell, Tools.Test, Mcp, Webhooks):
 `ChildJob` (the kill-on-close job that ends children with NetPI) and `ProcessJob` (a job per process tree, killed on demand).
 
 `shared/SearchKit/` is the word side of the hybrid searches, compiled into Memory and CodeSearch: tokens (code tokens split

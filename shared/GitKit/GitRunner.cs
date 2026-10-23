@@ -70,6 +70,8 @@ internal static class GitRunner
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
                 try { await Task.WhenAll(stdout, stderr).WaitAsync(DrainGrace, timeout.Token).ConfigureAwait(false); }
                 catch (TimeoutException) { drain.Cancel(); }
+                // the overall deadline ran out during the grace, after git exited: git's answer stands, the drain just ends
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { drain.Cancel(); }
                 var (outp, cut) = await stdout.ConfigureAwait(false);
                 return new Result(process.ExitCode, outp, (await stderr.ConfigureAwait(false)).Text, false, false, cut, null);
             }
