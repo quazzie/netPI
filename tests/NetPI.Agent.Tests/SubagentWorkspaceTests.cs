@@ -299,8 +299,7 @@ public static class SubagentWorkspaceTests
 
         public GitRepo()
         {
-            RepoPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "netpi-agent-tests", "ws-repo-" + Ids.Short(8));
-            Directory.CreateDirectory(RepoPath);
+            RepoPath = T.TempDir("ws-repo");
             Available = TestGit.Run(RepoPath, "init", "-q", "-b", "main");
             if (!Available) return;
             File.WriteAllText(Path.Combine(RepoPath, "README.md"), "base\n");
@@ -319,10 +318,6 @@ public static class SubagentWorkspaceTests
         public void Dispose()
         {
             try { Directory.Delete(RepoPath, true); } catch { }
-            foreach (var dir in Directory.EnumerateDirectories(Path.GetDirectoryName(RepoPath)!, "repo-*"))
-            {
-                try { Directory.Delete(dir, true); } catch { }
-            }
         }
     }
 }

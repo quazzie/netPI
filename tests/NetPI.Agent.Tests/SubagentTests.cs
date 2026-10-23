@@ -774,7 +774,7 @@ public static class SubagentTests
                 {
                     foreach (var a in h.Runtime.List(true))
                         if (a.IsSubagent && a.Status == AgentStatus.Running && a.Model == solo
-                            && queuedSeq.TryGetValue(a.Id, out var q) && runningSeq[a.Id] > q)
+                            && queuedSeq.TryGetValue(a.Id, out var q) && runningSeq.TryGetValue(a.Id, out var r) && r > q)
                         {
                             var parent = h.Runtime.GetBySession(a.ParentSessionId!);
                             if (parent?.Status != AgentStatus.Yielded && h.Runtime.Get(a.Id)?.Status == AgentStatus.Running)
@@ -782,7 +782,7 @@ public static class SubagentTests
                                 lock (violations) violations.Add($"{tag}: the parent was {parent?.Status} while its child {a.Name} ran");
                         }
                 }
-                catch { }
+                catch (Exception ex) { lock (violations) violations.Add($"{tag}: the watcher itself failed: {ex.Message}"); }
                 Thread.SpinWait(1);
             }
         });
@@ -800,25 +800,31 @@ public static class SubagentTests
 
         // As many spawn+wait pairs as fit the budget: each is one chance for the window.
         var budget = Stopwatch.StartNew();
-        for (var i = 0; i < 150 && budget.Elapsed < TimeSpan.FromSeconds(30); i++)
+        try
         {
-            var parent = h.NewSession(model: solo);
-            current["p"] = parent.Id;
-            await h.SendAsync(parent.Id, "delegate " + i);
-            var p = await h.IdleAsync(parent.Id, 15_000);
-            var child = h.Runtime.Get(p.Children.Single())!;
-            Check.Equal(AgentStatus.Completed, child.Status, $"{tag} cycle {i}: the child finished");
-            // If the child waited for the slot, the parent's yield must have been recorded before the child took it: when
-            // the child started running, a yield of its parent was already on the bus.
-            if (queuedSeq.TryGetValue(child.Id, out var q) && runningSeq[child.Id] > q
-                && !yieldBeforeTakeover.ContainsKey(child.Id))
-                lock (violations) violations.Add($"{tag} cycle {i}: the child took the slot with no recorded parent yield before it");
+            for (var i = 0; i < 150 && budget.Elapsed < TimeSpan.FromSeconds(30); i++)
+            {
+                var parent = h.NewSession(model: solo);
+                current["p"] = parent.Id;
+                await h.SendAsync(parent.Id, "delegate " + i);
+                var p = await h.IdleAsync(parent.Id, 15_000);
+                var child = h.Runtime.Get(p.Children.Single())!;
+                Check.Equal(AgentStatus.Completed, child.Status, $"{tag} cycle {i}: the child finished");
+                // If the child waited for the slot, the parent's yield must have been recorded before the child took it: when
+                // the child started running, a yield of its parent was already on the bus.
+                if (queuedSeq.TryGetValue(child.Id, out var q) && runningSeq[child.Id] > q
+                    && !yieldBeforeTakeover.ContainsKey(child.Id))
+                    lock (violations) violations.Add($"{tag} cycle {i}: the child took the slot with no recorded parent yield before it");
+            }
         }
-
-        done.Cancel();
-        sub.Dispose();
-        try { await Task.WhenAll(loaders); } catch { }
-        await Task.WhenAll([watcher, .. readers]);
+        finally
+        {
+            // a failed check must not leave the watcher and the readers spinning for the rest of the run
+            done.Cancel();
+            sub.Dispose();
+            try { await Task.WhenAll(loaders); } catch { }
+            await Task.WhenAll([watcher, .. readers]);
+        }
     }
 
     private static async Task ParentAutoWake()

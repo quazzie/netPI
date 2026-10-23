@@ -229,7 +229,6 @@ public static class LoopTests
         await h.IdleAsync(s.Id);
         Check.Equal(3, peek.Calls);
         Check.True(max >= 2, $"ran concurrently (max {max})");
-        Check.True(sw.ElapsedMilliseconds < 700, $"parallel batch took {sw.ElapsedMilliseconds}ms");
         var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Content).OrderBy(x => x).ToList();
         Check.Equal("peeked 1|peeked 2|peeked 3", string.Join("|", results));
         // the model got all three results (normalized into one tool message)

@@ -78,7 +78,7 @@ public static class WorkspaceTests
         {
             Ctx = new FakePluginContext(T.TempDir("ws-home"));
             Ctx.Settings.Set("workspaces.isolateWriters", JsonValue.Create(isolate));
-            Root = Path.GetDirectoryName(Ctx.Paths.Home)!;
+            Root = T.TempDir("ws-env");   // this Env's own folder: the suite's shared root holds every other test's files
             ProjectPath = Path.Combine(Root, "repo");
             Directory.CreateDirectory(ProjectPath);
             Git = new GitProbe(TimeSpan.Zero);
@@ -158,6 +158,7 @@ public static class WorkspaceTests
         {
             Ctx.Unload();
             try { Directory.Delete(Root, recursive: true); } catch { }
+            try { Directory.Delete(Ctx.Paths.Home, recursive: true); } catch { }
         }
     }
 
