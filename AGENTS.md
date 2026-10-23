@@ -17,15 +17,13 @@
 - Follow `C:\AI\Projects\AGENTS.md`. Use your own worktree/branch; preserve others' edits; stage explicit paths.
 - One commit per piece. Merge into `master` from the main checkout and verify ancestry. A worker ends with `workspace { action: "retire" }`: its worktree and merged branch go when its run ends.
 - Plain builds use `artifacts/dev/app`; they must never touch the installed app.
-- After merging, publish yourself with `.\build.ps1 -Publish` — never leave it to the user. The script decides: plugins
-  are staged in place and the running host reloads them itself when no agent run is active (its reload gate: at once when
-  idle, else when the last run ends; a chat waiting for its user's answer has no run, and the shell's reload also waits
-  for the processes it started; a reload must never disturb a run — if one ever closes a run, that is a bug to
-  report); the web UI swaps in place (a window refresh shows it); host files, or plugins built against changed contracts,
-  wait in `.pending` for the next start, and NetPI restarts itself for them once nothing goes on (`host.autoRestart`:
-  no run, no shell process, a quiet minute; a host started before that existed waits for the owner). A host without the gate (started before it existed) gets its plugins in
-  `.pending` while a chat is mid-turn. There is nothing else to choose. `-NextStart` (reload nothing, stage everything)
-  only when the user asks for it. Report what the script printed: staged (reloads when idle), or waits in `.pending`.
+- After merging, publish yourself with `.\build.ps1 -Publish` — never leave it to the user. The script decides: staged
+  plugins reload when no agent run is active (the reload gate: [PLUGINS](docs/PLUGINS.md)), the web UI swaps in place
+  (a window refresh shows it), and what cannot reload in place — host files, plugins built against changed contracts —
+  waits in `.pending` until NetPI restarts itself (`host.autoRestart`: [SETTINGS](docs/SETTINGS.md)). A reload must
+  never end a run: report one that does. `-NextStart` (reload nothing, stage everything) only when the user asks for
+  it, and there is nothing else to choose. Report what the script printed: staged (reloads when idle), or waits in
+  `.pending`.
 - App changes are done when `-Publish` has run. A restart does not install Git changes.
 - Docs-only changes need no build/publish. Ask before stopping the owner's app.
 - Commands and install details: `Get-Help .\build.ps1 -Full`, [HANDOFF](docs/HANDOFF.md). UI: `npm ci`, `npm run build`; Git handles LF.
