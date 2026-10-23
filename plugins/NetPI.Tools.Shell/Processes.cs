@@ -299,7 +299,8 @@ public sealed class ManagedProcess : IDisposable
     /// </summary>
     private async Task WatchTreeDeathAsync(Task pumpsDone)
     {
-        await pumpsDone.ConfigureAwait(false);
+        try { await pumpsDone.ConfigureAwait(false); }
+        catch { /* a pump that faulted is over all the same: the hold must not stay */ }
         OutputReachedEof = true;
         try { OnTreeDone?.Invoke(this); } catch { }
         OnTreeDone = null;

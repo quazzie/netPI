@@ -81,6 +81,12 @@ public sealed class OutputCapture : IDisposable
     private readonly long _spillThreshold;
     private StreamWriter? _spill;
     private long _dropped;
+    private long _spilled;
+    private bool _spillFull;
+
+    /// <summary>The most chars the spill file takes (about 64 MB of text): past it the file is closed and stays as it is.</summary>
+    internal const long DefaultMaxSpillChars = 64L * 1024 * 1024;
+    private readonly long _maxSpill;
 
     public long TotalChars { get; private set; }
     public long TotalBytes { get; private set; }
@@ -91,8 +97,9 @@ public sealed class OutputCapture : IDisposable
 
     /// <param name="capacityChars">Chars kept in memory (the most recent ones).</param>
     /// <param name="spillPath">Where to store the full output once it exceeds <paramref name="spillThreshold"/> (null: never spill).</param>
-    public OutputCapture(int capacityChars = 1024 * 1024, string? spillPath = null, long spillThreshold = 1024 * 1024)
+    public OutputCapture(int capacityChars = 1024 * 1024, string? spillPath = null, long spillThreshold = 1024 * 1024, long maxSpillChars = DefaultMaxSpillChars)
     {
+        _maxSpill = maxSpillChars;
         _capacity = capacityChars;
         _spillPath = spillPath;
         _spillThreshold = Math.Min(spillThreshold, capacityChars);
@@ -110,8 +117,16 @@ public sealed class OutputCapture : IDisposable
             if (_spill is not null)
             {
                 try { _spill.Write(chunk); } catch { /* disk full etc.: keep the tail */ }
+                // A descendant that outlived the call can print forever: the log stops growing at the cap, for good.
+                _spilled += chunk.Length;
+                if (_spilled > _maxSpill)
+                {
+                    _spillFull = true;
+                    try { _spill.Dispose(); } catch { }
+                    _spill = null;
+                }
             }
-            else if (_spillPath is not null && TotalChars > _spillThreshold && _dropped == 0)
+            else if (_spillPath is not null && TotalChars > _spillThreshold && _dropped == 0 && !_spillFull)
             {
                 // Also reached after Dispose, when a descendant that outlived the shell keeps writing: the file at
                 // this path (the one SaveFull wrote, when the result was cut) is rewritten from the buffer, which
@@ -122,6 +137,7 @@ public sealed class OutputCapture : IDisposable
                     Directory.CreateDirectory(Path.GetDirectoryName(_spillPath)!);
                     _spill = new StreamWriter(_spillPath, append: false, new UTF8Encoding(false), 1 << 16);
                     _spill.Write(_buf.ToString()); // complete so far: nothing dropped yet
+                    _spilled = _buf.Length;
                     SpillFile = _spillPath;
                 }
                 catch

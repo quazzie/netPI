@@ -41,7 +41,7 @@ internal static partial class ChangeTracker
     /// <summary>What the command changed, ready for the result.</summary>
     public sealed record Report(string Root, List<Change> Changes, bool HeadMoved, string? Diff);
 
-    private static readonly ConcurrentDictionary<string, (string? Root, DateTime At)> Roots = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, (string? Root, DateTime At)> Roots = new(WorkspacePaths.Comparer);
 
     /// <summary>
     /// How long a repository whose snapshot could not be taken (git ran over the budget, the status was cut, too many dirty
@@ -50,7 +50,7 @@ internal static partial class ChangeTracker
     /// </summary>
     public static TimeSpan TooBigFor { get; set; } = TimeSpan.FromMinutes(5);
 
-    private static readonly ConcurrentDictionary<string, DateTime> TooBig = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, DateTime> TooBig = new(WorkspacePaths.Comparer);
 
     /// <summary>Whether a repository is being left alone (<see cref="TooBigFor"/>), for the tests.</summary>
     internal static bool Skipping(string root) => TooBig.TryGetValue(root, out var until) && DateTime.UtcNow < until;
@@ -140,18 +140,17 @@ internal static partial class ChangeTracker
     /// <summary>
     /// The directory whose repository the command works in: a leading <c>cd &lt;dir&gt; &amp;&amp;</c> (or <c>;</c>, or
     /// Set-Location) names it, as most agent commands start; otherwise the directory the shell starts in.
+    /// <paramref name="resolve"/> reads a path as the shell tools do (<see cref="ToolContext.ResolvePath"/>: ~, Git Bash's
+    /// /c/x and /tmp); a relative directory is joined to <paramref name="cwd"/> first.
     /// </summary>
-    public static string ProbeDir(string command, string cwd)
+    public static string ProbeDir(string command, string cwd, Func<string, string> resolve)
     {
         var m = LeadingCd().Match(command);
         if (!m.Success) return cwd;
         var dir = m.Groups["q"].Success ? m.Groups["q"].Value : m.Groups["s"].Success ? m.Groups["s"].Value : m.Groups["w"].Value;
         try
         {
-            if (dir == "~" || dir.StartsWith("~/")) dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), dir.Length > 2 ? dir[2..] : "");
-            // Git Bash spells C:\x as /c/x
-            if (OperatingSystem.IsWindows() && GitBashDrive().Match(dir) is { Success: true } d) dir = d.Groups[1].Value.ToUpperInvariant() + ":/" + d.Groups[2].Value;
-            var full = Path.GetFullPath(Path.IsPathRooted(dir) ? dir : Path.Combine(cwd, dir));
+            var full = resolve(Path.IsPathRooted(dir) || dir.StartsWith('~') ? dir : Path.Combine(cwd, dir));
             return Directory.Exists(full) ? full : cwd;
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException)
@@ -354,7 +353,4 @@ internal static partial class ChangeTracker
 
     [GeneratedRegex(@"^\s*(?:cd|Set-Location|sl|pushd|Push-Location)\s+(?:""(?<q>[^""]+)""|'(?<s>[^']+)'|(?<w>[^\s;&|]+))\s*(?:&&|;|\r?\n)", RegexOptions.IgnoreCase)]
     private static partial Regex LeadingCd();
-
-    [GeneratedRegex(@"^/([a-zA-Z])/(.*)$")]
-    private static partial Regex GitBashDrive();
 }
