@@ -51,7 +51,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
         _ctx = ctx;
         ctx.Services.Register(new SettingsSection
         {
-            Id = "webhooks", Title = "Webhooks", Group = "Agents", Order = 61,
+            Id = "webhooks", Title = "Webhooks", Group = "Automation", Order = 61,
             Help = "A system that can POST (a monitoring tool, a CI, a script) starts a chat here. The receiver is its own small listener, separate from NetPI's API, and off until you switch it on. Each webhook has its own token (shown once).",
             Settings =
             [

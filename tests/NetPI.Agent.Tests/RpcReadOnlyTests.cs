@@ -56,7 +56,7 @@ public static class RpcReadOnlyTests
             // cannot slip in unmarked (a read surface no tool can reach, or a write one every tool may call).
             var expected = new Dictionary<string, (string[] ReadOnly, string[] Writable)>
             {
-                ["netpi.runtime"] = (["agent.queue", "runs.list", "agent.get", "agent.stream", "agent.tools", "agent.waits"], ["agent.send", "agent.abort", "agent.dequeue", "agent.promote", "agent.setTools"]),
+                ["netpi.runtime"] = (["agent.queue", "runs.list", "agent.get", "agent.stream", "agent.tools", "agent.waits", "tools.exposure"], ["agent.send", "agent.abort", "agent.dequeue", "agent.promote", "agent.setTools"]),
                 ["netpi.guardrails"] = (["guard.pending", "guard.outcomes"], ["guard.answer"]),
                 ["netpi.autonomy"] = (["autonomy.state", "autonomy.journal", "autonomy.refusals", "autonomy.grants"], ["autonomy.grant", "autonomy.revoke", "autonomy.pause", "autonomy.undo"]),
                 ["netpi.context"] = (["context.preview", "context.prompts", "context.toolsets"], ["context.reset"]),

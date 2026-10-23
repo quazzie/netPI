@@ -1,6 +1,7 @@
 <script>
   import { tick } from 'svelte';
   import Icon from './Icon.svelte';
+  import { escLayer } from './Modal.svelte';
   /**
    * Dropdown / context menu (fixed position; closes on outside click or Esc, follows its anchor when the page scrolls).
    *   items: ({ label, icon?, hint?, checked?, danger?, disabled?, keepOpen?, onclick } | { divider: true } | { header })[]
@@ -74,8 +75,10 @@
       if (menuEl?.contains(e.target) || refEl?.contains(e.target)) return;
       open = false;
     };
+    // on the Esc stack while open, so an Esc closes the menu and not the dialog it is in
+    const layer = escLayer();
     const onKey = (e) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && layer.isTop()) {
         e.preventDefault();
         e.stopPropagation();
         open = false;
@@ -102,6 +105,7 @@
     window.addEventListener('resize', onScroll);
     window.addEventListener('blur', close);
     return () => {
+      layer.remove();
       cancelAnimationFrame(frame);
       window.removeEventListener('pointerdown', onDown, true);
       window.removeEventListener('keydown', onKey, true);

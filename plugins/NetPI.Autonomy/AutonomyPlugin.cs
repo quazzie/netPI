@@ -33,23 +33,23 @@ public sealed class AutonomyPlugin : INetPiPlugin
     {
         ctx.Services.Register(new SettingsSection
         {
-            Id = "autonomy", Title = "Autonomy", Group = "Tools", Order = 6,
+            Id = "autonomy", Title = "Autonomy", Group = "Safety", Order = 6,
             Help = "For chats started by a schedule or a webhook (and subagents): what they may do without asking, what they changed, and the brakes. The Autonomy tab shows it.",
             Settings =
             [
                 SettingInfo.Bool("autonomy.paused", "Pause unattended changes", false,
-                    "Chats started by a schedule or a webhook may still read, but every change is refused until this is off."),
+                    "Chats started by a schedule or a webhook may still read, but every change is refused until this is off.") with { Keywords = ["brake", "stop", "unattended"] },
                 SettingInfo.Choice("autonomy.unattendedAsks", "When a guardrail would ask", "refuse", ["refuse", "wait"],
                     "refuse: in a chat nobody watches, a guardrail's question is refused and listed in the Autonomy tab, where you can allow it for that origin from then on. wait: it waits for your answer, as before (a subagent's is refused either way)."),
                 SettingInfo.Int("autonomy.maxChangesPerHour", "Changes per hour, per origin", 120,
                     "Chats for one schedule or webhook that make more changes than this in an hour are stopped at the next one, and you get one notification. 0 switches it off.", 0, 100000),
-                SettingInfo.Int("autonomy.keepDays", "Keep the journal for", 30, "Journal rows, refusals and file copies older than this are dropped.", 1, 365, "days"),
-                SettingInfo.Int("autonomy.grantUnusedDays", "Drop grants unused for", 60, "A grant that let nothing through for this long is dropped. 0 keeps them.", 0, 3650, "days"),
-                SettingInfo.Int("autonomy.maxCheckpointKb", "Largest file copy", 4096, "A file larger than this is changed without a copy (no undo; the journal says so).", 0, 65536, "KB"),
+                SettingInfo.Int("autonomy.keepDays", "Keep the journal for", 30, "Journal rows, refusals and file copies older than this are dropped.", 1, 365, "days") with { Subgroup = "Journal", Advanced = true },
+                SettingInfo.Int("autonomy.grantUnusedDays", "Drop grants unused for", 60, "A grant that let nothing through for this long is dropped. 0 keeps them.", 0, 3650, "days") with { Subgroup = "Journal", Advanced = true },
+                SettingInfo.Int("autonomy.maxCheckpointKb", "Largest file copy", 4096, "A file larger than this is changed without a copy (no undo; the journal says so).", 0, 65536, "KB") with { Subgroup = "Journal", Advanced = true },
                 SettingInfo.List("autonomy.externalTools", "Tools that bring outside text", Options.DefaultExternalTools,
-                    "After one of these, a schedule's chat counts as having read outside text (a webhook's chat does from the start). plugin:<id> names every tool of a plugin."),
+                    "After one of these, a schedule's chat counts as having read outside text (a webhook's chat does from the start). plugin:<id> names every tool of a plugin.") with { Subgroup = "Outside text" },
                 SettingInfo.List("autonomy.taintedBlocked", "Never after outside text", Options.DefaultTaintedBlocked,
-                    "What a schedule's or webhook's chat that read outside text may not do, whatever is granted: a tool, or tool: action, action. So a page or an alert's text cannot make it act as you in the browser or on the desktop."),
+                    "What a schedule's or webhook's chat that read outside text may not do, whatever is granted: a tool, or tool: action, action. So a page or an alert's text cannot make it act as you in the browser or on the desktop.") with { Subgroup = "Outside text" },
             ],
         });
         var options = new Options(ctx.Settings);

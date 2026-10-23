@@ -35,7 +35,7 @@ public sealed class AgentsPlugin : INetPiPlugin
         });
         context.Services.Register(new SettingsSection
         {
-            Id = "budget", Title = "Budget", Group = "Models", Order = 20,
+            Id = "budget", Title = "Budget", Group = "Agents", Order = 20,
             Settings =
             [
                 SettingInfo.Number("budget.monthlyUsd", "Monthly budget", null, "Spend plus reservations for paid model calls per month; empty = no limit. Capped cloud models need known prices. Free and local models don't count.", 0, null, "$"),

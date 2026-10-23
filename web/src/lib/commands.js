@@ -72,7 +72,13 @@ const BUILTIN = [
     source: 'builtin',
     run: (args, { sessionId }) => editGoal(sessionId, args),
   },
-  { name: 'settings', description: 'Open settings', source: 'builtin', run: () => (modals.settings = true) },
+  {
+    name: 'settings',
+    description: 'Open settings (with words: search them)',
+    argsHint: '[search]',
+    source: 'builtin',
+    run: (args) => (modals.settings = String(args ?? '').trim() ? { q: String(args).trim() } : true),
+  },
   { name: 'help', description: 'Commands and keyboard shortcuts', source: 'builtin', run: () => (modals.help = true) },
   {
     name: 'abort',
@@ -128,7 +134,7 @@ async function runServerCommand(c, args, { sessionId }) {
       composer.insertText?.(value + (args ? ` ${args}` : ''));
       break;
     case 'settings':
-      modals.settings = true;
+      modals.settings = value || true; // settings:<page>
       break;
     default:
       toast(`/${c.name}: unsupported action “${action}”`, 'warn');

@@ -23,14 +23,14 @@ public sealed class SshPlugin : INetPiPlugin
             [
                 SettingInfo.Int("ssh.timeoutSeconds", "Default ssh_run timeout", 120, null, 1, 1800, "s"),
                 SettingInfo.Int("ssh.connectTimeoutSeconds", "Connect timeout", 10, null, 2, 120, "s"),
-                SettingInfo.FilePath("ssh.config", "ssh config", "The host aliases come from here.", "~/.ssh/config"),
-                SettingInfo.FilePath("ssh.path", "ssh", "Empty: the one found.", SshOptions.FindSsh()),
-                SettingInfo.FilePath("ssh.scpPath", "scp", "Empty: the one next to ssh.", SshOptions.Sibling(SshOptions.FindSsh(), OperatingSystem.IsWindows() ? "scp.exe" : "scp")),
-                SettingInfo.Bool("ssh.reuseConnections", "Reuse connections", true, "Keep a connection to a host open between calls where the ssh client cannot share one itself (Windows), so a run of calls pays the handshake once."),
-                SettingInfo.Int("ssh.connectionsPerHost", "Connections per host", 3, "Calls that run at the same time on one host; one more opens its own connection.", 1, 8),
-                SettingInfo.Int("ssh.idleSeconds", "Close idle connections after", 300, null, 10, 3600, "s"),
+                SettingInfo.FilePath("ssh.config", "ssh config", "The host aliases come from here.", "~/.ssh/config") with { Subgroup = "Programs", Keywords = ["hosts"] },
+                SettingInfo.FilePath("ssh.path", "ssh", "Empty: the one found.", SshOptions.FindSsh()) with { Subgroup = "Programs" },
+                SettingInfo.FilePath("ssh.scpPath", "scp", "Empty: the one next to ssh.", SshOptions.Sibling(SshOptions.FindSsh(), OperatingSystem.IsWindows() ? "scp.exe" : "scp")) with { Subgroup = "Programs", Advanced = true },
+                SettingInfo.Bool("ssh.reuseConnections", "Reuse connections", true, "Keep a connection to a host open between calls where the ssh client cannot share one itself (Windows), so a run of calls pays the handshake once.") with { Subgroup = "Connections", Keywords = ["controlmaster", "multiplex"] },
+                SettingInfo.Int("ssh.connectionsPerHost", "Connections per host", 3, "Calls that run at the same time on one host; one more opens its own connection.", 1, 8) with { Subgroup = "Connections", Advanced = true },
+                SettingInfo.Int("ssh.idleSeconds", "Close idle connections after", 300, null, 10, 3600, "s") with { Subgroup = "Connections", Advanced = true },
                 SettingInfo.Bool("ssh.blockShellSsh", "Refuse ssh through the shell", true,
-                    "A bash or pwsh command that starts ssh, scp or sftp to a host of the ssh config is refused, with the ssh tool call that does the same: the tool reuses the connection, saves the output and gives the host's notes, and the guardrails and the Autonomy journal see the host. Hosts the config does not name are not affected."),
+                    "A bash or pwsh command that starts ssh, scp or sftp to a host of the ssh config is refused, with the ssh tool call that does the same: the tool reuses the connection, saves the output and gives the host's notes, and the guardrails and the Autonomy journal see the host. Hosts the config does not name are not affected.") with { Subgroup = "Shell", Keywords = ["bash", "pwsh", "scp", "sftp"] },
             ],
         });
         context.Services.Register<IAgentHook>(new ShellSshHook(context));

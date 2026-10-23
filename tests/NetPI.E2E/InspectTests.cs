@@ -116,6 +116,17 @@ public static class InspectTests
                 .Select(m => m.S("method")!).Where(m => !m.StartsWith("desktop.", StringComparison.Ordinal)).Order(StringComparer.Ordinal).ToList();
             Check.True(bare.Count == 0, $"{bare.Count} method(s) registered without declared parameters (RpcMethod with RpcParams): {string.Join(", ", bare)}");
         });
+        r.Add("inspect.settings-groups", "settings dialog: every section the server declares is on a page the dialog lists (SettingsSection.Group, web/src/lib/settingsModel.js PAGES)", async () =>
+        {
+            var model = File.ReadAllText(Path.Combine(env.RepoRoot, "web", "src", "lib", "settingsModel.js"));
+            var pages = Regex.Matches(model, @"group: '(\w+)'").Select(m => m.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
+            Check.True(pages.Count >= 10, $"the dialog's pages name their groups ({pages.Count})");
+            var stray = new List<string>();
+            foreach (var section in (await env.Rpc("settings.schema")).Arr())
+                if (section.S("group") is { } group && !pages.Contains(group)) stray.Add($"{section.S("id")} ({group})");
+            Check.True(stray.Count == 0, $"{stray.Count} section(s) on a group no page lists, so they land on Other: {string.Join(", ", stray)}");
+        });
+
         r.Add("inspect.settings-docs", "docs: every setting the server's plugins declare (settings.schema) is in docs/SETTINGS.md (idea-yvcy8b)", async () =>
         {
             var keys = new HashSet<string>(StringComparer.Ordinal);

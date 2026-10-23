@@ -1,13 +1,15 @@
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace NetPI;
 
 /// <summary>
 /// One setting as the settings dialog shows it: a control per <see cref="Type"/>, saved with <c>settings.set</c>,
 /// <see cref="Default"/> shown while the key is unset. Plugins describe their own settings in a <see cref="SettingsSection"/>
-/// registered with <c>ctx.Services.Register(section)</c>, so hot reload removes it with the plugin.
+/// registered with <c>ctx.Services.Register(section)</c>, so hot reload removes it with the plugin. A record, so a factory's
+/// result takes the optional parts with <c>with { Subgroup = "Fetch", Advanced = true }</c>.
 /// </summary>
-public sealed class SettingInfo
+public sealed record SettingInfo
 {
     /// <summary>Dotted path in settings.json, e.g. <c>shell.timeoutSeconds</c>.</summary>
     public required string Key { get; init; }
@@ -26,6 +28,13 @@ public sealed class SettingInfo
     public IReadOnlyList<string>? Options { get; init; }
     /// <summary>When a change applies, if not at once: "restart" or "new sessions".</summary>
     public string? Applies { get; init; }
+    /// <summary>A heading inside its section (Web: "Search", "Fetch", "Browser"); settings with the same one are shown together.</summary>
+    public string? Subgroup { get; init; }
+    /// <summary>Rarely changed: the dialog keeps it under "More settings" unless it is set or searched for.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Advanced { get; init; }
+    /// <summary>Words the settings search finds this setting by that are not in its label ("api key", "proxy", "port").</summary>
+    public IReadOnlyList<string>? Keywords { get; init; }
 
     public static SettingInfo Bool(string key, string label, bool @default, string? help = null) =>
         new() { Key = key, Type = "bool", Label = label, Default = JsonValue.Create(@default), Help = help };
@@ -70,7 +79,11 @@ public sealed class SettingsSection
 {
     public required string Id { get; init; }
     public required string Title { get; init; }
-    /// <summary>Where the dialog lists it: General, Models, Agents, Context, Tools.</summary>
+    /// <summary>
+    /// The page of the settings dialog that lists it: <c>General</c>, <c>Models</c>, <c>Agents</c> (agents and budget), <c>Runs</c>
+    /// (how a run behaves), <c>Context</c>, <c>Tools</c>, <c>Knowledge</c> (memory, search, ideas, embeddings), <c>Automation</c>
+    /// (schedules, webhooks, the phone), <c>Safety</c>, <c>Data</c> or <c>Advanced</c>. Any other name gets a page "Other".
+    /// </summary>
     public string Group { get; init; } = "Tools";
     public int Order { get; init; }
     public string? Help { get; init; }

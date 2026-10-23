@@ -486,6 +486,13 @@
    "all": true
   },
   {
+   "path": "web/src/lib/settingsModel.js",
+   "ids": [
+    "inspect.settings-groups",
+    "ui.settings"
+   ]
+  },
+  {
    "path": "web/test/",
    "ignore": true
   },

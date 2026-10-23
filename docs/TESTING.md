@@ -135,7 +135,7 @@ dotnet tests/NetPI.Host.Tests/bin/Release/NetPI.Host.Tests.dll backup  # the sna
 as they are, with no browser and no server — the Work tab's slot placement and priority levels
 (`plugins/NetPI.Work/ui/util.js`), the Schedules, Webhooks, Ideas and MCP tabs' models (a schedule's skip reasons are
 read from `ScheduleRunner.cs` itself, so a reworded reason fails here), and from `web/src/lib` the formatters, the diff
-and turn numbers, where a streaming answer may be cut (`live.js`), the order a stream is laid out in (`chatItems.js`
+and turn numbers, the settings dialog's model (`settingsModel.js`, `settingsSearch.js`, `uiPrefs.js`: pages, layout, targets, search ranking, unknown keys), where a streaming answer may be cut (`live.js`), the order a stream is laid out in (`chatItems.js`
 `withStream`) and the RPC client's deadline (`rpc.svelte.js`, run in a vm with a fake clock and a fetch that never
 answers, so only a deadline can end a call). A logic change in one of those modules gets its test here, not a browser
 check. `node:test` and `node:assert` are all it uses: no npm package. `-Only` selects by test name as for the .NET suites.
@@ -480,7 +480,7 @@ Eight scripts in `tests/NetPI.E2E/ui`, each a thing a person does and would noti
 | `ui.tools` | `tools.mjs` | thinking shown and opened while it streams, a shell command's output in its row while it runs, a dropped stream retried without its discarded text |
 | `ui.reconnect` | `reconnect.mjs` | the socket drops and comes back: reconnecting shown, a run that ended meanwhile shows its stored answer, a streaming answer goes on with no gap, a new run reaches the page |
 | `ui.work` | `work.mjs` | the Work tab: an agent's two instances busy, a third chat queued and cancelled from the tab, rows that stay put as runs end |
-| `ui.settings` | `settings.mjs` | a number saved, reset and refused out of range; an agent added from the model search, edited and removed after a confirm; a chat's profile picker that stays open through a failed reload |
+| `ui.settings` | `settings.mjs` | a number in a section opened in place: saved, reset, refused out of range, Back; the same setting found by the search, changed in the results, listed under Changed and reset; the palette opening the dialog on a setting in its section; an agent added from the model search, edited and removed after a confirm; a chat's profile picker that stays open through a failed reload |
 | `ui.asks` | `asks.mjs` | an `ask_user` card that survives a reload, answered by an option, in the person's own words and with its Send button |
 | `ui.new-chat` | `new-chat.mjs` | a new chat from the start screen in a project: the chevron picks it, the first answer lists the chat, the main button starts the next one there |
 

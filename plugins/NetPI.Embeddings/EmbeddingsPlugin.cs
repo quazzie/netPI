@@ -20,14 +20,14 @@ public sealed class EmbeddingsPlugin : INetPiPlugin
     {
         context.Services.Register(new SettingsSection
         {
-            Id = "embed", Title = "Embeddings", Group = "Tools", Order = 46,
+            Id = "embed", Title = "Embeddings", Group = "Knowledge", Order = 10,
             Settings =
             [
                 SettingInfo.Str("embed.baseUrl", "Server URL", "", "An OpenAI-compatible /v1/embeddings server. Empty: the AiProxy/AiGateway server (the first AiProxy provider)."),
-                SettingInfo.Str("embed.model", "Embedding model", "", "Empty switches embeddings off. bge-base-en-v1.5 on the nuc was measured (decisions-lab nuc-plan.md)."),
-                SettingInfo.Str("embed.queryPrefix", "Query prefix", "", "Put in front of search texts only (bge: \"Represent this sentence for searching relevant passages: \"); stored documents get none."),
-                SettingInfo.Int("embed.timeoutMs", "Timeout (ms)", EmbeddingClient.DefaultTimeoutMs, "How long an interactive call waits. Indexing in the background waits up to 30 s per batch.", 100, 60000),
-                SettingInfo.Int("embed.batchSize", "Texts per request", EmbeddingClient.DefaultBatchSize, null, 1, 256),
+                SettingInfo.Str("embed.model", "Embedding model", "", "Empty switches embeddings off. bge-base-en-v1.5 on the nuc was measured (decisions-lab nuc-plan.md).") with { Keywords = ["embedding", "vector", "semantic", "meaning"] },
+                SettingInfo.Str("embed.queryPrefix", "Query prefix", "", "Put in front of search texts only (bge: \"Represent this sentence for searching relevant passages: \"); stored documents get none.") with { Advanced = true },
+                SettingInfo.Int("embed.timeoutMs", "Timeout (ms)", EmbeddingClient.DefaultTimeoutMs, "How long an interactive call waits. Indexing in the background waits up to 30 s per batch.", 100, 60000) with { Advanced = true },
+                SettingInfo.Int("embed.batchSize", "Texts per request", EmbeddingClient.DefaultBatchSize, null, 1, 256) with { Advanced = true },
             ],
         });
         // The kit's client: a bare HttpClient went through the system proxy for a loopback server too.

@@ -23,14 +23,14 @@ public sealed class RuntimePlugin : INetPiPlugin
         context.Sessions.DeclareForkReset("agentId", "parentAgentId", "agentInstructions", "runtimeEnvironment");
         context.Services.Register(new SettingsSection
         {
-            Id = "agents", Title = "Runs", Group = "Agents", Order = 10,
+            Id = "agents", Title = "Run limits", Group = "Runs", Order = 10,
             Settings =
             [
                 SettingInfo.Int("agent.maxTurns", "Model calls per run", 200, "A run stops after this many.", 1, 10000),
                 SettingInfo.Int("agents.maxDepth", "Subagent depth", ToolSelection.DefaultMaxDepth, "How deep subagents may nest; the deepest get no orchestration tools.", 1, 10),
                 SettingInfo.Bool("agent.parallelReadOnlyTools", "Run read-only tools in parallel", true, "Several read-only calls of one turn at once."),
                 SettingInfo.Int(ToolResultLimit.Setting, "Longest tool result", ToolResultLimit.Default, "Longer results go to a file: the agent sees their start and end and reads the rest from the file when it needs it.", 1000, null, "chars"),
-                SettingInfo.Int(OutputLimit.Setting, "Output limit for models without one", OutputLimit.Default, null, 256, null, "tokens"),
+                SettingInfo.Int(OutputLimit.Setting, "Output limit for models without one", OutputLimit.Default, null, 256, null, "tokens") with { Advanced = true },
             ],
         });
         // The registry of what runs on shared model resources (a local model's slots) outlives the agents plugin, whose
@@ -133,6 +133,10 @@ public sealed class RuntimePlugin : INetPiPlugin
             Task.FromResult<object?>(SessionToolSwitches.Info(context, runtime, req.Required("sessionId"))),
             "A session's tools with their switches: { sessionId } → { sessionId, started, contextTokens, off, tools: { name, label, category, description, readOnly, pluginId, on }[] }",
             true, session);
+
+        Rpc("tools.exposure", (_, _) => Task.FromResult<object?>(SessionToolSwitches.Exposure(context)),
+            "Every registered tool as the settings see it, without a chat (the settings dialog's Tool exposure): → { deferredSetting: string[]|null (tools.deferred as written), defaultDeferred, tools: { name, label, category, description, pluginId, deferred, byDefinition, infrastructure, disabled }[] }",
+            true);
 
         Rpc("agent.setTools", (req, _) =>
             Task.FromResult<object?>(SessionToolSwitches.Set(context, runtime, req.Required("sessionId"),

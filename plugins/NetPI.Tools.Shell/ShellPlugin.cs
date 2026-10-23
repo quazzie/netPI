@@ -27,15 +27,15 @@ public sealed class ShellPlugin : INetPiPlugin
             [
                 SettingInfo.Int("shell.timeoutSeconds", "Default timeout", 120, null, 1, 1800, "s"),
                 // the placeholders show what is found when the field is empty
-                SettingInfo.FilePath("shell.bashPath", "bash", "Git Bash on Windows, never WSL. Empty: the one found.", ShellLocator.FindBash(null) ?? "none found (install Git for Windows)"),
-                SettingInfo.FilePath("shell.pwshPath", "PowerShell", "Empty: the one found.", ShellLocator.FindPwsh(null, out _) ?? "none found"),
-                SettingInfo.Bool("shell.pwshAlways", "Offer pwsh even when none was found", false),
+                SettingInfo.FilePath("shell.bashPath", "bash", "Git Bash on Windows, never WSL. Empty: the one found.", ShellLocator.FindBash(null) ?? "none found (install Git for Windows)") with { Keywords = ["git bash"] },
+                SettingInfo.FilePath("shell.pwshPath", "PowerShell", "Empty: the one found.", ShellLocator.FindPwsh(null, out _) ?? "none found") with { Keywords = ["powershell"] },
+                SettingInfo.Bool("shell.pwshAlways", "Offer pwsh even when none was found", false) with { Advanced = true },
                 SettingInfo.Number("shell.idleMinutes", "Report a silent command after", 5,
                     "A running command that has printed nothing this long raises process.idle once (it may wait on an editor or a prompt); 0 = off.", 0, 240, "min"),
                 SettingInfo.Bool("shell.trackChanges", "Report the files a command changed", true,
                     "Compares git status before and after a command that may write, and tells the model and the chat which files in its repository changed."),
                 SettingInfo.List("shell.hideEnv", "Hidden environment variables", [],
-                    "Environment variables a bash/pwsh command never sees, on top of NetPI's own secrets (NETPI_TOKEN, the provider and search keys, and every variable a secret setting or an MCP server reads)."),
+                    "Environment variables a bash/pwsh command never sees, on top of NetPI's own secrets (NETPI_TOKEN, the provider and search keys, and every variable a secret setting or an MCP server reads).") with { Keywords = ["secrets", "environment", "env"] },
             ],
         });
         // Its own reload waits while a process it started is alive: the stop below kills them (IReloadGate.HoldOwn)

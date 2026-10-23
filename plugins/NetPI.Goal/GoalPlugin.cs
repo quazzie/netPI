@@ -17,7 +17,7 @@ public sealed class GoalPlugin : INetPiPlugin
         context.Sessions.DeclareForkReset("goal");
         context.Services.Register(new SettingsSection
         {
-            Id = "goals", Title = "Goals", Group = "Agents", Order = 20,
+            Id = "goals", Title = "Goals", Group = "Runs", Order = 20,
             Settings =
             [
                 SettingInfo.Int("goal.maxContinuations", "Automatic runs before a goal pauses", 100, "Resume allows as many again.", 1, 10000),

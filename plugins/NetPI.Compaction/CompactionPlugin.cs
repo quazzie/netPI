@@ -19,15 +19,15 @@ public sealed class CompactionPlugin : INetPiPlugin
             Id = "compaction", Title = "Compaction", Group = "Context", Order = 30,
             Settings =
             [
-                SettingInfo.Bool("compaction.enabled", "Compact long conversations", true),
+                SettingInfo.Bool("compaction.enabled", "Compact long conversations", true) with { Keywords = ["summary", "context window", "compact"] },
                 SettingInfo.Int("compaction.reserveTokens", "Compact when fewer tokens are left", 16384, "Room kept for the next answer.", 0, null, "tokens"),
-                SettingInfo.Number("compaction.thresholdPercent", "Also compact at", 1.0, "Share of the context window; 1 = only by the reserve above.", 0.3, 1.0),
+                SettingInfo.Number("compaction.thresholdPercent", "Also compact at", 1.0, "Share of the context window; 1 = only by the reserve above.", 0.3, 1.0) with { Advanced = true },
                 SettingInfo.Int("compaction.keepRecentTokens", "Recent tokens kept verbatim", 20000, null, 0, null, "tokens"),
                 SettingInfo.ModelRef("compaction.model", "Summarizer model", null, "the session's model"),
                 SettingInfo.Choice("compaction.effort", "Summarizer reasoning", "low", ["none", "low", "medium", "high", "chat"],
                     "Its thinking counts against the summary length. chat: the chat's own effort. An effort the model does not offer means its default."),
-                SettingInfo.Int("compaction.maxSummaryTokens", "Summary length", 13107, "Output budget of a summary, thinking included (80 % of the reserve); a summary cut off at it is tried once more with up to twice the room, then not used.", 256, null, "tokens"),
-                SettingInfo.Int("compaction.defaultContextWindow", "Context window when unknown", 131072, null, 1024, null, "tokens"),
+                SettingInfo.Int("compaction.maxSummaryTokens", "Summary length", 13107, "Output budget of a summary, thinking included (80 % of the reserve); a summary cut off at it is tried once more with up to twice the room, then not used.", 256, null, "tokens") with { Advanced = true },
+                SettingInfo.Int("compaction.defaultContextWindow", "Context window when unknown", 131072, null, 1024, null, "tokens") with { Advanced = true },
             ],
         });
         var service = new CompactionService(context);

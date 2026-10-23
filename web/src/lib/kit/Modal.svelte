@@ -61,8 +61,11 @@
 <script>
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
-  /** Centered dialog with overlay. Esc / overlay click → onclose. Tab stays inside it; the app behind it is inert. */
-  let { title = '', onclose, width = 520, children, footer = undefined, class: cls = '', padded = true } = $props();
+  /**
+   * Centered dialog with overlay. Esc / overlay click → onclose. Tab stays inside it; the app behind it is inert.
+   * onescape: asked first on Esc; returning true means the dialog used it (cleared a search, went back) and stays open.
+   */
+  let { title = '', onclose, onescape = undefined, width = 520, children, footer = undefined, class: cls = '', padded = true } = $props();
   let dialog = $state();
   let overlay = $state();
 
@@ -74,7 +77,7 @@
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        onclose?.();
+        if (!onescape?.()) onclose?.();
       } else if (e.key === 'Tab') {
         trapTab(e, dialog);
       }

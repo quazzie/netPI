@@ -88,9 +88,10 @@ web/
       composer/ Composer, ProfilePicker, ProjectPicker, AgentPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing,
                 QueueChips, GoalStrip, TodoStrip, RunStatus
       modals/  Modals, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
-               Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
-               SettingInfo), SettingsRow, AgentsEditor + AgentDialog, BudgetView, ProfilesEditor + ProfileDialog,
-               PluginSwitches
+               Projects (the projects dialog), Lightbox; the settings pages: SettingsSection, SettingField (one
+               control per SettingInfo), PrefField (a UI preference), SettingsRow, AgentsEditor + AgentDialog,
+               BudgetView, ProfilesEditor + ProfileDialog, ProvidersPanel + ProviderModelsDialog, PluginSwitches,
+               ToolExposureDialog, ListEditor, SkillsDialog
 plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/wwwroot/ui.js
   NetPI.Work/ui/                 WorkTab, AgentPool, RecentAgent, ProcessRow, util.js
   NetPI.Ideas/ui/                IdeasTab, IdeaCard, NewIdea, SectionEditor, model.js
@@ -273,7 +274,7 @@ into locals first, because after the parent clears the modal state or the row re
      also while the agent works (adding a second step cannot shrink an open row into a folded head line), and the
      group the agent is adding to shows its latest step on that line; `open` never folds. Steering input does not
      end a run. The user's choice to expand or collapse is kept per group in `chat.expanded`.
-     Three independent preferences (Settings → Chat): **Step groups** (`prefs.steps`, above), **Thinking**
+     Three independent preferences (Settings → General → Chat): **Step groups** (`prefs.steps`, above), **Thinking**
      (`prefs.expandThinking`: reasoning rows start expanded) and **Tool calls** (`prefs.expandTools`: `closed` (default),
      `errors` (a failed call starts open) or `open`; a row's own toggle in `chat.expanded` always wins).
    - **Fork.** A user message's hover actions have **Fork** (`sessions.fork` up to the message before it): a new chat
@@ -464,19 +465,41 @@ Timings measured by the old mock walkthrough (headless Chromium):
 
 ### Settings dialog
 
-The pages: **General**, **Agents & budget**, **Profiles**, **Models**, **Runs**, **Context**, **Tools**, **Plugins**, then
-**settings.json** and **About**. Host settings are controls rendered from `settings.schema` (the host's and each
-plugin's `SettingsSection`, placed on the page of its group; a plugin's section comes and goes with the plugin).
-`SettingField` renders one control per type (switch, number with unit and range, text, secret with an eye, choice,
-list, model with the searchable list, folder, file); a change saves that key alone (`settings.set`, on change or blur),
-**Reset** removes it so the default applies again, a bad value is refused in place, and a badge says when a change
-applies (`restart`, `new sessions`). Defaults are shown as they are, never as "built in": a text setting with a built-in
-text (the opening of the system prompt, the AGENTS.md guidance) shows that text to edit, and stays unset while it is
-unchanged; a path that is found at runtime (bash, pwsh, ssh, the browser) shows the path found.
+**Pages.** The nav lists the pages under headings (`PAGES` in `lib/settingsModel.js`): **General**; *AI*: **Models**, **Agents &
+budget**, **Profiles**, **Runs**, **Context**; *Capabilities*: **Tools**, **Knowledge**, **Automation**, **Safety**; *System*:
+**Data & backups**, **Plugins**, **Advanced**, **settings.json**, **About** (and **Other**, only while a plugin declares a group
+no page lists). Host settings are controls rendered from `settings.schema`: each `SettingsSection` goes to the page its `group`
+names, and comes and goes with its plugin. A page's nav entry counts its settings that are set. The dialog reopens where it
+was left (`netpi.settingsPlace` in localStorage); `modals.settings` (and a plugin's `ctx.app.openSettings`) takes `true`, a
+page id, or `{ page?, section?, key?, q? }`: a key opens its section and flashes the field, `q` opens a search.
 
-The Agents, Profiles, Models and Tools pages list their items as rows (`SettingsRow`: a title, a line under it, badges);
-each row opens its own dialog over the settings. Esc closes only the top one (popovers such as the model list are on
-the same Esc stack, `escLayer()` in `lib/kit/Modal.svelte`).
+**Sections.** A small section (up to three visible settings, a text area counting twice, no headings) is shown in its page;
+a bigger one is a row (`SettingsRow`: its help, "N changed", "off", and its `….enabled` switch beside the row) that opens it
+**in place**: a breadcrumb (page › section), Back (the arrow, Esc, Alt+←) and the switch in its header. `SettingsSection`
+shows the settings under their headings (`subgroup`), the `advanced` ones behind "More settings (N)" unless set or opened
+on, the others greyed out while the switch is off, and **Reset section** (asks first) when more than one is set. The Budget
+and Backups sections lead with their views.
+
+**Fields.** `SettingField` renders one control per type (switch, number with unit and range, text, secret with an eye, choice,
+list, model with the searchable list, folder, file); a change saves that key alone (`settings.set`, on change or blur),
+**Reset** removes it so the default applies again, a bad value is refused in place, a badge says when a change applies
+(`restart`, `new sessions`), and a dot marks a set key. The help shows its first sentence, **More** the rest. The ⋯ menu copies
+the key, shows it in settings.json (the editor opens with the key selected) and resets it, with the default beside. Defaults
+are shown as they are, never as "built in": a text setting with a built-in text (the opening of the system prompt, the
+AGENTS.md guidance) shows that text to edit, and stays unset while it is unchanged; a path that is found at runtime (bash,
+pwsh, ssh, the browser) shows the path found.
+
+**Search.** The box above the nav (Ctrl+F in the dialog) searches an index (`lib/settingsSearch.js`) of the pages, sections,
+settings (label, key, keywords, section, help, options), the UI preferences, and the agents, profiles, providers and plugins.
+Every word must match; a label word ranks above a keyword, a key, the section, the page and the help, and a typed key
+(`shell.timeoutSeconds`) comes first. Results are the live controls, grouped under a breadcrumb that opens their place;
+pages, sections and items are links above them (an agent opens its own dialog). **Changed** lists every set key and every
+preference that differs from its default, **Restart** the settings that apply after a restart; both combine with the words.
+Nothing found offers the text in settings.json. Esc clears the search, then leaves a section, then closes the dialog. The
+command palette lists the settings by label while something is typed, and `/settings <words>` opens the search.
+
+**Dialogs over the settings** (Esc closes only the top one; popovers such as the model list and the ⋯ menu are on the same
+Esc stack, `escLayer()` in `lib/kit/Modal.svelte`):
 
 - **Agents & budget:** `AgentsEditor` has one row per agent (`agents.<id>`: id, model, the note, badges for off / not
   loaded / busy, instances, price); `AgentDialog` edits one: its name (a new name moves it), on/off (`input.np-switch`,
@@ -492,19 +515,32 @@ the same Esc stack, `escLayer()` in `lib/kit/Modal.svelte`).
   (`profiles.autoProfile`; the UI starts of idea work pass `newSession({ auto: true })`, which calls `profiles.applyAuto`) and one row per profile (its name,
   the first line of its instructions, its tools); `ProfileDialog` edits one: the name, the instructions that replace the
   opening of the system prompt (they start as the current opening; unchanged they stay unset), whether new chats
-  start with it, and the tools as checkboxes by category (with all on / all off per category).
-- **Models** and **Tools:** one row per provider or tool section (its help, "N changed", "off"), each opening
-  a dialog with that section's settings. The Projects dialog sets a project's default (`projects.update { meta: { profile } }`).
+  start with it, and the tools as checkboxes by category (with all on / all off per category). The Projects dialog sets a
+  project's default (`projects.update { meta: { profile } }`).
+- **Models:** `ProvidersPanel` lists the providers; a provider's dialog has its kind's settings, **Models…**
+  (`ProviderModelsDialog`: per model the name, hidden, context window, output limit and, for a local kind, runs at once,
+  saved as the provider's whole `models` map because a model id may hold dots) and Remove.
+- **Tools → Tool exposure** (`ToolExposureDialog`, from `tools.exposure`): every tool by plugin with **Off**
+  (`tools.disabled`, keeping names no loaded plugin registers) and **Deferred** (`tools.deferred`, written as `"*"` plus
+  exceptions); a tool deferred by its MCP server and tool_search/call_tool cannot be switched there.
+- **Lists:** a list setting's **Edit…** opens `ListEditor` (one entry per row, add, remove, move, an address/CIDR check for
+  `webhooks.allowFrom` and `phone.allowFrom`; a list equal to the default removes the key); `skills.disabled` opens
+  `SkillsDialog` instead (the skills `skills.list` finds for every project and the open chat, as switches).
 - **Plugins:** `PluginSwitches` lists every plugin with a switch (`plugins.setEnabled`, confirmed) and the
-  tools it brings, and the names in `tools.disabled` when there are any (× shows one again). Single tools are switched
-  per chat (the composer's tools button).
+  tools it brings, and the names in `tools.disabled` when there are any (× shows one again).
+- **Advanced → Unknown keys:** the keys in settings.json that no loaded section declares, outside the roots edited
+  elsewhere (agents, profiles, providers, MCP servers, `ui`, the plugin and tool lists, `storage`): a typo, a leftover
+  (`agents.queueMax`), or a switched-off plugin's setting; Show opens it in settings.json, Remove deletes it (two-step).
 
-**General** holds the UI preferences (`prefs` in `lib/state/ui.svelte.js`, kept in localStorage and the host's
-`ui.state`): theme, send key, Steps (expanded / fold when done / folded), expand thinking, model turn details, chat
-width (normal 900px, wide 1200px, full; the `--chat-max` token), zoom and spellcheck in the message box. Zoom: in the
-desktop app the buttons call `desktop.zoom` and the shell remembers the factor (Ctrl + wheel and Ctrl + / − / 0 too);
-in a browser its own per-site zoom does that. **settings.json** edits the host settings as JSON and reloads when the
-file changes elsewhere while it has no unsaved edits. Every dialog reads the document through one store (`lib/state/settingsDoc.svelte.js`: one `settings.get`, refetched when `app.settingsVersion` moves).
+**General** holds the UI preferences (`prefs` in `lib/state/ui.svelte.js`, kept in localStorage and the host's `ui.state`),
+declared in `lib/uiPrefs.js` (which also gives `prefs` their defaults) and rendered by `PrefField`: *Appearance* (theme, chat
+width — normal 900px, wide 1200px, full; the `--chat-max` token — and zoom), *Chat* (send key, Steps: expanded / fold when done
+/ folded, thinking, tool calls, model turn details, spellcheck), *Notifications* (desktop app), then the default working
+folder. Zoom: in the desktop app the buttons call `desktop.zoom` and the shell remembers the factor (Ctrl + wheel and Ctrl +
+/ − / 0 too); in a browser its own per-site zoom does that. **settings.json** edits the host settings as JSON and reloads when
+the file changes elsewhere while it has no unsaved edits. Every dialog reads the document through one store
+(`lib/state/settingsDoc.svelte.js`: one `settings.get`, refetched when `app.settingsVersion` moves). Below 700px the nav
+folds into a page picker under the search.
 
 ## Plugin tabs
 

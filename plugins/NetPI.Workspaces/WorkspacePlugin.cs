@@ -49,7 +49,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
 
         context.Services.Register(new SettingsSection
         {
-            Id = "workspaces", Title = "Workspaces", Group = "Tools", Order = 15,
+            Id = "workspaces", Title = "Workspaces", Group = "Safety", Order = 15,
             Settings =
             [
                 SettingInfo.Bool(WorkspaceProvisioner.DefaultIsolationSetting, "Give each writing worker its own worktree", true,

@@ -547,15 +547,20 @@ public static class ServerTests
                          "settings.get", "settings.set", "settings.replace", "settings.schema", "fs.dirs", "tools.list", "rpc.list", "events.recent", "events.flush", "logs.recent" })
                 Check.True(rpcs.Contains(m), "rpc " + m);
 
-            // settings.schema: the host's section first, plugins' sections while they are registered
+            // settings.schema: by page (the group) in the dialog's order, then order; plugins' sections while they are registered
             static bool Has(JsonArray schema, string id) => schema.Any(s => s!["id"]!.GetValue<string>() == id);
             var schema = (await Call("settings.schema"))!.AsArray();
-            Check.Equal("core", schema[0]!["id"]!.GetValue<string>());
-            var model = schema[0]!["settings"]!.AsArray().Single(s => s!["key"]!.GetValue<string>() == "defaultModel")!;
+            Check.Equal("defaults", schema[0]!["id"]!.GetValue<string>(), "General comes first");
+            Check.Equal("core", schema[^1]!["id"]!.GetValue<string>(), "the host's own process settings are on Advanced, the last page");
+            var model = schema.Single(s => s!["id"]!.GetValue<string>() == "modelList")!["settings"]!.AsArray().Single(s => s!["key"]!.GetValue<string>() == "defaultModel")!;
             Check.Equal("model", model["type"]!.GetValue<string>());
+            var port = schema[^1]!["settings"]!.AsArray().Single(s => s!["key"]!.GetValue<string>() == "server.port")!;
+            Check.Equal("Server", port["subgroup"]!.GetValue<string>(), "a setting's heading inside its section");
+            Check.True(port["keywords"]!.AsArray().Any(k => k!.GetValue<string>() == "network"), "and the words search finds it by");
+            Check.Equal(null, port["advanced"], "advanced is left out while false");
             using (server.Services.Register(new SettingsSection
                    {
-                       Id = "sample", Title = "Sample", Group = "Tools", Settings = [SettingInfo.Int("sample.count", "Count", 3, null, 1, 9, "items")],
+                       Id = "sample", Title = "Sample", Group = "Tools", Settings = [SettingInfo.Int("sample.count", "Count", 3, null, 1, 9, "items") with { Advanced = true }],
                    }))
             {
                 schema = (await Call("settings.schema"))!.AsArray();
@@ -563,6 +568,7 @@ public static class ServerTests
                 Check.Equal("int", sample["type"]!.GetValue<string>());
                 Check.Equal(3, sample["default"]!.GetValue<int>());
                 Check.Equal("items", sample["unit"]!.GetValue<string>());
+                Check.Equal(true, sample["advanced"]!.GetValue<bool>());
             }
             Check.False(Has((await Call("settings.schema"))!.AsArray(), "sample"), "gone with its registration");
 

@@ -13,7 +13,7 @@ public sealed class LoopsPlugin : INetPiPlugin
     {
         context.Services.Register(new SettingsSection
         {
-            Id = "loops", Title = "Loops", Group = "Agents", Order = 32,
+            Id = "loops", Title = "Loops", Group = "Runs", Order = 32,
             Settings =
             [
                 SettingInfo.Int("loops.repeats", "Calls before a hint", 3, "The same call with the same result this many times (counting the one about to run).", 2, 10),

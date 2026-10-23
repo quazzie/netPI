@@ -18,7 +18,7 @@ public sealed class CodeModePlugin : INetPiPlugin
         context.Tools.Register(new CodeModeTool(context));
         context.Services.Register(new SettingsSection
         {
-            Id = "codemode", Title = "Code mode", Group = "Agents", Order = 40,
+            Id = "codemode", Title = "Code mode", Group = "Runs", Order = 40,
             Settings =
             [
                 SettingInfo.Int(CodeModeTool.TimeoutSetting, "Script time limit", CodeModeTool.DefaultTimeoutSeconds,
