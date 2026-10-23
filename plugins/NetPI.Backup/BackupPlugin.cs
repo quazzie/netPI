@@ -107,14 +107,24 @@ public sealed class BackupPlugin : INetPiPlugin
         catch { return; }   // the platform does not say how much is free: the copy is allowed
     }
 
-    /// <summary>A kill mid-backup leaves a DB-sized .pending-* behind: it is swept at startup.</summary>
+    /// <summary>How old a .pending-* must be before it is a leftover: a replaced instance's backup may still be copying while
+    /// the new instance starts (the old one's StopAsync arrives after the new one is up).</summary>
+    internal static readonly TimeSpan PendingGrace = TimeSpan.FromHours(2);
+
+    /// <summary>A kill mid-backup leaves a DB-sized .pending-* behind: it is swept at startup, when it is old enough not to be a running backup's.</summary>
     internal static void SweepPending(string home)
     {
         var root = Path.Combine(home, "backups");
         if (!Directory.Exists(root)) return;
         foreach (var dir in Directory.EnumerateDirectories(root))
         {
-            if (!Path.GetFileName(dir).StartsWith(".pending-", StringComparison.Ordinal)) continue;
+            var name = Path.GetFileName(dir);
+            if (!name.StartsWith(".pending-", StringComparison.Ordinal)) continue;
+            // its age is the time in its name (yyyyMMdd-HHmmss, UTC); a name without one falls back to the folder's creation time
+            var created = name.Length >= 24 && DateTime.TryParseExact(name[9..24], "yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var stamp)
+                ? stamp : Directory.GetCreationTimeUtc(dir);
+            if (DateTime.UtcNow - created < PendingGrace) continue;
             try { Directory.Delete(dir, true); }
             catch { /* something else holds it: it stays */ }
         }
@@ -196,8 +206,16 @@ public sealed class BackupPlugin : INetPiPlugin
                 // it is not interrupted in the middle of one.
                 if (Directory.EnumerateFileSystemEntries(path).Select(p => Path.GetFileName(p))
                     .Any(f => !File.Exists(Path.Combine(path, f)) || (!expected.Contains(f) && !f.StartsWith(IdeaImagesPrefix, StringComparison.Ordinal)))) continue;
-                foreach (var file in Directory.EnumerateFiles(path)) File.Delete(file);
-                Directory.Delete(path);
+                // The new snapshot is on disk and verified: an old one that is locked or already gone is retention's loss, not the backup's.
+                try
+                {
+                    foreach (var file in Directory.EnumerateFiles(path)) File.Delete(file);
+                    Directory.Delete(path);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    ctx.Logger.LogWarning(ex, "Backup {Snapshot} could not be removed by retention; the new backup is kept", old["id"]!.GetValue<string>());
+                }
             }
             manifest["path"] = destination;
             return manifest;
@@ -218,7 +236,8 @@ public sealed class BackupPlugin : INetPiPlugin
     /// <summary>The one file a snapshot has that is not the store's: the settings, which the store does not hold.</summary>
     private const string SettingsFile = "settings.json";
 
-    /// <summary>The folder under the home the idea images live in — the only plugin-owned files a snapshot carries.</summary>
+    /// <summary>The folder under the home the idea images live in — the only plugin-owned files a snapshot carries. It is
+    /// <c>IdeaImages.Dir</c> in the Ideas plugin (no shared assembly): a rename needs both, and BackupTests fails if they drift.</summary>
     private const string IdeaImagesDir = "idea-images";
 
     /// <summary>How a copied image is named inside a snapshot: a snapshot holds flat file names, so the folder is a prefix.</summary>

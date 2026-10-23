@@ -175,10 +175,36 @@ public static class BackupTests
             Directory.CreateDirectory(Path.Combine(root, ".pending-20200101-000000-aaaaaaaa"));
             Directory.CreateDirectory(Path.Combine(root, ".pending-20200101-000001-bbbbbbbb"));
             Directory.CreateDirectory(Path.Combine(root, "20200101-000002-keep"));
+            // a backup that is copying right now (another instance's, while a hot reload starts this one) is not a leftover
+            var running = Path.Combine(root, ".pending-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-cccccccc");
+            Directory.CreateDirectory(running);
             BackupPlugin.SweepPending(home);
+            Check.True(Directory.Exists(running), "a fresh pending one belongs to a running backup");
             Check.False(Directory.Exists(Path.Combine(root, ".pending-20200101-000000-aaaaaaaa")), "the stale pending one is gone");
             Check.False(Directory.Exists(Path.Combine(root, ".pending-20200101-000001-bbbbbbbb")));
             Check.True(Directory.Exists(Path.Combine(root, "20200101-000002-keep")), "a real snapshot is untouched");
+        });
+
+        r.Add("backup: an old snapshot retention cannot remove does not fail the backup that is already on disk", async () =>
+        {
+            var home = T.TempDir("backup-retention");
+            await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
+            var scope = new PluginScope("netpi.backup", kernel.Log);
+            var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
+            kernel.Settings.Set("backup.enabled", JsonValue.Create(false));
+            kernel.Settings.Set("backup.keepCount", JsonValue.Create(1));
+            var plugin = new BackupPlugin();
+            await plugin.StartAsync(ctx, default);
+            try
+            {
+                var old = await plugin.CreateAsync(ctx, true, default);
+                // held open without sharing: removing it fails on Windows (elsewhere the removal simply works, and so does the backup)
+                using var held = new FileStream(Path.Combine(old["path"]!.GetValue<string>(), "settings.json"), FileMode.Open, FileAccess.Read, FileShare.None);
+                var newest = await plugin.CreateAsync(ctx, true, default);
+                BackupPlugin.Verify(home, newest["id"]!.GetValue<string>());
+                Check.True(Directory.Exists(newest["path"]!.GetValue<string>()), "the new backup is kept");
+            }
+            finally { await plugin.StopAsync(default); scope.DisposeAll(); }
         });
 
         r.Add("backup: a snapshot that fails to verify is deleted, a verified one stays", () =>
