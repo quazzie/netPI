@@ -763,6 +763,15 @@ public static class ContextTests
         var changes = (JsonArray)ts["changes"]!;
         Check.Equal(1, changes.Count, "the change is found again");
         Check.Equal(changeSeq, (long)changes[0]!["seq"]!, "the same one, from before the filler");
+
+        // a second change and another page of filler: the changes of two pages come back oldest first
+        using (h.Tools.Register(new FakeTool("newer_probe", Ok), 0, "netpi.tools.web")) await Turn(h, s.Id, "another tool?");
+        for (var i = 0; i < 520; i++) h.Sessions.AppendMessage(s.Id, ChatMessage.NoticeText($"more filler {i}", "filler"));
+        var both = (JsonArray)((JsonObject)(await h.Rpc.CallAsync("context.toolsets", new { sessionId = s.Id }))!)["changes"]!;
+        Check.True(both.Count >= 2, "the change on the older page and the newer one");
+        var seqs = both.Select(c => (long)c!["seq"]!).ToList();
+        Check.Equal(changeSeq, seqs[0], "the oldest first");
+        Check.True(seqs.SequenceEqual(seqs.Order()), "ascending across the pages: " + string.Join(",", seqs));
     }
 
     // context.toolsets answers "what changed in my environment, when and why" from what the context plugin already keeps.
