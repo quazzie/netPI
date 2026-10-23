@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
 using NetPI.Providers.Kit;
 
 namespace NetPI.Decide;
@@ -24,7 +25,7 @@ public sealed class DecidePlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Str("decide.baseUrl", "Server URL", "", "Empty: the AiProxy/AiGateway server (the first AiProxy provider).") with { Subgroup = "Server" },
-                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070).") with { Subgroup = "Server" },
+                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070). Several, comma-separated (for loadouts that change the model ids): the first one loaded is used.") with { Subgroup = "Server", Keywords = ["fallback", "loadout"] },
                 SettingInfo.Int("decide.maxItems", "Most items per call", 500, null, 1, 5000) with { Subgroup = "Batches" },
                 SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16) with { Subgroup = "Batches" },
                 SettingInfo.Str("decide.bulkModel", "Bulk decision model", "", "Explicit model for multi-item work; empty keeps the caller's choice. Does not load models.") with { Subgroup = "Batches" },
@@ -108,7 +109,7 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
     /// <summary>The same call with the server's usage kept, for a caller that reports what a decision cost.</summary>
     public async Task<DecisionAnswer> EvaluateAnswerAsync(DecisionRequest request, CancellationToken ct)
     {
-        var id = Model(request.Model);
+        var id = await ResolveAsync(request.Model, ct).ConfigureAwait(false);
         var model = await ctx.Models.FindAsync(id, ct).ConfigureAwait(false);
         var wireModel = model?.Id ?? id;
         // A short check on a local model goes on NInfer's decision lane: no agent slot, and no serializing behind the
@@ -151,7 +152,34 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
         }
         finally { slot?.Dispose(); if (reuse) _reuse.Release(); }
     }
-    public string Model(string? model) => string.IsNullOrWhiteSpace(model) ? ctx.Settings.Get("decide.model", "qwen3.8-27b") ?? "qwen3.8-27b" : model.Trim();
+    /// <summary>The model asked for, else <c>decide.model</c>; of a list (<c>"qwen3.8-27b, kev-9b"</c>) the first one.</summary>
+    public string Model(string? model) => Candidates(model)[0];
+
+    /// <summary>
+    /// The model asked for, else <c>decide.model</c> (the second opinion passes <c>guardrails.secondOpinionModel</c>). Either may
+    /// name several, comma-separated, because a loadout switch changes which one the server has: the first the model list
+    /// knows and has loaded (or reachable) is used, else the first named (the server's own error then says why).
+    /// </summary>
+    public async Task<string> ResolveAsync(string? model, CancellationToken ct)
+    {
+        var candidates = Candidates(model);
+        if (candidates.Length == 1) return candidates[0];
+        foreach (var c in candidates)
+        {
+            ModelInfo? info = null;
+            try { info = await ctx.Models.FindAsync(c, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogDebug(ex, "Decide: looking up {Model} failed", c); }
+            if (info is { Status: null or "loaded" or "available" }) return c;
+        }
+        return candidates[0];
+    }
+
+    private string[] Candidates(string? model)
+    {
+        var text = string.IsNullOrWhiteSpace(model) ? ctx.Settings.Get("decide.model", "qwen3.8-27b") ?? "qwen3.8-27b" : model;
+        var list = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return list.Length > 0 ? list : ["qwen3.8-27b"];
+    }
 
     public string Root()
     {

@@ -208,6 +208,23 @@ public static class DecideTests
             Check.Contains(res.Content, "kev-9b: HTTP 500 http_500: model name=kev-9b failed to load");
         });
 
+        r.Add("decide: of several models (a loadout changes the ids) the first loaded one is used, else the first named", async () =>
+        {
+            var seen = new List<JsonObject>();
+            await using var kev = await FakeKev(seen);
+            var env = new Env();
+            await env.StartAsync(kev.Url);
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "old-27b", IsLocal = true, Status = "unloaded" });
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "new-35b", IsLocal = true, Status = "loaded" });
+            var service = env.Ctx.Services.Get<IDecisionService>()!;
+            var body = new JsonObject { ["state"] = "ERR", ["questions"] = new JsonObject { ["e"] = new JsonObject { ["type"] = "yes_no", ["question"] = "Is this an error?" } } };
+            await service.EvaluateAsync(new DecisionRequest { Model = "old-27b, new-35b", Body = body }, CancellationToken.None);
+            Check.Equal("new-35b", seen[^1]["model"]!.Str(), "the loaded one");
+            env.Ctx.SettingsFake.Set("decide.model", JsonValue.Create("missing-9b, old-27b"));
+            await service.EvaluateAsync(new DecisionRequest { Body = body }, CancellationToken.None);
+            Check.Equal("missing-9b", seen[^1]["model"]!.Str(), "none loaded: the first named, and the server says why");
+        });
+
         r.Add("decide: the RPC decide.ask returns the raw answers", async () =>
         {
             var seen = new List<JsonObject>();

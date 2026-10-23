@@ -47,7 +47,7 @@ public sealed class GuardrailsPlugin : INetPiPlugin
                 SettingInfo.Bool("guardrails.secondOpinion", "Second opinion before asking", false,
                     "Before an ask: rule asks you about a shell command, a decision model reads it (the Decide plugin, through AiGateway); a command it finds confidently harmless runs without asking. Blocking rules and write/edit are never relaxed; without an answer you are asked.") with { Subgroup = "Asking you" },
                 SettingInfo.Str("guardrails.secondOpinionModel", "Second-opinion model", SecondOpinion.DefaultModel,
-                    "qwen3.8-27b (the NInfer chat model, about 0.3 s) was measured on 852 real commands; kev-9b calls too many local commands remote.") with { Subgroup = "Asking you" },
+                    "qwen3.8-27b (the NInfer chat model, about 0.3 s) was measured on 852 real commands; kev-9b calls too many local commands remote. Several, comma-separated (loadouts change the model ids): the first one loaded is used.") with { Subgroup = "Asking you", Keywords = ["fallback", "loadout"] },
                 SettingInfo.Number("guardrails.secondOpinionThreshold", "Second-opinion threshold", SecondOpinion.DefaultThreshold,
                     "A command runs without asking only when p(destructive), p(stops a process) and p(changes a remote) are each below it. p(read-only) is asked and shown, but not required: the model underrates builds and test runs as read-only (dotnet test 0.05-0.4), so a read-only bar cleared none of 50 hand-labelled hard commands, while the risk questions alone at 0.2 cleared 20 of their 39 read-only ones and none of the risky ones.", 0.01, 0.5) with { Subgroup = "Asking you", Advanced = true },
             ],
