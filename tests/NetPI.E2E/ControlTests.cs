@@ -199,6 +199,8 @@ public static class ControlTests
             var fork = await env.Rpc("sessions.fork", new { id = sid });
             var forkMeta = fork.TryGetProperty("meta", out var fm) && fm.ValueKind == System.Text.Json.JsonValueKind.Object ? fm : default;
             Check.True(forkMeta.ValueKind == default || (!forkMeta.TryGetProperty("workspaceId", out _) && !forkMeta.TryGetProperty("cwd", out _)), "the fork carries neither the workspace nor its folder");
+            var forkRun = await env.Run(fork.S("id")!, "and the fork? [s:where file=where-fork.txt]");
+            Check.Contains(forkRun.FinalText, "PWD=" + Env.BashPath(projectDir), "the fork runs in the project's folder");
 
             // Unbinding puts the session back in its project's folder.
             var unbound = await env.Rpc("sessions.setWorkspace", new { id = sid, workspaceId = (string?)null });

@@ -468,7 +468,7 @@ public static class AdvancedTests
             var m2 = c2.Mark();
             await env.Run(b, "for b [s:echo]");
             await env.Run(a, "for a [s:echo]");
-            await Task.Delay(200);
+            await Wait.Until(() => c2.Since(m2).Any(e => e.Type == "stream.delta" && e.Sid == a), "session a's stream events reach the subscribed client");
             var evs = c2.Since(m2);
             Check.False(evs.Any(e => e.Sid == b), "no scoped events of session b");
             Check.True(evs.Any(e => e.Type == "stream.delta" && e.Sid == a), "stream events of session a");
