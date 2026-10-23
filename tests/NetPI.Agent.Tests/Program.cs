@@ -29,6 +29,7 @@ SkillsTests.Register(runner);
 AskTests.Register(runner);
 PlanTests.Register(runner);
 GuardrailsTests.Register(runner);
+AutonomyTests.Register(runner);
 LoopsTests.Register(runner);
 RpcReadOnlyTests.Register(runner);
 CoordinatorTests.Register(runner);

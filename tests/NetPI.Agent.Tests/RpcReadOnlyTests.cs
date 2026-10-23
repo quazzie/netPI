@@ -1,6 +1,7 @@
 using NetPI.Agents;
 using NetPI.AgentsMd;
 using NetPI.Ask;
+using NetPI.Autonomy;
 using NetPI.Context;
 using NetPI.Goal;
 using NetPI.Guardrails;
@@ -39,6 +40,7 @@ public static class RpcReadOnlyTests
             await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
             var ctx = await h.StartPluginAsync(new RuntimePlugin());
             await h.StartPluginAsync(new GuardrailsPlugin());
+            await h.StartPluginAsync(new AutonomyPlugin());
             await h.StartPluginAsync(new ContextPlugin());
             await h.StartPluginAsync(new AgentsMdPlugin());
             await h.StartPluginAsync(new ProfilesPlugin());
@@ -56,6 +58,7 @@ public static class RpcReadOnlyTests
             {
                 ["netpi.runtime"] = (["agent.queue", "runs.list", "agent.get", "agent.stream", "agent.tools", "agent.waits"], ["agent.send", "agent.abort", "agent.dequeue", "agent.promote", "agent.setTools"]),
                 ["netpi.guardrails"] = (["guard.pending", "guard.outcomes"], ["guard.answer"]),
+                ["netpi.autonomy"] = (["autonomy.state", "autonomy.journal", "autonomy.refusals", "autonomy.grants"], ["autonomy.grant", "autonomy.revoke", "autonomy.pause", "autonomy.undo"]),
                 ["netpi.context"] = (["context.preview", "context.prompts", "context.toolsets"], ["context.reset"]),
                 ["netpi.agentsmd"] = (["agentsmd.list"], []),
                 ["netpi.profiles"] = (["profiles.list"], ["profiles.apply", "profiles.applyAuto"]),
