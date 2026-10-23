@@ -42,7 +42,7 @@ public sealed class SchedulesPlugin : INetPiPlugin
     {
         ctx.Services.Register(new SettingsSection
         {
-            Id = "schedules", Title = "Schedules", Group = "Agents", Order = 60,
+            Id = "schedules", Title = "Schedules", Group = "Automation", Order = 60,
             Help = "Prompts that start on their own as a new chat: once, every N minutes, or daily at a time. The agent's schedules tool and the Schedules tab manage them.",
             Settings =
             [

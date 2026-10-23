@@ -38,7 +38,7 @@ dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll [name-filter…] 
 
 Every request carries the active tools (the highest-priority registration per name), sorted by name, minus:
 
-- the tools of a disabled plugin (Settings → Plugins), and names in `tools.disabled` (settings.json): every chat;
+- the tools of a disabled plugin (Settings → Plugins), and names in `tools.disabled` (Settings → Tools → Tool exposure): every chat;
 - the tools switched off for the chat (the composer's tools button; `agent.setTools`, session `meta.toolsOff`; a profile
   sets them when it is applied). Before the first message that is free. In a started chat the change applies from the next model call: tool definitions lead the
   request, so the model re-reads the conversation once (slower on a local model, a full-price read on a paid one), and a

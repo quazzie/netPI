@@ -20,19 +20,19 @@ public sealed class DecidePlugin : INetPiPlugin
     {
         context.Services.Register(new SettingsSection
         {
-            Id = "decide", Title = "Decisions", Group = "Tools", Order = 45,
+            Id = "decide", Title = "Decisions", Group = "Knowledge", Order = 50,
             Settings =
             [
-                SettingInfo.Str("decide.baseUrl", "Server URL", "", "Empty: the AiProxy/AiGateway server (the first AiProxy provider)."),
-                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070)."),
-                SettingInfo.Int("decide.maxItems", "Most items per call", 500, null, 1, 5000),
-                SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16),
-                SettingInfo.Str("decide.bulkModel", "Bulk decision model", "", "Explicit model for multi-item work; empty keeps the caller's choice. Does not load models."),
-                SettingInfo.Int("decide.bulkThreshold", "Items before bulk routing", 8, null, 2, 5000),
+                SettingInfo.Str("decide.baseUrl", "Server URL", "", "Empty: the AiProxy/AiGateway server (the first AiProxy provider).") with { Subgroup = "Server" },
+                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070).") with { Subgroup = "Server" },
+                SettingInfo.Int("decide.maxItems", "Most items per call", 500, null, 1, 5000) with { Subgroup = "Batches" },
+                SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16) with { Subgroup = "Batches" },
+                SettingInfo.Str("decide.bulkModel", "Bulk decision model", "", "Explicit model for multi-item work; empty keeps the caller's choice. Does not load models.") with { Subgroup = "Batches" },
+                SettingInfo.Int("decide.bulkThreshold", "Items before bulk routing", 8, null, 2, 5000) with { Subgroup = "Batches" },
                 SettingInfo.Number("decide.groupSimilarity", "Share answers between near-identical items", DecideTool.DefaultGroupSimilarity,
-                    "With embeddings, decide items at or above this cosine share one decision (a log line that differs only in a timestamp). Identical items always do. 0: only identical ones. Kept high: lines that differ in an error code must stay apart.", 0, 1),
+                    "With embeddings, decide items at or above this cosine share one decision (a log line that differs only in a timestamp). Identical items always do. 0: only identical ones. Kept high: lines that differ in an error code must stay apart.", 0, 1) with { Subgroup = "Batches", Advanced = true },
                 SettingInfo.Bool("decide.lane", "Short checks on the decision lane", true,
-                    "A single short check (the guard's second opinion, the idea checks, loop hints) on a local model does not take an agent slot: NInfer answers decisions on its own lane ahead of agent work. Off: every decision waits for a slot like a chat. The decide tool always takes slots."),
+                    "A single short check (the guard's second opinion, the idea checks, loop hints) on a local model does not take an agent slot: NInfer answers decisions on its own lane ahead of agent work. Off: every decision waits for a slot like a chat. The decide tool always takes slots.") with { Subgroup = "Batches", Advanced = true },
             ],
         });
         // The kit's client: a bare HttpClient sent the loopback AiGateway through the system proxy.

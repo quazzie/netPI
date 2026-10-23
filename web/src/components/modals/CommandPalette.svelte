@@ -7,12 +7,20 @@
   import { tabs, openPanelTab, resetTabPlacement } from '../../lib/state/tabs.svelte.js';
   import { allCommands } from '../../lib/commands.js';
   import { scrollIntoView } from '../../lib/actions.js';
+  import { rpc } from '../../lib/rpc.svelte.js';
+  import { pagesOf } from '../../lib/settingsModel.js';
+  import { UI_PREFS } from '../../lib/uiPrefs.js';
 
   let { onclose } = $props();
   let q = $state('');
   let index = $state(0);
   let inputEl = $state();
   let el = $state();
+  // the settings, as entries once something is typed: "Port" opens the dialog on that field
+  let schema = $state.raw([]);
+  rpc('settings.schema')
+    .then((x) => (schema = x ?? []))
+    .catch(() => {});
 
   function entries() {
     const out = [];
@@ -54,6 +62,14 @@
           else c.run('', { sessionId: app.activeId });
         },
       });
+    if (q.trim()) {
+      const layout = pagesOf(schema);
+      for (const p of layout.pages)
+        for (const sec of p.sections)
+          for (const st of sec.settings ?? [])
+            out.push({ group: 'Settings', label: st.label ?? st.key, icon: p.icon, hint: `${p.title} › ${sec.title}`, run: () => (modals.settings = { key: st.key }) });
+      for (const pr of UI_PREFS) out.push({ group: 'Settings', label: pr.label, icon: 'sliders', hint: 'General', run: () => (modals.settings = { key: pr.key }) });
+    }
     return out;
   }
 

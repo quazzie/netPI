@@ -33,7 +33,7 @@ public sealed class PlanPlugin : INetPiPlugin
         context.Services.Register<IModelMiddleware>(new PlanToolPolicy(context));
         context.Services.Register(new SettingsSection
         {
-            Id = "plan", Title = "Plan mode", Group = "Agents", Order = 34,
+            Id = "plan", Title = "Plan mode", Group = "Runs", Order = 34,
             Settings =
             [
                 SettingInfo.List("plan.mcpAllow", "MCP tools allowed in plan mode", [],

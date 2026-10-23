@@ -20,7 +20,12 @@ writes `<home>/server.json` (its URL and this run's token) for tools that inspec
 
 The ⚙ settings dialog edits the same file. Most settings are real controls there: the host and each plugin declare
 theirs (`settings.schema`, see `docs/PLUGINS.md`), and a control saves one key (`settings.set`; **Reset** removes the key
-so the default applies again). The agents and the budget have their own page; the `settings.json` page edits the whole file.
+so the default applies again). Its pages: **General** (the look of the app and the chat, the default working folder),
+**Models**, **Agents & budget**, **Profiles**, **Runs**, **Context**, **Tools**, **Knowledge** (embeddings, memory, code
+search, ideas, decisions), **Automation** (schedules, webhooks, the phone), **Safety** (guardrails, workspaces), **Data &
+backups**, **Plugins**, **Advanced** (the port, the log, the SQLite library, and the keys in this file that nothing
+declares) and **settings.json**, which edits the whole file. The search above the pages finds any setting by its label,
+its key or a keyword, and **Changed** lists every key that is set ([UI.md](UI.md), "Settings dialog").
 
 ## Core
 
@@ -34,9 +39,9 @@ so the default applies again). The agents and the budget have their own page; th
 | `plugins.disabled` | `[]` | plugin ids not to load |
 | `plugins.enabled` | `[]` | turn on plugins whose `plugin.json` says `enabled: false` |
 | `plugins.dirs` | `[]` | extra plugin folders (besides `<app>/plugins` and `~/.netpi/plugins`) |
-| `plugins.quiet` | `false` | while on, a plugin reload (a `/reload`, a build that replaced a plugin's files) is recorded and **not applied**: the running version keeps serving, so nothing swaps under a running chat and no in-memory plugin state is lost. Switching it off applies everything that piled up, in plugin start order. `diag.overview` lists what is waiting in `deferred`, and `plugins.reloaded` says `kind: "deferred", reason: "quiet"`. The one thing a git worktree cannot do: the running app is one process that every session shares. A switch in **Settings → General**. Without it a reload still never happens under an agent run (the reload gate, docs/PLUGINS.md) |
-| `tools.deferred` | the default list | built-in tools kept out of requests until a chat uses them (called by name or found with `tool_search`); absent: `ToolExposure.DefaultDeferred` (all but the file and shell tools, `codemode`, `tool_search`, `ask_user`), `[]`: every built-in tool declared; `"*"` (every tool) and `"!name"` (an exception) work too. A profile can have its own (`profiles.<id>.toolsDeferred`). Only in this file (docs/TOOLS.md, "Deferred tools") |
-| `tools.disabled` | `[]` | tool names hidden from every chat (e.g. `["pwsh"]`); only in this file: the dialog switches whole plugins, and each chat switches its own tools (the composer's tools button, `meta.toolsOff`) |
+| `plugins.quiet` | `false` | while on, a plugin reload (a `/reload`, a build that replaced a plugin's files) is recorded and **not applied**: the running version keeps serving, so nothing swaps under a running chat and no in-memory plugin state is lost. Switching it off applies everything that piled up, in plugin start order. `diag.overview` lists what is waiting in `deferred`, and `plugins.reloaded` says `kind: "deferred", reason: "quiet"`. The one thing a git worktree cannot do: the running app is one process that every session shares. A switch in **Settings → Advanced**. Without it a reload still never happens under an agent run (the reload gate, docs/PLUGINS.md) |
+| `tools.deferred` | the default list | built-in tools kept out of requests until a chat uses them (called by name or found with `tool_search`); absent: `ToolExposure.DefaultDeferred` (all but the file and shell tools, `codemode`, `tool_search`, `ask_user`), `[]`: every built-in tool declared; `"*"` (every tool) and `"!name"` (an exception) work too. A profile can have its own (`profiles.<id>.toolsDeferred`). **Settings → Tools → Tool exposure** writes it as `"*"` plus exceptions, so a tool that comes later is deferred as with the default (docs/TOOLS.md, "Deferred tools") |
+| `tools.disabled` | `[]` | tool names hidden from every chat (e.g. `["pwsh"]`): **Settings → Tools → Tool exposure** (Off), which keeps names no loaded plugin registers; Plugins switches whole plugins, and each chat switches its own tools (the composer's tools button, `meta.toolsOff`) |
 | `logging.level` | `Information` | host log level (`~/.netpi/logs/netpi-YYYYMMDD.log`) |
 
 Two of the keys above are read at **startup only**, so a change to them takes effect on the next start:
@@ -47,7 +52,7 @@ Two of the keys above are read at **startup only**, so a change to them takes ef
 | key | default | |
 |---|---|---|
 | `storage.provider` | `sqlite` | the storage provider the store is opened with: `sqlite` (`<home>/netpi.db`) or `memory`. Selection fails closed — a provider that is missing or broken stops the startup with a message that says what to do. `memory` runs only when it is asked for, because running after a broken install would lose every chat; `netpi-server --ephemeral` is that switch for a throwaway run or a test. A provider of your own drops in as an implementation of `IStorageProvider` and has to pass `tests/NetPI.Storage.Tests` (docs/PLUGINS.md) |
-| `database.sqlitePath` | – | explicit SQLite **library** to load (default: `winsqlite3.dll` on Windows, `libsqlite3` elsewhere; env `NETPI_SQLITE`); only the `sqlite` provider reads it, and only the `Sqlite3` P/Invoke layer. A path field in **Settings → General** |
+| `database.sqlitePath` | – | explicit SQLite **library** to load (default: `winsqlite3.dll` on Windows, `libsqlite3` elsewhere; env `NETPI_SQLITE`); only the `sqlite` provider reads it, and only the `Sqlite3` P/Invoke layer. A path field in **Settings → Advanced** |
 
 The port is `src/NetPI.Abstractions/StoragePort.cs`: sessions/messages/projects, the core's small key-value store,
 each plugin's own collections of JSON documents (`ctx.Data`), and a snapshot of the whole store. A provider reads its
@@ -80,7 +85,7 @@ An id is letters, digits, `-` and `_`. Kinds: `aiproxy`, `openai-compatible`, `o
 | `reasoningSummary` | – | Responses `reasoning.summary` (nInfer rejects it with HTTP 400; leave unset for AiProxy/nInfer) |
 | `headers` | – | extra HTTP headers |
 | `enabled`, `local` | `true` | a local model's `concurrency` is how many runs its agents share |
-| `models.<id>` | – | per model: `transport`, `replayReasoning`, `parseThinkTags`, `maxOutputTokens`, `contextWindow`, `concurrency`, `displayName`, `hidden` |
+| `models.<id>` | – | per model: `transport`, `replayReasoning`, `parseThinkTags`, `maxOutputTokens`, `contextWindow`, `concurrency`, `displayName`, `hidden`. The provider's dialog in Settings → Models has **Models…** for the name, hidden, context, output limit and runs at once |
 
 ### Kind `openai-compatible` (any OpenAI-style server)
 
@@ -99,7 +104,7 @@ model that produced them (required for tool calls with Claude, Gemini or OpenAI 
 | `apiKey` | env `OPENROUTER_API_KEY` | `"env:NAME"` / `"$NAME"` read another environment variable |
 | `baseUrl` | `https://openrouter.ai/api` | a trailing `/v1` is fine |
 | `include` | all models with tool calls | model ids or globs to offer, e.g. `["stealth/*", "anthropic/claude-*", "*:free"]`; an exact id is offered even without tool support |
-| `models.<id>` | – | per model: `displayName`, `contextWindow`, `maxOutputTokens`, `hidden` |
+| `models.<id>` | – | per model: `displayName`, `contextWindow`, `maxOutputTokens`, `hidden` (the provider's **Models…** in Settings → Models) |
 | `maxOutputTokens` | `32768` | cap for `max_tokens` (catalogs report up to 500k+; reasoning counts against it), further cut to what the model's `contextWindow` has left beside the request. The catalog lists each model's output limit under this cap (a per-model `maxOutputTokens` is used as it is), so the budget reserves what a call can actually produce |
 | `provider` | – | routing preferences sent as the request's `provider` object, e.g. `{ "sort": "throughput" }` |
 | `promptCaching` | `true` | top-level `cache_control` for `anthropic/*` models (other providers cache automatically) |

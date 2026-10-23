@@ -433,8 +433,7 @@ internal static class CoreRpc
 
         a.Add("settings.schema", "The settings the dialog shows as controls → SettingsSection[] (host and plugins, by group and order)", _ =>
         {
-            string[] groups = ["General", "Models", "Agents", "Context", "Tools"];
-            int Rank(string g) => Array.IndexOf(groups, g) is var i and >= 0 ? i : groups.Length;
+            int Rank(string g) => Array.IndexOf(CoreSettings.Groups, g) is var i and >= 0 ? i : CoreSettings.Groups.Length;
             return CoreSettings.Sections(Path.Combine(a.K.Paths.Home, "workspace")).Concat(a.K.Services.GetAll<SettingsSection>())
                 .OrderBy(s => Rank(s.Group)).ThenBy(s => s.Order).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase)
                 .ToList();

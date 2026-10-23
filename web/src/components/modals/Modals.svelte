@@ -13,7 +13,7 @@
   import { modals } from '../../lib/state/ui.svelte.js';
 </script>
 
-{#if modals.settings}<SettingsModal page={typeof modals.settings === 'string' ? modals.settings : 'general'} onclose={() => (modals.settings = false)} />{/if}
+{#if modals.settings}<SettingsModal target={modals.settings} onclose={() => (modals.settings = false)} />{/if}
 {#if modals.agent}<AgentModal id={modals.agent} onclose={() => (modals.agent = null)} />{/if}
 {#if modals.help}<HelpModal onclose={() => (modals.help = false)} />{/if}
 {#if modals.palette}<CommandPalette onclose={() => (modals.palette = false)} />{/if}

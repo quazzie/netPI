@@ -28,14 +28,14 @@ public sealed class McpPlugin : INetPiPlugin
             Id = "mcp", Title = "MCP", Group = "Tools", Order = 80,
             Settings =
             [
-                SettingInfo.Int("mcp.maxMessageChars", "Largest protocol message", 4_000_000, "Reject oversized frames and SSE events.", 4096, 16_000_000, "chars"),
-                SettingInfo.Int("mcp.maxArgumentChars", "Largest tool call arguments", 1_000_000, "Refuse a tool call whose serialized arguments are larger.", 1024, 16_000_000, "chars"),
-                SettingInfo.Int("mcp.maxCatalogTools", "Largest tool catalog", 10000, "Maximum tools discovered per server.", 1, 10000, "tools"),
-                SettingInfo.Int("mcp.maxCatalogChars", "Largest tool catalog data", 8_000_000, "Bound discovery memory per server.", 4096, 32_000_000, "chars"),
-                SettingInfo.Int("mcp.maxResourceEntries", "Largest resource catalog", 2000, "Maximum resources discovered per server.", 1, 20000, "resources"),
-                SettingInfo.Int("mcp.maxResourceCatalogChars", "Largest resource catalog data", 2_000_000, "Bound resource discovery memory per server.", 4096, 16_000_000, "chars"),
-                SettingInfo.Int("mcp.maxResourceChars", "Largest resource read", 20000, "Characters per resource read; a larger one is written to a file.", 1024, 200000, "chars"),
-                SettingInfo.Int("mcp.maxBinaryBytes", "Largest image", 2_000_000, "Maximum decoded image size.", 1024, 8_000_000, "bytes"),
+                SettingInfo.Int("mcp.maxMessageChars", "Largest protocol message", 4_000_000, "Reject oversized frames and SSE events.", 4096, 16_000_000, "chars") with { Subgroup = "Limits", Advanced = true },
+                SettingInfo.Int("mcp.maxArgumentChars", "Largest tool call arguments", 1_000_000, "Refuse a tool call whose serialized arguments are larger.", 1024, 16_000_000, "chars") with { Subgroup = "Limits", Advanced = true },
+                SettingInfo.Int("mcp.maxCatalogTools", "Largest tool catalog", 10000, "Maximum tools discovered per server.", 1, 10000, "tools") with { Subgroup = "Limits", Advanced = true },
+                SettingInfo.Int("mcp.maxCatalogChars", "Largest tool catalog data", 8_000_000, "Bound discovery memory per server.", 4096, 32_000_000, "chars") with { Subgroup = "Limits", Advanced = true },
+                SettingInfo.Int("mcp.maxResourceEntries", "Largest resource catalog", 2000, "Maximum resources discovered per server.", 1, 20000, "resources") with { Subgroup = "Limits", Advanced = true },
+                SettingInfo.Int("mcp.maxResourceCatalogChars", "Largest resource catalog data", 2_000_000, "Bound resource discovery memory per server.", 4096, 16_000_000, "chars") with { Subgroup = "Limits", Advanced = true },
+                SettingInfo.Int("mcp.maxResourceChars", "Largest resource read", 20000, "Characters per resource read; a larger one is written to a file.", 1024, 200000, "chars") with { Subgroup = "Limits", Advanced = true },
+                SettingInfo.Int("mcp.maxBinaryBytes", "Largest image", 2_000_000, "Maximum decoded image size.", 1024, 8_000_000, "bytes") with { Subgroup = "Limits", Advanced = true },
                 SettingInfo.Int("mcp.refreshSeconds", "Catalog refresh", 60, "Refresh even when a server does not support change notifications.", 5, 3600, "seconds"),
             ],
         });

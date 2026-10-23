@@ -10,6 +10,7 @@
   import ConfirmButton from '../../lib/kit/ConfirmButton.svelte';
   import SettingsRow from './SettingsRow.svelte';
   import SettingField from './SettingField.svelte';
+  import ProviderModelsDialog from './ProviderModelsDialog.svelte';
   import { app } from '../../lib/state/app.svelte.js';
   import { getAt, setSetting } from '../../lib/settings.js';
 
@@ -21,6 +22,8 @@
 
   let choosing = $state(false);
   let openId = $state(null);
+  let perModelId = $state(null); // the provider whose per-model overrides are open
+  const PER_MODEL = new Set(['aiproxy', 'openai-compatible', 'openrouter']);
   const open = $derived(openId ? instances.find(([id]) => id === openId) ?? null : null);
   const openType = $derived(open ? typeOf(open[1].type) : null);
 
@@ -91,8 +94,19 @@
     {#if openType?.help}<div class="sec-help np-dim">{openType.help}</div>{/if}
     <SettingField setting={nameField(open[0])} {doc} />
     {#each openType?.settings ?? [] as st (st.key)}<SettingField setting={field(open[0], st)} {doc} />{/each}
-    <div class="foot"><ConfirmButton icon="trash" label="Remove provider" confirmLabel="Remove it?" onconfirm={() => remove(open[0])} /></div>
+    <div class="foot">
+      {#if PER_MODEL.has(open[1].type)}
+        <button class="np-btn np-btn-sm" onclick={() => (perModelId = open[0])} data-testid="provider-models">Models… <span class="np-dim">{modelsOf(open[0])}</span></button>
+      {/if}
+      <span class="np-spacer"></span>
+      <ConfirmButton icon="trash" label="Remove provider" confirmLabel="Remove it?" onconfirm={() => remove(open[0])} />
+    </div>
   </Modal>
+{/if}
+
+{#if perModelId && instances.find(([id]) => id === perModelId)}
+  {@const inst = instances.find(([id]) => id === perModelId)}
+  <ProviderModelsDialog id={inst[0]} type={inst[1].type} title={inst[1].name || inst[0]} {doc} onclose={() => (perModelId = null)} />
 {/if}
 
 <style>
@@ -122,7 +136,8 @@
   }
   .foot {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
     padding-top: 12px;
   }
 </style>

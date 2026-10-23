@@ -1,5 +1,6 @@
 // UI-only state: panel layout, preferences, modals, toasts and the composer bridge.
 import { load, persist, fetchRemote } from '../persist.js';
+import { PREF_DEFAULTS } from '../uiPrefs.js';
 
 const LAYOUT_KEY = 'netpi.layout';
 const PREFS_KEY = 'netpi.prefs';
@@ -9,19 +10,11 @@ const defaultLayout = {
   right: { width: 360, collapsed: false, active: null },
   tabs: { left: [], right: [] }, // side-panel tab keys as the user dragged them (tabs.svelte.js)
 };
+// the preferences on Settings → General take their defaults from lib/uiPrefs.js (theme dark, steps 'done', chat width
+// normal, Enter sends, thinking and tool calls collapsed, turn details, spellcheck and notifications on)
 const defaultPrefs = {
-  theme: 'dark', // dark | light | system
-  // thinking/tool step groups: 'open' never fold · 'done' fold a group once text follows it ·
-  // 'folded' fold from the second step on, also while the agent works
-  steps: 'done',
-  chatWidth: 'normal', // normal (900px) | wide (1200px) | full
-  enterSends: true, // false → Ctrl+Enter sends, Enter = newline
-  expandThinking: false, // thinking rows start expanded
-  expandTools: 'closed', // tool call rows start: 'closed' · 'errors' (a failed call is open) · 'open'
-  turnDetails: true, // under each model turn's steps: time to first token, cache reuse, output speed, tokens
-  spellcheck: true, // spell checking in the composer
+  ...PREF_DEFAULTS,
   favorites: [], // project ids listed in the tab bar's + menu, for a quick new session
-  notifications: true, // desktop app: a Windows notification when a chat needs you while NetPI is in the background
 };
 
 const CHAT_WIDTH = { normal: '900px', wide: '1200px', full: 'none' };
@@ -125,7 +118,7 @@ export function togglePanel(side) {
 // ------------------------------------------------------------------------------------------ modals
 
 export const modals = $state({
-  settings: false, // true, or the page to open on (e.g. 'agents')
+  settings: false, // true (where it was), a page id ('agents'), or { page?, section?, key?, q? } (lib/settingsModel.js resolveTarget)
   agent: null, // an agent's id: its dialog on its own (the Work tab opens it), without Settings behind it
   palette: false,
   help: false,

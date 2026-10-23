@@ -19,7 +19,7 @@ public sealed class CodeSearchPlugin : INetPiPlugin
     {
         context.Services.Register(new SettingsSection
         {
-            Id = "codesearch", Title = "Code search", Group = "Tools", Order = 63,
+            Id = "codesearch", Title = "Code search", Group = "Knowledge", Order = 30,
             Settings =
             [
                 SettingInfo.Bool("codesearch.enabled", "Search the workspace's code", true,
@@ -27,8 +27,8 @@ public sealed class CodeSearchPlugin : INetPiPlugin
                 SettingInfo.Bool("codesearch.embed", "Rank by meaning", true,
                     "Embed the passages with the embedding model (embed.model) and rank by meaning as well as by words. Off, or without a model: words only."),
                 SettingInfo.Int("codesearch.maxFiles", "Files per workspace", CodeIndex.DefaultMaxFiles, "A workspace with more files is indexed up to this many (in git's order).", 100, 200_000),
-                SettingInfo.Int("codesearch.maxFileKb", "Largest file", CodeIndex.DefaultMaxFileKb, "Larger files are left out.", 16, 8192, "KB"),
-                SettingInfo.Int("codesearch.maxChunkLines", "Longest passage", CodeIndex.DefaultMaxChunkLines, "A longer declaration is cut into parts of at most this many lines (and 100 characters per line on average).", 20, 400, "lines"),
+                SettingInfo.Int("codesearch.maxFileKb", "Largest file", CodeIndex.DefaultMaxFileKb, "Larger files are left out.", 16, 8192, "KB") with { Advanced = true },
+                SettingInfo.Int("codesearch.maxChunkLines", "Longest passage", CodeIndex.DefaultMaxChunkLines, "A longer declaration is cut into parts of at most this many lines (and 100 characters per line on average).", 20, 400, "lines") with { Advanced = true },
             ],
         });
         var index = context.Track(new CodeIndex(context));

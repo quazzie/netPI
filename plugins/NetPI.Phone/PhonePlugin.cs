@@ -41,7 +41,7 @@ public sealed class PhonePlugin : INetPiPlugin
         _ctx = ctx;
         ctx.Services.Register(new SettingsSection
         {
-            Id = "phone", Title = "Phone", Group = "Agents", Order = 62,
+            Id = "phone", Title = "Phone", Group = "Automation", Order = 62,
             Help = "A mobile page for your own phone: chats, new chats, steering and approvals. It is its own small listener, separate from NetPI's API, and off until you switch it on. Pair a phone from the Phone tab. Anyone who can reach the port and holds a paired device's token can run what the agent can run: keep it on your LAN, a VPN, or behind a reverse proxy you trust.",
             Settings =
             [

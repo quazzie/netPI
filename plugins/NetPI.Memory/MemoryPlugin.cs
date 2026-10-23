@@ -20,13 +20,13 @@ public sealed class MemoryPlugin : INetPiPlugin
     {
         context.Services.Register(new SettingsSection
         {
-            Id = "memory", Title = "Memory", Group = "Tools", Order = 62,
+            Id = "memory", Title = "Memory", Group = "Knowledge", Order = 20,
             Settings =
             [
                 SettingInfo.Bool("memory.enabled", "Search past chats", true,
                     "Every chat is indexed in the background and the memory_search tool finds earlier chats by their words and, with an embedding model (embed.model), by meaning. The text goes only to the embedding server."),
                 SettingInfo.Int("memory.maxChunksPerChat", "Pieces per chat", MemoryIndex.DefaultMaxChunks,
-                    "How many pieces of ~1,200 characters a chat is embedded as at most (its start, its end and its summaries are kept first). Only pieces whose text changed are embedded again.", 4, 400),
+                    "How many pieces of ~1,200 characters a chat is embedded as at most (its start, its end and its summaries are kept first). Only pieces whose text changed are embedded again.", 4, 400) with { Advanced = true },
             ],
         });
         var index = context.Track(new MemoryIndex(context));

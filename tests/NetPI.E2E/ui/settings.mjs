@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// Journey: a person changes their settings. In Settings → Runs they change a number, see it saved, reset it, and get a
-// value out of range refused; in Agents & budget they add an agent from the model search, give it one instance, and
+// Journey: a person changes their settings. In Settings → Runs they open Run limits in place, change a number, see it
+// saved, reset it, get a value out of range refused, and go back; they find the same setting with the search, change it in
+// the results, see it under Changed and reset it there; the command palette opens the dialog on another setting, in its
+// section. In Agents & budget they add an agent from the model search, give it one instance, and
 // remove it again after confirming. While it is switched off, the composer's agent picker hides it ("Any available"
 // stays), and switching it on brings it back. What the page saved is read back from the server (settings.get). And a
 // chat's profile picker stays open with its profiles while the settings change, even when the reload that follows fails
@@ -46,8 +48,9 @@ await run('settings', async ({ page, socket }) => {
   const dialog = page.getByRole('dialog', { name: 'Settings' });
   await expectEventually('Ctrl+, opens the settings', () => dialog.isVisible(), { stop: true, quiet: true });
 
-  // ---- a number: saved, reset, a value out of range refused
-  await dialog.locator('[data-page="Agents"]').click();
+  // ---- a number in its section, opened in place: saved, reset, a value out of range refused
+  await dialog.locator('[data-page="runs"]').click();
+  await dialog.locator('[data-section-row="agents"]').click();
   const field = dialog.locator('[data-setting="agent.maxTurns"]');
   const input = field.getByRole('textbox');
   await input.fill('300');
@@ -62,6 +65,35 @@ await run('settings', async ({ page, socket }) => {
   await input.fill('');
   await input.press('Enter');
   await shot(page, 'ui-settings-01-field');
+  await dialog.getByTestId('settings-back').click();
+  await expectEventually('Back leaves the section for its page', () => dialog.locator('[data-section-row="agents"]').count(), { pass: (n) => n === 1 });
+
+  // ---- the search: found by a word of its label, changed in the results, listed under Changed, reset there
+  const search = dialog.getByTestId('settings-search');
+  const results = dialog.getByTestId('settings-results');
+  await search.fill('model calls');
+  const hit = results.locator('[data-setting="agent.maxTurns"]');
+  await expectEventually('the search finds the setting by its label', () => hit.count(), { pass: (n) => n === 1 });
+  await hit.getByRole('textbox').fill('250');
+  await hit.getByRole('textbox').press('Enter');
+  await expectEventually('a change in the results is saved', async () => (await settings()).agent?.maxTurns, { pass: (v) => v === 250 });
+  await search.fill('');
+  await dialog.getByTestId('filter-changed').click();
+  const changed = results.locator('[data-setting="agent.maxTurns"]');
+  await expectEventually('Changed lists it', () => changed.count(), { pass: (n) => n === 1 });
+  await shot(page, 'ui-settings-01b-changed');
+  await changed.getByTestId('reset-setting').click();
+  await expectEventually('…and resets it', async () => (await settings()).agent?.maxTurns, { pass: (v) => v === undefined });
+  await dialog.getByTestId('filter-changed').click();
+
+  // ---- the command palette opens the dialog on a setting, in its section
+  await page.keyboard.press('Escape');
+  await expectEventually('Esc closes the settings', () => dialog.count(), { pass: (n) => n === 0 });
+  await page.keyboard.press('Control+k');
+  await page.keyboard.type('Silence between tokens');
+  await page.keyboard.press('Enter');
+  await expectEventually('the palette opens the settings on that field', () => dialog.locator('[data-setting="retry.stallTimeoutSeconds"]').count(), { pass: (n) => n === 1 });
+  check('…in its section, opened in place', (await dialog.getByTestId('settings-back').count()) === 1);
 
   // ---- an agent: added from the model search, edited, removed
   const before = Object.keys((await settings()).agents ?? {});

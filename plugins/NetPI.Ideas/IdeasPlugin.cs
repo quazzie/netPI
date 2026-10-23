@@ -63,31 +63,31 @@ public sealed class IdeasPlugin : INetPiPlugin
     private void RegisterSettings(IPluginContext context) =>
         context.Services.Register(new SettingsSection
         {
-            Id = "ideas", Title = "Ideas", Group = "Tools", Order = 60,
+            Id = "ideas", Title = "Ideas", Group = "Knowledge", Order = 40,
             Settings =
             [
                 SettingInfo.Bool("ideas.tellAgentOnCommit", "Tell the agent to close its own idea on a commit", true,
-                    "After the agent itself runs a successful git commit or git merge in the session's project, one notice asks it to mark the idea that commit finished (or to say that none of them is about it). Nothing happens when the project has no open idea."),
+                    "After the agent itself runs a successful git commit or git merge in the session's project, one notice asks it to mark the idea that commit finished (or to say that none of them is about it). Nothing happens when the project has no open idea.") with { Subgroup = "Commit notices", Keywords = ["git"] },
                 SettingInfo.Int("ideas.commitNoticesPerRun", "Commit notices per run", IdeaCommitNoticeHook.DefaultMaxPerRun,
-                    "How many of those notices one run may get, so a run that commits in a loop is asked a bounded number of times.", 0, 10),
+                    "How many of those notices one run may get, so a run that commits in a loop is asked a bounded number of times.", 0, 10) with { Subgroup = "Commit notices" },
                 SettingInfo.Bool("ideas.semantic", "Meaning search", true,
-                    "With an embedding model (the Embeddings plugin, embed.model): the backlog is embedded in the background, the commit notice names the open ideas closest to the commit, the ideas tool adds the closest ideas when a search finds no word match, and a new idea names the existing ones it resembles. Off, or without embeddings, the word search alone."),
+                    "With an embedding model (the Embeddings plugin, embed.model): the backlog is embedded in the background, the commit notice names the open ideas closest to the commit, the ideas tool adds the closest ideas when a search finds no word match, and a new idea names the existing ones it resembles. Off, or without embeddings, the word search alone.") with { Subgroup = "Similar ideas", Keywords = ["embeddings", "duplicates"] },
                 SettingInfo.Number("ideas.similarThreshold", "Similar idea threshold", IdeaVectors.DefaultSimilarThreshold,
-                    "How close (cosine, card to card) an existing idea has to be before a new one is said to resemble it. 0.80 is about the top 7 % of nearest neighbours in a 231-idea backlog with bge-base; the known duplicate pair scored 0.807-0.824.", 0.5, 0.99),
+                    "How close (cosine, card to card) an existing idea has to be before a new one is said to resemble it. 0.80 is about the top 7 % of nearest neighbours in a 231-idea backlog with bge-base; the known duplicate pair scored 0.807-0.824.", 0.5, 0.99) with { Subgroup = "Similar ideas", Advanced = true },
                 SettingInfo.Number("ideas.noticeFloor", "Commit notice: similarity floor", IdeaCommitNoticeHook.DefaultNoticeFloor,
-                    "The commit notice names an open idea only when it is at least this close to the commit message (embeddings).", 0, 0.99),
+                    "The commit notice names an open idea only when it is at least this close to the commit message (embeddings).", 0, 0.99) with { Subgroup = "Commit notices", Advanced = true },
                 SettingInfo.Int("ideas.commitNoticeDebounceSec", "Commit notice debounce", IdeaCommitNoticeHook.DefaultDebounceSec,
-                    "Seconds a run waits after a commit notice before it may get the next one, so a burst of commits costs one notice instead of one each.", 0, 3600),
+                    "Seconds a run waits after a commit notice before it may get the next one, so a burst of commits costs one notice instead of one each.", 0, 3600) with { Subgroup = "Commit notices", Advanced = true },
                 SettingInfo.Bool("ideas.autoRefine.enabled", "Automatic refine", false,
-                    "Your own agents refine newly filed ideas in the background (the same task as the Refine button), so each becomes a clear, checkable piece of work. Only the agents listed below run it; with none listed nothing runs. An idea is refined once: after a manual refine too."),
+                    "Your own agents refine newly filed ideas in the background (the same task as the Refine button), so each becomes a clear, checkable piece of work. Only the agents listed below run it; with none listed nothing runs. An idea is refined once: after a manual refine too.") with { Subgroup = "Automatic refine" },
                 SettingInfo.List("ideas.autoRefine.agents", "Automatic refine: agents", [],
-                    "The agent keys that may run it, taken in turn (prefer free local ones). Empty: nothing runs. 'any' is not accepted on purpose: it could pick a paid agent.", "agent key"),
+                    "The agent keys that may run it, taken in turn (prefer free local ones). Empty: nothing runs. 'any' is not accepted on purpose: it could pick a paid agent.", "agent key") with { Subgroup = "Automatic refine" },
                 SettingInfo.Int("ideas.autoRefine.maxConcurrent", "Automatic refine: at once", IdeaAutoRefine.DefaultMaxConcurrent,
-                    "How many automatic refines may run at the same time. They queue behind your own chats (low priority).", 1, 4),
+                    "How many automatic refines may run at the same time. They queue behind your own chats (low priority).", 1, 4) with { Subgroup = "Automatic refine" },
                 SettingInfo.Int("ideas.autoRefine.delayMinutes", "Automatic refine: delay", IdeaAutoRefine.DefaultDelayMinutes,
-                    "An idea is refined only after you have not created or edited it for this long, so an idea you are still writing is left alone. 0: at once.", 0, 10080, "min"),
+                    "An idea is refined only after you have not created or edited it for this long, so an idea you are still writing is left alone. 0: at once.", 0, 10080, "min") with { Subgroup = "Automatic refine" },
                 SettingInfo.Bool("ideas.autoRefine.archiveWhenDone", "Automatic refine: archive the chat", true,
-                    "The finished chat is archived; it stays linked on the idea's card."),
+                    "The finished chat is archived; it stays linked on the idea's card.") with { Subgroup = "Automatic refine" },
             ],
         });
 

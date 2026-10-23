@@ -48,6 +48,43 @@ internal static class SessionToolSwitches
         };
     }
 
+    /// <summary>
+    /// The settings' view of every registered tool, without a chat: switched off everywhere (<c>tools.disabled</c>) and
+    /// deferred (<c>tools.deferred</c>, else the default list, or by its definition), for the settings dialog's Tool exposure.
+    /// </summary>
+    public static JsonObject Exposure(IPluginContext ctx)
+    {
+        List<string>? written = null;
+        try { written = ctx.Settings.Get<List<string>>(ToolExposure.Setting); } catch { }
+        var disabled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try { foreach (var n in ctx.Settings.Get<List<string>>("tools.disabled") ?? []) disabled.Add(n); } catch { }
+        var exposure = ToolExposure.For(ctx.Settings, null, null);
+        var tools = new JsonArray();
+        foreach (var r in ctx.Tools.Registrations.GroupBy(r => r.Tool.Definition.Name, StringComparer.OrdinalIgnoreCase)
+                     .Select(g => g.OrderByDescending(r => r.Priority).First()).OrderBy(r => r.Tool.Definition.Name, StringComparer.Ordinal))
+        {
+            var d = r.Tool.Definition;
+            tools.Add(new JsonObject
+            {
+                ["name"] = d.Name,
+                ["label"] = d.Label,
+                ["category"] = d.Category,
+                ["description"] = d.Description,
+                ["pluginId"] = r.PluginId,
+                ["deferred"] = exposure.IsDeferred(d),
+                ["byDefinition"] = d.Deferred,
+                ["infrastructure"] = r.Tool is IDeferredToolInfrastructure,
+                ["disabled"] = disabled.Contains(d.Name),
+            });
+        }
+        return new JsonObject
+        {
+            ["deferredSetting"] = written is null ? null : new JsonArray([.. written.Select(n => (JsonNode?)n)]),
+            ["defaultDeferred"] = new JsonArray([.. ToolExposure.DefaultDeferred.Select(n => (JsonNode?)n)]),
+            ["tools"] = tools,
+        };
+    }
+
     /// <summary>Switch tools off (<paramref name="off"/>) or back on (<paramref name="on"/>) for one session.</summary>
     public static JsonObject Set(IPluginContext ctx, AgentRuntime runtime, string sessionId, IReadOnlyList<string> off, IReadOnlyList<string> on)
     {

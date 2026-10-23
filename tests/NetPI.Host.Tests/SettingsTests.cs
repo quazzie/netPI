@@ -43,6 +43,8 @@ public static class SettingsTests
             SettingInfo Info(string key) => core.Settings.Single(s => s.Key == key);
             Check.Equal(false, Info("plugins.quiet").Default!.GetValue<bool>(), "the default the dialog shows");
             Check.Equal("restart", Info("database.sqlitePath").Applies, "the SQLite library is read at startup only");
+            Check.True(CoreSettings.Sections("ws").All(x => CoreSettings.Groups.Contains(x.Group)), "the host's sections are on the dialog's pages");
+            Check.Equal("Advanced", core.Group, "the process settings (port, log, SQLite) are not on General");
             var file = Path.Combine(T.TempDir("settings-schema"), "settings.json");
             using var s = new SettingsStore(file, NullLogger.Instance);
             Check.Equal(CoreSettings.QuietDefault, s.Get<bool>("plugins.quiet"), "the first-run document carries the default the host reads with");

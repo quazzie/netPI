@@ -13,7 +13,7 @@ public sealed class NudgePlugin : INetPiPlugin
     {
         context.Services.Register(new SettingsSection
         {
-            Id = "nudge", Title = "Nudge", Group = "Agents", Order = 30,
+            Id = "nudge", Title = "Nudge", Group = "Runs", Order = 30,
             Settings =
             [
                 SettingInfo.Int("nudge.maxPerRun", "Nudges per stall episode", 3, "How many nudges in a row one stall may get. An acceptable response (a tool call, a final answer, an aborted or errored turn) resets it, so a long run that recovers can still be nudged when it stalls again.", 0, 20),

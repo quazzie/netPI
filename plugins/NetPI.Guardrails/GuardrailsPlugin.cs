@@ -30,26 +30,26 @@ public sealed class GuardrailsPlugin : INetPiPlugin
         context.Sessions.DeclareForkReset("guardrailsAllowed");
         context.Services.Register(new SettingsSection
         {
-            Id = "guardrails", Title = "Guardrails", Group = "Tools", Order = 5,
+            Id = "guardrails", Title = "Guardrails", Group = "Safety", Order = 5,
             Settings =
             [
                 SettingInfo.Bool("guardrails.enabled", "Check tool calls", true, "Before a tool runs, against the rules below. Fast: patterns and paths only."),
                 SettingInfo.List("guardrails.commands", "Blocked commands", RuleSet.DefaultCommands,
-                    "Regular expressions, tried on each part of a bash, pwsh or ssh run command (split at new lines, ; && || | &), ignoring case. Start a line with ask: to ask you first instead of blocking. Start a line with the tools it applies to — bash, pwsh, ssh, windows, comma-separated, a colon after (bash: ^…, before any ask:/block:) to limit it to those: a pwsh started by the pwsh tool is not a bash pwsh."),
+                    "Regular expressions, tried on each part of a bash, pwsh or ssh run command (split at new lines, ; && || | &), ignoring case. Start a line with ask: to ask you first instead of blocking. Start a line with the tools it applies to — bash, pwsh, ssh, windows, comma-separated, a colon after (bash: ^…, before any ask:/block:) to limit it to those: a pwsh started by the pwsh tool is not a bash pwsh.") with { Subgroup = "Rules", Keywords = ["block", "deny"] },
                 SettingInfo.List("guardrails.paths", "Protected paths", RuleSet.DefaultPaths,
-                    "Files and folders the agent may not change: write and edit refuse them, and so do bash and pwsh commands that name them (the read tool still reads them). ~ is your home. Start a line with ask: to ask you first."),
+                    "Files and folders the agent may not change: write and edit refuse them, and so do bash and pwsh commands that name them (the read tool still reads them). ~ is your home. Start a line with ask: to ask you first.") with { Subgroup = "Rules", Keywords = ["protect", "deny"] },
                 SettingInfo.Number("guardrails.maxSleepSeconds", "Longest deliberate wait", Sleeps.DefaultMaxSeconds,
-                    "A bash, pwsh or ssh run command that waits longer than this (sleep, Start-Sleep, ping -n/-c, the script a shell runs with -c) is refused or asks, so the agent waits for a command instead of sleeping through the wait. 0 switches it off.", 0, 3600, "s"),
+                    "A bash, pwsh or ssh run command that waits longer than this (sleep, Start-Sleep, ping -n/-c, the script a shell runs with -c) is refused or asks, so the agent waits for a command instead of sleeping through the wait. 0 switches it off.", 0, 3600, "s") with { Subgroup = "Waiting", Keywords = ["sleep"] },
                 SettingInfo.Bool("guardrails.askReflect", "Agent reconsiders before asking", true,
-                    "The first time a call meets an ask: rule the agent is told why and may take another way (pwsh instead of powershell, diag instead of reading ~/.netpi by shell). Only the same call again asks you, with the agent's reason on the question."),
+                    "The first time a call meets an ask: rule the agent is told why and may take another way (pwsh instead of powershell, diag instead of reading ~/.netpi by shell). Only the same call again asks you, with the agent's reason on the question.") with { Subgroup = "Asking you" },
                 SettingInfo.Choice("guardrails.maxSleepAction", "On a long wait", "block", ["block", "ask"],
-                    "block: the call does not run and the model reads why (a shell call with a matching timeout is the wait). ask: you are asked on the tool's row in the chat, and can allow it for the rest of that chat."),
+                    "block: the call does not run and the model reads why (a shell call with a matching timeout is the wait). ask: you are asked on the tool's row in the chat, and can allow it for the rest of that chat.") with { Subgroup = "Waiting" },
                 SettingInfo.Bool("guardrails.secondOpinion", "Second opinion before asking", false,
-                    "Before an ask: rule asks you about a shell command, a decision model reads it (the Decide plugin, through AiGateway); a command it finds confidently harmless runs without asking. Blocking rules and write/edit are never relaxed; without an answer you are asked."),
+                    "Before an ask: rule asks you about a shell command, a decision model reads it (the Decide plugin, through AiGateway); a command it finds confidently harmless runs without asking. Blocking rules and write/edit are never relaxed; without an answer you are asked.") with { Subgroup = "Asking you" },
                 SettingInfo.Str("guardrails.secondOpinionModel", "Second-opinion model", SecondOpinion.DefaultModel,
-                    "qwen3.8-27b (the NInfer chat model, about 0.3 s) was measured on 852 real commands; kev-9b calls too many local commands remote."),
+                    "qwen3.8-27b (the NInfer chat model, about 0.3 s) was measured on 852 real commands; kev-9b calls too many local commands remote.") with { Subgroup = "Asking you" },
                 SettingInfo.Number("guardrails.secondOpinionThreshold", "Second-opinion threshold", SecondOpinion.DefaultThreshold,
-                    "A command runs without asking only when p(destructive), p(stops a process) and p(changes a remote) are each below it. p(read-only) is asked and shown, but not required: the model underrates builds and test runs as read-only (dotnet test 0.05-0.4), so a read-only bar cleared none of 50 hand-labelled hard commands, while the risk questions alone at 0.2 cleared 20 of their 39 read-only ones and none of the risky ones.", 0.01, 0.5),
+                    "A command runs without asking only when p(destructive), p(stops a process) and p(changes a remote) are each below it. p(read-only) is asked and shown, but not required: the model underrates builds and test runs as read-only (dotnet test 0.05-0.4), so a read-only bar cleared none of 50 hand-labelled hard commands, while the risk questions alone at 0.2 cleared 20 of their 39 read-only ones and none of the risky ones.", 0.01, 0.5) with { Subgroup = "Asking you", Advanced = true },
             ],
         });
         var outcomes = new GuardOutcomes(context.Data, context.Logger);
