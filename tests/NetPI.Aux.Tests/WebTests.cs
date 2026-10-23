@@ -82,12 +82,12 @@ public static class WebTests
 
         public void Set(string path, JsonNode? value) => Ctx.SettingsFake.Set(path, value);
 
-        public Task<ToolResult> Run(string tool, object args, ModelInfo? model = null, string session = "ses_1") =>
+        public Task<ToolResult> Run(string tool, object args, ModelInfo? model = null, string session = "ses_1", CancellationToken ct = default) =>
             Ctx.ToolsFake.Get(tool)!.ExecuteAsync(new ToolContext
             {
                 SessionId = session, AgentId = "agt_1", CallId = "call_1", Cwd = Path.GetTempPath(), Model = model,
                 Services = Ctx.Services, Events = Ctx.Events,
-            }, T.Args(args), CancellationToken.None);
+            }, T.Args(args), ct);
     }
 
     private static System.Text.Json.JsonElement D(ToolResult r) => NetPiJson.ToElement(r.Details);
@@ -261,6 +261,47 @@ public static class WebTests
             Check.False(D(r1).GetProperty("fromCache").GetBoolean());
             Check.False(D(r2).GetProperty("fromCache").GetBoolean());
             Check.Equal(1, hits); // one upstream fetch, not one per request
+            env.Ctx.Unload();
+        });
+
+        r.Add("web_fetch: a joined request outlives the cancelled request that started the fetch, and keeps its own token", async () =>
+        {
+            var hits = 0;
+            await using var web = await LocalWeb.StartAsync(app =>
+            {
+                app.MapGet("/page", async () =>
+                {
+                    Interlocked.Increment(ref hits);
+                    await Task.Delay(800);
+                    return Results.Content(DocPage, "text/html; charset=utf-8");
+                });
+            });
+            var env = new Env();
+            await env.StartAsync();
+            var url = web.Url + "/page";
+
+            using var startersCancel = new CancellationTokenSource();
+            var starter = env.Run("web_fetch", new { url }, ct: startersCancel.Token);
+            await Task.Delay(200);
+            var joiner = env.Run("web_fetch", new { url });
+            using var impatientCancel = new CancellationTokenSource();
+            var impatient = env.Run("web_fetch", new { url }, ct: impatientCancel.Token);
+            await Task.Delay(100);
+            startersCancel.Cancel();
+            impatientCancel.Cancel();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await Check.ThrowsAsync<OperationCanceledException>(() => starter);
+            await Check.ThrowsAsync<OperationCanceledException>(() => impatient);
+            Check.True(sw.ElapsedMilliseconds < 400, "a cancelled waiter returns at once, not when the download ends");
+            var done = await joiner;
+            Check.False(done.IsError, done.Content);
+            Check.Contains(done.Content, "# What are runes?");
+            Check.Equal(1, hits);
+
+            // the last waiter leaving ends the download: nobody is left to want it
+            using var onlyCancel = new CancellationTokenSource(150);
+            var alone = env.Run("web_fetch", new { url = web.Url + "/page?again=1" }, ct: onlyCancel.Token);
+            await Check.ThrowsAsync<OperationCanceledException>(() => alone);
             env.Ctx.Unload();
         });
 

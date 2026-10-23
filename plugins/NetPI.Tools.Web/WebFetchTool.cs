@@ -16,7 +16,16 @@ internal sealed class FetchCache
     private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(5);
     private const int Max = 24;
     private readonly ConcurrentDictionary<string, (DateTimeOffset At, FetchedPage Page)> _pages = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, Task<(DateTimeOffset At, FetchedPage Page)>> _flying = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Flight> _flying = new(StringComparer.Ordinal);
+
+    /// <summary>One in-flight download, owned by no caller: it runs under its own token, which is cancelled when the
+    /// last request waiting on it leaves, so one caller's cancellation never faults the others.</summary>
+    private sealed class Flight
+    {
+        public Task<(DateTimeOffset At, FetchedPage Page)> Task = null!;
+        public readonly CancellationTokenSource Cts = new();
+        public int Waiters;
+    }
 
     private void Put(string key, FetchedPage page)
     {
@@ -27,50 +36,66 @@ internal sealed class FetchCache
 
     /// <summary>The page for <paramref name="key"/>: a fresh cache entry, a joined in-flight fetch (concurrent
     /// requests for the same cold page share one download), or a new fetch. <paramref name="refresh"/> skips the
-    /// cache and the in-flight fetch and fetches the page again.</summary>
+    /// cache and the in-flight fetch and fetches the page again. Each caller waits under its own
+    /// <paramref name="ct"/>; the shared fetch gets a token that ends when its last waiter leaves.</summary>
     public async Task<(FetchedPage Page, bool FromCache, DateTimeOffset FetchedAt)> GetOrFetchAsync(
-        string key, bool refresh, Func<Task<FetchedPage>> fetch, Func<FetchedPage, bool> cacheable)
+        string key, bool refresh, Func<CancellationToken, Task<FetchedPage>> fetch, Func<FetchedPage, bool> cacheable, CancellationToken ct)
     {
         if (!refresh)
         {
             if (_pages.TryGetValue(key, out var hit) && DateTimeOffset.UtcNow - hit.At < Ttl)
                 return (hit.Page, true, hit.At);
-            var shared = JoinOrStart(key, fetch, cacheable);
-            var done = await shared.ConfigureAwait(false);
-            return (done.Page, false, done.At);
+            var flight = JoinOrStart(key, fetch, cacheable);
+            try
+            {
+                var done = await flight.Task.WaitAsync(ct).ConfigureAwait(false);
+                return (done.Page, false, done.At);
+            }
+            finally { Leave(key, flight); }
         }
-        var page = await fetch().ConfigureAwait(false);
+        var page = await fetch(ct).ConfigureAwait(false);
         if (cacheable(page)) Put(key, page);
         return (page, false, DateTimeOffset.UtcNow);
     }
 
-    /// <summary>An in-flight fetch for <paramref name="key"/>, starting one if none is in flight. The slot is
-    /// registered before the fetch runs, so a request that arrives mid-fetch joins it instead of downloading again.</summary>
-    private Task<(DateTimeOffset At, FetchedPage Page)> JoinOrStart(string key, Func<Task<FetchedPage>> fetch, Func<FetchedPage, bool> cacheable)
+    /// <summary>An in-flight fetch for <paramref name="key"/> with this caller counted as a waiter, starting one if
+    /// none is in flight. The slot is registered before the fetch runs, so a request that arrives mid-fetch joins it
+    /// instead of downloading again.</summary>
+    private Flight JoinOrStart(string key, Func<CancellationToken, Task<FetchedPage>> fetch, Func<FetchedPage, bool> cacheable)
     {
-        if (_flying.TryGetValue(key, out var existing)) return existing;
-        var tcs = new TaskCompletionSource<(DateTimeOffset At, FetchedPage Page)>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var taken = _flying.AddOrUpdate(key, _ => tcs.Task, (_, old) => old);
-        if (ReferenceEquals(taken, tcs.Task)) _ = FetchIntoAsync(key, fetch, cacheable, tcs);
-        return taken;
+        lock (_flying)
+        {
+            if (_flying.TryGetValue(key, out var existing)) { existing.Waiters++; return existing; }
+            var flight = new Flight { Waiters = 1 };
+            _flying[key] = flight;
+            flight.Task = FetchIntoAsync(key, flight, fetch, cacheable);
+            return flight;
+        }
     }
 
-    private async Task FetchIntoAsync(string key, Func<Task<FetchedPage>> fetch, Func<FetchedPage, bool> cacheable, TaskCompletionSource<(DateTimeOffset At, FetchedPage Page)> tcs)
+    /// <summary>A waiter is done (it got the page, or gave up): the last one out cancels a fetch nobody waits for.</summary>
+    private void Leave(string key, Flight flight)
+    {
+        lock (_flying)
+        {
+            if (--flight.Waiters > 0) return;
+            if (_flying.TryGetValue(key, out var current) && ReferenceEquals(current, flight)) _flying.Remove(key);
+        }
+        if (!flight.Task.IsCompleted) flight.Cts.Cancel();
+    }
+
+    private async Task<(DateTimeOffset At, FetchedPage Page)> FetchIntoAsync(string key, Flight flight, Func<CancellationToken, Task<FetchedPage>> fetch, Func<FetchedPage, bool> cacheable)
     {
         try
         {
-            var page = await fetch().ConfigureAwait(false);
+            var page = await Task.Run(() => fetch(flight.Cts.Token)).ConfigureAwait(false);
             if (cacheable(page)) Put(key, page);
-            tcs.SetResult((DateTimeOffset.UtcNow, page));
-        }
-        catch (Exception ex)
-        {
-            tcs.SetException(ex);
+            return (DateTimeOffset.UtcNow, page);
         }
         finally
         {
-            // the slot is owned by this fetch (only the adder in JoinOrStart starts a fetch and removes it)
-            _flying.TryRemove(key, out _);
+            lock (_flying)
+                if (_flying.TryGetValue(key, out var current) && ReferenceEquals(current, flight)) _flying.Remove(key);
         }
     }
 }
@@ -129,7 +154,7 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
         FetchedPage page;
         try
         {
-            (page, fromCache, fetchedAt) = await cache.GetOrFetchAsync(key, refresh, () => FetchAsync(uri, format, o, context.Model, ct), IsCacheable).ConfigureAwait(false);
+            (page, fromCache, fetchedAt) = await cache.GetOrFetchAsync(key, refresh, token => FetchAsync(uri, format, o, context.Model, token), IsCacheable, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
