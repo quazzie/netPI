@@ -153,13 +153,19 @@ internal sealed partial class ServerManager : IAsyncDisposable
             if (m["method"]?.GetValue<string>() is "notifications/tools/list_changed" or "notifications/resources/list_changed")
                 state.Commands.Writer.TryWrite(new Command("catalog-refresh", false));
         };
+        // A close can land before this candidate becomes state.Connection (while the catalogs are listed): the handler then
+        // finds it is not current, so the swap below re-checks the flag. Either side may act; a second reconnect is harmless.
+        var closed = 0;
+        void Lost()
+        {
+            state.Disconnected = true;
+            state.Commands.Writer.TryWrite(new Command("transport-lost", true));
+        }
         candidate.Transport.Closed += _ =>
         {
-            if (ReferenceEquals(state.Connection, candidate))
-            {
-                state.Disconnected = true;
-                state.Commands.Writer.TryWrite(new Command("transport-lost", true));
-            }
+            Volatile.Write(ref closed, 1);
+            Interlocked.MemoryBarrier();
+            if (ReferenceEquals(state.Connection, candidate)) Lost();
         };
         try
         {
@@ -170,6 +176,8 @@ internal sealed partial class ServerManager : IAsyncDisposable
                 Limit("mcp.maxResourceCatalogChars", 2_000_000, 4096, 16_000_000), timeout.Token).ConfigureAwait(false);
             var old = state.Connection;
             state.Connection = candidate; state.Disconnected = false; state.Generation++;
+            Interlocked.MemoryBarrier();
+            if (Volatile.Read(ref closed) == 1) Lost();
             Apply(state, raw, resources, reason);
             SetStatus(state, "connected", null);
             if (old is not null) { await WaitIdleAsync(state).ConfigureAwait(false); await old.DisposeAsync().ConfigureAwait(false); }
@@ -290,7 +298,7 @@ internal sealed partial class ServerManager : IAsyncDisposable
                     try { command = await state.Commands.Reader.ReadAsync(wait.Token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested) { command = new Command("catalog-refresh", state.Status != "connected" || state.Disconnected); }
                 }
-                if (ct.IsCancellationRequested) break;
+                if (ct.IsCancellationRequested) { command.Done?.TrySetCanceled(ct); break; }
                 try
                 {
                     if (command.Reconnect || state.Connection is null || state.Disconnected)
