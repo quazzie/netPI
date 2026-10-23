@@ -60,6 +60,7 @@ internal static class ShellSsh
         ["scp"] = "cDFiJlOoPSX",
         ["sftp"] = "BbcDFiJlOoPRSsX",
     };
+    private static readonly HashSet<string> Keywords = new(StringComparer.Ordinal) { "do", "then", "else", "elif", "if", "while", "until", "!", "{" };
     private static readonly HashSet<string> Wrappers = new(StringComparer.OrdinalIgnoreCase) { "sudo", "env", "command", "exec", "time", "nohup", "&" };
 
     /// <summary>The first part of <paramref name="command"/> that starts ssh, scp or sftp to one of <paramref name="hosts"/>, or null.</summary>
@@ -70,8 +71,9 @@ internal static class ShellSsh
         {
             var words = Words(part);
             var i = 0;
-            // what a shell starts first: past variable assignments and wrappers (sudo and its options, env, exec, …)
-            while (i < words.Count && (Wrappers.Contains(words[i]) || IsAssignment(words[i]) || (i > 0 && Wrappers.Contains(words[i - 1]) && words[i].StartsWith('-'))))
+            // what a shell starts first: past variable assignments, wrappers (sudo and its options, env, exec, …) and the
+            // keyword of a compound command (do, then, if, …)
+            while (i < words.Count && (Keywords.Contains(words[i]) || Wrappers.Contains(words[i]) || IsAssignment(words[i]) || (i > 0 && Wrappers.Contains(words[i - 1]) && words[i].StartsWith('-'))))
                 i++;
             if (i >= words.Count) continue;
             var program = Program(words[i]);
@@ -167,7 +169,7 @@ internal static class ShellSsh
         return eq > 0 && w[..eq].All(c => char.IsLetterOrDigit(c) || c == '_');
     }
 
-    /// <summary>The command split where a shell starts another one: new lines, <c>;</c>, <c>&amp;&amp;</c>, <c>||</c>, <c>|</c>, <c>&amp;</c> (not inside quotes, not <c>2&gt;&amp;1</c>).</summary>
+    /// <summary>The command split where a shell starts another one: new lines, <c>;</c>, <c>&amp;&amp;</c>, <c>||</c>, <c>|</c>, <c>&amp;</c>, <c>(</c>, <c>)</c> and a backtick (a subshell or a substitution; not inside quotes, not <c>2&gt;&amp;1</c>).</summary>
     internal static List<string> Parts(string command)
     {
         var parts = new List<string>();
@@ -184,7 +186,7 @@ internal static class ShellSsh
             }
             if (c is '"' or '\'') { quote = c; sb.Append(c); continue; }
             var redirect = c == '&' && i > 0 && command[i - 1] == '>';
-            if (c is '\n' or '\r' or ';' or '|' || (c == '&' && !redirect))
+            if (c is '\n' or '\r' or ';' or '|' or '(' or ')' or '`' || (c == '&' && !redirect))
             {
                 parts.Add(sb.ToString());
                 sb.Clear();
