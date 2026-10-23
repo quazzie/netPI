@@ -551,7 +551,9 @@ turns it into a grant. The question card in your own chats has "Always for your 
 the chats of schedules and webhooks (and their subagents) the plugin also keeps a **journal** of every call that may
 change something (any call its tool does not mark read-only), with a copy of each file a `write` or `edit` changed (Undo
 in the tab: only those tools' files — a `sed -i`, a script or an `ssh run` edit is recorded as the command it was, with no
-copy, because what a command changes cannot be known reliably), and applies the **brakes** below. Your own chats are never
+copy, because what a command changes cannot be known reliably), and applies the **brakes** below. A model that runs its
+own tools (the Claude CLI) is only journaled, after each call: its calls are never asked first, so the brakes, the tainted
+block and the copies do not reach them. Your own chats are never
 journaled or braked. Disabled, none of it runs: the guardrails ask as before, and grants and journal wait in the plugin's
 data. Its settings are in Settings → Safety, beside the guardrails.
 
