@@ -122,7 +122,7 @@
   <div class="fld">
     <span class="f-label">Repeat</span>
     <Segmented
-      value={f.kind}
+      bind:value={f.kind}
       fit={false}
       options={[
         { value: 'once', label: 'Once' },
