@@ -30,7 +30,7 @@
   const value = $derived(getAt(doc, s.key));
   const isSet = $derived(value !== undefined && value !== null);
   const current = $derived(isSet ? value : s.default);
-  const stacked = $derived(['text', 'pick', 'pickText', 'agents'].includes(s.type) || (s.type === 'string' && s.options?.length > 0));
+  const stacked = $derived(s.type === 'text' || (s.type === 'string' && s.options?.length > 0));
   // an agents field: "Any free agent" and the agents, each with its model, free or paid, and whether it can take work now
   const agentChoices = $derived(
     s.type !== 'agents'
@@ -287,10 +287,11 @@
     align-items: flex-start;
     justify-content: flex-start;
   }
-  /* a pick list takes the row, Reset and the menu stay beside it */
-  .stacked .ctl > :global(.np-picklist) {
-    flex: 1;
+  /* a pick list is as wide as its chips, right next to Reset and the menu */
+  .ctl > :global(.np-picklist) {
     width: auto;
+    max-width: 460px;
+    justify-content: flex-end;
   }
   .quick {
     flex-wrap: wrap;
