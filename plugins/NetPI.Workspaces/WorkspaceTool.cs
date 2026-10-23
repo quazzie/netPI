@@ -120,6 +120,12 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
         if (target is null) return ToolResult.Error($"No workspace \"{id}\". Call workspace with action list to see them.");
         if (!target.Managed)
             return ToolResult.Error($"{target.Name} was attached, not created by NetPI, so it is not retired automatically: remove it yourself when it is no longer needed.");
+        // A name or id reaches every workspace of every project: the caller may flag its own (bound to it, or owner), a worker's
+        // it spawned, and nothing of another project, as Switch holds the project.
+        if (context.Project?.Id is { Length: > 0 } projectId && target.ProjectId is { Length: > 0 } targetProject && targetProject != projectId)
+            return ToolResult.Error($"Workspace \"{target.Name}\" belongs to another project than this one.");
+        if (!MayRetire(context, target))
+            return ToolResult.Error($"Workspace \"{target.Name}\" belongs to another worker, not to this session or one it started, so this session does not retire it.");
         var flagged = retirement.Request(target, context.SessionId);
         var problems = retirement.Problems(flagged, context.SessionId);
         var text = problems.Count == 0
@@ -132,6 +138,15 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
             ["workspaceId"] = target.Id, ["requested"] = true,
             ["problems"] = new JsonArray([.. problems.Select(p => (JsonNode)JsonValue.Create(p)!)]),
         });
+    }
+
+    /// <summary>Whether the caller may ask for a workspace's removal: it is bound to it, owns it, or started the session that owns it.</summary>
+    private bool MayRetire(ToolContext context, WorkspaceInfo target)
+    {
+        if (context.Workspace()?.WorkspaceId == target.Id) return true;
+        if (target.OwnerSessionId is not { Length: > 0 } owner) return false;
+        if (owner == context.SessionId) return true;
+        return ctx.Sessions.GetSession(owner)?.ParentSessionId == context.SessionId;
     }
 
     private ToolResult List(SessionInfo? session)

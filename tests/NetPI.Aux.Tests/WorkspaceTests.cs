@@ -38,6 +38,8 @@ public static class WorkspaceTests
         t.Add("workspaces: retire asked mid-run removes the worktree and its merged branch when the run ends", RetireAfterRun);
         t.Add("workspaces: retire waits while a run or a user's answer is pending, and keeps a dirty or unmerged worktree with a notice", RetireKept);
         t.Add("workspaces: retire refuses an attached workspace, and reports what would still block", RetireRefusals);
+        t.Add("workspaces: retiring is refused, and nothing deleted, while git cannot answer (fails, or is missing)", RetireRefusesWhenGitCannotAnswer);
+        t.Add("workspaces: retire by id is refused for another project's workspace and another worker's, allowed for a worker's it started", RetireByIdIsScoped);
         t.Add("workspaces: workspaces.delete whenDone flags and retires once nothing runs; a pending flag is tried at start", RetireWhenDoneRpc);
         t.Add("workspaces: a worker re-tasked after its workspace was retired gets a fresh one or the project root", RetaskAfterRetire);
         t.Add("workspaces: the guard is per spelling: relative, absolute, .. and a symlink into another checkout", GuardSpellings);
@@ -981,6 +983,90 @@ public static class WorkspaceTests
         Directory.CreateDirectory(dir);
         var att = env.Provisioner.Attach(dir, env.Project.Id, "att").Binding!;
         await Check.ThrowsAsync<RpcException>(async () => await delete(new { id = att.WorkspaceId, whenDone = true }, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// A git that fails (exit 128) or is missing answered nothing, and "nothing" is not "clean" or "merged": the worktree with
+    /// uncommitted work stays, with its record, and the refusal says git could not tell (a failed probe once read as no changes).
+    /// </summary>
+    private static async Task RetireRefusesWhenGitCannotAnswer()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("retire with a failing git"); }
+        var w = env.Provision("flaky", "ses_flaky").Binding!;
+        var wip = env.Write(w.Root, "wip.txt", "uncommitted");
+        var record = env.Store.GetWorkspace(w.WorkspaceId)!;
+
+        var fakeDir = T.TempDir("ws-nogit");
+        string failing;
+        if (OperatingSystem.IsWindows())
+        {
+            failing = Path.Combine(fakeDir, "git.cmd");
+            File.WriteAllText(failing, "@exit /b 128\n");
+        }
+        else
+        {
+            failing = Path.Combine(fakeDir, "git");
+            File.WriteAllText(failing, "#!/bin/sh\nexit 128\n");
+            File.SetUnixFileMode(failing, UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+        }
+        var oldExe = GitRunner.Executable;
+        try
+        {
+            foreach (var exe in new[] { failing, Path.Combine(fakeDir, "no-such-git") })
+            {
+                GitRunner.Executable = exe;
+                var (ok, why) = env.Provisioner.CanRetire(record);
+                Check.False(ok, "a worktree was allowed to go while git could not answer");
+                Check.Contains(why!, "could not tell");
+                var (retired, error) = await env.Provisioner.RetireAsync(record);
+                Check.False(retired, "retired while git could not answer");
+                Check.Contains(error!, "could not tell");
+                Check.True(File.Exists(wip), "uncommitted work was deleted while git could not answer");
+                Check.True(env.Store.GetWorkspace(record.Id) is not null, "the record went with it");
+            }
+        }
+        finally { GitRunner.Executable = oldExe; }
+
+        // Git back: the refusal is the real one.
+        var (okAfter, whyAfter) = env.Provisioner.CanRetire(record);
+        Check.False(okAfter);
+        Check.Contains(whyAfter!, "uncommitted changes");
+    }
+
+    private static async Task RetireByIdIsScoped()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("retire by id"); }
+        var tool = new WorkspaceTool(env.Ctx, env.Resolver, env.Ctx.Services.Get<WorkspaceRetirement>()!);
+        var caller = env.Session("caller");
+        async Task<ToolResult> Retire(string id) =>
+            await tool.ExecuteAsync(env.Context(caller), Json(new { action = "retire", id }), CancellationToken.None);
+
+        // Another worker's workspace of the same project.
+        var theirs = env.Provision("theirs", env.Session("stranger").Id).Binding!;
+        var refused = await Retire(theirs.WorkspaceId);
+        Check.True(refused.IsError);
+        Check.Contains(refused.Content, "another worker");
+        Check.False(WorkspaceRetirement.IsFlagged(env.Store.GetWorkspace(theirs.WorkspaceId)!), "flagged though it is not the caller's");
+
+        // A workspace of another project, even one the caller owns.
+        var other = env.Ctx.SessionsFake.CreateProject("Other", env.Root);
+        var foreign = env.Store.CreateWorkspace(new WorkspaceInfo
+        {
+            Name = "foreign", Path = env.Root, ProjectId = other.Id, Kind = "worktree", Managed = true, OwnerSessionId = caller.Id,
+        });
+        var wrongProject = await Retire("foreign");
+        Check.True(wrongProject.IsError);
+        Check.Contains(wrongProject.Content, "another project");
+        Check.False(WorkspaceRetirement.IsFlagged(env.Store.GetWorkspace(foreign.Id)!));
+
+        // A worker the caller started: allowed.
+        var child = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "child", ProjectId = env.Project.Id, ParentSessionId = caller.Id });
+        var mine = env.Provision("mine", child.Id).Binding!;
+        var allowed = await Retire(mine.WorkspaceId);
+        Check.False(allowed.IsError, allowed.Content);
+        Check.True(WorkspaceRetirement.IsFlagged(env.Store.GetWorkspace(mine.WorkspaceId)!));
     }
 
     private static async Task RetaskAfterRetire()

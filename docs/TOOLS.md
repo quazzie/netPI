@@ -482,7 +482,10 @@ disk". When there are none: this session works in the project's folder.
   request. If it still cannot go at the end of the run, the workspace and the flag stay, the owner's chat gets a notice
   with the reason (once per reason), and `workspace.retire { workspaceId, status: 'requested'|'retired'|'kept', reason?,
   sessionId? }` is published; it is tried again at every later run end and at plugin start. An attached (not NetPI-made)
-  workspace is refused. A worker re-tasked after its workspace went works in the project folder, or gets a fresh
+  workspace is refused, and so is one of another project or of another worker: with an `id` the caller may name only the
+  workspace it is bound to, one it owns, or one owned by a session it started. A git that cannot answer (it fails, times
+  out or is missing) is never read as "clean" or "merged": the problem list then says git could not tell, and the
+  worktree is kept. A worker re-tasked after its workspace went works in the project folder, or gets a fresh
   isolated worktree when `agent_spawn` asks for one (a new branch; the retired one is gone).
 
 ```ts
