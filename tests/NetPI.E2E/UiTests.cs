@@ -99,7 +99,13 @@ public static class UiTests
         });
         var stderr = proc.StandardError.ReadToEndAsync();
         try { await proc.WaitForExitAsync(cts.Token); }
-        catch (OperationCanceledException) { if (!proc.HasExited) proc.Kill(true); throw new AssertException($"ui {name} timed out after {timeoutSeconds} s"); }
+        catch (OperationCanceledException)
+        {
+            if (!proc.HasExited) proc.Kill(true);
+            // what the journey had printed is the evidence of where it stuck: nothing else of it is saved on a timeout
+            static string Tail(string text) => string.Join('\n', text.Split('\n').Select(l => l.TrimEnd()).Where(l => l.Length > 0).TakeLast(15));
+            throw new AssertException($"ui {name} timed out after {timeoutSeconds} s\n--- its last output:\n{Tail(await stdout)}\n--- its last errors:\n{Tail(await stderr)}");
+        }
         var output = await stdout;
         var err = await stderr;
         foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());

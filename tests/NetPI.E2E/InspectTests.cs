@@ -225,7 +225,12 @@ public static class InspectTests
         var stdout = proc.StandardOutput.ReadToEndAsync();
         var stderr = proc.StandardError.ReadToEndAsync();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await proc.WaitForExitAsync(cts.Token);
+        try { await proc.WaitForExitAsync(cts.Token); }
+        catch (OperationCanceledException)
+        {
+            if (!proc.HasExited) proc.Kill(true);
+            throw new AssertException($"netpi.mjs {string.Join(' ', args)} timed out after 30 s: {await stdout}{await stderr}");
+        }
         return (proc.ExitCode, await stdout, await stderr);
     }
 }
