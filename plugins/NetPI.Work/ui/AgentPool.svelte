@@ -20,8 +20,6 @@
   const owners = $derived(pool.owners ?? []);
   const waiters = $derived(pool.waiters ?? []);
   const busyCount = $derived(owners.length);
-  // one-line rows once an agent has many instances (the tab would be all slots otherwise)
-  const compact = $derived(capacity > 4);
   // only an agent that is off (and not finishing runs) collapses to one line; the others show their work and one free box
   const off = $derived(!usable && busyCount === 0 && waiters.length === 0);
   const freeCount = $derived(Math.max(0, capacity - busyCount));
@@ -132,7 +130,6 @@
         data-state="busy"
         data-prio={prio(o)}
         data-session={o.sessionId ?? runOf(o)?.sessionId}
-        class:compact
         role="button"
         tabindex="0"
         title={tip(o)}
@@ -143,21 +140,17 @@
         <span class="t">
           <span class="l1 np-line np-baseline">
             <span class="name np-grow">{who(o)}</span>
-            {#if compact && runOf(o)?.isSubagent}<span class="arrow" title="subagent">↳</span>{/if}
-            {#if compact && forWhom(o)}<span class="for">for {forWhom(o)}</span>{/if}
             <Elapsed since={o.since} class="np-mono el" />
           </span>
-          {#if !compact}
-            <span class="l2 np-line np-baseline">
-              {#if runOf(o)?.isSubagent}<span class="arrow" title="subagent">↳</span>{/if}
-              {#if forWhom(o)}<span class="for" title="for {forWhom(o)}">for {forWhom(o)} ·</span>{/if}
-              {#if cmdsOf(o).length}
-                <span class="act cmd np-mono np-grow" title={cmdsOf(o)[0].command}>$ {shortCommand(cmdsOf(o)[0].command)}{#if cmdsOf(o).length > 1}<span class="np-dim"> +{cmdsOf(o).length - 1}</span>{/if}</span>
-              {:else}
-                <span class="act np-grow">{doing(o)}</span>
-              {/if}
-            </span>
-          {/if}
+          <span class="l2 np-line np-baseline">
+            {#if runOf(o)?.isSubagent}<span class="arrow" title="subagent">↳</span>{/if}
+            {#if forWhom(o)}<span class="for" title="for {forWhom(o)}">for {forWhom(o)} ·</span>{/if}
+            {#if cmdsOf(o).length}
+              <span class="act cmd np-mono np-grow" title={cmdsOf(o)[0].command}>$ {shortCommand(cmdsOf(o)[0].command)}{#if cmdsOf(o).length > 1}<span class="np-dim"> +{cmdsOf(o).length - 1}</span>{/if}</span>
+            {:else}
+              <span class="act np-grow">{doing(o)}</span>
+            {/if}
+          </span>
         </span>
         <span class="np-hover-actions"
           ><IconButton icon="stop" title="Stop ({who(o)}); its subagents keep working. Shift: stop them too" size="sm" disabled={stopping === o.agentId || ctx.hasRpc?.('agent.abort') === false} onclick={(e) => stop(e, o)} /></span
@@ -259,9 +252,6 @@
     background: var(--bg-1);
     min-width: 0;
     overflow: hidden;
-  }
-  .slot.compact {
-    height: 24px;
   }
   .slot.free {
     height: 26px;
