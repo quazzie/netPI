@@ -232,6 +232,7 @@ try {
             $env:NETPI_TEST_ROOT = Join-Path ([IO.Path]::GetTempPath()) "netpi-tests-$runId-$s"
             $runRoots += $env:NETPI_TEST_ROOT
             $resultFile = Join-Path $logDir "$stamp-$s.result.json"
+            $suiteDll = Join-Path $repoRoot "tests\NetPI.$s.Tests\bin\$Config\NetPI.$s.Tests.dll"
             $sw = [Diagnostics.Stopwatch]::StartNew()
             $job = Start-Job -ScriptBlock {
                 param($dll, $only, $appDir, $testRoot, $root, $resultFile)
@@ -244,16 +245,18 @@ try {
                 $env:NETPI_TEST_RESULT = $resultFile
                 $out = & dotnet $dll @only 2>&1 | ForEach-Object { "$_" }
                 [pscustomobject]@{ Code = $LASTEXITCODE; Out = $out }
-            } -ArgumentList (Join-Path $repoRoot "tests\NetPI.$s.Tests\bin\$Config\NetPI.$s.Tests.dll"), $Only, $env:NETPI_APP_DIR, $env:NETPI_TEST_ROOT, $repoRoot, $resultFile
+            } -ArgumentList $suiteDll, $Only, $env:NETPI_APP_DIR, $env:NETPI_TEST_ROOT, $repoRoot, $resultFile
             # The result file travels with the job: with -Parallel the $resultFile above is already the next
             # suite's by the time this one finishes, so the post-run block must not read the loop variable.
-            $running[$s] = @{ Job = $job; Sw = $sw; ResultFile = $resultFile }
+            $running[$s] = @{ Job = $job; Sw = $sw; ResultFile = $resultFile; Dll = $suiteDll }
         }
         foreach ($late in @($running.Keys | Where-Object { $running[$_].Job.State -eq 'Running' -and $running[$_].Sw.Elapsed.TotalMinutes -gt $TimeoutMinutes })) {
             Stop-Job $running[$late].Job -ErrorAction SilentlyContinue
-            # the job's own process goes with Stop-Job, the dotnet it started does not
+            # the job's own process goes with Stop-Job, the dotnet it started does not. Matched by this checkout's dll path:
+            # the same suite running in another worktree is somebody else's run and must live
+            $lateDll = $running[$late].Dll
             Get-CimInstance Win32_Process -Filter "Name = 'dotnet.exe'" -ErrorAction SilentlyContinue |
-                Where-Object { $_.CommandLine -like "*NetPI.$late.Tests.dll*" } |
+                Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($lateDll, [StringComparison]::OrdinalIgnoreCase) -ge 0 } |
                 ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
             $running[$late].TimedOut = $true
         }
