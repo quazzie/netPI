@@ -1,7 +1,7 @@
 <script>
   // The Phone tab: whether the listener is up and where, "Pair a phone" (a one-time code, its link and a QR code of it),
   // and the paired phones with a revoke button. The data is the plugin's own RPCs; phone.changed refreshes it.
-  import { useRefresh, Button, IconButton, Empty, ConfirmButton, timeAgo } from '@netpi/kit';
+  import { copyText, useRefresh, Button, IconButton, Empty, ConfirmButton, timeAgo } from '@netpi/kit';
   import { qrSvg } from './qr.js';
 
   let { ctx } = $props();
@@ -66,12 +66,7 @@
     }
   }
   async function copy(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-    } catch {
-      copied = false;
-    }
+    copied = await copyText(text);
   }
 </script>
 

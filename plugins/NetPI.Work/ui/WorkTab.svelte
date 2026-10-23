@@ -356,11 +356,6 @@
     color: var(--info);
     font-size: var(--fs-xs);
   }
-  .nobody {
-    padding: 0 4px;
-    font-size: var(--fs-xs);
-    color: var(--fg-dim);
-  }
   .usage.budget {
     padding: 6px 12px 8px;
     border-bottom: 1px solid var(--border);
@@ -410,11 +405,6 @@
   /* one line tall: the smaller mono figures share the name's baseline without making the line taller */
   .uline {
     height: 1lh;
-  }
-  @container (max-width: 259px) {
-    .cached {
-      display: none;
-    }
   }
   .uprov {
     font-weight: 600;

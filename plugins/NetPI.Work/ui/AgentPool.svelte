@@ -376,11 +376,6 @@
     display: flex;
     width: 100%;
   }
-  .nobody {
-    padding: 0 4px;
-    font-size: var(--fs-xs);
-    color: var(--fg-dim);
-  }
   .cmd {
     font-size: 11px;
     color: var(--fg-dim);

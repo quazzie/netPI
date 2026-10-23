@@ -44,3 +44,18 @@ test('NAME=VALUE lines and back', () => {
   assert.equal(pairsToText({ A: '1', B: '2' }), 'A=1\nB=2');
   assert.equal(pairsToText(null), '');
 });
+
+test('an empty tools or resources list ("none exposed") survives a save, until it is cleared on purpose', () => {
+  const cfg = { enabled: true, transport: 'stdio', command: 'x', tools: [], resources: [] };
+  const form = configToForm(cfg);
+  assert.equal(form.toolsNone, true);
+  assert.equal(form.resourcesNone, true);
+  const kept = formToConfig({ ...form, callTimeoutMs: '1000' }, cfg).config;
+  assert.deepEqual(kept.tools, []);
+  assert.deepEqual(kept.resources, []);
+  const all = formToConfig({ ...form, toolsNone: false, resourcesNone: false }, cfg).config;
+  assert.equal('tools' in all, false);
+  assert.equal('resources' in all, false);
+  assert.deepEqual(formToConfig({ ...form, tools: 'a' }, cfg).config.tools, ['a']);
+  assert.equal(configToForm({ command: 'x' }).toolsNone, false);
+});

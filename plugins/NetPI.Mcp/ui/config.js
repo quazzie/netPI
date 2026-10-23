@@ -37,7 +37,10 @@ export function configToForm(cfg = {}) {
     connectTimeoutMs: cfg.connectTimeoutMs ?? '',
     callTimeoutMs: cfg.callTimeoutMs ?? '',
     tools: list(cfg.tools),
+    // an empty list is "none exposed", which an empty box cannot say: keep it as its own flag
+    toolsNone: Array.isArray(cfg.tools) && cfg.tools.length === 0,
     resources: list(cfg.resources),
+    resourcesNone: Array.isArray(cfg.resources) && cfg.resources.length === 0,
     pinned: list(cfg.pinned),
     readOnly: list(cfg.readOnly),
   };
@@ -79,5 +82,8 @@ export function formToConfig(f, base = {}) {
     else config[key] = n;
   }
   for (const key of ['tools', 'resources', 'pinned', 'readOnly']) if (lines(f[key]).length) config[key] = lines(f[key]);
+  // an absent list exposes everything and an empty one nothing: a box left empty keeps "nothing" until it is cleared on purpose
+  if (f.toolsNone && !config.tools) config.tools = [];
+  if (f.resourcesNone && !config.resources) config.resources = [];
   return { config, errors };
 }

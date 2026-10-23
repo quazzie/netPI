@@ -60,7 +60,6 @@
       [list, projects] = await Promise.all([ctx.rpc('ideas.list', {}), ctx.rpc('projects.list', {}).catch(() => [])]);
       error = '';
       ctx.rpc('ideas.autoRefine.status', {}).then((r) => (autoRefine = r ?? null)).catch(() => (autoRefine = null));
-      ctx.rpc('ideas.capabilities', {}).then((c) => (canMeaning = !!c?.embeddings)).catch(() => (canMeaning = false));
     } catch (e) {
       error = e?.message ?? String(e);
       list = null;
@@ -87,6 +86,7 @@
   }
 
   onMount(() => {
+    ctx.rpc('ideas.capabilities', {}).then((c) => (canMeaning = !!c?.embeddings)).catch(() => (canMeaning = false));
     const offChange = ctx.app.onChange(() => {
       const pid = ctx.app.activeProject?.id ?? null;
       if (pid !== activeProjectId) {
@@ -207,7 +207,7 @@
       try {
         r = await ctx.rpc('ideas.update', params);
       } catch (e) {
-        if (/conflict|changed since/i.test(e?.message ?? '')) {
+        if (e?.code === 'conflict') {
           conflict = { id, message: e.message };
           ctx.app.toast('This idea changed somewhere else - your text is still here. Reload it and apply your change again.', 'error');
           return null;

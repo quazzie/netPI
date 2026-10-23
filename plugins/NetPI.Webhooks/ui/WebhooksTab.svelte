@@ -3,7 +3,7 @@
   // new or re-keyed webhook is shown once, here, with a ready curl line. The data is the plugin's own RPCs; projects and
   // agents are other plugins' reads, and each degrades on its own when absent. webhooks.changed (unscoped) is the refresh
   // backbone; webhooks.ran is session-scoped to the chat a delivery started, so it is only a hint.
-  import { useRefresh, Button, IconButton, Empty } from '@netpi/kit';
+  import { copyText, useRefresh, Button, IconButton, Empty } from '@netpi/kit';
   import WebhookRow from './WebhookRow.svelte';
   import WebhookForm from './WebhookForm.svelte';
   import { curlLine } from './model.js';
@@ -62,12 +62,7 @@
   const command = $derived(reveal ? curlLine(base, reveal.hook.id, reveal.token) : '');
 
   async function copy(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-    } catch {
-      copied = false;
-    }
+    copied = await copyText(text);
   }
 </script>
 

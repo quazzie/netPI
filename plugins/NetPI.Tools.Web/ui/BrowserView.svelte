@@ -28,6 +28,15 @@
     visible = v;
     if (v && !ws) connect();
     if (v) loadExtension();
+    else disconnect(); // a hidden view keeps no socket: the server stops the screencast with its last viewer
+  }
+
+  function disconnect() {
+    clearTimeout(retryTimer);
+    const socket = ws;
+    ws = null;
+    connected = false;
+    socket?.close();
   }
 
   function connect() {
@@ -59,7 +68,8 @@
       } else if (m.type === 'error') error = m.message;
     };
     socket.onclose = () => {
-      if (ws === socket) ws = null;
+      if (ws !== socket) return; // closed by disconnect(), or replaced by a newer socket
+      ws = null;
       connected = false;
       if (closed || !visible) return;
       // the plugin reloaded, or the server restarted: come back

@@ -19,8 +19,8 @@
   }
   // svelte-ignore state_referenced_locally
   const tab = useRefresh(ctx, { load, events: ['mcp.toolsChanged', 'mcp.serverChanged'] });
-  /** Called by main.js (onShow): the list is stale after the tab was hidden. */
-  export function setVisible(v) { if (v) tab.refresh(); }
+  /** Called by main.js (onShow / onHide): what lands while the tab is hidden only marks it stale, and showing it loads once. */
+  export function setVisible(v) { tab.setVisible(v); }
   /** A server is a disclosure: its tools show while it is the chosen one, a second click closes it, and none is open at the start. */
   async function choose(server) {
     if (selected === server.id) { selected = ''; query = ''; return; }

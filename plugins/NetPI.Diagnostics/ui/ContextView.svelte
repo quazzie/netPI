@@ -1,6 +1,6 @@
 <script>
   import { onMount, untrack } from 'svelte';
-  import { Section, Empty, IconButton, Badge, TimeAgo, bytes, tokens, copyText, desktop, basename } from '@netpi/kit';
+  import { Section, useRefresh, Empty, IconButton, Badge, TimeAgo, bytes, tokens, copyText, desktop, basename } from '@netpi/kit';
 
   /** What the model sees for the active session: context.preview + agentsmd.list + skills.list, and how its tools got this way. */
   let { ctx, visible = true } = $props();
@@ -13,13 +13,13 @@
   let error = $state('');
   let loading = $state(false);
   let full = $state(false);
-  let disposed = false;
   const optional = (method, params) => ctx.hasRpc?.(method) === false ? Promise.resolve(null) : ctx.rpc(method, params);
 
   async function load() {
     sid = ctx.app.activeSessionId;
     if (!sid) {
       preview = files = skills = toolSets = null;
+      loading = false;
       return;
     }
     loading = true;
@@ -30,7 +30,7 @@
       optional('skills.list', { sessionId: id }),
       optional('diag.toolsets', { sessionId: id }),
     ]);
-    if (disposed || id !== ctx.app.activeSessionId) return;
+    if (!tab.alive || id !== ctx.app.activeSessionId) return;
     preview = p.status === 'fulfilled' ? p.value : null;
     files = f.status === 'fulfilled' ? f.value : null;
     skills = k.status === 'fulfilled' ? k.value : null;
@@ -39,14 +39,12 @@
     loading = false;
   }
 
-  onMount(() => {
-    load();
-    const off = ctx.app.onChange(() => {
-      if (ctx.app.activeSessionId !== sid) load();
-    });
-    const changes = ctx.on('rpc.changed', () => load());
-    return () => { disposed = true; off(); changes(); };
-  });
+  // one load at a time (an older answer cannot land after a newer one), and none while the tab is hidden
+  // svelte-ignore state_referenced_locally
+  const tab = useRefresh(ctx, { load, events: ['rpc.changed'], visible: () => visible });
+  onMount(() => ctx.app.onChange(() => {
+    if (ctx.app.activeSessionId !== sid) tab.schedule(0);
+  }));
 
   const session = $derived(sid ? ctx.app.activeSession : null);
   const promptTokens = $derived(preview ? Math.round((preview.systemPrompt?.length ?? 0) / 3.6) : 0);
@@ -58,7 +56,7 @@
 {:else}
   <div class="head">
     <div class="title np-ellipsis">{session?.title || 'Session'}</div>
-    <IconButton icon="refresh" title="Refresh" size="sm" disabled={loading} onclick={load} />
+    <IconButton icon="refresh" title="Refresh" size="sm" disabled={loading} onclick={tab.refresh} />
   </div>
   {#if loading && !preview}
     <Empty><span class="np-spinner"></span></Empty>
