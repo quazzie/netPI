@@ -215,7 +215,7 @@ internal sealed class ClaudeCliStream(MessageAssembler asm)
         {
             var status = o.Int("api_error_status");
             // a failure before any work (a session that is gone) puts its reason in errors[], with an empty result
-            var errors = o.Arr("errors") is { } arr ? string.Join("; ", arr.Select(e => e?.GetValue<string>()).Where(e => !string.IsNullOrWhiteSpace(e))) : "";
+            var errors = o.Arr("errors") is { } arr ? string.Join("; ", arr.Select(e => e is JsonValue v && v.TryGetValue<string>(out var s) ? s : e?.ToJsonString()).Where(e => !string.IsNullOrWhiteSpace(e))) : "";
             var msg = !string.IsNullOrWhiteSpace(text) ? text! : errors.Length > 0 ? errors : $"Claude CLI reported an error ({o.Str("subtype")})";
             if (errors.Contains("No conversation found", StringComparison.OrdinalIgnoreCase))
                 throw new ModelException($"Claude CLI: {msg}", false, null, SessionNotFound);
