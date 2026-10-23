@@ -143,8 +143,7 @@
             <Elapsed since={o.since} class="np-mono el" />
           </span>
           <span class="l2 np-line np-baseline">
-            {#if runOf(o)?.isSubagent}<span class="arrow" title="subagent">↳</span>{/if}
-            {#if forWhom(o)}<span class="for" title="for {forWhom(o)}">for {forWhom(o)} ·</span>{/if}
+            {#if runOf(o)?.isSubagent}<span class="arrow" title={forWhom(o) ? `subagent of ${forWhom(o)}` : 'subagent'}>↳</span>{/if}
             {#if cmdsOf(o).length}
               <span class="act cmd np-mono np-grow" title={cmdsOf(o)[0].command}>$ {shortCommand(cmdsOf(o)[0].command)}{#if cmdsOf(o).length > 1}<span class="np-dim"> +{cmdsOf(o).length - 1}</span>{/if}</span>
             {:else}
@@ -329,15 +328,6 @@
   .arrow {
     flex: none;
     color: var(--fg-dim);
-  }
-  .for {
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--fg-dim);
-    font-size: var(--fs-xs);
   }
   .free .l1 {
     color: var(--ok);

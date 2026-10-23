@@ -700,7 +700,7 @@ defaults of this layout apply). Top to bottom: summary, budget, Off, agents, Que
   and `3 free`. A job keeps its place in the order (`placeSlots`); a finished one leaves and the rows below move up.
   Above 4 instances the rows are one line each. A busy row is the run holding the instance (the `owners` of `agents.list`
   joined to the runs by run id): line 1 the chat title (never squeezed below 8 characters) and the elapsed time, line 2
-  `↳` for a subagent, `for <chat>` for the chat it works for, then the activity — or, while the chat runs a foreground
+  `↳` for a subagent (its tooltip names the chat it works for), then the activity — or, while the chat runs a foreground
   shell command, the command (`$ dotnet build …`). Priority is the row's left edge (amber high, red critical, dotted low, dimmer dotted background),
   the tooltip names it. Clicking opens the session, the hover button stops that run alone (`agent.abort { sessionId,
   subagents: false }`; Shift+click stops its subagents too). Under the rows, only when something is queued for the agent,
