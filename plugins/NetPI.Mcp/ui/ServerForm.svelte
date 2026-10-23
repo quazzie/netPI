@@ -132,7 +132,8 @@
           </div>
           <div class="fld">
             <span class="f-label">Only these tools</span>
-            <PickList value={lines(f.tools)} candidates={toolChoices} placeholder="Every tool the server offers" label="Only these tools" onchange={(v) => (f.tools = v.join('\n'))} />
+            <PickList value={lines(f.tools)} candidates={toolChoices} placeholder={f.toolsNone ? 'No tools exposed' : 'Every tool the server offers'} label="Only these tools" onchange={(v) => { f.tools = v.join('\n'); f.toolsNone = false; }} />
+            {#if f.toolsNone}<button type="button" class="np-btn np-btn-sm np-btn-ghost" onclick={() => (f.toolsNone = false)}>Expose every tool</button>{/if}
           </div>
           <div class="fld">
             <span class="f-label">Schemas always in the chat</span>
@@ -144,7 +145,8 @@
           </div>
           <label class="fld">
             <span class="f-label">Resources</span>
-            <textarea class="np-input np-mono" rows="2" bind:value={f.resources} placeholder="a URI, or a prefix ending in *; empty = all" spellcheck="false"></textarea>
+            <textarea class="np-input np-mono" rows="2" bind:value={f.resources} oninput={() => (f.resourcesNone = false)} placeholder={f.resourcesNone ? 'none exposed' : 'a URI, or a prefix ending in *; empty = all'} spellcheck="false"></textarea>
+            {#if f.resourcesNone}<button type="button" class="np-btn np-btn-sm np-btn-ghost" onclick={() => (f.resourcesNone = false)}>Expose every resource</button>{/if}
           </label>
         </div>
       </Collapsible>
