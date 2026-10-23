@@ -1,6 +1,8 @@
 // Images travel as base64 inside one JSON envelope on the WebSocket, so what fits is the host's message limit
 // (app.info.maxMessageBytes, WsHub.MaxMessageBytes), not the file size: a 1.5 MB screenshot becomes ~2 MB of base64
 // and used to be cut off mid-send, which the user saw as "could not send".
+import { bytes } from './format.js';
+
 const FALLBACK_LIMIT = 2 * 1024 * 1024; // the host's WsHub.MaxMessageBytes, until app.info arrives
 const ENVELOPE_SLACK = 8 * 1024; // the JSON around the images: ids, text, escaping
 const RAW_FILE_LIMIT = 24 * 1024 * 1024; // a bigger file is refused outright rather than decoded
@@ -20,9 +22,6 @@ export function imageBudget(limit) {
 export function payloadBytes(images) {
   return (images ?? []).reduce((n, i) => n + (i?.data?.length ?? 0), 0);
 }
-
-export const formatBytes = (n) =>
-  n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 
 function readAsDataUrl(file) {
   return new Promise((resolve) => {
@@ -86,7 +85,7 @@ export async function prepareImage(file, limit) {
   if (!file?.type?.startsWith('image/')) return { image: null, note: null };
   const name = file.name || 'pasted image';
   if (file.size > RAW_FILE_LIMIT) {
-    return { image: null, note: `${name} is ${formatBytes(file.size)} — too large to attach` };
+    return { image: null, note: `${name} is ${bytes(file.size)} — too large to attach` };
   }
 
   const budget = imageBudget(limit);
@@ -122,12 +121,12 @@ export async function prepareImage(file, limit) {
         if (encoded.length > budget) continue;
         return {
           image: { mediaType: type, data: encoded, url, name },
-          note: `${name} was ${formatBytes(file.size)} — shrunk to ${formatBytes(encoded.length)} to fit`,
+          note: `${name} was ${bytes(file.size)} — shrunk to ${bytes(encoded.length)} to fit`,
         };
       }
       scale *= 0.7; // still too big at this size: try a smaller one before giving up
     }
-    return { image: null, note: `${name} (${formatBytes(file.size)}) does not fit in a message — attach a smaller image` };
+    return { image: null, note: `${name} (${bytes(file.size)}) does not fit in a message — attach a smaller image` };
   } finally {
     source.close?.();
   }

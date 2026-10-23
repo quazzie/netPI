@@ -1,10 +1,10 @@
 <script>
+  import { bytes } from '../../lib/format.js';
   /** An image the agent showed with show_image. It stays visible when the run's steps collapse; a click enlarges it. */
   let { item, onimage } = $props();
   const d = $derived(item.result?.details ?? {});
   const src = $derived(d.data ? `data:${d.mediaType};base64,${d.data}` : '');
   let size = $state('');
-  const kb = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 </script>
 
 <figure class="shown">
@@ -15,7 +15,7 @@
   {/if}
   <figcaption>
     {#if d.caption}<span class="cap">{d.caption}</span>{/if}
-    <span class="meta">{[d.name, size, d.bytes ? kb(d.bytes) : ''].filter(Boolean).join(' · ')}</span>
+    <span class="meta">{[d.name, size, d.bytes ? bytes(d.bytes) : ''].filter(Boolean).join(' · ')}</span>
   </figcaption>
 </figure>
 

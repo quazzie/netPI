@@ -9,7 +9,7 @@ import { toast, syncUiStateFromHost, composer, openView } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick } from '../notify.js';
-import { firstLine as firstLineOf } from '../format.js';
+import { firstLine as firstLineOf, bytes as formatBytes } from '../format.js';
 import { BUSY } from '../runStatus.js';
 
 const firstLine = (text) => firstLineOf(text, 160); // notification bodies
@@ -17,7 +17,7 @@ import { loadAsks, askEvent, askingSessionIds, budgetStop, pruneSession } from '
 import { loadPlans, planEvent, planAskingSessionIds, prunePlans } from './plans.svelte.js';
 import { loadScheduleProposals, scheduleEvent, pruneScheduleProposals, proposalSessionIds } from './schedules.svelte.js';
 import { welcomeIdeas } from './welcomeIdeas.svelte.js';
-import { formatBytes, payloadBytes, sendBudget } from '../images.js';
+import { payloadBytes, sendBudget } from '../images.js';
 
 const TABS_KEY = 'netpi.openTabs';
 

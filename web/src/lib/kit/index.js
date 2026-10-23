@@ -23,7 +23,7 @@ export { default as Pips } from './Pips.svelte';
 export { timeAgo, duration, tokens, usd, bytes, relPath, basename, truncate, stamp } from '../format.js';
 // Image handling for anything that attaches one (the composer, the ideas tab): shrink to fit a message, refuse
 // politely, and say what happened. Browser-only (canvas), which is fine — the kit is UI.
-export { prepareImage, imageBudget, sendBudget, payloadBytes, formatBytes } from '../images.js';
+export { prepareImage, imageBudget, sendBudget, payloadBytes } from '../images.js';
 export { host, renderMarkdown, confirm, copyText, desktop } from './host.js';
 // The plugin tab lifecycle: createTab(Component) is what a main.js exports, useRefresh is the load/poll loop behind it.
 export { createTab } from './tab.js';

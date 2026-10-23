@@ -9,7 +9,8 @@
   import { toast } from '../../lib/state/ui.svelte.js';
   import { agentList, ANY } from '../../lib/agents.js';
   import AgentSelect from '../../lib/kit/AgentSelect.svelte';
-  import { prepareImage, formatBytes } from '../../lib/images.js';
+  import { prepareImage } from '../../lib/images.js';
+  import { bytes as formatBytes } from '../../lib/format.js';
   import { IDEA_STATUSES, IDEA_PRIORITIES, IDEA_MAX_IMAGES, parseTags } from '../../lib/ideas.js';
 
   /**
