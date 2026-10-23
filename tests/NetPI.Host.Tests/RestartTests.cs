@@ -36,6 +36,24 @@ public static class RestartTests
             server.Kernel.Plugins.Gate.EndApply();
         });
 
+        r.Add("restart: disposed while the restart is announced, no successor starts", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("restart-plugins"));
+            var app = T.TempDir("restart-app");
+            var restarts = 0;
+            var announced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var sub = server.Events.Subscribe("app.restarting", _ => announced.TrySetResult());
+            var w = new RestartWhenIdle(server.Kernel, () => { Interlocked.Increment(ref restarts); return Task.CompletedTask; },
+                tick: Timeout.InfiniteTimeSpan, announce: TimeSpan.FromSeconds(1), quiet: TimeSpan.Zero, appDir: app);
+            File.WriteAllText(Path.Combine(app, RestartWhenIdle.MarkerName), "not json");
+            w.Check();
+            await announced.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            w.Dispose();
+            await Task.Delay(1500);
+            Check.Equal(0, restarts, "the restart did not run after Dispose");
+            server.Kernel.Plugins.Gate.EndApply();
+        });
+
         r.Add("restart: a run (a hold on the reload gate) and then a client's change keep it waiting; a plugin's own call does not", async () =>
         {
             await using var server = await PluginTests.StartAsync(T.TempDir("restart-plugins"));

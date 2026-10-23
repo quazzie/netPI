@@ -134,6 +134,8 @@ public static class PluginTests
             var info = server.Plugins.List().Single(p => p.Id == "test.sample");
             Check.Equal("running", info.State);
             Check.Equal(2, info.LoadCount);
+            // the state flips before the previous version is retired (its bus lines drain first): wait for that
+            await Wait.Until(() => server.Kernel.Tools.Registrations.Count(t => t.Tool.Definition.Name == "sample_echo") == 1, "the previous version is retired", 10_000);
             Check.Equal("v2|test.sample|1|1", Inspect(server), "registrations replaced, not duplicated");
             Check.Equal("hello v2", await HttpGetAsync(server, "/api/p/test.sample/hello"));
             Check.Contains(await PingAsync(server), "\"version\":\"v2\"");

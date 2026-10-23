@@ -171,7 +171,8 @@ public static class ToolResultLimit
     public static int Fit(ISettings? settings, int own, int room = 1000)
     {
         var limit = Get(settings);
-        return limit > 0 ? Math.Clamp(limit - room, 1024, own) : own;
+        // never above the tool's own cap, and never a range Clamp refuses (own under the 1024 floor)
+        return limit > 0 ? Math.Min(own, Math.Max(Math.Min(1024, own), limit - room)) : own;
     }
 }
 

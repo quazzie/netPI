@@ -26,7 +26,7 @@ internal static class Program
     {
         // a restart by itself (NetPiServerOptions.Restart): the process before this one exits first
         var original = args;
-        args = Successor.WaitForPredecessor(args, out var successor);
+        args = Successor.WaitForPredecessor(args, out _);
         var options = new NetPiServerOptions();
         var plugins = new List<string>();
         var open = false;
@@ -61,7 +61,7 @@ internal static class Program
         options.ExtraPluginDirs = plugins;
         // The environment keeps the token out of argv (visible to every local user on a shared box through /proc).
         options.Token ??= Environment.GetEnvironmentVariable(Successor.TokenVariable);
-        if (successor) Environment.SetEnvironmentVariable(Successor.TokenVariable, null); // passed down, not on to what this process starts
+        Environment.SetEnvironmentVariable(Successor.TokenVariable, null); // never on to what this process starts (git, LSP, browser)
 
         using var stop = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>

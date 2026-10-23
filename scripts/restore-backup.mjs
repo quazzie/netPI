@@ -17,10 +17,11 @@ function inside(dir, name) {
   return full;
 }
 
-/** An idea image belongs at one plain file name inside the images directory of the home, and nowhere else. */
+/** An idea image belongs at one plain file name inside the images directory of the home, and nowhere else: a name that
+ *  is plain for POSIX but climbs on Windows (a backslash, a drive letter) is refused on every platform. */
 function imageTarget(name) {
   const parts = typeof name === 'string' ? name.split('/') : [];
-  if (parts.length !== 2 || parts[0] !== 'idea-images' || !parts[1] || parts[1] === '.' || parts[1] === '..' || parts[1] !== path.posix.basename(parts[1]))
+  if (parts.length !== 2 || parts[0] !== 'idea-images' || !parts[1] || parts[1] === '.' || parts[1] === '..' || parts[1] !== path.posix.basename(parts[1]) || parts[1] !== path.win32.basename(parts[1]))
     throw new Error(`The manifest names an idea image at ${JSON.stringify(name)}, which is not a file of the images directory`);
   return parts[1];
 }

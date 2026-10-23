@@ -333,6 +333,31 @@ public static class ModelCatalogTests
             Check.True(await catalog.FindAsync("held/n") is not null, "a later read sees what the refresh listed");
             Check.Equal(2, held.CallCount, "one refresh for the stale cache, not one per read");
         });
+        r.Add("models: a change that arrives while a refresh is running starts the next refresh when that one ends, with no read needed", async () =>
+        {
+            var dir = T.TempDir("models");
+            await using var bus = new EventBus(NullLogger.Instance);
+            using var settings = new SettingsStore(Path.Combine(dir, "settings.json"), NullLogger.Instance);
+            var services = new ServiceRegistry();
+            using var catalog = new ModelCatalog(services, settings, bus, NullLogger.Instance);
+            var held = new HeldProvider("held");
+            using var reg = services.Register<IModelProvider>(held);
+            var first = catalog.ListAsync(refresh: true);
+            await Wait.Until(() => held.CallCount >= 1, "the first listing reached the provider");
+            held.Call(0).TrySetResult([Model("held", "m")]);
+            await first;
+
+            catalog.Invalidate();
+            _ = catalog.FindAsync("held/m");   // starts the background refresh, which the provider holds
+            await Wait.Until(() => held.CallCount >= 2, "the background refresh reached the provider");
+            catalog.Invalidate();              // the change this listing may predate
+            await Task.Delay(700);             // the debounced refresh fires meanwhile and finds one in flight
+            Check.Equal(2, held.CallCount, "it started nothing beside the one in flight");
+            held.Call(1).TrySetResult([Model("held", "m")]);
+            await Wait.Until(() => held.CallCount >= 3, "the refresh that ended starts the next one itself");
+            held.Call(2).TrySetResult([Model("held", "m")]);
+        });
+
         r.Add("models: stream normalizes messages and runs middleware lowest Order outermost", async () =>
         {
             var dir = T.TempDir("models");

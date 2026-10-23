@@ -163,7 +163,9 @@ public static class SqliteTests
             db.Execute("INSERT INTO u(name) VALUES('a')");
             var ex = Check.Throws<SqliteException>(() => db.Execute("INSERT INTO u(name) VALUES('a')"));
             Check.Contains(ex.Message, "UNIQUE constraint failed");
-            Check.Contains(ex.Message, "INSERT INTO u(name) VALUES('a')");
+            Check.False(ex.Message.Contains("INSERT INTO"), "the SQL is not part of the message a client or the model reads");
+            Check.Contains(ex.ToString(), "INSERT INTO u(name) VALUES('a')");
+            Check.Contains(ex.Sql ?? "", "INSERT INTO u(name) VALUES('a')");
             Check.Equal(19, ex.PrimaryCode);
             var syntax = Check.Throws<SqliteException>(() => db.Query("SELEC nonsense", null, x => 1));
             Check.Contains(syntax.Message, "syntax error");

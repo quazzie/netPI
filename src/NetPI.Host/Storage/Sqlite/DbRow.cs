@@ -4,7 +4,6 @@ namespace NetPI.Host.Storage.Sqlite;
 internal interface ISqlRow
 {
     int FieldCount { get; }
-    string GetName(int ordinal);
     int Ordinal(string name);
     bool IsNull(string name);
     long GetInt64(string name);

@@ -552,6 +552,13 @@ public static class BackupTests
                 var refused = Path.Combine(home, "restored-tampered");
                 Check.True(await RunRestoreAsync(repo, tampered, refused) != 0, "the restore script refuses it too");
                 Check.False(Directory.Exists(refused), "verify before touching destination");
+
+                // backslashes climb on Windows although they are plain characters to POSIX path logic
+                manifest["ideaImages"]!.AsObject()["idea-images.img-abc12345.png"] = "idea-images/..\\..\\escape.png";
+                File.WriteAllText(Path.Combine(tampered, "manifest.json"), manifest.ToJsonString());
+                var refusedBackslash = Path.Combine(home, "restored-backslash");
+                Check.True(await RunRestoreAsync(repo, tampered, refusedBackslash) != 0, "the restore script refuses a backslash target");
+                Check.False(Directory.Exists(refusedBackslash), "and touches no destination for it");
             }
             finally { await plugin.StopAsync(default); scope.DisposeAll(); }
         });
