@@ -8,8 +8,8 @@ export const asks = {
   pending: new SvelteMap(), // question id -> { id, sessionId, callId, agentId, agentName, questions, askedAt }
   drafts: new SvelteMap(), // question id -> string[][]: the options picked, per question
   closed: new SvelteMap(), // question id -> { status: answered|steered|withdrawn|cancelled, answers, text }
-  approvals: new SvelteMap(), // approvalId -> { sessionId, callId, agentId, tool, kind: command|path, subject, rule, askedAt, opinion?, reason? (the agent's words when it asked again after guardrails.askReflect) }
-  cleared: new SvelteMap(), // [sessionId, callId] -> guard.cleared: an ask rule matched, and the second opinion let it run without asking
+  approvals: new SvelteMap(), // approvalId -> { sessionId, callId, agentId, tool, kind: command|path, subject, rule, askedAt, opinion?, reason? (the agent's words when it asked again after guardrails.askReflect), grantTo? (who 'always' would allow it for: the Autonomy plugin) }
+  cleared: new SvelteMap(), // [sessionId, callId] -> guard.cleared: an ask rule matched, and it ran without asking (by: session | opinion | grant)
   budget: new SvelteMap(), // sessionId -> { sessionId, askedAt }: the budget stopped the chat and asks whether it may go over (budget.onLimit "ask")
 };
 
@@ -142,7 +142,7 @@ export function opinionText(o) {
   return `${o.model}: read-only ${pct(p.read_only ?? 0)} · ${RISKS[risk]} ${pct(value)}`;
 }
 
-/** Lets a tool call run, or not; scope 'session' allows the rule that asked for the rest of the chat. */
+/** Lets a tool call run, or not; scope 'session' allows the rule that asked for the rest of the chat, 'always' grants it to the chat's origin (the Autonomy plugin; the card offers it when the question has grantTo). */
 export function answerApproval(approvalId, allow, scope = 'once') {
   return rpc('guard.answer', { approvalId, allow, scope });
 }

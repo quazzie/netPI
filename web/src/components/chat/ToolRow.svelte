@@ -162,6 +162,7 @@
     {#if status === 'approval'}<span class="state asks">needs your OK</span>{/if}
     {#if cleared && status !== 'approval'}
       {#if cleared.by === 'session'}<span class="state" title="A guardrail asks first ({cleared.rule}); you allowed it for this chat, so it ran without asking">allowed in this chat</span>
+      {:else if cleared.by === 'grant'}<span class="state" title="A guardrail asks first ({cleared.rule}); you allowed it for {cleared.origin} (the Autonomy tab), so it ran without asking">allowed for {cleared.origin}</span>
       {:else}<span class="state" title="A guardrail asks first ({cleared.rule}); {opinionText(cleared.opinion)}, so it ran without asking">checked</span>{/if}
     {/if}
     {#if status === 'pending'}<span class="state">queued</span>{/if}
@@ -188,6 +189,15 @@
           title="Allow it, and don't ask again in this chat for anything the guardrail {approval.rule} matches"
           onclick={() => decide(true, 'session')}>Allow in this chat</button
         >
+        {#if approval.grantTo}
+          <button
+            class="np-btn np-btn-sm"
+            disabled={deciding}
+            data-testid="guard-always"
+            title="Allow it, and don't ask again for anything the guardrail {approval.rule} matches in {approval.grantTo} (the Autonomy tab lists and removes it)"
+            onclick={() => decide(true, 'always')}>Always for {approval.grantTo}</button
+          >
+        {/if}
         <button class="np-btn np-btn-sm np-btn-primary" disabled={deciding} onclick={() => decide(true)}>Allow</button>
       </span>
     </div>

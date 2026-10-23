@@ -78,7 +78,7 @@ public sealed class AutonomyPlugin : INetPiPlugin
 
     private static void Register(IPluginContext ctx, AutonomyStore store, Grants grants, Options options)
     {
-        ctx.Rpc.Register(new RpcMethod("autonomy.state", "The Autonomy tab's header: { paused, changesLastHour, grants, refusals }", ReadOnly: true),
+        ctx.Rpc.Register(new RpcMethod("autonomy.state", "The Autonomy tab's header: { paused, changesLastHour, grants, refusals }", ReadOnly: true, Params: []),
             (_, _) => Task.FromResult<object?>(new JsonObject
             {
                 ["paused"] = options.Paused,
@@ -96,7 +96,7 @@ public sealed class AutonomyPlugin : INetPiPlugin
                 "What chats nobody watches were refused, newest first: { limit? (100) } → [{ id, at, origin, label, sessionId, title, tool, why: ask | tainted, kind?, rule?, subject, grantable, grantedMs? }]",
                 ReadOnly: true, Params: [RpcParam.Opt("limit", RpcParamType.Integer)]),
             (req, _) => Task.FromResult<object?>(new JsonArray([.. store.Refusals(Math.Clamp(req.Int("limit") ?? 100, 1, 500)).Select(r => (JsonNode)r)])));
-        ctx.Rpc.Register(new RpcMethod("autonomy.grants", "The standing grants: [{ id, origin, label, rule, tool, kind, createdAt, lastUsedMs?, uses }]", ReadOnly: true),
+        ctx.Rpc.Register(new RpcMethod("autonomy.grants", "The standing grants: [{ id, origin, label, rule, tool, kind, createdAt, lastUsedMs?, uses }]", ReadOnly: true, Params: []),
             (_, _) => Task.FromResult<object?>(new JsonArray([.. store.Grants().Select(g => (JsonNode)g)])));
         ctx.Rpc.Register(new RpcMethod("autonomy.grant", "Allow a refused guardrail question for its origin from now on: { refusalId } → the grant", ReadOnly: false,
                 Params: [RpcParam.Req("refusalId")]),
