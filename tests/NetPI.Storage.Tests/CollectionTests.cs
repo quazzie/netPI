@@ -399,7 +399,7 @@ public static class CollectionTests
         {
             // Two transactions of one plugin id never run at the same time (the test above). This pins the other
             // half: the plugin's own lock is taken *outside* the provider's, so a provider that used one lock for
-            // every plugin — or took the plugin lock inside the provider's — deadlocks here. The shape: this thread
+            // every plugin deadlocks here. The shape: this thread
             // holds the provider's lock (the kernel's, handed out by the port), a transaction on another thread has
             // taken the first plugin's lock and is waiting for the provider's, and a transaction of a *different*
             // plugin runs from this thread without waiting for anything. It is timed, because it proves the absence
@@ -414,7 +414,10 @@ public static class CollectionTests
             {
                 var waiting = Task.Run(() => a.Transaction(() => releaseA.Wait(10_000)));
                 Thread.Sleep(250);              // long enough for that thread to reach the provider's lock
-                b.Transaction(() => bRan++);   // this thread already holds the provider's lock, so only a plugin lock can hold it up
+                // This thread already holds the provider's lock (re-entrantly), so only a plugin lock can hold it up. What that
+                // proves is that plugin "two" does not share "one"'s lock; it cannot tell the plugin lock being taken inside the
+                // provider's from outside it (a transaction body holds the provider's lock, so no other thread could run b).
+                b.Transaction(() => bRan++);
                 Check.Equal(1, bRan, "another plugin id's transaction does not wait on the first one's lock");
                 releaseA.Set();
                 Monitor.Exit(store.Lock);

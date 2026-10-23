@@ -230,8 +230,14 @@ public static class MessageTests
             }
             Check.Equal("to", copies[0].SessionId, "the copy belongs to the session it was copied into");
             Check.Equal(0, store.Sessions.CopyMessages("nope", "to", 10), "nothing to copy is nothing copied");
-            Check.Throws<Exception>(() => store.Sessions.CopyMessages("from", "nope", 10), "a copy goes into a session that exists");
+            // the port documents "throws" for a missing target, not which exception: the memory provider says KeyNotFound, sqlite StorageException
+            var refused = Check.Throws<Exception>(() => store.Sessions.CopyMessages("from", "nope", 10), "a copy goes into a session that exists");
+            Check.True(refused is KeyNotFoundException or StorageException, "and the refusal is a storage failure, not a crash: " + refused.GetType().Name);
             Check.Equal(2, store.Sessions.GetMessages("to").Count, "and the refused copy wrote nothing");
+
+            Build.WithMessages(store, "busy", 1);   // holds seq 1 already
+            Check.Throws<StorageException>(() => store.Sessions.CopyMessages("from", "busy", 10), "a copy into a session that holds one of the seqs is refused");
+            Check.Equal("1", string.Join(",", Build.Seqs(store.Sessions.GetMessages("busy"))), "and copies nothing of the seqs it could have taken");
         });
 
         Providers.Add(r, "messages: the meta of one message is rewritten on its own", store =>

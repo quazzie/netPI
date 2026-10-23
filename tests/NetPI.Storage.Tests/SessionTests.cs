@@ -141,6 +141,15 @@ public static class SessionTests
             Check.Equal(0, Build.Ids(store.Sessions.ListSessions(new SessionQuery { Limit = 5, Offset = 500 })).Count, "an offset past the end is empty");
         });
 
+        Providers.Add(r, "sessions: a limit above five thousand is cut to five thousand", store =>
+        {
+            store.Sessions.Atomic(repo =>
+            {
+                for (var i = 0; i < 5001; i++) repo.InsertSession(Build.Session("s" + i.ToString("D4")));
+            });
+            Check.Equal(5000, store.Sessions.ListSessions(new SessionQuery { Limit = 6000 }).Count, "the cap, not the limit asked for");
+        });
+
         Providers.Add(r, "sessions: Attached finds the sessions whose meta key is that string", store =>
         {
             store.Sessions.InsertSession(Build.Session("bound", s => s.Meta = Build.Doc(("workspaceId", "w1"))));

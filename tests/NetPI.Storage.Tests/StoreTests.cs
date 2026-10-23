@@ -121,6 +121,10 @@ public static class StoreTests
             var directory = T.TempDir("snapshot");
             var files = store.Snapshot.Write(directory);
             Check.True(files.Count > 0, "a snapshot writes at least one file");
+            Check.Equal(store.ProviderId, store.Info.Provider, "the store reports the provider it is");
+            var written = string.Concat(files.Select(f => System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(Path.Combine(directory, f)))));
+            Check.Contains(written, "ui.state", "the snapshot holds the value that was set");
+            Check.Contains(written, "s1", "and the session that was written");
             foreach (var file in files)
             {
                 Check.False(Path.IsPathRooted(file), $"{file} is named relative to the directory");
