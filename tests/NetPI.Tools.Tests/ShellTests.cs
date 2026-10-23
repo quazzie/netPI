@@ -511,6 +511,7 @@ public static class ShellTests
                 Check.Equal("exited", p.Status, "the shell reported its exit");
                 Check.False(p.OutputReachedEof, "the descendant still holds the pipes");
                 Check.True(p.TreeMayBeAlive, "the tree is still alive and killable");
+                Check.True(new WorkspaceProcesses(registry).IsBusyIn(dir), "the directory is busy while the descendant lives, though the shell exited");
                 Check.True(await child.IsAlive(5000), "the descendant is still running");
                 // its Windows pid, so the cleanup below can still take it down if a check after this one fails (a
                 // survivor would hold the runner's output pipe for the rest of the suite)

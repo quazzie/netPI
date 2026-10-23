@@ -103,7 +103,8 @@ internal sealed class WorkspaceProcesses(ProcessRegistry registry) : IWorkspaceP
         var root = WorkspacePaths.Canonical(path);
         foreach (var p in registry.List())
         {
-            if (!p.IsRunning) continue;
+            // A shell that exited can leave a descendant holding the output pipes: that tree still works in the directory.
+            if (!p.TreeMayBeAlive) continue;
             var cwd = p.Cwd;
             if (string.IsNullOrWhiteSpace(cwd)) continue;
             if (WorkspacePaths.IsInside(root, cwd)) return true;
