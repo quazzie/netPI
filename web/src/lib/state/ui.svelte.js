@@ -155,6 +155,15 @@ export function confirmDialog({ title = 'Are you sure?', message = '', confirmLa
   });
 }
 
+/**
+ * Closing a dialog that holds unsaved edits (its x, a click outside, Esc): resolves true when it may close. Nothing to lose,
+ * or the person says to drop it.
+ */
+export async function mayClose(dirty) {
+  if (!dirty) return true;
+  return confirmDialog({ title: 'Discard your changes?', message: 'This dialog holds changes that are not saved yet.', confirmLabel: 'Discard', danger: true });
+}
+
 /** A text prompt; resolves with the text, or null when cancelled. multiline: a text box (Ctrl+Enter confirms). */
 export function promptDialog({ title, label = '', value = '', placeholder = '', multiline = false, confirmLabel = 'OK', hint = '' }) {
   return new Promise((resolve) => {

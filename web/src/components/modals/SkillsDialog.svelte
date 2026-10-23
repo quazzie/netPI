@@ -10,6 +10,7 @@
   import { rpc } from '../../lib/rpc.svelte.js';
   import { app } from '../../lib/state/app.svelte.js';
   import { getAt, setSetting } from '../../lib/settings.js';
+  import { mayClose } from '../../lib/state/ui.svelte.js';
 
   let { doc, onclose } = $props();
 
@@ -18,6 +19,10 @@
   let off = $state(new Set(untrack(() => getAt(doc, 'skills.disabled') ?? [])));
   let q = $state('');
   let saving = $state(false);
+  const was = JSON.stringify([...untrack(() => off)].sort());
+  async function close() {
+    if (await mayClose(JSON.stringify([...off].sort()) !== was)) onclose();
+  }
 
   $effect(() => {
     const asks = [...app.projects.map((p) => ({ projectId: p.id })), ...(app.activeId ? [{ sessionId: app.activeId }] : [])];
@@ -51,7 +56,7 @@
   }
 </script>
 
-<Modal title="Skills" width={600} {onclose} class="section-dialog">
+<Modal title="Skills" width={600} onclose={close} class="section-dialog">
   <div class="help np-dim">Skills switched off are hidden from agents; the skill tool and /skill: refuse them.</div>
   {#if error}
     <div class="np-empty">Could not list the skills: {error}</div>

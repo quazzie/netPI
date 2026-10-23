@@ -8,6 +8,7 @@
   import Modal from '../../lib/kit/Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import { getAt, setSetting } from '../../lib/settings.js';
+  import { mayClose } from '../../lib/state/ui.svelte.js';
   import { cidrProblem } from '../../lib/settingsModel.js';
   import { pickFolder, pickFile } from '../../lib/folderPicker.js';
 
@@ -29,6 +30,10 @@
   const entries = $derived(rows.map((r) => r.text.trim()).filter(Boolean));
   const problems = $derived(check ? rows.map((r) => (r.text.trim() ? check(r.text) : null)) : rows.map(() => null));
   const bad = $derived(problems.some(Boolean));
+  const was = JSON.stringify(initial.map((r) => r.text.trim()).filter(Boolean));
+  async function close() {
+    if (await mayClose(JSON.stringify(entries) !== was)) onclose();
+  }
 
   function add() {
     rows.push({ id: next++, text: '' });
@@ -63,7 +68,7 @@
   }
 </script>
 
-<Modal title={s.label ?? s.key} width={560} {onclose} class="section-dialog">
+<Modal title={s.label ?? s.key} width={560} onclose={close} class="section-dialog">
   {#if s.help}<div class="help np-dim">{s.help}</div>{/if}
   <ol class="rows" bind:this={list} data-testid="list-editor" data-setting={s.key}>
     {#each rows as r, i (r.id)}

@@ -3,12 +3,13 @@
    * Every tool, by plugin, with the two settings that act on all chats: Off (`tools.disabled`: hidden from every chat)
    * and Deferred (`tools.deferred`: registered and callable, but kept out of requests until a chat calls it by name or
    * finds it with tool_search). Reads tools.exposure; Save writes the deferred choice as "*" plus exceptions, so a tool
-   * that comes later is deferred as with the built-in default, and keeps names in tools.disabled that no loaded plugin
+   * that registers later is deferred too (the built-in default names its tools, so there a new one is declared; "Default deferred list" goes back to it), and keeps names in tools.disabled that no loaded plugin
    * registers. A chat's own switches (the composer's tools button) and a profile's lists come on top of these.
    */
   import Modal from '../../lib/kit/Modal.svelte';
   import { rpc } from '../../lib/rpc.svelte.js';
   import { getAt, setSetting } from '../../lib/settings.js';
+  import { mayClose } from '../../lib/state/ui.svelte.js';
   import { deferredList } from '../../lib/settingsModel.js';
   import SearchInput from '../../lib/kit/SearchInput.svelte';
 
@@ -20,6 +21,10 @@
   let off = $state(new Set());
   let deferred = $state(new Set());
   let touchedDeferred = $state(false);
+  let baseOff = ''; // the switched-off tools as loaded
+  async function close() {
+    if (await mayClose(!!data && (touchedDeferred || JSON.stringify([...off].sort()) !== baseOff))) onclose();
+  }
   let saving = $state(false);
   let q = $state('');
 
@@ -31,6 +36,7 @@
       off = new Set(x.tools.filter((t) => t.disabled).map((t) => t.name));
       deferred = new Set(x.tools.filter((t) => t.deferred && !t.byDefinition).map((t) => t.name));
       touchedDeferred = false;
+      baseOff = JSON.stringify([...off].sort());
     } catch (e) {
       error = e.message;
     }
@@ -83,7 +89,7 @@
   }
 </script>
 
-<Modal title="Tool exposure" width={680} {onclose} class="section-dialog">
+<Modal title="Tool exposure" width={680} onclose={close} class="section-dialog">
   <div class="help np-dim">
     <b>Off</b> hides a tool from every chat. <b>Deferred</b> keeps it out of each request until a chat calls it by name or finds it with
     tool_search, which keeps requests small. Each chat can still switch its own tools (the tools button next to the model), and a
