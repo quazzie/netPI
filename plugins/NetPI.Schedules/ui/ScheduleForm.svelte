@@ -170,7 +170,7 @@
     </select>
   </label>
 
-  <label class="fld">
+  <div class="fld">
     <span class="f-label">Agent</span>
       <AgentSelect
         {agents}
@@ -181,7 +181,7 @@
           { value: 'any', label: 'Any available', hint: 'whichever agent has a free instance first' },
         ]}
       />
-  </label>
+  </div>
 
   <label class="fld">
     <span class="f-label">Priority</span>

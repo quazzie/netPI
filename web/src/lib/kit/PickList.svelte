@@ -109,8 +109,8 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 4px;
+    width: 100%;
     min-width: 0;
-    max-width: 420px;
   }
   .chip,
   .add {
@@ -151,7 +151,9 @@
     font-size: var(--fs-sm);
   }
   .typed {
-    width: 130px;
+    flex: 1 1 180px;
+    min-width: 160px;
+    max-width: 300px;
     height: 24px;
     font-size: var(--fs-sm);
   }

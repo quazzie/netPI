@@ -1,7 +1,7 @@
 <script>
   // The add/edit form: an inline panel that replaces the list. The prompt is a template over the payload ({{path.to.field}});
   // the Before command filters and shapes it, the After command reports back; the agent is a key, any, free or a list.
-  import { AgentSelect, Button, Modal } from '@netpi/kit';
+  import { AgentSelect, Button, Modal, PickList } from '@netpi/kit';
   import { agentToForm, formToAgent, hookToForm, formToHook } from './model.js';
 
   let { ctx, hook = null, projects = [], agents = null, profiles = null, ondone, oncancel } = $props();
@@ -157,7 +157,7 @@
     {/if}
   </label>
 
-  <label class="fld">
+  <div class="fld">
     <span class="f-label">Agent</span>
     <AgentSelect
       {agents}
@@ -171,16 +171,15 @@
       ]}
     />
     {#if f.agentChoice === '__list'}
-      <AgentSelect
-        {agents}
-        multiple
+      <PickList
+        candidates={(agents ?? []).map((a) => ({ value: a.key, hint: [String(a.model ?? '').split('/').pop(), a.free ? 'free' : 'paid'].join(' · ') }))}
         label="Preference list"
         placeholder="Choose agents, first preferred"
         value={f.agentList.split(',').map((s) => s.trim()).filter(Boolean)}
         onchange={(list) => (f.agentList = list.join(', '))}
       />
     {/if}
-  </label>
+  </div>
 
   <label class="fld">
     <span class="f-label">Priority</span>

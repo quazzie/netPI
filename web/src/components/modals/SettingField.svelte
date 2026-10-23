@@ -16,7 +16,7 @@
   import { helpParts } from '../../lib/settingsModel.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import ModelSelect from '../ModelSelect.svelte';
-  import AgentSelect from '../../lib/kit/AgentSelect.svelte';
+  import PickList from '../../lib/kit/PickList.svelte';
   import { agentList } from '../../lib/agents.js';
   import ListEditor from './ListEditor.svelte';
   import SettingPick from './SettingPick.svelte';
@@ -30,7 +30,20 @@
   const value = $derived(getAt(doc, s.key));
   const isSet = $derived(value !== undefined && value !== null);
   const current = $derived(isSet ? value : s.default);
-  const stacked = $derived(s.type === 'text' || s.type === 'pick' || s.type === 'pickText' || (s.type === 'string' && s.options?.length > 0));
+  const stacked = $derived(['text', 'pick', 'pickText', 'agents'].includes(s.type) || (s.type === 'string' && s.options?.length > 0));
+  // an agents field: "Any free agent" and the agents, each with its model, free or paid, and whether it can take work now
+  const agentChoices = $derived(
+    s.type !== 'agents'
+      ? []
+      : [
+          { value: 'free', label: 'Any free agent', hint: 'every agent whose model costs nothing, while it can take work', group: 'Choices' },
+          ...agentList().map((a) => ({
+            value: a.key,
+            hint: [String(a.model ?? '').split('/').pop(), a.free ? 'free' : 'paid', a.disabled ? 'off' : a.available === false ? 'not active now' : ''].filter(Boolean).join(' · '),
+            group: 'Agents',
+          })),
+        ],
+  );
   const isList = $derived(s.type === 'list' || s.type === 'folders' || s.type === 'files');
   // a text setting whose default is a built-in text (the opening of the system prompt, the AGENTS.md guidance)
   const textDefault = $derived(s.type === 'text' && typeof s.default === 'string' ? s.default : null);
@@ -135,18 +148,15 @@
     {:else if s.type === 'pick' || s.type === 'pickText'}
       <SettingPick setting={s} {value} {disabled} />
     {:else if s.type === 'agents'}
-      <div class="sel">
-        <AgentSelect
-          agents={agentList()}
-          multiple
-          value={Array.isArray(current) ? current : []}
-          options={[{ value: 'free', label: 'Any free agent', hint: 'every agent whose model costs nothing' }]}
-          placeholder={s.placeholder ? `None (${s.placeholder})` : 'None'}
-          label={s.label ?? s.key}
-          {disabled}
-          onchange={(list) => setSetting(s.key, list.length ? list : null)}
-        />
-      </div>
+      <PickList
+        value={Array.isArray(current) ? current : []}
+        candidates={agentChoices}
+        custom={false}
+        placeholder={s.placeholder ? `None: ${s.placeholder}` : 'None'}
+        label={s.label ?? s.key}
+        {disabled}
+        onchange={(list) => setSetting(s.key, list.length ? list : null)}
+      />
     {:else if s.type === 'model'}
       <div class="sel"><ModelSelect value={isSet ? value : null} none={s.placeholder ?? 'the default'} label={s.label ?? s.key} onchange={(ref) => setSetting(s.key, ref)} /></div>
     {:else if s.type === 'text'}
@@ -274,10 +284,13 @@
     min-width: 0;
   }
   .stacked .ctl {
-    justify-content: stretch;
     align-items: flex-start;
-    flex-wrap: wrap;
     justify-content: flex-start;
+  }
+  /* a pick list takes the row, Reset and the menu stay beside it */
+  .stacked .ctl > :global(.np-picklist) {
+    flex: 1;
+    width: auto;
   }
   .quick {
     flex-wrap: wrap;

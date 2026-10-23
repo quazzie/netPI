@@ -81,7 +81,7 @@ public sealed class IdeasPlugin : INetPiPlugin
                 SettingInfo.Bool("ideas.autoRefine.enabled", "Automatic refine", false,
                     "Your own agents refine newly filed ideas in the background (the same task as the Refine button), so each becomes a clear, checkable piece of work. Only the agents listed below run it; with none listed nothing runs. An idea is refined once: after a manual refine too.") with { Subgroup = "Automatic refine" },
                 SettingInfo.List("ideas.autoRefine.agents", "Automatic refine: agents", [],
-                    "The agents that may run it, taken in turn. \"Any free agent\" adds every agent whose model costs nothing, while it can take work. Empty: nothing runs. 'any' is not accepted on purpose: it could pick a paid agent.", "agent key")
+                    "The agents that may run it, taken in turn. \"Any free agent\" adds every agent whose model costs nothing, while it can take work. Empty: nothing runs. 'any' is not accepted on purpose: it could pick a paid agent.", "nothing runs")
                     with { Type = "agents", Subgroup = "Automatic refine", Keywords = ["free", "agent"] },
                 SettingInfo.Int("ideas.autoRefine.maxConcurrent", "Automatic refine: at once", IdeaAutoRefine.DefaultMaxConcurrent,
                     "How many automatic refines may run at the same time. They queue behind your own chats (low priority).", 1, 4) with { Subgroup = "Automatic refine" },

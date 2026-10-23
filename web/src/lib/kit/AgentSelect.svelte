@@ -84,8 +84,7 @@
     align-items: center;
     gap: 6px;
     width: 100%;
-    min-width: 0;
-    max-width: 300px;
+    min-width: min(220px, 100%);
     text-align: left;
     cursor: pointer;
   }
