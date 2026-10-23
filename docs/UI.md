@@ -148,7 +148,9 @@ by type:
   session carries `meta.openInTab` (the Webhooks "Open in a tab" option) additionally opens that chat as a background
   tab in this window: `activeId` stays where it is (no focus stealing, no notification), an already-open tab does not
   move, a closed session does not re-open, and a chat that started while no window was open is not opened
-  retroactively (the open set is per-window, read on `session.created` only). `agent.status` updates
+  retroactively (the open set is per-window, read on `session.created` only). A chat with `meta.quiet` (every chat a script
+  starts over the HTTP API) raises no Windows notification when its run ends or its goal completes; it opens no tab either,
+  and what needs the person (an ask, an approval, a plan, the budget) still notifies. `agent.status` updates
   a `SvelteMap` keyed by session, so only that session's dots re-render. When an agent goes from busy to idle
   in a background tab, the tab becomes *unread*. A background run that ends in an error (an `error` notice or
   `stopReason: 'error'`) gives the tab the *error* dot. `session.context` feeds the context ring.

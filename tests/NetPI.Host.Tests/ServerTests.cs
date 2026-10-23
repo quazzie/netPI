@@ -347,6 +347,19 @@ public static class ServerTests
             var err = await a.RpcAsync("sessions.get", new { id = "ses_nope" });
             Check.Equal("not_found", err["e"]!["code"]!.GetValue<string>());
             Check.True(err["r"] is null);
+            Check.True(created["r"]!["meta"]?["quiet"] is null, "a chat the UI's socket creates is the owner's: not quiet");
+
+            // The HTTP API is the scripts' door: its chats are quiet unless the caller says otherwise.
+            using (var scripts = NewHttp())
+            {
+                void Auth(HttpRequestMessage q) => q.Headers.Add(WebServer.TokenHeader, server.Token);
+                var quiet = await SendAsync(scripts, HttpMethod.Post, server.BaseUrl + "/api/rpc/sessions.create", """{"title":"script"}""", Auth);
+                Check.True(JsonNode.Parse(quiet.Body)!["meta"]!["quiet"]!.GetValue<bool>(), "over the HTTP API: meta.quiet");
+                var loud = await SendAsync(scripts, HttpMethod.Post, server.BaseUrl + "/api/rpc/sessions.create", """{"title":"script","meta":{"quiet":false,"x":1}}""", Auth);
+                var loudMeta = JsonNode.Parse(loud.Body)!["meta"]!;
+                Check.False(loudMeta["quiet"]!.GetValue<bool>(), "an explicit quiet:false stays");
+                Check.Equal(1, loudMeta["x"]!.GetValue<int>());
+            }
 
             await a.SendAsync(new { t = "sub", sessions = new[] { sid } });
             await b.SendAsync(new { t = "sub", sessions = new[] { "ses_other" } });

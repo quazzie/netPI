@@ -30,6 +30,8 @@ public sealed class RpcRequest
     public JsonElement Params { get; init; }
     /// <summary>Websocket client id when called from the UI, null for in-process calls.</summary>
     public string? ClientId { get; init; }
+    /// <summary>A call over the HTTP API (scripts, the CLI, other programs): neither the UI's socket nor a plugin's in-process call.</summary>
+    public bool External { get; init; }
     /// <summary>
     /// The parameters the method declared (<see cref="RpcMethod.Params"/>), or null for a method registered without them.
     /// A handler that reads a name outside the declaration fails at once — a typo in a parameter name is found by the

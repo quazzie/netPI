@@ -803,8 +803,8 @@ function notifyAbout(sid, s, body) {
   notify(sid, titleOf(s), body);
 }
 
-// A chat's run ended. Not when it goes on by itself right away (a queued message, a subagent's report waking it), not
-// while its goal runs (the goal says when it is complete or blocked), and not right after a specific notification about
+// A chat's run ended. Not in a quiet chat (meta.quiet: one a script started over the HTTP API), not when it goes on by
+// itself right away (a queued message, a subagent's report waking it), not while its goal runs (the goal says when it is complete or blocked), and not right after a specific notification about
 // it (the goal was completed, the budget asks): that one says why the run ended.
 function runEndedNotification(a) {
   if (a.isSubagent) return;
@@ -813,6 +813,7 @@ function runEndedNotification(a) {
     const now = app.agents.get(sid);
     if (!now || BUSY.has(now.status)) return;
     const s = app.sessionsById.get(sid);
+    if (s?.meta?.quiet === true) return;
     if (s?.meta?.goal?.status === 'active' || Date.now() - (saidJustNow.get(sid) ?? 0) < SAID_JUST_NOW_WINDOW) return;
     // a chat's run that fails ends idle, with its error (only a subagent's ends "failed"): a refused call (the budget, an
     // agent switched off) or a provider error is not "Finished", in a chat that is not open too, whose notice never
@@ -825,7 +826,7 @@ function runEndedNotification(a) {
 // A chat's goal was completed or is blocked (session meta "goal", plugins/NetPI.Goal).
 function goalNotification(before, s) {
   const g = s?.meta?.goal;
-  if (!before || !g || s.kind === 'subagent' || g.status === before.meta?.goal?.status) return;
+  if (!before || !g || s.kind === 'subagent' || s.meta?.quiet === true || g.status === before.meta?.goal?.status) return;
   if (g.status === 'complete') notifyAbout(s.id, s, 'Goal complete');
   else if (g.status === 'blocked') notifyAbout(s.id, s, `Goal blocked${g.reason ? `: ${firstLine(g.reason)}` : ''}`);
 }

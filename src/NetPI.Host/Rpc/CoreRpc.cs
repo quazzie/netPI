@@ -151,15 +151,20 @@ internal static class CoreRpc
         a.Add("sessions.list", "Sessions, pinned first then newest first: { projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, archivedOnly? (only archived; takes precedence over includeArchived), limit?, offset? } → SessionInfo[]",
             req => a.K.Sessions.ListSessions(req.Bind<SessionQuery>()), readOnly: true);
 
-        a.Add("sessions.create", "Create a session: { title?, projectId?, model?, reasoning?, meta? } → SessionInfo", req =>
-            a.K.Sessions.CreateSession(new SessionInfo
+        a.Add("sessions.create", "Create a session: { title?, projectId?, model?, reasoning?, meta? } → SessionInfo (over the HTTP API the chat is quiet: meta.quiet, unless meta says otherwise)", req =>
+        {
+            var meta = req.Prop("meta") is { ValueKind: JsonValueKind.Object } m ? JsonNode.Parse(m.GetRawText()) as JsonObject : null;
+            // A chat a script or another program starts is not the owner's: the app windows announce nothing when its run ends.
+            if (req.External) (meta ??= [])["quiet"] ??= true;
+            return a.K.Sessions.CreateSession(new SessionInfo
             {
                 Title = req.Str("title") ?? "",
                 ProjectId = req.Str("projectId"),
                 Model = req.Str("model"),
                 Reasoning = req.Str("reasoning"),
-                Meta = req.Prop("meta") is { ValueKind: JsonValueKind.Object } meta ? JsonNode.Parse(meta.GetRawText()) as JsonObject : null,
-            }));
+                Meta = meta,
+            });
+        });
 
         a.Add("sessions.fork", "Fork a chat: a new chat with its messages up to a message, the original unchanged: { id, upToSeq? (the last) } → SessionInfo (publishes session.forked)", req =>
         {

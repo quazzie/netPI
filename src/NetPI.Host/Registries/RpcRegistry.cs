@@ -91,7 +91,7 @@ internal sealed class RpcRegistry : IRpcRegistry
         if (entry.Params is not null && new RpcMethod(method, Params: entry.Params).Validate(parameters) is { } problem)
             throw new RpcException("bad_request", $"{method}: {problem}");
         if (fromClient && !entry.ReadOnly) Interlocked.Exchange(ref _lastClientWrite, Environment.TickCount64);
-        return await entry.Handler(new RpcRequest { Method = method, Params = parameters, ClientId = clientId, Declared = entry.Params }, ct).ConfigureAwait(false);
+        return await entry.Handler(new RpcRequest { Method = method, Params = parameters, ClientId = clientId, External = fromClient && clientId is null, Declared = entry.Params }, ct).ConfigureAwait(false);
     }
 
     public IReadOnlyList<RpcMethodInfo> List()
