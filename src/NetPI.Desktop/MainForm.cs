@@ -22,6 +22,7 @@ internal sealed class MainForm : Form
     private readonly WebView2 _web;
     private readonly Label _status;
     private NetPiServer? _server;
+    private Task<NetPiServer>? _starting; // while the host starts: a close then waits for it and stops it
     private string _origin = "";
     private IDisposable? _captureRpc;
     private IDisposable? _zoomRpc;
@@ -169,16 +170,17 @@ internal sealed class MainForm : Form
         try
         {
             var options = new NetPiServerOptions { Desktop = true, ConsoleLogging = false, Home = _home, Restart = RestartAsync };
-            if (_successor)
-            {
-                options.Token = Environment.GetEnvironmentVariable(Successor.TokenVariable);
-                Environment.SetEnvironmentVariable(Successor.TokenVariable, null); // not on to what this process starts
-            }
+            var passed = Environment.GetEnvironmentVariable(Successor.TokenVariable);
+            if (_successor) options.Token = passed;
+            Environment.SetEnvironmentVariable(Successor.TokenVariable, null); // never on to what this process starts (git, LSP, browser)
             if (int.TryParse(Arg("--port"), out var port)) options.Port = port;
-            _server = await Task.Run(() => NetPiServer.StartAsync(options));
+            _starting = Task.Run(() => NetPiServer.StartAsync(options));
+            _server = await _starting;
         }
         catch (Exception ex)
         {
+            _starting = null;
+            if (_closing) return; // closed while starting: the shutdown has nothing to stop
             ShowStatus("netPI could not start:\n\n" + ex.Message);
             // another NetPI on this home says so in its message; anything unexpected shows its stack too
             MessageBox.Show(this, ex.Message.StartsWith("NetPI is already running", StringComparison.Ordinal) ? ex.Message : ex.ToString(),
@@ -186,6 +188,7 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_closing) return; // closed while starting: the shutdown stops the host
         try
         {
             await InitWebViewAsync(_server);
@@ -260,8 +263,10 @@ internal sealed class MainForm : Form
         _zoomRpc ??= server.Rpc.Register("desktop.zoom",
             (req, ct) => ZoomAsync(req.Prop("factor") is { ValueKind: System.Text.Json.JsonValueKind.Number } f ? f.GetDouble() : null, ct),
             "The desktop window's zoom (desktop app only): { factor? (0.5–3) } → { factor }");
+        var renderFailures = 0; // consecutive render-process failures; a page that loads resets it
         core.NavigationCompleted += (_, e) =>
         {
+            if (e.IsSuccess) renderFailures = 0;
             if (!_web.Visible)
             {
                 _web.Visible = true;
@@ -279,8 +284,15 @@ internal sealed class MainForm : Form
         };
         core.ProcessFailed += (_, e) =>
         {
-            if (e.ProcessFailedKind is CoreWebView2ProcessFailedKind.RenderProcessExited or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)
-                BeginInvoke(new Action(core.Reload));
+            if (e.ProcessFailedKind is not (CoreWebView2ProcessFailedKind.RenderProcessExited or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)) return;
+            if (++renderFailures > 3)
+            {
+                // a page that crashes on every load would reload in a tight loop: stop and say so
+                BeginInvoke(new Action(() => ShowStatus($"The page keeps crashing, so netPI stopped reloading it.\n\nnetPI is running at {server.BaseUrl}\nClose this window and start netPI again, or open it in a browser.")));
+                return;
+            }
+            // a pause, so a crash on load does not spin
+            _ = Task.Delay(1000).ContinueWith(_ => { try { BeginInvoke(new Action(core.Reload)); } catch (InvalidOperationException) { } }, TaskScheduler.Default);
         };
         core.WebMessageReceived += OnWebMessage;
         _captureRpc ??= server.Rpc.Register("desktop.capture", (req, ct) => CaptureAsync(req.Int("maxWidth") ?? 1600, ct),
@@ -599,7 +611,7 @@ internal sealed class MainForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         SavePlacement();
-        if (_server is not null && !_closeReady)
+        if ((_server is not null || _starting is not null) && !_closeReady)
         {
             e.Cancel = true;
             if (_closing) return;
@@ -622,6 +634,11 @@ internal sealed class MainForm : Form
             _badge = null;
             _web.Dispose();
             var server = _server;
+            if (server is null && _starting is not null)
+            {
+                try { server = await _starting; } // closed while the host was still starting: it is stopped like a running one
+                catch { }
+            }
             if (server is not null)
                 await Task.WhenAny(server.StopAsync(), Task.Delay(TimeSpan.FromSeconds(8)));
         }
