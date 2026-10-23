@@ -76,17 +76,32 @@ internal sealed class MemoryIndex : IDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly Lock _gate = new();
     private Dictionary<string, Entry>? _cache;
+    private readonly Dictionary<string, Body> _bodies = new(StringComparer.Ordinal);
+    private long _bodyBytes;
     private Timer? _timer;
     /// <summary>The timer's sweep in flight: Dispose waits for it (bounded) so no write lands after the plugin is gone.</summary>
     private Task? _inFlight;
 
     /// <summary>
-    /// One chat: its pieces' texts, their content hashes (a piece whose text is unchanged keeps its vector), vectors (none
+    /// Most bytes of chat bodies (texts at 2 bytes a character, vectors at 4 a component) kept in memory: 64 MB. The store is
+    /// the index, so a chat whose body did not fit is read from it when a search reaches it, and the memory stays bounded
+    /// however many chats there are.
+    /// </summary>
+    internal const long MaxCachedBytes = 64L * 1024 * 1024;
+    internal long CacheBudget { get; set; } = MaxCachedBytes;
+    internal long CachedBytes { get { lock (_gate) return _bodyBytes; } }
+
+    /// <summary>What the sweep and the filters need of a chat; always in memory, a few hundred bytes.</summary>
+    private sealed record Entry(string Model, string Rev, string Title, string? ProjectId, string UpdatedAt);
+
+    /// <summary>
+    /// A chat's pieces: their texts, their content hashes (a piece whose text is unchanged keeps its vector), vectors (none
     /// without an embedding model) and word counts (the word ranking's piece lengths).
     /// </summary>
-    private sealed record Entry(string Model, string Rev, string Title, string? ProjectId, string UpdatedAt, string[] Texts, string[] Hashes, float[][] Vectors)
+    private sealed record Body(string[] Texts, string[] Hashes, float[][] Vectors)
     {
         public int[] Lengths { get; } = Texts.Select(Lexical.Count).ToArray();
+        public long Bytes => Texts.Sum(t => 2L * t.Length) + Vectors.Sum(v => 4L * v.Length);
     }
 
     public MemoryIndex(IPluginContext ctx)
@@ -157,8 +172,8 @@ internal sealed class MemoryIndex : IDisposable
                     // Only the pieces whose text is new are embedded: a chat that grew by a message re-embeds its last piece or two.
                     var hashes = chunks.Select(Hash).ToArray();
                     var known = new Dictionary<string, float[]>(StringComparer.Ordinal);
-                    if (have is not null && have.Model == model)
-                        for (var i = 0; i < Math.Min(have.Hashes.Length, have.Vectors.Length); i++) known.TryAdd(have.Hashes[i], have.Vectors[i]);
+                    if (have is not null && have.Model == model && BodyOf(session.Id) is { } old)
+                        for (var i = 0; i < Math.Min(old.Hashes.Length, old.Vectors.Length); i++) known.TryAdd(old.Hashes[i], old.Vectors[i]);
                     var missing = chunks.Where((_, i) => !known.ContainsKey(hashes[i])).Distinct(StringComparer.Ordinal).ToList();
                     if (service is not null && missing.Count > 0)
                     {
@@ -167,16 +182,16 @@ internal sealed class MemoryIndex : IDisposable
                         pieces += missing.Count;
                     }
                     // Stored under the configured model name: the one the next sweep and the search compare with.
-                    var entry = new Entry(model, rev, session.Title, session.ProjectId, session.UpdatedAt.ToString("O"),
-                        chunks.ToArray(), hashes, service is null ? [] : hashes.Select(h => known[h]).ToArray());
+                    var entry = new Entry(model, rev, session.Title, session.ProjectId, session.UpdatedAt.ToString("O"));
+                    var body = new Body(chunks.ToArray(), hashes, service is null ? [] : hashes.Select(h => known[h]).ToArray());
                     _store.Put(session.Id, new JsonObject
                     {
                         ["model"] = entry.Model, ["rev"] = rev, ["title"] = entry.Title, ["projectId"] = entry.ProjectId, ["updatedAt"] = entry.UpdatedAt,
-                        ["texts"] = new JsonArray(entry.Texts.Select(s => (JsonNode)s).ToArray()),
-                        ["hashes"] = new JsonArray(entry.Hashes.Select(s => (JsonNode)s).ToArray()),
-                        ["vectors"] = new JsonArray(entry.Vectors.Select(v => (JsonNode)VectorMath.Pack(v)).ToArray()),
+                        ["texts"] = new JsonArray(body.Texts.Select(s => (JsonNode)s).ToArray()),
+                        ["hashes"] = new JsonArray(body.Hashes.Select(s => (JsonNode)s).ToArray()),
+                        ["vectors"] = new JsonArray(body.Vectors.Select(v => (JsonNode)VectorMath.Pack(v)).ToArray()),
                     });
-                    lock (_gate) if (_cache is not null) _cache[session.Id] = entry;
+                    Remember(session.Id, entry, body);
                     indexed++;
                     _failed.Remove(session.Id);
                 }
@@ -230,7 +245,44 @@ internal sealed class MemoryIndex : IDisposable
     {
         if (string.IsNullOrEmpty(sessionId)) return;
         try { _store.Delete(sessionId); } catch (Exception ex) { _ctx.Logger.LogDebug("Memory: {Session} not removed: {Message}", sessionId, ex.Message); }
-        lock (_gate) _cache?.Remove(sessionId);
+        lock (_gate)
+        {
+            _cache?.Remove(sessionId);
+            Unkeep(sessionId);
+        }
+    }
+
+    /// <summary>Keep a chat just written; its body only while the budget has room (the store has it either way).</summary>
+    private void Remember(string sessionId, Entry entry, Body body)
+    {
+        lock (_gate)
+        {
+            if (_cache is null) return;   // not loaded yet: the load reads it from the store
+            _cache[sessionId] = entry;
+            Unkeep(sessionId);
+            Keep(sessionId, body);
+        }
+    }
+
+    private void Keep(string sessionId, Body body)
+    {
+        var bytes = body.Bytes;
+        if (_bodyBytes + bytes > CacheBudget) return;
+        _bodies[sessionId] = body;
+        _bodyBytes += bytes;
+    }
+
+    private void Unkeep(string sessionId)
+    {
+        if (_bodies.Remove(sessionId, out var old)) _bodyBytes -= old.Bytes;
+    }
+
+    /// <summary>A chat's pieces: from memory, else from the store (null when gone or unreadable).</summary>
+    private Body? BodyOf(string sessionId)
+    {
+        lock (_gate)
+            if (_bodies.TryGetValue(sessionId, out var kept)) return kept;
+        return _store.Get(sessionId) is { } doc ? Parse(doc)?.Body : null;
     }
 
     /// <summary>
@@ -261,17 +313,18 @@ internal sealed class MemoryIndex : IDisposable
         if (q is not null)
             foreach (var (id, entry) in entries)
             {
-                if (entry.Model != model || entry.Vectors.Length == 0) continue;
+                if (entry.Model != model || BodyOf(id) is not { Vectors.Length: > 0 } body) continue;
                 var best = float.MinValue;
                 var at = 0;
-                for (var i = 0; i < entry.Vectors.Length; i++)
+                for (var i = 0; i < body.Vectors.Length; i++)
                 {
-                    var s = VectorMath.Dot(q, entry.Vectors[i]);
+                    var s = VectorMath.Dot(q, body.Vectors[i]);
                     if (s > best) { best = s; at = i; }
                 }
                 meaning[id] = (best, at);
             }
-        var words = Lexical.Rank(terms, entries.Select(e => (e.Key, e.Value.Texts, e.Value.Lengths)));
+        // one body at a time: the ranking reads each chat once, so a store-read body is let go as soon as it is counted
+        var words = Lexical.Rank(terms, entries.Select(e => BodyOf(e.Key) is { } b ? (e.Key, b.Texts, b.Lengths) : (e.Key, Array.Empty<string>(), Array.Empty<int>())));
 
         var fused = Lexical.Fuse(Lexical.Ranks(meaning.OrderByDescending(x => x.Value.Score).Select(x => x.Key)), Lexical.Ranks(words));
         var byId = entries.ToDictionary(e => e.Key, e => e.Value, StringComparer.Ordinal);
@@ -280,10 +333,11 @@ internal sealed class MemoryIndex : IDisposable
         foreach (var (id, _) in fused.Take(Math.Clamp(limit, 1, 20)))
         {
             var entry = byId[id];
+            var texts = BodyOf(id)?.Texts ?? [];
             double? score = meaning.TryGetValue(id, out var mm) ? Math.Round(mm.Score, 3) : null;
             var snippet = lexical.TryGetValue(id, out var w)
-                ? Lexical.Window(entry.Texts[w.At], terms, 400)
-                : Snippet(entry.Texts.ElementAtOrDefault(mm.At));
+                ? Lexical.Window(texts[w.At], terms, 400)
+                : Snippet(texts.ElementAtOrDefault(mm.At));
             hits.Add(new MemoryHit(id, entry.Title, entry.ProjectId, entry.UpdatedAt, score, w?.Words ?? 0, snippet));
         }
         return new MemorySearch(hits, q is not null, terms.Count);
@@ -389,14 +443,23 @@ internal sealed class MemoryIndex : IDisposable
             var map = new Dictionary<string, Entry>(StringComparer.Ordinal);
             foreach (var doc in _store.Find())
             {
-                var vectors = (doc.Doc["vectors"] as JsonArray ?? []).Select(v => VectorMath.Unpack(v?.GetValue<string>())).ToArray();
-                if (vectors.Any(v => v is null)) continue;
-                map[doc.Key] = new Entry(Str(doc.Doc["model"]), Str(doc.Doc["rev"]), Str(doc.Doc["title"]), doc.Doc["projectId"]?.GetValue<string>(),
-                    Str(doc.Doc["updatedAt"]), Strings(doc.Doc["texts"]), Strings(doc.Doc["hashes"]), vectors!);
+                if (Parse(doc.Doc) is not { } chat) continue;
+                map[doc.Key] = chat.Entry;
+                Keep(doc.Key, chat.Body);
             }
             _cache = map;
             return new Dictionary<string, Entry>(map, StringComparer.Ordinal);
         }
+    }
+
+    /// <summary>A stored chat; null when a vector cannot be read (the sweep then indexes the chat again).</summary>
+    private static (Entry Entry, Body Body)? Parse(JsonObject doc)
+    {
+        var vectors = (doc["vectors"] as JsonArray ?? [])
+            .Select(v => v is JsonValue jv && jv.TryGetValue<string>(out var packed) ? VectorMath.Unpack(packed) : null).ToArray();
+        if (vectors.Any(v => v is null)) return null;
+        var entry = new Entry(Str(doc["model"]), Str(doc["rev"]), Str(doc["title"]), doc["projectId"] is JsonValue p && p.TryGetValue<string>(out var pid) ? pid : null, Str(doc["updatedAt"]));
+        return (entry, new Body(Strings(doc["texts"]), Strings(doc["hashes"]), vectors!));
     }
 
     private static string Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : "";

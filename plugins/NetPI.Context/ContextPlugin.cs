@@ -145,7 +145,7 @@ public sealed class ContextPlugin : INetPiPlugin
         var toolArr = new JsonArray();
         foreach (var d in defs)
         {
-            var schema = d.Parameters.ToJsonString().Length;
+            var schema = d.ParametersChars;
             var size = d.Name.Length + d.Description.Length + schema + 16;
             chars += size;
             // what each tool costs in every request: its description and its parameter schema, in characters

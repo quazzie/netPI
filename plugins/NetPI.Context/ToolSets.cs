@@ -59,10 +59,11 @@ internal static class ToolSets
         for (var page = 0; page < MaxPages; page++)
         {
             var batch = ctx.Sessions.GetMessages(sessionId, before, MessagePage);
+            var found = new List<JsonObject>();
             foreach (var m in batch)
             {
                 if (m.Role != MessageRole.Notice || m.MetaString("kind") != ToolNotices.Kind) continue;
-                list.Add(new JsonObject
+                found.Add(new JsonObject
                 {
                     ["seq"] = m.Seq,
                     ["time"] = m.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
@@ -75,6 +76,7 @@ internal static class ToolSets
                     ["text"] = m.Text,
                 });
             }
+            list.InsertRange(0, found);   // each page is older than the ones before it and ascending inside, so the list stays oldest first
             if (batch.Count < MessagePage || batch[0].Seq <= 1) return (list, false);  // that was the first page
             before = batch[0].Seq;   // carry on just before the oldest message of this one
         }
