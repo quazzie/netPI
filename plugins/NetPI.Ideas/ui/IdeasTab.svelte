@@ -48,6 +48,7 @@
 
   /** The automatic refine drain's state (ideas.autoRefine.status): shown in the header only while it is enabled. */
   let autoRefine = $state(null);
+  const autoRefineOn = $derived(!!autoRefine?.enabled);
   const autoRefineText = $derived(
     autoRefine?.enabled
       ? `Auto refine: ${autoRefine.running?.length ?? 0} running, ${autoRefine.queued?.length ?? 0} waiting`
@@ -68,8 +69,17 @@
     }
   }
 
+  /** The on/off switch for the automatic refine: the same setting as Settings → Ideas, written with settings.set. */
+  async function toggleAutoRefine() {
+    const on = !autoRefineOn;
+    if (await call('settings.set', { path: 'ideas.autoRefine.enabled', value: on })) {
+      autoRefine = { ...(autoRefine ?? {}), enabled: on };
+      ctx.app.toast(on ? 'Auto refine on: new ideas you file are refined in the background' : 'Auto refine off');
+    }
+  }
+
   // svelte-ignore state_referenced_locally
-  const tab = useRefresh(ctx, { load, events: ['ideas.changed'] });
+  const tab = useRefresh(ctx, { load, events: ['ideas.changed', 'settings.changed'] });
 
   /** Called by main.js (onShow / onHide): what lands while the tab is hidden only marks it stale. */
   export function setVisible(v) {
@@ -331,6 +341,14 @@
       <span class="arstat np-ellipsis" title="Your agents refine new ideas in the background, one after another at low priority, until all are refined. Settings: Ideas.">
         <Icon name="bot" size={12} /> {autoRefineText}
       </span>
+    {/if}
+    {#if autoRefine}
+      <IconButton
+        icon="bot"
+        size="sm"
+        pressed={autoRefineOn}
+        title={autoRefineOn ? 'Auto refine is on: click to turn it off' : 'Auto refine is off: click to have your agents refine new ideas in the background'}
+        onclick={toggleAutoRefine} />
     {/if}
     <IconButton icon="plus" title="New idea (Ctrl+I)" size="sm" onclick={newIdea} />
   </div>

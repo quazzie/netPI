@@ -426,7 +426,7 @@ the idea (`get`) and works from what it read. Invalid input comes back as an `is
 - Filters: search over title, summary, tags and sections (with embeddings, a ≈ toggle ranks by meaning); the project
   filter above; a status menu (**Active** = open, planned, in-progress; **All**; or one status) with counts; and a **#**
   tag menu (multi-select). Selected tags show as removable chips below the filters.
-- Automatic refine: while `ideas.autoRefine.enabled`, the header shows "Auto refine: N running, M waiting"; a card shows
+- Automatic refine: a bot button in the header switches `ideas.autoRefine.enabled` on and off (`settings.set`, the same setting as Settings → Ideas; the tab refetches on `settings.changed`). While it is on, the header shows "Auto refine: N running, M waiting"; a card shows
   *refining…* while its run goes, *auto-refined* (a link to the chat) when it is done and *refine failed* with a **retry**
   (the normal refine dialog) when it failed.
 - Cards: a calm overview — **one line per idea, the title only**, plus a small priority mark (high ▲ / low ▼, medium
