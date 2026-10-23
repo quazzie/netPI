@@ -78,9 +78,12 @@ export const isSet = (doc, key) => {
   return v !== undefined && v !== null;
 };
 
-/** The section's on/off switch: its first bool setting named `….enabled`, or null. */
+/**
+ * The section's on/off switch: its bool setting `<name>.enabled` (one level: `webhooks.enabled`), or null. A deeper one
+ * (`ideas.autoRefine.enabled`) switches a part of the section, not the section.
+ */
 export function enabledSettingOf(section) {
-  return (section?.settings ?? []).find((st) => st.type === 'bool' && st.key.endsWith('.enabled')) ?? null;
+  return (section?.settings ?? []).find((st) => st.type === 'bool' && /^[^.]+\.enabled$/.test(st.key)) ?? null;
 }
 
 /** Whether the section's switch is off (set false, or false by default). */
@@ -99,26 +102,28 @@ export function sectionState(section, doc) {
 }
 
 /**
- * How a section is shown: its settings in subgroups (null: no heading; in the order they first appear), the advanced
- * ones apart unless `all`, or set, or `reveal` names one. → { groups: [{ title, settings }], hidden }
+ * How a section is shown: its settings under their headings (subgroup; null: no heading; in the order they first appear,
+ * the ones without a heading first), and the advanced ones apart, in a block of their own at the end, grouped the same
+ * way. `set`: how many of the advanced ones are set (the block then starts open, and its line says so).
+ * → { groups: [{ title, settings }], advanced: { groups, count, set } }
  */
-export function sectionLayout(section, doc, { all = false, reveal = null } = {}) {
-  const groups = [];
-  let hidden = 0;
-  for (const st of section.settings ?? []) {
-    const shown = all || !st.advanced || isSet(doc, st.key) || st.key === reveal;
-    if (!shown) {
-      hidden++;
-      continue;
+export function sectionLayout(section, doc) {
+  const group = (settings) => {
+    const groups = [];
+    for (const st of settings) {
+      const title = st.subgroup ?? null;
+      let g = groups.find((x) => x.title === title);
+      if (!g) groups.push((g = { title, settings: [] }));
+      g.settings.push(st);
     }
-    const title = st.subgroup ?? null;
-    let g = groups.find((x) => x.title === title);
-    if (!g) groups.push((g = { title, settings: [] }));
-    g.settings.push(st);
-  }
-  // settings without a heading lead
-  groups.sort((a, b) => (a.title === null ? -1 : 0) - (b.title === null ? -1 : 0));
-  return { groups, hidden };
+    return groups.sort((a, b) => (a.title === null ? -1 : 0) - (b.title === null ? -1 : 0));
+  };
+  const all = section.settings ?? [];
+  const adv = all.filter((st) => st.advanced);
+  return {
+    groups: group(all.filter((st) => !st.advanced)),
+    advanced: { groups: group(adv), count: adv.length, set: adv.filter((st) => isSet(doc, st.key)).length },
+  };
 }
 
 /**

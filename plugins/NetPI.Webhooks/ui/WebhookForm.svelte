@@ -1,7 +1,7 @@
 <script>
   // The add/edit form: an inline panel that replaces the list. The prompt is a template over the payload ({{path.to.field}});
   // the Before command filters and shapes it, the After command reports back; the agent is a key, any, free or a list.
-  import { Button, Modal } from '@netpi/kit';
+  import { AgentSelect, Button, Modal } from '@netpi/kit';
   import { agentToForm, formToAgent, hookToForm, formToHook } from './model.js';
 
   let { ctx, hook = null, projects = [], agents = null, profiles = null, ondone, oncancel } = $props();
@@ -54,13 +54,6 @@
 
   let busy = $state(false);
   let error = $state('');
-
-  const agentOptions = $derived(
-    (agents ?? []).map((a) => ({
-      value: a.key,
-      label: a.key + (a.disabled ? ' (disabled)' : a.available === false ? ` (unavailable${a.unavailable ? ': ' + a.unavailable : ''})` : '') + (a.free ? ' · free' : ''),
-    })),
-  );
 
   async function save() {
     if (busy) return;
@@ -166,17 +159,26 @@
 
   <label class="fld">
     <span class="f-label">Agent</span>
-    <select class="np-input" bind:value={f.agentChoice}>
-      <option value="">Default</option>
-      <option value="any">Any: whichever agent has a free instance first</option>
-      <option value="free">Free: the first free-priced agent</option>
-      {#each agentOptions as a (a.value)}
-        <option value={a.value}>{a.label}</option>
-      {/each}
-      <option value="__list">Preference list…</option>
-    </select>
+    <AgentSelect
+      {agents}
+      bind:value={f.agentChoice}
+      label="Agent"
+      options={[
+        { value: '', label: 'Default', hint: 'the agent new chats start on' },
+        { value: 'any', label: 'Any', hint: 'whichever agent has a free instance first' },
+        { value: 'free', label: 'Free', hint: 'the first free-priced agent' },
+        { value: '__list', label: 'Preference list…', hint: 'the first available of several' },
+      ]}
+    />
     {#if f.agentChoice === '__list'}
-      <input class="np-input" placeholder="sonnet, qwen3-27b, home (the first available one runs)" bind:value={f.agentList} />
+      <AgentSelect
+        {agents}
+        multiple
+        label="Preference list"
+        placeholder="Choose agents, first preferred"
+        value={f.agentList.split(',').map((s) => s.trim()).filter(Boolean)}
+        onchange={(list) => (f.agentList = list.join(', '))}
+      />
     {/if}
   </label>
 

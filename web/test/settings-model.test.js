@@ -64,17 +64,19 @@ test('resolveTarget: a key names its section and page; a page id alone; unknown 
   assert.equal(resolveTarget({ q: 'port' }, l).q, 'port');
 });
 
-test('sectionLayout: headings in order of appearance, plain ones first; advanced hidden unless set, revealed or all', () => {
+test('sectionLayout: headings in order of appearance, plain ones first; the advanced ones in a block of their own', () => {
   const retry = SCHEMA.find((s) => s.id === 'retry');
   let l = sectionLayout(retry, {});
   assert.deepEqual(l.groups.map((g) => g.title), ['Attempts', 'Timeouts']);
-  assert.equal(l.hidden, 1);
+  assert.deepEqual(l.advanced.groups.map((g) => g.title), ['Backoff'], 'grouped under their own headings');
+  assert.equal(l.advanced.count, 1);
+  assert.equal(l.advanced.set, 0);
   l = sectionLayout(retry, { retry: { baseDelayMs: 500 } });
-  assert.deepEqual(l.groups.map((g) => g.title), ['Attempts', 'Timeouts', 'Backoff'], 'a set advanced setting is shown');
-  assert.equal(sectionLayout(retry, {}, { reveal: 'retry.baseDelayMs' }).hidden, 0);
-  assert.equal(sectionLayout(retry, {}, { all: true }).hidden, 0);
+  assert.deepEqual(l.groups.map((g) => g.title), ['Attempts', 'Timeouts'], 'a set advanced setting stays in the block');
+  assert.equal(l.advanced.set, 1, 'and the block says so (it starts open)');
   const mixed = { settings: [st('a', { subgroup: 'H' }), st('b')] };
   assert.deepEqual(sectionLayout(mixed, {}).groups.map((g) => g.title), [null, 'H']);
+  assert.equal(sectionLayout(mixed, {}).advanced.count, 0);
 });
 
 test('sectionInline: small plain sections inline, headings or more than three settings make a row', () => {
@@ -91,6 +93,8 @@ test('sectionOff and sectionState: the …enabled switch, off by its default too
   assert.equal(sectionOff(wh, { webhooks: { enabled: true } }), false);
   assert.deepEqual(sectionState(wh, { webhooks: { port: 9, enabled: true } }), { changed: 2, off: false });
   assert.equal(sectionOff(SCHEMA.find((s) => s.id === 'shell'), {}), false, 'no switch: never off');
+  const ideas = { settings: [st('ideas.tellAgentOnCommit', { type: 'bool' }), st('ideas.autoRefine.enabled', { type: 'bool', default: false })] };
+  assert.equal(sectionOff(ideas, {}), false, "a part's switch (ideas.autoRefine.enabled) is not the section's");
 });
 
 test('helpParts: the first sentence, the rest behind More; short texts stay whole', () => {

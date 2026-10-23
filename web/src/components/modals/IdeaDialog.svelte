@@ -8,6 +8,7 @@
   import { app, openSession, newSession, sendMessage } from '../../lib/state/app.svelte.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import { agentList, ANY } from '../../lib/agents.js';
+  import AgentSelect from '../../lib/kit/AgentSelect.svelte';
   import { prepareImage, formatBytes } from '../../lib/images.js';
   import { IDEA_STATUSES, IDEA_PRIORITIES, IDEA_MAX_IMAGES, parseTags } from '../../lib/ideas.js';
 
@@ -310,11 +311,8 @@
       <div class="refine">
         <div class="rhead"><Icon name="bot" size={13} /><b>Refine with an agent</b></div>
         <p class="np-dim np-small">Starts a chat in which an agent reads the code, then rewrites this idea: a sharper title and summary, what exists today, a plan and the questions only you can answer. It cannot change files or run commands.</p>
-        <label class="lbl" for="refine-agent">Agent</label>
-        <select id="refine-agent" class="np-input i-agent" bind:value={agent}>
-          <option value={ANY}>Any available agent</option>
-          {#each agents as a (a.key)}<option value={a.key}>{a.key}{a.use ? ` — ${a.use}` : ''}</option>{/each}
-        </select>
+        <span class="lbl">Agent</span>
+        <AgentSelect {agents} bind:value={agent} options={[{ value: ANY, label: 'Any available agent', hint: 'the first with a free instance' }]} label="Refine agent" />
         <label class="lbl" for="refine-hint">Focus (optional)</label>
         <textarea id="refine-hint" class="np-input i-hint" rows="2" placeholder="e.g. check whether the Files plugin already does part of this" bind:value={hint}></textarea>
       </div>

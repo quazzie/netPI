@@ -109,7 +109,7 @@ interface SettingsSection { id; title; group: 'General'|'Models'|'Agents'|'Runs'
   order; help?; providerType?; settings: SettingInfo[] }
 // providerType: a kind of model provider (not listed as a section): "Add provider" offers it and `settings` (keys relative to one
 // providers.instances.<id> entry) is its form; see docs/SETTINGS.md Providers
-interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'string'|'text'|'secret'|'choice'|'list'|'model'|'folder'|'file';
+interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'string'|'text'|'secret'|'choice'|'list'|'model'|'folder'|'file'|'agents';
   label; help?; default?; placeholder?; min?; max?; unit?; options?: string[]; applies?: 'restart'|'new sessions'|string;
   subgroup? /* a heading inside the section */; advanced?: true /* under "More settings" */; keywords?: string[] /* for the search */ }
 ```

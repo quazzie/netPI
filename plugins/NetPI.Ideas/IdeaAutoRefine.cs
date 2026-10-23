@@ -9,6 +9,7 @@ namespace NetPI.Ideas;
 /// The automatic refine drain: the owner's free local agents refine newly filed ideas in the background, through the same
 /// path as <c>ideas.refine</c> (<see cref="IdeaRefine.StartAsync"/>). Off by default, and it only ever uses the agents the owner
 /// listed in <c>ideas.autoRefine.agents</c> — an empty list runs nothing, never "any agent", which could be a paid one.
+/// <c>free</c> in the list stands for every agent <c>agents.list</c> marks free (its model costs nothing) at the time it picks.
 /// <para>
 /// Which ideas: open, filed by the user, not refined yet (no <c>autoRefine</c> field: a manual refine sets it too), not tagged
 /// <c>no-refine</c>, and untouched for <c>delayMinutes</c>. The state lives on the idea: <c>autoRefine { state, sessionId, at,
@@ -270,7 +271,9 @@ public sealed class IdeaAutoRefine : IDisposable
             try { slots = NetPiJson.ToNode(await _ctx.Rpc.InvokeAsync("agents.list", new JsonObject(), ct).ConfigureAwait(false)) as JsonArray; }
             catch (Exception ex) when (ex is not OperationCanceledException) { _ctx.Logger.LogDebug(ex, "Ideas: agents.list failed; round robin without it"); }
         }
-        var order = Enumerable.Range(0, keys.Count).Select(i => keys[(_next + i) % keys.Count]).ToList();
+        keys = Expand(keys, slots);
+        if (keys.Count == 0) return null;
+        var order = Enumerable.Range(0, keys.Count).Select(i => keys[(_next % keys.Count + i) % keys.Count]).ToList();
         var usable = new List<(string Key, bool Free)>();
         foreach (var key in order)
         {
@@ -287,4 +290,29 @@ public sealed class IdeaAutoRefine : IDisposable
         _next = (keys.IndexOf(pick.Key) + 1) % keys.Count;
         return pick.Key;
     }
+
+    /// <summary>
+    /// The owner's list with <c>free</c> replaced by the agents <c>agents.list</c> marks free, in its order (an agent named
+    /// on its own keeps its place). Without the list nothing is known to be free, so <c>free</c> adds none.
+    /// </summary>
+    internal static List<string> Expand(List<string> keys, JsonArray? slots)
+    {
+        var result = new List<string>();
+        foreach (var key in keys)
+        {
+            if (!string.Equals(key, FreeAgents, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!result.Contains(key, StringComparer.OrdinalIgnoreCase)) result.Add(key);
+                continue;
+            }
+            foreach (var slot in slots?.OfType<JsonObject>() ?? [])
+                if (slot["free"]?.GetValue<bool?>() == true && IdeaOps.Str(slot["key"]) is { Length: > 0 } k
+                    && slot["configured"]?.GetValue<bool?>() != false && !result.Contains(k, StringComparer.OrdinalIgnoreCase))
+                    result.Add(k);
+        }
+        return result;
+    }
+
+    /// <summary>The entry of <c>ideas.autoRefine.agents</c> that stands for every free agent.</summary>
+    public const string FreeAgents = "free";
 }

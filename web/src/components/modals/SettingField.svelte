@@ -1,7 +1,7 @@
 <script>
   /**
    * One host setting from settings.schema as a control: toggle, number, text, text area, secret, choice, list, model,
-   * folder or file. Saves with settings.set on change (text and numbers when the field is left); an unset key shows its
+   * folder, file, or agents (the agent picker; "free" is every free agent). Saves with settings.set on change (text and numbers when the field is left); an unset key shows its
    * default (a text with a built-in default shows that text, and stays unset while it is unchanged); "Reset" removes the
    * key so the default applies again. The help shows its first sentence ("More" shows the rest); the ⋯ menu names the
    * key, copies it, shows it in settings.json (the dialog's `settings` context) and resets it. A
@@ -14,6 +14,8 @@
   import { helpParts } from '../../lib/settingsModel.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import ModelSelect from '../ModelSelect.svelte';
+  import AgentSelect from '../../lib/kit/AgentSelect.svelte';
+  import { agentList } from '../../lib/agents.js';
   import ListEditor from './ListEditor.svelte';
   import SkillsDialog from './SkillsDialog.svelte';
   import { pickFolder } from '../../lib/folderPicker.js';
@@ -124,6 +126,19 @@
         {#each s.options ?? [] as o (o)}
           <button aria-pressed={current === o} {disabled} onclick={() => current !== o && setSetting(s.key, o)}>{o}</button>
         {/each}
+      </div>
+    {:else if s.type === 'agents'}
+      <div class="sel">
+        <AgentSelect
+          agents={agentList()}
+          multiple
+          value={Array.isArray(current) ? current : []}
+          options={[{ value: 'free', label: 'Any free agent', hint: 'every agent whose model costs nothing' }]}
+          placeholder={s.placeholder ? `None (${s.placeholder})` : 'None'}
+          label={s.label ?? s.key}
+          {disabled}
+          onchange={(list) => setSetting(s.key, list.length ? list : null)}
+        />
       </div>
     {:else if s.type === 'model'}
       <div class="sel"><ModelSelect value={isSet ? value : null} none={s.placeholder ?? 'the default'} label={s.label ?? s.key} onchange={(ref) => setSetting(s.key, ref)} /></div>

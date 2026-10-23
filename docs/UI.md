@@ -482,12 +482,14 @@ a bigger one is a row (`SettingsRow`: its help, "N changed", "off", and its `…
 move to another page, section or search remembers the place it left (50 back), and the ← arrow (in a section's header,
 beside a page's title and above search results), Alt+← and the mouse's back button return to it; Esc only clears a search,
 leaves a section, then closes. `SettingsSection`
-shows the settings under their headings (`subgroup`), the `advanced` ones behind "More settings (N)" unless set or opened
-on, the others greyed out while the switch is off, and **Reset section** (asks first) when more than one is set. The Budget
+shows the settings under their headings (`subgroup`), greyed out while the switch is off, and **Reset section** (asks
+first) when more than one is set. The `advanced` ones are a block of their own at the end of the section: one line names
+them ("▸ Advanced settings (3) Query prefix · Timeout (ms) · Texts per request", with "N changed" when some are set) and
+opens them right below itself; it starts open when one of them is set or the dialog was opened on one. The Budget
 and Backups sections lead with their views.
 
 **Fields.** `SettingField` renders one control per type (switch, number with unit and range, text, secret with an eye, choice,
-list, model with the searchable list, folder, file); a change saves that key alone (`settings.set`, on change or blur),
+list, model with the searchable list, folder, file, agents with the agent picker); a change saves that key alone (`settings.set`, on change or blur),
 **Reset** removes it so the default applies again, a bad value is refused in place, a badge says when a change applies
 (`restart`, `new sessions`), and a dot marks a set key. The help shows its first sentence, **More** the rest. The ⋯ menu copies
 the key, shows it in settings.json (the editor opens with the key selected) and resets it, with the default beside. Defaults
@@ -907,6 +909,7 @@ components rather than copies of them.
 | `SearchInput` | `bind:value`, `placeholder`; Esc clears |
 | `Segmented` | `options` (`{ value, label, icon?, count?, tone?, title? }[]`), `bind:value`, `onchange`, `fit` (default `true`: steps down to labels only → icons + selected label → icons only to stay inside its container; the icon steps need an `icon` on every option). Buttons carry `data-value`. |
 | `Menu` | `items` (`{ label, icon?, hint?, checked?, danger?, disabled?, keepOpen?, onclick }`, `{ divider }`, `{ header }`; `keepOpen` for multi-select toggles), `trigger` snippet `({ toggle, open })`, `placement` (`bottom-end` / `bottom-start`); exported `openAt(x, y, items?)`, `openFor(el, items?)`, `close()` for context menus. Follows its anchor when anything scrolls; `openAt` has no anchor (a point), so nothing moves it |
+| `AgentSelect` | `agents` (`agents.list` slots; null: a text field for keys), `bind:value` (a key or an option's value; with `multiple` an array in the order chosen), `options` (`{ value, label, hint? }[]` before the agents: Default, Any, Free…), `placeholder`, `label`, `disabled`, `onchange`. A button naming the choice and a `Menu` of the options and the agents with their model, free or paid, and off / unavailable. Used by the settings' `agents` fields, the idea dialog's refine agent, and the Webhook and Schedule forms |
 | `Pips` | `busy`, `capacity`, `queued`, `max` (a bar instead of pips above `max`) |
 | `Collapsible` | `title` or `header` snippet, `bind:open` |
 | `Markdown` | `text`, `highlight` (default `true`) |

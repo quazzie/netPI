@@ -163,6 +163,26 @@ public static class IdeasAutoRefineTests
             Check.Equal("a", env.Used[2]);
         });
 
+        r.Add("ideas.autoRefine: \"free\" stands for every free agent agents.list reports, never a paid one", async () =>
+        {
+            var env = new Env(agents: ["free"], max: 3);
+            env.Ctx.RpcFake.Register("agents.list", (_, _) => Task.FromResult<object?>(new JsonArray(
+                new JsonObject { ["key"] = "qwen", ["configured"] = true, ["free"] = true, ["available"] = true, ["capacity"] = 2, ["busy"] = 0 },
+                new JsonObject { ["key"] = "opus", ["configured"] = true, ["free"] = false, ["available"] = true, ["capacity"] = 1, ["busy"] = 0 },
+                new JsonObject { ["key"] = "gemma", ["configured"] = true, ["free"] = true, ["disabled"] = true },
+                new JsonObject { ["key"] = "small", ["configured"] = true, ["free"] = true, ["available"] = true, ["capacity"] = 1, ["busy"] = 0 })), "test");
+            await env.StartAsync();
+            env.Idea("1", ageMinutes: 90);
+            env.Idea("2", ageMinutes: 80);
+            env.Idea("3", ageMinutes: 70);
+            await env.Tick();
+            Check.Equal("qwen,small,qwen", string.Join(",", env.Used), "the free agents in turn; the paid and the switched-off one never");
+
+            Check.Equal("a,qwen,small", string.Join(",", IdeaAutoRefine.Expand(["a", "free", "qwen"], new JsonArray(
+                new JsonObject { ["key"] = "qwen", ["free"] = true }, new JsonObject { ["key"] = "small", ["free"] = true }))), "a named agent keeps its place");
+            Check.Equal("", string.Join(",", IdeaAutoRefine.Expand(["free"], null)), "without agents.list nothing is known to be free");
+        });
+
         r.Add("ideas.autoRefine: keeps going until every eligible idea is refined (no daily cap)", async () =>
         {
             var env = await new Env(agents: ["qwen"], max: 1).StartAsync();

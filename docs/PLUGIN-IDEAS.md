@@ -292,8 +292,9 @@ define it better, without changing any files; the chat is recorded on the idea's
 
 Off by default. When on, the owner's own agents refine newly filed ideas in the background through the same code as
 `ideas.refine` (one method, `IdeaRefine.StartAsync`), so each idea becomes a clear, checkable piece of work without the
-owner pressing Refine. Settings (docs/SETTINGS.md): `enabled` (false), `agents` (the agent keys that may run it; **empty
-means nothing runs**, never "any agent", which could be a paid one), `maxConcurrent` (1, 1–4), `delayMinutes` (1),
+owner pressing Refine. Settings (docs/SETTINGS.md): `enabled` (false), `agents` (the agents that may run it, chosen with the agent
+picker; `free` is every agent `agents.list` marks free at the time; **empty means nothing runs**, never "any agent", which
+could be a paid one), `maxConcurrent` (1, 1–4), `delayMinutes` (1),
 `archiveWhenDone` (true).
 
 - **Which ideas:** status open, filed by the user (`createdBy: "user"`, not an agent), no `autoRefine` field yet (a manual

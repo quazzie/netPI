@@ -2,7 +2,7 @@
   // The add/edit form: an inline panel that replaces the list (not a modal), stacked fields for 220px.
   // Edit mode always sends `enabled` explicitly (a cadence change alone would silently resume a paused
   // schedule), and a cadence only when it changed (a new cadence counts the next run from now).
-  import { Button, Segmented } from '@netpi/kit';
+  import { AgentSelect, Button, Segmented } from '@netpi/kit';
   import { cadenceToForm, formToCadence, cadenceChanged, toLocalInput } from './model.js';
 
   let { ctx, schedule = null, projects = [], agents = null, ondone, oncancel } = $props();
@@ -51,13 +51,6 @@
     ['UTC', ...new Set([f.tz, ...(typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [])])]
       .filter((z, i, a) => a.indexOf(z) === i),
   );
-  const agentOptions = $derived(
-    (agents ?? []).map((a) => ({
-      value: a.key,
-      label: a.key + (a.disabled ? ' (disabled)' : a.available === false ? ` (unavailable${a.unavailable ? ': ' + a.unavailable : ''})` : ''),
-    })),
-  );
-
   const minNow = () => toLocalInput(new Date());
 
   async function save() {
@@ -179,17 +172,15 @@
 
   <label class="fld">
     <span class="f-label">Agent</span>
-    {#if agents === null}
-      <input class="np-input" placeholder="agent key (agents.list unavailable)" bind:value={f.agent} />
-    {:else}
-      <select class="np-input" bind:value={f.agent}>
-        <option value="">Default</option>
-        <option value="any">Any available</option>
-        {#each agentOptions as a (a.value)}
-          <option value={a.value}>{a.label}</option>
-        {/each}
-      </select>
-    {/if}
+      <AgentSelect
+        {agents}
+        bind:value={f.agent}
+        label="Agent"
+        options={[
+          { value: '', label: 'Default', hint: 'the agent new chats start on' },
+          { value: 'any', label: 'Any available', hint: 'whichever agent has a free instance first' },
+        ]}
+      />
   </label>
 
   <label class="fld">
