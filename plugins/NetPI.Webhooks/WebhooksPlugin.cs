@@ -272,6 +272,7 @@ public sealed class WebhooksPlugin : INetPiPlugin
                 max => Body.ReadAsync(http.Request, max, http.RequestAborted), bearer, work.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { return; }
+        catch (BadHttpRequestException) { answer = (413, Err("too_large", "the request body is too large")); }   // a chunked body over the listener's cap
         catch (Exception ex)
         {
             _ctx?.Logger.LogError(ex, "Webhooks: a request failed");

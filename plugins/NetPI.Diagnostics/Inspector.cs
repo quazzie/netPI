@@ -383,14 +383,14 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     /// One tool call in full: its arguments and its result as the model got it (text, error flag, images, details), from
     /// the chat's messages. <c>{ callId, sessionId? }</c>: the session is found in the tool log, or must be given.
     /// </summary>
-    public JsonObject Tool(RpcRequest r)
+    public JsonObject Tool(RpcRequest r, CancellationToken ct = default)
     {
         var callId = r.Required("callId");
         var record = recorder.Tools().FirstOrDefault(t => t.CallId == callId);
         // Out of the tool log (older than its last 500 calls, or before a restart), the call is looked up in the stored
         // sessions: the history is the source, the log only a faster way in.
         var sessionId = r.Str("sessionId") ?? record?.SessionId
-                        ?? SessionOfCall(callId)
+                        ?? SessionOfCall(callId, ct)
                         ?? throw new RpcException("not_found", $"No tool call {callId} in any stored session.");
         // Paged backwards in small pages until the id turns up, rather than reading 2000 messages (every tool result and
         // image in them deserialised) to find one call — and the scan for the list of calls has the same shape (idea-5oitnm).
@@ -419,14 +419,14 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     }
 
     /// <summary>The stored session that holds a tool call, found by scanning the history (up to a minute: a call id that exists is found).</summary>
-    private string? SessionOfCall(string callId)
+    private string? SessionOfCall(string callId, CancellationToken ct)
     {
         var request = new RpcRequest
         {
             Method = "diag.search",
             Params = JsonSerializer.SerializeToElement(new JsonObject { ["callId"] = callId, ["limit"] = 1, ["budgetSeconds"] = 60 }),
         };
-        return history.Search(request, CancellationToken.None)["hits"] is JsonArray { Count: > 0 } hits ? (string?)hits[0]?["sessionId"] : null;
+        return history.Search(request, ct)["hits"] is JsonArray { Count: > 0 } hits ? (string?)hits[0]?["sessionId"] : null;
     }
 
     /// <summary>

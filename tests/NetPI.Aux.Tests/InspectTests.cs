@@ -528,6 +528,11 @@ private static async Task ReloadBackground()
         Check.Equal(500, (int)failedDetail["errorDetail"]!["status"]!);
         Check.Equal("server_error", failedDetail["errorDetail"]!["type"].Str());
 
+        // a next link that throws before it streams: the record ends as an error instead of staying "running"
+        await Check.ThrowsAsync<InvalidOperationException>(() => Drain(mw.InvokeAsync(Request(), (_, _) => throw new InvalidOperationException("refused up front"), CancellationToken.None)));
+        var refused = ((JsonArray)(await ctx.RpcFake.Call("diag.calls", new JsonObject { ["errors"] = true }))!).First(c => c!["error"].Str().Contains("refused up front"))!;
+        Check.Equal("error", refused["state"].Str());
+
         // the caller stops reading (a steer): cancelled
         await foreach (var _ in mw.InvokeAsync(Request(), (_, c) => Stream([Yield(new TextDelta("a")), Yield(new TextDelta("b"))], c), CancellationToken.None))
             break;
