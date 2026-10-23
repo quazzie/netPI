@@ -90,8 +90,13 @@ await run('settings', async ({ page, socket }) => {
   await page.keyboard.press('Escape');
   await expectEventually('Esc closes the settings', () => dialog.count(), { pass: (n) => n === 0 });
   await page.keyboard.press('Control+k');
-  await page.keyboard.type('Silence between tokens');
-  await page.keyboard.press('Enter');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await expectEventually('Ctrl+K opens the palette', () => palette.isVisible(), { stop: true, quiet: true });
+  await palette.getByRole('textbox').fill('Silence between tokens');
+  // its settings come with settings.schema, which the palette asks for when it opens
+  const option = palette.getByRole('button', { name: /^Silence between tokens/ });
+  await expectEventually('the palette lists the setting by its label', () => option.count(), { pass: (n) => n === 1 });
+  await option.click();
   await expectEventually('the palette opens the settings on that field', () => dialog.locator('[data-setting="retry.stallTimeoutSeconds"]').count(), { pass: (n) => n === 1 });
   check('…in its section, opened in place', (await dialog.getByTestId('settings-back').count()) === 1);
 
