@@ -29,8 +29,11 @@ public sealed class SshPlugin : INetPiPlugin
                 SettingInfo.Bool("ssh.reuseConnections", "Reuse connections", true, "Keep a connection to a host open between calls where the ssh client cannot share one itself (Windows), so a run of calls pays the handshake once."),
                 SettingInfo.Int("ssh.connectionsPerHost", "Connections per host", 3, "Calls that run at the same time on one host; one more opens its own connection.", 1, 8),
                 SettingInfo.Int("ssh.idleSeconds", "Close idle connections after", 300, null, 10, 3600, "s"),
+                SettingInfo.Bool("ssh.blockShellSsh", "Refuse ssh through the shell", true,
+                    "A bash or pwsh command that starts ssh, scp or sftp to a host of the ssh config is refused, with the ssh tool call that does the same: the tool reuses the connection, saves the output and gives the host's notes, and the guardrails and the Autonomy journal see the host. Hosts the config does not name are not affected."),
             ],
         });
+        context.Services.Register<IAgentHook>(new ShellSshHook(context));
         // One broker for every action: its connections outlive a call, and a reload's Track disposal closes them.
         var broker = context.Track(new SshBroker(context.Logger));
         foreach (var tool in SshToolSet.Create(context, new ProcessLauncher(), broker)) context.Tools.Register(tool);

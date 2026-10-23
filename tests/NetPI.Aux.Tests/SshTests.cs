@@ -1029,7 +1029,73 @@ public static class SshTests
         });
     }
 
-    public static void RegisterMore(TestRunner r) => SshJobsTests.Register(r);
+    public static void RegisterMore(TestRunner r)
+    {
+        SshJobsTests.Register(r);
+        r.Add("ssh: a shell command that starts ssh, scp or sftp to a host of the config is found, with the tool call to use instead; mentions and other hosts are not (idea-xh3pvw)", ShellSshFound);
+    }
+
+    private static Task ShellSshFound()
+    {
+        var hosts = new List<SshHost> { new("nas", "192.168.1.20", "admin", null), new("web1", "web1.example.com", null, 2222) };
+        ShellSshHit? F(string c) => ShellSsh.Find(c, hosts);
+
+        foreach (var (command, host) in new[]
+        {
+            ("ssh nas uptime", "nas"),
+            ("ssh admin@nas 'df -h'", "nas"),
+            ("ssh -p 22 -i ~/.ssh/id nas uptime", "nas"),
+            ("ssh -o ConnectTimeout=5 web1.example.com systemctl status x", "web1"),
+            ("ssh ssh://admin@192.168.1.20:22 ls", "nas"),
+            ("cd /tmp && ssh nas ls", "nas"),
+            ("sudo -n ssh nas reboot", "nas"),
+            ("FOO=1 /usr/bin/ssh nas ls", "nas"),
+            ("& ssh.exe nas ls", "nas"),
+            (@"C:\Windows\System32\OpenSSH\ssh.exe nas ls", "nas"),
+            ("echo x | ssh NAS 'cat > f'", "nas"),
+            ("scp ./a.txt nas:/tmp/", "nas"),
+            ("scp -P 2222 admin@web1:/var/log/x.log .", "web1"),
+            ("sftp -b batch.txt nas", "nas"),
+        })
+        {
+            var hit = F(command);
+            Check.True(hit is not null, $"found: {command}");
+            Check.Equal(host, hit!.Host, command);
+        }
+        var run = F("ssh nas 'df -h' /")!;
+        Check.Equal("ssh", run.Program);
+        Check.Equal("df -h /", run.Remote);
+        Check.Contains(run.Advice(), "\"action\":\"run\",\"host\":\"nas\",\"script\":\"df -h /\"");
+        Check.Contains(run.Advice(), "Nothing ran.");
+        Check.Contains(F("scp a nas:/b")!.Advice(), "\"action\":\"copy\"");
+        Check.Contains(F("ssh nas")!.Advice(), "interactive login");
+
+        foreach (var command in new[]
+        {
+            "git push origin main", "echo ssh nas", "grep -r 'ssh nas' .", "ssh other-host ls", "ssh-keygen -t ed25519",
+            @"scp C:\a.txt D:\b.txt", "scp C:/a.txt nas-backup/", "scp a.txt b.txt", "cat ~/.ssh/config", "git commit -m \"ssh nas fix\"", "ls; echo 'a; ssh nas ls'",
+            "ssh -p 22", "rsync -a x nas:/y",
+        })
+            Check.True(F(command) is null, $"not a shell ssh to a known host: {command}");
+        Check.True(ShellSsh.Find("ssh nas ls", []) is null, "no config, no hosts: nothing to redirect to");
+        Check.Equal("nas", ShellSsh.HostOf("ssh://admin@nas:2200/path"));
+        Check.Equal("::1", ShellSsh.HostOf("admin@[::1]"));
+
+        // the hook: bash and pwsh (also through call_tool), the hosts of the configured file, switched off by the setting
+        var env = new Env();
+        var hook = new ShellSshHook(env.Ctx);
+        ToolCallPart Call(string tool, object args) => new() { Id = "c1", Name = tool, Arguments = JsonSerializer.Serialize(args) };
+        var refused = hook.Decide(Call("bash", new { command = "ssh nuc 'systemctl restart x'" }));
+        Check.True(refused is { Block: true }, "bash ssh to a configured host is refused");
+        Check.Contains(refused!.Reason!, "\"host\":\"nuc\"");
+        Check.True(hook.Decide(Call("pwsh", new { command = "scp ./a server:/tmp/" })) is { Block: true }, "pwsh scp too");
+        Check.True(hook.Decide(Call("call_tool", new { name = "bash", arguments = new { command = "ssh 192.168.1.3 ls" } })) is { Block: true }, "a HostName, through call_tool");
+        Check.True(hook.Decide(Call("bash", new { command = "ssh elsewhere ls" })) is null, "a host the config does not name");
+        Check.True(hook.Decide(Call("ssh", new { action = "run", host = "nuc", script = "ls" })) is null, "the ssh tool itself");
+        env.Ctx.SettingsFake.Set("ssh.blockShellSsh", JsonValue.Create(false));
+        Check.True(hook.Decide(Call("bash", new { command = "ssh nuc ls" })) is null, "switched off");
+        return Task.CompletedTask;
+    }
 
     private static readonly SshOptions BrokerOptions = new("ssh", "scp", "config", true, 5, 30, null);
     private static readonly SshHost BrokerHost = new("h1", null, null, null);
