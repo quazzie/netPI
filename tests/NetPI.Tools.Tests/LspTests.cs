@@ -435,6 +435,11 @@ public static class LspTests
         Check.Contains(refs.Content, "a.fake:1:1: old = 1");
         Check.Contains(refs.Content, "b.fake:2:5: use old here");
 
+        var big = Path.Combine(root, "big.fake");
+        File.WriteAllBytes(big, new byte[LspSession.MaxFileBytes + 1]);
+        var tooBig = await Run(new { action = "references", file = "big.fake", line = 1, column = 1 });
+        Check.True(tooBig.IsError && tooBig.Content.Contains("larger than 2 MB"), tooBig.Content);
+
         var nothing = await Run(new { action = "rename", file = "a.fake", line = 1, column = 100, newName = "n" });
         Check.True(nothing.IsError && nothing.Content.Contains("nothing to rename"), nothing.Content);
 

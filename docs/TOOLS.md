@@ -567,7 +567,7 @@ so no chat parses a console log. The project describes it in `.netpi/tests.json`
   streams to the call; the last lines come back only when the run produced no results.
 - `only` (a name filter) reaches the command in the `NETPI_TEST_ONLY` environment variable, and replaces `{only}` (quoted) where
   the command has that placeholder; quotes, backslashes, `$`, `%` and backticks are refused, because it goes into a command
-  line. `NETPI_TEST_RESULTS` holds the full results path. The tool deletes the old results file first, so a file that is there
+  line. `NETPI_TEST_RESULTS` holds the full results path (`results` has to name a path inside the project folder). The tool deletes the old results file first, so a file that is there
   afterwards is this run's.
 - The results file is JSON: `{ "passed": n, "failed": n, "skipped": n, "failures": [{ "name", "message", "evidence"? }], "log"?: path }`.
   The answer is `<suite>: P passed, F failed, S skipped in T s.` and each failure (at most 20: name, the message on one line cut
@@ -597,7 +597,7 @@ sha512); `plugin.json` names both downloads. A failed or refused install is the 
 A server is started per workspace root on its first request (the first C# call loads the project: up to a few minutes), at
 most `lsp.maxServers` at once (the least recently used stops), and stopped after `lsp.idleMinutes` unused. Installs and starts
 run outside the pool's lock and are shared by whoever asks meanwhile, so a C# project loading never holds up a TypeScript
-question. Every request sends the file as it is on disk now, so another session's edit is never answered stale. Diagnostics
+question. Every request sends the file as it is on disk now (a file over 2 MB is refused instead), so another session's edit is never answered stale. Diagnostics
 are asked for: csharp-ls and svelte-language-server answer `textDocument/diagnostic`; typescript-language-server only
 publishes (and nothing while a clean file stays clean), so its tsserver is asked directly through the
 `typescript.tsserverRequest` command it offers (syntactic and semantic diagnostics). A server that offers neither has its
