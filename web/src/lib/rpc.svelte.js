@@ -28,6 +28,9 @@ export const conn = $state({
 const DEFAULT_TIMEOUT = 30_000;
 const FALLBACK_AFTER = 3_000;
 const BACKOFF = [400, 1000, 2000, 4000, 7000, 10_000];
+// The host takes 64 unanswered calls per connection and answers a frame past that with `busy` (docs/PROTOCOL.md). Calls past
+// this many wait here in the order they were made and go out as answers come back, so a fan-out of calls is slowed, not failed.
+const MAX_IN_FLIGHT = 60;
 
 let ws = null;
 let nextId = 1;
@@ -124,6 +127,7 @@ function handle(msg) {
       clearTimeout(p.timer);
       if (msg.e) p.reject(new RpcError(msg.e.code, msg.e.message, p.m));
       else p.resolve(msg.r);
+      flushOutbox(); // a slot is free
       break;
     }
     case 'ev':
@@ -182,16 +186,32 @@ function rawSend(obj) {
   return false;
 }
 
+/** Calls sent on the socket that have no answer yet. */
+function inFlight() {
+  let n = 0;
+  for (const p of pending.values()) if (p.sent) n++;
+  return n;
+}
+
+/** Sends the queued calls in order, as many as the socket takes; the rest stay queued for the next free slot. */
 function flushOutbox() {
+  if (!outbox.length) return;
   const items = outbox;
   outbox = [];
+  let free = MAX_IN_FLIGHT - inFlight();
   for (const it of items) {
-    clearTimeout(it.fallbackTimer);
     const p = pending.get(it.id);
-    if (!p) continue; // timed out meanwhile
+    if (!p) {
+      clearTimeout(it.fallbackTimer);
+      continue; // timed out meanwhile
+    }
     if (ws && ws.readyState === 1) {
-      ws.send(it.frame);
-      p.sent = true;
+      clearTimeout(it.fallbackTimer); // the socket is back: waiting for a slot is not a reason to switch to HTTP
+      if (free > 0) {
+        ws.send(it.frame);
+        p.sent = true;
+        free--;
+      } else outbox.push(it);
     } else outbox.push(it);
   }
 }
@@ -223,15 +243,18 @@ export function rpc(m, p, opts = {}) {
         if (idx >= 0) outbox.splice(idx, 1);
       }
       reject(timeoutError(m));
+      flushOutbox(); // the call may have held a slot
     }, timeout);
     pending.set(id, entry);
-    if (ws && ws.readyState === 1) {
+    const open = ws && ws.readyState === 1;
+    if (open && !outbox.length && inFlight() < MAX_IN_FLIGHT) {
       ws.send(frame);
       entry.sent = true;
       return;
     }
     item = { id, frame, fallbackTimer: 0 };
-    if (opts.fallback !== false) {
+    // on an open socket the call waits for a free slot (flushOutbox); only a socket that is down switches to HTTP
+    if (!open && opts.fallback !== false) {
       item.fallbackTimer = setTimeout(() => {
         const idx = outbox.indexOf(item);
         if (idx < 0 || !pending.has(id)) return;
