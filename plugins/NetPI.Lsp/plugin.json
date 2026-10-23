@@ -1,7 +1,7 @@
 {
   "id": "netpi.lsp",
   "name": "Language servers",
-  "description": "lsp: diagnostics, definitions and symbols from language servers (C#, Svelte, JavaScript/TypeScript)",
+  "description": "lsp: diagnostics, definitions and symbols from language servers (C#, C/C++, Svelte, JavaScript/TypeScript, Go)",
   "downloads": [
     {
       "what": "csharp-ls 0.28.0 (MIT), the C# language server",

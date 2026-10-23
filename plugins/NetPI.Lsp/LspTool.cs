@@ -32,15 +32,16 @@ internal sealed class LspTool(LspPool pool, IRpcRegistry? rpc = null) : IAgentTo
         Category = "code",
         ReadOnly = false, // rename writes; the calls that only read say so (IReadOnlyCalls)
         SummaryArg = "action",
-        Description = "Ask a language server about code (C#, Svelte, JavaScript/TypeScript, Go): diagnostics of files (default: the changed ones), " +
+        Description = "Ask a language server about code (C#, C/C++, Svelte, JavaScript/TypeScript, Go): diagnostics of files (default: the changed ones), " +
                       "the definition or the references of the symbol at a position, rename it everywhere, or symbols (a file's outline, or a workspace search).",
         Help = "action: diagnostics { files?: string[] (default: the files git reports changed) }, definition { file, line, column } " +
                "(1-based), references { file, line, column } (every use, the declaration included: file:line:column and the line), " +
                "rename { file, line, column, newName } (the server's rename applied to all the files it touches, or to none; " +
-               "files keep their line endings and encoding; refused when the server also wants to create, rename or delete files), symbols { file } (its outline) or { query, language?: csharp|svelte|typescript|go, file? } (a workspace search; " +
+               "files keep their line endings and encoding; refused when the server also wants to create, rename or delete files), symbols { file } (its outline) or { query, language?: csharp|svelte|typescript|go|cpp, file? } (a workspace search; " +
                "the JavaScript servers search the projects of the files they have open: give a file of the project to search in, " +
                "else one is picked). The first call for a language installs its server (csharp-ls, svelte-language-server, " +
-               "typescript-language-server, pinned and checked; Go uses gopls, which you install yourself: go install golang.org/x/tools/gopls@latest) and loads the project: it can take a minute or two; later calls are " +
+               "typescript-language-server, pinned and checked; Go uses gopls, which you install yourself: go install golang.org/x/tools/gopls@latest; " +
+               "C/C++ uses clangd, which you install yourself: LLVM provides it, or set NETPI_CLANGD to the binary) and loads the project: it can take a minute or two; later calls are " +
                "fast. Answers are about the files as they are on disk now. cwd: analyse another project folder (not for rename, which stays in the chat's workspace).",
         Parameters = JsonNode.Parse("""
             {"type":"object","properties":{
@@ -51,7 +52,7 @@ internal sealed class LspTool(LspPool pool, IRpcRegistry? rpc = null) : IAgentTo
               "column":{"type":"integer","minimum":1},
               "query":{"type":"string"},
               "newName":{"type":"string"},
-              "language":{"type":"string","enum":["csharp","svelte","typescript","go"]},
+              "language":{"type":"string","enum":["csharp","svelte","typescript","go","cpp"]},
               "cwd":{"type":"string","description":"the project folder to analyse (absolute, or relative to the chat's folder; default: the chat's folder). Not for rename."}},
              "required":["action"]}
             """)!.AsObject(),
@@ -105,8 +106,8 @@ internal sealed class LspTool(LspPool pool, IRpcRegistry? rpc = null) : IAgentTo
                       string.Join(", ", files.Except(served, StringComparer.OrdinalIgnoreCase).Select(f => Rel(root, f) + (File.Exists(f) ? "" : " (missing)"))) + ".");
         if (served.Count == 0)
             return given is null
-                ? ToolResult.Ok("No changed C#, Svelte, JavaScript/TypeScript or Go files.")
-                : ToolResult.Error("None of these files is C#, Svelte, JavaScript/TypeScript or Go, or none exists.");
+                ? ToolResult.Ok("No changed C#, C/C++, Svelte, JavaScript/TypeScript or Go files.")
+                : ToolResult.Error("None of these files is C#, C/C++, Svelte, JavaScript/TypeScript or Go, or none exists.");
         if (served.Count > MaxFiles) notes.Add($"Only the first {MaxFiles} of {served.Count} files were checked.");
 
         var lines = new StringBuilder();
@@ -319,7 +320,7 @@ internal sealed class LspTool(LspPool pool, IRpcRegistry? rpc = null) : IAgentTo
     /// <summary>The server for a file that exists, or why there is none.</summary>
     private LspServer Served(string file) =>
         !File.Exists(file) ? throw new LspException($"There is no file {file}.")
-        : (ServerFor?.Invoke(file) ?? LspServer.For(file)) ?? throw new LspException($"No language server here serves {Path.GetExtension(file)} files (C#, Svelte, JavaScript/TypeScript and Go ones are served).");
+        : (ServerFor?.Invoke(file) ?? LspServer.For(file)) ?? throw new LspException($"No language server here serves {Path.GetExtension(file)} files (C#, C/C++, Svelte, JavaScript/TypeScript and Go ones are served).");
 
     // ------------------------------------------------------------------ formatting
 

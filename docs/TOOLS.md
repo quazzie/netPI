@@ -589,7 +589,11 @@ its encoding, BOM and line endings, refused for a path the workspace rule refuse
 their edit counts; a server that also wants to create, rename or delete files gets the whole rename refused, nothing is
 changed). The tool reports `rename` as a writing call and the others as read-only per call (`IReadOnlyCalls`). `symbols { file }` (an outline) or `symbols { query, language?, file? }` (a workspace search; the language
 defaults to C# when the folder has a project or solution). C# runs on csharp-ls 0.28.0, `.svelte` on svelte-language-server
-0.18.4, JavaScript/TypeScript on typescript-language-server 6.0.1 with TypeScript 5.9.3. Each is installed on its first use
+0.18.4, JavaScript/TypeScript on typescript-language-server 6.0.1 with TypeScript 5.9.3. C/C++ (`.c`, `.cpp`, `.cc`, `.cxx` and the
+header and include extensions) runs on clangd, which NetPI does not install: it is found on NETPI_CLANGD, PATH, then LLVM's own
+folder (C:\Program Files\LLVM\bin on Windows, /usr/bin and /usr/local/bin elsewhere); the project's own `.clangd` and
+`compile_commands.json` give it its context (clangd finds them itself), and its first call indexes the project: up to a few minutes.
+Each of the others is installed on its first use
 into `<home>/lsp/servers`, pinned and checked before anything runs: the csharp-ls nupkg against its SHA-256, the JS servers
 with `npm ci --ignore-scripts` from the package.json and package-lock.json the plugin ships (npm checks every package's
 sha512); `plugin.json` names both downloads. A failed or refused install is the call's error, never a hang.

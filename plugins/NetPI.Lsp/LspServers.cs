@@ -67,7 +67,19 @@ internal sealed class LspServer
         StartTimeout = TimeSpan.FromSeconds(180), RequestTimeout = TimeSpan.FromSeconds(90),
     };
 
-    public static readonly LspServer[] All = [CSharp, Svelte, TypeScript, Go];
+    public static readonly LspServer Cpp = new()
+    {
+        Id = "cpp", Install = "", External = true,
+        Extensions = [".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".inl"],
+        LanguageIdOf = p => Path.GetExtension(p).ToLowerInvariant() is ".c" ? "c" : "cpp",
+        CommandOf = _ => (FindClangd(), []),
+        Needs = "clangd is not installed by NetPI: install LLVM (which provides clangd), or set NETPI_CLANGD to the binary; " +
+                "accurate results need a compile_commands.json or .clangd in the project.",
+        // the first request indexes the project
+        StartTimeout = TimeSpan.FromSeconds(180), RequestTimeout = TimeSpan.FromSeconds(60),
+    };
+
+    public static readonly LspServer[] All = [CSharp, Svelte, TypeScript, Go, Cpp];
 
     /// <summary>gopls: NETPI_GOPLS, then PATH, GOBIN, GOPATH/bin, ~/go/bin and Go's own folder; an <see cref="LspException"/> naming the install command when it is nowhere.</summary>
     internal static string FindGopls()
@@ -93,6 +105,41 @@ internal sealed class LspServer
             catch (ArgumentException) { /* a malformed PATH entry */ }
         }
         throw new LspException($"gopls was not found (looked in NETPI_GOPLS, PATH, GOBIN, GOPATH/bin, ~/go/bin). Install it with: {GoplsInstall}");
+    }
+
+    /// <summary>clangd: NETPI_CLANGD, then PATH, then LLVM's own folder (C:\Program Files\LLVM\bin on Windows, /usr/bin and
+    /// /usr/local/bin elsewhere); an <see cref="LspException"/> naming the install when it is nowhere.</summary>
+    internal static string FindClangd()
+    {
+        var exe = OperatingSystem.IsWindows() ? "clangd.exe" : "clangd";
+        var explicitPath = Environment.GetEnvironmentVariable("NETPI_CLANGD");
+        if (!string.IsNullOrWhiteSpace(explicitPath))
+            return File.Exists(explicitPath) ? explicitPath : throw new LspException($"NETPI_CLANGD points to {explicitPath}, which does not exist.");
+        var dirs = new List<string>();
+        dirs.AddRange((Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries));
+        var looked = new List<string> { "NETPI_CLANGD", "PATH" };
+        if (OperatingSystem.IsWindows())
+        {
+            dirs.Add(@"C:\Program Files\LLVM\bin");
+            looked.Add(@"C:\Program Files\LLVM\bin");
+        }
+        else
+        {
+            dirs.Add("/usr/bin");
+            dirs.Add("/usr/local/bin");
+            looked.Add("/usr/bin, /usr/local/bin");
+        }
+        foreach (var dir in dirs)
+        {
+            try
+            {
+                var candidate = Path.Combine(dir.Trim('"'), exe);
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch (ArgumentException) { /* a malformed PATH entry */ }
+        }
+        throw new LspException($"clangd was not found (looked in {string.Join(", ", looked)}). It is not installed by NetPI: install LLVM (which provides clangd), " +
+                              "or set NETPI_CLANGD to the binary; accurate results need a compile_commands.json or .clangd in the project.");
     }
 
     /// <summary>The server for a file, by its extension; null for a file none of them serves.</summary>

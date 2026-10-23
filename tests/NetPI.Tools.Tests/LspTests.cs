@@ -23,6 +23,7 @@ public static class LspTests
         t.Add("lsp: the pool starts servers outside its lock and shares a start, stops the least recently used and the idle, starts a dead one again, forgets a failed start; diagnostics pulled and published", Pool);
         t.Add("lsp: references list every use with its line; rename asks the server, applies its edit to all files through files.applyEdits (EOL kept), and refuses file operations; rename is not read-only", ReferencesAndRename);
         t.Add("lsp: Go goes to gopls, which is found by NETPI_GOPLS or the usual folders; a missing one is an error naming the install command", GoRouting);
+        t.Add("lsp: C/C++ goes to clangd, which is found by NETPI_CLANGD, PATH or LLVM's own folder; a missing one is an error naming the install", CppRouting);
         t.Add("lsp: live: gopls (when installed) gives diagnostics, an outline, a workspace search, references and a definition for a Go module", LiveGo);
         t.Add("lsp: live: csharp-ls finds the uses of a method in two files and renames it in both (set NETPI_LSP_LIVE=1; downloads)", LiveRename);
         t.Add("lsp: live: csharp-ls, svelte-language-server and typescript-language-server installed: diagnostics, a definition, an outline and a workspace search (set NETPI_LSP_LIVE=1; downloads)", Live);
@@ -119,6 +120,51 @@ public static class LspTests
         finally
         {
             Environment.SetEnvironmentVariable("NETPI_GOPLS", old);
+            Environment.SetEnvironmentVariable("PATH", oldPath);
+        }
+        return Task.CompletedTask;
+    }
+
+    private static Task CppRouting()
+    {
+        Check.Equal("cpp", LspServer.For("src/main.cpp")!.Id);
+        Check.Equal("cpp", LspServer.For("src/header.h")!.Id);
+        Check.Equal("csharp", LspServer.For("src/A.cs")!.Id, "a .cs file is not the C++ server's");
+        Check.Equal("c", LspServer.For("src/a.c")!.LanguageId("src/a.c"));
+        Check.Equal("cpp", LspServer.For("src/a.hpp")!.LanguageId("src/a.hpp"));
+        var old = Environment.GetEnvironmentVariable("NETPI_CLANGD");
+        var oldPath = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            var fake = Path.Combine(T.TempDir("lsp-clangd"), OperatingSystem.IsWindows() ? "clangd.exe" : "clangd");
+            File.WriteAllText(fake, "");
+            Environment.SetEnvironmentVariable("NETPI_CLANGD", fake);
+            Check.Equal(fake, LspServer.FindClangd());
+            var real = OperatingSystem.IsWindows() ? @"C:\Program Files\LLVM\bin\clangd.exe" : "/usr/bin/clangd";
+            if (File.Exists(real))
+            {
+                Environment.SetEnvironmentVariable("NETPI_CLANGD", real);
+                Check.Equal(real, LspServer.FindClangd(), "the machine's own clangd, named");
+            }
+            Environment.SetEnvironmentVariable("NETPI_CLANGD", Path.Combine(Path.GetDirectoryName(fake)!, "nope"));
+            Check.Contains(Check.Throws<LspException>(() => LspServer.FindClangd()).Message, "NETPI_CLANGD");
+            Environment.SetEnvironmentVariable("NETPI_CLANGD", null);
+            Environment.SetEnvironmentVariable("PATH", Path.GetDirectoryName(fake));
+            Check.Equal(fake, LspServer.FindClangd());
+            // nothing on PATH: LLVM's own folder decides
+            Environment.SetEnvironmentVariable("PATH", T.TempDir("lsp-clangd-empty"));
+            if (File.Exists(real))
+                Check.Equal(real, LspServer.FindClangd(), "LLVM's own folder is asked too");
+            else
+            {
+                var missing = Check.Throws<LspException>(() => LspServer.FindClangd());
+                Check.Contains(missing.Message, "LLVM", "the install hint");
+                Check.Contains(missing.Message, "NETPI_CLANGD");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NETPI_CLANGD", old);
             Environment.SetEnvironmentVariable("PATH", oldPath);
         }
         return Task.CompletedTask;
