@@ -591,7 +591,7 @@ public static class BrowserTests
             {
                 app.UseWebSockets();
                 app.Map("/api/p/netpi.tools.web/{**rest}", (HttpContext c) => http.Routes[c.Request.RouteValues["rest"]!.ToString()!].Handler(c));
-                app.MapGet("/blank", () => Results.Content("<!doctype html><title>Blank</title><body>blank</body>", "text/html"));
+                app.MapGet("/blank", () => Results.Content("<!doctype html><title>Blink</title><body>blink<script>setInterval(() => document.body.style.background = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'), 50)</script></body>", "text/html"));  // repaints, so the screencast keeps sending frames
             });
             try
             {
@@ -627,23 +627,24 @@ public static class BrowserTests
                 for (var round = 0; round < 4; round++)
                 {
                     var (ws, inbox) = await ViewAsync();
-                    await Wait.Until(() => Has(inbox, "frame") && tab.HasViewers, $"round {round}: the view streams the tab");
-                    // the socket drops while the chat's tab is replaced: binds race the close
+                    await Wait.Until(() => tab.HasViewers, $"round {round}: the view holds the screencast");
+                    await tab.NavigateAsync(web.Url + "/blank?round=" + round, CancellationToken.None);  // a new page is a frame for sure
+                    await Wait.Until(() => Has(inbox, "frame"), $"round {round}: the view streams the tab");
+                    // the socket drops while the tab's own events keep binding the view
                     var closing = Task.Run(() => ws.Abort());
-                    var replaced = Task.Run(async () =>
+                    var churn = Task.Run(async () =>
                     {
-                        await host.CloseTabAsync("ses_r");
-                        return (await host.TabAsync("ses_r", create: true, "own", CancellationToken.None))!;
+                        for (var k = 0; k < 5; k++) await tab.NavigateAsync(web.Url + "/blank?k=" + k, CancellationToken.None);
                     });
                     await closing;
-                    var old = tab;
-                    tab = await replaced;
+                    await churn;
                     ws.Dispose();
-                    await Wait.Until(() => !old.HasViewers && !tab.HasViewers, $"round {round}: nothing holds a screencast open after the view is gone");
-                    await tab.NavigateAsync(web.Url + "/blank", CancellationToken.None);
+                    await Wait.Until(() => !tab.HasViewers, $"round {round}: nothing holds a screencast open after the view is gone");
                 }
                 // a count that went below zero would keep the next view from ever starting the screencast
                 var (last, lastInbox) = await ViewAsync();
+                await Wait.Until(() => tab.HasViewers, "the new view holds the screencast");
+                await tab.NavigateAsync(web.Url + "/blank?last", CancellationToken.None);
                 await Wait.Until(() => Has(lastInbox, "frame"), "a new view still gets frames", 15_000);
                 Check.True(tab.HasViewers);
                 last.Abort();
