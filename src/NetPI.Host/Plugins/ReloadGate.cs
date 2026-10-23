@@ -16,7 +16,7 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
     /// is part of. A box, not a bool, so a task that start left running sees it end with the apply instead of keeping a
     /// copy of "true" for ever.
     /// </summary>
-    private static readonly AsyncLocal<ApplyFlow?> s_inApply = new();
+    private readonly AsyncLocal<ApplyFlow?> _inApply = new();
     private ApplyFlow? _flow;
 
     private readonly Lock _lock = new();
@@ -48,7 +48,7 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
         Waiter w;
         lock (_lock)
         {
-            if (_disposed || !_applying || s_inApply.Value is { Active: true })
+            if (_disposed || !_applying || _inApply.Value is { Active: true })
             {
                 var h = new Handle(this, owner, reason, own: false);
                 _holds.Add(h);
@@ -151,7 +151,7 @@ internal sealed class ReloadGate : IReloadGate, IDisposable
             _applying = true;
             _flow = new ApplyFlow();
         }
-        s_inApply.Value = _flow;
+        _inApply.Value = _flow;
         return true;
     }
 
