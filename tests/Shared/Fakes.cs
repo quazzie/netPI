@@ -70,12 +70,13 @@ public sealed class FakeSettings(IEventBus? bus = null, JsonObject? root = null)
             if (o[part] is not JsonObject child) { child = new JsonObject(); o[part] = child; }
             o = child;
         }
-        o[parts[^1]] = value;
+        o[parts[^1]] = value?.DeepClone();   // like the real store: the caller's node is not shared with the settings
     }
 
     /// <summary>Set and announce it, like the real settings file does (a bus-less fake just sets).</summary>
     public void Set(string path, JsonNode? value)
     {
+        if (JsonNode.DeepEquals(GetNode(path), value)) return;   // an unchanged value announces nothing, as in the real store
         SetQuiet(path, value);
         bus?.Publish(EventTypes.SettingsChanged, new JsonObject { ["path"] = path });
     }
@@ -83,7 +84,7 @@ public sealed class FakeSettings(IEventBus? bus = null, JsonObject? root = null)
     public SettingsReplace Replace(JsonObject root, JsonObject? baseDocument = null)
     {
         if (baseDocument is not null && !JsonNode.DeepEquals(_root, baseDocument)) return SettingsReplace.Conflict;
-        _root = root;
+        _root = (JsonObject)root.DeepClone();
         bus?.Publish(EventTypes.SettingsChanged, new JsonObject());
         return SettingsReplace.Saved;
     }
@@ -255,7 +256,7 @@ public sealed class FakeTools(Ownership? owner = null, ISettings? settings = nul
             var disabled = settings?.Get<List<string>>("tools.disabled") ?? [];
             lock (_tools)
                 return _tools.GroupBy(i => i.Tool.Definition.Name)
-                    .Select(g => g.OrderByDescending(i => i.Priority).First().Tool)
+                    .Select(g => g.Reverse().OrderByDescending(i => i.Priority).First().Tool)
                     .Where(t => !disabled.Contains(t.Definition.Name))
                     .ToList();
         }
