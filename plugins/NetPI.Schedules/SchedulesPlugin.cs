@@ -104,8 +104,9 @@ public sealed class SchedulesPlugin : INetPiPlugin
                     ctx.Logger.LogError(ex, "Schedules: a tick failed");
                 }
                 // sleep until the soonest run (at most a minute, so a changed setting or clock is seen), or until a change
+                // (paused: nothing advances a due time, so it would read the documents once a second for nothing)
                 var wait = TimeSpan.FromMinutes(1);
-                if (store.NextDue() is { } next) wait = TimeSpan.FromTicks(Math.Clamp((next - _time.GetUtcNow()).Ticks, TimeSpan.TicksPerSecond, wait.Ticks));
+                if (ctx.Settings.Get("schedules.enabled", true) && store.NextDue() is { } next) wait = TimeSpan.FromTicks(Math.Clamp((next - _time.GetUtcNow()).Ticks, TimeSpan.TicksPerSecond, wait.Ticks));
                 await _wake.WaitAsync(wait, ct).ConfigureAwait(false);
             }
         }
