@@ -213,6 +213,14 @@ public static class EmbeddingsTests
             var answer = (JsonObject)NetPiJson.ToNode(await ctx2.Rpc.InvokeAsync("embed.texts", new JsonObject { ["texts"] = new JsonArray("one two", "three four") }))!;
             Check.Equal(2, ((JsonArray)answer["vectors"]!).Count);
             Check.Equal(64, answer["dim"]!.GetValue<int>());
+
+            async Task<RpcException> Refused(JsonNode texts) =>
+                await Check.ThrowsAsync<RpcException>(async () => await ctx2.Rpc.InvokeAsync("embed.texts", new JsonObject { ["texts"] = texts }));
+            var notString = await Refused(new JsonArray("fine", 7));
+            Check.Equal("bad_request", notString.Code);
+            Check.Contains(notString.Message, "texts[1]");
+            Check.Equal("bad_request", (await Refused(new JsonArray([.. Enumerable.Range(0, 1025).Select(i => (JsonNode)JsonValue.Create("t" + i)!)]))).Code, "too many texts");
+            Check.Equal("bad_request", (await Refused(new JsonArray(new string('x', 32_001)))).Code, "one text too long");
         });
 
         r.Add("embeddings: VectorMath packs and unpacks exactly; dot of different lengths is 0", () =>
@@ -532,6 +540,37 @@ public static class EmbeddingsTests
             Check.Contains(result.Content, "2/2 words");
             ctx.Unload();
             plain.Unload();
+        });
+
+        r.Add("memory: the bodies in memory stay within a budget, a chat past it is read from the store when searched; a corrupt vector is skipped, not fatal", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("memory-bounded"));
+            ctx.ServicesFake.Register<IEmbeddingService>(new BagOfWords());
+            var radio = ctx.SessionsFake.CreateSession(new SessionInfo { Title = "Radio buffer" });
+            ctx.SessionsFake.AppendMessage(radio.Id, ChatMessage.UserText("the radio runs out of buffered songs when the batch size is raised"));
+            var other = ctx.SessionsFake.CreateSession(new SessionInfo { Title = "Timer leak" });
+            ctx.SessionsFake.AppendMessage(other.Id, ChatMessage.UserText("the work tab leaks a timer per collapsed process row"));
+
+            using var none = new NetPI.Memory.MemoryIndex(ctx) { CacheBudget = 0 };
+            Check.Equal(2, (await none.SweepAsync(CancellationToken.None))["indexed"]!.GetValue<int>());
+            Check.Equal(0L, none.CachedBytes, "nothing fits a budget of zero");
+            var hits = (await none.SearchAsync("radio buffered songs batch", 5, null, null, CancellationToken.None))!.Hits;
+            Check.Equal(radio.Id, hits[0].SessionId, "found anyway, from the store");
+            Check.Contains(hits[0].Snippet, "buffered songs");
+
+            using var roomy = new NetPI.Memory.MemoryIndex(ctx);
+            Check.Equal(radio.Id, (await roomy.SearchAsync("radio buffered songs batch", 5, null, null, CancellationToken.None))!.Hits[0].SessionId);
+            Check.True(roomy.CachedBytes > 0, "within the budget the bodies are kept");
+
+            var store = ctx.Data.Collection("chats", new CollectionSpec().Text("model").Text("projectId"));
+            var doc = store.Get(other.Id)!;
+            ((JsonArray)doc["vectors"]!)[0] = 7;
+            store.Put(other.Id, doc);
+            using var after = new NetPI.Memory.MemoryIndex(ctx);
+            var found = (await after.SearchAsync("work tab timer", 5, null, null, CancellationToken.None))!.Hits;
+            Check.True(found.All(h => h.SessionId != other.Id), "the damaged chat is skipped");
+            Check.Equal(1, (await after.SweepAsync(CancellationToken.None))["indexed"]!.GetValue<int>(), "and indexed again by the next sweep");
+            ctx.Unload();
         });
 
         r.Add("memory: the sweep pages through every chat, not only the 100 most recent ones the list answers by default", async () =>
