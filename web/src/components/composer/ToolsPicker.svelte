@@ -4,6 +4,7 @@
    * the agent nor its subagents. Before the first message a change is free; later it applies from the next model call,
    * which re-reads the conversation once (tool definitions lead the request).
    */
+  import { untrack } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import Popover from '../Popover.svelte';
   import { rpc } from '../../lib/rpc.svelte.js';
@@ -27,21 +28,31 @@
   });
   const offListed = $derived((info?.tools ?? []).filter((t) => !t.on).map((t) => t.name));
 
+  // of loads that overlap only the newest answer counts (and a close drops the one in flight)
+  let loads = 0;
   async function load() {
+    const n = ++loads;
     try {
-      info = await rpc('agent.tools', { sessionId: session.id });
+      const got = await rpc('agent.tools', { sessionId: session.id });
+      if (n === loads) info = got;
     } catch (e) {
+      if (n !== loads) return;
       info = null;
       toast(e.message, 'error');
     }
   }
-  // loaded on every open (the chat may have started since); nothing stale in between
+  // loaded on every open (the chat may have started since); nothing stale in between. `session` is read untracked: the
+  // object is replaced on every message, which must not load the list again while the picker stays open.
   $effect(() => {
-    if (open) load();
-    else info = null;
+    if (open) untrack(load);
+    else {
+      loads++;
+      info = null;
+    }
   });
 
   async function set(change) {
+    loads++; // a load still in flight is older than this change
     try {
       info = await rpc('agent.setTools', { sessionId: session.id, ...change });
       // A chat with no messages yet is not announced (no session.updated): the button counts from a fresh copy of it
