@@ -2,7 +2,7 @@
 // Journey: a person changes their settings. In Settings → Runs they open Run limits in place, change a number, see it
 // saved, reset it, get a value out of range refused, and go back; they find the same setting with the search, change it in
 // the results, see it under Changed and reset it there; the command palette opens the dialog on another setting, in its
-// section. In Agents & budget they add an agent from the model search, give it one instance, and
+// section; Back (the arrow, Alt+Left, the mouse back button) walks back through pages, sections and a search. In Agents & budget they add an agent from the model search, give it one instance, and
 // remove it again after confirming. While it is switched off, the composer's agent picker hides it ("Any available"
 // stays), and switching it on brings it back. What the page saved is read back from the server (settings.get). And a
 // chat's profile picker stays open with its profiles while the settings change, even when the reload that follows fails
@@ -67,6 +67,26 @@ await run('settings', async ({ page, socket }) => {
   await shot(page, 'ui-settings-01-field');
   await dialog.getByTestId('settings-back').click();
   await expectEventually('Back leaves the section for its page', () => dialog.locator('[data-section-row="agents"]').count(), { pass: (n) => n === 1 });
+
+  // ---- Back walks the way it came: pages, sections, a search; the arrow, Alt+Left and the mouse's back button
+  const onRuns = () => dialog.locator('[data-section-row="agents"]').count();
+  const onTools = () => dialog.getByTestId('tool-exposure-row').count();
+  await dialog.locator('[data-page="tools"]').click();
+  await dialog.locator('[data-section-row="web"]').click();
+  await expectEventually('a section of another page opens in place', () => dialog.locator('[data-setting="web.search.count"]').count(), { pass: (n) => n === 1 });
+  await dialog.getByTestId('settings-back').click();
+  await expectEventually('the arrow goes back to the page it came from', onTools, { pass: (n) => n === 1 });
+  await page.keyboard.press('Alt+ArrowLeft');
+  await expectEventually('Alt+Left goes back to the page before that', onRuns, { pass: (n) => n === 1 });
+  await dialog.getByTestId('settings-search').fill('fetch timeout');
+  await expectEventually('a search', () => dialog.getByTestId('settings-results').locator('[data-setting="web.fetch.timeoutSeconds"]').count(), { pass: (n) => n === 1 });
+  await dialog.getByTestId('settings-results').getByRole('button', { name: /Web › Fetch/ }).click();
+  await expectEventually('its breadcrumb opens the section', () => dialog.getByTestId('settings-results').count(), { pass: (n) => n === 0 });
+  await dialog.getByTestId('settings-content').dispatchEvent('mouseup', { button: 3 });
+  await expectEventually("the mouse's back button returns to the results", () => dialog.getByTestId('settings-results').locator('[data-setting="web.fetch.timeoutSeconds"]').count(), { pass: (n) => n === 1 });
+  await dialog.getByTestId('settings-back').click();
+  await expectEventually('…and from the search to where it started', onRuns, { pass: (n) => n === 1 });
+  check('the search is cleared', (await dialog.getByTestId('settings-search').inputValue()) === '');
 
   // ---- the search: found by a word of its label, changed in the results, listed under Changed, reset there
   const search = dialog.getByTestId('settings-search');

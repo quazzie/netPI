@@ -478,7 +478,10 @@ page id, or `{ page?, section?, key?, q? }`: a key opens its section and flashes
 
 **Sections.** A small section (up to three visible settings, a text area counting twice, no headings) is shown in its page;
 a bigger one is a row (`SettingsRow`: its help, "N changed", "off", and its `….enabled` switch beside the row) that opens it
-**in place**: a breadcrumb (page › section), Back (the arrow, Esc, Alt+←) and the switch in its header. `SettingsSection`
+**in place**: a breadcrumb (page › section) and the switch in its header. **Back** walks the way the dialog came: every
+move to another page, section or search remembers the place it left (50 back), and the ← arrow (in a section's header,
+beside a page's title and above search results), Alt+← and the mouse's back button return to it; Esc only clears a search,
+leaves a section, then closes. `SettingsSection`
 shows the settings under their headings (`subgroup`), the `advanced` ones behind "More settings (N)" unless set or opened
 on, the others greyed out while the switch is off, and **Reset section** (asks first) when more than one is set. The Budget
 and Backups sections lead with their views.
@@ -498,7 +501,8 @@ Every word must match; a label word ranks above a keyword, a key, the section, t
 (`shell.timeoutSeconds`) comes first. Results are the live controls, grouped under a breadcrumb that opens their place;
 pages, sections and items are links above them (an agent opens its own dialog). **Changed** lists every set key and every
 preference that differs from its default, **Restart** the settings that apply after a restart; both combine with the words.
-Nothing found offers the text in settings.json. Esc clears the search, then leaves a section, then closes the dialog. The
+Nothing found offers the text in settings.json; Back returns from a result's place to the results, and from the
+search to where it started. Esc clears the search, then leaves a section, then closes the dialog. The
 command palette lists the settings by label while something is typed, and `/settings <words>` opens the search.
 
 **Dialogs over the settings** (Esc closes only the top one; popovers such as the model list and the ⋯ menu are on the same

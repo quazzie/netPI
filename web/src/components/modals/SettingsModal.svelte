@@ -72,6 +72,9 @@
   let content = $state();
   let exposureOpen = $state(false);
   let plugins = $state([]);
+  // where the dialog has been, for Back (the arrow, Alt+Left, the mouse's back button): each move to another page,
+  // section or search remembers the place it left
+  let trail = $state.raw([]);
 
   const page = $derived(layout.pages.find((p) => p.id === pageId) ?? layout.pages[0]);
   const section = $derived(sectionId ? (layout.sections.get(sectionId)?.section ?? null) : null);
@@ -113,8 +116,52 @@
     if (schemaLoaded && sectionId && !layout.sections.has(sectionId)) untrack(() => (sectionId = null));
   });
 
+  const here = () => ({ page: pageId, section: sectionId, q, onlyChanged, onlyRestart });
+  const same = (a, b) => a.page === b.page && a.section === b.section && a.q === b.q && a.onlyChanged === b.onlyChanged && a.onlyRestart === b.onlyRestart;
+  /** Remember the place being left (once; at most 50 back). */
+  function remember() {
+    const h = here();
+    if (trail.length && same(trail.at(-1), h)) return;
+    trail = [...trail, h].slice(-50);
+  }
+  const canBack = $derived(!!sectionId || trail.some((p) => !same(p, here())));
+
+  /** Back to the place before: the last one remembered that is not this one, else from a section to its page. */
+  async function goBack() {
+    const h = here();
+    let t = trail;
+    while (t.length && same(t.at(-1), h)) t = t.slice(0, -1);
+    if (!t.length) {
+      trail = t;
+      return back();
+    }
+    const p = t.at(-1);
+    trail = t.slice(0, -1);
+    const left = sectionId;
+    pageId = p.page;
+    sectionId = p.section;
+    q = p.q;
+    onlyChanged = p.onlyChanged;
+    onlyRestart = p.onlyRestart;
+    reveal = null;
+    await tick();
+    if (content) content.scrollTop = 0;
+    if (left && !sectionId) document.querySelector(`.settings-layout [data-section-row="${CSS.escape(left)}"]`)?.focus();
+    return true;
+  }
+  /** A search or a filter that starts remembers where it started from. */
+  function searching() {
+    if (!filtering) remember();
+  }
+  function mouseBack(e) {
+    if (e.button !== 3) return;
+    e.preventDefault(); // the browser's (WebView's) own back
+    if (e.type === 'mouseup') goBack();
+  }
+
   /** Open a place: a page, a section (in place when it is a row, else its page), a key (scrolled to and flashed). */
   async function go({ page: p = null, section: s = null, key = null } = {}) {
+    remember();
     q = '';
     onlyChanged = onlyRestart = false;
     const where = s ? layout.sections.get(s) : null;
@@ -129,6 +176,7 @@
     if (key) setTimeout(() => (reveal === key ? (reveal = null) : null), 2000);
   }
   function openPage(id) {
+    if (id !== pageId || sectionId || filtering) remember();
     q = '';
     onlyChanged = onlyRestart = false;
     pageId = id;
@@ -159,7 +207,8 @@
       e.preventDefault();
       searchEl?.querySelector('input')?.focus();
     } else if (e.altKey && e.key === 'ArrowLeft') {
-      if (back()) e.preventDefault();
+      e.preventDefault();
+      goBack();
     }
   }
 
@@ -368,6 +417,10 @@
   });
 </script>
 
+{#snippet backButton()}
+  <button class="back" onclick={goBack} disabled={!canBack} data-testid="settings-back" title="Back (Alt+←, the mouse's back button)" aria-label="Back"><Icon name="arrow-left" size={14} /></button>
+{/snippet}
+
 {#snippet sectionRow(s)}
   {@const r = rowOf(s)}
   {@const en = enabledSettingOf(s)}
@@ -399,14 +452,14 @@
 
 <Modal title="Settings" width={960} padded={false} {onclose} {onescape}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="layout settings-layout" onkeydown={onKey}>
+  <div class="layout settings-layout" onkeydown={onKey} onmousedown={mouseBack} onmouseup={mouseBack}>
     <nav class="nav">
       <div class="search" bind:this={searchEl}>
-        <SearchInput bind:value={q} placeholder="Search settings" data-testid="settings-search" aria-label="Search settings" />
+        <SearchInput bind:value={q} placeholder="Search settings" data-testid="settings-search" aria-label="Search settings" onbeforeinput={searching} />
       </div>
       <div class="chips">
-        <button class="chip" aria-pressed={onlyChanged} onclick={() => (onlyChanged = !onlyChanged)} data-testid="filter-changed">Changed{#if changedCount}<span class="n">{changedCount}</span>{/if}</button>
-        <button class="chip" aria-pressed={onlyRestart} onclick={() => (onlyRestart = !onlyRestart)} data-testid="filter-restart" title="Settings that apply after a restart">Restart</button>
+        <button class="chip" aria-pressed={onlyChanged} onclick={() => (searching(), (onlyChanged = !onlyChanged))} data-testid="filter-changed">Changed{#if changedCount}<span class="n">{changedCount}</span>{/if}</button>
+        <button class="chip" aria-pressed={onlyRestart} onclick={() => (searching(), (onlyRestart = !onlyRestart))} data-testid="filter-restart" title="Settings that apply after a restart">Restart</button>
       </div>
       <div class="pages">
         {#each nav as g (g.heading)}
@@ -433,6 +486,7 @@
       {#if filtering}
         <div class="results" data-testid="settings-results">
           <div class="rhead np-dim np-small">
+            {#if canBack}{@render backButton()}{/if}
             {#if fieldCount || grouped.links.length}
               {resultLine}
             {:else}
@@ -469,9 +523,9 @@
       {:else if section}
         {@const en = enabledSettingOf(section)}
         <div class="sub-head">
-          <button class="back" onclick={back} data-testid="settings-back" title="Back (Esc)"><Icon name="arrow-left" size={14} /></button>
+          {@render backButton()}
           <div class="crumbs">
-            <button class="crumb" onclick={back}>{page.title}</button>
+            <button class="crumb" onclick={() => back()}>{page.title}</button>
             <Icon name="chevron-right" size={11} />
             <span class="here">{section.title}</span>
           </div>
@@ -489,7 +543,7 @@
         {#if section.help}<div class="sub-help np-dim">{section.help}</div>{/if}
         <SettingsSection section={section} {doc} {reveal} title={false} />
       {:else if page}
-        <div class="page-title">{page.title}</div>
+        <div class="page-head">{#if canBack}{@render backButton()}{/if}<div class="page-title">{page.title}</div></div>
         {#if page.id === 'general'}
           {#each prefSections as ps (ps.id)}
             <section class="sec" data-section="pref:{ps.id}">
@@ -707,8 +761,13 @@
   .narrow {
     display: none;
   }
-  .page-title {
+  .page-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin-bottom: 4px;
+  }
+  .page-title {
     font-size: 15px;
     font-weight: 600;
   }
