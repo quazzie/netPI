@@ -96,6 +96,8 @@ internal static class EditApplier
                     }
                     catch (Exception) { notRestored.Add(w.Path); }
                 }
+                // a cancelled call is not an io fault once the files are back (the same rule the edit tool follows)
+                if (ex is OperationCanceledException && notRestored.Count == 0) throw;
                 throw new RpcException("io", notRestored.Count == 0
                     ? $"Writing {p.Path} failed: {ex.Message} The files already written were restored; nothing was changed."
                     : $"Writing {p.Path} failed: {ex.Message} Restoring failed for {string.Join(", ", notRestored)}: check them.");

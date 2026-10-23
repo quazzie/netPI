@@ -149,8 +149,7 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
             entries.Add((path, edits));
         }
 
-        var comparer = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-        var seen = new Dictionary<string, int>(comparer);
+        var seen = new Dictionary<string, int>(WorkspacePaths.Comparer);
         var prepared = new List<Prepared>();
         for (var i = 0; i < entries.Count; i++)
         {
@@ -225,7 +224,7 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
         for (var i = 0; i < prepared.Count; i++)
         {
             if (summaries[i].Diff is { } d) combined.Add(d.Text.TrimEnd('\n'));
-            details.Add(JsonSerializer.SerializeToNode(summaries[i].Diff is { } fd ? FileDetails(prepared[i], fd)
+            details.Add(NetPiJson.ToNode(summaries[i].Diff is { } fd ? FileDetails(prepared[i], fd)
                 : new { path = prepared[i].Full, diff = "", added = 0, removed = 0, edits = prepared[i].Edits }));
         }
         return ToolResult.Ok(sb.ToString(), new

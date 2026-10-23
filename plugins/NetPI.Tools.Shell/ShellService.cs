@@ -163,7 +163,7 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
         // after it (a background job writes after this call has returned, so it is not tracked).
         ChangeTracker.Snapshot? before = null;
         if (!background && Settings.GetOr("shell.trackChanges", true) && ChangeTracker.MayWrite(command))
-            before = await ChangeTracker.TakeAsync(ChangeTracker.ProbeDir(command, cwd), ct).ConfigureAwait(false);
+            before = await ChangeTracker.TakeAsync(ChangeTracker.ProbeDir(command, cwd, ctx.ResolvePath), ct).ConfigureAwait(false);
 
         var id = Ids.New("proc");
         var capture = new OutputCapture(1024 * 1024, background ? null : Path.Combine(TempDir, $"{shell}-{id}.log"));

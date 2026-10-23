@@ -169,14 +169,20 @@ public static class ShellTests
 
             var dir = T.TempDir("probe");
             Directory.CreateDirectory(Path.Combine(dir, "sub dir"));
-            Check.Equal(Path.Combine(dir, "sub dir"), ChangeTracker.ProbeDir("cd \"sub dir\" && make", dir), "a quoted relative cd");
-            Check.Equal(Path.GetFullPath(Path.Combine(dir, "sub dir")), ChangeTracker.ProbeDir($"cd '{dir}/sub dir'; ls", "/elsewhere"), "an absolute cd with ;");
-            Check.Equal(dir, ChangeTracker.ProbeDir("cd nope && make", dir), "a directory that does not exist is not where it runs");
-            Check.Equal(dir, ChangeTracker.ProbeDir("make && cd sub", dir), "only a leading cd counts");
+            var resolve = T.Ctx(dir).ResolvePath;
+            Check.Equal(Path.Combine(dir, "sub dir"), ChangeTracker.ProbeDir("cd \"sub dir\" && make", dir, resolve), "a quoted relative cd");
+            Check.Equal(Path.GetFullPath(Path.Combine(dir, "sub dir")), ChangeTracker.ProbeDir($"cd '{dir}/sub dir'; ls", "/elsewhere", resolve), "an absolute cd with ;");
+            Check.Equal(dir, ChangeTracker.ProbeDir("cd nope && make", dir, resolve), "a directory that does not exist is not where it runs");
+            Check.Equal(dir, ChangeTracker.ProbeDir("make && cd sub", dir, resolve), "only a leading cd counts");
             if (OperatingSystem.IsWindows())
             {
                 var gitBash = "/" + char.ToLowerInvariant(dir[0]) + dir[2..].Replace('\\', '/');
-                Check.Equal(Path.GetFullPath(dir), ChangeTracker.ProbeDir($"cd {gitBash} && make", "C:\\"), "Git Bash spells C:\\x as /c/x");
+                Check.Equal(Path.GetFullPath(dir), ChangeTracker.ProbeDir($"cd {gitBash} && make", "C:\\", resolve), "Git Bash spells C:\\x as /c/x");
+                // the shell tools read /tmp as the user's temp folder, so does the probe
+                var tmp = Path.Combine(Path.GetTempPath(), "probe-tmp-" + Guid.NewGuid().ToString("N")[..8]);
+                Directory.CreateDirectory(tmp);
+                try { Check.Equal(tmp, ChangeTracker.ProbeDir($"cd /tmp/{Path.GetFileName(tmp)} && make", dir, resolve), "/tmp is the temp folder"); }
+                finally { Directory.Delete(tmp); }
             }
             return Task.CompletedTask;
         });
@@ -511,6 +517,7 @@ public static class ShellTests
                 Check.Equal("exited", p.Status, "the shell reported its exit");
                 Check.False(p.OutputReachedEof, "the descendant still holds the pipes");
                 Check.True(p.TreeMayBeAlive, "the tree is still alive and killable");
+                Check.True(new WorkspaceProcesses(registry).IsBusyIn(dir), "the directory is busy while the descendant lives, though the shell exited");
                 Check.True(await child.IsAlive(5000), "the descendant is still running");
                 // its Windows pid, so the cleanup below can still take it down if a check after this one fails (a
                 // survivor would hold the runner's output pipe for the rest of the suite)
@@ -573,6 +580,21 @@ public static class ShellTests
                 child.Kill();
                 await registry.KillAllAsync(TimeSpan.FromSeconds(5));
             }
+        });
+
+        r.Add("output: the spill file stops growing at its cap, also after the capture was disposed and reopened", () =>
+        {
+            var path = Path.Combine(T.TempDir("spillcap"), "out.log");
+            var cap = new OutputCapture(1000, path, 1000, maxSpillChars: 10_000);
+            var chunk = new string('x', 500);
+            cap.Append(chunk);
+            cap.Dispose(); // the call returned with a small output, before any spill
+            for (var i = 0; i < 200; i++) cap.Append(chunk); // a descendant keeps printing: the spill reopens (nothing dropped yet) and grows
+            var size = new FileInfo(path).Length;
+            Check.True(size <= 10_000 + 2 * chunk.Length, $"capped near 10000 chars, was {size}");
+            for (var i = 0; i < 20; i++) cap.Append(chunk);
+            Check.Equal(size, new FileInfo(path).Length, "no later chunk is written");
+            return Task.CompletedTask;
         });
 
         r.Add("bash: output truncation keeps the tail and spills the full output", async () =>

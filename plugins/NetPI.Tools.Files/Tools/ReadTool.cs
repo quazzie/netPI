@@ -202,7 +202,7 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
                 var oldest = n < o ? 0 : n % o;
                 for (var k = 0; k < Math.Min(n, o); k++) window.Add(ring[(oldest + k) % o]!);
                 return Page(ctx, fi.FullName, window, total, offset, limit, maxBytes,
-                    sample.DetectedEol, bomLength > 0, legacy || sample.Legacy, firstLineNumber: offset);
+                    sample.DetectedEol, bomLength > 0, legacy, firstLineNumber: offset);
             }
             // More lines were asked for than a page holds, so the window ends before the last line and a ring would have
             // to be bigger than a page to catch it: count first, then read the page (as before), and the count is exact.
@@ -243,7 +243,7 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
             if (!moreAfterWindow) total = lineNo;   // the end of the file was reached: the count is exact
         }
         return Page(ctx, fi.FullName, window, total < 0 ? null : total, offset, limit, maxBytes,
-            sample.DetectedEol, bomLength > 0, legacy || sample.Legacy, firstLineNumber: offset, moreAfterWindow: moreAfterWindow);
+            sample.DetectedEol, bomLength > 0, legacy, firstLineNumber: offset, moreAfterWindow: moreAfterWindow);
     }
 
     private static async Task<ToolResult> ReadImageAsync(ToolContext ctx, FileInfo fi, CancellationToken ct)
