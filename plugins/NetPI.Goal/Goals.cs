@@ -392,7 +392,14 @@ internal sealed class Goals(IPluginContext ctx)
     {
         goal.Status = Goal.ExecutionUnavailable;
         goal.Reason = "No executor capability is available. The goal is saved; resume explicitly after an executor returns.";
-        Update(sessionId, g => g?.Id == goal.Id && g.Status == Goal.Active ? goal : g);
+        Update(sessionId, g =>
+        {
+            // the stored goal, not the caller's copy: counters it moved meanwhile stay
+            if (g?.Id != goal.Id || g.Status != Goal.Active) return g;
+            g.Status = goal.Status;
+            g.Reason = goal.Reason;
+            return g;
+        });
     }
 
     public void ExecutorChanged()
