@@ -174,6 +174,11 @@ public static class DecideTests
                 var items = NetPiJson.ToElement(res.Details).GetProperty("items");
                 Check.Equal(1, items[2].GetProperty("sameAs").GetInt32());
                 if (withEmbeddings) Check.Equal(2, items[3].GetProperty("sameAs").GetInt32());
+                // The usage is the spend: each decision asked is counted once, not once per item that shares it.
+                var usage = NetPiJson.ToElement(res.Details).GetProperty("usage");
+                Check.Equal(4096 * seen.Count, usage.GetProperty("promptTokens").GetInt32(), "prompt tokens of the decisions asked");
+                Check.Equal(4000 * seen.Count, usage.GetProperty("cachedTokens").GetInt32(), "cached tokens of the decisions asked");
+                Check.Equal(0, items[2].GetProperty("ms").GetInt32(), "a repeat costs no time of its own");
             }
         });
 

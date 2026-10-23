@@ -121,9 +121,15 @@ internal sealed class LspSession : IAsyncDisposable
         _published[Normalize(uri)] = (version, p["diagnostics"] as JsonArray ?? [], Stopwatch.GetTimestamp());
     }
 
+    /// <summary>The largest file sent to a server (bytes).</summary>
+    internal const long MaxFileBytes = 2 * 1024 * 1024;
+
     /// <summary>Send the file as it is on disk now; its version, to match the diagnostics published for it.</summary>
     private async Task<(string Uri, int Version)> SyncAsync(string path, CancellationToken ct)
     {
+        // The whole text goes into memory and into a didOpen/didChange message: a generated or minified file is refused.
+        if (new FileInfo(path).Length > MaxFileBytes)
+            throw new LspException($"{Path.GetFileName(path)} is larger than {MaxFileBytes / (1024 * 1024)} MB: it is not sent to the {Server.Id} language server.");
         var text = await File.ReadAllTextAsync(path, ct).ConfigureAwait(false);
         var uri = Uri(path);
         await _docs.WaitAsync(ct).ConfigureAwait(false);

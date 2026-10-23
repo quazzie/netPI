@@ -34,6 +34,10 @@ internal sealed record TestConfig(IReadOnlyDictionary<string, string> Suites, st
             var config = new TestConfig(suites, Str("changed"), Str("results"), timeout);
             if (suites.Count == 0 && config.Changed is null) return (null, $"{RelativePath} names no suites and no changed command. {HowToAdd}");
             if (config.Results is null) return (null, $"{RelativePath} has no results (the path of the JSON results file the command writes). {HowToAdd}");
+            // The tool deletes this file before every run: it has to be inside the checkout being tested.
+            var relative = Path.GetRelativePath(root, Path.GetFullPath(Path.Combine(root, config.Results)));
+            if (Path.IsPathRooted(config.Results) || Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                return (null, $"{RelativePath}: results ({config.Results}) must be a path inside the project folder.");
             return (config, null);
         }
         catch (JsonException ex) { return (null, $"{RelativePath} is not valid JSON: {ex.Message}"); }

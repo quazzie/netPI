@@ -230,14 +230,17 @@ internal sealed class LspInstaller(string serversDir, string pluginDir, HttpClie
             throw new LspException($"npm could not be started ({ex.Message}): the Svelte and JavaScript servers need Node.js with npm.");
         }
         using var process = npm ?? throw new LspException("npm did not start.");
+        try { ChildJob.Assign(process); } catch { /* the job is a safety net: the cancel path below ends the tree itself */ }
         var stdout = process.StandardOutput.ReadToEndAsync(ct);
         var stderr = process.StandardError.ReadToEndAsync(ct);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
         limit.CancelAfter(TimeSpan.FromMinutes(10));
         try { await process.WaitForExitAsync(limit.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
+            // The time limit or the caller's cancel (plugin stop, reload): cmd.exe and npm must not keep installing either way.
             try { process.Kill(entireProcessTree: true); } catch { /* gone */ }
+            if (ct.IsCancellationRequested) throw;
             throw new LspException("npm ci did not finish within 10 minutes: the Svelte and JavaScript servers are unavailable.");
         }
         if (process.ExitCode != 0)

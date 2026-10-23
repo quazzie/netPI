@@ -78,6 +78,12 @@ public static class TestToolTests
         Check.Contains((await Run(broken, new { })).Content, "not valid JSON");
         var noResults = Project("""{ "suites": { "a": "echo hi" } }""");
         Check.Contains((await Run(noResults, new { })).Content, "no results");
+        foreach (var outside in new[] { "../r.json", "a/../../r.json", Path.GetTempPath().Replace('\\', '/') + "r.json" })
+        {
+            var escaping = Project("{ \"suites\": { \"a\": \"echo hi\" }, \"results\": \"" + outside + "\" }");
+            var refused = await Run(escaping, new { });
+            Check.True(refused.IsError && refused.Content.Contains("inside the project folder"), outside + ": " + refused.Content);
+        }
         var noSuites = Project("""{ "results": "r.json" }""");
         Check.Contains((await Run(noSuites, new { })).Content, "no suites");
         await Task.CompletedTask;

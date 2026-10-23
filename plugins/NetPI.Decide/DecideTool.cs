@@ -250,7 +250,7 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
                     scoreSums[qid] = (scoreSums.GetValueOrDefault(qid).Sum + s, scoreSums.GetValueOrDefault(qid).N + 1);
             }
             if (isUnsure) unsure.Add(i);
-            rows.Add(new { index = i + 1, text = Clip(items[i], 300), answers = cells, unsure = isUnsure, ms = Math.Round(r.Ms),
+            rows.Add(new { index = i + 1, text = Clip(items[i], 300), answers = cells, unsure = isUnsure, ms = leader is not null && leader[i] != i ? 0 : Math.Round(r.Ms),
                 sameAs = leader is not null && leader[i] != i ? leader[i] + 1 : (int?)null });
         }
 
@@ -286,15 +286,16 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
     /// <summary>
     /// What the server reported for tokens, so the cost of a decision is measurable rather than assumed: the whole
     /// argument for these calls is that they reuse a cached prefix, and <c>cached_tokens</c> is the only place that
-    /// number exists. Totals across the items of one call; null when the server reported no usage.
+    /// number exists. Totals across the items of one call, each shared answer counted once (items that repeat an earlier
+    /// one point at the same answer and cost nothing); null when the server reported no usage.
     /// </summary>
     private static JsonObject? Usage(DecisionAnswer?[] results)
     {
         long prompt = 0, cached = 0, completion = 0;
         var seen = false;
-        foreach (var r in results)
+        foreach (var r in results.Where(r => r is not null).Distinct(ReferenceEqualityComparer.Instance).Cast<DecisionAnswer>())
         {
-            if (r?.Usage is not { } u) continue;
+            if (r.Usage is not { } u) continue;
             seen = true;
             prompt += u["prompt_tokens"]?.GetValue<long>() ?? u["input_tokens"]?.GetValue<long>() ?? 0;
             cached += u["cached_tokens"]?.GetValue<long>() ?? u["cache_read_tokens"]?.GetValue<long>() ?? 0;

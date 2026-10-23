@@ -456,6 +456,7 @@ internal sealed class LspTool(LspPool pool, IRpcRegistry? rpc = null) : IAgentTo
         {
             using var git = Process.Start(psi);
             if (git is null) return null;
+            try { ChildJob.Assign(git); } catch { /* the job is a safety net: the cancel path below ends git itself */ }
             try
             {
                 var output = git.StandardOutput.ReadToEndAsync(ct);
