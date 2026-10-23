@@ -617,10 +617,10 @@ public static class PluginTests
             var candidates = Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom
                 ? new[] { Path.Combine(custom, "plugins") }
                 : new[] { "dev", "" }.Select(p => Path.Combine(T.RepoRoot, "artifacts", p, "app", "plugins")).ToArray();
-            var root = candidates.FirstOrDefault(d => File.Exists(Path.Combine(d, "NetPI.Tools.Files", "NetPI.Tools.Files.dll")))
-                ?? throw new AssertException($"no built plugins in {string.Join(" or ", candidates)}: run build.ps1");
+            var root = candidates.FirstOrDefault(d => File.Exists(Path.Combine(d, "NetPI.Tools.Files", "NetPI.Tools.Files.dll")));
+            if (root is null) Check.Skip($"no built plugins in {string.Join(" or ", candidates)}: run build.ps1");
             foreach (var name in new[] { "NetPI.Tools.Files", "NetPI.Tools.Shell", "NetPI.Providers.AiProxy", "NetPI.Providers.Anthropic" })
-                if (!File.Exists(Path.Combine(root, name, name + ".dll"))) throw new AssertException($"{name} is not built in {root}");
+                if (!File.Exists(Path.Combine(root, name, name + ".dll"))) Check.Skip($"{name} is not built in {root}: run build.ps1");
             await using var server = await StartAsync(root);
             var plugins = server.Plugins.List().ToDictionary(p => p.Id);
             foreach (var id in new[] { "netpi.tools.files", "netpi.tools.shell", "netpi.providers.aiproxy", "netpi.providers.anthropic" })

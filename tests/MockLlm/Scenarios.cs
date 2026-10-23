@@ -179,7 +179,9 @@ public sealed partial class ScenarioEngine
                 "codemode" => CodeMode(step, after),
                 "plan" => PlanFlow(tag, step, after),
                 "long" => Long(tag, msgs),
-                _ => Echo(req, anchor >= 0 ? msgs[anchor] : msgs.LastOrDefault(m => m.Role == "user" && !m.IsNotice), step),
+                "echo" or "default" => Echo(req, anchor >= 0 ? msgs[anchor] : msgs.LastOrDefault(m => m.Role == "user" && !m.IsNotice), step),
+                // a typo in a tag must not read as a plain echo: a test that asserts no marker would pass on the wrong scenario
+                _ => new Plan { ErrorStatus = 400, ErrorType = "invalid_request_error", ErrorMessage = $"mock: unknown scenario '{name}'" },
             };
         }
         plan.Scenario = name;
@@ -658,7 +660,11 @@ public sealed partial class ScenarioEngine
             return new Plan { Thinking = "Two ways to do this; the user decides.", Text = "I can do it two ways." }
                 .Call("ask_user", Obj(("questions", questions)));
         }
-        return Final("Answer received: " + FirstLine(ToolResults(after).LastOrDefault()?.Text) + "\n\nASK-DONE");
+        // several questions: the first line only says "The user answered:", the picks are on the lines after it
+        var answered = tag.PInt("n", 1) >= 2
+            ? string.Join(" ", (ToolResults(after).LastOrDefault()?.Text ?? "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0))
+            : FirstLine(ToolResults(after).LastOrDefault()?.Text);
+        return Final("Answer received: " + answered + "\n\nASK-DONE");
     }
 
     /// <summary>

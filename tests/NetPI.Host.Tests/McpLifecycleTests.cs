@@ -12,6 +12,7 @@ public static class McpLifecycleTests
         r.Add("mcp host: successful swap unloads old context and failed candidate retains healthy process", async () => {
             var root=T.TempDir("mcp-plugins");
             var built=Path.Combine(T.RepoRoot,"artifacts","dev","app","plugins","NetPI.Mcp");
+            if(!Directory.Exists(built)) Check.Skip("NetPI.Mcp is not built: run build.ps1");
             T.CopyDir(built,Path.Combine(root,"NetPI.Mcp"));
             await using var server=await PluginTests.StartAsync(root);
             var variable="NETPI_MCP_TEST_FAIL_"+Environment.ProcessId;

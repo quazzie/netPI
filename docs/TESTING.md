@@ -147,8 +147,9 @@ tests pass. `NETPI_TEST_LOGS=1` shows host logs in the Host suite.
 one set of scenarios run against every store a factory builds — ids and seqs, the session list with every filter,
 projects, the session tree, the context view and compaction, the copy a fork makes, `Atomic` (rollback and
 re-entrancy), the key-value store, the collections (every `DataOp`, ordering and paging, `Count`/`Sum`/`DeleteWhere`,
-a changed declaration, a transaction and the lock rules) and the snapshot. It holds no SQL: a provider joins with one
-line in its `Providers.All` and passes the same scenarios as every other, which is what makes a second provider
+a changed declaration, a transaction and the lock rules) and the snapshot. It holds no SQL apart from the two data-damage
+scenarios (a malformed `meta`, an unknown role), which damage each provider's own store by hand and need a twin for a new one:
+a provider joins with one line in its `Providers.All` and passes the same scenarios as every other, which is what makes a second provider
 trustworthy. Nothing about the storage port may be changed without running it (`-Suite Storage`).
 
 The web tool tests serve pages and fake SearXNG / Brave endpoints from a local Kestrel server and never read your pi
@@ -205,8 +206,8 @@ none/low/medium/xhigh, 262k context, 16k max output) — plus `tiny-ctx` (loaded
 ### Scenarios
 
 The answer is scripted by the conversation: the `[s:name key=value …]` tag in the latest user message that is not a
-harness notice picks the scenario, and the step is the number of assistant messages after that message. No tag = a
-markdown echo of the message. Every tag also takes `hold=<ms>`: the first answer of the scenario stays open for that long after its first chunk (a fixed time, not
+harness notice picks the scenario, and the step is the number of assistant messages after that message. No tag (or `[s:echo]`) = a
+markdown echo of the message; a tag naming no scenario is a 400 (`mock: unknown scenario`). Every tag also takes `hold=<ms>`: the first answer of the scenario stays open for that long after its first chunk (a fixed time, not
 scaled by `--speed`), so a test can observe the live state instead of racing it. `gate=<name>` holds it there instead until
 `POST /_release?gate=<name>` (at most 60 s; a release that comes first lets the call through), and `sumgate=<name>` does
 the same to the summary call that compacts a conversation carrying the tag, and `aftergate=<name>` holds the first answer after

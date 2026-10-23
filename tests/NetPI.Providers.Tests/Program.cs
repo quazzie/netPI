@@ -466,7 +466,7 @@ await t.Run("a 200 whose body is not JSON is a transient, described provider err
 
 // ================================================================== AiProxy plugin
 
-var apCtx = new FakePluginContext(new JsonObject
+using var apCtx = new FakePluginContext(new JsonObject
 {
     ["providers"] = new JsonObject
     {
@@ -1269,7 +1269,7 @@ await t.Run("aiproxy plugin: extras reconciled on settings.changed; StopAsync cl
 
 // ================================================================== Anthropic
 
-var anCtx = new FakePluginContext(new JsonObject
+using var anCtx = new FakePluginContext(new JsonObject
 {
     ["providers"] = new JsonObject { ["instances"] = new JsonObject { ["anthropic"] = new JsonObject { ["type"] = "anthropic", ["apiKey"] = "test-key", ["baseUrl"] = mock.BaseUrl } } },
 }, "netpi.providers.anthropic");
@@ -1280,7 +1280,7 @@ var sonnet = AN.ClaudeCapabilities.ToModelInfo("anthropic", "claude-sonnet-4-5",
 
 await t.Run("anthropic: no API key -> empty list and helpful non-transient error", async () =>
 {
-    var ctx = new FakePluginContext(new JsonObject { ["providers"] = new JsonObject { ["instances"] = new JsonObject { ["anthropic"] = new JsonObject { ["type"] = "anthropic", ["baseUrl"] = mock.BaseUrl } } } });
+    using var ctx = new FakePluginContext(new JsonObject { ["providers"] = new JsonObject { ["instances"] = new JsonObject { ["anthropic"] = new JsonObject { ["type"] = "anthropic", ["baseUrl"] = mock.BaseUrl } } } });
     using var http = new HttpClient();
     var p = new AN.AnthropicProvider(http, () => ctx.Settings.GetNode("providers.instances.anthropic") as JsonObject);
     t.Eq(0, (await p.ListModelsAsync(true, CancellationToken.None)).Count, "empty list");
@@ -1847,7 +1847,7 @@ await t.Run("anthropic plugin: registration and stop", async () =>
 
 await t.Run("providers: none exist until added; each entry of a type is its own provider, live; other types are left alone", async () =>
 {
-    var ctx = new FakePluginContext(new JsonObject());
+    using var ctx = new FakePluginContext(new JsonObject());
     var plugin = new AN.AnthropicPlugin();
     await plugin.StartAsync(ctx, CancellationToken.None);
     t.Eq(0, ctx.ServicesImpl.GetAll<IModelProvider>().Count, "an empty settings file offers no provider");
@@ -1886,7 +1886,7 @@ await t.Run("providers: none exist until added; each entry of a type is its own 
 
 // ================================================================== OpenRouter
 
-var orCtx = new FakePluginContext(new JsonObject
+using var orCtx = new FakePluginContext(new JsonObject
 {
     ["providers"] = new JsonObject
     {

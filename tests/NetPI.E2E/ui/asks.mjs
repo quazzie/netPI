@@ -51,7 +51,7 @@ await run('asks', async ({ page }) => {
   await shot(page, 'ui-asks-02-two');
   await card().getByRole('button', { name: 'Send' }).click();
   await expectEventually('Send answers both', cardState, { pass: (s) => s === 'answered' });
-  await ends('');
+  await ends('Patch the client');
   // the answered card opens to the questions and what was picked for each
   await card().click();
   await expectEventually('the answered card shows what was picked for each question', () => chat.locator('[data-kind="ask"]').last().innerText(PROBE),

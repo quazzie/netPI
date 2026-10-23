@@ -110,7 +110,9 @@ if (showFlakes)
 }
 if (failedOnly)
 {
-    var failing = FailingState.Load(o.StateDir).Keys.Where(id => catalog.Any(c => c.Id == id)).ToList();
+    List<string> failing;
+    try { failing = FailingState.Load(o.StateDir).Keys.Where(id => catalog.Any(c => c.Id == id)).ToList(); }
+    catch (InvalidDataException ex) { Console.Error.WriteLine("error: " + ex.Message); return 2; }
     if (failing.Count == 0)
     {
         Console.WriteLine(o.StateDir.Length == 0 ? "--failed needs the state dir (drop --no-state)." : "No test is failing: nothing failed in the last runs, or it passed since.");

@@ -76,6 +76,8 @@ public static class WindowsTests
             await new WindowsPlugin().StartAsync(ctx, CancellationToken.None);
             Check.Equal("windows", ctx.ToolsFake.Tools.Single().Definition.Name);
             var title = "NetPI test " + Guid.NewGuid().ToString("N")[..8];
+            var since = DateTime.Now.AddSeconds(-1);
+            bool Ours(Process p) { try { return p.StartTime >= since; } catch { return false; } }
             Task<ToolResult> Run(object args, string session = "ses_1", ModelInfo? model = null) =>
                 ctx.ToolsFake.Get("windows")!.ExecuteAsync(new ToolContext
                 {
@@ -159,7 +161,8 @@ public static class WindowsTests
             {
                 ctx.Unload();
                 // the test window (and a dialog it shows) never outlives the test: it is this suite's own program
-                foreach (var p in Process.GetProcessesByName("netpi-wintest"))
+                // only the windows started since this test began: a run in another worktree has its own
+                foreach (var p in Process.GetProcessesByName("netpi-wintest").Where(Ours))
                     try { p.Kill(); } catch (Exception) { }
             }
         });

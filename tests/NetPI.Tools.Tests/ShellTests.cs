@@ -435,11 +435,16 @@ public static class ShellTests
             var ctx = new ToolContext { SessionId = "ses_k", AgentId = "agt", CallId = "call_k", Cwd = dir, Services = T.Services, Events = new FakeBus() };
             var run = Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "echo before; sleep 60" }), default);
             ManagedProcess? mp = null;
-            for (var i = 0; i < 100 && (mp = registry.ByCall("ses_k", "call_k")) is null; i++) await Task.Delay(50);
-            Check.True(mp is not null, "the running command is found by session and call id");
-            Check.True(registry.ByCall("ses_other", "call_k") is null, "another session's call id does not match");
-            Check.True(mp!.Kill());
-            var res = await run.WaitAsync(TimeSpan.FromSeconds(15));
+            ToolResult res;
+            try
+            {
+                for (var i = 0; i < 100 && (mp = registry.ByCall("ses_k", "call_k")) is null; i++) await Task.Delay(50);
+                Check.True(mp is not null, "the running command is found by session and call id");
+                Check.True(registry.ByCall("ses_other", "call_k") is null, "another session's call id does not match");
+                Check.True(mp!.Kill());
+                res = await run.WaitAsync(TimeSpan.FromSeconds(15));
+            }
+            finally { await registry.KillAllAsync(TimeSpan.FromSeconds(5)); }   // a failed check must not leave the sleep running
             ToolCheck.Error(res, "[killed from the chat");
             Check.Equal("killed", T.D(res).Str("status"));
             Check.True(registry.ByCall("ses_k", "call_k") is null, "a finished call is not found");

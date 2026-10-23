@@ -72,6 +72,27 @@
    ]
   },
   {
+   "path": "plugins/NetPI.Autonomy/",
+   "tags": [
+    "smoke",
+    "tools"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Autonomy/ui/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Autonomy/wwwroot/",
+   "ids": [
+    "ui.chat",
+    "ui.rpc-contract"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Backup/",
    "tags": [
     "smoke"
@@ -516,9 +537,7 @@
   },
   {
    "path": "tests/MockLlm/",
-   "tags": [
-    "smoke"
-   ]
+   "all": true
   },
   {
    "path": "tests/Shared/",

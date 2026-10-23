@@ -151,17 +151,19 @@ try {
     # What a project compiles or imports from outside its own folder, read from its csproj: the <Compile Include> and
     # <Import Project> entries that leave it ($(RepoRoot)shared/ProviderKit/*.cs in the three providers, shared/GitKit in
     # the file, shell and workspace tools, ../Shared/Harness.cs in the tests, build/WebRoot.targets in the server). A
-    # wildcard names its folder, a file names itself. Read from the project, so a new shared folder cannot be forgotten
-    # here and a change in it stale the projects that compile it.
+    # wildcard names its folder, a file names itself. A <ProjectReference> names the referenced project's folder: the
+    # stale build below runs with BuildProjectReferences=false, so a changed sibling (MockLlm under the E2E runner) has to
+    # stale its dependent too, or the dependent keeps the copy it last built against. Read from the project, so a new
+    # shared folder cannot be forgotten here and a change in it stale the projects that compile it.
     function Get-ExternalInputs([string]$projectDir) {
         $csproj = Get-ChildItem (Join-Path $repo $projectDir) -Filter *.csproj | Select-Object -First 1
         if (-not $csproj) { return }
         $repoRoot = $repo.TrimEnd('\') + '\'
         $projectRoot = (Resolve-Path -LiteralPath (Join-Path $repo $projectDir)).Path.TrimEnd('\') + '\'
         $text = Get-Content -LiteralPath $csproj.FullName -Raw
-        foreach ($m in [regex]::Matches($text, '<(?:Compile\s+Include|Import\s+Project)\s*=\s*"([^"]+)"')) {
+        foreach ($m in [regex]::Matches($text, '<(?:Compile\s+Include|Import\s+Project|ProjectReference\s+Include)\s*=\s*"([^"]+)"')) {
             $include = $m.Groups[1].Value.Replace('$(RepoRoot)', $repoRoot).Replace('/', '\')
-            if ($include -match '[\*\?]') { $include = Split-Path $include -Parent }   # a wildcard: the folder it is in
+            if ($include -match '[\*\?]' -or $include -match '\.csproj$') { $include = Split-Path $include -Parent }   # a wildcard, a referenced project: the folder it is in
             if (-not [IO.Path]::IsPathRooted($include)) { $include = Join-Path $projectRoot $include }
             $full = [IO.Path]::GetFullPath($include)
             if ($full.StartsWith($projectRoot, [StringComparison]::OrdinalIgnoreCase)) { continue }   # the project's own
@@ -196,6 +198,7 @@ try {
             $stamps['web'] = $started
         }
         elseif (-not $stamps.ContainsKey('web')) { $stamps['web'] = [DateTime]::UtcNow.Ticks }
+        elseif ($webNewest -gt $stamps['web']) { Write-Host 'web UI sources changed but npm or node_modules is missing: the committed bundles are used' -ForegroundColor Yellow }
 
         $stale = @($projects | Where-Object {
                 $_.Name -and ($Rebuild -or -not $stamps.ContainsKey($_.Name) -or -not (Test-Path $_.Out) -or (Get-Newest $_.Inputs) -gt $stamps[$_.Name])
@@ -299,6 +302,12 @@ try {
                 })
         }
         elseif ($code) { $items = @([ordered]@{ name = '(run)'; message = "the runner exited $code without writing report.json"; evidence = (Join-Path $out 'console.txt') }); $failedCount = 1 }
+        if ($code -and $failedCount -eq 0) {
+            # a non-zero exit with nothing failed (the server did not start: every test NotRun with a reason) is a failed run, not a green one
+            $reason = @($report.tests | Where-Object { $_.outcome -eq 'NotRun' -and $_.reason } | Select-Object -First 1).reason
+            $items += [ordered]@{ name = '(run)'; message = "the runner exited ${code}: $skippedCount test(s) not run$(if ($reason) { ": $reason" })"; evidence = (Join-Path $out 'console.txt') }
+            $failedCount = 1
+        }
         $dir = Join-Path $repo 'artifacts\testlogs'
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         [ordered]@{ passed = $passed; failed = $failedCount; skipped = $skippedCount; failures = $items; log = (Join-Path $out 'console.txt'); exitCode = $code } |

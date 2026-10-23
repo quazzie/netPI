@@ -116,7 +116,8 @@ public sealed class Orchestrator
 
         var shardInfo = new ShardStats[shards];
         var outputs = await Task.WhenAll(lists.Select((l, i) => RunShardAsync(i, l, shardInfo)));
-        var results = outputs.SelectMany(r => r).OrderBy(r => selected.ToList().FindIndex(c => c.Id == r.Id)).ThenBy(r => r.Attempt).ToList();
+        var order = selected.Select((c, i) => (c.Id, i)).ToDictionary(x => x.Id, x => x.i);
+        var results = outputs.SelectMany(r => r).OrderBy(r => order[r.Id]).ThenBy(r => r.Attempt).ToList();
         wall.Stop();
 
         var report = BuildReport(results, selected, shardInfo, wall.Elapsed, startedAt);
@@ -572,6 +573,10 @@ public static class FlakeLedger
     {
         try
         {
+            // Two runs (two worktrees) finishing together would each read the old rates and the later write would drop the
+            // earlier run's counts: the read-modify-write holds a lock file beside the ledger.
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path))!);
+            using var gate = Lock(path + ".lock");
             var byId = Load(path).ToDictionary(e => e.Id, StringComparer.Ordinal);
             var dirty = false;
             foreach (var group in results.GroupBy(r => r.Id))
@@ -619,6 +624,18 @@ public static class FlakeLedger
         catch (Exception ex) { Console.WriteLine("  could not update the flake ledger: " + ex.Message); }
     }
 
+    /// <summary>An exclusive lock file, waited for up to five seconds; null (go on without it) when it stays taken, since the
+    /// ledger is statistics and a stale lock must not cost the run its other results.</summary>
+    private static FileStream? Lock(string lockPath)
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            try { return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException) { Thread.Sleep(100); }
+        }
+        return null;
+    }
+
     private static bool IsBad(TestResult r) => r.Outcome is Outcome.Failed or Outcome.TimedOut;
     private static string Cause(TestResult r)
     {
@@ -640,14 +657,15 @@ public static class FailingState
     public static Dictionary<string, (string Message, string Run)> Load(string stateDir)
     {
         var map = new Dictionary<string, (string, string)>(StringComparer.Ordinal);
+        var path = Path.Combine(stateDir, "failing.json");
+        if (stateDir.Length == 0 || !File.Exists(path)) return map;
         try
         {
-            var path = Path.Combine(stateDir, "failing.json");
-            if (stateDir.Length > 0 && File.Exists(path))
-                foreach (var e in JsonNode.Parse(File.ReadAllText(path))!["failing"]!.AsArray())
-                    map[e!["id"]!.GetValue<string>()] = (e["message"]?.GetValue<string>() ?? "", e["run"]?.GetValue<string>() ?? "");
+            foreach (var e in JsonNode.Parse(File.ReadAllText(path))!["failing"]!.AsArray())
+                map[e!["id"]!.GetValue<string>()] = (e["message"]?.GetValue<string>() ?? "", e["run"]?.GetValue<string>() ?? "");
         }
-        catch { }
+        // an unreadable list is not an empty one: --failed would say nothing failed, and the next Update would write over it
+        catch (Exception ex) { throw new InvalidDataException($"{path} is unreadable ({ex.Message}); delete it to start the list again", ex); }
         return map;
     }
 
@@ -668,8 +686,11 @@ public static class FailingState
             {
                 ["id"] = p.Key, ["message"] = p.Value.Message, ["run"] = p.Value.Run,
             }).ToArray());
-            File.WriteAllText(Path.Combine(stateDir, "failing.json"), new JsonObject { ["failing"] = arr }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            var file = Path.Combine(stateDir, "failing.json");
+            var tmp = file + "." + Environment.ProcessId + ".tmp";
+            File.WriteAllText(tmp, new JsonObject { ["failing"] = arr }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(tmp, file, overwrite: true);
         }
-        catch { }
+        catch (Exception ex) { Console.WriteLine("  could not update the failing list: " + ex.Message); }
     }
 }
