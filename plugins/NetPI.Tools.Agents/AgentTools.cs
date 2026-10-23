@@ -268,7 +268,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         ["priority"] = new JsonObject
         {
             ["type"] = "string", ["enum"] = new JsonArray("background", "low", "normal", "high"),
-            ["description"] = "Where it queues while its agent has no free instance (default: your own priority; never above it)",
+            ["description"] = "Where it queues while its agent has no free instance (default: normal, or your own level when lower; an explicit level may go up to yours, never above high)",
         },
     };
 
@@ -291,7 +291,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             "agent: an id from agent_choices (required when agents are set up), or \"any\" for the first free one. model: only when no agents are set up (\"provider/model\"). " +
             "tools: by name, may include tools you lack; default: yours (the tools switched off in your chat stay off then; an explicit list is taken as it is, the chat's switches are not applied to it). instructions: extra system-prompt text. " +
             "maxUsd: the most the subagent may spend (USD, its own calls); a paid call that would go over is refused and it ends with \"stopped: its maxUsd is spent\". maxTurns: the most model calls per run. " +
-            "priority: background, low, normal or high, the order it queues in while its agent is busy (default: yours, and never above yours); low for work that can wait, background for work that should give its instance to any other waiting run.\n" +
+            "priority: background, low, normal or high, the order it queues in while its agent is busy (default: normal, or yours when lower — a subagent never starts above normal; an explicit level may go up to your own, never above high); low for work that can wait, background for work that should give its instance to any other waiting run.\n" +
             "workspace: a subagent that only reads shares yours; one that writes gets its own git worktree and branch (merge it yourself afterwards; " +
             "it comes back in the report). isolated: true or workspace: \"new\" forces one; pass the same workspace to subagents that must see each other's files.",
         Category = "agents",

@@ -952,8 +952,10 @@ named agent's model, otherwise the catalog default. Turns, delegation and manual
 including during manual compaction, rather than silently replaced by the global default.
 
 `priority` (`background`, `low`, `normal`, `high`): the order the subagent queues in while its agent has no free instance (SETTINGS.md
-"Priority"); default the caller's own, never above it (`critical` is refused: a subagent does not take instances from
-other runs, and a critical chat's subagents run at `high`). Work that can wait goes at `low`.
+"Priority"); default `normal`, or the caller's own level when lower (a subagent never starts above normal, so a high- or
+critical-priority caller's children do not queue ahead of the caller's peers); an explicit level may go up to the caller's
+own, never above `high` (`critical` is refused: a subagent does not take instances from other runs). A low- or
+background-priority caller's subagents stay at its level. Work that can wait goes at `low`.
 
 Several at once (up to 32 per call; more is an error that starts none): `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority?, maxUsd?, maxTurns? }, …] }`.
 `taskFile` reads a long task from a file (path relative to the working directory; appended to `task` if both are given), so a batch stays short enough for a model to write in one call. Arguments that end inside an open object or array from a response cut off at its output limit are reported as cut off, with that advice.

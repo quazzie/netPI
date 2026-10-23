@@ -1151,13 +1151,15 @@ internal sealed class AgentRuntime : IAgentRuntime
     }
 
     /// <summary>
-    /// The level a subagent's runs queue at (<see cref="RunPriority"/>): the one it asked for, else its parent's; never above
-    /// its parent's nor above high, so a subagent never takes a slot from another run.
+    /// The level a subagent's runs queue at (<see cref="RunPriority"/>): the one it asked for, capped at its parent's level
+    /// and at high; its parent's level capped at normal when it asked for none. A subagent never starts above normal (a
+    /// high- or critical-priority parent's children do not queue ahead of the parent's peers), and a low or background
+    /// parent's children never go above its level, so a subagent never takes a slot from another run.
     /// </summary>
     internal static string ChildPriority(int? requested, SessionInfo? parentSession)
     {
         var parent = RunPriority.Of(parentSession);
-        var level = Math.Min(Math.Min(requested ?? parent, parent), RunPriority.High);
+        var level = requested is { } r ? Math.Min(Math.Min(r, parent), RunPriority.High) : Math.Min(parent, RunPriority.Normal);
         return RunPriority.Name(Math.Max(level, RunPriority.Background));
     }
 

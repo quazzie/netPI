@@ -48,7 +48,8 @@ with what was skipped and why, is `docs/archive/2026-10-16-review-oneshot.md`. W
 
 A chat's runs queue for an instance by its `meta.priority` (`RunPriority` in `src/NetPI.Contracts/AgentSlots.cs`: background,
 low, normal, high, critical), set by whatever started the chat for the user: a webhook's or schedule's `priority` field, or
-`agent_spawn`'s `priority` (default the parent's, never above it nor above high). The user's own chats carry none: normal,
+`agent_spawn`'s `priority` (default normal, or the parent's level when lower; an explicit level up to the parent's,
+never above high). The user's own chats carry none: normal,
 and never paused. A **critical** run that finds no free instance signals the pausable runs below it on the agents it may
 use (or on their local model) through `IAgentSlot.Wanted`; the first to reach a stopping point hands its instance over
 with `GiveUpIfWanted` (atomic in the scheduler, so one critical run never pauses two): at its next model call, or once

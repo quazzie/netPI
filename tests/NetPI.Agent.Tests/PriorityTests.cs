@@ -14,7 +14,7 @@ public static class PriorityTests
 {
     public static void Register(TestRunner t)
     {
-        t.Add("priority: chats queue by their meta.priority; a subagent gets its parent's, never above it nor above high", QueueOrderAndChildren);
+        t.Add("priority: chats queue by their meta.priority; a subagent starts at normal at most, an explicit ask up to its parent's level, never above high", QueueOrderAndChildren);
         t.Add("priority: changing a queued chat reorders it immediately", ReprioritizeQueued);
         t.Add("priority: a critical chat takes the slot of a pausable run at its next model call, and that run goes on after it", PausedAtNextCall);
         t.Add("priority: the user's own chat is never paused, and a high chat only queues first", NotPaused);
@@ -204,12 +204,16 @@ public static class PriorityTests
         foreach (var s in new[] { first, low, normal, high }) await h.IdleAsync(s.Id);
         Check.Equal("first,high,normal,low", script.Order);
 
-        // a subagent's level: its parent's by default, lower when it asks, never above its parent's nor above high
-        Check.Equal("high", AgentRuntime.ChildPriority(null, Session("critical")), "a critical parent's subagents run at high");
+        // a subagent's level: normal at most by default (a high- or critical-priority parent's children do not queue ahead of
+        // the parent's peers), its parent's level when that is lower; an explicit ask may go up to the parent's level, capped at high
+        Check.Equal("normal", AgentRuntime.ChildPriority(null, Session("critical")), "a critical parent's subagents start at normal");
+        Check.Equal("high", AgentRuntime.ChildPriority(RunPriority.High, Session("critical")), "an explicit ask may go up to the parent's level, capped at high");
         Check.Equal("normal", AgentRuntime.ChildPriority(null, Session(null)), "the user's chat: normal");
         Check.Equal("low", AgentRuntime.ChildPriority(RunPriority.Low, Session(null)), "lower when it asks");
         Check.Equal("normal", AgentRuntime.ChildPriority(RunPriority.High, Session(null)), "never above its parent");
-        Check.Equal("low", AgentRuntime.ChildPriority(null, Session("low")));
+        Check.Equal("low", AgentRuntime.ChildPriority(null, Session("low")), "a low parent's subagents stay low");
+        Check.Equal("low", AgentRuntime.ChildPriority(RunPriority.Normal, Session("low")), "nor can they go up");
+        Check.Equal("background", AgentRuntime.ChildPriority(null, Session("background")));
 
         // spawned: the child's chat carries its level (which also makes its runs pausable)
         var parent = h.Runtime.GetBySession(high.Id)!;

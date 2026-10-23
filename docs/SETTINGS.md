@@ -300,7 +300,8 @@ where a chat runs, the profile who it is.
 - **Priority:** a chat's runs queue at its `meta.priority` — `background`, `low`, `normal`, `high` or `critical` (-200, -100, 0, 100, 200).
   New chats started manually default to `high`; the composer selector can change a chat's priority, including while it is
   queued. System-started chats use their caller's priority: a webhook's or schedule's `priority`, or `agent_spawn`'s
-  `priority` (a subagent's default is its parent's, never above it nor above `high`). Manual chats are marked with
+  `priority` (a subagent's default is `normal`, or its parent's level when lower; an explicit level may go up to the
+  parent's, never above `high`). Manual chats are marked with
   `meta.prioritySource: "manual"` and are never paused, except at `background`: a chat the user sets to background yields to everything.
   A run that queues again after giving its instance away (a wait for its subagents, a pause) gets +50: first among its
   own level, still behind the levels above. **Critical** goes further: when no instance it could use is free, it takes
