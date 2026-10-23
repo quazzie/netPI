@@ -18,6 +18,16 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 ## Current state (2026-09-28)
 
+### Autonomy: standing grants instead of approvals (2026-10-23)
+
+New plugin `NetPI.Autonomy` (right tab, `autonomy.*` RPCs, `autonomy.*` settings) for chats nobody watches (schedules,
+webhooks, subagents): the guardrails ask its `IToolGrants` (`src/NetPI.Contracts/ToolGrants.cs`) before they ask the
+user, so a rule allowed **Always for …** an origin stops asking there, and in an unattended chat an ungranted ask is
+refused and listed in the tab instead of waiting. For schedules' and webhooks' chats it journals every change (Undo for
+files), and has a pause switch, an hourly cap (the only notification) and a list of what a chat that read outside text
+may never do. Disabled, NetPI behaves as before. Record: [archive/2026-10-23-autonomy.md](archive/2026-10-23-autonomy.md).
+Contract change: a publish stages everything for the next start.
+
 ### Whole-repo review, fixed in one pass (2026-10-16)
 
 A sharded review of the whole repository (about 120 findings) and its fixes, merged as nine workstreams; the record,

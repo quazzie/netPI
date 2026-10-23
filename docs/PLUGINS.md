@@ -217,6 +217,7 @@ a call blocks it instead of rewriting it, which leaves the turn as it was sent.
 | `IModelProvider` | `ctx.Services.Register<IModelProvider>` | model backends (see the AiProxy / Anthropic plugins) |
 | `IModelMiddleware` | `ctx.Services.Register<IModelMiddleware>` | wrap every model call (retry, logging, budgets) |
 | `IAgentHook` | `ctx.Services.Register<IAgentHook>` | agent lifecycle: before/after model calls (compaction, nudge, tool repair), tool calls (permission gates), run start/end |
+| `IToolGrants` (`NetPI.Contracts`) | `ctx.Services.Register<IToolGrants>` | standing grants the guardrails ask before they ask the user (`Find`), what they do instead of asking in a chat nobody watches (`Refuse`), and the card's "Always for …" (`OriginLabel`, `Grant`). The Autonomy plugin registers it; resolved per use, so without it the guardrails ask as before |
 | `IAgentCallObserver` | `ctx.Services.Register<IAgentCallObserver>` | watching a model call without deciding anything (metering, diagnostics): always runs, where a hook stops at the first non-null decision |
 | `IPromptSection` | `ctx.Services.Register<IPromptSection>` | system prompt sections |
 | `ToolResultLimit` | `ToolResultLimit.Fit(ctx.Settings, ownCap)` | a tool that pages or tails its own output stays under the tool result limit (the runner saves longer results to a file) |
