@@ -302,10 +302,14 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             ["subagents"] = new JsonObject
             {
                 ["type"] = "array",
+                ["maxItems"] = MaxBatch,
                 ["items"] = Schema(ItemProperties()),
             },
         }),
     };
+
+    /// <summary>The most subagents one call starts: a runaway call must not queue hundreds of sessions.</summary>
+    internal const int MaxBatch = 32;
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -315,6 +319,8 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             ? sub.EnumerateArray().ToList()
             : null;
         if (batch is { Count: 0 }) return ToolResult.Error("subagents is empty: give each subagent a task.");
+        if (batch is { Count: > MaxBatch })
+            return ToolResult.Error($"One agent_spawn starts at most {MaxBatch} subagents ({batch.Count} given): start the rest with another call once agent wait shows these finishing. None of them was started.");
         var items = batch ?? [args];
         var agents = (context.Services.Get<IAgentScheduler>()?.Snapshot() ?? []).Where(p => p.Configured).ToList();
         var requests = new List<SpawnRequest>(items.Count);

@@ -921,7 +921,7 @@ agents: "No agents are set up", and a subagent runs on the caller's model.
 
 ### `agent_spawn` (summary arg `name`)
 
-`{ task, name?, agent?, model?, tools?, instructions?, background?, timeoutSeconds? }`. With agents set up `agent` is required
+`{ task, name?, agent?, model?, tools?, instructions?, maxUsd?, maxTurns?, priority?, taskFile?, workspace?, isolated?, subagents? }`. With agents set up `agent` is required
 (an id from `agent_choices`; a model ref is accepted as an agent on that model; `"any"`: the first agent with a free
 instance takes the subagent, whatever its model); an agent that can't take work is refused with the list. The
 subagent's session keeps the agent (`meta.agent`) as where it runs by preference: it waits for the first agent on that
@@ -947,7 +947,7 @@ including during manual compaction, rather than silently replaced by the global 
 "Priority"); default the caller's own, never above it (`critical` is refused: a subagent does not take instances from
 other runs, and a critical chat's subagents run at `high`). Work that can wait goes at `low`.
 
-Several at once: `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority?, maxUsd?, maxTurns? }, …] }`.
+Several at once (up to 32 per call; more is an error that starts none): `{ subagents: [{ task | taskFile, name?, agent?, model?, tools?, instructions?, workspace?, isolated?, priority?, maxUsd?, maxTurns? }, …] }`.
 `taskFile` reads a long task from a file (path relative to the working directory; appended to `task` if both are given), so a batch stays short enough for a model to write in one call. Arguments that end inside an open object or array from a response cut off at its output limit are reported as cut off, with that advice.
 Every entry is checked first, and every workspace the batch needs is provisioned before the first child starts (a named one
 resolved, the worktree of every worker that writes created, by the same rule a single spawn follows); a bad one starts none of
