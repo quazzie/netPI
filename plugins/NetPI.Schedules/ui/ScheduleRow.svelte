@@ -1,5 +1,6 @@
 <script>
   // One schedule row: dot + name + next, a meta line, hover actions, and the expandable detail with its run history.
+  import { onDestroy } from 'svelte';
   import { StatusDot, IconButton, ConfirmButton, Button, timeAgo } from '@netpi/kit';
   import RunHistory from './RunHistory.svelte';
   import { rowState, describeNext, summarise } from './model.js';
@@ -9,6 +10,7 @@
   let open = $state(false);
   let busy = $state(false);
   let flash = $state('');
+  let flashTimer = 0;
 
   // `now` is the kit's 1 s clock getter: calling it inside a $derived is what ties the row to the tick.
   const state = $derived(rowState(s, running, now()));
@@ -23,8 +25,10 @@
   function say(msg, level = 'info') {
     flash = msg;
     ctx.app.toast?.(msg, level);
-    setTimeout(() => (flash = ''), 4000);
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => (flash = ''), 4000);
   }
+  onDestroy(() => clearTimeout(flashTimer));
 
   async function runNow() {
     if (busy) return;

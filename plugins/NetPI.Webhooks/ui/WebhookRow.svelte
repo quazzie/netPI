@@ -1,6 +1,7 @@
 <script>
   // One webhook row: dot + name, a meta line, hover actions, and the expandable detail — where to POST, the template, a
   // "try a payload" panel (preview or send), and the delivery history.
+  import { onDestroy } from 'svelte';
   import { StatusDot, IconButton, ConfirmButton, Button, Modal, timeAgo } from '@netpi/kit';
   import DeliveryHistory from './DeliveryHistory.svelte';
   import { rowState, limitsLine, incidentLine, hookLine } from './model.js';
@@ -11,6 +12,7 @@
   let historyOpen = $state(false); // the deliveries, in a dialog
   let busy = $state(false);
   let flash = $state('');
+  let flashTimer = 0;
   let tryText = $state('{\n  "message": "hello from the Try box"\n}');
   let preview = $state.raw(null);
   let incidents = $state.raw([]);
@@ -41,8 +43,10 @@
   function say(msg, level = 'info') {
     flash = msg;
     ctx.app.toast?.(msg, level);
-    setTimeout(() => (flash = ''), 5000);
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => (flash = ''), 5000);
   }
+  onDestroy(() => clearTimeout(flashTimer));
 
   async function call(method, params) {
     if (busy) return null;
