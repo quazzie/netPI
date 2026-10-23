@@ -189,12 +189,13 @@ public sealed class McpPlugin : INetPiPlugin
         }, token), "Enable or disable an MCP server: {id,enabled}", false, serverArg, RpcParam.Req("enabled", RpcParamType.Boolean));
         Rpc("mcp.reconnect", async (req, token) => { await manager.CommandAsync(req.Required("id"), true, token).ConfigureAwait(false); return manager.Snapshot(); }, "Reconnect an MCP server: {id}", false, serverArg);
         Rpc("mcp.refresh", async (req, token) => { await manager.CommandAsync(req.Required("id"), false, token).ConfigureAwait(false); return manager.Snapshot(); }, "Refresh an MCP server catalog: {id}", false, serverArg);
-        ctx.Events.SubscribeAsync("settings.changed", async _ =>
+        // a sync handler that schedules the work: an async one left on the bus would root this generation while it runs
+        ctx.Events.Subscribe("settings.changed", e => { _ = Task.Run(async () =>
         {
             try { await manager.ReconcileAsync(ctx.Stopping).ConfigureAwait(false); }
             catch (OperationCanceledException) when (ctx.Stopping.IsCancellationRequested) { }
             catch (Exception ex) { ctx.Logger.LogWarning("MCP configuration update failed: {Error}", ex.Message); }
-        });
+        }); });
         ctx.Ui.AddTab(new UiTabInfo { Id = "mcp", Title = "MCP", Panel = UiPanel.Right, Icon = "plug", Order = 65 });
     }
     public async Task StopAsync(CancellationToken ct)

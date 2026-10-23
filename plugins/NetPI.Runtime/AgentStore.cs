@@ -85,6 +85,38 @@ internal sealed class AgentStore(IPluginContext ctx)
         }
     }
 
+    /// <summary>How long a finished agent's record is kept (its task and result text) before <see cref="PruneOld"/> deletes it.</summary>
+    public const int KeepFinishedDays = 30;
+    private long _prunedAt;
+
+    /// <summary>Delete the finished (completed, failed, cancelled) records older than <see cref="KeepFinishedDays"/>; the count. Records that wait or run are never touched.</summary>
+    public int PruneOld()
+    {
+        Interlocked.Exchange(ref _prunedAt, Environment.TickCount64);
+        try
+        {
+            var cutoff = Iso(DateTimeOffset.UtcNow.AddDays(-KeepFinishedDays));
+            return _records.DeleteWhere(new DataQuery().In("status", ["completed", "failed", "cancelled"]).Lt("createdAt", cutoff));
+        }
+        catch (Exception ex)
+        {
+            ctx.Logger.LogWarning(ex, "Failed to prune old agent records");
+            return 0;
+        }
+    }
+
+    /// <summary><see cref="PruneOld"/> at most once an hour, off the caller's thread (it is called where an agent finishes).</summary>
+    public void PruneOldSometimes()
+    {
+        var now = Environment.TickCount64;
+        var last = Interlocked.Read(ref _prunedAt);
+        if (last != 0 && now - last < 3_600_000 || Interlocked.CompareExchange(ref _prunedAt, now, last) != last) return;
+        _ = Task.Run(() => PruneOld());
+    }
+
+    /// <summary>The agent left the in-memory registry: its write-order slot goes with it.</summary>
+    public void Forget(string id) => _written.TryRemove(id, out _);
+
     /// <param name="pending">The batch that waits for the user (<see cref="PendingJson"/>, made under the agent's gate), or null.</param>
     /// <param name="version">The agent's save counter when the snapshot was taken (0: unversioned, always written). A write older than the last one made for the record is dropped.</param>
     public void Save(AgentInfo info, string? instructions, bool notifyParent, IReadOnlyList<QueuedRecord> queue, JsonObject? pending = null, long version = 0)

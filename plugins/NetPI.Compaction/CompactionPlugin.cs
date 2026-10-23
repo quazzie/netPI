@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Compaction;
@@ -30,7 +31,12 @@ public sealed class CompactionPlugin : INetPiPlugin
             ],
         });
         var service = new CompactionService(context);
-        context.Services.Register<IAgentHook>(new CompactionHook(service, context.Logger));
+        var hook = new CompactionHook(service, context.Logger);
+        context.Services.Register<IAgentHook>(hook);
+        context.Events.Subscribe(EventTypes.SessionDeleted, e =>
+        {
+            if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) hook.Forget(id);
+        });
 
         context.Rpc.Register(new RpcMethod("compaction.run", "Summarize older messages of a session: { sessionId, args? } → status string", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("args", RpcParamType.String, "/compact's text: instructions for the summary"), RpcParam.Opt("instructions")]),
             (req, rpcCt) => RunAsync(context, service, req, rpcCt));
@@ -110,6 +116,9 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
     // model call tried again (a full summarizer pass over ~250k tokens each, six in four minutes on one chat).
     private readonly ConcurrentDictionary<string, (int Skip, long Estimate)> _backoff = new();
 
+    /// <summary>The session is gone: its wait goes with it.</summary>
+    public void Forget(string sessionId) => _backoff.TryRemove(sessionId, out _);
+
     public int Order => -100;
 
     public async ValueTask OnBeforeModelCallAsync(AgentTurnContext turn)
@@ -147,7 +156,8 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
         {
             // Never break the run: the model call may still fit, and the overflow path is a second chance. The next
             // attempt waits a few calls (or a real growth of the context), since the same input fails the same way.
-            if (_backoff.Count > 1000) _backoff.Clear();
+            // a session that is not waiting any more has nothing to lose; the ones that wait keep their backoff
+            if (_backoff.Count > 1000) foreach (var (id, entry) in _backoff) if (entry.Skip <= 0) _backoff.TryRemove(id, out _);
             _backoff[sessionId] = (BackoffCalls, estimate);
             logger?.LogWarning(ex, "Auto-compaction of {Session} failed", sessionId);
             service.Notice(sessionId, "warn", $"Auto-compaction failed: {ex.Message} It is tried again after {BackoffCalls} model calls.", "failed", CompactionMode.Auto);

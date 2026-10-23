@@ -125,6 +125,9 @@ internal sealed class AgentRuntime : IAgentRuntime
             Ctx.Services.Get<IAgentScheduler>()?.UpdatePriority(id, RunPriority.Of(session), IsPausable(session));
         });
         _store.Initialize();
+        // before the interrupted ones are marked failed: those stay for the user to see until the next start
+        var pruned = _store.PruneOld();
+        if (pruned > 0) Ctx.Logger.LogInformation("Deleted {Count} old agent record(s)", pruned);
         var interrupted = _store.MarkInterrupted();
         if (interrupted > 0) Ctx.Logger.LogInformation("Marked {Count} interrupted agent(s) as failed", interrupted);
         var records = _store.LoadRecent(MaxFinishedInMemory);
@@ -328,6 +331,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// <summary>Keep active agents and the most recent <see cref="MaxFinishedInMemory"/> inactive ones.</summary>
     private void Prune()
     {
+        _store.PruneOldSometimes();
         // Lock order: an agent's gate before the registry's (FindState under a gate takes _gate), so the registry lock is
         // never held while an agent's gate is taken.
         List<AgentState> all;
@@ -353,6 +357,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 lock (_gate)
                 {
                     _agents.Remove(s.Info.Id);
+                    _store.Forget(s.Info.Id);
                     if (_bySession.TryGetValue(s.Info.SessionId, out var id) && id == s.Info.Id) _bySession.Remove(s.Info.SessionId);
                 }
             }

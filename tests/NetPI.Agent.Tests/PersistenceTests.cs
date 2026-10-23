@@ -8,6 +8,7 @@ public static class PersistenceTests
     public static void Register(TestRunner t)
     {
         t.Add("persistence: agent records survive a restart", AgentRecords);
+        t.Add("persistence: finished agent records older than the keep window are deleted at start", OldRecordsPruned);
         t.Add("persistence: usage survives a restart", UsageRecords);
         t.Add("persistence: queued inputs survive a runtime reload", QueuedInputsSurviveReload);
     }
@@ -77,6 +78,29 @@ public static class PersistenceTests
         await Wait.Until(() => h.Catalog.Requests.Count(r => r.SessionId == sub.SessionId) == 2, "sub ran again");
         Check.Contains(h.Catalog.Requests.Last(r => r.SessionId == sub.SessionId).SystemPrompt, "custom rule");
         await h.IdleAsync(s.Id);
+    }
+
+    private static async Task OldRecordsPruned()
+    {
+        await using var h = await TestHost.StartAsync();
+        string At(int daysAgo) => DateTimeOffset.UtcNow.AddDays(-daysAgo).UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'");
+        void Put(string id, string status, int daysAgo) => Records(h).Put(id, new JsonObject
+        {
+            ["id"] = id, ["sessionId"] = "ses_" + id, ["name"] = id, ["status"] = status, ["createdAt"] = At(daysAgo),
+        });
+        Put("agt_old_done", "completed", 90);
+        Put("agt_old_failed", "failed", 90);
+        Put("agt_new_done", "completed", 1);
+        Put("agt_old_idle", "idle", 90); // a chat's own agent is not a spawn's leftover
+
+        await h.StopPluginAsync("netpi.runtime");
+        await h.StopPluginAsync("netpi.tools.agents");
+        await h.StartPluginAsync(new RuntimePlugin());
+        await h.StartPluginAsync(new NetPI.Tools.Agents.AgentToolsPlugin());
+
+        Check.True(Records(h).Get("agt_old_done") is null && Records(h).Get("agt_old_failed") is null, "old finished records are gone");
+        Check.True(Records(h).Get("agt_new_done") is not null, "a recent one stays");
+        Check.True(Records(h).Get("agt_old_idle") is not null, "an idle chat agent stays");
     }
 
     /// <summary>A follow-up and a steer offered during a run are persisted with the agent and survive a reload of the runtime.</summary>

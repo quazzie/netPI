@@ -129,6 +129,9 @@ internal sealed class MemoryIndex : IDisposable
     public async Task<JsonObject> SweepAsync(CancellationToken ct)
     {
         if (!Enabled) return new JsonObject { ["enabled"] = false };
+        // an unload ends every sweep between two chats, an RPC-started one too (not only the timer's, which has _stop's token)
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _stop.Token);
+        ct = linked.Token;
         var service = Service;
         if (service is { Available: false }) return new JsonObject { ["enabled"] = true, ["available"] = false };
         var model = service?.Model ?? "";

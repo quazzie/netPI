@@ -683,6 +683,17 @@ public static class CompactionTests
             Check.Equal(10_000, req.MaxOutputTokens, "the whole budget (a quarter of the 40k window), not half of it");
         });
 
+        r.Add("compaction: a deleted session's backoff is dropped", async () =>
+        {
+            var env = new Env();
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "length", Parts = [new ThinkingPart { Text = "..." }] };
+            env.Conversation(13);
+            await env.Hook.OnBeforeModelCallAsync(env.Turn());
+            Check.True(env.Hook.BackingOff(env.Session.Id));
+            env.Hook.Forget(env.Session.Id);
+            Check.False(env.Hook.BackingOff(env.Session.Id), "forgotten with the session");
+        });
+
         r.Add("compaction: a failed auto-compaction never breaks the run, and the next model calls wait unless the context grows", async () =>
         {
             var env = new Env();
