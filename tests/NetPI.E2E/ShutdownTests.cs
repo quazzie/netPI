@@ -17,7 +17,9 @@ public static class ShutdownTests
             await env.Rpc("agent.send", new { sessionId = sid, text = "slow [s:slow ms=8000]" });
             await env.Client.WaitFor(mark, e => e.Type == "stream.delta" && e.Sid == sid, "streaming", 20_000);
 
-            // Graceful on Unix (SIGTERM). On Windows the process is killed, so only persistence is checked.
+            // Graceful on Unix (SIGTERM). On Windows the process is killed (a console process has no SIGTERM to catch without a
+            // console control event that the harness's hidden child does not receive), so only persistence is checked there:
+            // the exit code, "Stopping..." and the saved-as-aborted checks are covered by a Unix run (CI).
             var graceful = !OperatingSystem.IsWindows();
             var code = await env.StopServerAsync(TimeSpan.FromSeconds(20));
             var log = env.ReadServerLog();

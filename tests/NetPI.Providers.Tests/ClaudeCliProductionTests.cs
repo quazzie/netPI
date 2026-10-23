@@ -341,7 +341,10 @@ internal static class ClaudeCliProductionTests
                 await foreach (var _ in claudecli::NetPI.Providers.ClaudeCli.ProcessRunner.Run(
                     new claudecli::NetPI.Providers.ClaudeCli.CliCall(cmd, [], "", dir, TimeSpan.FromSeconds(30), []), CancellationToken.None))
                     break;
-                await Task.Delay(6000);
+                // the CLI's work ends ~4 s after its first line, which this test already has: watch a window well past that (a left-over CLI
+                // writes the marker and the check fails at once; a killed one never does) instead of trusting one fixed sleep
+                var until = DateTime.UtcNow.AddSeconds(10);
+                while (DateTime.UtcNow < until && !File.Exists(marker)) await Task.Delay(100);
                 t.Check(!File.Exists(marker), "the CLI was killed when the consumer stopped, not left to finish");
             }
             finally { try { Directory.Delete(dir, true); } catch { /* temp */ } }

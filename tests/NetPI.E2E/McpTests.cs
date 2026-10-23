@@ -29,7 +29,7 @@ public static class McpTests
                 // the first request is the same whatever the catalog's size: tool_search, none of the remote tools
                 var first=await env.MockRequest(requests[0].L("seq"));
                 var serialized=first.P("tools").GetRawText();
-                constantTools ??= serialized; Check.Equal(constantTools, serialized);
+                if (constantTools is null) constantTools = serialized; else Check.Equal(constantTools, serialized);
                 constantInstructions ??= first.S("instructions"); Check.Equal(constantInstructions, first.S("instructions"));
                 Check.Contains(serialized,"tool_search"); Check.NotContains(serialized,target.S("id")!);
                 // finding it does not change the request's tools (no prefill, 0f4a6e2): the next request declares the same

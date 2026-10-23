@@ -1,3 +1,4 @@
+using System.Text;
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -50,6 +51,24 @@ public static class UiTests
             RunUiScript(env, "new-chat.mjs", 300), 330);
     }
 
+    /// <summary>All of the script's output; calls <paramref name="onMachine"/> with the factor of its "  machine: x2.4 …" line.</summary>
+    private static async Task<string> ReadOutputAsync(StreamReader reader, Action<double> onMachine)
+    {
+        var all = new StringBuilder();
+        while (await reader.ReadLineAsync() is { } line)
+        {
+            all.Append(line).Append('\n');
+            if (line.StartsWith("  machine: x", StringComparison.Ordinal))
+            {
+                var rest = line.AsSpan("  machine: x".Length);
+                var end = 0;
+                while (end < rest.Length && (char.IsAsciiDigit(rest[end]) || rest[end] == '.')) end++;
+                if (double.TryParse(rest[..end], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var factor)) onMachine(factor);
+            }
+        }
+        return all.ToString();
+    }
+
     /// <summary>
     /// Runs ui/<paramref name="script"/> with node against this shard's server and mock (<c>--url --token --mock --app --work --out</c>,
     /// then <paramref name="args"/>) and echoes its check lines. It fails on a failed check, a missing result line (the script
@@ -68,9 +87,17 @@ public static class UiTests
         foreach (var a in new[] { "--url", env.BaseUrl, "--token", Env.Token, "--mock", env.MockUrl, "--app", env.AppDir, "--work", env.Projects, "--out", env.ScreenshotDir }.Concat(args))
             psi.ArgumentList.Add(a);
         using var proc = Process.Start(psi)!;
-        var stdout = proc.StandardOutput.ReadToEndAsync();
-        var stderr = proc.StandardError.ReadToEndAsync();
+        var baseSeconds = timeoutSeconds / scale;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        // The script stretches its own waits by the larger of NETPI_UI_SLOW and what it measured (lib.mjs SLOW, printed first as
+        // "  machine: x<factor>"): the budget follows that factor, or a slow machine would outlive it while the script still progresses.
+        var stdout = ReadOutputAsync(proc.StandardOutput, factor =>
+        {
+            if (factor <= scale) return;
+            timeoutSeconds = (int)Math.Ceiling(baseSeconds * factor);
+            try { cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds)); } catch (ObjectDisposedException) { }
+        });
+        var stderr = proc.StandardError.ReadToEndAsync();
         try { await proc.WaitForExitAsync(cts.Token); }
         catch (OperationCanceledException) { if (!proc.HasExited) proc.Kill(true); throw new AssertException($"ui {name} timed out after {timeoutSeconds} s"); }
         var output = await stdout;

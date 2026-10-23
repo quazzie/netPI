@@ -30,7 +30,7 @@ await run('chat', async ({ page }) => {
   // a finished run's steps fold: open them as a person would, then the edit's row
   await unfoldSteps(chat);
   const tools = await chat.locator('[data-tool]').evaluateAll((rows) => rows.map((r) => `${r.dataset.tool}:${r.dataset.status}`));
-  check('the four tool calls are rows that finished (ls, read, edit, write)', ['ls', 'read', 'edit', 'write'].every((t) => tools.includes(`${t}:ok`)), tools.join(' '));
+  check('the four tool calls, and only those, are rows that finished (ls, read, edit, write)', JSON.stringify([...tools].sort()) === JSON.stringify(['edit:ok', 'ls:ok', 'read:ok', 'write:ok']), tools.join(' '));
   check('no tool row ended in an error', !tools.some((t) => t.endsWith(':error')), tools.join(' '));
   await chat.locator('[data-tool="edit"] button[aria-expanded]').first().click();
   await expectEventually('the edit shows its diff', () => chat.locator('[data-testid="diff"] [data-row="add"]').count(), { pass: (n) => n > 0 });

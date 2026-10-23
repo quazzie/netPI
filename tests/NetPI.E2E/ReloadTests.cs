@@ -13,6 +13,7 @@ public static class ReloadTests
         r.Add("reload.file-change", "hot reload: overwriting NetPI.Nudge.dll reloads the plugin, the old context is collected, nudges still work", async () =>
         {
             var before = await Plugin(env, "netpi.nudge");
+            var runtimeBefore = (await Plugin(env, "netpi.runtime")).L("loadCount");
             var mark = env.Client.Mark();
             var dll = Path.Combine(env.AppDir, "plugins", "NetPI.Nudge", "NetPI.Nudge.dll");
             var tmp = dll + ".copy";
@@ -33,7 +34,7 @@ public static class ReloadTests
             var unloaded = await env.Client.WaitFor(mark, e => e.Type == "plugins.unloaded" && e.D.S("id") == "netpi.nudge", "plugins.unloaded", 30_000);
             Check.True(unloaded.D.B("collected"), "the previous load context was garbage collected");
             // other plugins untouched
-            Check.Equal(1L, (await Plugin(env, "netpi.runtime")).L("loadCount"));
+            Check.Equal(runtimeBefore, (await Plugin(env, "netpi.runtime")).L("loadCount"), "the runtime was not reloaded");
 
             var s = await env.NewSession();
             var run = await env.Run(s.S("id")!, "Analyze [s:cutoff]");

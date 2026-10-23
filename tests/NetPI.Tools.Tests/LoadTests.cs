@@ -1,5 +1,6 @@
 extern alias shell;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 
 namespace NetPI.Tools.Tests;
@@ -26,26 +27,51 @@ public static class LoadTests
         {
             r.Add($"load: {project} starts and stops in a collectible AssemblyLoadContext", async () =>
             {
-                var dir = FindPluginDir(project);
-                foreach (var contracts in Shared)
-                    Check.False(File.Exists(Path.Combine(dir, contracts + ".dll")), $"{contracts} must not be copied next to the plugin");
-                var alc = new PluginLoadContext(dir);
-                var asm = alc.LoadFromAssemblyPath(Path.Combine(dir, project + ".dll"));
-                var types = asm.GetTypes().Where(t => t.IsPublic && !t.IsAbstract && typeof(INetPiPlugin).IsAssignableFrom(t)).ToList();
-                Check.Equal(1, types.Count, "exactly one plugin class");
-                var attr = types[0].GetCustomAttribute<NetPiPluginAttribute>();
-                Check.True(attr is not null && attr.Order == 20 && attr.Id.StartsWith("netpi.tools."));
-                var plugin = (INetPiPlugin)Activator.CreateInstance(types[0])!;
-                using var ctx = new FakePluginContext(T.TempDir("load"));
-                await plugin.StartAsync(ctx, CancellationToken.None);
-                Check.Equal(expectedTools, ctx.ToolsFake.Tools.Count);
-                Check.True(ctx.RpcFake.Handlers.Count >= 2);
-                if (project == "NetPI.Tools.Files")
-                    Check.True(ctx.UiFake.Tabs.Any(t => t.Id == "files" && t.Panel == UiPanel.Left), "files tab registered");
-                await plugin.StopAsync(CancellationToken.None);
-                alc.Unload();
+                var alc = await LoadRunUnloadAsync(project, expectedTools);
+                // a plugin that pins its context (a static field, a leaked timer) would keep it alive
+                Check.True(await WaitCollectedAsync(alc), $"{project}'s load context is collected after unload");
             });
         }
+    }
+
+    // no inlining and no locals in the caller: nothing of this frame may keep the context reachable
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<WeakReference> LoadRunUnloadAsync(string project, int expectedTools)
+    {
+        var dir = FindPluginDir(project);
+        foreach (var contracts in Shared)
+            Check.False(File.Exists(Path.Combine(dir, contracts + ".dll")), $"{contracts} must not be copied next to the plugin");
+        var alc = new PluginLoadContext(dir);
+        var asm = alc.LoadFromAssemblyPath(Path.Combine(dir, project + ".dll"));
+        var types = asm.GetTypes().Where(t => t.IsPublic && !t.IsAbstract && typeof(INetPiPlugin).IsAssignableFrom(t)).ToList();
+        Check.Equal(1, types.Count, "exactly one plugin class");
+        var attr = types[0].GetCustomAttribute<NetPiPluginAttribute>();
+        Check.True(attr is not null && attr.Order == 20 && attr.Id.StartsWith("netpi.tools."));
+        var plugin = (INetPiPlugin)Activator.CreateInstance(types[0])!;
+        using (var ctx = new FakePluginContext(T.TempDir("load")))
+        {
+            await plugin.StartAsync(ctx, CancellationToken.None);
+            Check.Equal(expectedTools, ctx.ToolsFake.Tools.Count);
+            Check.True(ctx.RpcFake.Handlers.Count >= 2);
+            if (project == "NetPI.Tools.Files")
+                Check.True(ctx.UiFake.Tabs.Any(t => t.Id == "files" && t.Panel == UiPanel.Left), "files tab registered");
+            await plugin.StopAsync(CancellationToken.None);
+        }
+        var weak = new WeakReference(alc);
+        alc.Unload();
+        return weak;
+    }
+
+    private static async Task<bool> WaitCollectedAsync(WeakReference wr)
+    {
+        for (var i = 0; i < 40 && wr.IsAlive; i++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            await Task.Delay(50);
+        }
+        return !wr.IsAlive;
     }
 
     private static string FindPluginDir(string project)

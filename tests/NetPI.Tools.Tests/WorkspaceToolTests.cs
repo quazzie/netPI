@@ -53,26 +53,31 @@ public static class WorkspaceToolTests
             var binding = new WorkspaceBinding("wsp_1", Path.Combine(env.Project, "wt"), "netpi/w", null, Path.Combine(env.Project, ".git"), "worktree", "ses_owner", null, true, 1);
             Directory.CreateDirectory(binding.Root);
             // The probe is what decides "another checkout of the same repository" (git's common dir); a fake one answers it here.
-            T.Services.Register<IWorkspaceRepoProbe>(new SameRepoProbe(Path.Combine(env.Project, ".git")));
-            var ctx = T.Ctx(binding.Root, binding);
-            var outside = Path.Combine(env.Project, "victim.txt");
-            var write = await new WriteTool().ExecuteAsync(ctx, T.Args(new { path = outside, content = "x" }), CancellationToken.None);
-            Check.True(write.IsError, "a write into the primary checkout was allowed");
-            Check.Contains(write.Content, "Refused");
-            Check.False(File.Exists(outside));
+            // (T.Services is process-wide: the registration goes with the test, its project directory is deleted)
+            var probe = T.Services.Register<IWorkspaceRepoProbe>(new SameRepoProbe(Path.Combine(env.Project, ".git")));
+            try
+            {
+                var ctx = T.Ctx(binding.Root, binding);
+                var outside = Path.Combine(env.Project, "victim.txt");
+                var write = await new WriteTool().ExecuteAsync(ctx, T.Args(new { path = outside, content = "x" }), CancellationToken.None);
+                Check.True(write.IsError, "a write into the primary checkout was allowed");
+                Check.Contains(write.Content, "Refused");
+                Check.False(File.Exists(outside));
 
-            // Inside the workspace it writes; outside the repository it is ordinary work and is allowed.
-            var own = await new WriteTool().ExecuteAsync(ctx, T.Args(new { path = "inside.txt", content = "x" }), CancellationToken.None);
-            Check.False(own.IsError, own.Content);
-            var temp = Path.Combine(Path.GetTempPath(), "netpi-outside.txt");
-            var elsewhere = await new WriteTool().ExecuteAsync(ctx, T.Args(new { path = temp, content = "x" }), CancellationToken.None);
-            Check.False(elsewhere.IsError, elsewhere.Content);
-            File.Delete(temp);
+                // Inside the workspace it writes; outside the repository it is ordinary work and is allowed.
+                var own = await new WriteTool().ExecuteAsync(ctx, T.Args(new { path = "inside.txt", content = "x" }), CancellationToken.None);
+                Check.False(own.IsError, own.Content);
+                var temp = Path.Combine(Path.GetTempPath(), "netpi-outside.txt");
+                var elsewhere = await new WriteTool().ExecuteAsync(ctx, T.Args(new { path = temp, content = "x" }), CancellationToken.None);
+                Check.False(elsewhere.IsError, elsewhere.Content);
+                File.Delete(temp);
 
-            // A session with no workspace is the pre-workspace behavior: nothing is refused.
-            var plain = T.Ctx(env.Project);
-            var allowed = await new WriteTool().ExecuteAsync(plain, T.Args(new { path = outside, content = "x" }), CancellationToken.None);
-            Check.False(allowed.IsError, allowed.Content);
+                // A session with no workspace is the pre-workspace behavior: nothing is refused.
+                var plain = T.Ctx(env.Project);
+                var allowed = await new WriteTool().ExecuteAsync(plain, T.Args(new { path = outside, content = "x" }), CancellationToken.None);
+                Check.False(allowed.IsError, allowed.Content);
+            }
+            finally { probe.Dispose(); }
         });
 
         r.Add("workspace: files.applyEdits refuses a path in another checkout of the same repository, and changes nothing", async () =>
@@ -107,7 +112,7 @@ public static class WorkspaceToolTests
             using var env = new Env();
             var service = new ShellService(new ProcessRegistry(new FakeBus()), null);
             var binding = new WorkspaceBinding("wsp_1", Path.Combine(env.Project, "wt"), null, null, null, "worktree", "ses_owner", null, true, 1);
-            var ctx = T.Ctx(binding.Root, binding);
+                var ctx = T.Ctx(binding.Root, binding);
             Directory.CreateDirectory(binding.Root);
 
             var here = await service.RunAsync("bash", ctx, new ToolArgs(JsonSerializer.SerializeToElement(new { command = "pwd" })), CancellationToken.None);
