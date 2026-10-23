@@ -329,7 +329,7 @@ where a chat runs, the profile who it is.
 | `budget.resetDay` | `1` | the day of the month the budget period starts (1–28) |
 | `budget.warnPercent` | `80` | from here `agent_choices` tells agents to use paid agents only when you asked |
 | `budget.onLimit` | `"stop"` | when a budget is spent: `"stop"` paid calls, or `"ask"`: your chats stop with "let this chat go over" (`budget.allow`), subagents stop |
-| `budget.keepCallsDays` | `90` | days the ledger keeps its row per model call (at least 62; `0` keeps every row). Older settled rows are deleted at start and every 5000 calls; the totals per period, day, agent and chat (`session_usage`) stay, so only `usage.chats` of a period older than that comes back empty (idea-sdevr6) |
+| `budget.keepCallsDays` | `90` | days the ledger keeps its row per model call (at least 62; `0` keeps every row). Older settled rows are deleted at start and every 5000 calls; the totals per period, day (`day_usage`), agent and chat (`session_usage`) stay, so only `usage.chats` of a period older than that comes back empty (idea-sdevr6) |
 
 
 Every provider attempt (including each retry) is recorded in the ledger the Agents plugin keeps in `ctx.Data`.

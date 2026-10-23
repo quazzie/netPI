@@ -879,6 +879,13 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     internal static string Escape(string s) => s.Replace("&", "&amp;").Replace("\"", "&quot;").Replace("<", "&lt;").Replace(">", "&gt;");
 
+    /// <summary>
+    /// A report or message sits inside a wrapper tag the parent model reads as structure: a closing or opening
+    /// <c>agent-</c> tag in the body gets a visible break, so it cannot end the wrapper early or forge another.
+    /// The rest (code, XML) stays as written.
+    /// </summary>
+    internal static string Defang(string s) => s.Replace("</agent-", "<\\/agent-").Replace("<agent-", "<\\agent-");
+
     internal static string StatusName(AgentStatus s) => JsonNamingPolicy.CamelCase.ConvertName(s.ToString());
 
     /// <summary>The agent-result notice a finished subagent's parent gets (built where its id is recorded).</summary>
@@ -887,11 +894,11 @@ internal sealed class AgentRuntime : IAgentRuntime
         var sb = new StringBuilder();
         sb.Append("<agent-result id=\"").Append(final.Id).Append("\" name=\"").Append(Escape(final.Name))
           .Append("\" status=\"").Append(StatusName(final.Status)).Append("\">\n");
-        if (final.Status == AgentStatus.Failed && !string.IsNullOrEmpty(final.Error)) sb.Append("Error: ").Append(final.Error).Append("\n\n");
+        if (final.Status == AgentStatus.Failed && !string.IsNullOrEmpty(final.Error)) sb.Append("Error: ").Append(Defang(final.Error)).Append("\n\n");
         var report = string.IsNullOrWhiteSpace(final.Result) ? "(no final report)" : final.Result.Trim();
         // the cut names the call that reads on from it (agent result pages the whole report)
         var cut = report.Length > ResultNoticeChars && char.IsHighSurrogate(report[ResultNoticeChars - 1]) ? ResultNoticeChars - 1 : ResultNoticeChars;
-        sb.Append(TextLimit.Head(report, ResultNoticeChars, $"agent with action result, id {final.Id}, offset {cut} reads on."));
+        sb.Append(Defang(TextLimit.Head(report, ResultNoticeChars, $"agent with action result, id {final.Id}, offset {cut} reads on.")));
         sb.Append("\n</agent-result>");
         return new UserInput
         {
@@ -1242,17 +1249,33 @@ internal sealed class AgentRuntime : IAgentRuntime
             PublishStatus(parent);
         }
 
-        await DeliverAsync(state, new UserInput
+        try
         {
-            Text = request.Task,
-            Source = parentInfo is null ? "system" : "agent:" + parentInfo.Id,
-        }, DeliveryMode.Auto).ConfigureAwait(false);
-        // The run takes its slot (or queues for one) on its own task: wait for that, so the caller is told "queued" when it
-        // is, instead of the "running" the run starts with.
-        if (state.Run?.SlotDecided.Task is { } decided)
+            await DeliverAsync(state, new UserInput
+            {
+                Text = request.Task,
+                Source = parentInfo is null ? "system" : "agent:" + parentInfo.Id,
+            }, DeliveryMode.Auto).ConfigureAwait(false);
+            // The run takes its slot (or queues for one) on its own task: wait for that, so the caller is told "queued" when it
+            // is, instead of the "running" the run starts with.
+            if (state.Run?.SlotDecided.Task is { } decided)
+            {
+                try { await decided.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
+                catch (TimeoutException) { }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            try { await decided.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
-            catch (TimeoutException) { }
+            // registered and listed under its parent, but never started (the runtime is stopping): the caller is told it failed,
+            // so the child must not stay behind as an idle agent no tool call knows about
+            AbortCore(state, "cancelled: it could not start", byParent: true);
+            if (parent is not null)
+            {
+                lock (parent.Gate) parent.Info.Children.Remove(id);
+                Save(parent);
+                PublishStatus(parent);
+            }
+            throw;
         }
         return Snapshot(state);
     }
@@ -1426,7 +1449,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         var name = sender?.Info.Name ?? fromAgentId;
         var input = new UserInput
         {
-            Text = $"<agent-message from=\"{Escape(name)} ({fromAgentId})\">\n{text.Trim()}\n</agent-message>",
+            Text = $"<agent-message from=\"{Escape(name)} ({fromAgentId})\">\n{Defang(text.Trim())}\n</agent-message>",
             AsNotice = true,
             NoticeKind = "agent-message",
             Source = "agent:" + fromAgentId,

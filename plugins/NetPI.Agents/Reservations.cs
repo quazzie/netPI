@@ -61,6 +61,7 @@ internal sealed partial class Ledger
         PeriodUsageAdd(period, agent, request.Model.Provider, request.Model.Id, 1,
             u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, cost, source == "unknown" ? 1 : 0);
         SessionUsageAdd(request.SessionId, root, 1, cost, source == "reserved" ? cost : 0);
+        DayUsageAdd(day, 1, cost);
         // the old rows go now and then (budget.keepCallsDays): off this call's transaction, it holds the store
         if (id % PruneEvery == 0) _ = Task.Run(() =>
         {
@@ -333,6 +334,7 @@ internal sealed partial class Ledger
                         u.InputTokens - oldInput, u.OutputTokens - oldOutput,
                         u.CacheReadTokens - oldCacheRead, u.CacheWriteTokens - oldCacheWrite,
                         cost - oldCost, (source == "unknown" ? 1 : 0) - (oldSource == "unknown" ? 1 : 0));
+                if (doc["day"]?.GetValue<string>() is { } callDay) DayUsageAdd(callDay, 0, cost - oldCost);
                 // the chat's line: the estimate becomes the settled cost, and leaves the reserved part
                 SessionUsageAdd(doc["sessionId"]?.GetValue<string>(), doc["rootSessionId"]?.GetValue<string>(), 0, cost - oldCost,
                     (source == "reserved" ? cost : 0) - (oldSource == "reserved" ? oldCost : 0));

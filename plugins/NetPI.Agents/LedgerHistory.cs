@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace NetPI.Agents;
 
 // The usage tab's reads (usage.history, usage.chats). History comes from the roll-ups the recorded calls maintain
-// (period_usage per period, lane and model; the day indexes of usage_calls and lanes_usage), so it costs a few indexed
+// (period_usage per period, lane and model; day_usage and lanes_usage per day), so it costs a few indexed
 // reads however many calls there are; only the per-chat ranking has to read the period's calls, and it is its own call.
 internal sealed partial class Ledger
 {
@@ -29,6 +29,17 @@ internal sealed partial class Ledger
             CacheWrite += L(d["cacheWriteTokens"]);
             Unknown += L(d["unknownCalls"]);
             Cost += D(d["costUsd"]);
+        }
+
+        /// <summary>One call row: a call, its tokens and its cost.</summary>
+        public void AddCall(JsonObject call)
+        {
+            Calls++;
+            Input += L(call["inputTokens"]);
+            Output += L(call["outputTokens"]);
+            CacheRead += L(call["cacheReadTokens"]);
+            CacheWrite += L(call["cacheWriteTokens"]);
+            Cost += D(call["costUsd"]);
         }
 
         public JsonObject ToJson(JsonObject? into = null)
@@ -133,7 +144,7 @@ internal sealed partial class Ledger
             ? start.AddMonths(1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
             : key;
 
-    /// <summary>The last <paramref name="count"/> days, oldest first, a day with no calls as zeros: cost and calls from the day index of the calls, tokens from the daily roll-up.</summary>
+    /// <summary>The last <paramref name="count"/> days, oldest first, a day with no calls as zeros: cost and calls from the day roll-up, tokens from the daily token roll-up.</summary>
     private JsonArray Days(int count)
     {
         var arr = new JsonArray();
@@ -149,14 +160,11 @@ internal sealed partial class Ledger
                 if (!tokens.TryGetValue(day, out var t)) tokens[day] = t = new Sum();
                 t.Add(d.Doc);
             }
-        // one range read of the window's calls, added up per day as the pages come (not two queries per day)
+        // cost and calls per day come from the day roll-up: one indexed read of the window, however many calls it holds
         var perDay = new Dictionary<string, (double Cost, long Calls)>(StringComparer.Ordinal);
-        ScanCalls(new DataQuery().Ge("day", first), int.MaxValue, doc =>
-        {
-            if (doc["day"]?.GetValue<string>() is not { } d) return;
-            var (c, n) = perDay.GetValueOrDefault(d);
-            perDay[d] = (c + D(doc["costUsd"]), n + 1);
-        });
+        if (_dayUsage is not null)
+            foreach (var d in _dayUsage.Find(new DataQuery().Ge("day", first)))
+                if (d.Doc["day"]?.GetValue<string>() is { } dayKey) perDay[dayKey] = (D(d.Doc["costUsd"]), L(d.Doc["calls"]));
         for (var i = count - 1; i >= 0; i--)
         {
             var day = today.AddDays(-i).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -220,17 +228,11 @@ internal sealed partial class Ledger
         {
             truncated = ScanCalls(new DataQuery().Ge("ts", from).Lt("ts", to), MaxRankedCalls, doc =>
             {
-                var one = new JsonObject
-                {
-                    ["calls"] = 1L, ["inputTokens"] = doc["inputTokens"]?.DeepClone(), ["outputTokens"] = doc["outputTokens"]?.DeepClone(),
-                    ["cacheReadTokens"] = doc["cacheReadTokens"]?.DeepClone(), ["cacheWriteTokens"] = doc["cacheWriteTokens"]?.DeepClone(),
-                    ["costUsd"] = doc["costUsd"]?.DeepClone(),
-                };
-                total.Add(one);
+                total.AddCall(doc);
                 var chat = doc["rootSessionId"]?.GetValue<string>() ?? doc["sessionId"]?.GetValue<string>();
-                if (chat is null) { rest.Add(one); return; }
+                if (chat is null) { rest.AddCall(doc); return; }
                 if (!perChat.TryGetValue(chat, out var sum)) perChat[chat] = sum = new Sum { Name = chat };
-                sum.Add(one);
+                sum.AddCall(doc);
             });
         }
         var chats = new JsonArray();

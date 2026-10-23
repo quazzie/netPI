@@ -1400,6 +1400,13 @@ public static class LoopTests
 
         try
         {
+            await h.Rpc.CallAsync("agent.send", new { sessionId = s.Id, text = "x", images = new[] { new { mediaType = "text/html", data = "PGgxPg==" } } });
+            throw new AssertException("expected bad_request");
+        }
+        catch (RpcException ex) { Check.Equal("bad_request", ex.Code); }
+
+        try
+        {
             await h.Rpc.CallAsync("agent.send", new { sessionId = "ses_missing", text = "x" });
             throw new AssertException("expected not_found");
         }

@@ -38,6 +38,12 @@ namespace NetPI.Agents;
 //   doc:   { day, lane, laneKey, costUsd }
 //   index: day Text, laneKey Text, costUsd Real
 //
+// day_usage — the calls and cost per day (the usage tab's day chart reads these, not the day's call rows): added to when a call
+//   is recorded (a reservation at its estimate) and corrected by its settlement, on the day the call started.
+//   key:   <day>
+//   doc:   { day, calls, costUsd }
+//   index: day Text
+//
 // session_usage — what each chat cost, so a chat's cost does not need its call rows (idea-sdevr6): its own calls, and every
 //   call of its tree (the calls whose root it is), upserted with each call and corrected by its settlement.
 //   key:   s|<sessionId>  { sessionId, calls, costUsd, reservedUsd }         (the chat's own calls)
@@ -45,7 +51,7 @@ namespace NetPI.Agents;
 //   index: none
 //
 // counters — the plugin's sequences, and marks.
-//   key:   the counter name ("usage_calls"), or "session_usage" once that roll-up was built from the calls
+//   key:   the counter name ("usage_calls"), or "session_usage" / "day_usage" once that roll-up was built from the calls
 //   doc:   { value } / { built: true }
 //   index: none
 //
@@ -84,6 +90,7 @@ internal sealed partial class Ledger
     private IDataCollection? _lanesUsage;   // lanes_usage: tokens per day, provider and model
     private IDataCollection? _laneUsage;    // lane_usage: the cost per day and lane (an agent's pool for the day)
     private IDataCollection? _periodUsage;  // period_usage: calls, tokens and cost per period, lane, provider and model
+    private IDataCollection? _dayUsage;     // day_usage: calls and cost per day
     private IDataCollection? _sessionUsage; // session_usage: calls and cost per chat, and per chat with its subagents
     private IDataCollection? _counters;     // per-plugin sequences
 
@@ -133,12 +140,14 @@ internal sealed partial class Ledger
                 .Text("day").Text("laneKey").Real("costUsd"));
             var periodUsage = _ctx.Data.Collection("period_usage", new CollectionSpec()
                 .Text("period").Integer("calls"));
+            var dayUsage = _ctx.Data.Collection("day_usage", new CollectionSpec().Text("day"));
             var sessionUsage = _ctx.Data.Collection("session_usage", new CollectionSpec());
             var counters = _ctx.Data.Collection("counters", new CollectionSpec());
             _calls = calls;
             _lanesUsage = lanesUsage;
             _laneUsage = laneUsage;
             _periodUsage = periodUsage;
+            _dayUsage = dayUsage;
             _sessionUsage = sessionUsage;
             _counters = counters;
         }
@@ -154,6 +163,7 @@ internal sealed partial class Ledger
         try
         {
             if (_calls is not null && _sessionUsage is not null && _counters is not null) _ctx.Data.Transaction(CatchUpSessionUsage);
+            if (_calls is not null && _dayUsage is not null && _counters is not null) _ctx.Data.Transaction(CatchUpDayUsage);
             SweepAbandoned(ProcessStartMs());
             PruneCalls();
         }
@@ -189,6 +199,33 @@ internal sealed partial class Ledger
         _sessionUsage!.DeleteWhere(new DataQuery());
         foreach (var (key, doc) in totals) _sessionUsage.Put(key, doc);
         _counters.Put("session_usage", new JsonObject { ["built"] = true });
+    }
+
+    /// <summary>Build <c>day_usage</c> from the calls, once (a store from before it): paged, inside the caller's transaction.</summary>
+    private void CatchUpDayUsage()
+    {
+        if (_counters!.Get("day_usage") is not null) return;
+        var perDay = new Dictionary<string, (long Calls, double Cost)>(StringComparer.Ordinal);
+        ScanCalls(new DataQuery(), int.MaxValue, doc =>
+        {
+            if (doc["day"]?.GetValue<string>() is not { } day) return;
+            var (n, c) = perDay.GetValueOrDefault(day);
+            perDay[day] = (n + 1, c + D(doc["costUsd"]));
+        });
+        _dayUsage!.DeleteWhere(new DataQuery());
+        foreach (var (day, (n, c)) in perDay)
+            _dayUsage.Put(day, new JsonObject { ["day"] = day, ["calls"] = n, ["costUsd"] = Usd6(c) });
+        _counters.Put("day_usage", new JsonObject { ["built"] = true });
+    }
+
+    /// <summary>A call (calls 1) or its settlement (calls 0, the cost's change) in the day's roll-up, in the caller's transaction.</summary>
+    private void DayUsageAdd(string day, int calls, double cost)
+    {
+        if (_dayUsage is null) return;
+        var doc = _dayUsage.Get(day) ?? new JsonObject { ["day"] = day, ["calls"] = 0L, ["costUsd"] = 0.0 };
+        doc["calls"] = L(doc["calls"]) + calls;
+        doc["costUsd"] = Usd6(D(doc["costUsd"]) + cost);
+        _dayUsage.Put(day, doc);
     }
 
     private static long ProcessStartMs()
@@ -253,7 +290,7 @@ internal sealed partial class Ledger
         if (days <= 0) return 0;
         days = Math.Max(days, MinKeepCallsDays);
         // until the chats' roll-up exists, their costs come from these rows: keep them
-        if (_counters?.Get("session_usage") is null) return 0;
+        if (_counters?.Get("session_usage") is null || _counters.Get("day_usage") is null) return 0;
         var before = Math.Min(new DateTimeOffset(DateTime.Now.AddDays(-days)).ToUnixTimeMilliseconds(),
             new DateTimeOffset(PeriodStart).ToUnixTimeMilliseconds());
         var deleted = _ctx.Data.Transaction(() => _calls.DeleteWhere(new DataQuery().Lt("ts", before).NotIn("costSource", ["reserved"])));

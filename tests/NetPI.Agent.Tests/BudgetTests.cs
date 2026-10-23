@@ -135,7 +135,9 @@ public static class BudgetTests
         Roll(cur, null, "cloud", "big", 2, 200, 20, 0.1, unknown: 1);
         Roll(prev, "Alpha", "cloud", "big", 7, 700, 70, 1.25);
 
-        // today's tokens come from the daily roll-up, today's cost and calls from the calls' day index
+        // today's tokens come from the daily token roll-up, today's cost and calls from the day roll-up
+        h.Storage.Plugins.For("netpi.agents").Collection("day_usage", new CollectionSpec().Text("day"))
+            .Put(today, new JsonObject { ["day"] = today, ["calls"] = 6L, ["costUsd"] = 1.06 });
         h.Storage.Plugins.For("netpi.agents").Collection("lanes_usage", new CollectionSpec().Text("day").Text("provider").Text("model"))
             .Put($"{today}|cloud|big", new JsonObject { ["day"] = today, ["provider"] = "cloud", ["model"] = "big", ["inputTokens"] = 1000L, ["outputTokens"] = 100L, ["cacheReadTokens"] = 0L, ["cacheWriteTokens"] = 0L, ["calls"] = 2L });
         var a = h.NewSession(title: "chat A");
@@ -175,7 +177,7 @@ public static class BudgetTests
         var days = all["days"]!.AsArray();
         Check.Equal(30, days.Count);
         Check.Equal(today, (string?)days[^1]!["day"]);
-        Check.Equal(1.06, Math.Round(Num(days[^1]!["costUsd"]), 6), "today's cost is the calls' sum");
+        Check.Equal(1.06, Math.Round(Num(days[^1]!["costUsd"]), 6), "today's cost is the day roll-up's");
         Check.Equal(6L, (long)days[^1]!["calls"]!);
         Check.Equal(1000L, (long)days[^1]!["inputTokens"]!, "its tokens come from the daily roll-up");
         Check.Equal(0.0, Num(days[0]!["costUsd"]), "a day with no calls is zeros, not missing");

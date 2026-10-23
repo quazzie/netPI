@@ -20,6 +20,7 @@ public static class ReservationTests
         t.Add("budget: the output of a model without a limit comes from agent.defaultMaxOutputTokens", OutputLimitFromSetting);
         t.Add("budget: a call that started before the ledger was stopped (a hot swap of the plugin) still settles into the store", SettlesAfterStop);
         t.Add("budget: a call in flight counts against the limits but not in the settled figures a person reads", SettledApart);
+        t.Add("budget: a day's calls and cost are a roll-up the calls and their settlements keep (built once from an older store)", DayRollup);
         t.Add("budget: a chat's cost is a roll-up (built once from an older store), so old call rows can go and the totals stay", ChatRollupAndRetention);
     }
 
@@ -71,6 +72,40 @@ public static class ReservationTests
         Check.Equal(0.0, rebuilt.SessionCost(parent.Id)["reservedUsd"]!.GetValue<double>(), "no longer counted as in flight");
         Check.Equal(1, rebuilt.PruneCalls(), "and it is pruned like a settled row");
         Check.Equal(0, rebuilt.SweepAbandoned(DateTimeOffset.Now.ToUnixTimeMilliseconds()), "idempotent");
+    }
+
+    // usage.history's day chart read the window's call rows every time the tab refreshed (idea: a roll-up per day).
+    private static async Task DayRollup()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
+        var l = Create(h);
+        var days = h.Storage.Plugins.For("ledger-test").Collection("day_usage", new CollectionSpec().Text("day"));
+        var today = Ledger.Today;
+        var first = l.Reserve(Request(), "a", null);
+        Check.Equal(1L, days.Get(today)!["calls"]!.GetValue<long>(), "a reservation is a call of the day");
+        Check.True(days.Get(today)!["costUsd"]!.GetValue<double>() > 0, "at its estimate");
+        l.Settle(first, new Usage { CostUsd = 0.10 }, true, false);
+        l.Settle(l.Reserve(Request(), null, null), new Usage { CostUsd = 0.05 }, true, false);
+        Check.Equal(2L, days.Get(today)!["calls"]!.GetValue<long>());
+        Check.Equal(0.15, Math.Round(days.Get(today)!["costUsd"]!.GetValue<double>(), 6), "the settlements replaced the estimates");
+        var shown = l.History(null, 3)["days"]!.AsArray();
+        Check.Equal(0.15, Math.Round(shown[^1]!["costUsd"]!.GetValue<double>(), 6), "usage.history reads the roll-up");
+        Check.Equal(2L, shown[^1]!["calls"]!.GetValue<long>());
+        Check.Equal(0.0, shown[0]!["costUsd"]!.GetValue<double>(), "a quiet day is zeros");
+
+        // a store from before the roll-up: built from the call rows on the next start
+        var yesterday = DateTime.Now.AddDays(-1).ToString("yyyy-MM-dd");
+        var calls = Calls(h);
+        var row = calls.Find().First();
+        row.Doc["day"] = yesterday;
+        calls.Put(row.Key, row.Doc);
+        days.DeleteWhere(new DataQuery());
+        h.Storage.Plugins.For("ledger-test").Collection("counters", new CollectionSpec()).Delete("day_usage");
+        var rebuilt = Create(h);
+        var rebuiltDays = rebuilt.History(null, 3)["days"]!.AsArray();
+        Check.Equal(1L, rebuiltDays[^1]!["calls"]!.GetValue<long>(), "one call is still today's");
+        Check.Equal(1L, rebuiltDays[^2]!["calls"]!.GetValue<long>(), "and one is yesterday's");
+        Check.Equal(0.15, Math.Round(rebuiltDays[^1]!["costUsd"]!.GetValue<double>() + rebuiltDays[^2]!["costUsd"]!.GetValue<double>(), 6));
     }
 
     // The figures jumped by a whole reservation at every call and back at its settlement: 0.22 -> 0.6 -> 0.22 (idea-qbi2fv).

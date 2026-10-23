@@ -176,6 +176,11 @@ public sealed class RuntimePlugin : INetPiPlugin
                 mediaType ??= data[5..idx];
                 data = data[(idx + 8)..];
             }
+            // refused here, not kept in the chat just to be replaced by a placeholder at every request
+            if (mediaType is not null && !mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                throw new RpcException("bad_request", $"An image's mediaType is image/*, not '{mediaType}'.");
+            if (data.Length > ModelMessages.MaxImageChars)
+                throw new RpcException("bad_request", $"An image is at most {ModelMessages.MaxImageChars / 4 * 3 / (1024 * 1024)} MB.");
             list.Add(new ImagePart { MediaType = mediaType ?? "image/png", Data = data });
         }
         return list.Count == 0 ? null : list;
