@@ -31,6 +31,7 @@ internal sealed class RestartWhenIdle : IDisposable
     private string? _waitingFor;
     private bool _restarting;
     private bool _disposed;
+    private readonly CancellationTokenSource _stop = new(); // cancelled by Dispose: a restart still announcing starts no successor for a process that is ending
 
     /// <param name="tick">How often it looks (the marker is a file, the gate and the activity are counters).</param>
     /// <param name="announce">Between <c>app.restarting</c> and the restart, so the clients can say so.</param>
@@ -115,8 +116,13 @@ internal sealed class RestartWhenIdle : IDisposable
     {
         try
         {
-            await Task.Delay(_announce).ConfigureAwait(false);
+            await Task.Delay(_announce, _stop.Token).ConfigureAwait(false);
+            lock (_lock) if (_disposed) return;
             await _restart().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+        {
+            // disposed during the announcement: the process is going down by itself
         }
         catch (Exception ex)
         {
@@ -148,6 +154,7 @@ internal sealed class RestartWhenIdle : IDisposable
     public void Dispose()
     {
         lock (_lock) _disposed = true;
+        _stop.Cancel();
         _timer.Dispose();
     }
 }
