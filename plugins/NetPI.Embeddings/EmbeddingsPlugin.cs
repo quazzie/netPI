@@ -38,7 +38,7 @@ public sealed class EmbeddingsPlugin : INetPiPlugin
             async (r, rct) =>
         {
             var texts = r.Prop("texts") is { ValueKind: JsonValueKind.Array } arr
-                ? arr.EnumerateArray().Select(e => e.GetString() ?? "").ToList()
+                ? Texts(arr)
                 : throw new RpcException("bad_request", "Missing array parameter 'texts'");
             var kind = string.Equals(r.Str("kind"), "query", StringComparison.OrdinalIgnoreCase) ? EmbeddingKind.Query : EmbeddingKind.Document;
             try
@@ -58,6 +58,28 @@ public sealed class EmbeddingsPlugin : INetPiPlugin
         context.Rpc.Register(new RpcMethod("embed.models", "The models the embedding server lists (GET /v1/models), for the settings' model picker → { models: string[], error? }", ReadOnly: true, Params: []),
             async (_, rct) => await client.ListModelsAsync(rct).ConfigureAwait(false));
         return Task.CompletedTask;
+    }
+
+    /// <summary>The most texts one <c>embed.texts</c> call takes.</summary>
+    internal const int MaxTexts = 1024;
+    /// <summary>The longest single text, in characters, that <c>embed.texts</c> takes (a model clips far earlier).</summary>
+    internal const int MaxTextChars = 32_000;
+
+    private static List<string> Texts(JsonElement arr)
+    {
+        if (arr.GetArrayLength() > MaxTexts)
+            throw new RpcException("bad_request", $"'texts' holds {arr.GetArrayLength()} texts; one call takes at most {MaxTexts}.");
+        var texts = new List<string>(arr.GetArrayLength());
+        foreach (var e in arr.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.String)
+                throw new RpcException("bad_request", $"'texts[{texts.Count}]' is not a string.");
+            var text = e.GetString() ?? "";
+            if (text.Length > MaxTextChars)
+                throw new RpcException("bad_request", $"'texts[{texts.Count}]' is {text.Length} characters; one text takes at most {MaxTextChars}.");
+            texts.Add(text);
+        }
+        return texts;
     }
 }
 
