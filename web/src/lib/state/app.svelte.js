@@ -4,12 +4,12 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { rpc, subscribe, onOpen, connect } from '../rpc.svelte.js';
 import { bus } from '../bus.js';
 import { load, save, persist, fetchRemote } from '../persist.js';
-import { getChat, peekChat, pinChat, dropChat, allChats } from './chat.svelte.js';
+import { getChat, peekChat, pinChat, dropChat, allChats, LRU_MAX } from './chat.svelte.js';
 import { toast, syncUiStateFromHost, composer, openView } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick } from '../notify.js';
-import { firstLine as firstLineOf } from '../format.js';
+import { firstLine as firstLineOf, bytes as formatBytes } from '../format.js';
 import { BUSY } from '../runStatus.js';
 
 const firstLine = (text) => firstLineOf(text, 160); // notification bodies
@@ -17,7 +17,7 @@ import { loadAsks, askEvent, askingSessionIds, budgetStop, pruneSession } from '
 import { loadPlans, planEvent, planAskingSessionIds, prunePlans } from './plans.svelte.js';
 import { loadScheduleProposals, scheduleEvent, pruneScheduleProposals, proposalSessionIds } from './schedules.svelte.js';
 import { welcomeIdeas } from './welcomeIdeas.svelte.js';
-import { formatBytes, payloadBytes, sendBudget } from '../images.js';
+import { payloadBytes, sendBudget } from '../images.js';
 
 const TABS_KEY = 'netpi.openTabs';
 
@@ -369,10 +369,14 @@ async function loadAll({ reconnect }) {
     resubscribe();
     if (active) showChat(getChat(active));
     // the open tabs whose runs are busy missed the answer that streamed while the page was gone: their stores are
-    // new to this page, so catch each of them up (the active one showChat did)
+    // new to this page, so catch each of them up (the active one showChat did). Only as many as the store keeps: a sixth
+    // would push the first out of the cache again, its fetch wasted; a tab beyond them catches up when it is opened.
+    let caught = 1;
     for (const id of app.openTabs) {
+      if (caught >= LRU_MAX) break;
       if (id === active || !BUSY.has(app.agents.get(id)?.status)) continue;
       getChat(id).catchUpStream();
+      caught++;
     }
   } else {
     // we may have missed events: refresh the active chat, mark the others stale

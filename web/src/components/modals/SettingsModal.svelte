@@ -23,7 +23,7 @@
   import PluginSwitches from './PluginSwitches.svelte';
   import ProvidersPanel from './ProvidersPanel.svelte';
   import ToolExposureDialog from './ToolExposureDialog.svelte';
-  import { prefs, toast, modals } from '../../lib/state/ui.svelte.js';
+  import { prefs, toast, modals, mayClose } from '../../lib/state/ui.svelte.js';
   import { app } from '../../lib/state/app.svelte.js';
   import { settingsDoc } from '../../lib/state/settingsDoc.svelte.js';
   import { rpc, conn } from '../../lib/rpc.svelte.js';
@@ -299,7 +299,7 @@
     loading = true;
     loadError = '';
     try {
-      if (!settingsDoc.loaded) await settingsDoc.refresh();
+      await settingsDoc.refresh(); // a Reload reads the file again, not the copy in memory
       fill();
     } catch (e) {
       loadError = e.message;
@@ -376,6 +376,10 @@
     }
   });
   const dirty = $derived(raw !== original);
+  // settings.json edited and not saved: closing asks (leaving the page with Esc keeps the text, closing the dialog drops it)
+  async function close() {
+    if (await mayClose(dirty)) onclose();
+  }
 
   async function save() {
     if (parseError) return;
@@ -450,7 +454,7 @@
   {#each inline as s (s.id)}<SettingsSection section={s} {doc} {reveal} />{/each}
 {/snippet}
 
-<Modal title="Settings" width={960} padded={false} {onclose} {onescape}>
+<Modal title="Settings" width={960} padded={false} onclose={close} {onescape}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="layout settings-layout" onkeydown={onKey} onmousedown={mouseBack} onmouseup={mouseBack}>
     <nav class="nav">

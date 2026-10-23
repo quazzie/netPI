@@ -47,7 +47,8 @@
   let tail = $state('');
   let cut = 0;
   let done = ''; // the text the finished blocks were rendered from (a stream that restarts invalidates them)
-  const liveHtml = $derived(blocks.join('') + tail);
+  // what `follow` watches: it changes whenever a block finishes or the tail is written again
+  const liveKey = $derived(blocks.length + tail);
   let timer = 0;
   let last = 0;
   function render() {
@@ -108,7 +109,7 @@
   </button>
   {#if open && p.text}
     {#if s}
-      <div class="body live-body md np-scroll" data-testid="thinking-body" use:follow={liveHtml}>{@html liveHtml}</div>
+      <div class="body live-body md np-scroll" data-testid="thinking-body" use:follow={liveKey}>{#each blocks as b, i (i)}{@html b}{/each}{@html tail}</div>
     {:else}
       <div class="body md" data-testid="thinking-body">{@html renderMarkdown(p.text)}</div>
     {/if}

@@ -59,6 +59,7 @@
 
   function anyModalOpen() {
     return (
+      modals.agent ||
       modals.settings ||
       modals.palette ||
       modals.help ||

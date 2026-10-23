@@ -19,6 +19,7 @@
 // Items keep their identity across rebuilds while their inputs are unchanged (messages are immutable
 // objects: `message.updated` replaces the object), so keyed {#each} blocks only touch what changed.
 import { toMs } from './format.js';
+import { editFiles } from './diff.js';
 import { effectiveCall, liveEffectiveCall, parseArgs, pathArg, scheduleProposal } from './tools.js';
 
 function same(a, b) {
@@ -89,23 +90,25 @@ export function createItemBuilder() {
     let turnKey = '';
     const noteFile = (call, result, m) => {
       if (!result || result.isError) return;
-      let path;
-      let caption;
-      let how;
+      // [path, how, caption]: an edit of several files (`files: [{ path, edits }]`) has no top-level path
+      let found;
       if (call.name === 'artifact') {
-        path = result.details?.path ?? pathArg(parseArgs(call));
-        caption = result.details?.caption;
-        how = 'artifact';
-      } else if (call.name === 'write' || call.name === 'edit') {
-        path = pathArg(parseArgs(call));
-        how = call.name === 'write' ? 'written' : 'edited';
+        const args = parseArgs(call);
+        found = [[result.details?.path ?? pathArg(args), 'artifact', result.details?.caption]];
+      } else if (call.name === 'write') found = [[pathArg(parseArgs(call)), 'written']];
+      else if (call.name === 'edit') {
+        const args = parseArgs(call);
+        const many = editFiles(args);
+        found = many ? many.map((f) => [f.path, 'edited']) : [[pathArg(args), 'edited']];
       } else return;
-      if (typeof path !== 'string' || !path) return;
-      const key = path.replaceAll('\\', '/').toLowerCase();
-      const old = files.get(key);
-      if (!turnKey) turnKey = `${m.id}`;
-      // an artifact call's caption wins; a file both written and edited keeps its first how unless handed over
-      files.set(key, { path, name: path.split(/[\\/]/).pop(), caption: caption ?? old?.caption, how: old?.how ?? how });
+      for (const [path, how, caption] of found) {
+        if (typeof path !== 'string' || !path) continue;
+        const key = path.replaceAll('\\', '/').toLowerCase();
+        const old = files.get(key);
+        if (!turnKey) turnKey = `${m.id}`;
+        // an artifact call's caption wins; a file both written and edited keeps its first how unless handed over
+        files.set(key, { path, name: path.split(/[\\/]/).pop(), caption: caption ?? old?.caption, how: old?.how ?? how });
+      }
     };
     const flushFiles = () => {
       if (!files.size) return;

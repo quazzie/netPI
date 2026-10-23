@@ -51,6 +51,14 @@ export function listedTools(list, registered) {
 }
 
 /**
+ * The entries of a switched-off list that name no registered tool (a plugin that is off at the moment): an edit made from
+ * the registered tools keeps them, so the plugin's tools are still off when it comes back.
+ */
+export function unlistedTools(list, registered) {
+  return (list ?? []).filter((e) => listedTools([e], registered).size === 0);
+}
+
+/**
  * The name a call is shown as. One rule, no list of tools: a call with an action is shown as `<tool>_<action>` when that
  * name has a view here (a tool with actions is the old tools merged: ssh + run as ssh_run, process + output as
  * process_output, agent + wait as agent_wait; older chats hold those names), else as the tool itself.

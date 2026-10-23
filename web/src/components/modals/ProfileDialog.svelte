@@ -9,14 +9,21 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import { setSetting } from '../../lib/settings.js';
   import { confirmDialog } from '../../lib/state/ui.svelte.js';
-  import { listedTools } from '../../lib/tools.js';
+  import { listedTools, unlistedTools } from '../../lib/tools.js';
 
   let { id, profile, categories = [], opening = '', isDefault = false, isAuto = false, onclose } = $props();
 
   // the tools the profile switches off; an older list may name a merged tool by one of its actions (ssh_run for ssh),
   // and a change writes the list back with the current names
   const registered = $derived(new Set(categories.flatMap(([, list]) => list.map((t) => t.name))));
-  const off = $derived(listedTools(profile?.toolsOff, registered));
+  // The list as last written: a second click before settings.changed has brought the first one back builds on it, not on the
+  // list the first click started from. Dropped once the profile shows it.
+  let written = $state.raw(null);
+  const base = $derived(written ?? profile?.toolsOff);
+  $effect(() => {
+    if (written && JSON.stringify(profile?.toolsOff ?? []) === JSON.stringify(written)) written = null;
+  });
+  const off = $derived(listedTools(base, registered));
   const own = $derived(typeof profile?.prompt === 'string' && profile.prompt.trim().length > 0);
 
   async function setPrompt(text) {
@@ -29,11 +36,17 @@
     const list = text.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
     await setSetting(`profiles.${id}.toolsDeferred`, list.length ? list : null);
   }
+  // writes the registered tools in `next` plus the entries naming tools that are not registered now
+  async function writeOff(next) {
+    const all = [...new Set([...unlistedTools(base, registered), ...next])].sort();
+    written = all;
+    await setSetting(`profiles.${id}.toolsOff`, all.length ? all : null);
+  }
   async function toggle(name, on) {
     const next = new Set(off);
     if (on) next.delete(name);
     else next.add(name);
-    await setSetting(`profiles.${id}.toolsOff`, next.size ? [...next].sort() : null);
+    await writeOff(next);
   }
   async function setCategory(list, on) {
     const next = new Set(off);
@@ -41,7 +54,7 @@
       if (on) next.delete(t.name);
       else next.add(t.name);
     }
-    await setSetting(`profiles.${id}.toolsOff`, next.size ? [...next].sort() : null);
+    await writeOff(next);
   }
   async function remove() {
     const ok = await confirmDialog({
