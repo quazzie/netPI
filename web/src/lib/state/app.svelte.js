@@ -165,7 +165,9 @@ function upsertSession(s) {
   if (i >= 0) {
     // an RPC result can arrive after a newer session.updated (e.g. sessions.create, then the default profile the server
     // gives the new chat right away): never replace a session with an older copy of it
-    if (Date.parse(s.updatedAt) < Date.parse(list[i].updatedAt)) return;
+    // (a row without a parseable updatedAt has no recency: it only replaces a stored row that has none either)
+    const stored = Date.parse(list[i].updatedAt);
+    if (!Number.isNaN(stored) && !(Date.parse(s.updatedAt) >= stored)) return;
     // the session's project moved: its recorded workspace was resolved for the old one, so it is stale from now on. One
     // files.scope per workspace, not per message: the read below is the only cost of the change.
     if (list[i].projectId !== s.projectId && app.workspaces.has(s.id)) {
@@ -221,7 +223,16 @@ export async function loadSessions(offset = 0, append = false) {
   // the rows in hand when the request goes out: a row that appears while it is in flight (a chat created in
   // another window) is newer than the page that answers, and must survive it
   const had = new Set(app.sessions.map((s) => s.id));
-  const list = (await rpc('sessions.list', { includeSubagents: true, limit: SESSION_PAGE, offset })).filter((s) => !goneSessions.has(s.id));
+  let list;
+  try {
+    list = (await rpc('sessions.list', { includeSubagents: true, limit: SESSION_PAGE, offset })).filter((s) => !goneSessions.has(s.id));
+  } catch (e) {
+    // loadAll's Promise.all must not reject (a reconnect would skip the chats' reconcile): keep the last list.
+    // "Show older" has its own caller to tell.
+    if (append) throw e;
+    console.warn('sessions.list failed', e);
+    return null;
+  }
   if (append) {
     // the rows we don't have yet, in newest-first order (a row that moved up stays where it is)
     const known = new Set(app.sessions.map((s) => s.id));
@@ -233,13 +244,18 @@ export async function loadSessions(offset = 0, append = false) {
     const extra = app.sessions.filter((s) => !known.has(s.id) && (app.openTabs.includes(s.id) || !had.has(s.id)));
     app.sessions = [...list, ...extra];
   }
+  // (sessions deleted server-side between pages can make this skip a row; the next full reload heals it)
   app.sessionsOffset = offset + list.length;
   app.sessionsMore = list.length === SESSION_PAGE;
   return list;
 }
 
 export async function loadProjects() {
-  app.projects = await rpc('projects.list');
+  try {
+    app.projects = await rpc('projects.list');
+  } catch (e) {
+    console.warn('projects.list failed', e); // keep the last list; loadAll's Promise.all must not reject
+  }
 }
 
 export async function loadModels(refresh = false) {

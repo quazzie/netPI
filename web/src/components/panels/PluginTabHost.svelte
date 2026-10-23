@@ -66,6 +66,7 @@
       }
       handle = h ?? {};
       phase = 'ready';
+      attempt = 0;
       syncVisibility();
     } catch (e) {
       if (my !== token) return;

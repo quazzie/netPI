@@ -12,6 +12,7 @@ const SLACK = 20; // trim only when this far over the cap (avoids trimming on ev
 const OUTPUT_CAP = 200_000; // live tool output kept per call (tail)
 const OUTPUT_SLACK = 64_000; // trimmed only once it exceeds the cap by this much, so a chunk does not copy the buffer each time
 const LRU_MAX = 5;
+const HELD_COALESCE = 500; // catchUpStream: held events past this many get their stream deltas merged
 
 /** Live state of a running (or just finished) tool call, fed by tool.start/output/result/end. */
 export class LiveTool {
@@ -378,7 +379,14 @@ export class ChatStore {
   /** Scoped event for this session; `seq` is the bus's (catchUpStream orders by it). */
   handle(type, d, seq = 0) {
     if (this.#held) {
-      this.#held.push([type, d, seq]);
+      const held = this.#held;
+      const last = held[held.length - 1];
+      // a long wait (the retry) must not build an unbounded array: past a few hundred entries a delta joins the one before it
+      // (same kind; it keeps the later seq, so at worst a seam repeats a few characters rather than losing any)
+      if (held.length > HELD_COALESCE && type === 'stream.delta' && last?.[0] === 'stream.delta' && last[1].kind === d.kind) {
+        last[1] = { ...last[1], text: (last[1].text ?? '') + (d.text ?? '') };
+        last[2] = seq;
+      } else held.push([type, d, seq]);
       return;
     }
     // the message window is read as a whole: what lands during a load is newer than the page it waits for

@@ -11,7 +11,7 @@
 
   let { prompt, chat } = $props();
 
-  const key = $derived(`p${prompt.version}`);
+  const key = $derived(`pr${prompt.version}`);
   const open = $derived(chat.expanded.get(key) ?? false);
   const tools = $derived(Array.isArray(prompt.tools) ? prompt.tools : []);
   const toolChars = $derived(tools.reduce((n, t) => n + JSON.stringify(t).length, 0));

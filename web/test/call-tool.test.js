@@ -85,6 +85,14 @@ test('a streaming call_tool call is the inner tool once tool.start named it', ()
   const live = new Map([['p1', { name: 'plan_submit', arguments: '{"plan":"P"}' }]]);
   const after = withStream([], stream, live);
   assert.equal(after[0].kind, 'plan');
-  assert.equal(after[0].key, 'pp1');
+  assert.equal(after[0].key, 'plp1');
   assert.deepEqual(parseArgs(after[0].call), { plan: 'P' });
+});
+
+test('item keys of different kinds never collide (a numeric call id equal to a prompt version)', () => {
+  const m = assistant({ type: 'tool_call', id: '1', name: 'plan_submit', arguments: '{"plan":"P"}' });
+  const items = createItemBuilder()([m], [{ version: 1, systemPrompt: 'S', tools: [], afterSeq: 0 }], true);
+  const keys = items.map((i) => i.key);
+  assert.equal(new Set(keys).size, keys.length);
+  assert.deepEqual(items.map((i) => i.kind).sort(), ['plan', 'prompt']);
 });

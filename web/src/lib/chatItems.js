@@ -78,7 +78,7 @@ export function createItemBuilder() {
     const pending = prompts
       .filter((p) => (p.version === 1 ? atStart : atStart || p.afterSeq >= first - 1))
       .sort((a, b) => a.version - b.version);
-    const promptItem = (p) => stable({ kind: 'prompt', key: `p${p.version}`, prompt: p }, [p]);
+    const promptItem = (p) => stable({ kind: 'prompt', key: `pr${p.version}`, prompt: p }, [p]);
     let steps = null;
     let groupKey = null;
     let startMs = 0;
@@ -169,10 +169,10 @@ export function createItemBuilder() {
                 items.push(stable({ kind: 'ask', key: `a${p.id}`, call: p, result: r?.part ?? null, msg: m }, [p, r?.part ?? null]));
               } else if (p.name === 'plan_submit' || p.name === 'plan_enter') {
                 flush();
-                items.push(stable({ kind: p.name === 'plan_submit' ? 'plan' : 'planenter', key: `p${p.id}`, call: p, result: r?.part ?? null, msg: m }, [p, r?.part ?? null]));
+                items.push(stable({ kind: p.name === 'plan_submit' ? 'plan' : 'planenter', key: `${p.name === 'plan_submit' ? 'pl' : 'pe'}${p.id}`, call: p, result: r?.part ?? null, msg: m }, [p, r?.part ?? null]));
               } else if (p.name === 'schedules' && scheduleProposal(parseArgs(p))) {
                 flush();
-                items.push(stable({ kind: 'schedule', key: `s${p.id}`, call: p, result: r?.part ?? null, msg: m }, [p, r?.part ?? null]));
+                items.push(stable({ kind: 'schedule', key: `sc${p.id}`, call: p, result: r?.part ?? null, msg: m }, [p, r?.part ?? null]));
               } else if (r && p.name === 'show_image' && !r.part.isError && r.part.details?.data) {
                 flush();
                 items.push(stable({ kind: 'shown', key: `v${p.id}`, call: p, result: r.part, msg: m }, [p, r.part]));
@@ -204,7 +204,7 @@ export function createItemBuilder() {
           const sr = m.stopReason;
           if (sr === 'error' || sr === 'aborted' || sr === 'length' || sr === 'content_filter') {
             flush();
-            items.push(stable({ kind: 'status', key: `s${m.id}`, msg: m }, [m]));
+            items.push(stable({ kind: 'status', key: `st${m.id}`, msg: m }, [m]));
           }
           break;
         }
@@ -278,7 +278,7 @@ export function withStream(items, stream, live = null) {
       out.push({ kind: 'ask', key: `a${t.callId}`, call, result: null, msg: null, preparing: true });
     } else if (call.name === 'plan_submit' || call.name === 'plan_enter') {
       flush();
-      out.push({ kind: call.name === 'plan_submit' ? 'plan' : 'planenter', key: `p${t.callId}`, call, result: null, msg: null, preparing: true });
+      out.push({ kind: call.name === 'plan_submit' ? 'plan' : 'planenter', key: `${call.name === 'plan_submit' ? 'pl' : 'pe'}${t.callId}`, call, result: null, msg: null, preparing: true });
     } else push({ kind: 'tool', key: `c${t.callId}`, call, result: null, resultMsg: null, msg: null, preparing: true });
   });
   flush();
