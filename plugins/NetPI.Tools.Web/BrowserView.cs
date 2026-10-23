@@ -36,12 +36,14 @@ internal sealed class BrowserView(IPluginContext ctx, BrowserHost host)
         var viewer = new Viewer(ws, ctx.Logger);
         BrowserTab? tab = null;
         var gate = new SemaphoreSlim(1, 1);
+        var closed = false; // set under the gate when the socket is done: a bind that was waiting for the gate does nothing
 
         async Task BindAsync()
         {
             await gate.WaitAsync().ConfigureAwait(false);
             try
             {
+                if (closed) return;
                 var now = host.Peek(sessionId);
                 if (!ReferenceEquals(now, tab))
                 {
@@ -96,12 +98,21 @@ internal sealed class BrowserView(IPluginContext ctx, BrowserHost host)
         finally
         {
             host.TabChanged -= OnTabChanged;
-            if (tab is not null)
+            // no bind may be mid-flight or start later: it would subscribe a dead socket and leave the tab's viewer count raised,
+            // or unsubscribe and stop a tab this finally already stopped (the count then goes below zero)
+            await gate.WaitAsync().ConfigureAwait(false);
+            try
             {
-                tab.FrameReady -= viewer.Frame;
-                tab.Changed -= OnChanged;
-                await tab.StopScreencastAsync().ConfigureAwait(false);
+                closed = true;
+                if (tab is not null)
+                {
+                    tab.FrameReady -= viewer.Frame;
+                    tab.Changed -= OnChanged;
+                    await tab.StopScreencastAsync().ConfigureAwait(false);
+                    tab = null;
+                }
             }
+            finally { gate.Release(); }
             viewer.Close();
         }
     }
