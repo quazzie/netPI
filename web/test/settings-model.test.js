@@ -126,7 +126,7 @@ test('cidrProblem: addresses and ranges of both families', () => {
   for (const ok of ['1:2:3:4:5:6:7:8', '1:2:3:4:5:6:7::', '::', '2001:db8::1/64']) assert.equal(cidrProblem(ok), null, ok);
 });
 
-test('deferredList: "*" with the declared tools as exceptions, so later tools are deferred like the default', () => {
+test('deferredList: "*" with the declared tools as exceptions, so tools that register later are deferred too', () => {
   assert.deepEqual(deferredList(['read', 'web_fetch', 'bash', 'tool_search'], new Set(['web_fetch'])), ['*', '!bash', '!read', '!tool_search']);
   assert.deepEqual(deferredList(['a'], new Set(['a'])), ['*']);
 });

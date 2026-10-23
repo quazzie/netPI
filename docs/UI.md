@@ -534,7 +534,7 @@ Esc stack, `escLayer()` in `lib/kit/Modal.svelte`):
   saved as the provider's whole `models` map because a model id may hold dots) and Remove.
 - **Tools → Tool exposure** (`ToolExposureDialog`, from `tools.exposure`): every tool by plugin with **Off**
   (`tools.disabled`, keeping names no loaded plugin registers) and **Deferred** (`tools.deferred`, written as `"*"` plus
-  exceptions); a tool deferred by its MCP server and tool_search/call_tool cannot be switched there.
+  exceptions: a tool that registers later is deferred too, unlike with the built-in default list, which "Default deferred list" restores); a tool deferred by its MCP server and tool_search/call_tool cannot be switched there.
 - **Lists:** a list setting's **Edit…** opens `ListEditor` (one entry per row, add, remove, move, an address/CIDR check for
   `webhooks.allowFrom` and `phone.allowFrom`; a list equal to the default removes the key); `skills.disabled` opens
   `SkillsDialog` instead (the skills `skills.list` finds for every project and the open chat, as switches).

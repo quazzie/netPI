@@ -235,7 +235,7 @@ export function cidrProblem(text) {
 
 /**
  * The tools.deferred list that defers exactly `deferred` among `names`: every tool by default, the others as
- * exceptions, so a tool that comes later is deferred as with the built-in default.
+ * exceptions, so a tool that registers later is deferred too (the built-in default is a list of names: there a new tool is declared).
  */
 export function deferredList(names, deferred) {
   const keep = names.filter((n) => !deferred.has(n)).sort();
