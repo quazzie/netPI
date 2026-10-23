@@ -122,7 +122,14 @@ public sealed class Recorder
         {
             var record = recorder.Begin(request);
             var clock = Stopwatch.StartNew();
-            var stream = next(request, ct).GetAsyncEnumerator(ct);
+            IAsyncEnumerator<ModelStreamEvent> stream;
+            try { stream = next(request, ct).GetAsyncEnumerator(ct); }
+            catch (Exception ex)
+            {
+                // a next link that refuses before it streams: the record must not stay "running" (running records are never evicted)
+                record.End(ex is OperationCanceledException && ct.IsCancellationRequested ? "cancelled" : "error", clock, ex is OperationCanceledException ? null : ex);
+                throw;
+            }
             try
             {
                 while (true)
@@ -405,7 +412,8 @@ public sealed class Recorder
     internal static string? Preview(string? text, int max)
     {
         if (string.IsNullOrEmpty(text)) return null;
-        var t = text.Replace('\n', ' ').Replace('\r', ' ').Trim();
+        // clip before normalizing: the text can be megabytes (a write's content) and each Replace copies all of it
+        var t = (text.Length > max * 2 ? text[..(max * 2)] : text).Replace('\n', ' ').Replace('\r', ' ').Trim();
         return t.Length <= max ? t : t[..max] + "…";
     }
 }
