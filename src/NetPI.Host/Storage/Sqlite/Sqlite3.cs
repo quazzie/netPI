@@ -172,10 +172,12 @@ internal static unsafe class Utf8
     }
 }
 
-/// <summary>A SQLite error with the failing SQL.</summary>
-public sealed class SqliteException(int code, string message, string? sql)
-    : Exception(sql is null ? message : $"{message}\n  SQL: {Shorten(sql)}")
+/// <summary>A SQLite error with the failing SQL. The SQL is in <see cref="ToString"/> (what the log writes) and
+/// <see cref="Sql"/>, not in <see cref="Exception.Message"/>: that one reaches clients and the model as an error text.</summary>
+public sealed class SqliteException(int code, string message, string? sql) : Exception(message)
 {
+    public override string ToString() => Sql is null ? base.ToString() : $"{base.ToString()}\n  SQL: {Shorten(Sql)}";
+
     public int Code { get; } = code;
     /// <summary>Primary result code (e.g. 19 = constraint).</summary>
     public int PrimaryCode => Code & 0xFF;

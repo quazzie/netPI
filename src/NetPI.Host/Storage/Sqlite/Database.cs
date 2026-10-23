@@ -623,18 +623,16 @@ internal sealed unsafe class Database : IDisposable
             st.EnsureColumns();
             var values = new object?[st.ColumnNames!.Length];
             for (var i = 0; i < values.Length; i++) values[i] = row.GetValue(i);
-            list.Add(new RowSnapshot(st.ColumnNames!, st.Ordinals!, values, sql));
+            list.Add(new RowSnapshot(st.Ordinals!, values, sql));
             return !firstRowOnly;
         });
         return list;
     }
 
     /// <summary>A row's values, copied: strings and blobs are already fresh, so it stays valid after the lock is gone.</summary>
-    private sealed class RowSnapshot(string[] names, Dictionary<string, int> ordinals, object?[] values, string sql) : ISqlRow
+    private sealed class RowSnapshot(Dictionary<string, int> ordinals, object?[] values, string sql) : ISqlRow
     {
         public int FieldCount => values.Length;
-
-        public string GetName(int ordinal) => names[ordinal];
 
         public int Ordinal(string name) => ordinals.TryGetValue(name, out var i)
             ? i
@@ -674,12 +672,6 @@ internal sealed unsafe class Database : IDisposable
         private readonly IntPtr _h = st.Handle;
 
         public int FieldCount => Sqlite3.sqlite3_column_count(_h);
-
-        public string GetName(int ordinal)
-        {
-            st.EnsureColumns();
-            return st.ColumnNames![ordinal];
-        }
 
         public int Ordinal(string name)
         {

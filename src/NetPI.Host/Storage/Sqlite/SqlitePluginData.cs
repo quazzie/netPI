@@ -232,7 +232,10 @@ internal sealed class SqliteCollection : IDataCollection
         while (true)
         {
             // Key-ordered pages: a new index field back-fills the whole collection, and it must not pull every document
-            // into memory at once (or hold the gate for the length of it). A short page is the last.
+            // into memory at once. A short page is the last. The database gate IS held for the length of it (the
+            // declaration's transaction runs the back-fill, so the columns and their values appear together or not at
+            // all): a one-time stall of every database user, when a plugin first declares an index field on an
+            // existing collection.
             var page = _db.Query($"SELECT k, doc FROM {_table} WHERE k > @after ORDER BY k LIMIT @limit",
                 new { after, limit = Page }, r => (Key: r.GetString("k"), Doc: r.GetString("doc")));
             if (page.Count == 0) break;
