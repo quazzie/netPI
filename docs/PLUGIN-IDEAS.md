@@ -287,6 +287,7 @@ notice stays first; added during a run, the agent reads it at its next model cal
 
 `ideas.refine` (the card's "Refine") starts a chat on the idea's project with the idea attached and an agent tasked to
 define it better, without changing any files; the chat is recorded on the idea's `sessions`.
+"Without changing files" is a snapshot: the chat is created with every tool that can change something switched off (`meta.toolsOff`), as the tools stood at that moment. A write-capable tool that appears later (an MCP server connecting, a plugin loaded) is not in that list; an allow-list mode in `SessionTools` would close it, and is not built.
 
 ### Automatic refine (`ideas.autoRefine.*`)
 

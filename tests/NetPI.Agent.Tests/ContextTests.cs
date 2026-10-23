@@ -19,6 +19,7 @@ public static class ContextTests
         t.Add("context: a fork goes on with the prompt the original had at the fork point", ForkPrompt);
         t.Add("context: a fork whose first call races the copy of the fork point's prompts records it once", ForkPromptRace);
         t.Add("context: the sent-prompt history in the session meta: provisional entries, final marking, tools by definition hash", SentHistoryRules);
+        t.Add("context: the sent-prompt history keeps the newest entries and versions keep counting from the first prompt", SentHistoryIsCapped);
         t.Add("context: context.prompts pages the history and reads tool definitions from the shared store", PromptsPagingAndDefinitions);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
@@ -504,6 +505,21 @@ public static class ContextTests
         Check.Equal("P", SessionPrompt.Fallback(session), "a provisional prompt leaves the frozen one");
         Check.True(SessionPrompt.LastSent(session)!.Provisional);
         Check.Equal(2, SessionPrompt.LastSent(session)!.Version);
+    }
+
+    // The history keeps the newest MaxHistory entries (every write of the session carries them); a version stays the
+    // position counted from the first prompt ever sent, so context.prompts' beforeVersion still means the same prompt.
+    private static void SentHistoryIsCapped()
+    {
+        var session = new SessionInfo { Id = "ses_cap", Meta = new JsonObject() };
+        var total = SessionPrompt.MaxHistory + 25;
+        for (var i = 1; i <= total; i++) SessionPrompt.RecordSent(session, "P" + i, 0, i, []);
+        var history = SessionPrompt.History(session);
+        Check.Equal(SessionPrompt.MaxHistory, history.Count, "only the newest are kept");
+        Check.Equal("P26", history[0].Prompt, "the oldest 25 were dropped");
+        Check.Equal(26, history[0].Version, "and the first kept one is still version 26");
+        Check.Equal(total, SessionPrompt.LastSent(session)!.Version, "the newest keeps counting from the first prompt ever sent");
+        Check.Equal("P" + total, SessionPrompt.Fallback(session), "the frozen prefix is untouched");
     }
 
     // context.prompts reads tools with their parameters from the content-addressed context_tooldefs; sessions with the same

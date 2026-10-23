@@ -10,6 +10,10 @@ public static class SessionPrompt
     public const string FallbackRevisionKey = "runtimePromptRevision";
     public const string ForkResetKey = "promptForkReset";
     public const string HistoryKey = "sentPromptHistory";
+    /// <summary>How many of the oldest history entries were dropped (see <see cref="MaxHistory"/>): versions keep counting from it.</summary>
+    public const string HistoryBaseKey = "sentPromptBase";
+    /// <summary>The newest entries kept in a session's meta: every write of the session carries them, and a prompt is large.</summary>
+    public const int MaxHistory = 100;
     private static long Number(JsonNode? node) => node is JsonValue v ? v.TryGetValue<long>(out var n) ? n : v.TryGetValue<int>(out var i) ? i : 0 : 0;
     public static long Revision(SessionInfo session) => Number(session.Meta?[RevisionKey]);
     public static void Invalidate(SessionInfo session)
@@ -59,6 +63,12 @@ public static class SessionPrompt
         };
         if (!final) entry["provisional"] = true;
         history.Add(entry);
+        if (history.Count > MaxHistory)
+        {
+            var drop = history.Count - MaxHistory;
+            for (var i = 0; i < drop; i++) history.RemoveAt(0);
+            session.Meta[HistoryBaseKey] = Number(session.Meta[HistoryBaseKey]) + drop;
+        }
     }
 
     /// <summary>
@@ -79,11 +89,12 @@ public static class SessionPrompt
         return history.Count == 0 ? null : history[^1];
     }
 
-    /// <summary>The prompts the session was sent, oldest first; <see cref="SentPromptEntry.Version"/> is the 1-based position.</summary>
+    /// <summary>The prompts the session was sent, oldest first; <see cref="SentPromptEntry.Version"/> is the 1-based position counted from the first prompt ever sent, so it stays the same when the oldest entries are dropped.</summary>
     public static IReadOnlyList<SentPromptEntry> History(SessionInfo session)
     {
         if (session.Meta?[HistoryKey] is not JsonArray history) return [];
         var list = new List<SentPromptEntry>(history.Count);
+        var dropped = Number(session.Meta[HistoryBaseKey]);
         foreach (var node in history)
         {
             if (node is not JsonObject e) continue;
@@ -91,7 +102,7 @@ public static class SessionPrompt
             foreach (var t in (e["tools"] as JsonArray)?.OfType<JsonObject>() ?? [])
                 if (Text(t["name"]) is { } name)
                     tools.Add(new SentTool(name, Text(t["def"]) ?? "", Text(t["revision"])));
-            list.Add(new SentPromptEntry(list.Count + 1, Number(e["afterSeq"]), Number(e["revision"]), Text(e["prompt"]) ?? "",
+            list.Add(new SentPromptEntry((int)(dropped + list.Count + 1), Number(e["afterSeq"]), Number(e["revision"]), Text(e["prompt"]) ?? "",
                 Text(e["createdAt"]), tools, e["provisional"]?.GetValue<bool>() == true));
         }
         return list;
