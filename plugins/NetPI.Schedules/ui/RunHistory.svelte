@@ -7,13 +7,16 @@
   let runs = $state.raw(null);
   let limit = $state(20);
   let more = $state(false);
+  let error = $state('');
 
   async function load() {
     try {
       runs = (await ctx.rpc('schedules.history', { id: scheduleId, limit })) ?? [];
       more = runs.length >= limit;
-    } catch {
-      runs = [];
+      error = '';
+    } catch (e) {
+      error = String(e?.message ?? e);
+      runs ??= [];
     }
   }
 
@@ -26,6 +29,8 @@
   <div class="h-title np-small np-muted">Runs</div>
   {#if runs === null}
     <div class="np-small np-muted">loading…</div>
+  {:else if error}
+    <div class="np-small h-error">Could not load the runs: {error}</div>
   {:else if runs.length === 0}
     <div class="np-small np-muted">No runs yet</div>
   {:else}
@@ -75,6 +80,7 @@
   .h-status[data-status='skipped'] { color: var(--np-warn, #d9a441); }
   .h-status[data-status='failed'] { color: var(--np-err, #e05555); }
   .h-status[data-status='missed'] { color: var(--np-warn, #d9a441); }
+  .h-error { color: var(--np-err, #e05555); }
   .h-open {
     flex: none;
     background: none;

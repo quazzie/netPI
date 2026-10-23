@@ -7,13 +7,16 @@
   let runs = $state.raw(null);
   let limit = $state(15);
   let more = $state(false);
+  let error = $state('');
 
   async function load() {
     try {
       runs = (await ctx.rpc('webhooks.history', { id: webhookId, limit })) ?? [];
       more = runs.length >= limit;
-    } catch {
-      runs = [];
+      error = '';
+    } catch (e) {
+      error = String(e?.message ?? e);
+      runs ??= [];
     }
   }
 
@@ -26,6 +29,8 @@
   <div class="h-title np-small np-muted">Deliveries</div>
   {#if runs === null}
     <div class="np-small np-muted">loading…</div>
+  {:else if error}
+    <div class="np-small h-error">Could not load the deliveries: {error}</div>
   {:else if runs.length === 0}
     <div class="np-small np-muted">None yet</div>
   {:else}
@@ -66,6 +71,9 @@
   }
   .np-line {
     gap: 6px;
+  }
+  .h-error {
+    color: var(--np-err, #e05555);
   }
   .h-when {
     flex: none;
