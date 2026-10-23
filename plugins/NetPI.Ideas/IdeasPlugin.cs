@@ -42,6 +42,11 @@ public sealed class IdeasPlugin : INetPiPlugin
             events.Changed(reason);
             vectors.Changed();
         };
+        _ = Task.Run(() =>
+        {
+            try { IdeaImages.Sweep(context.Paths.Home, repo.All(), IdeaImages.SweepAge); }
+            catch (Exception ex) { context.Logger.LogWarning(ex, "Sweeping the idea images failed"); }
+        }, CancellationToken.None);
         vectors.Changed(); // the first pass embeds what is not indexed yet (nothing, without embeddings)
 
         context.Tools.Register(new IdeasTool(repo, locator, vectors));
@@ -318,6 +323,7 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeaSna
         // and only once the idea itself is gone, so a delete that does not land leaves its images with it.
         if (!_repo.Delete(id)) throw new RpcException("not_found", $"Idea {id} not found");
         IdeaImages.DeleteAll(_home, found.Doc);
+        IdeaImages.Sweep(_home, _repo.All(), IdeaImages.SweepAge);   // files an attach left behind when its idea never landed
         return Task.FromResult<object?>(true);
     });
 

@@ -116,5 +116,51 @@ public static class IdeasSnapshotTests
             CheckSanitized((await env.Ideas()).Single(i => i["id"].Str() == "idea-imp0001"));
             env.Ctx.Unload();
         });
+
+        r.Add("ideas snapshot: an import announces once after it commits, and a status this build does not know is read, not stored", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var seen = new List<BusEvent>();
+            using var _ = env.Ctx.Events.Subscribe(IdeasPlugin.ChangedEvent, seen.Add);
+            var snapshot = new JsonObject
+            {
+                ["version"] = 1, ["format"] = "netpi.ideas.export", ["exportedAt"] = "2026-09-01T00:00:00Z",
+                ["ideas"] = new JsonArray(
+                    new JsonObject { ["id"] = "idea-imp0001", ["title"] = "Odd", ["status"] = "wip", ["priority"] = "urgent!!" },
+                    new JsonObject { ["id"] = "idea-imp0002", ["title"] = "Empty", ["status"] = "" },
+                    new JsonObject { ["id"] = "idea-imp0003", ["title"] = "Fine", ["status"] = "parked" }),
+            };
+            var file = env.PathOf("odd.json");
+            File.WriteAllText(file, snapshot.ToJsonString());
+            await env.Rpc("ideas.import", new JsonObject { ["path"] = file, ["mode"] = "merge" });
+            Check.Equal(1, seen.Count, "one announcement for the import, not one per idea: " + string.Join(",", seen.Select(e => ((JsonObject)e.Data!)["reason"].Str())));
+            Check.Equal("import", ((JsonObject)seen[0].Data!)["reason"].Str());
+            var byId = (await env.Ideas()).ToDictionary(i => i["id"].Str());
+            Check.Equal("in-progress", byId["idea-imp0001"]["status"].Str(), "wip is the status the tab knows as in-progress");
+            Check.Equal("medium", byId["idea-imp0001"]["priority"].Str(), "an unknown priority falls back");
+            Check.Equal("open", byId["idea-imp0002"]["status"].Str(), "an empty status falls back to open");
+            Check.Equal("parked", byId["idea-imp0003"]["status"].Str());
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas images: a size that is not an int is 0, not an internal error; files no idea references are swept once old", () =>
+        {
+            var images = JsonNode.Parse("""[{"path":"idea-images/a.png","bytes":1.5},{"path":"idea-images/b.png","bytes":3000000000},{"path":"idea-images/c.png","bytes":12}]""")!;
+            var kept = IdeaImages.Sanitize(null, images).OfType<JsonObject>().Select(o => o["bytes"]!.GetValue<int>()).ToList();
+            Check.Equal("0,0,12", string.Join(",", kept));
+
+            var home = T.TempDir("ideas-sweep");
+            var dir = Path.Combine(home, IdeaImages.Dir);
+            Directory.CreateDirectory(dir);
+            foreach (var name in new[] { "used.png", "orphan-old.png", "orphan-new.png" }) File.WriteAllBytes(Path.Combine(dir, name), [1]);
+            foreach (var name in new[] { "used.png", "orphan-old.png" }) File.SetLastWriteTimeUtc(Path.Combine(dir, name), DateTime.UtcNow.AddDays(-3));
+            var idea = new JsonObject { ["images"] = new JsonArray(new JsonObject { ["path"] = "idea-images/used.png" }) };
+            Check.Equal(1, IdeaImages.Sweep(home, [idea], IdeaImages.SweepAge), "only the old orphan goes");
+            Check.True(File.Exists(Path.Combine(dir, "used.png")), "a referenced file stays however old");
+            Check.True(File.Exists(Path.Combine(dir, "orphan-new.png")), "a fresh orphan may belong to a composer that has not saved yet");
+            Check.False(File.Exists(Path.Combine(dir, "orphan-old.png")));
+            return Task.CompletedTask;
+        });
     }
 }
