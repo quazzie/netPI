@@ -374,6 +374,25 @@ public static class SchedulesTests
             Check.True((await env.Get(id))["starting"] is null, "and the claim is let go");
         });
 
+        r.Add("schedules: a tick stopped after it claimed several schedules still gives each a history row", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var a = S((await env.Add(new { kind = "every", minutes = 60 }))["id"])!;
+            var b = S((await env.Add(new { kind = "once", at = env.Time.Now.AddMinutes(30).ToString("O") }))["id"])!;
+            env.Time.Advance(TimeSpan.FromMinutes(61));
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            await Check.ThrowsAsync<OperationCanceledException>(() => env.Plugin.Runner!.TickAsync(cts.Token));
+            foreach (var id in new[] { a, b })
+            {
+                var history = await env.History(id);
+                Check.Equal(1, history.Count, "the claim left a row");
+                Check.Equal("skipped", S(history[0]!["status"]));
+                Check.Contains(S(history[0]!["reason"]), "stopped");
+            }
+            Check.Equal(0, env.Runtime.Sent.Count, "and nothing started");
+        });
+
         r.Add("schedules: the schedules survive a restart, pausing keeps them, and two generations ticking at once start a run once", async () =>
         {
             var env = await new Env().StartAsync();

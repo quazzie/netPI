@@ -28,9 +28,16 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
         var claims = store.ClaimDue(now, grace);
         if (claims.Count == 0) return 0;
         var started = 0;
-        foreach (var claim in claims)
+        for (var i = 0; i < claims.Count; i++)
         {
-            ct.ThrowIfCancellationRequested();
+            var claim = claims[i];
+            if (ct.IsCancellationRequested)
+            {
+                // the claims are already taken (the next run moved on, a once finished): the ones not started still get their history row
+                for (var j = i; j < claims.Count; j++)
+                    Finish(claims[j].Schedule, now, Skipped, "the host stopped before it started", null);
+                ct.ThrowIfCancellationRequested();
+            }
             if (claim.Missed)
             {
                 var late = grace.TotalHours >= 1 ? $"{grace.TotalHours:0} h" : $"{grace.TotalMinutes:0} min";
