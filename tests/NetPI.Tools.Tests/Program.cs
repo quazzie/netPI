@@ -1,8 +1,8 @@
 using NetPI.Tools.Tests;
 
 // Usage: dotnet run --project tests/NetPI.Tools.Tests [-- <name filter>...]
-// the live language-server test downloads and loads a project: it gets longer when it is switched on
-var runner = new TestRunner { Name = "Tools", TimeoutSeconds = Environment.GetEnvironmentVariable("NETPI_LSP_LIVE") == "1" ? 900 : 90 };
+// the live language-server and embedding tests download and load a project / a model: they get longer when switched on
+var runner = new TestRunner { Name = "Tools", TimeoutSeconds = Environment.GetEnvironmentVariable("NETPI_LSP_LIVE") == "1" || Environment.GetEnvironmentVariable("NETPI_CODESEARCH_LIVE") == "1" ? 900 : 90 };
 ToolArgsTests.Register(runner);
 WorkspaceToolTests.Register(runner);
 FileTests.Register(runner);
