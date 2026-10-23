@@ -90,6 +90,12 @@ internal sealed class ScheduleRunner(IPluginContext ctx, ScheduleStore store, Ti
                 await ctx.Rpc.InvokeAsync("agents.use", new JsonObject { ["sessionId"] = session.Id, ["agent"] = agent }, ct).ConfigureAwait(false);
             if (ctx.Rpc.Exists("profiles.applyAuto"))
                 await ctx.Rpc.InvokeAsync("profiles.applyAuto", new JsonObject { ["sessionId"] = session.Id }, ct).ConfigureAwait(false);
+            if (await SessionModel.UnattendedRefusalAsync(session.Id, ctx.Sessions, ctx.Models, ctx.Settings, ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false) is { } refusal)
+            {
+                try { ctx.Sessions.DeleteSession(session.Id); } catch { /* already gone */ }
+                ctx.Logger.LogWarning("Schedule {Schedule}: refused, {Reason}", id, refusal);
+                return Finish(schedule, now, Failed, "refused: " + refusal, null, claim);
+            }
             await runtime.SendAsync(session.Id, new UserInput
             {
                 Text = schedule["prompt"]?.GetValue<string>() ?? "",

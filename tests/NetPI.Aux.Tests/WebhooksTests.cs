@@ -511,6 +511,19 @@ public static class WebhooksTests
             Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count);
         });
 
+        r.Add("webhooks: a model that works with its own tools (the Claude CLI) is refused at once, not retried: nobody is there to hold what it runs", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var added = await env.Add();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "fake", Id = "cli", RunsOwnTools = true });
+            env.Ctx.ModelsFake.DefaultModelRef = "fake/cli";
+            var refused = await env.Post(S(added["id"])!, S(added["token"])!, Alert());
+            Check.Equal("failed", S(refused.Body["status"]));
+            Check.Contains(S(refused.Body["reason"]), "works with its own tools");
+            Check.Equal(0, env.Runtime.Sent.Count, "nothing was sent to the runtime");
+            Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count, "and the chat is gone");
+        });
+
         r.Add("webhooks: a start cancelled by the caller is reported, not swallowed, and leaves no empty chat behind; a chat that already runs is kept and counts as started", async () =>
         {
             var env = await new Env().StartAsync();

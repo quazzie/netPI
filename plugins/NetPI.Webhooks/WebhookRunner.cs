@@ -367,6 +367,13 @@ internal sealed class WebhookRunner(IPluginContext ctx, WebhookStore store, Time
                 await ctx.Rpc.InvokeAsync("profiles.apply", new JsonObject { ["sessionId"] = session.Id, ["profile"] = chosen }, ct).ConfigureAwait(false);
             else if (ctx.Rpc.Exists("profiles.applyAuto"))
                 await ctx.Rpc.InvokeAsync("profiles.applyAuto", new JsonObject { ["sessionId"] = session.Id }, ct).ConfigureAwait(false);
+            // a refusal is permanent, not a busy moment: the alerts are reported as failed instead of waiting to be retried
+            if (await SessionModel.UnattendedRefusalAsync(session.Id, ctx.Sessions, ctx.Models, ctx.Settings, ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false) is { } refusal)
+            {
+                try { ctx.Sessions.DeleteSession(session.Id); } catch { /* already gone */ }
+                ctx.Logger.LogWarning("Webhook {Webhook}: refused, {Reason}", id, refusal);
+                return await FailAsync(hook, batch, now, "refused: " + refusal, ct).ConfigureAwait(false);
+            }
             await runtime.SendAsync(session.Id, new UserInput
             {
                 Text = prompt, Source = "system",

@@ -334,6 +334,19 @@ public static class SchedulesTests
             Check.Equal(n, store.StartedSince("s1", now.AddDays(-5)), "a run older than a day is pruned past the history size");
         });
 
+        r.Add("schedules: a model that works with its own tools (the Claude CLI) is refused: nobody is there to hold what it runs", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var id = S((await env.Add(new { kind = "every", minutes = 60 }))["id"])!;
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "fake", Id = "cli", RunsOwnTools = true });
+            env.Ctx.ModelsFake.DefaultModelRef = "fake/cli";
+            var refused = (await env.Ctx.RpcFake.CallAsync("schedules.run", new { id }))!;
+            Check.Equal("failed", S(refused["status"]));
+            Check.Contains(S(refused["reason"]), "works with its own tools");
+            Check.Equal(0, env.Runtime.Sent.Count, "nothing was sent to the runtime");
+            Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count, "and the chat is gone");
+        });
+
         r.Add("schedules: a run that cannot start is failed and its chat is removed; the daily cap skips", async () =>
         {
             var env = await new Env().StartAsync();
