@@ -36,6 +36,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     private readonly ILogger _log;
     private readonly SemaphoreSlim _op = new(1, 1);
     private readonly Lock _gate = new();
+    private readonly Lock _enabledLock = new(); // plugins.disabled / plugins.enabled are read, changed and written back as a whole
     private readonly List<PluginEntry> _entries = [];
     /// <summary>
     /// Plugins whose reload is asked for and not applied yet, oldest first, each once: waiting for the gate
@@ -92,22 +93,25 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     public async Task SetEnabledAsync(string pluginId, bool enabled, CancellationToken ct = default)
     {
         var e = FindById(pluginId) ?? throw new KeyNotFoundException($"Plugin '{pluginId}' not found");
-        var disabled = _k.Settings.Get<List<string>>("plugins.disabled") ?? [];
-        var forced = _k.Settings.Get<List<string>>("plugins.enabled") ?? [];
-        bool Match(string s) => s.Equals(e.Id, StringComparison.OrdinalIgnoreCase) || s.Equals(e.FolderName, StringComparison.OrdinalIgnoreCase);
-        var forcedChanged = false;
-        if (enabled)
+        lock (_enabledLock)
         {
-            disabled.RemoveAll(Match);
-            if (e.Manifest is { Enabled: false } && !forced.Any(Match)) { forced.Add(e.Id); forcedChanged = true; }
+            var disabled = _k.Settings.Get<List<string>>("plugins.disabled") ?? [];
+            var forced = _k.Settings.Get<List<string>>("plugins.enabled") ?? [];
+            bool Match(string s) => s.Equals(e.Id, StringComparison.OrdinalIgnoreCase) || s.Equals(e.FolderName, StringComparison.OrdinalIgnoreCase);
+            var forcedChanged = false;
+            if (enabled)
+            {
+                disabled.RemoveAll(Match);
+                if (e.Manifest is { Enabled: false } && !forced.Any(Match)) { forced.Add(e.Id); forcedChanged = true; }
+            }
+            else
+            {
+                if (!disabled.Any(Match)) disabled.Add(e.Id);
+                forcedChanged = forced.RemoveAll(Match) > 0;
+            }
+            _k.Settings.Set("plugins.disabled", new JsonArray(disabled.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()));
+            if (forcedChanged) _k.Settings.Set("plugins.enabled", new JsonArray(forced.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()));
         }
-        else
-        {
-            if (!disabled.Any(Match)) disabled.Add(e.Id);
-            forcedChanged = forced.RemoveAll(Match) > 0;
-        }
-        _k.Settings.Set("plugins.disabled", new JsonArray(disabled.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()));
-        if (forcedChanged) _k.Settings.Set("plugins.enabled", new JsonArray(forced.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()));
         await ApplyEnabledStateAsync(ct, retry: enabled ? e : null).ConfigureAwait(false);
     }
 
@@ -382,24 +386,39 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         // the start below stays in (Order, Name) sequence.
         var loads = await Task.WhenAll(enabled.Select(e => Task.Run(async () => (Entry: e, Ok: await LoadAssemblyAsync(e).ConfigureAwait(false)))));
         var loaded = loads.Where(p => p.Ok).Select(p => p.Entry).ToList();
-        foreach (var e in loaded.OrderBy(e => e.Order).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ThenBy(e => e.Id, StringComparer.Ordinal))
+        var ordered = loaded.OrderBy(e => e.Order).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ThenBy(e => e.Id, StringComparer.Ordinal).ToList();
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            if (!IsEnabled(e, sets)) // the real id (from the attribute) may be disabled
+            foreach (var e in ordered)
             {
-                await UnloadContextAsync(e, CurrentLoad(e), track: true).ConfigureAwait(false);
-                e.State = "disabled";
-                continue;
+                ct.ThrowIfCancellationRequested();
+                if (!IsEnabled(e, sets)) // the real id (from the attribute) may be disabled
+                {
+                    await UnloadContextAsync(e, CurrentLoad(e), track: true).ConfigureAwait(false);
+                    e.State = "disabled";
+                    continue;
+                }
+                if (RunningTwin(e) is { } twin)
+                {
+                    await UnloadContextAsync(e, CurrentLoad(e), track: true).ConfigureAwait(false);
+                    e.State = "failed";
+                    e.Error = $"Duplicate plugin id '{e.Id}' (already loaded from {twin.Folder})";
+                    _log.LogWarning("Plugin in {Folder}: {Error}", e.Folder, e.Error);
+                    continue;
+                }
+                await StartInstanceAsync(e, ct).ConfigureAwait(false);
             }
-            if (RunningTwin(e) is { } twin)
-            {
-                await UnloadContextAsync(e, CurrentLoad(e), track: true).ConfigureAwait(false);
-                e.State = "failed";
-                e.Error = $"Duplicate plugin id '{e.Id}' (already loaded from {twin.Folder})";
-                _log.LogWarning("Plugin in {Folder}: {Error}", e.Folder, e.Error);
-                continue;
-            }
-            await StartInstanceAsync(e, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // the plugins not reached keep no shadow copy or load context behind a "loading" state
+            foreach (var e in ordered)
+                if (e.State == "loading")
+                {
+                    await UnloadContextAsync(e, CurrentLoad(e), track: true).ConfigureAwait(false);
+                    e.State = "stopped";
+                }
+            throw;
         }
     }
 
@@ -465,6 +484,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         e.UiStamp = UiStampOf(e);
         var context = new PluginContext(_k, e.Id, e.Folder, scope, stopping.Token, () => e.UiVersion);
         INetPiPlugin? instance = null;
+        Task? startTask = null;
         try
         {
             instance = (INetPiPlugin)Activator.CreateInstance(e.Load.PluginType!)!;
@@ -472,7 +492,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             // when the start task completes.
             var startCts = CancellationTokenSource.CreateLinkedTokenSource(ct, stopping.Token, _shutdown.Token);
             startCts.CancelAfter(StartTimeout);
-            var startTask = instance.StartAsync(context, startCts.Token);
+            startTask = instance.StartAsync(context, startCts.Token);
             _ = startTask.ContinueWith(_ => startCts.Dispose(), TaskScheduler.Default);
             await startTask.WaitAsync(StartTimeout, ct).ConfigureAwait(false);
             e.Load = e.Load with { Instance = instance, Scope = scope, Stopping = stopping };
@@ -488,6 +508,9 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             var inner = JsonUtil.Unwrap(ex);
             var message = inner is TimeoutException ? $"StartAsync did not complete within {StartTimeout.TotalSeconds:0}s" : inner.Message;
             _log.LogError(inner, "Plugin {Id} failed to start", e.Id);
+            // given up on while still running: a failure it ends with later is named, not left unobserved
+            if (startTask is { IsCompleted: false })
+                _ = startTask.ContinueWith(t => _log.LogWarning(t.Exception, "Plugin {Id}: StartAsync ended in failure after it was given up on", e.Id), TaskContinuationOptions.OnlyOnFaulted);
             if (instance is not null) await StopQuietlyAsync(instance, e.Id).ConfigureAwait(false);
             Cancel(stopping, e.Id);
             scope.DisposeAll();
@@ -505,6 +528,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         var load = TakeLoad(e);
         if (load.Instance is not null) await StopQuietlyAsync(load.Instance, e.Id).ConfigureAwait(false);
         Cancel(load.Stopping, e.Id);
+        await DrainBusAsync().ConfigureAwait(false); // events queued for its handlers run before the line goes, not against an unloading context
         load.Scope?.DisposeAll();
         load.Stopping?.Dispose();
         await UnloadContextAsync(e, load, track).ConfigureAwait(false);
@@ -516,15 +540,26 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
 
     private async Task StopQuietlyAsync(INetPiPlugin instance, string id)
     {
+        Task? stop = null;
         try
         {
             using var cts = new CancellationTokenSource(StopTimeout);
-            await instance.StopAsync(cts.Token).WaitAsync(StopTimeout).ConfigureAwait(false);
+            stop = instance.StopAsync(cts.Token);
+            await stop.WaitAsync(StopTimeout).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             _log.LogWarning(JsonUtil.Unwrap(ex), "Plugin {Id}: StopAsync failed", id);
+            // given up on while still running: a failure it ends with later is named, not left unobserved
+            if (stop is { IsCompleted: false })
+                _ = stop.ContinueWith(t => _log.LogWarning(t.Exception, "Plugin {Id}: StopAsync ended in failure after it was given up on", id), TaskContinuationOptions.OnlyOnFaulted);
         }
+    }
+
+    private async Task DrainBusAsync()
+    {
+        try { await _k.Bus.FlushAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+        catch (TimeoutException) { }
     }
 
     private void Cancel(CancellationTokenSource? cts, string id)
@@ -803,6 +838,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         if (!load.Live) { load.Stopping?.Dispose(); return; }
         if (load.Instance is not null) await StopQuietlyAsync(load.Instance, e.Id).ConfigureAwait(false);
         Cancel(load.Stopping, e.Id);
+        await DrainBusAsync().ConfigureAwait(false);
         load.Scope?.DisposeAll();
         load.Stopping?.Dispose();
         await UnloadContextAsync(e, load, track).ConfigureAwait(false);
