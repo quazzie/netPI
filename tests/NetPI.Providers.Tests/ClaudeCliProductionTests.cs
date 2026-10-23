@@ -400,5 +400,24 @@ internal static class ClaudeCliProductionTests
             e = await Fails(p, Req());
             t.Check(e is { ErrorType: "cli_incomplete" } && e.Message.Contains("out of memory"), $"stderr in the message: {e?.Message}");
         });
+
+        await t.Run("claude-cli: an errors[] entry that is not a string is quoted, not an exception", async () =>
+        {
+            var odd = new[] { Init, """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"","errors":["boom",42,{"a":1}]}""" };
+            var p = new CL.ClaudeCliProvider(() => Cfg(), null, (_, ct) => Lines(odd, ct));
+            var e = await Fails(p, Req());
+            t.Check(e is not null && e.Message.Contains("boom") && e.Message.Contains("42") && e.Message.Contains("{\"a\":1}"), $"errors quoted: {e?.Message}");
+        });
+
+        await t.Run("claude-cli: a session bound to a workspace that cannot be resolved or is gone fails, with no fallback folder", () =>
+        {
+            ModelException? Bound(Func<string?> cwd) { try { CL.ClaudeCliPlugin.BoundFolder(cwd); return null; } catch (ModelException ex) { return ex; } }
+            var here = AppContext.BaseDirectory;
+            t.Eq(here, CL.ClaudeCliPlugin.BoundFolder(() => here), "an existing folder is used");
+            t.Check(Bound(() => throw new InvalidOperationException("workspace ws_1 is missing")) is { ErrorType: "invalid_config", Transient: false } m && m.Message.Contains("ws_1"), "resolver failure");
+            t.Check(Bound(() => Path.Combine(here, "gone-" + Guid.NewGuid().ToString("N"))) is { ErrorType: "invalid_config" }, "folder gone");
+            t.Check(Bound(() => null) is { ErrorType: "invalid_config" }, "no folder");
+            return Task.CompletedTask;
+        });
     }
 }

@@ -17,7 +17,8 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
     private const string UsageCollection = "usage";
     private const string UsageKey = "latest";
 
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    // one client per plugin instance, disposed with it (a static one outlives every reload's handler until its idle timeout)
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     private IDisposable? _settingsSub;
     private ProviderSet<ClaudeCliProvider>? _set;
@@ -69,7 +70,7 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
             async (_, rpcCt) =>
             {
                 if (!UsageOn(context)) return new JsonObject { ["limits"] = new JsonArray() };
-                return await usage.RefreshAsync(fetchCt => ClaudeUsageApi.FetchAsync(Http, ClaudeUsageApi.CredentialsPath(), fetchCt), rpcCt).ConfigureAwait(false);
+                return await usage.RefreshAsync(fetchCt => ClaudeUsageApi.FetchAsync(_http, ClaudeUsageApi.CredentialsPath(), fetchCt), rpcCt).ConfigureAwait(false);
             });
         // The plan comes from `claude auth status`: only once a provider is on (a NetPI that does not use the CLI starts
         // no CLI process, idea-irqqkj), and again when one is added later.
@@ -199,8 +200,9 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         {
             if (context.Sessions.GetSession(sessionId) is not { } session) return null;
             var resolver = context.Services.Get<IWorkspaceResolver>();
-            return SessionWorkspace.Of(session) is not null && resolver is not null ? resolver.CwdOf(session) : context.Sessions.GetCwd(session);
+            return SessionWorkspace.Of(session) is not null && resolver is not null ? BoundFolder(() => resolver.CwdOf(session)) : context.Sessions.GetCwd(session);
         }
+        catch (ModelException) { throw; }
         catch (Exception ex)
         {
             context.Logger.LogWarning(ex, "claude-cli: could not resolve the working folder of {Session}", sessionId);
@@ -208,10 +210,26 @@ public sealed class ClaudeCliPlugin : INetPiPlugin
         }
     }
 
+    /// <summary>The folder of a session bound to a workspace. A bound session has no fallback: a workspace that cannot be
+    /// resolved, or whose folder is gone, fails the run instead of silently running in the plugin's own folder.</summary>
+    internal static string BoundFolder(Func<string?> cwd)
+    {
+        string? folder;
+        try { folder = cwd(); }
+        catch (Exception ex) when (ex is not ModelException)
+        {
+            throw new ModelException($"Claude CLI: the session's workspace cannot be used: {ex.Message}", false, null, "invalid_config", ex);
+        }
+        if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
+            throw new ModelException($"Claude CLI: the session's workspace folder does not exist ('{folder}').", false, null, "invalid_config");
+        return folder;
+    }
+
     public Task StopAsync(CancellationToken ct)
     {
         _settingsSub?.Dispose();
         _settingsSub = null;
+        _http.Dispose();
         _set?.Dispose();
         _set = null;
         return Task.CompletedTask;
