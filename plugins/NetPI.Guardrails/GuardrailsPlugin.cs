@@ -142,18 +142,17 @@ internal sealed class Approvals(IPluginContext ctx, GuardOutcomes? outcomes = nu
         var w = Waiting(null).FirstOrDefault(x => x.Id == approvalId)
                 ?? throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its chat moved on).");
         var rule = (string?)w.Data?["rule"] ?? "";
-        if (always)
-        {
-            var grants = ctx.Services.Get<IToolGrants>()
-                         ?? throw new RpcException("unavailable", "Allowing for good needs the Autonomy plugin, which is not running.");
-            grants.Grant(new GuardAsk(w.SessionId, (string?)w.Data?["tool"] ?? w.Tool, (string?)w.Data?["kind"] ?? "", rule, (string?)w.Data?["subject"] ?? ""));
-        }
-        if (forSession) AllowInSession(w.SessionId, rule);
+        var grants = always
+            ? ctx.Services.Get<IToolGrants>() ?? throw new RpcException("unavailable", "Allowing for good needs the Autonomy plugin, which is not running.")
+            : null;
         var resolution = allow
             ? WaitResolution.Allow()
             : WaitResolution.Answer(ToolResult.Error($"Blocked: the user said no to {Subject((string?)w.Data?["kind"], (string?)w.Data?["subject"])}. Nothing ran."));
         if (!await Runtime.ResolveAsync(w.Id, resolution, ct).ConfigureAwait(false))
             throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its chat moved on).");
+        // only an answer that took effect is kept: a wait already answered elsewhere leaves no grant behind
+        grants?.Grant(new GuardAsk(w.SessionId, (string?)w.Data?["tool"] ?? w.Tool, (string?)w.Data?["kind"] ?? "", rule, (string?)w.Data?["subject"] ?? ""));
+        if (forSession) AllowInSession(w.SessionId, rule);
         var kept = always ? "always" : forSession ? "session" : null;
         Closed(w.Id, w.SessionId, w.CallId, w.Tool, w.Data, allow ? "allowed" : "denied", kept);
         if (kept is not null)

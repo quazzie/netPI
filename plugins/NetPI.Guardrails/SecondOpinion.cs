@@ -92,7 +92,7 @@ internal sealed class SecondOpinion(IPluginContext ctx)
         try
         {
             var result = await DecisionCapabilities.InvokeAsync(ctx.Services, new JsonObject { ["state"] = state, ["questions"] = Questions(), ["model"] = model }, cts.Token, held: run?.AdmissionLease(), heldModel: run?.Model.Ref, lane: true).ConfigureAwait(false);
-            var answers = result as JsonObject ?? JsonSerializer.SerializeToNode(result) as JsonObject;
+            var answers = result;
             var p = new Dictionary<string, double>(StringComparer.Ordinal);
             foreach (var key in Questions().Select(q => q.Key))
                 if (answers?[key]?["noul"] is JsonValue v && v.TryGetValue<double>(out var d)) p[key] = d;

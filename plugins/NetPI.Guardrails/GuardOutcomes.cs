@@ -41,12 +41,12 @@ internal sealed class GuardOutcomes(IPluginData data, ILogger log)
 
     public JsonObject Read(string? result, int limit)
     {
-        var q = new DataQuery().Order("at", true).Take(Math.Clamp(limit, 1, 1000));
-        if (result is { Length: > 0 }) q.Eq("result", result);
+        var all = _rows.Find(new DataQuery().Order("at", true)).Select(d => d.Doc).ToList();
         var summary = new JsonObject();
-        foreach (var doc in _rows.Find())
-            if (doc.Doc["result"]?.GetValue<string>() is { } r) summary[r] = (summary[r]?.GetValue<int>() ?? 0) + 1;
-        return new JsonObject { ["summary"] = summary, ["rows"] = new JsonArray(_rows.Find(q).Select(d => (JsonNode)d.Doc).ToArray()) };
+        foreach (var doc in all)
+            if (doc["result"]?.GetValue<string>() is { } r) summary[r] = (summary[r]?.GetValue<int>() ?? 0) + 1;
+        var rows = all.Where(d => result is not { Length: > 0 } || (string?)d["result"] == result).Take(Math.Clamp(limit, 1, 1000));
+        return new JsonObject { ["summary"] = summary, ["rows"] = new JsonArray(rows.Select(d => (JsonNode)d).ToArray()) };
     }
 
     private void Prune()
