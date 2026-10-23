@@ -76,6 +76,7 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
             Multiline = args.Bool("multiline", "U", "multi_line") ?? false,
             Filter = globs.Count > 0 ? new GlobFilter(globs) : null,
             DisplayBase = ctx.Cwd,
+            MaxOutputChars = ToolResultLimit.Fit(Settings, 50_000, 400),
         };
 
         var r = await GrepEngine.RunAsync(target, options, ct).ConfigureAwait(false);
@@ -167,11 +168,15 @@ public sealed class FindTool(ISettings? settings = null) : FileToolBase(settings
         var glob = new Glob(pattern);
         var results = new List<string>();
         var truncated = false;
+        var room = ToolResultLimit.Fit(Settings, 50_000, 400); // the list stays whole inside the result limit, with its notice
+        var chars = 0;
         foreach (var e in FileWalker.Walk(root, new WalkOptions(), ct: ct))
         {
             if (!glob.IsMatch(e.RelPath)) continue;
-            if (results.Count >= max) { truncated = true; break; }
-            results.Add(Rel(ctx, e.FullPath) + (e.IsDir ? "/" : ""));
+            var line = Rel(ctx, e.FullPath) + (e.IsDir ? "/" : "");
+            if (results.Count >= max || (results.Count > 0 && chars + line.Length + 1 > room)) { truncated = true; break; }
+            results.Add(line);
+            chars += line.Length + 1;
         }
 
         string content;
@@ -180,7 +185,7 @@ public sealed class FindTool(ISettings? settings = null) : FileToolBase(settings
         else
         {
             content = string.Join('\n', results);
-            if (truncated) content += $"\n\n[Showing the first {max} results. Use a more specific pattern or path, or raise maxResults.]";
+            if (truncated) content += $"\n\n[Showing the first {results.Count} results. Use a more specific pattern or path, or raise maxResults.]";
         }
         return Task.FromResult(ToolResult.Ok(content, new { pattern, path = root, count = results.Count, truncated }));
     }

@@ -240,7 +240,7 @@ parse `details.diff` for both `edit` and `write`.
     `context > 0`. Lines longer than 500 characters are clipped around the match.
   - **files**: one path per line.
   - **count**: `rel/path: N`.
-- The output is capped at `maxResults` (matching lines in content mode, files in the other modes) and 50KB, with the notice
+- The output is capped at `maxResults` (matching lines in content mode, files in the other modes) and 50KB (less under a smaller `agent.maxToolResultChars`, so the notice below survives), with the notice
   `[Results truncated at 200 matches. …]`. When the cap stops the scan early, `filesSearched` counts the files actually
   searched, not the candidates that were left unexamined.
 - Binary files and files over 32MB are skipped. That is only reported when it could explain a missing result.
@@ -256,7 +256,8 @@ details: { pattern, path /* absolute search root */, outputMode, matches: number
 
 `{ pattern, path?, maxResults? (1000) }`
 
-- Glob search. Results are sorted by path (depth-first) and relative to the cwd, and directories end with `/`.
+- Glob search. Results are sorted by path (depth-first) and relative to the cwd, and directories end with `/`. The list
+  also stops at the tool result limit, with a `[Showing the first N results. …]` notice.
 - A literal prefix of the pattern (`src/**/*.cs`) or an absolute pattern (`C:/proj/**/*.cs`) becomes the walk root.
 
 ```ts
@@ -757,7 +758,7 @@ program and its arguments like a shell command (the names the tool reads them by
 together with its menus, popups and owned dialogs.
 
 - **Windows.** `list` (the visible top-level windows: `[hwnd] title — process`); `open {app, args?, title?, timeout?
-  (20)}` (starts a program — `notepad`, a path, a URI like `ms-settings:` — and takes its new window: the program's own,
+  (20, max 1800)}` (starts a program — `notepad`, a path, a URI like `ms-settings:` — and takes its new window: the program's own,
   else the first new one, or the one whose title matches the `title` pattern); `use {window}` (a number from `list`, or
   part of a title, or a process name); `focus` (bring it to the front); `close` (the window's close; a "save?" dialog
   it shows is a window of its own); `screenshot` (the window as it draws itself, behind other windows too).

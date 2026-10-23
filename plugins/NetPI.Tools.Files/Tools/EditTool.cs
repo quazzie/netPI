@@ -149,8 +149,7 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
             entries.Add((path, edits));
         }
 
-        var comparer = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-        var seen = new Dictionary<string, int>(comparer);
+        var seen = new Dictionary<string, int>(WorkspacePaths.Comparer);
         var prepared = new List<Prepared>();
         for (var i = 0; i < entries.Count; i++)
         {

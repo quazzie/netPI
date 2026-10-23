@@ -697,6 +697,24 @@ public static class FileTests
             finally { ReadTool.StreamingThresholdBytes = was; }
         });
 
+        r.Add("read: a huge UTF-8 file whose 64KB sample ends inside a character is not reported as Latin-1", async () =>
+        {
+            var dir = T.TempDir("read-cut");
+            var was = ReadTool.StreamingThresholdBytes;
+            ReadTool.StreamingThresholdBytes = 1024;
+            try
+            {
+                // 4369 lines of 15 bytes end exactly at 65535: the first byte of the next line's é is the sample's last
+                var text = string.Concat(Enumerable.Repeat("aaaaaaaaaaaaaa\n", 4369)) + "éé row\nlast é\n";
+                T.WriteText(dir, "cut.txt", text);
+                var res = await T.Run(Read, dir, new { path = "cut.txt", offset = -1 });
+                Check.Equal("last é", res.Content);
+                var d = T.D(res);
+                Check.False(d.TryGetProperty("encoding", out var enc) && enc.ValueKind == JsonValueKind.String, "UTF-8 reports no legacy encoding");
+            }
+            finally { ReadTool.StreamingThresholdBytes = was; }
+        });
+
         r.Add("read: pages fit the tool result limit (at most 50KB), huge single line, empty file", async () =>
         {
             var dir = T.TempDir("read");
@@ -980,6 +998,19 @@ public static class FileTests
             Check.Equal("src/app.cs", res.Content);
             res = await T.Run(find, dir, new { pattern = "*.zzz" });
             Check.Contains(res.Content, "No files matching");
+        });
+
+        r.Add("find, grep: their own output stays inside the tool result limit and says it was cut", async () =>
+        {
+            var dir = T.TempDir("limit");
+            for (var i = 0; i < 1500; i++) File.WriteAllText(Path.Combine(dir, $"a-rather-long-file-name-{i:D5}.txt"), "needle " + new string('x', 40) + "\n");
+            var limit = ToolResultLimit.Default;
+            var res = await T.Run(new FindTool(), dir, new { pattern = "*.txt" });
+            Check.True(res.Content.Length <= limit, $"find answered {res.Content.Length} chars");
+            Check.Contains(res.Content, "Showing the first");
+            res = await T.Run(new GrepTool(), dir, new { pattern = "needle", maxResults = 1500 });
+            Check.True(res.Content.Length <= limit, $"grep answered {res.Content.Length} chars");
+            Check.Contains(res.Content, "truncated");
         });
 
         r.Add("ls: dirs first, sizes, hidden ignored entries, all=true", async () =>
