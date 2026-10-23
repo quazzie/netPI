@@ -46,7 +46,7 @@ internal sealed class AnthropicOptions
         }
     }
 
-    public string Fingerprint => $"{Root}|{ApiKey?.GetHashCode()}|{string.Join(",", Betas)}";
+    public string Fingerprint => $"{Root}|{ApiKey?.GetHashCode()}|{string.Join(",", Betas)}|{string.Join(",", Headers.Select(h => h.Key + "=" + h.Value))}";
 
     public static AnthropicOptions Parse(JsonObject? o)
     {

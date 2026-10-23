@@ -108,6 +108,9 @@ public sealed class AnthropicProvider : IModelProvider
         if (!o.Enabled) throw new ModelException("Anthropic: provider is disabled in settings.", false, null, "provider_disabled");
         if (o.ApiKey is null) throw new ModelException(NoKeyMessage, false, 401, "authentication_error");
 
+        if (!Uri.TryCreate(o.Root, UriKind.Absolute, out _))
+            throw new ModelException($"Anthropic: no valid baseUrl configured ('{o.BaseUrl}').", false, null, "invalid_config");
+
         var binding = _dropUnboundThinking.ContainsKey(request.Model.Id);
         HttpResponseMessage resp;
         for (var attempt = 0; ; attempt++)
@@ -152,19 +155,33 @@ public sealed class AnthropicProvider : IModelProvider
 
         using (resp)
         {
-            Stream stream;
-            try { stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "Anthropic", ct); }
-
             var asm = new MessageAssembler();
             var parser = new AnthropicStreamParser(asm, "Anthropic");
-            await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct, "Anthropic"), "Anthropic", ct).ConfigureAwait(false))
+
+            // A gateway that ignores stream:true answers with the plain Messages JSON (or an error page with a 200).
+            if (resp.Content.Headers.ContentType?.MediaType is "application/json")
             {
-                // An error frame carries its own request id, for a gateway that sends no header.
-                try { parser.Handle(sse); }
+                string text;
+                try { text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "Anthropic", ct); }
+                call.ResponseBody = ProviderErrors.Cap(text); // same cap as the non-2xx path
+                try { parser.HandleJsonBody(text); }
                 finally { call.RequestId ??= parser.RequestId; }
-                foreach (var ev in asm.Drain()) yield return ev;
-                if (parser.Finished) break;
+            }
+            else
+            {
+                Stream stream;
+                try { stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is not ModelException) { throw HttpTransport.Rethrow(ex, "Anthropic", ct); }
+
+                await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct, "Anthropic"), "Anthropic", ct).ConfigureAwait(false))
+                {
+                    // An error frame carries its own request id, for a gateway that sends no header.
+                    try { parser.Handle(sse); }
+                    finally { call.RequestId ??= parser.RequestId; }
+                    foreach (var ev in asm.Drain()) yield return ev;
+                    if (parser.Finished) break;
+                }
             }
             parser.Finish();
             foreach (var ev in asm.Drain()) yield return ev;

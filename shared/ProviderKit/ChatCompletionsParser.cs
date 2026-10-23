@@ -231,6 +231,8 @@ internal class ChatCompletionsParser(MessageAssembler asm, string provider, bool
         }
         if (!_done && _finish is null) throw ProviderErrors.UnexpectedEnd(Provider, _dropped.Note);
         if (!_anyChunk && !Asm.HasContent) throw ProviderErrors.UnexpectedEnd(Provider, _dropped.Note);
+        // The terminal chunk arrived, but a frame before it was unreadable: a content delta may be what was lost.
+        if (_dropped.Note is { } lost) throw ProviderErrors.UnexpectedEnd(Provider, lost);
 
         Asm.StopReason = _finish switch
         {

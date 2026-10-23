@@ -18,6 +18,10 @@ internal static class SseReader
     /// and reading it unbounded would fill the process's memory: past the cap the stream is a provider error.</summary>
     public const int MaxLineLength = 16 * 1024 * 1024;
 
+    /// <summary>The most data one event may accumulate across its <c>data:</c> lines; a stream that never sends the
+    /// blank separator would otherwise fill memory one short line at a time.</summary>
+    public const int MaxEventChars = 16 * 1024 * 1024;
+
     public static async IAsyncEnumerable<SseEvent> ReadAsync(Stream stream, [EnumeratorCancellation] CancellationToken ct = default,
         string? provider = null)
     {
@@ -63,6 +67,7 @@ internal static class SseReader
                         else data.Append('\n');
                     }
                     data.Append(value);
+                    if (data.Length > MaxEventChars) throw ProviderErrors.SseLineTooLong(provider, MaxEventChars);
                     hasData = true;
                     break;
                 case "event":

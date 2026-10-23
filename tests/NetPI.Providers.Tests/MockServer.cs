@@ -515,6 +515,13 @@ internal sealed class MockServer : IAsyncDisposable
                 ctx.Response.Headers["Retry-After"] = "4";
                 await Json(ctx, """{"type":"error","error":{"type":"rate_limit_error","message":"Number of requests has exceeded your rate limit"}}""", 429);
                 return;
+            case "json-body":
+                // A gateway that ignores stream:true: the whole message as plain JSON.
+                await Json(ctx, """{"id":"msg_j","type":"message","role":"assistant","model":"json-body","content":[{"type":"thinking","thinking":"hm","signature":"S=="},{"type":"text","text":"Plain answer"},{"type":"tool_use","id":"toolu_j","name":"read","input":{"path":"a.txt"}}],"stop_reason":"tool_use","usage":{"input_tokens":11,"output_tokens":7}}""");
+                return;
+            case "json-html":
+                await Json(ctx, "<!doctype html>\n<html><body><h1>502 Bad Gateway</h1></body></html>");
+                return;
             case "malformed":
                 // The frames the parser cannot read are the ones that carry the terminal event (idea-saljbd): the
                 // stream then simply ends, and the error has to say what was lost.

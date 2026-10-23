@@ -5,6 +5,8 @@ namespace NetPI.Providers.Kit;
 
 internal static class HttpFactory
 {
+    public const long MaxBufferedResponseBytes = 64 * 1024 * 1024;
+
     /// <summary>
     /// One client per plugin instance: pooled connections recycled every 5 minutes, no overall timeout
     /// (servers may hold a request for minutes; cancellation is driven by the caller's token).
@@ -21,7 +23,9 @@ internal static class HttpFactory
             Proxy = new LoopbackBypassProxy(HttpClient.DefaultProxy),
             UseProxy = true,
         };
-        return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        // Buffered reads (an error body, a non-streamed JSON answer, a model list) stop at this size instead of the
+        // 2 GB default; a streamed answer is not buffered and is unaffected.
+        return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan, MaxResponseContentBufferSize = MaxBufferedResponseBytes };
     }
 
     private sealed class LoopbackBypassProxy(IWebProxy inner) : IWebProxy

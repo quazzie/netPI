@@ -1073,7 +1073,7 @@ await t.Run("chat: request body (system, tool_calls, tool results, images, strea
     var asst = msgs[2]!;
     t.Eq("Reading", asst["content"]!.GetValue<string>(), "assistant content");
     t.Check(asst["reasoning_content"] is null, "no reasoning replay by default");
-    t.Check(asst["tool_calls"]![0]!["id"]!.GetValue<string>() == "call:1" && asst["tool_calls"]![1]!["function"]!["arguments"]!.GetValue<string>() == "not json", "tool_calls");
+    t.Check(asst["tool_calls"]![0]!["id"]!.GetValue<string>() == "call:1" && asst["tool_calls"]![1]!["function"]!["arguments"]!.GetValue<string>() == "{}", "tool_calls (arguments that are not an object are sent as {})");
     t.Check(msgs[3]!["tool_call_id"]!.GetValue<string>() == "call:1" && msgs[3]!["content"]!.GetValue<string>() == "content A", "tool result");
     t.Check(msgs[5]!["content"]!.AsArray().Any(c => c!["type"]!.GetValue<string>() == "image_url"), "tool images after tool messages");
 });
@@ -1739,6 +1739,99 @@ await t.Run("a malformed frame is counted and named in the error that ends the s
     var e = await Fails(anthropic, Req(M("anthropic", "malformed")));
     t.Check(e is { ErrorType: "stream_truncated", Transient: true }, "the stream still ends truncated: " + e?.Message);
     t.Check(e!.Message.Contains("2 malformed events") && e.Message.Contains("message_delta"), "how many and what the first looked like: " + e.Message);
+});
+
+// A gateway that ignores stream:true answers 200 + application/json. The Messages transport pushed that body through
+// the SSE reader, so a whole answer ended as "the response stream ended unexpectedly".
+await t.Run("anthropic: a non-streamed JSON message is read like a streamed one; an HTML 200 is a described error", async () =>
+{
+    var events = await Collect(anthropic, Req(M("anthropic", "json-body")));
+    var msg = ((StreamCompleted)events[^1]).Message;
+    t.Eq("ThinkingPart,TextPart,ToolCallPart", string.Join(",", msg.Parts.Select(p => p.GetType().Name)), "parts");
+    t.Eq("Plain answer", ((TextPart)msg.Parts[1]).Text, "text");
+    t.Eq("tool_use", msg.StopReason, "stop reason");
+    t.Eq("""{"path":"a.txt"}""", ((ToolCallPart)msg.Parts[2]).Arguments, "tool input");
+    t.Eq(11, msg.Usage?.InputTokens, "usage");
+
+    var e = await Fails(anthropic, Req(M("anthropic", "json-html")));
+    t.Check(e is { Transient: true, ErrorType: "bad_json" } && e.Message.Contains("Anthropic") && e.Message.Contains("not JSON"), "bad_json: " + e?.Message);
+});
+
+// A base URL that is not absolute used to reach SendAsync and surface as a raw InvalidOperationException.
+await t.Run("anthropic: a relative base URL is an invalid_config error naming the provider", async () =>
+{
+    var ctx = new FakePluginContext(new JsonObject { ["providers"] = new JsonObject { ["anthropic"] = new JsonObject { ["apiKey"] = "k", ["baseUrl"] = "api.example.com" } } });
+    using var http = new HttpClient();
+    var p = new AN.AnthropicProvider(http, () => ctx.Settings.GetNode("providers.anthropic") as JsonObject);
+    var e = await Fails(p, Req(sonnet));
+    t.Check(e is { Transient: false, ErrorType: "invalid_config" } && e.Message.Contains("Anthropic"), "invalid_config: " + e?.Message);
+});
+
+await t.Run("anthropic: extra headers are part of the model-list cache identity", () =>
+{
+    string Fp(string v) => AN.AnthropicOptions.Parse(new JsonObject { ["apiKey"] = "k", ["headers"] = new JsonObject { ["X-Gateway"] = v } }).Fingerprint;
+    t.Check(Fp("a") != Fp("b"), "a changed header changes the fingerprint");
+    t.Eq(Fp("a"), Fp("a"), "and the same headers do not");
+    return Task.CompletedTask;
+});
+
+// The terminal event arriving does not make a stream whole when a frame before it was unreadable: a content delta
+// may be what was lost, and the answer used to complete clean.
+await t.Run("an unreadable frame fails the stream even when the terminal event arrived (all parsers)", () =>
+{
+    static ModelException? Run(Action finish)
+    {
+        try { finish(); return null; } catch (ModelException ex) { return ex; }
+    }
+    var bad = "{\"oops";
+
+    var chat = new AP.ChatStreamParser(new Kit.MessageAssembler(), "P", false);
+    chat.Handle(new Kit.SseEvent(null, """{"choices":[{"delta":{"content":"x"}}]}"""));
+    chat.Handle(new Kit.SseEvent(null, bad));
+    chat.Handle(new Kit.SseEvent(null, """{"choices":[{"delta":{},"finish_reason":"stop"}]}"""));
+    var chatErr = Run(chat.Finish);
+    t.Check(chatErr is { Transient: true, ErrorType: "stream_truncated" } && chatErr.Message.Contains("1 malformed event"), "chat: " + chatErr?.Message);
+
+    var responses = new AP.ResponsesStreamParser(new Kit.MessageAssembler(), "P");
+    responses.Handle(new Kit.SseEvent(null, bad));
+    responses.Handle(new Kit.SseEvent("response.completed", """{"type":"response.completed","response":{"id":"r","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}"""));
+    var respErr = Run(responses.Finish);
+    t.Check(respErr is { ErrorType: "stream_truncated" } && respErr.Message.Contains("1 malformed event"), "responses: " + respErr?.Message);
+
+    var an = new AN.AnthropicStreamParser(new AnKit.MessageAssembler(), "Anthropic");
+    an.Handle(new AnKit.SseEvent(null, bad));
+    an.Handle(new AnKit.SseEvent(null, """{"type":"message_stop"}"""));
+    var anErr = Run(an.Finish);
+    t.Check(anErr is { ErrorType: "stream_truncated" } && anErr.Message.Contains("1 malformed event"), "anthropic: " + anErr?.Message);
+    return Task.CompletedTask;
+});
+
+// Tool arguments are replayed to the backend as they were stored; a call cut off by the output limit stored broken ones.
+await t.Run("tool arguments that are not a JSON object are replayed as {} on the chat and responses transports", () =>
+{
+    foreach (var broken in new[] { "not json", "{\"path\":\"a", "[1]", "\"s\"", "null", "", "  " })
+        t.Eq("{}", Kit.ChatMessageBuilder.ToolArguments(broken), $"'{broken}'");
+    t.Eq("""{"path":"a"}""", Kit.ChatMessageBuilder.ToolArguments("""{"path":"a"}"""), "an object is kept verbatim");
+    var input = AP.ResponsesTransport.BuildBody(Req(M("aiproxy", "m"), [new ChatMessage
+    {
+        Role = MessageRole.Assistant,
+        Parts = [new ToolCallPart { Id = "c1", Name = "read", Arguments = "{\"cut" }],
+    }]), AP.ProviderOptions.Parse(new JsonObject(), new AP.ProviderDefaults()).ForModel("m"), true, "aiproxy")["input"]!.AsArray();
+    t.Eq("{}", input.Single(i => i!["type"]!.GetValue<string>() == "function_call")!["arguments"]!.GetValue<string>(), "responses function_call");
+    return Task.CompletedTask;
+});
+
+// One event that never ends (no blank line) and a response body of any size must not be buffered without limit.
+await t.Run("SSE reader: an event over the cap is a described provider error; buffered reads are capped", async () =>
+{
+    var line = "data: " + new string('x', 1024 * 1024) + "\n";
+    var stream = new MemoryStream(Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat(line, 17))));
+    ModelException? caught = null;
+    try { await foreach (var _ in Kit.ProviderErrors.Guard(Kit.SseReader.ReadAsync(stream, default, "P"), "P", CancellationToken.None)) { } }
+    catch (ModelException ex) { caught = ex; }
+    t.Check(caught is { ErrorType: "stream_truncated" } && caught.Message.StartsWith("P: SSE line over"), "provider error naming the cap: " + caught?.Message);
+    using var http = Kit.HttpFactory.Create();
+    t.Eq(Kit.HttpFactory.MaxBufferedResponseBytes, http.MaxResponseContentBufferSize, "HttpFactory caps buffered response bodies");
 });
 
 await t.Run("anthropic plugin: registration and stop", async () =>

@@ -368,6 +368,39 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
         using (doc) HandleEvent(doc.RootElement, sse.Event);
     }
 
+    // A gateway that ignores stream:true answers 200 + application/json with the whole Messages object; one in
+    // front of it can answer the same with an HTML page. The object is replayed through the event handlers, so a
+    // non-streamed answer is read exactly like a streamed one.
+    public void HandleJsonBody(string json)
+    {
+        JsonNode? root;
+        try { root = JsonNode.Parse(json); }
+        catch (JsonException) { throw ChatCompletionsParser.NotJson(provider, json); }
+        if (root is not JsonObject msg) throw ChatCompletionsParser.NotJson(provider, json);
+        if (msg["type"]?.GetValue<string>() == "error") { Replay(msg); return; }
+
+        Replay(new JsonObject { ["type"] = "message_start", ["message"] = msg.DeepClone() });
+        if (msg["content"] is JsonArray content)
+            for (var i = 0; i < content.Count; i++)
+            {
+                Replay(new JsonObject { ["type"] = "content_block_start", ["index"] = i, ["content_block"] = content[i]?.DeepClone() });
+                Replay(new JsonObject { ["type"] = "content_block_stop", ["index"] = i });
+            }
+        Replay(new JsonObject
+        {
+            ["type"] = "message_delta",
+            ["delta"] = new JsonObject { ["stop_reason"] = msg["stop_reason"]?.DeepClone() },
+            ["usage"] = msg["usage"]?.DeepClone(),
+        });
+        Replay(new JsonObject { ["type"] = "message_stop" });
+    }
+
+    private void Replay(JsonObject ev)
+    {
+        using var doc = JsonDocument.Parse(ev.ToJsonString());
+        HandleEvent(doc.RootElement, null);
+    }
+
     private void HandleEvent(JsonElement e, string? sseEvent)
     {
         switch (e.Str("type") ?? sseEvent)
@@ -483,6 +516,8 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
     public void Finish()
     {
         if (!Finished) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
+        // The terminal event arrived, but a frame before it was unreadable: a content delta may be what was lost.
+        if (_dropped.Note is { } lost) throw ProviderErrors.UnexpectedEnd(provider, lost);
         asm.StopReason = _stop switch
         {
             null or "end_turn" or "stop_sequence" => asm.ToolCallCount > 0 ? "tool_use" : "stop",

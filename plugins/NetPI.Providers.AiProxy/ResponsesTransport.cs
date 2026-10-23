@@ -113,7 +113,7 @@ internal static class ResponsesTransport
                                     ["type"] = "function_call",
                                     ["call_id"] = c.Id,
                                     ["name"] = c.Name,
-                                    ["arguments"] = string.IsNullOrWhiteSpace(c.Arguments) ? "{}" : c.Arguments,
+                                    ["arguments"] = ChatMessageBuilder.ToolArguments(c.Arguments),
                                 });
                                 break;
                         }
@@ -259,6 +259,8 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
     {
         foreach (var it in _items) FlushText(it);
         if (!Finished) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
+        // The terminal event arrived, but a frame before it was unreadable: a delta may be what was lost.
+        if (_dropped.Note is { } lost) throw ProviderErrors.UnexpectedEnd(provider, lost);
     }
 
     // ---------------------------------------------------------------- message text (optionally split at <think> tags)

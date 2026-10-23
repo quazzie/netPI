@@ -1,4 +1,5 @@
 // Compiled into each provider plugin from shared/ProviderKit (plugins do not reference each other): edit it here.
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace NetPI.Providers.Kit;
@@ -16,6 +17,21 @@ internal class ChatMessageBuilder(bool allowImages)
     /// silence, so the model answered as if the image were empty; idea-vgwg26).</summary>
     public static string ToolImagesOmitted(string callId, int count) =>
         $"[{count} image{(count == 1 ? "" : "s")} returned by tool call {callId} omitted: the selected model does not accept image input]";
+
+    /// <summary>The <c>arguments</c> a replayed tool call carries: its own text when that is a JSON object, else
+    /// <c>{}</c>. A call cut off by the output limit keeps broken arguments in the history, and a backend that parses
+    /// the history (a llama.cpp chat template does) would refuse every later turn over them. The call and its result
+    /// stay paired, as on the Anthropic transport, whose <c>input</c> has to be an object.</summary>
+    public static string ToolArguments(string? arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments)) return "{}";
+        try
+        {
+            using var doc = JsonDocument.Parse(arguments);
+            return doc.RootElement.ValueKind == JsonValueKind.Object ? arguments : "{}";
+        }
+        catch (JsonException) { return "{}"; }
+    }
 
     /// <summary>The properties an assistant turn's replayed reasoning adds to its message, or null for none (and
     /// then the turn is dropped when it carries no text and no tool call).</summary>
@@ -61,7 +77,7 @@ internal class ChatMessageBuilder(bool allowImages)
                             ["function"] = new JsonObject
                             {
                                 ["name"] = c.Name,
-                                ["arguments"] = string.IsNullOrWhiteSpace(c.Arguments) ? "{}" : c.Arguments,
+                                ["arguments"] = ToolArguments(c.Arguments),
                             },
                         });
                     var reasoning = Reasoning(m);
