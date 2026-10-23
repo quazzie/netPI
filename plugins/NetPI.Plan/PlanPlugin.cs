@@ -38,7 +38,7 @@ public sealed class PlanPlugin : INetPiPlugin
             [
                 SettingInfo.List("plan.mcpAllow", "MCP tools allowed in plan mode", [],
                     "MCP tools that read, beyond the ones their server declares read-only. Names with * as wildcard, matched against the tool's own name or server/name: ha_get_*, ha_search, ha_list_*. A tool that changes things stays blocked.",
-                    "ha_get_*"),
+                    "ha_get_*") with { Type = "pick", Options = ["@mcpTools"] },
                 SettingInfo.Bool("plan.subagentsReadOnly", "Research subagents are read-only", true,
                     "Subagents a plan-mode chat starts get only tools that read, no checkout of their own, and are bound by plan mode too."),
                 SettingInfo.Bool("plan.seedTodos", "Approved plan fills the todo list", true,

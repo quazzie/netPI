@@ -175,3 +175,16 @@ test('uiPrefs: every preference has a section, choices have options with their d
   assert.ok(prefsFor(true).some((p) => p.key === 'notifications'));
   assert.equal(prefChanged(UI_PREFS.find((p) => p.key === 'theme'), { theme: 'dark' }), false);
 });
+
+test('pickers: options name the sources, the standalone values and fixed ones; values round-trip as array or text', async () => {
+  const { pickSpec, pickValue, pickStore } = await import('../src/lib/settingsModel.js');
+  assert.deepEqual(pickSpec({ options: ['=default', '=none', 'Read', 'Grep'] }), { sources: [], fixed: ['default', 'none', 'Read', 'Grep'], exclusive: ['default', 'none'], max: 0 });
+  assert.deepEqual(pickSpec({ options: ['@tools', '@plugins', 'rpc:embed.models'], max: 1 }).sources, ['@tools', '@plugins', 'rpc:embed.models']);
+  const text = { type: 'pickText' };
+  assert.deepEqual(pickValue(text, 'a, b ,c'), ['a', 'b', 'c']);
+  assert.equal(pickStore(text, ['a', 'b']), 'a, b');
+  assert.equal(pickStore(text, []), null, 'none chosen: the default applies');
+  assert.deepEqual(pickStore({ type: 'pick' }, ['x']), ['x']);
+  assert.deepEqual(pickValue({ type: 'pick' }, ['x', 'y']), ['x', 'y']);
+  assert.deepEqual(pickValue({ type: 'pick' }, undefined), []);
+});

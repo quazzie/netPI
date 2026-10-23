@@ -56,7 +56,8 @@ public sealed class WebhooksPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Bool("webhooks.enabled", "Receive webhooks", false, "Off: the receiver does not listen at all."),
-                SettingInfo.Str("webhooks.bind", "Listen on", "127.0.0.1", "The address to listen on: 127.0.0.1 (this PC only), this PC's LAN address, or 0.0.0.0 (every interface). Anything but 127.0.0.1 needs a firewall rule for the port.", "127.0.0.1"),
+                SettingInfo.Str("webhooks.bind", "Listen on", "127.0.0.1", "The address to listen on: 127.0.0.1 (this PC only), this PC's LAN address, or 0.0.0.0 (every interface). Anything but 127.0.0.1 needs a firewall rule for the port.", "127.0.0.1")
+                    with { Options = BindAddresses.Choices() },
                 SettingInfo.Int("webhooks.port", "Port", 7432, "The receiver's port (not NetPI's own).", 1, 65535),
                 SettingInfo.List("webhooks.allowFrom", "Accept requests from", ["127.0.0.1/32", "::1/128"], "Addresses or CIDR ranges that may call the receiver, e.g. 192.168.1.2/32 for one server. Everything else is refused before the token is looked at.", "192.168.1.2/32"),
                 SettingInfo.Int("webhooks.maxBodyKb", "Largest payload", 256, "Bigger requests are refused.", 1, 1024, "KB"),

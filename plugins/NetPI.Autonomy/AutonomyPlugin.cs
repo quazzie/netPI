@@ -47,7 +47,7 @@ public sealed class AutonomyPlugin : INetPiPlugin
                 SettingInfo.Int("autonomy.grantUnusedDays", "Drop grants unused for", 60, "A grant that let nothing through for this long is dropped. 0 keeps them.", 0, 3650, "days") with { Subgroup = "Journal", Advanced = true },
                 SettingInfo.Int("autonomy.maxCheckpointKb", "Largest file copy", 4096, "A file larger than this is changed without a copy (no undo; the journal says so).", 0, 65536, "KB") with { Subgroup = "Journal", Advanced = true },
                 SettingInfo.List("autonomy.externalTools", "Tools that bring outside text", Options.DefaultExternalTools,
-                    "After one of these, a schedule's chat counts as having read outside text (a webhook's chat does from the start). plugin:<id> names every tool of a plugin.") with { Subgroup = "Outside text" },
+                    "After one of these, a schedule's chat counts as having read outside text (a webhook's chat does from the start). plugin:<id> names every tool of a plugin.") with { Type = "pick", Options = ["@tools", "@plugins"], Subgroup = "Outside text" },
                 SettingInfo.List("autonomy.taintedBlocked", "Never after outside text", Options.DefaultTaintedBlocked,
                     "What a schedule's or webhook's chat that read outside text may not do, whatever is granted: a tool, or tool: action, action. So a page or an alert's text cannot make it act as you in the browser or on the desktop.") with { Subgroup = "Outside text" },
             ],

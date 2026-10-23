@@ -1,7 +1,9 @@
 <script>
   /**
    * One host setting from settings.schema as a control: toggle, number, text, text area, secret, choice, list, model,
-   * folder, file, or agents (the agent picker; "free" is every free agent). Saves with settings.set on change (text and numbers when the field is left); an unset key shows its
+   * folder, file, folders / files (lists of paths, browsed per row), pick / pickText (names chosen in order from what
+   * the options offer: SettingPick), agents (the agent picker; "free" is every free agent); a string with options offers
+   * them as quick choices beside the field. Saves with settings.set on change (text and numbers when the field is left); an unset key shows its
    * default (a text with a built-in default shows that text, and stays unset while it is unchanged); "Reset" removes the
    * key so the default applies again. The help shows its first sentence ("More" shows the rest); the ⋯ menu names the
    * key, copies it, shows it in settings.json (the dialog's `settings` context) and resets it. A
@@ -17,8 +19,9 @@
   import AgentSelect from '../../lib/kit/AgentSelect.svelte';
   import { agentList } from '../../lib/agents.js';
   import ListEditor from './ListEditor.svelte';
+  import SettingPick from './SettingPick.svelte';
   import SkillsDialog from './SkillsDialog.svelte';
-  import { pickFolder } from '../../lib/folderPicker.js';
+  import { pickFolder, pickFile } from '../../lib/folderPicker.js';
 
   /** disabled: its section is switched off. highlight: the field the dialog was opened on (it flashes once). */
   let { setting: s, doc, disabled = false, highlight = false } = $props();
@@ -27,7 +30,8 @@
   const value = $derived(getAt(doc, s.key));
   const isSet = $derived(value !== undefined && value !== null);
   const current = $derived(isSet ? value : s.default);
-  const stacked = $derived(s.type === 'text');
+  const stacked = $derived(s.type === 'text' || s.type === 'pick' || s.type === 'pickText' || (s.type === 'string' && s.options?.length > 0));
+  const isList = $derived(s.type === 'list' || s.type === 'folders' || s.type === 'files');
   // a text setting whose default is a built-in text (the opening of the system prompt, the AGENTS.md guidance)
   const textDefault = $derived(s.type === 'text' && typeof s.default === 'string' ? s.default : null);
   const shown = () => (textDefault != null && !isSet ? textDefault : toText(value));
@@ -68,7 +72,7 @@
       if (s.min != null && n < s.min) return (invalid = `at least ${s.min}`);
       if (s.max != null && n > s.max) return (invalid = `at most ${s.max}`);
       next = n;
-    } else if (s.type === 'list') next = parseList(t);
+    } else if (isList) next = parseList(t);
     else next = t;
     if (JSON.stringify(next) === JSON.stringify(isSet ? value : null)) return;
     await setSetting(s.key, next);
@@ -83,7 +87,8 @@
   }
 
   async function browse() {
-    const picked = await pickFolder({ initial: toText(value) || null, title: s.label ?? s.key });
+    const pick = s.type === 'file' ? pickFile : pickFolder;
+    const picked = await pick({ initial: toText(value) || s.placeholder || null, title: s.label ?? s.key });
     if (picked) await setSetting(s.key, picked);
   }
 
@@ -127,6 +132,8 @@
           <button aria-pressed={current === o} {disabled} onclick={() => current !== o && setSetting(s.key, o)}>{o}</button>
         {/each}
       </div>
+    {:else if s.type === 'pick' || s.type === 'pickText'}
+      <SettingPick setting={s} {value} {disabled} />
     {:else if s.type === 'agents'}
       <div class="sel">
         <AgentSelect
@@ -155,6 +162,13 @@
         aria-label={s.label ?? s.key}
       ></textarea>
     {:else}
+      {#if s.type === 'string' && s.options?.length}
+        <div class="np-seg quick">
+          {#each s.options as o (o)}
+            <button aria-pressed={current === o} {disabled} onclick={() => current !== o && setSetting(s.key, o === s.default ? null : o)}>{o}</button>
+          {/each}
+        </div>
+      {/if}
       <div class="inline" class:num={s.type === 'int' || s.type === 'number'}>
         <input
           class="np-input"
@@ -176,10 +190,10 @@
         {#if s.type === 'secret'}
           <button class="icon" title={show ? 'Hide' : 'Show'} onclick={() => (show = !show)}><Icon name={show ? 'eye-off' : 'eye'} size={13} /></button>
         {/if}
-        {#if s.type === 'folder'}
+        {#if s.type === 'folder' || s.type === 'file'}
           <button class="np-btn np-btn-sm" onclick={browse} {disabled}>Browse…</button>
         {/if}
-        {#if s.type === 'list'}
+        {#if isList}
           <button class="np-btn np-btn-sm" onclick={() => (editing = true)} {disabled} data-testid="edit-list" title={s.key === 'skills.disabled' ? 'Choose from the skills found' : 'One entry per line'}>{s.key === 'skills.disabled' ? 'Choose…' : 'Edit…'}</button>
         {/if}
       </div>
@@ -262,6 +276,11 @@
   .stacked .ctl {
     justify-content: stretch;
     align-items: flex-start;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .quick {
+    flex-wrap: wrap;
   }
   .inline {
     display: flex;

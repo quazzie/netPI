@@ -46,7 +46,8 @@ public sealed class PhonePlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Bool("phone.enabled", "Serve the phone page", false, "Off: nothing listens."),
-                SettingInfo.Str("phone.bind", "Listen on", "127.0.0.1", "127.0.0.1 (this PC only, for a reverse proxy on this PC), this PC's LAN address, or 0.0.0.0 (every interface). Anything but 127.0.0.1 needs a firewall rule for the port.", "127.0.0.1"),
+                SettingInfo.Str("phone.bind", "Listen on", "127.0.0.1", "127.0.0.1 (this PC only, for a reverse proxy on this PC), this PC's LAN address, or 0.0.0.0 (every interface). Anything but 127.0.0.1 needs a firewall rule for the port.", "127.0.0.1")
+                    with { Options = BindAddresses.Choices() },
                 SettingInfo.Int("phone.port", "Port", 7433, "The listener's port (not NetPI's own).", 1, 65535),
                 SettingInfo.List("phone.allowFrom", "Accept connections from", ["127.0.0.1/32", "::1/128"], "Addresses or CIDR ranges that may connect, e.g. 192.168.1.0/24 for the home network, or the reverse proxy's address. Everything else is refused before anything is looked at.", "192.168.1.0/24"),
                 SettingInfo.Bool("phone.trustProxy", "Behind a reverse proxy", false, "Read the phone's address from X-Forwarded-For, its scheme from X-Forwarded-Proto and its host from X-Forwarded-Host. Only requests from an address in the list above are believed. Leave off when phones connect directly."),

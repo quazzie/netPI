@@ -1,7 +1,7 @@
 <script>
   /**
-   * A list setting one entry per row, over the settings: add, remove, move, and a check per entry where the setting has
-   * one (an address or CIDR range for `*.allowFrom`). Save writes the list (settings.set); a list equal to the default is
+   * A list setting one entry per row, over the settings: add, remove, move, a check per entry where the setting has
+   * one (an address or CIDR range for `*.allowFrom`), and Browse per row for a list of folders or files. Save writes the list (settings.set); a list equal to the default is
    * the default again (the key is removed), so Save never pins a default.
    */
   import { untrack } from 'svelte';
@@ -9,6 +9,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import { getAt, setSetting } from '../../lib/settings.js';
   import { cidrProblem } from '../../lib/settingsModel.js';
+  import { pickFolder, pickFile } from '../../lib/folderPicker.js';
 
   let { setting: s, doc, onclose } = $props();
 
@@ -32,6 +33,12 @@
   function add() {
     rows.push({ id: next++, text: '' });
     requestAnimationFrame(() => list?.querySelector('li:last-child input')?.focus());
+  }
+  const paths = $derived(s.type === 'folders' || s.type === 'files');
+  async function browse(i) {
+    const pick = s.type === 'files' ? pickFile : pickFolder;
+    const picked = await pick({ initial: rows[i].text.trim() || null, title: s.label ?? s.key });
+    if (picked) rows[i].text = picked;
   }
   function move(i, d) {
     const j = i + d;
@@ -62,6 +69,7 @@
     {#each rows as r, i (r.id)}
       <li class:bad={!!problems[i]}>
         <input class="np-input np-mono" bind:value={r.text} spellcheck="false" autocomplete="off" aria-label="Entry {i + 1}" onkeydown={(e) => onKey(e, i)} />
+        {#if paths}<button class="np-btn np-btn-sm" onclick={() => browse(i)}>Browse…</button>{/if}
         <button class="icon" title="Up" aria-label="Move up" disabled={i === 0} onclick={() => move(i, -1)}><Icon name="chevron-up" size={13} /></button>
         <button class="icon" title="Down" aria-label="Move down" disabled={i === rows.length - 1} onclick={() => move(i, 1)}><Icon name="chevron-down" size={13} /></button>
         <button class="icon" title="Remove" aria-label="Remove entry {i + 1}" onclick={() => rows.splice(i, 1)}><Icon name="x" size={13} /></button>
@@ -96,7 +104,7 @@
   }
   li {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto auto;
     gap: 2px;
     align-items: center;
   }

@@ -95,7 +95,7 @@ internal static class CoreRpc
         ["plugins.setEnabled"] = [Req("id"), Req("enabled", RpcParamType.Boolean)],
         ["settings.set"] = [Req("path"), Opt("value", RpcParamType.Any)],
         ["settings.replace"] = [Req("settings", RpcParamType.Object), Opt("base", RpcParamType.Object)],
-        ["fs.dirs"] = [Opt("path")],
+        ["fs.dirs"] = [Opt("path"), Opt("files", RpcParamType.Boolean)],
         ["events.recent"] = [Opt("max", RpcParamType.Integer)],
         ["logs.recent"] = [Opt("max", RpcParamType.Integer)],
     };
@@ -450,7 +450,7 @@ internal static class CoreRpc
             return clients?.Clients() ?? [];
         }, readOnly: true);
 
-        a.Add("fs.dirs", "Folder picker: { path? } → { path, parent, dirs: {name,path}[], roots }", req => ListDirectories(req.Str("path")), readOnly: true);
+        a.Add("fs.dirs", "Folder and file picker: { path?, files? } → { path, parent, dirs: {name,path}[], files?: {name,path}[] (with files: true), roots }", req => ListDirectories(req.Str("path"), req.Bool("files") == true), readOnly: true);
 
         a.Add("tools.list", "Tool registrations → { name, label, description, category, readOnly, pluginId, active, disabled, priority }[]", _ =>
         {
@@ -519,7 +519,7 @@ internal static class CoreRpc
         return full;
     }
 
-    private static object ListDirectories(string? requested)
+    private static object ListDirectories(string? requested, bool withFiles = false)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var path = string.IsNullOrWhiteSpace(requested) ? home : requested.Trim();
@@ -548,7 +548,14 @@ internal static class CoreRpc
             throw new RpcException("forbidden", $"Access denied: {path}");
         }
         var roots = OperatingSystem.IsWindows() ? Directory.GetLogicalDrives() : new[] { "/", home };
-        return new { path = dir.FullName, parent = dir.Parent?.FullName, dirs, roots };
+        if (!withFiles) return new { path = dir.FullName, parent = dir.Parent?.FullName, dirs, roots };
+        var files = dir.EnumerateFiles("*", options)
+            .Where(f => !f.Name.StartsWith('.'))
+            .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(2000)
+            .Select(f => (object)new { name = f.Name, path = f.FullName })
+            .ToList();
+        return new { path = dir.FullName, parent = dir.Parent?.FullName, dirs, files, roots };
     }
 
     private static JsonElement? SafeElement(object? data)

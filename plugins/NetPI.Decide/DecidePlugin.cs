@@ -25,10 +25,10 @@ public sealed class DecidePlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Str("decide.baseUrl", "Server URL", "", "Empty: the AiProxy/AiGateway server (the first AiProxy provider).") with { Subgroup = "Server" },
-                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070). Several, comma-separated (for loadouts that change the model ids): the first one loaded is used.") with { Subgroup = "Server", Keywords = ["fallback", "loadout"] },
+                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070). Several, comma-separated (for loadouts that change the model ids): the first one loaded is used.") with { Type = "pickText", Options = ["@models"], Subgroup = "Server", Keywords = ["fallback", "loadout"] },
                 SettingInfo.Int("decide.maxItems", "Most items per call", 500, null, 1, 5000) with { Subgroup = "Batches" },
                 SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16) with { Subgroup = "Batches" },
-                SettingInfo.Str("decide.bulkModel", "Bulk decision model", "", "Explicit model for multi-item work; empty keeps the caller's choice. Does not load models.") with { Subgroup = "Batches" },
+                SettingInfo.Str("decide.bulkModel", "Bulk decision model", "", "Explicit model for multi-item work; empty keeps the caller's choice. Does not load models.") with { Type = "pickText", Options = ["@models"], Subgroup = "Batches" },
                 SettingInfo.Int("decide.bulkThreshold", "Items before bulk routing", 8, null, 2, 5000) with { Subgroup = "Batches" },
                 SettingInfo.Number("decide.groupSimilarity", "Share answers between near-identical items", DecideTool.DefaultGroupSimilarity,
                     "With embeddings, decide items at or above this cosine share one decision (a log line that differs only in a timestamp). Identical items always do. 0: only identical ones. Kept high: lines that differ in an error code must stay apart.", 0, 1) with { Subgroup = "Batches", Advanced = true },

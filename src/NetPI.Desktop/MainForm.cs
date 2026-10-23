@@ -389,6 +389,9 @@ internal sealed class MainForm : Form
                 var path = PickFolder(Str(msg, "initial"), Str(msg, "title"));
                 Post(new JsonObject { ["type"] = "pickFolderResult", ["id"] = id, ["path"] = path });
                 break;
+            case "pickFile":
+                Post(new JsonObject { ["type"] = "pickFileResult", ["id"] = id, ["path"] = PickFile(Str(msg, "initial"), Str(msg, "title")) });
+                break;
             case "openExternal":
                 if (Str(msg, "url") is { } url) OpenExternal(url);
                 break;
@@ -458,6 +461,22 @@ internal sealed class MainForm : Form
         };
         if (!string.IsNullOrWhiteSpace(initial) && Directory.Exists(initial)) dialog.InitialDirectory = initial;
         return dialog.ShowDialog(this) == DialogResult.OK ? dialog.SelectedPath : null;
+    }
+
+    private string? PickFile(string? initial, string? title)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = string.IsNullOrWhiteSpace(title) ? "Choose a file" : title,
+            CheckFileExists = true,
+            Filter = "All files (*.*)|*.*",
+        };
+        if (!string.IsNullOrWhiteSpace(initial))
+        {
+            if (File.Exists(initial)) { dialog.InitialDirectory = Path.GetDirectoryName(initial); dialog.FileName = Path.GetFileName(initial); }
+            else if (Directory.Exists(initial)) dialog.InitialDirectory = initial;
+        }
+        return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
     }
 
     private static void OpenExternal(string url)

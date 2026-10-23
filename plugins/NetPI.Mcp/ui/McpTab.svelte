@@ -4,6 +4,7 @@
   let { ctx } = $props();
   let servers = $state([]), tools = $state([]), selected = $state(''), error = $state(''), busy = $state(false);
   let editing = $state(false), isNew = $state(false), id = $state(''), draft = $state.raw({}), query = $state('');
+  let serverTools = $state.raw([]); // the tools the server being edited offers: the form's tool lists choose from them
   const filtered = $derived(tools.filter(t => (t.name + ' ' + t.description).toLowerCase().includes(query.toLowerCase())));
   async function load() {
     // which server this load is about: two clicks in a row race, and the slower answer must not list the first
@@ -52,6 +53,8 @@
     }
     id = server?.id ?? '';
     isNew = !server;
+    serverTools = [];
+    if (server) ctx.rpc('mcp.tools', { serverId: server.id }).then((r) => { if (id === server.id) serverTools = r?.tools ?? []; }).catch(() => {});
     draft = config ?? { enabled: true, transport: 'stdio' };
     editing = true;
   }
@@ -99,7 +102,7 @@
   <p class="np-dim np-small hint">External tools are discovered on demand. Only search and call schemas enter a chat by default.</p>
   {#if error && !editing}<p class="err np-small" role="alert">{error}</p>{/if}
   {#if editing}
-    <ServerForm {isNew} initialId={id} base={draft} {busy} {error} onsave={save} oncancel={() => { editing = false; error = ''; }} />
+    <ServerForm {isNew} initialId={id} base={draft} tools={serverTools} {busy} {error} onsave={save} oncancel={() => { editing = false; error = ''; }} />
   {/if}
   {#if !servers.length && !editing}<p class="np-empty">No servers configured.</p>{/if}
   {#each servers as server (server.id)}

@@ -489,7 +489,10 @@ opens them right below itself; it starts open when one of them is set or the dia
 and Backups sections lead with their views.
 
 **Fields.** `SettingField` renders one control per type (switch, number with unit and range, text, secret with an eye, choice,
-list, model with the searchable list, folder, file, agents with the agent picker); a change saves that key alone (`settings.set`, on change or blur),
+list, model with the searchable list, folder and file with Browse (the native dialog in the desktop app, `pickFolder` /
+`pickFile` in `lib/folderPicker.js`, else a browser over `fs.dirs`), folders and files (lists of paths, Browse per row in
+the list editor), pick / pickText (`SettingPick`: the kit's `PickList` over what the setting's options offer, loaded when
+it shows), agents with the agent picker, and a string with options as quick choices beside its field); a change saves that key alone (`settings.set`, on change or blur),
 **Reset** removes it so the default applies again, a bad value is refused in place, a badge says when a change applies
 (`restart`, `new sessions`), and a dot marks a set key. The help shows its first sentence, **More** the rest. The ⋯ menu copies
 the key, shows it in settings.json (the editor opens with the key selected) and resets it, with the default beside. Defaults
@@ -910,6 +913,7 @@ components rather than copies of them.
 | `Segmented` | `options` (`{ value, label, icon?, count?, tone?, title? }[]`), `bind:value`, `onchange`, `fit` (default `true`: steps down to labels only → icons + selected label → icons only to stay inside its container; the icon steps need an `icon` on every option). Buttons carry `data-value`. |
 | `Menu` | `items` (`{ label, icon?, hint?, checked?, danger?, disabled?, keepOpen?, onclick }`, `{ divider }`, `{ header }`; `keepOpen` for multi-select toggles), `trigger` snippet `({ toggle, open })`, `placement` (`bottom-end` / `bottom-start`); exported `openAt(x, y, items?)`, `openFor(el, items?)`, `close()` for context menus. Follows its anchor when anything scrolls; `openAt` has no anchor (a point), so nothing moves it |
 | `AgentSelect` | `agents` (`agents.list` slots; null: a text field for keys), `bind:value` (a key or an option's value; with `multiple` an array in the order chosen), `options` (`{ value, label, hint? }[]` before the agents: Default, Any, Free…), `placeholder`, `label`, `disabled`, `onchange`. A button naming the choice and a `Menu` of the options and the agents with their model, free or paid, and off / unavailable. Used by the settings' `agents` fields, the idea dialog's refine agent, and the Webhook and Schedule forms |
+| `PickList` | `value` (names in order), `candidates` (`{ value, label?, hint?, group? }[]`), `exclusive` (values that stand alone), `max` (1: one), `custom` (default `true`: a field for a name the menu lacks), `placeholder`, `label`, `disabled`, `onchange(names)`. Chips (a click: Move first / up / down, Remove) and "+ Add" with the candidates by group. Used by the settings' `pick` fields and the MCP server form's tool lists |
 | `Pips` | `busy`, `capacity`, `queued`, `max` (a bar instead of pips above `max`) |
 | `Collapsible` | `title` or `header` snippet, `bind:open` |
 | `Markdown` | `text`, `highlight` (default `true`) |

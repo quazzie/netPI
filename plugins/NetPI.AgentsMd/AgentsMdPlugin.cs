@@ -24,7 +24,7 @@ public sealed class AgentsMdPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.List("agentsMd.fileNames", "Instruction file names", ["AGENTS.md", "CLAUDE.md"], "The first match per folder, from the root down to the working folder."),
-                SettingInfo.List("agentsMd.extraFiles", "Always include", [], "Paths of more instruction files."),
+                SettingInfo.List("agentsMd.extraFiles", "Always include", [], "Paths of more instruction files.") with { Type = "files" },
                 new SettingInfo { Key = "agentsMd.guidance", Type = "text", Label = "How agents use AGENTS.md", Default = System.Text.Json.Nodes.JsonValue.Create(InstructionsSection.Default), Help = "The \"# Instruction files\" section of the system prompt; empty leaves it out.", Applies = "new sessions" },
             ],
         });

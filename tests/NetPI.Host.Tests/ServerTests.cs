@@ -536,6 +536,11 @@ public static class ServerTests
             Check.True(fs["parent"] is not null);
             Directory.CreateDirectory(Path.Combine(dir, ".hidden"));
             Check.Equal(1, (await Call("fs.dirs", new { path = dir }))!["dirs"]!.AsArray().Count, "hidden folders are skipped");
+            File.WriteAllText(Path.Combine(dir, "notes.md"), "x");
+            File.WriteAllText(Path.Combine(dir, ".secret"), "x");
+            Check.Equal(null, (await Call("fs.dirs", new { path = dir }))!["files"], "files only when asked for (the folder picker)");
+            var withFiles = (await Call("fs.dirs", new { path = dir, files = true }))!["files"]!.AsArray();
+            Check.Equal("notes.md", string.Join(",", withFiles.Select(f => f!["name"]!.GetValue<string>())), "the file picker lists the files, not the hidden ones");
             var home = (await Call("fs.dirs"))!;
             Check.Equal(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), home["path"]!.GetValue<string>());
 

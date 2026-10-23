@@ -4,13 +4,14 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import { rpc } from '../../lib/rpc.svelte.js';
 
-  /** Browser fallback folder picker (fs.dirs). data: { initial, title, resolve } */
+  /** Browser fallback folder or file picker (fs.dirs). data: { initial, title, resolve, files? } */
   let { data, onclose } = $props();
 
   let path = $state('');
   let input = $state('');
   let parent = $state(null);
   let dirs = $state.raw([]);
+  let files = $state.raw([]);
   let roots = $state.raw([]);
   let loading = $state(false);
   let error = $state('');
@@ -22,12 +23,13 @@
     loading = true;
     error = '';
     try {
-      const res = await rpc('fs.dirs', p ? { path: p } : {});
+      const res = await rpc('fs.dirs', { ...(p ? { path: p } : {}), ...(data.files ? { files: true } : {}) });
       if (mine !== seq) return;
       path = res.path ?? '';
       input = path;
       parent = res.parent ?? null;
       dirs = res.dirs ?? [];
+      files = res.files ?? [];
       roots = res.roots ?? [];
       selected = null;
     } catch (e) {
@@ -36,7 +38,15 @@
       if (mine === seq) loading = false;
     }
   }
-  onMount(() => go(data.initial));
+  // a file to start from: its folder, with it chosen
+  onMount(async () => {
+    const start = data.initial ?? null;
+    if (data.files && start && /[\\/][^\\/]+\.[^\\/]+$/.test(start)) {
+      await go(start.replace(/[\\/][^\\/]+$/, ''));
+      if (!error) selected = start;
+      if (error) await go(null);
+    } else await go(start);
+  });
 
   function done(v) {
     data.resolve(v);
@@ -75,7 +85,13 @@
             <span class="np-ellipsis">{d.name}</span>
           </button>
         {:else}
-          <div class="np-empty">No subfolders</div>
+          {#if !files.length}<div class="np-empty">No subfolders</div>{/if}
+        {/each}
+        {#each files as f (f.path)}
+          <button class="dir file" class:sel={selected === f.path} onclick={() => (selected = f.path)} ondblclick={() => done(f.path)}>
+            <Icon name="file" size={14} />
+            <span class="np-ellipsis">{f.name}</span>
+          </button>
         {/each}
       {/if}
     </div>
@@ -83,7 +99,11 @@
   {#snippet footer()}
     <span class="np-mono np-dim np-small np-ellipsis chosen">{selected ?? path}</span>
     <button class="np-btn np-btn-ghost" onclick={() => done(null)}>Cancel</button>
-    <button class="np-btn np-btn-primary" disabled={!path || loading} onclick={() => done(selected ?? path)}>Select folder</button>
+    {#if data.files}
+      <button class="np-btn np-btn-primary" disabled={!selected || !files.some((f) => f.path === selected) || loading} onclick={() => done(selected)}>Select file</button>
+    {:else}
+      <button class="np-btn np-btn-primary" disabled={!path || loading} onclick={() => done(selected ?? path)}>Select folder</button>
+    {/if}
   {/snippet}
 </Modal>
 

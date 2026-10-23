@@ -55,11 +55,12 @@ public sealed class WorkspacePlugin : INetPiPlugin
                 SettingInfo.Bool(WorkspaceProvisioner.DefaultIsolationSetting, "Give each writing worker its own worktree", true,
                     "A subagent or chat that writes gets its own git worktree and branch instead of sharing the project's checkout. " +
                     "Projects that are not git repositories get a plain folder, and are unaffected."),
-                SettingInfo.Text(WorkspaceProvisioner.BranchPrefixSetting, "Branch prefix for worktrees", "netpi/",
+                SettingInfo.Str(WorkspaceProvisioner.BranchPrefixSetting, "Branch prefix for worktrees", "netpi/",
                     "The branch name of a worktree NetPI creates is this prefix plus the workspace name."),
-                SettingInfo.Text(WorkspaceProvisioner.WorktreeRootSetting, "Where worktrees are created", "",
+                SettingInfo.Folder(WorkspaceProvisioner.WorktreeRootSetting, "Where worktrees are created",
                     "Empty: inside the project, in its .worktrees folder. Otherwise this folder (a relative path is taken from the project). "
-                    + "A root inside the repository is kept out of git's status through .git/info/exclude, so no branch gains an ignore line."),
+                    + "A root inside the repository is kept out of git's status through .git/info/exclude, so no branch gains an ignore line.",
+                    "the project's .worktrees folder"),
             ],
         });
 

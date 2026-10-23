@@ -52,7 +52,7 @@ Remote resources are negotiated, listed and read. A server may advertise resourc
 
 ## Configuration
 
-Use the MCP tab to add, edit, enable, inspect, refresh or reconnect servers. Settings are a map at `mcp.servers` keyed by a stable server id:
+Use the MCP tab to add, edit, enable, inspect, refresh or reconnect servers. In its form, "Only these tools", "Schemas always in the chat" and "Safe to call at the same time" choose from the tools the server offers now (`mcp.tools`; the kit's `PickList`), and a name it does not offer yet can be typed. Settings are a map at `mcp.servers` keyed by a stable server id:
 
 ```json
 {

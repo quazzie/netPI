@@ -13,7 +13,7 @@ public static class CoreRpcTests
         ("app.info", "Host information → { version, os, home, appDir, defaultWorkspace, desktop, maxMessageBytes, ... }", true),
         ("events.flush", "Wait until every event published before this call has been delivered: its answer follows them on the same socket → true", true),
         ("events.recent", "Recent bus events: { max? } → { type, sid, d, seq, ts, source }[]", true),
-        ("fs.dirs", "Folder picker: { path? } → { path, parent, dirs: {name,path}[], roots }", true),
+        ("fs.dirs", "Folder and file picker: { path?, files? } → { path, parent, dirs: {name,path}[], files?: {name,path}[] (with files: true), roots }", true),
         ("logs.recent", "Recent log entries: { max? } → { time, level, category, message, exception? }[]", true),
         ("models.list", "Models of all providers: { refresh? } → { models, defaultModel }", true),
         ("plugins.list", "Plugins → PluginInfo[]", true),

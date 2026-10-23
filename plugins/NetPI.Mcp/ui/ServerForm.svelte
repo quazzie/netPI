@@ -2,10 +2,12 @@
   // The add/edit dialog of an MCP server: fields for what a server needs (how to reach it, what to pass it), the limits and
   // tool lists folded away, and a JSON view for anything the fields do not cover. The configuration is the plugin's own
   // `mcp.servers` entry; unknown keys in it are carried through untouched (config.js).
-  import { Modal, Segmented, Collapsible } from '@netpi/kit';
-  import { configToForm, formToConfig } from './config.js';
+  import { Modal, Segmented, Collapsible, PickList } from '@netpi/kit';
+  import { configToForm, formToConfig, lines } from './config.js';
 
-  let { isNew = false, initialId = '', base = {}, busy = false, error = '', onsave, oncancel } = $props();
+  /** tools: the tools the server offers now (mcp.tools), for the tool lists to choose from; a name can still be typed. */
+  let { isNew = false, initialId = '', base = {}, tools = [], busy = false, error = '', onsave, oncancel } = $props();
+  const toolChoices = $derived(tools.map((t) => ({ value: t.name, hint: (t.description ?? '').split('\n')[0].slice(0, 90) })));
 
   // svelte-ignore state_referenced_locally
   let id = $state(initialId);
@@ -128,18 +130,18 @@
               <input class="np-input" bind:value={f.callTimeoutMs} placeholder="60000" inputmode="numeric" />
             </label>
           </div>
-          <label class="fld">
+          <div class="fld">
             <span class="f-label">Only these tools</span>
-            <textarea class="np-input np-mono" rows="2" bind:value={f.tools} placeholder="empty = every tool the server offers" spellcheck="false"></textarea>
-          </label>
-          <label class="fld">
+            <PickList value={lines(f.tools)} candidates={toolChoices} placeholder="Every tool the server offers" label="Only these tools" onchange={(v) => (f.tools = v.join('\n'))} />
+          </div>
+          <div class="fld">
             <span class="f-label">Schemas always in the chat</span>
-            <textarea class="np-input np-mono" rows="2" bind:value={f.pinned} placeholder="tool names, one per line" spellcheck="false"></textarea>
-          </label>
-          <label class="fld">
+            <PickList value={lines(f.pinned)} candidates={toolChoices} label="Schemas always in the chat" onchange={(v) => (f.pinned = v.join('\n'))} />
+          </div>
+          <div class="fld">
             <span class="f-label">Safe to call at the same time (read-only)</span>
-            <textarea class="np-input np-mono" rows="2" bind:value={f.readOnly} placeholder="tool names, one per line" spellcheck="false"></textarea>
-          </label>
+            <PickList value={lines(f.readOnly)} candidates={toolChoices} label="Safe to call at the same time (read-only)" onchange={(v) => (f.readOnly = v.join('\n'))} />
+          </div>
           <label class="fld">
             <span class="f-label">Resources</span>
             <textarea class="np-input np-mono" rows="2" bind:value={f.resources} placeholder="a URI, or a prefix ending in *; empty = all" spellcheck="false"></textarea>

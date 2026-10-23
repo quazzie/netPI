@@ -10,6 +10,8 @@ namespace NetPI.Providers.ClaudeCli;
 internal sealed class ClaudeCliOptions
 {
     public static readonly string[] DefaultModels = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
+    /// <summary>The CLI's built-in tools, the choices for <c>tools</c> (another name can still be typed).</summary>
+    public static readonly string[] KnownTools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task", "TodoWrite"];
     public static readonly string[] Efforts = ["low", "medium", "high", "xhigh", "max"];
     public static readonly string[] PermissionModes = ["bypassPermissions", "acceptEdits", "plan", "default"];
 
@@ -62,7 +64,8 @@ internal sealed class ClaudeCliOptions
             TimeoutSeconds = Math.Clamp(o.Int("timeoutSeconds") ?? 3600, 10, 14400),
             Tools = string.IsNullOrWhiteSpace(o.Str("tools")) ? "default" : o.Str("tools")!.Trim(),
             PermissionMode = PermissionModes.Contains(mode, StringComparer.OrdinalIgnoreCase) ? mode! : "bypassPermissions",
-            SettingSources = (o.Str("settingSources") ?? "").Trim(),
+            // "user, project" as the settings dialog writes it is --setting-sources user,project
+            SettingSources = string.Join(",", (o.Str("settingSources") ?? "").Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)),
             Connectors = o.Bool("connectors", false),
             Usage = o.Bool("usage", true),
             StallTimeoutSeconds = Math.Clamp(o.Int("stallTimeoutSeconds") ?? 1800, 0, 7200),

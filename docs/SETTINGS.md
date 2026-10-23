@@ -25,7 +25,11 @@ so the default applies again). Its pages: **General** (the look of the app and t
 search, ideas, decisions), **Automation** (schedules, webhooks, the phone), **Safety** (guardrails, workspaces), **Data &
 backups**, **Plugins**, **Advanced** (the port, the log, the SQLite library, and the keys in this file that nothing
 declares) and **settings.json**, which edits the whole file. The search above the pages finds any setting by its label,
-its key or a keyword, and **Changed** lists every key that is set ([UI.md](UI.md), "Settings dialog").
+its key or a keyword, and **Changed** lists every key that is set ([UI.md](UI.md), "Settings dialog"). Names are
+chosen rather than typed where the dialog can list them: the decision, second-opinion and embedding models (the models
+listed now, or the embedding server's own list; an id of a loadout that is not up can still be typed), the tools of
+`plan.mcpAllow` and `autonomy.externalTools`, the Claude CLI's tools and settings files, this PC's addresses for
+`webhooks.bind` and `phone.bind`, and folders and files with Browse.
 
 ## Core
 

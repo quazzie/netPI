@@ -230,3 +230,37 @@ export function deferredList(names, deferred) {
   const keep = names.filter((n) => !deferred.has(n)).sort();
   return ['*', ...keep.map((n) => `!${n}`)];
 }
+
+/**
+ * What a picker setting offers (types `pick`: an array; `pickText`: a comma-separated text, as decide.model reads it). Its
+ * `options` name the candidates: `@models` (the local models the model list has now), `@tools` (NetPI's tools), `@mcpTools`
+ * (the MCP servers' own tool names), `@plugins` (`plugin:<id>`), `rpc:<method>` (a read-only method that answers names),
+ * `=value` (a value that stands alone: default, none), or a plain value (a fixed candidate). `max` 1: one name.
+ * → { sources: string[], fixed: string[], exclusive: string[], max }
+ */
+export function pickSpec(setting) {
+  const sources = [];
+  const fixed = [];
+  const exclusive = [];
+  for (const o of setting?.options ?? []) {
+    if (o.startsWith('@') || o.startsWith('rpc:')) sources.push(o);
+    else if (o.startsWith('=')) {
+      exclusive.push(o.slice(1));
+      fixed.push(o.slice(1));
+    } else fixed.push(o);
+  }
+  return { sources, fixed, exclusive, max: setting?.max ?? 0 };
+}
+
+/** A picker setting's value as names: an array as it is, a text split at commas. */
+export function pickValue(setting, value) {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === 'string') return value.split(',').map((s) => s.trim()).filter(Boolean);
+  return [];
+}
+
+/** Names back to the value the setting stores: null when none (the default applies), a text for `pickText`. */
+export function pickStore(setting, names) {
+  if (!names.length) return null;
+  return setting.type === 'pickText' ? names.join(', ') : names;
+}

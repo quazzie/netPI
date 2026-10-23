@@ -24,7 +24,7 @@ public sealed class EmbeddingsPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Str("embed.baseUrl", "Server URL", "", "An OpenAI-compatible /v1/embeddings server. Empty: the AiProxy/AiGateway server (the first AiProxy provider)."),
-                SettingInfo.Str("embed.model", "Embedding model", "", "Empty switches embeddings off. bge-base-en-v1.5 on the nuc was measured (decisions-lab nuc-plan.md).") with { Keywords = ["embedding", "vector", "semantic", "meaning"] },
+                SettingInfo.Str("embed.model", "Embedding model", "", "Empty switches embeddings off. bge-base-en-v1.5 on the nuc was measured (decisions-lab nuc-plan.md).") with { Type = "pickText", Options = ["rpc:embed.models"], Max = 1, Keywords = ["embedding", "vector", "semantic", "meaning"] },
                 SettingInfo.Str("embed.queryPrefix", "Query prefix", "", "Put in front of search texts only (bge: \"Represent this sentence for searching relevant passages: \"); stored documents get none.") with { Advanced = true },
                 SettingInfo.Int("embed.timeoutMs", "Timeout (ms)", EmbeddingClient.DefaultTimeoutMs, "How long an interactive call waits. Indexing in the background waits up to 30 s per batch.", 100, 60000) with { Advanced = true },
                 SettingInfo.Int("embed.batchSize", "Texts per request", EmbeddingClient.DefaultBatchSize, null, 1, 256) with { Advanced = true },
@@ -55,6 +55,8 @@ public sealed class EmbeddingsPlugin : INetPiPlugin
         });
         context.Rpc.Register(new RpcMethod("embed.status", "The embedding client: { model, baseUrl, available, downUntil?, lastError?, calls, failures, p50Ms }", ReadOnly: true, Params: []),
             (_, _) => Task.FromResult<object?>(client.Status()));
+        context.Rpc.Register(new RpcMethod("embed.models", "The models the embedding server lists (GET /v1/models), for the settings' model picker → { models: string[], error? }", ReadOnly: true, Params: []),
+            async (_, rct) => await client.ListModelsAsync(rct).ConfigureAwait(false));
         return Task.CompletedTask;
     }
 }
@@ -193,6 +195,27 @@ internal sealed class EmbeddingClient(ISettings settings, HttpClient http, Func<
             _lastError = error;
             var wait = TimeSpan.FromTicks(Math.Min(MaxBackoff.Ticks, FirstBackoff.Ticks << Math.Min(_failuresInRow - 1, 16)));
             _downUntil = _now() + wait;
+        }
+    }
+
+    /// <summary>The server's <c>/v1/models</c> ids; an unreachable server answers with its error and no models (a few seconds at most).</summary>
+    public async Task<JsonObject> ListModelsAsync(CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            using var res = await http.GetAsync(Root() + "/v1/models", cts.Token).ConfigureAwait(false);
+            var json = JsonNode.Parse(await res.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false));
+            var ids = (json?["data"] as JsonArray ?? json?["models"] as JsonArray ?? [])
+                .Select(m => m is JsonValue v && v.TryGetValue<string>(out var s) ? s : m?["id"]?.GetValue<string>() ?? m?["name"]?.GetValue<string>())
+                .OfType<string>().Distinct().OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+            return new JsonObject { ["models"] = new JsonArray([.. ids.Select(i => (JsonNode)i)]) };
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or JsonException or InvalidOperationException)
+        {
+            if (ct.IsCancellationRequested) throw;
+            return new JsonObject { ["models"] = new JsonArray(), ["error"] = ex.Message };
         }
     }
 
