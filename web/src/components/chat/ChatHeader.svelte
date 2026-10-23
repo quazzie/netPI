@@ -3,6 +3,7 @@
   import { app, updateSession, openSession } from '../../lib/state/app.svelte.js';
   import { tabs } from '../../lib/state/tabs.svelte.js';
   import { sessionViews, toggleView } from '../../lib/state/ui.svelte.js';
+  import { chatOrigin } from '../../lib/origin.js';
 
   let { session } = $props();
 
@@ -13,6 +14,8 @@
   const parent = $derived(session.parentSessionId ? app.sessionsById.get(session.parentSessionId) : null);
   // a fork (sessions.fork): the chat it came from, while it exists
   const forkedFrom = $derived(session.meta?.forkedFrom?.sessionId ? app.sessionsById.get(session.meta.forkedFrom.sessionId) : null);
+  // a chat a webhook or a schedule started (or its subagent), and whether it read outside text (lib/origin.js)
+  const origin = $derived(chatOrigin(session, (id) => app.sessionsById.get(id)));
 
   function start() {
     value = session.title || '';
@@ -58,6 +61,26 @@
       />
     {:else}
       <button class="title" title="Rename" onclick={start}>{session.title || 'New session'}</button>
+    {/if}
+    {#if origin}
+      <span
+        class="chip"
+        data-testid="chat-origin"
+        title="Started by the {origin.label}: nobody watches it, so a guardrail's question is refused instead of waiting (unless allowed for the {origin.label}), and its changes are in the Autonomy tab"
+      >
+        <Icon name={origin.kind === 'webhook' ? 'zap' : 'history'} size={11} />
+        <span class="lbl np-ellipsis">{origin.name}</span>
+      </span>
+      {#if origin.tainted}
+        <span
+          class="chip warn"
+          data-testid="chat-tainted"
+          title="Read text from outside ({origin.taintedBy}): it may not act in the browser or on the desktop, or change schedules and webhooks (autonomy.taintedBlocked)"
+        >
+          <Icon name="globe" size={11} />
+          <span class="lbl np-ellipsis">outside text</span>
+        </span>
+      {/if}
     {/if}
 
     <span class="spacer"></span>
@@ -106,6 +129,7 @@
     align-items: baseline;
     gap: 10px;
     min-width: 0;
+    container-type: inline-size;
   }
   .crumb,
   .status {
@@ -160,6 +184,35 @@
     font-size: 13.5px;
     font-weight: 600;
     outline: none;
+  }
+  .chip {
+    align-self: center;
+    flex: 0 1 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    max-width: 140px;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    color: var(--fg-dim);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+  }
+  /* a narrow chat keeps the title readable: the chips shrink to their icons (the tooltip says the rest) */
+  @container (max-width: 480px) {
+    .chip {
+      flex: none;
+      padding: 2px 4px;
+    }
+    .chip .lbl {
+      display: none;
+    }
+  }
+  .chip.warn {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 45%, transparent);
   }
   .spacer {
     flex: 1;

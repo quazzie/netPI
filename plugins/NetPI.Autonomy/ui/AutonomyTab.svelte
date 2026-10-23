@@ -184,21 +184,21 @@
     align-items: center;
     gap: 6px;
     padding: 6px 10px;
-    border-bottom: 1px solid var(--np-border, #2a2a2a);
+    border-bottom: 1px solid var(--border);
   }
   .seg {
     padding: 6px 10px 2px;
   }
   .banner {
     padding: 6px 10px;
-    font-size: 12px;
-    color: var(--np-warn, #d9a441);
-    border-bottom: 1px solid var(--np-border, #2a2a2a);
+    font-size: var(--fs-sm);
+    color: var(--warn);
+    border-bottom: 1px solid var(--border);
   }
   .err {
     padding: 4px 10px;
-    font-size: 12px;
-    color: var(--np-err, #e5534b);
+    font-size: var(--fs-sm);
+    color: var(--err);
     overflow-wrap: anywhere;
   }
   .np-list {
@@ -210,11 +210,11 @@
   }
   .row {
     padding: 6px 10px;
-    border-bottom: 1px solid var(--np-border, #2a2a2a);
+    border-bottom: 1px solid var(--border);
     min-width: 0;
   }
   .row.failed .tool {
-    color: var(--np-err, #e5534b);
+    color: var(--err);
   }
   .line {
     display: flex;
@@ -223,12 +223,12 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     line-height: 18px;
   }
   .line.dim {
-    color: var(--np-dim, #8b8b8b);
-    font-size: 11px;
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
   }
   .tool {
     flex: none;
@@ -245,7 +245,7 @@
     flex: 0 1 auto;
   }
   .bad {
-    color: var(--np-err, #e5534b);
+    color: var(--err);
   }
   .btns {
     display: flex;
@@ -258,8 +258,8 @@
     background: none;
     border: 0;
     padding: 0;
-    color: var(--np-accent, #4c8dff);
+    color: var(--accent);
     cursor: pointer;
-    font-size: 11px;
+    font-size: var(--fs-xs);
   }
 </style>
