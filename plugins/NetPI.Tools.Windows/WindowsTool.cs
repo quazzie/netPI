@@ -16,6 +16,9 @@ namespace NetPI.Tools.Windows;
 /// </summary>
 internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAgentTool
 {
+    /// <summary>The longest any open or wait timeout runs, whatever number the model asks for (the shell's own ceiling).</summary>
+    private const int MaxWaitSeconds = 1800;
+
     private sealed class ChatWindow(long hwnd)
     {
         public long Hwnd { get; } = hwnd;
@@ -113,7 +116,7 @@ internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAge
                 var app = a.Str(ToolPathArgs.WindowsAppNames);   // the names the guardrails read too
                 if (string.IsNullOrWhiteSpace(app)) return ToolResult.Error("open needs an app: a name (notepad, calc), a path, or a URI (ms-settings:).");
                 var req = new JsonObject { ["cmd"] = "launch", ["exe"] = app.Trim(), ["args"] = a.Str(ToolPathArgs.WindowsArgsNames) ?? "", ["title"] = a.Str("title") };
-                var timeout = a.Int("timeout") ?? 20;
+                var timeout = Math.Clamp(a.Int("timeout") ?? 20, 1, MaxWaitSeconds);
                 req["timeout"] = timeout * 1000;
                 var w = await agent.CallAsync(req, ct, timeout + 10).ConfigureAwait(false);
                 var chat = _windows[sid] = new ChatWindow(w["hwnd"]!.GetValue<long>());
@@ -245,14 +248,14 @@ internal sealed class WindowsTool(IPluginContext ctx, WindowsAgent agent) : IAge
             case "wait":
             {
                 var text = a.Str("text", "for", "until")?.Trim();
-                var seconds = a.Double("seconds", "s");
+                var seconds = a.Double("seconds", "s") is { } sec ? Math.Clamp(double.IsNaN(sec) ? 0 : sec, 0, MaxWaitSeconds) : (double?)null;
                 if (string.IsNullOrEmpty(text))
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(Math.Max(0, seconds ?? 1)), ct).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(seconds ?? 1), ct).ConfigureAwait(false);
                     return ($"Waited {seconds ?? 1:0.#} s.", false);
                 }
                 var gone = a.Bool("gone") == true;
-                var timeout = a.Double("timeout") ?? seconds ?? 30;
+                var timeout = a.Double("timeout") is { } t ? Math.Clamp(double.IsNaN(t) ? 0 : t, 0, MaxWaitSeconds) : seconds ?? 30;
                 for (var until = DateTime.UtcNow.AddSeconds(timeout); ;)
                 {
                     var (_, items) = await ReadWindowAsync(win, offscreen: false, ct).ConfigureAwait(false);
