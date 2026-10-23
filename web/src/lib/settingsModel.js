@@ -209,13 +209,24 @@ export function parseList(text) {
     .filter(Boolean);
 }
 
+/** An IPv6 address as text: hex groups of 1-4 digits, eight of them, or fewer with one `::` for the rest (an IPv4 tail is not taken). */
+function isIPv6(addr) {
+  if (!/^[0-9a-f:]+$/i.test(addr) || !addr.includes(':')) return false;
+  const halves = addr.split('::');
+  if (halves.length > 2) return false;
+  const groups = (h) => (h === '' ? [] : h.split(':'));
+  const all = halves.flatMap(groups);
+  if (!all.every((g) => /^[0-9a-f]{1,4}$/i.test(g))) return false;
+  return halves.length === 2 ? all.length < 8 : all.length === 8;
+}
+
 /** An address or a CIDR range (IPv4 or IPv6) as `webhooks.allowFrom` / `phone.allowFrom` take it; null when valid. */
 export function cidrProblem(text) {
   const t = String(text ?? '').trim();
   const [addr, bits, extra] = t.split('/');
   if (extra !== undefined || !addr) return 'an address, or an address/bits range';
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr);
-  const v6 = !v4 && /^[0-9a-f:]+$/i.test(addr) && addr.includes(':');
+  const v6 = !v4 && isIPv6(addr);
   if (v4 && v4.slice(1).some((n) => +n > 255)) return 'each part of an IPv4 address is 0–255';
   if (!v4 && !v6) return 'not an IPv4 or IPv6 address';
   if (bits !== undefined && !(/^\d+$/.test(bits) && +bits <= (v4 ? 32 : 128))) return `bits are 0–${v4 ? 32 : 128}`;

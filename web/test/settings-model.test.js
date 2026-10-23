@@ -122,7 +122,8 @@ test('unknownKeys: undeclared leaves, not under a declared key or a dynamic root
 
 test('cidrProblem: addresses and ranges of both families', () => {
   for (const ok of ['127.0.0.1', '127.0.0.1/32', '192.168.1.0/24', '::1', '::1/128', 'fe80::/10', '0.0.0.0/0']) assert.equal(cidrProblem(ok), null, ok);
-  for (const bad of ['', 'localhost', '256.1.1.1', '10.0.0.0/33', '::1/129', '1.2.3.4/x', '1.2.3.4/8/9']) assert.ok(cidrProblem(bad), bad);
+  for (const bad of ['', 'localhost', '256.1.1.1', '10.0.0.0/33', '::1/129', '1.2.3.4/x', '1.2.3.4/8/9', '::::::', 'fe80:::1', '1::2::3', '12345::1', '1:2:3:4:5:6:7', '1:2:3:4:5:6:7:8:9', ':1:2:3:4:5:6:7']) assert.ok(cidrProblem(bad), bad);
+  for (const ok of ['1:2:3:4:5:6:7:8', '1:2:3:4:5:6:7::', '::', '2001:db8::1/64']) assert.equal(cidrProblem(ok), null, ok);
 });
 
 test('deferredList: "*" with the declared tools as exceptions, so later tools are deferred like the default', () => {
