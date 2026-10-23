@@ -65,6 +65,9 @@ internal sealed class BrowserTab
     public bool Shared { get; }
     public bool IsOpen => _cdp.IsOpen && SessionId.Length > 0;
     public DateTime LastUse { get; private set; } = DateTime.UtcNow;
+
+    /// <summary>An action is running on this tab (the browser must not be closed under it).</summary>
+    public bool IsBusy => _busy.CurrentCount == 0;
     public bool HasViewers => Volatile.Read(ref _viewers) > 0;
 
     /// <summary>A screencast frame for the views: JPEG data (base64) and the frame's metadata.</summary>
@@ -102,6 +105,9 @@ internal sealed class BrowserTab
         TargetId = targetId;
         SessionId = r.GetProperty("sessionId").GetString()!;
         _children.Clear();
+        // a dialog of the session we left can no longer be answered, and its close event will not come
+        _dialog = null;
+        _dialogOpened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await Task.WhenAll(
             Send("Page.enable", null, ct),
             Send("Accessibility.enable", null, ct),
@@ -368,7 +374,11 @@ internal sealed class BrowserTab
             return await FinishAsync(action, single.Text, before, o, ct, error: single.Error, full: action is "open" or "snapshot",
                 all: action == "snapshot" && new ToolArgs(args).Bool("all", "full") == true).ConfigureAwait(false);
         }
-        finally { _busy.Release(); }
+        finally
+        {
+            LastUse = DateTime.UtcNow;
+            _busy.Release();
+        }
     }
 
     internal static string Normalize(string action)
@@ -550,7 +560,14 @@ internal sealed class BrowserTab
                 if (_dialog is not { } d) return new Outcome("No dialog is open.", Error: true, Refuse: true);
                 var accept = a.Bool("accept", "ok", "yes") ?? true;
                 var prompt = a.Str("text", "value");
-                await Send("Page.handleJavaScriptDialog", new { accept, promptText = prompt }, ct).ConfigureAwait(false);
+                try { await Send("Page.handleJavaScriptDialog", new { accept, promptText = prompt }, ct).ConfigureAwait(false); }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("No dialog is showing", StringComparison.OrdinalIgnoreCase))
+                {
+                    // the page closed it already: forget it, or every other action would be refused for a dialog that is gone
+                    _dialog = null;
+                    _dialogOpened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    return new Outcome("No dialog is open.", Error: true, Refuse: true);
+                }
                 _dialog = null;
                 _dialogOpened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 await SettleAsync(ct).ConfigureAwait(false);
@@ -697,7 +714,9 @@ internal sealed class BrowserTab
         var text = a.Str("text", "for", "until")?.Trim();
         var gone = a.Bool("gone", "disappear") == true;
         var seconds = a.Double("seconds", "s");
-        var timeout = a.Double("timeout") ?? (seconds ?? 30);
+        // a bound: a huge number would hold the tab (and the browser's idle clock) for good, or overflow the clock
+        seconds = seconds is { } sec ? Math.Clamp(sec, 0, 3600) : null;
+        var timeout = Math.Clamp(a.Double("timeout") ?? (seconds ?? 30), 0, 3600);
         if (string.IsNullOrEmpty(text))
         {
             await Task.Delay(TimeSpan.FromSeconds(Math.Max(0, seconds ?? 1)), ct).ConfigureAwait(false);

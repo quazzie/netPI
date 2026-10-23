@@ -21,6 +21,7 @@ internal sealed class BrowserHost : IAsyncDisposable
     private readonly IPluginContext _ctx;
     private readonly SemaphoreSlim _launch = new(1, 1);
     private readonly ConcurrentDictionary<string, BrowserTab> _tabs = new();
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _opening = new();  // one tab being found or made per chat
     private readonly ConcurrentDictionary<int, SharedTab> _pool = new();  // shared by the user, not given to a chat yet
     private readonly ConcurrentDictionary<string, Action<string, JsonElement>> _listeners = new();  // scratch pages by session
     private readonly ConcurrentDictionary<string, (BrowserTab Tab, string Name)> _downloads = new();
@@ -54,6 +55,15 @@ internal sealed class BrowserHost : IAsyncDisposable
     public IReadOnlyCollection<SharedTab> Pool => [.. _pool.Values.OrderBy(t => t.SharedAt)];
 
     public async Task<BrowserTab?> TabAsync(string sessionId, bool create, string where, CancellationToken ct)
+    {
+        // the agent's call and the Browser view's "open" can arrive together: the second finds the first's tab
+        var gate = _opening.GetOrAdd(sessionId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try { return await FindOrOpenTabAsync(sessionId, create, where, ct).ConfigureAwait(false); }
+        finally { gate.Release(); }
+    }
+
+    private async Task<BrowserTab?> FindOrOpenTabAsync(string sessionId, bool create, string where, CancellationToken ct)
     {
         _lastUse = DateTime.UtcNow;
         if (_tabs.TryGetValue(sessionId, out var tab))
@@ -282,8 +292,19 @@ internal sealed class BrowserHost : IAsyncDisposable
         _lastUse = DateTime.UtcNow;
         var cdp = await EnsureOwnAsync(ct).ConfigureAwait(false);
         var context = (await cdp.SendAsync("Target.createBrowserContext", new { disposeOnDetach = true }, null, ct).ConfigureAwait(false)).GetProperty("browserContextId").GetString()!;
-        var target = (await cdp.SendAsync("Target.createTarget", new { url = "about:blank", browserContextId = context, width, height }, null, ct).ConfigureAwait(false)).GetProperty("targetId").GetString()!;
-        var session = (await cdp.SendAsync("Target.attachToTarget", new { targetId = target, flatten = true }, null, ct).ConfigureAwait(false)).GetProperty("sessionId").GetString()!;
+        string session;
+        try
+        {
+            var target = (await cdp.SendAsync("Target.createTarget", new { url = "about:blank", browserContextId = context, width, height }, null, ct).ConfigureAwait(false)).GetProperty("targetId").GetString()!;
+            session = (await cdp.SendAsync("Target.attachToTarget", new { targetId = target, flatten = true }, null, ct).ConfigureAwait(false)).GetProperty("sessionId").GetString()!;
+        }
+        catch (Exception)
+        {
+            // the context lives as long as the browser's connection: without a page object nobody else disposes it
+            try { await cdp.SendAsync("Target.disposeBrowserContext", new { browserContextId = context }, null, CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception) { }
+            throw;
+        }
         var page = new ScratchPage(cdp, context, session, () => _listeners.TryRemove(session, out _));
         _listeners[session] = page.OnEvent;
         return page;
@@ -347,9 +368,10 @@ internal sealed class BrowserHost : IAsyncDisposable
     private async Task CloseIfIdleAsync()
     {
         var minutes = WebOptions.Read(_ctx.Settings).BrowserIdleMinutes;
-        if ((_ownProcess is null && _chrome is null) || DateTime.UtcNow - _lastUse < TimeSpan.FromMinutes(minutes)) return;
-        // a chat's tab someone is looking at keeps its browser
-        if (_tabs.Values.Any(t => t.HasViewers)) return;
+        var idle = TimeSpan.FromMinutes(minutes);
+        if ((_ownProcess is null && _chrome is null) || DateTime.UtcNow - _lastUse < idle) return;
+        // a chat's tab someone is looking at keeps its browser, and so does one in the middle of a long action
+        if (_tabs.Values.Any(t => t.HasViewers || t.IsBusy || DateTime.UtcNow - t.LastUse < idle)) return;
         if (!await _launch.WaitAsync(0).ConfigureAwait(false)) return;
         try
         {
