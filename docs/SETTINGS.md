@@ -279,9 +279,11 @@ where a chat runs, the profile who it is.
   switched off. An inactive agent stays listed with the reason; a chat on it stops at once with a notice, and waiting
   runs are told too. Runs already going finish.
 - **Instances:** default the model's slots for a local model, 1 for a cloud one. A local model's shared capacity is its
-  positive catalog `concurrency`, otherwise `models.localSlots`, clamped to at least 1. Every named agent and plain
-  model call on that model shares this limit; each agent's instances are an additional limit. Increasing instances
-  does not create more model capacity. Different model refs have separate limits.
+  positive catalog `concurrency`, otherwise `models.localSlots`, clamped to at least 1. An agent with a blank instance
+  count follows the model's catalog `concurrency` as it updates (a local backend's list is polled every few seconds, and
+  on a start or reload the agents plugin takes a fresh list, so a restart does not pin it to the old slot count).
+  Every named agent and plain model call on that model shares this limit; each agent's instances are an additional
+  limit. Increasing instances does not create more model capacity. Different model refs have separate limits.
   Settings/catalog changes refresh existing queues. Reducing capacity lets active calls finish before more start;
   changing an agent's model keeps its active calls counted against their original model until they finish.
 - **A run picks no agent up front.** It is eligible for every agent on its chat's model that can take work, and the first

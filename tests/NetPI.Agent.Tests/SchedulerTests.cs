@@ -14,6 +14,7 @@ public static class SchedulerTests
         t.Add("agents: chats run on their agent (taken, agents.use, agents.setEnabled); an inactive agent stops the chat at once", ChatsOnAgents);
         t.Add("scheduler: priority, FIFO, cancellation, idempotent release", PriorityAndCancel);
         t.Add("agents: more instances wake waiters; instances follow the catalog", CapacityIncrease);
+        t.Add("agents: a blank instance count takes the model's slots, and a start asks for a fresh list, not the stale cache", BlankInstancesFollowTheCatalog);
         t.Add("scheduler: agents.changed is debounced, and only sent on changes", Debounce);
         t.Add("scheduler: a price or a daily cap set on an agent is announced (agents.changed)", PriceIsAnnounced);
         t.Add("scheduler: the queue has no cap and no longest wait: a run waits until it gets a slot or is cancelled", QueueHasNoLimits);
@@ -354,6 +355,16 @@ public static class SchedulerTests
         ((IEventBus)h.Bus).Publish(EventTypes.ModelsChanged, new JsonObject());
         await h.Bus.DrainAsync();
         Check.Equal(3, s.Snapshot().Single(p => p.Key == "a").Capacity);
+    }
+
+    private static async Task BlankInstancesFollowTheCatalog()
+    {
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local" }""")),
+            plugins: TestHost.Plugins.Agents);
+        // on (re)start the plugin takes a fresh list, so an agent with a blank instance count is not pinned to the
+        // catalog cache's old slot count (a cache that is up to models.refreshSeconds stale after a reload)
+        await Wait.Until(() => h.Catalog.LastListRefresh == true, "the plugin asks for a fresh model list on start");
+        Check.Equal(2, h.Scheduler!.Snapshot().Single(p => p.Key == "a").Capacity, "a blank instance count takes the model's slots");
     }
 
     private static async Task Debounce()

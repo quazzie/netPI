@@ -140,8 +140,12 @@ public sealed class FakeCatalog(IServiceRegistry services) : IModelCatalog
     /// <summary>Called by <see cref="ListAsync"/> (simulates a catalog that loads lazily).</summary>
     public Action? OnList { get; set; }
 
+    /// <summary>The <c>refresh</c> argument of the last <see cref="ListAsync"/> call (null: none yet).</summary>
+    public bool? LastListRefresh { get; private set; }
+
     public Task<IReadOnlyList<ModelInfo>> ListAsync(bool refresh = false, CancellationToken ct = default)
     {
+        LastListRefresh = refresh;
         OnList?.Invoke();
         return Task.FromResult(Cached);
     }

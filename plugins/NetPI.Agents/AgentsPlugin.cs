@@ -166,7 +166,11 @@ public sealed class AgentsPlugin : INetPiPlugin
         {
             try
             {
-                await context.Models.ListAsync(false, context.Stopping).ConfigureAwait(false);
+                // A fresh list, not the cache: an agent with a blank instance count takes its slot count from the
+                // model's catalog concurrency, and after a restart or reload the cache may still hold the old list
+                // (it is at most models.refreshSeconds stale) — a reload must not pin the agents to a slot count the
+                // backend no longer serves.
+                await context.Models.ListAsync(true, context.Stopping).ConfigureAwait(false);
                 scheduler.Refresh();
                 var pools = scheduler.Snapshot();
                 if (pools.Count > 0)
