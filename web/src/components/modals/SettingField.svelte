@@ -71,8 +71,13 @@
   const placeholder = $derived(textDefault != null ? '' : (s.placeholder ?? (s.default == null ? '' : toText(s.default))));
   const defaultText = $derived(s.default == null || textDefault != null ? '' : toText(s.default) + (s.unit ? ` ${s.unit}` : ''));
 
+  // folder and file lists are edited in the list editor, one entry per line: a path may hold a comma, which the inline text
+  // (entries joined by commas) cannot tell from a separator
+  const inlineReadonly = $derived(s.type === 'folders' || s.type === 'files');
+
   async function commit() {
     focused = false;
+    if (inlineReadonly) return;
     invalid = '';
     const t = s.type === 'text' ? draft : draft.trim();
     let next;
@@ -187,6 +192,7 @@
           type={s.type === 'secret' && !show ? 'password' : 'text'}
           inputmode={s.type === 'int' || s.type === 'number' ? 'decimal' : undefined}
           bind:value={draft}
+          readonly={inlineReadonly}
           {placeholder}
           {disabled}
           spellcheck="false"
