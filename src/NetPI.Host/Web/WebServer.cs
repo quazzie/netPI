@@ -214,7 +214,7 @@ internal sealed class WebServer : IAsyncDisposable
         byte[] response;
         try
         {
-            var result = await _k.Rpc.InvokeAsync(method, parameters, null, ctx.RequestAborted).ConfigureAwait(false);
+            var result = await _k.Rpc.InvokeAsync(method, parameters, null, fromClient: true, ctx.RequestAborted).ConfigureAwait(false);
             response = Wire.SerializeValue(result);
         }
         catch (Exception ex)

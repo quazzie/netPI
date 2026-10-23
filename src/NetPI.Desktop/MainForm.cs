@@ -32,9 +32,13 @@ internal sealed class MainForm : Form
     private bool _closeReady;
     private bool _shown;
 
-    public MainForm(string[] args)
+    private readonly bool _successor;
+
+    /// <param name="successor">Started by the NetPI before it to restart: its token comes along (<see cref="Successor"/>).</param>
+    public MainForm(string[] args, bool successor = false)
     {
         _args = args;
+        _successor = successor;
         _home = HostKernel.ResolveHome(Arg("--home"));
         _placementFile = Path.Combine(_home, "window.json");
 
@@ -164,7 +168,12 @@ internal sealed class MainForm : Form
         ListenForActivation();
         try
         {
-            var options = new NetPiServerOptions { Desktop = true, ConsoleLogging = false, Home = _home };
+            var options = new NetPiServerOptions { Desktop = true, ConsoleLogging = false, Home = _home, Restart = RestartAsync };
+            if (_successor)
+            {
+                options.Token = Environment.GetEnvironmentVariable(Successor.TokenVariable);
+                Environment.SetEnvironmentVariable(Successor.TokenVariable, null); // not on to what this process starts
+            }
             if (int.TryParse(Arg("--port"), out var port)) options.Port = port;
             _server = await Task.Run(() => NetPiServer.StartAsync(options));
         }
@@ -558,6 +567,15 @@ internal sealed class MainForm : Form
     }
 
     // ---------------------------------------------------------------- shutdown
+
+    /// <summary>The host restarts by itself (an update waits and nothing goes on): the next NetPI starts, this window closes.</summary>
+    private Task RestartAsync()
+    {
+        var server = _server ?? throw new InvalidOperationException("NetPI is not running");
+        Successor.Start(_args, server.Token);
+        BeginInvoke(new Action(Close));
+        return Task.CompletedTask;
+    }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {

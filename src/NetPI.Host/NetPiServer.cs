@@ -23,6 +23,12 @@ public sealed class NetPiServerOptions
     public bool ConsoleLogging { get; set; } = true;
     /// <summary>Keep everything in memory (the <c>memory</c> storage provider): nothing is written to the home's database, and nothing survives the run. For tests and throwaway runs; never chosen by a missing or broken store.</summary>
     public bool Ephemeral { get; set; }
+    /// <summary>
+    /// How the shell restarts this NetPI: start the successor (<see cref="Successor.Start"/>) and stop. Given, the host
+    /// restarts by itself when a publish left something for the next start and nothing goes on (<see cref="RestartWhenIdle"/>);
+    /// null (tests, an embedding) never restarts.
+    /// </summary>
+    public Func<Task>? Restart { get; set; }
 }
 
 /// <summary>
@@ -63,6 +69,7 @@ public sealed class NetPiServer : IAsyncDisposable
                 kernel.Log.LogInformation("NetPI {Version} ready at {Url} in {Ms} ms (home: {Home})", HostInfo.Version, web.BaseUrl, sw.ElapsedMilliseconds, kernel.Paths.Home);
                 // how tools outside find this run (url and token): docs/DEBUGGING.md
                 ServerFile.Write(kernel.Paths, web.BaseUrl, kernel.Token, options.Desktop, kernel.Log);
+                if (options.Restart is { } restart && !options.Ephemeral) kernel.Restart = new RestartWhenIdle(kernel, restart);
                 started = true;
                 return new NetPiServer(kernel, web);
             }
@@ -106,6 +113,7 @@ public sealed class NetPiServer : IAsyncDisposable
     {
         _kernel.Log.LogInformation("NetPI stopping");
         ServerFile.Remove(_kernel.Paths, _kernel.Log);
+        _kernel.Restart?.Dispose();
         try { await _web.DisposeAsync().ConfigureAwait(false); }
         catch (Exception ex) { _kernel.Log.LogWarning(ex, "Stopping the web server failed"); }
         await _kernel.DisposeAsync().ConfigureAwait(false);

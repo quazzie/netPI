@@ -22,7 +22,8 @@
   idle, else when the last run ends; a chat waiting for its user's answer has no run, and the shell's reload also waits
   for the processes it started; a reload must never disturb a run — if one ever closes a run, that is a bug to
   report); the web UI swaps in place (a window refresh shows it); host files, or plugins built against changed contracts,
-  wait in `.pending` for the next start. A host without the gate (started before it existed) gets its plugins in
+  wait in `.pending` for the next start, and NetPI restarts itself for them once nothing goes on (`host.autoRestart`:
+  no run, no shell process, a quiet minute; a host started before that existed waits for the owner). A host without the gate (started before it existed) gets its plugins in
   `.pending` while a chat is mid-turn. There is nothing else to choose. `-NextStart` (reload nothing, stage everything)
   only when the user asks for it. Report what the script printed: staged (reloads when idle), or waits in `.pending`.
 - App changes are done when `-Publish` has run. A restart does not install Git changes.

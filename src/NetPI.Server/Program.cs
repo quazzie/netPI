@@ -24,6 +24,9 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        // a restart by itself (NetPiServerOptions.Restart): the process before this one exits first
+        var original = args;
+        args = Successor.WaitForPredecessor(args, out var successor);
         var options = new NetPiServerOptions();
         var plugins = new List<string>();
         var open = false;
@@ -57,7 +60,8 @@ internal static class Program
         }
         options.ExtraPluginDirs = plugins;
         // The environment keeps the token out of argv (visible to every local user on a shared box through /proc).
-        options.Token ??= Environment.GetEnvironmentVariable("NETPI_TOKEN");
+        options.Token ??= Environment.GetEnvironmentVariable(Successor.TokenVariable);
+        if (successor) Environment.SetEnvironmentVariable(Successor.TokenVariable, null); // passed down, not on to what this process starts
 
         using var stop = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
@@ -71,10 +75,18 @@ internal static class Program
             stop.Cancel();
         });
 
+        NetPiServer? running = null;
+        options.Restart = () =>
+        {
+            Successor.Start(original, running!.Token);
+            Console.WriteLine("Restarting to install an update...");
+            stop.Cancel();
+            return Task.CompletedTask;
+        };
         NetPiServer server;
         try
         {
-            server = await NetPiServer.StartAsync(options, stop.Token);
+            server = running = await NetPiServer.StartAsync(options, stop.Token);
         }
         catch (OperationCanceledException)
         {

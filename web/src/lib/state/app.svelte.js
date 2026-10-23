@@ -938,6 +938,13 @@ function onEvent(d, env) {
       break;
     case 'ui.changed':
     case 'plugins.changed':
+    // the host restarts by itself to install an update (RestartWhenIdle): a browser tab reconnects, a desktop window reopens
+    case 'app.restarting':
+      toast(`NetPI restarts to install ${(d?.reasons ?? ['an update']).join(', ')}; it is back in a few seconds`);
+      break;
+    case 'app.restartFailed':
+      toast(`NetPI could not restart to install an update: ${d?.error ?? 'unknown error'}`, 'error');
+      break;
     case 'plugins.reloaded':
     case 'rpc.changed':
     case 'services.changed':

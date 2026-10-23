@@ -12,7 +12,14 @@ internal sealed class RpcRegistry : IRpcRegistry
 
     private readonly Lock _gate = new();
     private readonly Dictionary<string, List<Entry>> _methods = new(StringComparer.Ordinal);
+    private long _lastClientWrite = Environment.TickCount64;
     public event Action<string>? Changed;
+
+    /// <summary>
+    /// When a client (the UI, a script over HTTP) last called a method that may write, in <see cref="Environment.TickCount64"/>
+    /// milliseconds (the start until then): someone is at work, which a restart by itself must not interrupt.
+    /// </summary>
+    public long LastClientWrite => Interlocked.Read(ref _lastClientWrite);
 
     public IDisposable Register(string method, RpcHandler handler, string? description = null) =>
         Register(method, handler, description, "host", false);
@@ -67,7 +74,11 @@ internal sealed class RpcRegistry : IRpcRegistry
     public Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default) =>
         InvokeAsync(method, ToParams(parameters), null, ct);
 
-    public async Task<object?> InvokeAsync(string method, JsonElement parameters, string? clientId, CancellationToken ct)
+    public Task<object?> InvokeAsync(string method, JsonElement parameters, string? clientId, CancellationToken ct) =>
+        InvokeAsync(method, parameters, clientId, fromClient: false, ct);
+
+    /// <param name="fromClient">A call from outside (the WebSocket or HTTP API), not a plugin's: one that may write counts as <see cref="LastClientWrite"/>.</param>
+    public async Task<object?> InvokeAsync(string method, JsonElement parameters, string? clientId, bool fromClient, CancellationToken ct)
     {
         Entry entry;
         lock (_gate)
@@ -79,6 +90,7 @@ internal sealed class RpcRegistry : IRpcRegistry
         // A declared method is checked before its handler runs (the UI, the CLI and other plugins alike).
         if (entry.Params is not null && new RpcMethod(method, Params: entry.Params).Validate(parameters) is { } problem)
             throw new RpcException("bad_request", $"{method}: {problem}");
+        if (fromClient && !entry.ReadOnly) Interlocked.Exchange(ref _lastClientWrite, Environment.TickCount64);
         return await entry.Handler(new RpcRequest { Method = method, Params = parameters, ClientId = clientId, Declared = entry.Params }, ct).ConfigureAwait(false);
     }
 

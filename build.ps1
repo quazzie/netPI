@@ -24,6 +24,8 @@
   Publishing while NetPI runs moves each changed host file into artifacts\app\.old (a running exe or DLL can be
   renamed, not overwritten), so the next start of NetPI.exe runs the new host; when the contracts changed, the
   rebuilt plugins wait in .pending instead, because the running NetPI would load them onto its old contracts.
+  Whatever waits for the next start is named in artifacts\app\.restart.json, and the running NetPI restarts itself
+  for it once nothing goes on (no run, no shell process, a quiet minute; setting host.autoRestart).
 
 .EXAMPLE
   .\build.ps1                # build (Release) into artifacts\dev\app; the running app sees nothing
@@ -451,9 +453,22 @@ if ($Publish) {
             }
         }
 
-        if ($restart.Count -or $oldHostRunning) {
+        # what waits for the next start asks the running NetPI to restart (src/NetPI.Host/RestartWhenIdle.cs): it does once
+        # nothing goes on (no run, active or queued, no shell process, and a quiet minute), unless host.autoRestart is off.
+        # The start that installs it deletes the marker.
+        $reasons = @()
+        if ($restart.Count) { $reasons += 'new host files' }
+        elseif ($oldHostRunning) { $reasons += 'host files from an earlier publish' }
+        if ($pluginNames.Count -and $pluginsWait) {
+            $reasons += if ($newContracts) { 'plugins built against changed contracts' } elseif ($defer) { '-NextStart' } else { 'plugins that waited for a busy chat' }
+        }
+        if ($running -and $reasons.Count) {
+            [ordered]@{ at = (Get-Date).ToUniversalTime().ToString('o'); reasons = $reasons } | ConvertTo-Json -Compress |
+                Set-Content -LiteralPath (Join-Path $app '.restart.json') -Encoding utf8
+        }
+        if ($restart.Count -or $oldHostRunning -or $reasons.Count) {
             $what = if ($restart.Count) { " The new host: $($restart -join ', ')." } else { '' }
-            Write-Host "Ready for the next start: close NetPI and start it again (artifacts\app\NetPI.exe).$what" -ForegroundColor Yellow
+            Write-Host "Ready for the next start.$what NetPI restarts itself once nothing goes on (no run, no shell process, a quiet minute; host.autoRestart). A NetPI started before that existed waits for you: close it and start it again (artifacts\app\NetPI.exe)." -ForegroundColor Yellow
         }
         Write-Host "Installed into $app (the running app). artifacts\dev\app is what you just built; -Pending lists what a restart waits for." -ForegroundColor DarkGray
     }

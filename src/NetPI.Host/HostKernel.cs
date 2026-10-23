@@ -38,6 +38,8 @@ internal sealed class HostKernel : IAsyncDisposable
     /// <summary>Logs it when the bus, or the thread pool, stops making progress (see <see cref="StallWatchdog"/>).</summary>
     internal StallWatchdog? Watchdog { get; init; }
     public PluginManager Plugins { get; private set; } = null!;
+    /// <summary>The restart by itself, when the shell can restart (<see cref="NetPiServerOptions.Restart"/>); for <c>app.info</c>.</summary>
+    internal RestartWhenIdle? Restart { get; set; }
     public ILogger Log { get; private set; } = null!;
 
     public static HostKernel Create(NetPiServerOptions options)

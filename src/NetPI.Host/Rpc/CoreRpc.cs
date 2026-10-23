@@ -117,6 +117,7 @@ internal static class CoreRpc
             sqlite = a.K.Storage.Info is { Provider: "sqlite" } info ? info.Version : null,
             pathSeparator = Path.DirectorySeparatorChar.ToString(),
             maxMessageBytes = WsHub.MaxMessageBytes,
+            restart = a.K.Restart?.Status,
         }, readOnly: true);
 
     // ------------------------------------------------------------ projects

@@ -51,6 +51,12 @@ internal static class CoreSettings
                 SettingInfo.Bool("plugins.quiet", "Quiet plugin reloads", QuietDefault,
                     "While on, a plugin reload is recorded and not applied: the running version keeps serving, so nothing swaps under a running chat. Switching it off applies everything that piled up.")
                     with { Subgroup = "Logging and plugins", Keywords = ["hot reload", "defer"] },
+                SettingInfo.Bool("host.autoRestart", "Restart by itself to install an update", true,
+                    "When a publish left something for the next start (new host files, plugins built against changed contracts, -NextStart), NetPI restarts once nothing goes on: no run, active or queued, no process the shell started, and no change from you for the quiet time below. A desktop window closes and opens again; a browser tab reconnects.")
+                    with { Subgroup = "Updates", Keywords = ["restart", "update", "pending", "publish"] },
+                SettingInfo.Int("host.autoRestartQuietSeconds", "Quiet time before it restarts", RestartWhenIdle.DefaultQuietSeconds,
+                    "How long nothing may have changed (a message sent, a setting saved, anything you do that writes) before the restart.", 10, 3600, "s")
+                    with { Subgroup = "Updates", Advanced = true },
                 new SettingInfo
                 {
                     Key = "server.port", Type = "int", Label = "Port", Default = System.Text.Json.Nodes.JsonValue.Create(7431),

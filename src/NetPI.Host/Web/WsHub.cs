@@ -366,7 +366,7 @@ internal sealed class WsClient
             byte[] response;
             try
             {
-                var result = await _k.Rpc.InvokeAsync(method, p, Id, _cts.Token).ConfigureAwait(false);
+                var result = await _k.Rpc.InvokeAsync(method, p, Id, fromClient: true, _cts.Token).ConfigureAwait(false);
                 response = Wire.Result(id, result);
                 if (response.Length > MaxPendingBytes)
                 {

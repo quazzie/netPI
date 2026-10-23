@@ -19,9 +19,17 @@ internal static class PendingBuild
 
     public static void Install(string appDir, ILogger log) => Install(appDir, log, LockWait);
 
+    /// <summary>This start installs what the publish left (or leaves it for the next one): its call for a restart is answered.</summary>
+    private static void ClearRestartMarker(string appDir)
+    {
+        try { File.Delete(Path.Combine(appDir, RestartWhenIdle.MarkerName)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* the restart watcher tries again; harmless */ }
+    }
+
     /// <param name="lockWait">How long to wait for a publish that holds the install lock before leaving the pending build for the next start.</param>
     internal static void Install(string appDir, ILogger log, TimeSpan lockWait)
     {
+        ClearRestartMarker(appDir);
         var old = Path.Combine(appDir, ".old");
         var pending = Path.Combine(appDir, ".pending");
         if (!Directory.Exists(pending) && !Directory.Exists(old)) return;

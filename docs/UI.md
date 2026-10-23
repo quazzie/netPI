@@ -115,6 +115,9 @@ plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/www
 - **Reconnect:** backoff is 0.4s, 1s, 2s, 4s, 7s, then 10s, with jitter. The client also retries right away on
   `online`, on `visibilitychange`, or when the user clicks the indicator. A ping goes out every 15s, and a
   socket that has been silent for 45s is treated as dead.
+- **A restart by itself** (`host.autoRestart`): `app.restarting` shows a toast naming what it installs, the socket
+  drops, and the reconnect reaches the successor, which keeps the token and the port. In the desktop app the window
+  closes and the successor opens it again where it was (`window.json`). `app.restartFailed` is an error toast.
 - On every (re)connect the client re-sends the `sub` set (the open tabs), reloads every list, and reloads the
   active chat's messages. Cached background chats are marked stale and reload when shown.
 - A chat shown that was not following its events (new to the page, evicted from the cache, or stale after a reconnect)
