@@ -107,6 +107,7 @@
   // commit made in a terminal); while the tab is hidden it only notes that it is out of date.
   let gitSeq = 0;
   async function loadGit() {
+    if (!scopeKey) return; // the mount finds the workspace key first, then loads
     const seq = ++gitSeq;
     const gen = scopeKey;
     let r = null;
