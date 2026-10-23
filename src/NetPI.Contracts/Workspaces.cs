@@ -10,8 +10,8 @@ namespace NetPI;
 /// logical identity (backlog, defaults, which repository), and several workers of the same project work in different
 /// workspaces of that one repository.
 /// <para>
-/// The meta key on a session that points at one is <see cref="SessionWorkspace.MetaKey"/>; the column behind it is
-/// <c>sessions.workspace_id</c>. A session with none keeps the project's own path (the behavior before workspaces
+/// The meta key on a session that points at one is <see cref="SessionWorkspace.MetaKey"/> (<c>meta.workspaceId</c>); the
+/// binding is plain session meta, not a column of its own. A session with none keeps the project's own path (the behavior before workspaces
 /// existed), so nothing has to be migrated for an old chat to keep working.
 /// </para>
 /// </summary>
@@ -86,8 +86,8 @@ public static class SessionWorkspace
 }
 
 /// <summary>
-/// Persistence for workspaces and the session reference to one. Implemented by the host (the sessions database); the
-/// workspace plugin owns the behavior around it (git provisioning, ownership, cleanup), so the host stays a store.
+/// Persistence for workspaces and the session reference to one. Implemented by the Workspaces plugin (its own data
+/// collection); the plugin also owns the behavior around it (git provisioning, ownership, cleanup).
 /// </summary>
 public interface IWorkspaceStore
 {

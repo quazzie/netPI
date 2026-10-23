@@ -18,7 +18,7 @@ namespace NetPI.Host.Storage.Memory;
 //                     createdAt, updatedAt, archived, pinned, messageCount, contextTokens, meta|null }
 //              list: pinned descending, updatedAt descending, id descending
 //              (no workspace: the port has no workspace methods, and a binding is meta.workspaceId on the
-//               session — the kernel's sessions.workspace_id column goes with it)
+//               session; the sessions table has no workspace column)
 //
 //   messages   key: the session id (ordinal) -> that session's messages, ascending by seq
 //              doc:  { id, seq, role, parts, createdAt, provider|null, model|null, stopReason|null, usage|null,

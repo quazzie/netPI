@@ -23,7 +23,7 @@ public sealed class StorageOpenOptions
     /// <summary>The NetPI home folder. A file-based provider keeps its files here.</summary>
     public required string Home { get; init; }
     public required Microsoft.Extensions.Logging.ILogger Logger { get; init; }
-    /// <summary>Provider settings live under <c>storage.&lt;id&gt;.*</c> (for example <c>storage.sqlite.path</c>).</summary>
+    /// <summary>Provider settings live under <c>storage.&lt;id&gt;.*</c> (reserved; today the sqlite provider reads <c>database.sqlitePath</c>, the library to load).</summary>
     public required ISettings Settings { get; init; }
 }
 
