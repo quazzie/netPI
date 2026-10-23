@@ -780,6 +780,7 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
 
         // scp reads "C:\x" as host "C": run it in the local folder and pass a relative name
         string local, workDir, localArg;
+        string? part = null;
         if (direction == "upload")
         {
             local = context.ResolvePath(from);
@@ -796,6 +797,12 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
             Directory.CreateDirectory(parent);
             workDir = parent;
             localArg = "./" + Path.GetFileName(Path.TrimEndingDirectorySeparator(local));
+            // scp truncates its target as it opens it: a single file comes into a side file and replaces the old one only when it is whole
+            if (!recursive && !Directory.Exists(local))
+            {
+                part = local + ".netpi.part";
+                localArg += ".netpi.part";
+            }
         }
         var remote = $"{host.Alias}:{(direction == "upload" ? to : from)}";
         var scpArgs = new List<string> { "-q", "-p" };
@@ -806,9 +813,20 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
         else scpArgs.AddRange([remote, localArg]);
 
         var r = await Launcher.RunAsync(o.Scp, scpArgs, null, workDir, null, null, TimeSpan.FromSeconds(Math.Max(600, o.Timeout)), ct).ConfigureAwait(false);
-        if (r.Aborted) return ToolResult.Error("[aborted]");
-        if (r.TimedOut) return ToolResult.Error($"scp timed out after {Math.Max(600, o.Timeout)}s.");
-        if (r.ExitCode != 0) return ToolResult.Error($"scp {(direction == "upload" ? "to" : "from")} {host.Alias} failed: {(r.Stderr.Trim() is { Length: > 0 } e ? e : $"exit code {r.ExitCode}")}");
+        var whole = !r.Aborted && !r.TimedOut && r.ExitCode == 0;
+        if (part is not null && File.Exists(part))
+        {
+            try { if (whole) File.Move(part, local, overwrite: true); else File.Delete(part); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return ToolResult.Error($"scp finished, but {local} could not be replaced: {ex.Message} The download is in {part}.");
+            }
+        }
+        const string kept = " The file at the target is unchanged.";
+        var partial = recursive && direction == "download" ? $" {local} may hold part of the folder." : part is not null ? kept : "";
+        if (r.Aborted) return ToolResult.Error("[aborted]" + partial);
+        if (r.TimedOut) return ToolResult.Error($"scp timed out after {Math.Max(600, o.Timeout)}s." + partial);
+        if (r.ExitCode != 0) return ToolResult.Error($"scp {(direction == "upload" ? "to" : "from")} {host.Alias} failed: {(r.Stderr.Trim() is { Length: > 0 } e ? e : $"exit code {r.ExitCode}")}" + partial);
         var bytes = File.Exists(local) ? new FileInfo(local).Length : Directory.Exists(local) ? Size(local) : 0;
         var text = direction == "upload" ? $"Uploaded {local} to {remote}" : $"Downloaded {remote} to {local}";
         return ToolResult.Ok($"{text} ({bytes} bytes).", new { host = host.Alias, direction, from, to, local, remote, bytes, recursive });

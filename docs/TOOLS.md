@@ -1329,7 +1329,8 @@ result (the check reads the context, as the instruction-file notices do). Calls 
 
 `{ host, direction: 'upload'|'download', from, to, recursive? }`. `scp -p` (times and modes kept), for large or binary
 files and for folders (`recursive`). Local paths resolve like the file tools; scp runs in the local folder with a
-relative `./name`, because it would read a Windows drive letter as a host name. A download creates the local folder.
+relative `./name`, because it would read a Windows drive letter as a host name. A download creates the local folder. A single file comes into `<name>.netpi.part` and replaces the target only when
+scp finished cleanly; on a timeout, abort or failure the part is deleted and the old file stays.
 Timeout: at least 600 s.
 
 ```ts
