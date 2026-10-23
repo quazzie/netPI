@@ -511,6 +511,19 @@ public static class WebhooksTests
             Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count);
         });
 
+        r.Add("webhooks: a start cancelled by the caller is reported, not swallowed, and does not delete the chat it was starting", async () =>
+        {
+            var env = await new Env().StartAsync();
+            var added = await env.Add();
+            using var cts = new CancellationTokenSource();
+            env.Ctx.Rpc.Register("profiles.applyAuto", (_, _) => { cts.Cancel(); throw new OperationCanceledException(cts.Token); });
+            var (status, body) = await env.Plugin.ReceiveAsync("/hook/" + S(added["id"]), "POST", IPAddress.Parse("127.0.0.1"), "application/json",
+                max => Task.FromResult<string?>(JsonSerializer.Serialize(Alert())), S(added["token"])!, cts.Token);
+            Check.Equal("failed", S(body["status"]), "an ungrouped alert has no conversation to wait under: it is told at once");
+            Check.Contains(S(body["reason"]), "cancelled");
+            Check.Equal(1, env.Ctx.SessionsFake.Sessions.Count, "a sender hang-up must not delete a chat that may already run");
+        });
+
         r.Add("webhooks: a webhook's own profile is applied to its chats (the automatic one has no ssh); unknown ones are refused; a deleted one fails clearly", async () =>
         {
             var env = await new Env().StartAsync();

@@ -146,7 +146,7 @@ public sealed class BackupPlugin : INetPiPlugin
             Directory.CreateDirectory(root);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(root, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             var store = ctx.Services.Require<IStorageAccess>();
-            EnsureFreeSpace(store.Info.SizeBytes ?? 0, root);   // a copy that does not fit is refused before it starts
+            EnsureFreeSpace((store.Info.SizeBytes ?? 0) + IdeaImagesSize(ctx.Paths.Home), root);   // a copy that does not fit is refused before it starts (the idea images are copied into it too)
             var id = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N");
             staging = Path.Combine(root, ".pending-" + id);
             Directory.CreateDirectory(staging);
@@ -242,6 +242,14 @@ public sealed class BackupPlugin : INetPiPlugin
             copied[inSnapshot] = $"{IdeaImagesDir}/{name}";
         }
         return copied;
+    }
+
+    /// <summary>The bytes <see cref="CopyIdeaImages"/> will copy, to reserve them with the store's own size.</summary>
+    internal static long IdeaImagesSize(string home)
+    {
+        var dir = Path.Combine(home, IdeaImagesDir);
+        try { return Directory.Exists(dir) ? Directory.EnumerateFiles(dir).Sum(f => new FileInfo(f).Length) : 0; }
+        catch { return 0; }   // unreadable now: the copy itself reports it
     }
 
     public static JsonObject Verify(string home, string id)

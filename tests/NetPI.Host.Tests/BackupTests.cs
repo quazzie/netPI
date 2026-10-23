@@ -160,6 +160,12 @@ public static class BackupTests
             Check.Throws<IOException>(() => BackupPlugin.EnsureFreeSpace(long.MaxValue, root), "an absurd size cannot fit");
             BackupPlugin.EnsureFreeSpace(1024, root);   // a size the disk can hold is allowed
             BackupPlugin.EnsureFreeSpace(0, root);      // a store that reports no size reserves nothing
+            var home = T.TempDir("backup-images-size");
+            Check.Equal(0L, BackupPlugin.IdeaImagesSize(home), "no folder, nothing to reserve");
+            Directory.CreateDirectory(Path.Combine(home, "idea-images"));
+            File.WriteAllBytes(Path.Combine(home, "idea-images", "a.png"), new byte[300]);
+            File.WriteAllBytes(Path.Combine(home, "idea-images", "b.png"), new byte[200]);
+            Check.Equal(500L, BackupPlugin.IdeaImagesSize(home), "the images are reserved with the store");
         });
 
         r.Add("backup: a .pending-* left by a kill mid-backup is swept, the snapshots are not", () =>

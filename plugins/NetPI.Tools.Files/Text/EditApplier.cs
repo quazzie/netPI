@@ -88,7 +88,12 @@ internal static class EditApplier
                 var notRestored = new List<string>();
                 foreach (var w in written)
                 {
-                    try { TextCodec.WriteAtomic(w.Path, w.Original); }
+                    try
+                    {
+                        // a file another writer changed after this call wrote it is theirs now: not put back over them
+                        if (!File.ReadAllBytes(w.Path).AsSpan().SequenceEqual(w.Result)) { notRestored.Add(w.Path + " (changed again since)"); continue; }
+                        TextCodec.WriteAtomic(w.Path, w.Original);
+                    }
                     catch (Exception) { notRestored.Add(w.Path); }
                 }
                 throw new RpcException("io", notRestored.Count == 0
