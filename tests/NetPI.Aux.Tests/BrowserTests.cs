@@ -628,8 +628,14 @@ public static class BrowserTests
                 {
                     var (ws, inbox) = await ViewAsync();
                     await Wait.Until(() => tab.HasViewers, $"round {round}: the view holds the screencast");
-                    await tab.NavigateAsync(web.Url + "/blank?round=" + round, CancellationToken.None);  // a new page is a frame for sure
-                    await Wait.Until(() => Has(inbox, "frame"), $"round {round}: the view streams the tab");
+                    // a new page is a frame for sure; a browser window that is not painting (several run at once in a full test run) can
+                    // owe one for seconds, so the page is loaded again until the first frame arrives
+                    for (var attempt = 0; attempt < 20 && !Has(inbox, "frame"); attempt++)
+                    {
+                        await tab.NavigateAsync(web.Url + "/blank?round=" + round + "&try=" + attempt, CancellationToken.None);
+                        await Task.Delay(500);
+                    }
+                    Check.True(Has(inbox, "frame"), $"round {round}: the view streams the tab");
                     // the socket drops while the tab's own events keep binding the view
                     var closing = Task.Run(() => ws.Abort());
                     var churn = Task.Run(async () =>
