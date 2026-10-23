@@ -165,18 +165,22 @@ public sealed class WorkspaceProvisioner(
     /// Whether a worker's commits are already durable: reachable from a ref other than the worker's own branch (merged
     /// into the project's branch, or pushed). Uncommitted work does not count — that is <see cref="CanRetire"/>'s job,
     /// because CanRetire is the one allowed to delete.
+    /// <para>"Durable" is only ever git saying so: when git fails, times out or is missing this throws
+    /// <see cref="GitUnavailableException"/>, because "the branch is gone" and "no commits" read off a failed probe would
+    /// pass a worktree whose work was never checked.</para>
     /// </summary>
     public bool WorkIsDurable(WorkspaceInfo workspace)
     {
         if (workspace.RepoCommonDir is null || workspace.Branch is not { Length: > 0 } branch) return true;  // not a repository
         if (!Directory.Exists(workspace.Path)) return true;
-        if (!git.BranchExists(workspace.Path, branch)) return true;                                        // the branch is gone
-        if (git.HeadOf(workspace.Path) is not { Length: > 0 } head) return true;
-        var elsewhere = git.BranchesContaining(workspace.Path, head).Where(b => !WorkspacePaths.Comparer.Equals(b, branch)).ToList();
+        if (!git.BranchExistsStrict(workspace.Path, branch)) return true;                                  // the branch is gone
+        var head = git.HeadStrict(workspace.Path);
+        if (head.Length == 0) return true;
+        var elsewhere = git.BranchesContainingStrict(workspace.Path, head).Where(b => !WorkspacePaths.Comparer.Equals(b, branch)).ToList();
         if (elsewhere.Count > 0) return true;
         // Not on any other branch: durable only when the project's own branch already has it.
         var target = ProjectBranchOf(workspace);
-        return target is { Length: > 0 } && IsAncestor(workspace.Path, head, target);
+        return target is { Length: > 0 } && git.IsAncestorStrict(workspace.Path, head, target);
     }
 
     /// <summary>
@@ -218,14 +222,23 @@ public sealed class WorkspaceProvisioner(
             problems.Add($"{workspace.Name} still has a running process working in it. Stop it first.");
             if (firstOnly) return problems;
         }
-        var changes = git.DescribeChanges(workspace.Path);
-        if (changes.Length > 0)
+        try
         {
-            problems.Add($"{workspace.Name} has uncommitted changes ({changes}); commit them, or keep the worktree.");
-            if (firstOnly) return problems;
+            // A checkout of a repository is only removed on git's own word: a failed or timed-out git is not "no changes".
+            var changes = workspace.RepoCommonDir is null ? git.DescribeChanges(workspace.Path) : git.DescribeChangesStrict(workspace.Path);
+            if (changes.Length > 0)
+            {
+                problems.Add($"{workspace.Name} has uncommitted changes ({changes}); commit them, or keep the worktree.");
+                if (firstOnly) return problems;
+            }
+            if (!WorkIsDurable(workspace))
+                problems.Add($"{workspace.Name} holds commits on {workspace.Branch} that are not merged or pushed anywhere yet. Merge them first, or keep the worktree.");
         }
-        if (!WorkIsDurable(workspace))
-            problems.Add($"{workspace.Name} holds commits on {workspace.Branch} that are not merged or pushed anywhere yet. Merge them first, or keep the worktree.");
+        catch (GitUnavailableException ex)
+        {
+            problems.Add($"git could not tell whether {workspace.Name} has uncommitted or unmerged work ({ex.Message}), so it is kept. " +
+                         "Fix git (or the worktree) and ask again, or remove the folder yourself once you have looked.");
+        }
         return problems;
     }
 
@@ -245,6 +258,17 @@ public sealed class WorkspaceProvisioner(
                     var (code, output) = await git.ExecAsync(main, ct, "worktree", "remove", "--force", workspace.Path).ConfigureAwait(false);
                     if (code != 0)
                     {
+                        // git could not remove it; the folder goes only while git still says, now, that nothing in it is uncommitted.
+                        try
+                        {
+                            var left = git.DescribeChangesStrict(workspace.Path);
+                            if (left.Length > 0)
+                                return (false, $"git worktree remove failed ({output.Trim()}) and {workspace.Name} has uncommitted changes ({left}); nothing was deleted.");
+                        }
+                        catch (GitUnavailableException ex)
+                        {
+                            return (false, $"git worktree remove failed ({output.Trim()}) and git cannot confirm that {workspace.Name} is clean ({ex.Message}); nothing was deleted.");
+                        }
                         try { Directory.Delete(workspace.Path, recursive: true); }
                         catch (Exception ex) { return (false, $"git worktree remove failed ({output.Trim()}); deleting the folder failed too: {ex.Message}"); }
                     }

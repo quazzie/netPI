@@ -74,7 +74,7 @@ public sealed class IdeaSnapshots(IdeasRepository repo)
             {
                 if (IdeaOps.Str(idea["id"]) is not { Length: > 0 }) continue;
                 if (r.Find(IdeaOps.Str(idea["id"])) is not null) continue; // a merge never overwrites
-                r.Add(idea);
+                r.Add(Normalized(idea));
             }
             r.RecordImport("snapshot:" + (IdeaOps.Str(snapshot["exportedAt"]) ?? Ids.Short(8)), "snapshot",
                 IdeaOps.Str(snapshot["format"]) ?? "netpi.ideas.export", SnapshotFile.HashOf(Encoding.UTF8.GetBytes(snapshot.ToJsonString())),
@@ -90,6 +90,24 @@ public sealed class IdeaSnapshots(IdeasRepository repo)
         report["mode"] = mode;
         report["imported"] = new JsonObject { ["ideas"] = ideas.Count };
         return report;
+    }
+
+    /// <summary>
+    /// A snapshot may come from another build or a hand edit: a status or priority this build does not know ("wip", "") is read
+    /// the way a patch would, and falls back to open / medium rather than storing an idea no column of the tab would show.
+    /// </summary>
+    private static JsonObject Normalized(JsonObject idea)
+    {
+        var doc = (JsonObject)idea.DeepClone();
+        doc["status"] = Or(() => IdeaOps.NormalizeStatus(IdeaOps.Str(doc["status"])), "open");
+        if (doc["priority"] is not null) doc["priority"] = Or(() => IdeaOps.NormalizePriority(IdeaOps.Str(doc["priority"])), "medium");
+        return doc;
+
+        static string Or(Func<string> normalize, string fallback)
+        {
+            try { return normalize(); }
+            catch (IdeaInputException) { return fallback; }
+        }
     }
 
     /// <summary>

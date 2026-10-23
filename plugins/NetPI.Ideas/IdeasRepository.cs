@@ -31,7 +31,7 @@ public sealed class IdeasConflictException(string message) : Exception(message);
 /// An idea as it is stored, with the revision it is at. A class on purpose: a document that is not there has to be
 /// distinguishable from one whose fields happen to be null, which a value tuple cannot express.
 /// </summary>
-public sealed record IdeaRow(JsonObject Doc, long Revision);
+public sealed record IdeaRow(JsonObject Doc, long Revision, string Key);
 
 /// <summary>
 /// The Ideas backlog in the store's plugin data: one collection per table, one repository, one write path, one
@@ -73,7 +73,14 @@ public sealed class IdeasRepository
     /// </summary>
     public Action<string>? OnChanged { get; set; }
 
-    private void Announce(string reason) => OnChanged?.Invoke(reason);
+    /// <summary>The announcements of the writes inside the <see cref="Transaction{T}"/> running on this thread: held until it commits.</summary>
+    [ThreadStatic] private static List<string>? _held;
+
+    private void Announce(string reason)
+    {
+        if (_held is { } held) held.Add(reason);
+        else OnChanged?.Invoke(reason);
+    }
 
     private IdeasRepository(IPluginData data, IStorageAccess? storage, ILogger? log, string? home)
     {
@@ -117,7 +124,17 @@ public sealed class IdeasRepository
     /// Run several of these writes as one transaction. The import uses it: the ideas and the receipt that accounts for
     /// them commit together, or neither does.
     /// </summary>
-    public T Transaction<T>(Func<IdeasRepository, T> work) => _data.Transaction(() => work(this));
+    public T Transaction<T>(Func<IdeasRepository, T> work)
+    {
+        if (_held is not null) return _data.Transaction(() => work(this));   // nested: the outer one announces
+        var held = _held = [];
+        T result;
+        try { result = _data.Transaction(() => work(this)); }
+        finally { _held = null; }   // a rolled-back transaction announces nothing
+        // Once, after the commit, not once per idea inside it (and never under the store's lock).
+        if (held.Count > 0) Announce(held.Count == 1 ? held[0] : "import");
+        return result;
+    }
 
     // ------------------------------------------------------------------ ideas
 
@@ -145,9 +162,9 @@ public sealed class IdeasRepository
             // The case-insensitive halves: the id as typed, or with the prefix. idLower is ASCII-folded like the old
             // lower() was, and compared ordinally, so the two folds agree.
             var byId = _items.Find(new DataQuery().Eq("idLower", Lower(want)));
-            if (byId.Count > 0) return new IdeaRow(Read(byId[0].Doc), Rev(byId[0].Doc));
+            if (byId.Count > 0) return new IdeaRow(Read(byId[0].Doc), Rev(byId[0].Doc), byId[0].Key);
             var byPref = _items.Find(new DataQuery().Eq("idLower", Lower("idea-" + want)));
-            if (byPref.Count > 0) return new IdeaRow(Read(byPref[0].Doc), Rev(byPref[0].Doc));
+            if (byPref.Count > 0) return new IdeaRow(Read(byPref[0].Doc), Rev(byPref[0].Doc), byPref[0].Key);
         }
         return row;
     }
@@ -190,7 +207,7 @@ public sealed class IdeasRepository
         var result = _data.Transaction(() =>
         {
             var current = Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
-            var storedId = IdeaOps.Str(current.Doc["id"]) ?? id;
+            var storedId = current.Key;   // the key the document was read under, which a legacy document may not name in its id
             if (expectedRevision is { } want && want != current.Revision)
                 throw new IdeasConflictException(
                     $"Idea {storedId} changed since you read it (it is at revision {current.Revision}, your copy is {want}). " +
@@ -315,7 +332,7 @@ public sealed class IdeasRepository
         var recorded = _data.Transaction(() =>
         {
             if (Find(id) is not { } found) return false;
-            var storedId = IdeaOps.Str(found.Doc["id"]) ?? id;
+            var storedId = found.Key;
             var next = (JsonObject)found.Doc.DeepClone();
             IdeaOps.AddSessionEntry(next, entry);
             PutItem_(storedId, next, OrdOf(storedId), found.Revision + 1);
@@ -334,7 +351,7 @@ public sealed class IdeasRepository
         var set = _data.Transaction(() =>
         {
             if (Find(id) is not { } found) return false;
-            var storedId = IdeaOps.Str(found.Doc["id"]) ?? id;
+            var storedId = found.Key;
             var next = (JsonObject)found.Doc.DeepClone();
             next.Remove("autoRefine");
             if (state is not null) next["autoRefine"] = (JsonObject)state.DeepClone();
@@ -351,7 +368,7 @@ public sealed class IdeasRepository
         var attached = _data.Transaction(() =>
         {
             if (Find(id) is not { } found) throw new RpcException("not_found", $"Idea {id} not found");
-            var storedId = IdeaOps.Str(found.Doc["id"]) ?? id;
+            var storedId = found.Key;
             var next = (JsonObject)found.Doc.DeepClone();
             IdeaOps.AddSession(next, sessionId);
             var revision = found.Revision + 1;
@@ -413,7 +430,7 @@ public sealed class IdeasRepository
     {
         var doc = _items.Get(key);
         if (doc is null) return null;
-        return new IdeaRow(Read(doc), Rev(doc));
+        return new IdeaRow(Read(doc), Rev(doc), key);
     }
 
     private long OrdOf(string id) => Long_(_items.Get(id)?["ord"]);

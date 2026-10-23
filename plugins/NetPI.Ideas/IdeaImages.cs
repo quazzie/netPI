@@ -10,7 +10,11 @@ namespace NetPI.Ideas;
 /// </summary>
 public static class IdeaImages
 {
-    /// <summary>Where the files go, relative to the home.</summary>
+    /// <summary>
+    /// Where the files go, relative to the home. The Backup plugin copies this folder into every snapshot by its literal name
+    /// (<c>IdeaImagesDir</c> in <c>BackupPlugin.cs</c>; plugins share no assembly): rename it in both places, and
+    /// <c>BackupTests</c> fails if they drift.
+    /// </summary>
     public const string Dir = "idea-images";
     /// <summary>Largest single image. The UI shrinks anything bigger before it gets here (the composer's budget).</summary>
     public const int MaxBytes = 4 * 1024 * 1024;
@@ -77,7 +81,7 @@ public static class IdeaImages
                 ["path"] = clean,
                 ["name"] = IdeaOps.Str(o["name"]) ?? Path.GetFileName(clean),
                 ["mediaType"] = IsImage(IdeaOps.Str(o["mediaType"])) ? IdeaOps.Str(o["mediaType"])! : "image/png",
-                ["bytes"] = o["bytes"] is { } b && b.GetValueKind() == System.Text.Json.JsonValueKind.Number ? b.GetValue<int>() : 0,
+                ["bytes"] = o["bytes"] is { } b && b.GetValueKind() == System.Text.Json.JsonValueKind.Number && b.AsValue().TryGetValue<int>(out var size) ? size : 0,
             });
         }
         return kept;
@@ -129,6 +133,37 @@ public static class IdeaImages
     public static void DeleteAll(string home, JsonObject idea)
     {
         foreach (var image in idea["images"] as JsonArray ?? []) if (image is JsonObject o) Delete(home, IdeaOps.Str(o["path"]));
+    }
+
+    /// <summary>How old an unreferenced file must be before <see cref="Sweep"/> removes it: a composer that attached an image
+    /// and has not saved its idea yet is still working.</summary>
+    public static readonly TimeSpan SweepAge = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Delete the files in the images directory that no idea references (an attach whose idea never landed, a cancelled
+    /// composer), once they are older than <paramref name="minAge"/>. Returns how many went. Best effort: a file in use stays.
+    /// </summary>
+    public static int Sweep(string home, IEnumerable<JsonObject> ideas, TimeSpan minAge)
+    {
+        var dir = Path.Combine(home, Dir);
+        if (!Directory.Exists(dir)) return 0;
+        var referenced = new HashSet<string>(WorkspacePaths.Comparer);
+        foreach (var idea in ideas)
+            foreach (var image in idea["images"] as JsonArray ?? [])
+                if (image is JsonObject o && Absolute(home, IdeaOps.Str(o["path"])) is { } path) referenced.Add(WorkspacePaths.Canonical(path));
+        var removed = 0;
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(dir))
+            {
+                if (referenced.Contains(WorkspacePaths.Canonical(file))) continue;
+                if (DateTime.UtcNow - File.GetLastWriteTimeUtc(file) < minAge) continue;
+                try { File.Delete(file); removed++; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return removed;
     }
 
     /// <summary>The idea's images, as absolute paths — what the agent needs to read them.</summary>

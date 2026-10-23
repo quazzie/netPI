@@ -205,6 +205,24 @@ public static class IdeasStorageTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas storage: a document stored under a key its id does not name is updated in place, not copied under its id", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var repo = env.Repo;
+            var legacy = IdeaOps.CreateIdea(new JsonObject { ["title"] = "Old title" }, repo.TakenIds(), "user", null);
+            legacy["id"] = "idea-real";
+            legacy["ord"] = 0L; legacy["revision"] = 1L; legacy["idLower"] = "legacy-key";
+            env.Ctx.Data.Collection("items", new CollectionSpec().Text("idLower").Integer("ord").Text("status").Text("projectId")).Put("legacy-key", legacy);
+            Check.Equal(1, repo.Count());
+            repo.Update("legacy-key", new JsonObject { ["title"] = "New title" }, fromUi: true);
+            Check.Equal(1, repo.Count(), "the update did not leave a second document under the id field");
+            Check.Equal("New title", repo.Idea("legacy-key")!["title"].Str());
+            repo.AddSession("legacy-key", env.Session.Id);
+            Check.Equal(1, repo.Count(), "nor did the session record");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas storage: the order the user arranged is the order the backlog answers in", async () =>
         {
             var env = new Env();

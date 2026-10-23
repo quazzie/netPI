@@ -45,10 +45,70 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
     public string DescribeChanges(string path)
     {
         var status = Run(path, "status", "--porcelain", "--untracked-files=normal");
-        if (status is null) return "";
+        return status is null ? "" : Summarize(status);
+    }
+
+    /// <summary>
+    /// <see cref="DescribeChanges"/> for the callers that delete on the answer: "no changes" is only ever git saying so.
+    /// When git fails, times out or is missing this throws <see cref="GitUnavailableException"/> instead of reading as clean.
+    /// Never cached.
+    /// </summary>
+    public string DescribeChangesStrict(string path) => Summarize(Answer(path, "status", "--porcelain", "--untracked-files=normal"));
+
+    private static string Summarize(string status)
+    {
         var lines = status.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         return string.Join("; ", lines.Take(10).Select(l => l.Length > 3 ? l[3..].Trim() : l.Trim())) +
                (lines.Length > 10 ? $" (+{lines.Length - 10} more)" : "");
+    }
+
+    /// <summary>The commit HEAD points at; throws <see cref="GitUnavailableException"/> when git cannot say.</summary>
+    public string HeadStrict(string path) => Answer(path, "rev-parse", "HEAD");
+
+    /// <summary>
+    /// Whether a local branch exists, from git's own exit codes: 0 it does, 1 it does not (<c>--quiet</c> says nothing). Anything
+    /// else — a failed start, a timeout, another exit code — is no answer and throws <see cref="GitUnavailableException"/>.
+    /// </summary>
+    public bool BranchExistsStrict(string path, string branch)
+    {
+        var (code, _, stderr) = Exec(path, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch);
+        return code switch { 0 => true, 1 => false, _ => throw Unavailable("rev-parse", code, stderr) };
+    }
+
+    /// <summary>Whether a commit is an ancestor of a ref (exit 0 yes, 1 no); any other ending throws <see cref="GitUnavailableException"/>.</summary>
+    public bool IsAncestorStrict(string path, string commit, string @ref)
+    {
+        var (code, _, stderr) = Exec(path, "merge-base", "--is-ancestor", commit, @ref);
+        return code switch { 0 => true, 1 => false, _ => throw Unavailable("merge-base", code, stderr) };
+    }
+
+    /// <summary>The refs containing a commit; throws <see cref="GitUnavailableException"/> when git cannot say.</summary>
+    public IReadOnlyList<string> BranchesContainingStrict(string path, string commit)
+    {
+        var outp = Answer(path, "branch", "--format=%(refname:short)", "--contains", commit);
+        return string.IsNullOrWhiteSpace(outp) ? [] : [.. outp.Split('\n', StringSplitOptions.TrimEntries)];
+    }
+
+    private (int Code, string Stdout, string Stderr) Exec(string cwd, params string[] args)
+    {
+        try { return ExecSplitAsync(cwd, CancellationToken.None, args).GetAwaiter().GetResult(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return (127, "", ex.Message);
+        }
+    }
+
+    private string Answer(string cwd, params string[] args)
+    {
+        var (code, stdout, stderr) = Exec(cwd, args);
+        return code == 0 ? stdout.Trim() : throw Unavailable(args[0], code, stderr + stdout);
+    }
+
+    private static GitUnavailableException Unavailable(string command, int code, string output)
+    {
+        var said = output.Trim();
+        if (said.Length > 200) said = said[..200] + "…";
+        return new GitUnavailableException($"git {command} {(code == 124 ? "timed out" : code == 127 ? "did not start" : $"exited {code}")}{(said.Length > 0 ? ": " + said : "")}");
     }
 
     public async Task<string?> RunAsync(string cwd, CancellationToken ct, params string[] args)
@@ -209,3 +269,6 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
     /// <summary>Whether a branch exists locally.</summary>
     public bool BranchExists(string path, string branch) => Run(path, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch) is not null;
 }
+
+/// <summary>Git did not answer (it failed, timed out or is missing), which is not the same as git answering "no": a caller that deletes on an absence must refuse.</summary>
+public sealed class GitUnavailableException(string message) : Exception(message);
