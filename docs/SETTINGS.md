@@ -539,7 +539,8 @@ nobody watches, an ask with no grant is **refused** instead of waiting, and list
 turns it into a grant. The question card in your own chats has "Always for your chats" next to "Allow in this chat". For
 the chats of schedules and webhooks (and their subagents) the plugin also keeps a **journal** of every call that may
 change something (any call its tool does not mark read-only), with a copy of each file a `write` or `edit` changed (Undo
-in the tab), and applies the **brakes** below. Your own chats are never journaled or braked. Disabled, none of it runs: the
+in the tab: only those tools' files — a `sed -i`, a script or an `ssh run` edit is recorded as the command it was, with no
+copy, because what a command changes cannot be known reliably), and applies the **brakes** below. Your own chats are never journaled or braked. Disabled, none of it runs: the
 guardrails ask as before, and grants and journal wait in the plugin's data.
 
 | key | default | |
@@ -620,6 +621,7 @@ guardrails ask as before, and grants and journal wait in the plugin's data.
 | `ssh.reuseConnections` | `true` | where the client cannot multiplex (Windows), keep connections to a host open between calls (below) |
 | `ssh.connectionsPerHost` | `3` | kept connections per host (1–8): calls running at the same time; one more opens its own ssh |
 | `ssh.idleSeconds` | `300` | a kept connection unused this long is closed (10–3600) |
+| `ssh.blockShellSsh` | `true` | a `bash` or `pwsh` command that starts `ssh`, `scp` or `sftp` to an alias or HostName of the ssh config is refused before the guardrails, with the `ssh` tool call that does the same (idea-xh3pvw): the tool reuses the connection, saves the output, gives the host's notes, and the guardrails and the Autonomy journal see the host and the remote command. Hosts the config does not name, and commands that only mention ssh (`git push`, `echo ssh`, a quoted string), are left alone; `bash -c "ssh …"` and `rsync` are not read |
 | `ssh.hostNotes` | `{}` | notes about hosts: `{ "folders": ["<dir>"], "files": { "<alias>": "<file>" } }` (settings.json only). A chat's first `ssh` call to a host gets the note as a section of the result: the file `files[alias]`, else `<folder>/<alias>.md` in the first folder that has one (a leading `~/` is expanded); at most 12 KB, a longer note is cut with a pointer to the file; shown again when compaction dropped it from the chat |
 
 Where the client supports it, calls to one host ride a single master connection (OpenSSH `ControlMaster`, 5 minutes

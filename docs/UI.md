@@ -336,6 +336,11 @@ into locals first, because after the parent clears the modal state or the row re
      verb chosen once per run (Tinkering, Pondering, …). The running tool shows in its steps group, not here. The line
      floats over the chat's bottom room, so coming and going moves nothing; the chat header only shows how a run
      ended badly (failed, cancelled).
+   - **Origin chips.** A chat a webhook or a schedule started, or a subagent of one, shows after its title who it works
+     for (`webhook Checkmk`, `schedule nightly`) and, when it read text from outside (a webhook's payload, or
+     `meta.autonomy.tainted` after an external tool), an "outside text" chip (`lib/origin.js`, read from the meta those
+     plugins write; the tooltip says what it means for the chat). In a narrow chat (under 480px of header) the chips
+     are icons only. The owner's own chats have none.
    - **What the model got.** Everything NetPI adds to a request can be read where it happened. A `prompt` item
      (`PromptRow`, from `context.prompts`, refreshed on `context.prompt`) is the system prompt: the first above the
      first message (when the window starts there), one after a profile switch where it was rendered again; it opens

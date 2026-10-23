@@ -25,7 +25,9 @@ webhooks, subagents): the guardrails ask its `IToolGrants` (`src/NetPI.Contracts
 user, so a rule allowed **Always for …** an origin stops asking there, and in an unattended chat an ungranted ask is
 refused and listed in the tab instead of waiting. For schedules' and webhooks' chats it journals every change (Undo for
 files), and has a pause switch, an hourly cap (the only notification) and a list of what a chat that read outside text
-may never do. Disabled, NetPI behaves as before. Record: [archive/2026-10-23-autonomy.md](archive/2026-10-23-autonomy.md).
+may never do. Disabled, NetPI behaves as before. Chips in the chat header say who a chat works for and whether it
+read outside text, and the Ssh plugin refuses `ssh`/`scp`/`sftp` through the shell to its configured hosts
+(`ssh.blockShellSsh`). Record: [archive/2026-10-23-autonomy.md](archive/2026-10-23-autonomy.md).
 Contract change: a publish stages everything for the next start.
 
 ### Whole-repo review, fixed in one pass (2026-10-16)
