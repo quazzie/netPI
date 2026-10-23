@@ -95,8 +95,8 @@ internal static class Agent
     {
         var before = Win.Top().Select(w => w.Hwnd).ToHashSet();
         var exe = (string)c["exe"]!;
-        var p = Process.Start(new ProcessStartInfo(exe, (string?)c["args"] ?? "") { UseShellExecute = true });
-        var pid = p?.Id ?? 0;
+        int pid;
+        using (var p = Process.Start(new ProcessStartInfo(exe, (string?)c["args"] ?? "") { UseShellExecute = true })) pid = p?.Id ?? 0;
         var rx = c["title"] is JsonNode t && ((string?)t)?.Length > 0 ? new Regex((string)t!, RegexOptions.IgnoreCase) : null;
         var sw = Stopwatch.StartNew();
         var timeout = (int?)c["timeout"] ?? 20000;

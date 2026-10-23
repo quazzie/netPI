@@ -146,6 +146,7 @@ internal sealed class ContextCache
             {
                 _entries.Remove(message.SessionId);
                 _lru.Remove(message.SessionId);
+                SettleGenerationLocked(message.SessionId);   // as a drop does: a read in flight predates this message
                 return;
             }
             entry.Rows.Add(message);
@@ -164,14 +165,14 @@ internal sealed class ContextCache
         }
     }
 
-    /// <summary>A session that is going away: forget its cached context, its generation and any in-flight read of it.</summary>
+    /// <summary>A session that is going away: forget its cached context and poison any read of it still in flight.</summary>
     public void Forget(string sessionId)
     {
         lock (_lock)
         {
             if (_entries.Remove(sessionId)) _lru.Remove(sessionId);
-            _generation.Remove(sessionId);
-            _inflight.Remove(sessionId);
+            // a read in flight stays counted (its Fill or DecrementInflight still comes) and is poisoned: it must not refill the slot
+            SettleGenerationLocked(sessionId);
         }
     }
 

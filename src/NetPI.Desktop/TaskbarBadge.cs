@@ -39,6 +39,7 @@ internal sealed class TaskbarBadge : IDisposable
 
     private void Apply()
     {
+        var hicon = IntPtr.Zero;
         try
         {
             if (_list is null)
@@ -54,7 +55,7 @@ internal sealed class TaskbarBadge : IDisposable
                 Release();
                 return;
             }
-            var hicon = Draw(_waiting > 0 ? Waiting : Working, count);
+            hicon = Draw(_waiting > 0 ? Waiting : Working, count);
             var text = _waiting > 0 && _working > 0 ? $"{_working} working, {_waiting} waiting"
                 : _waiting > 0 ? $"{_waiting} waiting for you" : $"{_working} working";
             _list.SetOverlayIcon(_hwnd, hicon, text);
@@ -64,6 +65,9 @@ internal sealed class TaskbarBadge : IDisposable
         catch
         {
             _list = null; // a badge is a nicety: never take the window down
+            // no icon handle outlives a failure: the one just drawn, and the previous one (the overlay's state is unknown now)
+            if (hicon != IntPtr.Zero && hicon != _hicon) DestroyIcon(hicon);
+            Release();
         }
     }
 

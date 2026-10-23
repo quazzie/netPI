@@ -173,5 +173,20 @@ public static class ContextCacheTests
             cache.Fill("gone", Rows("gone", 1), 1, fresh);
             Check.True(cache.TryGet("gone") is not null);
         });
+
+        r.Add("context cache: an append that drops the entry, and a forget, poison a cold read already in flight", () =>
+        {
+            var cache = new ContextCache();
+            var early = cache.BeginRead("s");          // a cold read starts…
+            Read(cache, "s", Rows("s", 1, 2, 3), 3);   // …another one fills the slot first
+            cache.Append(Msg("s", 2));                 // an out-of-order append drops the entry
+            cache.Fill("s", Rows("s", 1, 2, 3), 3, early);
+            Check.True(cache.TryGet("s") is null, "the read that began before the append cannot fill with a context without it");
+
+            var gone = cache.BeginRead("g");
+            cache.Forget("g");
+            cache.Fill("g", Rows("g", 1), 1, gone);
+            Check.True(cache.TryGet("g") is null, "a read of a deleted session does not refill its slot");
+        });
     }
 }
