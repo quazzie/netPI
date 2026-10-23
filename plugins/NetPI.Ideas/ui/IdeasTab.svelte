@@ -337,11 +337,6 @@
     {#if storage}
       <span class="file" title="The ideas backlog lives in the {storage.database} database ({storage.scope}, version {storage.schemaVersion}) - it is not a file you can edit"><Icon name="archive" size={12} /></span>
     {/if}
-    {#if autoRefineText}
-      <span class="arstat np-ellipsis" title="Your agents refine new ideas in the background, one after another at low priority, until all are refined. Settings: Ideas.">
-        <Icon name="bot" size={12} /> {autoRefineText}
-      </span>
-    {/if}
     {#if autoRefine}
       <IconButton
         icon="bot"
@@ -352,6 +347,11 @@
     {/if}
     <IconButton icon="plus" title="New idea (Ctrl+I)" size="sm" onclick={newIdea} />
   </div>
+  {#if autoRefineText}
+    <div class="arstat" title="Your agents refine new ideas in the background, one after another at low priority, until all are refined. Settings: Ideas.">
+      <Icon name="bot" size={12} /> <span class="np-ellipsis">{autoRefineText}</span>
+    </div>
+  {/if}
 
   <div class="filters">
     <!-- the search and its ≈ mode share a row; the status and tag filters sit on the row below -->
@@ -499,10 +499,10 @@
     text-align: left;
   }
   .arstat {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 4px;
-    margin-left: auto;
+    padding: 0 10px 2px 12px;
     min-width: 0;
     font-size: var(--fs-sm);
     color: var(--fg-dim);
