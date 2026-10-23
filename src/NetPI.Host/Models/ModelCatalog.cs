@@ -252,8 +252,15 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
         }
         finally
         {
+            bool again;
             lock (_gate)
+            {
                 if (_generation == generation) _inflight = null;
+                // invalidated while this refresh ran (the debounced one found it in flight and started nothing): the
+                // listing it took may predate the change, so the next one starts now, not at the next read
+                again = _dirty && _inflight is null && !_disposed;
+            }
+            if (again) _ = RefreshQuietlyAsync();
         }
     }
 
