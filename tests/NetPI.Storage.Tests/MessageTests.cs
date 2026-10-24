@@ -75,7 +75,7 @@ public static class MessageTests
         Providers.Add(r, "messages: an append for a session that is not stored is refused, and changes nothing", store =>
         {
             Build.WithMessages(store, "s1", 1);
-            Check.Throws<Exception>(() => store.Sessions.AppendMessage(Build.Message("nope")));
+            Check.Throws<KeyNotFoundException>(() => store.Sessions.AppendMessage(Build.Message("nope")), "the port names the refusal: a session that does not exist");
             Check.Equal(1, store.Sessions.GetMessages("s1").Count, "the refused append took nothing of the other session with it");
         });
 
