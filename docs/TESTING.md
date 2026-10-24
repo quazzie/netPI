@@ -529,10 +529,10 @@ fail with a message saying which, and that a tab importing a svelte entry point 
 (the second runtime it would bundle stays out of the page) while a tab on the shimmed entry points, or without svelte
 at all, still builds.
 
-`node web/scripts/check-projects.mjs` is the unit suite for `web/src/lib/projects.js` (what the projects panel and the
-projects dialog share) and for the three views of the dialog: the counts, the filter and order, and the remove flow in
-Node against stubbed state, then the views themselves in a headless browser — rows and counts, the filter narrowing
-the list, both forms, and what a failing rpc leaves on screen instead of a spinner.
+`web/test/projects.test.js` (npm test) is the unit suite for `web/src/lib/projects.js` (what the projects panel and the
+projects dialog share): the counts, the filter and order, and the remove flow in Node against stubbed state.
+`node web/scripts/check-projects.mjs` is the browser half of it: the three views of the dialog in a headless browser —
+rows and counts, the filter narrowing the list, both forms, and what a failing rpc leaves on screen instead of a spinner.
 
 On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
 `/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.

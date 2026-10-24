@@ -17,7 +17,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compile, compileModule } from 'svelte/compiler';
-import { loadPlaywright, launchBrowser } from './pw.mjs';
+import { loadPlaywright, launchBrowser, settle } from './pw.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const KIT = path.join(root, 'web/src/lib/kit');
@@ -149,31 +149,31 @@ const open = (loadMs, pollMs, delayMs) =>
     window.openTab(window.ctx);
   }, [loadMs, pollMs, delayMs]);
 
+/** The ctx's load counters, read live: what the settles poll on. */
+const stats = () => page.evaluate(() => window.ctx.stats);
+
 // 1 + 2: one load on mount, and the events that land in one window are one load
 await open(10, 0, 30);
-await page.waitForTimeout(120);
-const calls = await page.evaluate(() => window.ctx.stats.calls);
-check('one load on mount', calls === 1, `calls=${calls}`);
+const mount = await settle(stats, (s) => s.calls === 1 && s.inFlight === 0);
+check('one load on mount', mount?.calls === 1, `calls=${mount?.calls}`);
 await page.evaluate(() => {
   window.ctx.fire('probe.changed');
   window.ctx.fire('probe.changed');
   window.ctx.fire('probe.changed');
 });
-await page.waitForTimeout(150);
-const afterEvents = await page.evaluate(() => window.ctx.stats.calls);
-check('three events in one window are one load', afterEvents === calls + 1, `calls ${calls} → ${afterEvents}`);
+const coalesced = await settle(stats, (s) => s.calls === mount.calls + 1 && s.inFlight === 0);
+check('three events in one window are one load', coalesced?.calls === mount?.calls + 1, `calls ${mount?.calls} → ${coalesced?.calls}`);
 
 // 3: a load slower than the poll interval never has a second one in flight
 await open(80, 20, 20);
-await page.waitForTimeout(400);
-const polled = await page.evaluate(() => window.ctx.stats);
-check('the poll keeps loading', polled.calls > 2, `calls=${polled.calls}`);
-check('a load slower than the poll never has a second in flight', polled.peak === 1, `peak=${polled.peak}`);
+const polled = await settle(stats, (s) => s.calls > 2);
+check('the poll keeps loading', polled?.calls > 2, `calls=${polled?.calls}`);
+check('a load slower than the poll never has a second in flight', polled?.peak === 1, `peak=${polled?.peak}`);
 
 // 3b: a request that arrives while a load runs is one more load after it (what the running one read may be what the request
 // just made stale), never the answer of the load that started first, and several requests in that window are still one
 await open(80, 0, 20);
-await page.waitForTimeout(150);
+await settle(stats, (s) => s.calls === 1 && s.inFlight === 0); // the mount load has settled
 const midLoad = await page.evaluate(async () => {
   const before = window.ctx.stats.calls;
   const first = window.tab.refresh();
@@ -188,21 +188,18 @@ check('and still never two in flight', midLoad.peak === 1 && midLoad.settled ===
 
 // 4: a hidden tab loads nothing; showing it loads once, however many events arrived meanwhile
 await open(10, 0, 30);
-await page.waitForTimeout(120);
-const hidden = await page.evaluate(async () => {
+await settle(stats, (s) => s.calls === 1 && s.inFlight === 0);
+const before = await page.evaluate(() => window.ctx.stats.calls);
+await page.evaluate(() => {
   window.host.onHide();
-  const before = window.ctx.stats.calls;
   for (let i = 0; i < 5; i++) window.ctx.fire('probe.changed');
-  await new Promise((r) => setTimeout(r, 150));
-  const whileHidden = window.ctx.stats.calls;
-  const visible = window.tab.visible;
-  window.host.onShow();
-  await new Promise((r) => setTimeout(r, 150));
-  return { before, whileHidden, afterShow: window.ctx.stats.calls, visible };
 });
-check('the helper reports the visibility', hidden.visible === false, `visible=${hidden.visible}`);
-check('a hidden tab loads nothing', hidden.whileHidden === hidden.before, `${hidden.before} → ${hidden.whileHidden}`);
-check('showing it loads once', hidden.afterShow === hidden.before + 1, `${hidden.before} → ${hidden.afterShow}`);
+await new Promise((r) => setTimeout(r, 150)); // a bounded window: a hidden tab must not load, whatever arrived
+check('the helper reports the visibility', (await page.evaluate(() => window.tab.visible)) === false, 'visible=false');
+check('a hidden tab loads nothing', (await page.evaluate(() => window.ctx.stats.calls)) === before, `${before} → ${await page.evaluate(() => window.ctx.stats.calls)}`);
+await page.evaluate(() => window.host.onShow());
+const afterShow = await settle(stats, (s) => s.calls === before + 1 && s.inFlight === 0);
+check('showing it loads once', afterShow?.calls === before + 1, `${before} → ${afterShow?.calls}`);
 
 // 5: nothing runs after unmount
 const after = await page.evaluate(async () => {
@@ -210,7 +207,7 @@ const after = await page.evaluate(async () => {
   window.close();
   const before = window.ctx.stats.calls;
   window.ctx.fire('probe.changed');
-  await new Promise((r) => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 150)); // a bounded window: nothing must run after unmount
   return { before, after: window.ctx.stats.calls, alive: window.tab.alive, handlers: window.ctx.handlers.get('probe.changed').length };
 });
 check('nothing runs after unmount', after.after === after.before, `${after.before} → ${after.after}`);
