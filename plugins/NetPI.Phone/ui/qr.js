@@ -3,12 +3,12 @@
 const ECC_PER_BLOCK_L = [0, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18];
 const BLOCKS_L = [0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4];
 
-function rawModules(v) {
+export function rawModules(v) {
   let r = (16 * v + 128) * v + 64;
   if (v >= 2) { const a = Math.floor(v / 7) + 2; r -= (25 * a - 10) * a - 55; if (v >= 7) r -= 36; }
   return r;
 }
-function alignPositions(v) {
+export function alignPositions(v) {
   if (v === 1) return [];
   const n = Math.floor(v / 7) + 2, size = v * 4 + 17;
   const step = Math.ceil((v * 4 + 4) / (n * 2 - 2)) * 2;
@@ -16,17 +16,36 @@ function alignPositions(v) {
   for (let pos = size - 7; r.length < n; pos -= step) r.splice(1, 0, pos);
   return r;
 }
-function gfMul(a, b) { let z = 0; for (let i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11d); z ^= ((b >>> i) & 1) * a; } return z & 255; }
-function rsRemainder(data, degree) {
+export function gfMul(a, b) { let z = 0; for (let i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11d); z ^= ((b >>> i) & 1) * a; } return z & 255; }
+export function rsGenerator(degree) {
+  // The QR generator polynomial g(x) = prod over i of (x + alpha^i); coefficients in descending order, the leading 1 implicit.
   const gen = new Array(degree).fill(0); gen[degree - 1] = 1;
   let root = 1;
   for (let i = 0; i < degree; i++) { for (let j = 0; j < degree; j++) { gen[j] = gfMul(gen[j], root); if (j + 1 < degree) gen[j] ^= gen[j + 1]; } root = gfMul(root, 2); }
+  return gen;
+}
+export function rsRemainder(data, degree) {
+  const gen = rsGenerator(degree);
   const res = new Array(degree).fill(0);
   for (const b of data) { const f = b ^ res.shift(); res.push(0); gen.forEach((c, i) => { res[i] ^= gfMul(c, f); }); }
   return res;
 }
+// The 15-bit format information for ECC level L (bits 01) and the given mask.
+export function formatBits(mask) {
+  const d = (1 << 3) | mask;
+  let r = d;
+  for (let i = 0; i < 10; i++) r = (r << 1) ^ ((r >>> 9) * 0x537);
+  return ((d << 10) | r) ^ 0x5412;
+}
+// The 18-bit version information (BCH(18,6)) for versions 7 and up.
+export function versionBits(ver) {
+  let r = ver;
+  for (let i = 0; i < 12; i++) r = (r << 1) ^ ((r >>> 11) * 0x1f25);
+  return (ver << 12) | r;
+}
 
-export function qrMatrix(text) {
+// The version, data codewords and the per-block data + error correction (before interleaving) for a text.
+export function qrCodewords(text) {
   const bytes = [...new TextEncoder().encode(text)];
   let ver = 0, dataCw = 0;
   for (let v = 1; v <= 10; v++) {
@@ -43,17 +62,26 @@ export function qrMatrix(text) {
   const data = [];
   for (let i = 0; i < bits.length; i += 8) data.push(parseInt(bits.slice(i, i + 8).join(''), 2));
   for (let pad = 0xec; data.length < dataCw; pad ^= 0xec ^ 0x11) data.push(pad);
-  // error correction, interleaved
+  // per-block data + error correction, before interleaving
   const nb = BLOCKS_L[ver], eccLen = ECC_PER_BLOCK_L[ver], rawCw = Math.floor(rawModules(ver) / 8);
   const shortLen = Math.floor(rawCw / nb), nShort = nb - (rawCw % nb);
-  const blocks = []; let k = 0;
+  const blocks = []; const codewords = []; let k = 0;
   for (let i = 0; i < nb; i++) {
     const len = shortLen - eccLen + (i < nShort ? 0 : 1);
     const dat = data.slice(k, k + len); k += len;
     const ecc = rsRemainder(dat, eccLen);
+    codewords.push({ data: dat.slice(), ecc });
     if (i < nShort) dat.push(0);
     blocks.push(dat.concat(ecc));
   }
+  return { version: ver, dataCw, data, blocks, codewords, blockCount: nb, eccLen };
+}
+
+export function qrMatrix(text) {
+  const { version: ver, blocks, blockCount: nb, eccLen } = qrCodewords(text);
+  const rawCw = Math.floor(rawModules(ver) / 8);
+  const shortLen = Math.floor(rawCw / nb), nShort = nb - (rawCw % nb);
+  // interleave
   const all = [];
   for (let i = 0; i < blocks[0].length; i++) blocks.forEach((b, j) => { if (i !== shortLen - eccLen || j >= nShort) all.push(b[i]); });
 
@@ -67,7 +95,6 @@ export function qrMatrix(text) {
   finder(3, 3); finder(size - 4, 3); finder(3, size - 4);
   const ap = alignPositions(ver);
   ap.forEach((cx, i) => ap.forEach((cy, j) => { if ((i === 0 && j === 0) || (i === 0 && j === ap.length - 1) || (i === ap.length - 1 && j === 0)) return; for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) set(cx + dx, cy + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1); }));
-  const formatBits = (mask) => { const d = (1 << 3) | mask; let r = d; for (let i = 0; i < 10; i++) r = (r << 1) ^ ((r >>> 9) * 0x537); return ((d << 10) | r) ^ 0x5412; };
   const drawFormat = (mask) => {
     const f = formatBits(mask), b = (i) => ((f >>> i) & 1) !== 0;
     for (let i = 0; i <= 5; i++) set(8, i, b(i));
@@ -79,8 +106,7 @@ export function qrMatrix(text) {
   };
   drawFormat(0);
   if (ver >= 7) {
-    let r = ver; for (let i = 0; i < 12; i++) r = (r << 1) ^ ((r >>> 11) * 0x1f25);
-    const v = (ver << 12) | r;
+    const v = versionBits(ver);
     for (let i = 0; i < 18; i++) { const c = ((v >>> i) & 1) !== 0, a = size - 11 + (i % 3), b = Math.floor(i / 3); set(a, b, c); set(b, a, c); }
   }
   // data placement
