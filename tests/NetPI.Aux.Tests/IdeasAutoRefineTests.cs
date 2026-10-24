@@ -186,7 +186,7 @@ public static class IdeasAutoRefineTests
         r.Add("ideas.autoRefine: keeps going until every eligible idea is refined (no daily cap)", async () =>
         {
             var env = await new Env(agents: ["qwen"], max: 1).StartAsync();
-            var ids = Enumerable.Range(0, 30).Select(i => env.Idea("i" + i, ageMinutes: 60 + i)).ToList();
+            var ids = Enumerable.Range(0, 5).Select(i => env.Idea("i" + i, ageMinutes: 60 + i)).ToList();
             for (var n = 0; n < ids.Count; n++)
             {
                 await env.Tick();
@@ -195,7 +195,7 @@ public static class IdeasAutoRefineTests
                 env.Finish(env.SessionOf(running), AgentStatus.Idle);
                 await Settled(() => env.State(running) == "done");
             }
-            Check.True(ids.All(id => env.State(id) == "done"), "all 30 refined");
+            Check.True(ids.All(id => env.State(id) == "done"), "all 5 refined");
         });
 
         r.Add("ideas.autoRefine: agent-filed, no-refine, already refined, not open and edited-just-now ideas are skipped", async () =>

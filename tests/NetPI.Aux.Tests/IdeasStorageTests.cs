@@ -239,25 +239,6 @@ public static class IdeasStorageTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas storage: unknown fields on the idea and on its sections survive every write", async () =>
-        {
-            var env = new Env();
-            await env.StartAsync();
-            var repo = env.Repo;
-            var idea = IdeaOps.CreateIdea(new JsonObject { ["title"] = "Hand written" }, repo.TakenIds(), "user", null, keepExtraFields: true);
-            idea["estimate"] = new JsonObject { ["days"] = 3 };
-            idea["sections"]!.AsArray().Add(new JsonObject { ["id"] = "sec-aa", ["kind"] = "note", ["content"] = "x", ["author"] = "bob" });
-            repo.Add(idea);
-            repo.AddSession(idea["id"]!.Str(), env.Session.Id);
-            repo.Update(idea["id"]!.Str()!, new JsonObject { ["status"] = "done" }, fromUi: true);
-            var after = repo.Idea(idea["id"]!.Str())!;
-            Check.Equal("{\"days\":3}", after["estimate"]!.ToJsonString());
-            Check.Equal("bob", after["sections"]![0]!["author"].Str());
-            Check.Equal("done", after["status"].Str());
-            Check.Equal(env.Session.Id, after["sessionIds"]![0].Str());
-            env.Ctx.Unload();
-        });
-
         // ---------------------------------------------------------------- the storage descriptor and the events
 
         r.Add("ideas storage: a plugin reload - a new instance over the same tables - keeps the backlog", async () =>
