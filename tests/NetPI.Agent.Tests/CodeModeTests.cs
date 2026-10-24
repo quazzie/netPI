@@ -58,6 +58,21 @@ public static class CodeModeTests
                 : ToolResult.Error($"Unknown tool '{name}'");
     }
 
+    /// <summary>A 1x1 png, the smallest image a script can attach.</summary>
+    private const string Png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    /// <summary>A tool that answers with an image.</summary>
+    private sealed class Picture : IAgentTool
+    {
+        public ToolDefinition Definition { get; } = new()
+        {
+            Name = "picture", Description = "A picture.",
+            Parameters = JsonNode.Parse("""{"type":"object"}""")!.AsObject(),
+        };
+        public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct) =>
+            Task.FromResult(new ToolResult { Content = "a picture", Images = [new ImagePart { MediaType = "image/png", Data = Png }] });
+    }
+
     private static Task<ScriptRunner.Outcome> Run(string code, ScriptStore? store = null, double seconds = 10, long memory = 64L << 20, params IAgentTool[] tools) =>
         new ScriptRunner(new ScriptHost(new Direct(tools), store ?? ScriptStore.Of(null), null), new ScriptLimits(TimeSpan.FromSeconds(seconds), memory))
             .RunAsync(code, CancellationToken.None);
@@ -198,6 +213,80 @@ public static class CodeModeTests
             Check.Contains(o.Text, "\ntrue\n");
             Check.Contains(o.Text, "Unknown tool 'nope'");
             Check.Contains(o.Text, "find callable tools with searchTools(query)");
+        });
+
+        t.Add("codemode: image() attaches images to the result, and refuses what is not one", async () =>
+        {
+            var o = await Run($$"""
+                image({ mediaType: 'image/png', data: '{{Png}}' });
+                image({ mediaType: 'image/jpeg', data: '{{Png}}' });
+                text('two');
+                """);
+            Check.True(o.Ok, o.Text);
+            Check.Equal(2, o.Images.Count);
+            Check.Equal("image/png", o.Images[0].MediaType);
+            Check.Equal(Png, o.Images[0].Data);
+            Check.Contains(o.Text, "2 images attached.");
+            // a callTool result with images hands its first image over
+            o = await Run("image(await callTool('picture', {}));", tools: [new Picture()]);
+            Check.True(o.Ok, o.Text);
+            Check.Equal(1, o.Images.Count);
+            Check.Equal("image/png", o.Images[0].MediaType);
+            Check.Equal(Png, o.Images[0].Data);
+            // what it refuses: each a TypeError that names the fix, and the script keeps going
+            o = await Run($$"""
+                try { image({ mediaType: 'image/svg+xml', data: 'x' }); text('no throw'); } catch (e) { text(e.message); }
+                try { image({ mediaType: 'image/png', data: '' }); text('no throw'); } catch (e) { text(e.message); }
+                try { image({ mediaType: 'image/png', data: '!!' }); text('no throw'); } catch (e) { text(e.message); }
+                try { image(); text('no throw'); } catch (e) { text(e.message); }
+                """);
+            Check.True(o.Ok, o.Text);
+            Check.Contains(o.Text, "image() takes { mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp', data: base64 }");
+            Check.Contains(o.Text, "image() needs base64 data");
+            Check.Contains(o.Text, "image() data is not base64");
+            Check.Contains(o.Text, "image() takes an image block");
+            Check.NotContains(o.Text, "no throw");
+            // the ninth image is refused; the first eight stay
+            o = await Run($$"""
+                for (var i = 0; i < 9; i++) image({ mediaType: 'image/png', data: '{{Png}}' });
+                """);
+            Check.False(o.Ok);
+            Check.Equal(8, o.Images.Count);
+            Check.Contains(o.Text, "a script shows at most 8 images");
+        });
+
+        t.Add("codemode: console lines land in <console_output> in order, marked by their level", async () =>
+        {
+            var o = await Run("""
+                console.log('first');
+                console.info('second');
+                console.warn('third');
+                console.error('fourth');
+                console.debug('fifth');
+                console.log(1, { x: 2 });
+                text('out');
+                """);
+            Check.True(o.Ok, o.Text);
+            // the text items first, then the lines in the order they ran; only levels other than log are marked
+            Check.Contains(o.Text, "out\n<console_output>\nfirst\n[info] second\n[warn] third\n[error] fourth\n[debug] fifth\n1 {\"x\":2}\n</console_output>");
+            // a script that says nothing to the console gets no block
+            o = await Run("text('quiet');");
+            Check.False(o.Text.Contains("<console_output>"), o.Text);
+        });
+
+        t.Add("codemode: output past the 4,000,000-character limit is cut with the notice", async () =>
+        {
+            var o = await Run("text('x'.repeat(4_000_001)); text('after');");
+            Check.False(o.Ok);
+            Check.Contains(o.Text, "Script failed");
+            // the notice names the limit (its number is formatted by the machine's culture)
+            Check.Contains(o.Text, "the script's output passed");
+            Check.Contains(o.Text, "characters; write large data to a file with a tool and print a summary");
+            Check.NotContains(o.Text, "after");
+            Check.True(o.Text.Length < 1000, "the cut output is not kept: " + o.Text.Length);
+            // exactly at the limit still passes
+            o = await Run("text('x'.repeat(4_000_000));");
+            Check.True(o.Ok, "at the limit: " + o.Text.Length);
         });
 
         t.Add("codemode: a nested tool cannot run a script", async () =>
