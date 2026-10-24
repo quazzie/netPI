@@ -120,14 +120,14 @@ jobs:
         run: node web/scripts/check-host-shims.mjs
 
       # The other Node checks, each its own step so the job log names the one that failed: the kernel references only
-      # the contracts and names no plugin-owned type; every plugin tab's mount and refresh loop; the projects module and
-      # the dialog views on it; the UI's pure modules (rpc's one deadline per call, where a streaming answer may be cut for
-      # rendering, the order its text, thinking and tool calls are laid out in, the tabs' models).
+      # the contracts and names no plugin-owned type; every plugin tab's mount and refresh loop; the projects dialog
+      # views; the UI's pure modules (the projects module, rpc's one deadline per call, where a streaming answer may be
+      # cut for rendering, the order its text, thinking and tool calls are laid out in, the tabs' models).
       - name: The core stays small
         run: node scripts/core-size.mjs
       - name: The tab lifecycle
         run: node web/scripts/check-tab-lifecycle.mjs
-      - name: The projects module
+      - name: The projects dialog views
         run: node web/scripts/check-projects.mjs
       - name: The UI's pure modules (node --test over web/test)
         run: npm test

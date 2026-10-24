@@ -1,102 +1,26 @@
 #!/usr/bin/env node
-// What the projects panel and the projects dialog share (web/src/lib/projects.js), and the three views of the
-// dialog that use it (the split idea-g26991 asked for). The module was written out twice before, which is how a
-// count and a dialog could drift apart.
+// The three views of the projects dialog (the split idea-g26991 asked for), rendered in a headless browser against
+// stubbed state and rpc: what is checked here is the wiring the split introduced — the filter, the counts, the form
+// fields, and what a failing rpc leaves on screen. What the views share (web/src/lib/projects.js: the counts, the filter
+// and order, the remove flow) is checked in Node by web/test/projects.test.js (npm test) — the module was written out
+// twice before, which is how a count and a dialog could drift apart.
 //
 //   node web/scripts/check-projects.mjs
 //
-//   1 the counts a project row shows: its own chats, not an archived one, not a subagent's
-//   2 the filter and the order, and that listing never reorders the state it was given
-//   3 the remove flow: declined, accepted, and a delete the host refused
-//   4 the three views render against stubbed state: rows and counts, the filter, the two forms, and what a failing
+//   1 the three views render against stubbed state: rows and counts, the filter, the two forms, and what a failing
 //     rpc leaves on screen
-//
-// 1-3 need only Node: the module imports the app's state, so it is loaded here against stubs (the two specifiers
-// are rewritten to stand-ins that record what they were asked). 4 is a headless browser, like the other UI checks.
 import fs from 'node:fs/promises';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { compile, compileModule } from 'svelte/compiler';
-import { loadPlaywright, launchBrowser } from './pw.mjs';
+import { loadPlaywright, launchBrowser, settle } from './pw.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-const APP_STUB = `export const app = { projects: [], sessions: [] };
-export const deleted = [];
-export async function deleteProject(id) {
-  deleted.push(id);
-  if (String(id).startsWith('boom')) throw new Error('the host said no');
-}`;
-
-const UI_STUB = `export const toasts = [];
-export const asked = [];
-export const answers = { value: true };
-export function setAnswer(v) { answers.value = v; }
-export function toast(text, level = 'info') { toasts.push({ text, level }); }
-export function confirmDialog(opts) { asked.push(opts); return Promise.resolve(answers.value); }`;
-
-/** The module, with its two state imports pointed at the stubs, in a directory it can be imported from. */
-async function loadProjectsModule() {
-  const src = await fs.readFile(path.join(root, 'web/src/lib/projects.js'), 'utf8');
-  const stubbed = src.replace("'./state/app.svelte.js'", "'./app.stub.js'").replace("'./state/ui.svelte.js'", "'./ui.stub.js'");
-  if (stubbed.includes('./state/')) throw new Error('projects.js imports state the check cannot stub; the copy is stale');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'netpi-projects-'));
-  await fs.writeFile(path.join(dir, 'projects.js'), stubbed);
-  await fs.writeFile(path.join(dir, 'app.stub.js'), APP_STUB);
-  await fs.writeFile(path.join(dir, 'ui.stub.js'), UI_STUB);
-  const url = (file) => pathToFileURL(path.join(dir, file)).href;
-  return { projects: await import(url('projects.js')), app: await import(url('app.stub.js')), ui: await import(url('ui.stub.js')) };
-}
-
-const { projects, app, ui } = await loadProjectsModule();
 const results = [];
 const check = (what, ok, detail = '') => results.push({ what, ok, detail });
 
-// the counts a project row shows
-const session = (id, projectId, extra = {}) => ({ id, projectId, ...extra });
-const counts = projects.projectCounts([
-  session('a', 'p1'),
-  session('b', 'p1'),
-  session('c', 'p1', { archived: true }),
-  session('d', 'p1', { parentSessionId: 'b' }),
-  session('e', 'p2'),
-  session('f', null),
-]);
-check('a project counts its own chats', counts.get('p1') === 2, `${counts.get('p1')}`);
-check('an archived chat and a subagent are not counted', counts.get('p2') === 1 && !counts.has('none'), [...counts].join(' '));
-check('a chat without a project counts for nothing', counts.size === 2, `${counts.size} projects`);
-
-// the filter and the order
-const fixtures = [
-  { id: 'old', name: 'Alpha', path: 'C:/src/alpha', updatedAt: '2026-01-01T00:00:00Z' },
-  { id: 'used', name: 'Beta', path: 'C:/src/beta', updatedAt: '2026-01-02T00:00:00Z', lastUsedAt: '2026-03-01T00:00:00Z' },
-  { id: 'newer', name: 'Gamma', path: 'C:/src/gamma', updatedAt: '2026-02-01T00:00:00Z' },
-];
-const ids = (q) => projects.matchingProjects(fixtures, q).map((p) => p.id).join(',');
-check('an empty filter lists everything, most recently used first', ids('') === 'used,newer,old', ids(''));
-check('the name matches, whatever its case', ids('BETA') === 'used', ids('BETA'));
-check('the path matches too', ids('src/gamma') === 'newer', ids('src/gamma'));
-check('nothing matches an unknown filter', ids('zzz') === '', ids('zzz'));
-check('listing does not reorder the state it was given', fixtures.map((p) => p.id).join(',') === 'old,used,newer', fixtures.map((p) => p.id).join(','));
-
-// the remove flow, shared by the panel and the dialog
-ui.setAnswer(false);
-ui.toasts.length = 0;
-app.deleted.length = 0;
-const declined = await projects.removeProject({ id: 'p1', name: 'Alpha', path: 'C:/src/alpha' });
-check('a declined confirm removes nothing', declined === false && app.deleted.length === 0 && ui.toasts.length === 0, `deleted ${app.deleted.length}`);
-check('the confirm says what is and is not touched', /Files in C:\/src\/alpha are not touched; its sessions are kept/.test(ui.asked[0]?.message ?? '') && ui.asked[0]?.danger === true, JSON.stringify(ui.asked[0]));
-ui.setAnswer(true);
-const removed = await projects.removeProject({ id: 'p1', name: 'Alpha', path: 'C:/src/alpha' });
-check('an accepted confirm removes the project and says so', removed === true && app.deleted[0] === 'p1' && ui.toasts[0]?.text.includes('Alpha'), JSON.stringify(ui.toasts));
-const rejected = await projects.removeProject({ id: 'boom', name: 'Beta', path: 'C:/src/beta' });
-check("a delete that fails reports the host's message", rejected === false && ui.toasts.at(-1)?.level === 'error' && ui.toasts.at(-1)?.text === 'the host said no', JSON.stringify(ui.toasts.at(-1)));
-
-// --- the three views of the projects dialog, which share that module (idea-g26991) -------------------------
-// The views are rendered in a headless browser against stubbed state and rpc: what is checked here is the wiring
-// the split introduced — the filter, the counts, the form fields, and what a failing rpc leaves on screen.
 const VIEWS = {
   'ProjectsListView.svelte': {
     '../../lib/state/app.svelte.js': '/stub/app.js',
@@ -227,33 +151,44 @@ await page.waitForFunction(() => typeof window.show === 'function', null, { time
 
 // the list: a row per project with the sessions that count, most recently used first, and the shared filter
 const list = await page.evaluateHandle(() => window.show('ProjectsListView.svelte', { onnew: () => {}, onedit: () => {}, onremove: () => {}, onstart: () => {} }));
-await page.waitForTimeout(50);
-const rows = await list.evaluate((el) => [...el.querySelectorAll('.prow')].map((r) => r.querySelector('.pname').textContent.replace(/\s+/g, ' ').trim()));
-check('the list has a row per project, most recently used first', rows.length === 2 && /Beta/.test(rows[0]) && /Alpha/.test(rows[1]), JSON.stringify(rows));
-check("a row counts the project's own chats only", /Alpha\s*2 sessions/.test(rows[1]), JSON.stringify(rows[1]));
+const rows = await settle(
+  () => list.evaluate((el) => [...el.querySelectorAll('.prow')].map((r) => r.querySelector('.pname').textContent.replace(/\s+/g, ' ').trim())),
+  (r) => r.length === 2 && /Beta/.test(r[0]) && /Alpha/.test(r[1]),
+);
+check('the list has a row per project, most recently used first', rows?.length === 2 && /Beta/.test(rows[0]) && /Alpha/.test(rows[1]), JSON.stringify(rows));
+check("a row counts the project's own chats only", /Alpha\s*2 sessions/.test(rows?.[1] ?? ''), JSON.stringify(rows?.[1]));
 await list.evaluate((el) => {
   const input = el.querySelector('.search input');
   input.value = 'alph';
   input.dispatchEvent(new Event('input', { bubbles: true }));
 });
-await page.waitForTimeout(30);
-const filtered = await list.evaluate((el) => [...el.querySelectorAll('.prow .pname')].map((n) => n.textContent));
-check('the filter narrows the list', filtered.length === 1 && /Alpha/.test(filtered[0]), JSON.stringify(filtered));
+const filtered = await settle(
+  () => list.evaluate((el) => [...el.querySelectorAll('.prow .pname')].map((n) => n.textContent)),
+  (f) => f.length === 1 && /Alpha/.test(f[0]),
+);
+check('the filter narrows the list', filtered?.length === 1 && /Alpha/.test(filtered[0]), JSON.stringify(filtered));
 
 // the create form: a folder, a name, the hint the caller asked for, and the folder the browse picked
 const created = await page.evaluateHandle(() => window.show('ProjectsNewView.svelte', { form: { name: '', path: '', create: false }, hint: 'A new session starts in it.', onsubmit: () => {}, onbrowse: () => {} }));
-await page.waitForTimeout(30);
-const form = await created.evaluate((el) => ({
-  hint: el.querySelector('.hint')?.textContent,
-  path: el.querySelector('.pathrow input')?.placeholder,
-  name: el.querySelectorAll('.field')[1]?.querySelector('input')?.placeholder,
-}));
-check('the create form asks for a folder and a name, with the caller\'s hint', form.hint === 'A new session starts in it.' && !!form.path && !!form.name, JSON.stringify(form));
+const form = await settle(
+  () =>
+    created.evaluate((el) => ({
+      hint: el.querySelector('.hint')?.textContent,
+      path: el.querySelector('.pathrow input')?.placeholder,
+      name: el.querySelectorAll('.field')[1]?.querySelector('input')?.placeholder,
+    })),
+  (f) => f.hint === 'A new session starts in it.' && !!f.path && !!f.name,
+);
+check(
+  "the create form asks for a folder and a name, with the caller's hint",
+  form?.hint === 'A new session starts in it.' && !!form?.path && !!form?.name,
+  JSON.stringify(form),
+);
 
 // the project view: its fields, its chats, and what a failing rpc leaves on screen instead of a spinner
 const shown = await page.evaluateHandle(async () => {
   const { app } = await import('/stub/app.js');
-  const el = await window.show('ProjectsEditView.svelte', {
+  return window.show('ProjectsEditView.svelte', {
     project: app.projects[0],
     form: { name: 'Alpha', path: 'C:/src/alpha', create: false },
     onsubmit: () => {},
@@ -262,20 +197,22 @@ const shown = await page.evaluateHandle(async () => {
     onstart: () => {},
     onopen: () => {},
   });
-  await new Promise((r) => setTimeout(r, 50));
-  return el;
 });
-const edit = await shown.evaluate((el) => ({
-  name: el.querySelector('input.np-input')?.value,
-  sessions: [...el.querySelectorAll('.sess .sname')].map((n) => n.textContent),
-  count: el.querySelector('.np-section-count')?.textContent,
-  files: [...el.querySelectorAll('.hint')].map((n) => n.textContent),
-  skills: el.querySelectorAll('.skname').length,
-}));
-check('the project view opens on the name input, with the project\'s own values', edit.name === 'Alpha', JSON.stringify(edit.name));
-check('it lists the project\'s chats and how many', edit.sessions.length === 2 && edit.count === '2', JSON.stringify(edit.sessions));
-check('an instruction file list that cannot be read says so', edit.files.some((t) => /Unavailable: no host for agentsmd\.list/.test(t)), JSON.stringify(edit.files));
-check('no skills section without the skills plugin', edit.skills === 0, `${edit.skills} skills`);
+const edit = await settle(
+  () =>
+    shown.evaluate((el) => ({
+      name: el.querySelector('input.np-input')?.value,
+      sessions: [...el.querySelectorAll('.sess .sname')].map((n) => n.textContent),
+      count: el.querySelector('.np-section-count')?.textContent,
+      files: [...el.querySelectorAll('.hint')].map((n) => n.textContent),
+      skills: el.querySelectorAll('.skname').length,
+    })),
+  (e) => e.name === 'Alpha' && e.sessions.length === 2 && e.files.some((t) => /Unavailable: no host for agentsmd\.list/.test(t)),
+);
+check("the project view opens on the name input, with the project's own values", edit?.name === 'Alpha', JSON.stringify(edit?.name));
+check('it lists the project\'s chats and how many', edit?.sessions?.length === 2 && edit.count === '2', JSON.stringify(edit?.sessions));
+check('an instruction file list that cannot be read says so', edit?.files?.some((t) => /Unavailable: no host for agentsmd\.list/.test(t)), JSON.stringify(edit?.files));
+check('no skills section without the skills plugin', edit?.skills === 0, `${edit?.skills} skills`);
 check('no page errors', pageErrors.length === 0, pageErrors.join('; '));
 
 await browser.close();

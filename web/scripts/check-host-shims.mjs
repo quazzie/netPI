@@ -21,7 +21,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compile, compileModule } from 'svelte/compiler';
-import { loadPlaywright, launchBrowser } from './pw.mjs';
+import { loadPlaywright, launchBrowser, settle } from './pw.mjs';
 import { writeHostShims, exportNames } from './host-shims.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -262,14 +262,15 @@ check("a shim hands out the host's own functions", same === true, `same push: ${
 
 // 2 + 3: the tab renders through the shims, and host state read in the tab re-renders the tab
 const mounted = await page.evaluateHandle(() => window.mountTab({ app: window.app }));
-await page.waitForTimeout(50);
-const first = await mounted.evaluate((el) => el.textContent);
-const badge = await mounted.evaluate((el) => !!el.querySelector('.np-badge'));
-check('a tab compiled against the shims mounts, kit component and all', /first/.test(first) && badge, JSON.stringify(first));
+const mountedOk = (v) => /first/.test(v?.text ?? '') && v?.badge === true;
+const first = await settle(
+  () => mounted.evaluate((el) => ({ text: el.textContent, badge: !!el.querySelector('.np-badge') })),
+  mountedOk,
+);
+check('a tab compiled against the shims mounts, kit component and all', mountedOk(first), JSON.stringify(first));
 await page.evaluate(() => (window.app.label = 'second'));
-await page.waitForTimeout(50);
-const second = await mounted.evaluate((el) => el.textContent);
-check('a $derived in the tab follows host state', /second/.test(second), JSON.stringify(second));
+const second = await settle(() => mounted.evaluate((el) => el.textContent), (t) => /second/.test(t ?? ''));
+check('a $derived in the tab follows host state', /second/.test(second ?? ''), JSON.stringify(second));
 check('no page errors', pageErrors.length === 0, pageErrors.join('; '));
 
 await browser.close();

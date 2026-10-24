@@ -46,3 +46,23 @@ export async function launchBrowser(pw) {
     throw e;
   }
 }
+
+/**
+ * Poll `probe` until `pass(value)` holds — the checks' way of "wait for a state" (a fixed sleep is a flake: too short on a
+ * loaded machine, too long on an idle one; the journeys' expectEventually is the same idea). A probe that throws (an
+ * element that is not there yet) counts as "not yet". Returns the value it saw, so the caller's check fails with it when
+ * `timeout` ms (default 5000) come up. A negative guarantee (nothing should happen) has no state to poll for and keeps a
+ * bounded sleep instead.
+ */
+export async function settle(probe, pass, timeout = 5000, every = 25) {
+  const end = Date.now() + timeout;
+  let last;
+  for (;;) {
+    try {
+      last = await probe();
+      if (pass(last)) return last;
+    } catch {}
+    if (Date.now() >= end) return last;
+    await new Promise((r) => setTimeout(r, every));
+  }
+}
