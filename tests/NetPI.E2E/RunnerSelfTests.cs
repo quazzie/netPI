@@ -40,6 +40,7 @@ public static class RunnerSelfTests
             ("setup failure: the shard's tests are reported as not run, exit 3", SetupFailure_IsNotRun),
             ("repeat: a test that fails sometimes is reported as flaky, with its failure file per attempt", Repeat_FindsFlaky),
             ("failing list: a failure is remembered until it passes; a rerun of others does not forget it", FailingList_Persists),
+            ("timings: a test that no longer exists in the catalog keeps no figure; the live ones are kept", Timings_PrunesStaleIds),
             ("flake ledger: a rate accumulates across runs, a clean test never earns a row, and a pass marks it quiet", FlakeLedger_KeepsRates),
             ("flake ledger: a run writes only the ledger it was given, so a self-test cannot touch the committed one", FlakeLedger_FollowsItsPath),
             ("areas.json: every tag, id and path it names exists, and every plugin folder is mapped", Areas_AreConsistent),
@@ -72,7 +73,7 @@ public static class RunnerSelfTests
 
     /// <summary>Runs the orchestrator silently (its console output is captured) over fake shards; the fakes come from <paramref name="start"/>.</summary>
     private static async Task<(RunReport Report, string Output, string Out, string State)> Run(IReadOnlyList<TestCase> selected, Func<int, Task<ShardContext>> start,
-        Action<E2EOptions>? configure = null)
+        Action<E2EOptions>? configure = null, IReadOnlyCollection<string>? catalogIds = null)
     {
         var root = TempDir();
         var o = new E2EOptions { OutDir = Path.Combine(root, "out"), StateDir = Path.Combine(root, "state"), Parallel = 1 };
@@ -81,7 +82,7 @@ public static class RunnerSelfTests
         RoutedConsole.Attach(buffer);
         try
         {
-            var report = await new Orchestrator { Options = o, StartShard = start, CommandLine = ["self-test"] }.RunAsync(selected);
+            var report = await new Orchestrator { Options = o, StartShard = start, CommandLine = ["self-test"], CatalogIds = catalogIds }.RunAsync(selected);
             return (report, buffer.ToString(), o.OutDir, o.StateDir);
         }
         finally { RoutedConsole.Attach(null); }
@@ -509,6 +510,27 @@ public static class RunnerSelfTests
         FailingState.Update(state, [R("b.y", Outcome.TimedOut)], "run4");
         Check.Equal("run4", FailingState.Load(state)["b.y"].Run, "a repeated failure points at the latest run");
         return Task.CompletedTask;
+    }
+
+    private static async Task Timings_PrunesStaleIds()
+    {
+        // A timings file from an older run: a live test and one that no longer exists in the catalog.
+        var state = TempDir();
+        File.WriteAllText(Path.Combine(state, "timings.json"),
+            new JsonObject { ["a.live"] = 1000, ["ui.smoke"] = 9999 }.ToJsonString());
+
+        var dry = Cases(("a.live", "live"));
+        var (report, _, _, _) = await Run(dry, _ =>
+        {
+            var r = new TestRunner();
+            r.Add("a.live", "live", () => Task.CompletedTask);
+            return Task.FromResult(Shard(r));
+        }, o => o.StateDir = state, catalogIds: new[] { "a.live" });
+
+        Check.Equal(Outcome.Passed, report.Results[0].Outcome, "the live test ran");
+        var saved = Timings.Load(state);
+        Check.True(saved.ContainsKey("a.live"), "the live test's figure is kept");
+        Check.False(saved.ContainsKey("ui.smoke"), "the id that is no longer in the catalog is dropped");
     }
 
     private static Task FlakeLedger_KeepsRates()

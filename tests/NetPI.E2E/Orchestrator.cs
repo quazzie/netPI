@@ -67,6 +67,10 @@ public sealed class Orchestrator
     public required Func<int, Task<ShardContext>> StartShard { get; init; }
     public string[] CommandLine { get; init; } = [];
     public string Dll { get; init; } = typeof(Orchestrator).Assembly.Location;
+    /// <summary>The ids of the test catalog a run was made from: on save, timings for ids no longer in the catalog are
+    /// dropped, so a removed test keeps no stale figure in the file (the one <c>--list</c> reads). Null = the run's own
+    /// catalog (what <c>Suite</c> registers now); the self-test overrides it with its fake ids.</summary>
+    public IReadOnlyCollection<string>? CatalogIds { get; init; }
 
     private sealed record Work(TestCase Case, int Attempt);
 
@@ -124,7 +128,8 @@ public sealed class Orchestrator
         Print(results, shardInfo, wall.Elapsed, report.ExitCode);
         try { File.WriteAllText(Path.Combine(Options.OutDir, "report.json"), report.Json.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); }
         catch (Exception ex) { Console.WriteLine($"  could not write report.json: {ex.Message}"); }
-        Timings.Save(Options.StateDir, timings, results);
+        var catalog = CatalogIds ?? Suite.RegisterAll(null).Cases.Select(c => c.Id).ToHashSet();
+        Timings.Save(Options.StateDir, timings, results, catalog);
         FailingState.Update(Options.StateDir, results, Path.GetFileName(Options.OutDir));
         if (Options.LedgerPath.Length > 0) FlakeLedger.Update(Options.LedgerPath, results, Path.GetFileName(Options.OutDir));
         PruneRunDirs(Options.OutDir, Options.StateDir);
@@ -478,12 +483,14 @@ public static class Timings
         return map;
     }
 
-    public static void Save(string stateDir, Dictionary<string, double> map, IEnumerable<TestResult> results)
+    public static void Save(string stateDir, Dictionary<string, double> map, IEnumerable<TestResult> results, IReadOnlyCollection<string> catalog)
     {
         if (stateDir.Length == 0) return;
         try
         {
             foreach (var g in results.Where(r => r.Outcome == Outcome.Passed).GroupBy(r => r.Id)) map[g.Key] = g.Average(r => r.Ms);
+            // A test that no longer exists keeps no figure: drop every id the current catalog does not have.
+            foreach (var stale in map.Keys.Where(k => !catalog.Contains(k)).ToList()) map.Remove(stale);
             Directory.CreateDirectory(stateDir);
             var o = new JsonObject();
             foreach (var p in map.OrderBy(p => p.Key, StringComparer.Ordinal)) o[p.Key] = Math.Round(p.Value);
