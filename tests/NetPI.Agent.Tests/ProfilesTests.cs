@@ -10,7 +10,7 @@ public static class ProfilesTests
         t.Add("profiles: a new chat gets its project's default, else the global one; its text opens the prompt and its tools are off", NewChats);
         t.Add("profiles: switching before the first message is free; after it the prompt is rendered again, with a notice and no stray tools notice", Switching);
         t.Add("profiles: a chat the app starts itself gets the automatic profile (its project's default first), and what its starter keeps off stays off", Automatic);
-        t.Add("profiles: an older chat is never changed by a new default; subagents get no profile, their owner's tools or the ones it names", Boundaries);
+        t.Add("profiles: an older chat is never changed by a new default; subagents get no profile, and one cannot be applied to them", Boundaries);
         t.Add("profiles: a profile's deferred list (\"*\", \"!name\") replaces tools.deferred for its chats; the rest is a call by name away", DeferredList);
     }
 
@@ -201,17 +201,13 @@ public static class ProfilesTests
         Check.Equal(prompt, Last(h, s.Id).SystemPrompt);
         Check.True(Sent(h, s.Id).Contains("bash"));
 
-        // subagents: no profile; by default their owner's tools, or exactly the ones it names (even ones it lacks)
+        // subagents: no profile, and a profile cannot be applied to one (their tool inheritance is covered by SessionToolsTests)
         var admin = h.NewSession();
         await h.Rpc.CallAsync("profiles.apply", new { sessionId = admin.Id, profile = "admin" });
         await Turn(h, admin.Id, "hi");
         var owner = h.Runtime.GetBySession(admin.Id)!;
-        var helper = await h.Runtime.SpawnAsync(new SpawnRequest { ParentAgentId = owner.Id, Task = "look around" });
-        await h.StatusAsync(helper.Id, AgentStatus.Completed);
-        Check.False(Sent(h, helper.SessionId).Contains("bash"), "the owner's tools");
         var remote = await h.Runtime.SpawnAsync(new SpawnRequest { ParentAgentId = owner.Id, Task = "fix the host", Tools = ["ssh_run", "bash"] });
         await h.StatusAsync(remote.Id, AgentStatus.Completed);
-        Check.Equal("bash,ssh_run", string.Join(",", Sent(h, remote.SessionId)), "exactly the tools it was given");
         Check.True(h.Sessions.GetSession(remote.SessionId)!.Meta?.ContainsKey("profile") != true, "no profile");
         try
         {

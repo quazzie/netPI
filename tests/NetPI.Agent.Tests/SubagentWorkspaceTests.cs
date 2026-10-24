@@ -114,7 +114,6 @@ public static class SubagentWorkspaceTests
         };
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id);
-        await Task.Delay(50);
         Check.Contains(refused ?? "", "wsp_nope");
         Check.Contains(refused ?? "", "None of them was started");
         var children = h.Sessions.ListSessions(new SessionQuery { IncludeSubagents = true, Limit = 500 }).Where(s => s.Kind == "subagent").ToList();
@@ -145,7 +144,6 @@ public static class SubagentWorkspaceTests
         };
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id);
-        await Task.Delay(50);
         Check.Contains(refused ?? "", "wsp_nope");
         Check.Contains(refused ?? "", "subagents[1]");
         Check.Equal(0, h.Sessions.ListSessions(new SessionQuery { IncludeSubagents = true, Limit = 500 }).Count(s => s.Kind == "subagent"),
@@ -170,7 +168,6 @@ public static class SubagentWorkspaceTests
         };
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id);
-        await Task.Delay(50);
         Check.Contains(refused ?? "", "no room for a worktree");
         Check.Equal(0, h.Sessions.ListSessions(new SessionQuery { IncludeSubagents = true, Limit = 500 }).Count(s => s.Kind == "subagent"),
             "a failed provisioning still created a runnable child");
