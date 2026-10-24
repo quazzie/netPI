@@ -835,6 +835,70 @@ public static class WebhooksTests
             await Check.ThrowsAsync<HttpRequestException>(() => fresh.GetAsync($"http://127.0.0.1:{port}/health"));
             await env.Plugin.StopAsync(CancellationToken.None);
         });
+
+        r.Add("webhooks: a chunked body over the listener's 1 MB cap answers 413, and nothing is delivered or run", async () =>
+        {
+            var port = FreePort();
+            var env = await new Env(listen: true).StartAsync();
+            var added = await env.Add();
+            var id = S(added["id"])!; var token = S(added["token"])!;
+            env.Ctx.SettingsFake.SetQuiet("webhooks.port", port);
+            env.Ctx.SettingsFake.SetQuiet("webhooks.maxBodyKb", 1024);   // the plugin's own cap raised to the listener's 1 MB, so the listener's is the one that bites
+            env.Ctx.SettingsFake.SetQuiet("webhooks.enabled", true);
+            env.Ctx.Events.Publish("settings.changed", new JsonObject { ["path"] = "webhooks.enabled" });
+            await WaitFor(() => env.Plugin.Status()["listening"]!.GetValue<bool>() || env.Plugin.Status()["error"] is not null);
+            Check.True(env.Plugin.Status()["listening"]!.GetValue<bool>(), "listening: " + env.Plugin.Status()["error"]);
+
+            // a chunked body (no Content-Length) larger than the listener's 1 MB cap, sent over a raw socket: Kestrel cuts the
+            // connection the moment the body hits the cap, so the 413 it answers is read as it arrives, while the body is still sent
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(IPAddress.Loopback, port);
+            var net = tcp.GetStream();
+            var head = $"POST /hook/{id} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n";
+            await net.WriteAsync(Encoding.UTF8.GetBytes(head));
+            var reader = ReadAllAsync(net);   // the answer, read concurrently with the send so the cut does not lose it
+            var chunk = new byte[8192];
+            const int total = 2 * 1024 * 1024;   // 2 MB, over the listener's 1 MB cap
+            for (var sent = 0; sent < total; sent += chunk.Length)
+            {
+                var size = Math.Min(chunk.Length, total - sent);
+                var sizeHeader = Encoding.ASCII.GetBytes($"{size:x}\r\n");
+                try
+                {
+                    await net.WriteAsync(sizeHeader);
+                    await net.WriteAsync(chunk, 0, size);
+                    await net.WriteAsync(Encoding.ASCII.GetBytes("\r\n"));
+                }
+                catch (IOException)
+                {
+                    break;   // Kestrel closed the connection at the cap
+                }
+            }
+            var answered = Encoding.UTF8.GetString(await reader);
+            Check.Contains(answered, "413", "over the listener's cap: 413, not 500");
+            Check.Contains(answered, "the request body is too large", "the listener's cap, not the plugin's");
+            Check.Equal(0, env.Runtime.Sent.Count, "nothing was sent to the runtime");
+            Check.Equal(0, env.Ctx.SessionsFake.Sessions.Count, "no chat was started");
+            Check.Equal(0, (await env.History(id)).Count, "no delivery was recorded");
+            await env.Plugin.StopAsync(CancellationToken.None);
+        });
+    }
+
+    /// <summary>Reads a stream to the end (a connection cut by the peer ends it), for a raw-socket answer.</summary>
+    private static async Task<byte[]> ReadAllAsync(Stream net)
+    {
+        var response = new List<byte>();
+        var buffer = new byte[8192];
+        int read;
+        try
+        {
+            while ((read = await net.ReadAsync(buffer)) > 0) response.AddRange(buffer.AsSpan(0, read));
+        }
+        catch (IOException)
+        {
+            // the peer cut the connection; whatever arrived is all there is
+        }
+        return response.ToArray();
     }
 
     private static int FreePort()
