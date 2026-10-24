@@ -4,6 +4,8 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetPI.Host.Plugins;
+using NetPI.Host.Registries;
 using NetPI.Host.Web;
 
 namespace NetPI.Host.Tests;
@@ -332,25 +334,37 @@ public static class PluginTests
         {
             await SampleBuild.EnsureAsync();
             var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
-            await using var server = await StartAsync(pluginsRoot);
-            var before = TabVersion(server);
-            var uiChanged = 0;
-            using var sub = server.Events.Subscribe(EventTypes.UiChanged, _ => Interlocked.Increment(ref uiChanged));
-            await Task.Delay(600); // the start's own (debounced) ui.changed is out
-            Interlocked.Exchange(ref uiChanged, 0);
-            // The same bytes written again and the old write time put back: the watcher sees writes, the folder is as it was.
-            // (The first serve of a freshly copied bundle raised such an event, and the new version remounted the open tab.)
-            var ui = Path.Combine(pluginDir, "wwwroot", "ui.js");
-            var bytes = File.ReadAllBytes(ui);
-            var written = File.GetLastWriteTimeUtc(ui);
-            File.WriteAllBytes(ui, bytes);
-            File.SetLastWriteTimeUtc(ui, written);
-            await Task.Delay(1500); // past the watcher's 300 ms debounce, with room
-            Check.Equal(before, TabVersion(server), "the tab version is kept");
-            Check.Equal(0, Volatile.Read(ref uiChanged), "no ui.changed");
-            // a real change still bumps it
-            File.WriteAllText(ui, "export function mount(el) { el.textContent = 'changed'; }");
-            await Wait.Until(() => TabVersion(server) != before, "tab version bumped by a real change");
+            var uiBump = PluginManager.UiBumpDelay;
+            var uiChangedDelay = UiRegistry.UiChangedDelay;
+            PluginManager.UiBumpDelay = TimeSpan.FromMilliseconds(50);    // the wwwroot debounce, 2x outwaited below
+            UiRegistry.UiChangedDelay = TimeSpan.FromMilliseconds(500);  // the start's ui.changed lands after the subscription
+            try
+            {
+                await using var server = await StartAsync(pluginsRoot);
+                var before = TabVersion(server);
+                var uiChanged = 0;
+                using var sub = server.Events.Subscribe(EventTypes.UiChanged, _ => Interlocked.Increment(ref uiChanged));
+                await Wait.Until(() => Volatile.Read(ref uiChanged) > 0, "the start's own ui.changed is out", 5_000);
+                Interlocked.Exchange(ref uiChanged, 0);
+                // The same bytes written again and the old write time put back: the watcher sees writes, the folder is as it was.
+                // (The first serve of a freshly copied bundle raised such an event, and the new version remounted the open tab.)
+                var ui = Path.Combine(pluginDir, "wwwroot", "ui.js");
+                var bytes = File.ReadAllBytes(ui);
+                var written = File.GetLastWriteTimeUtc(ui);
+                File.WriteAllBytes(ui, bytes);
+                File.SetLastWriteTimeUtc(ui, written);
+                await Task.Delay((int)(2 * PluginManager.UiBumpDelay.TotalMilliseconds)); // past the 50 ms debounce, with room
+                Check.Equal(before, TabVersion(server), "the tab version is kept");
+                Check.Equal(0, Volatile.Read(ref uiChanged), "no ui.changed");
+                // a real change still bumps it
+                File.WriteAllText(ui, "export function mount(el) { el.textContent = 'changed'; }");
+                await Wait.Until(() => TabVersion(server) != before, "tab version bumped by a real change");
+            }
+            finally
+            {
+                PluginManager.UiBumpDelay = uiBump;
+                UiRegistry.UiChangedDelay = uiChangedDelay;
+            }
         });
 
         r.Add("plugins: failing StartAsync → failed state, registrations removed; new folders are picked up", async () =>
