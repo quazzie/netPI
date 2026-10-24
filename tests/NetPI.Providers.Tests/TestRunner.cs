@@ -17,6 +17,8 @@ internal sealed class TestRunner(string[] args)
     // --shard i/n (the shared parse) splits the registration-order stream; the filters select by name.
     private readonly (string[] Filters, (int Index, int Count)? Shard) Parsed = NetPI.TestShared.TestRunner.ParseArgs(args);
     private long _shardSeen;
+    // the live claude-cli tests call the real CLI (up to two turns): they get longer when switched on, like the Tools suite's
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(Environment.GetEnvironmentVariable("NETPI_CLAUDE_CLI_LIVE") == "1" ? 900 : 30);
     private long _totalMs;
 
     private int _passedChecks, _failedChecks, _passedTests, _failedTests, _skippedTests, _unselectedTests;
@@ -60,7 +62,7 @@ internal sealed class TestRunner(string[] args)
         var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            await body().WaitAsync(TimeSpan.FromSeconds(30));
+            await body().WaitAsync(Timeout);
         }
         catch (SkipException ex)
         {
