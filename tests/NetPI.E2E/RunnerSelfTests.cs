@@ -42,7 +42,7 @@ public static class RunnerSelfTests
             ("failing list: a failure is remembered until it passes; a rerun of others does not forget it", FailingList_Persists),
             ("flake ledger: a rate accumulates across runs, a clean test never earns a row, and a pass marks it quiet", FlakeLedger_KeepsRates),
             ("flake ledger: a run writes only the ledger it was given, so a self-test cannot touch the committed one", FlakeLedger_FollowsItsPath),
-            ("areas.json: every tag, id and path it names exists, and every plugin folder is mapped", Areas_AreConsistent),
+            ("areas.json: every tag, id and path it names exists, and every plugin, src and shared folder is mapped", Areas_AreConsistent),
         };
         var failed = 0;
         foreach (var (name, body) in tests)
@@ -493,6 +493,9 @@ public static class RunnerSelfTests
             Check.True(paths.Contains($"plugins/{dir}/"), $"areas.json: the plugin '{dir}' has no rule: say which E2E tests cover it (or that none can)");
         foreach (var dir in Directory.GetDirectories(Path.Combine(repo, "src")).Select(Path.GetFileName))
             Check.True(paths.Contains($"src/{dir}/"), $"areas.json: src/{dir} has no rule");
+        // a kit is compiled into its consumers: without its own rule a change to it gets only the smoke set
+        foreach (var dir in Directory.GetDirectories(Path.Combine(repo, "shared")).Select(Path.GetFileName))
+            Check.True(paths.Contains($"shared/{dir}/"), $"areas.json: shared/{dir} has no rule: name the tags of the plugins that compile it in");
         return Task.CompletedTask;
     }
 

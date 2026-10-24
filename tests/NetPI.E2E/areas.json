@@ -288,6 +288,29 @@
    ]
   },
   {
+   "path": "shared/ProcessKit/",
+   "tags": [
+    "smoke",
+    "mcp",
+    "provider",
+    "tools",
+    "control"
+   ]
+  },
+  {
+   "path": "shared/HttpKit/",
+   "tags": [
+    "smoke",
+    "provider"
+   ]
+  },
+  {
+   "path": "shared/ListenerKit/",
+   "tags": [
+    "smoke"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Retry/",
    "tags": [
     "retry"
