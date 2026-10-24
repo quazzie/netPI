@@ -26,7 +26,6 @@ public static class Catalog
         ["reload.runtime-midrun"] = "lifecycle",
         ["agents.setup"] = "scheduling",
         ["slots.three-chats"] = "scheduling",
-        ["slots.abort-queued"] = "scheduling",
         ["subagents.nested"] = "scheduling",
         ["subagents.report-wakes-parent"] = "scheduling",
         ["subagents.wait-steer"] = "scheduling",

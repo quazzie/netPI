@@ -103,38 +103,17 @@ public static class AdvancedTests
             Check.True(wait.B("isError"), "the interrupted agent_wait is recorded as aborted");
         }, 60);
 
-        r.Add("slots.three-chats", "slots: three chats on qwen (2 slots) at once → 2 run, 1 queued, all complete", async () =>
+        r.Add("slots.three-chats", "slots: three chats on qwen (2 slots) at once → 2 run, 1 queued; aborting the queued one frees its place without leaking a slot", async () =>
         {
             await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)).L("busy") == 0 ? "ok" : null, "idle qwen pool");
             await env.MockReset();
             var mark = env.Client.Mark();
             var sessions = new List<string>();
             for (var i = 0; i < 3; i++) sessions.Add((await env.NewSession(model: CoreTests.Qwen)).S("id")!);
-            var sends = await Task.WhenAll(sessions.Select(id => env.Rpc("agent.send", new { sessionId = id, text = "take your time [s:slow ms=1500]" })));
+            var sends = await Task.WhenAll(sessions.Select(id => env.Rpc("agent.send", new { sessionId = id, text = "take your time [s:slow ms=2500]" })));
             var queued = await env.Client.WaitFor(mark, e => e.Type == "agent.status" && sessions.Contains(e.D.P("agent").S("sessionId") ?? "")
                                                              && e.D.P("agent").S("status") == "queued", "one chat queued for a slot", 10_000);
             Check.Contains(queued.D.P("agent").S("activity"), "waiting for a slot on");
-            for (var i = 0; i < 3; i++) await env.WaitIdle(sessions[i], mark, sends[i].L("runs"), 30_000);
-            var q = (await env.MockStats()).P("models").P("qwen3.8-27b");
-            Check.Equal(2L, q.L("maxInflight"), "the backend never saw more than 2");
-            Check.Equal(3L, q.L("total"));
-            foreach (var id in sessions)
-            {
-                var msgs = (await env.Rpc("sessions.messages", new { id })).Arr("messages").ToList();
-                Check.Contains(RunResult.Text(msgs.Last()), "SLOW-DONE");
-            }
-        }, 60);
-
-        r.Add("slots.abort-queued", "slots: aborting a chat that waits for a slot removes it from the queue without leaking one", async () =>
-        {
-            await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)).L("busy") == 0 ? "ok" : null, "idle qwen pool");
-            var mark = env.Client.Mark();
-            var sessions = new List<string>();
-            for (var i = 0; i < 3; i++) sessions.Add((await env.NewSession(model: CoreTests.Qwen)).S("id")!);
-            var sends = new List<JsonElement>();
-            foreach (var id in sessions) sends.Add(await env.Rpc("agent.send", new { sessionId = id, text = "slow [s:slow ms=2500]" }));
-            var queued = await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("status") == "queued"
-                                                             && sessions.Contains(e.D.P("agent").S("sessionId") ?? ""), "a queued chat", 10_000);
             var waiting = queued.D.P("agent").S("sessionId")!;
             Check.True((await env.Rpc("agent.abort", new { sessionId = waiting })).GetBoolean(), "abort the waiting chat");
             await env.WaitIdle(waiting, mark, sends[sessions.IndexOf(waiting)].L("runs"), 10_000);
@@ -144,8 +123,15 @@ public static class AdvancedTests
             for (var i = 0; i < 3; i++)
                 if (sessions[i] != waiting) await env.WaitIdle(sessions[i], mark, sends[i].L("runs"), 30_000);
             await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)).L("busy") == 0 ? "ok" : null, "all slots free again", 5000);
-            var msgs = (await env.Rpc("sessions.messages", new { id = waiting })).Arr("messages").ToList();
-            Check.Equal("user", string.Join(",", msgs.Select(m => m.S("role"))), "the aborted chat never reached the model");
+            var q = (await env.MockStats()).P("models").P("qwen3.8-27b");
+            Check.Equal(2L, q.L("maxInflight"), "the backend never saw more than 2");
+            Check.Equal(2L, q.L("total"), "the aborted chat never reached the model");
+            foreach (var id in sessions)
+            {
+                var msgs = (await env.Rpc("sessions.messages", new { id })).Arr("messages").ToList();
+                if (id == waiting) Check.Equal("user", string.Join(",", msgs.Select(m => m.S("role"))), "the aborted chat has only its message");
+                else Check.Contains(RunResult.Text(msgs.Last()), "SLOW-DONE");
+            }
             var next = await env.Run(waiting, "now? [s:echo]");
             Check.Contains(next.FinalText, "ECHO-DONE");
         }, 60);

@@ -42,17 +42,19 @@ public static class ControlTests
             Check.Equal(agent.L("runs"), run.Final.L("runs"), "the steer did not need a second run");
         });
 
-        r.Add("control.queue", "queue: follow-up sent during a run is delivered after the answer, in the same run", async () =>
+        r.Add("control.queue", "queue: a follow-up sent during a run is delivered after the answer, in the same run; a dequeued one never is", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
             var mark = env.Client.Mark();
             var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Take your time [s:slow ms=2500]" });
             await env.Client.WaitFor(mark, e => e.Type == "stream.delta" && e.Sid == sid && e.D.S("kind") == "text", "slow text starts");
+            await env.Rpc("agent.send", new { sessionId = sid, text = "never mind [s:echo]", mode = "queue" });
             var queued = await env.Rpc("agent.send", new { sessionId = sid, text = "Then answer this follow-up [s:echo]", mode = "queue" });
-            Check.Equal(1L, queued.L("queuedMessages"));
-            var q = await env.Rpc("agent.queue", new { sessionId = sid });
-            Check.Equal("queue", q.Arr().Single().S("mode"));
+            Check.Equal(2L, queued.L("queuedMessages"));
+            var q = (await env.Rpc("agent.queue", new { sessionId = sid })).Arr().ToList();
+            Check.True(q.Count == 2 && q.All(i => i.S("mode") == "queue"), "two queued items, got " + q.Count);
+            Check.True((await env.Rpc("agent.dequeue", new { sessionId = sid, id = q[0].S("id") })).GetBoolean(), "dequeued");
             // a queued item can be listed but the slow answer must finish first
             var done = await env.WaitIdle(sid, mark, agent.L("runs"), 30_000);
             var run = await env.Result(sid, mark, done);
@@ -60,23 +62,11 @@ public static class ControlTests
             Check.Equal("user,assistant,user,assistant", roles);
             Check.Contains(RunResult.Text(run.Messages[1]), "SLOW-DONE");
             Check.Equal("queued", run.Messages[2].P("meta").S("kind"));
+            Check.Contains(RunResult.Text(run.Messages[2]), "follow-up");
+            Check.False(run.Messages.Any(m => RunResult.Text(m).Contains("never mind")), "the dequeued item was not delivered");
             Check.Contains(run.FinalText, "follow-up");
             Check.Equal(agent.L("runs"), run.Final.L("runs"), "the follow-up did not need a second run");
             Check.Equal(0, (await env.Rpc("agent.queue", new { sessionId = sid })).Arr().Count());
-        });
-
-        r.Add("control.dequeue", "queue: dequeue removes a pending follow-up", async () =>
-        {
-            var s = await env.NewSession();
-            var sid = s.S("id")!;
-            var mark = env.Client.Mark();
-            var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "slow [s:slow ms=1500]" });
-            await env.Rpc("agent.send", new { sessionId = sid, text = "never mind [s:echo]", mode = "queue" });
-            var item = (await env.Rpc("agent.queue", new { sessionId = sid })).Arr().Single();
-            Check.True((await env.Rpc("agent.dequeue", new { sessionId = sid, id = item.S("id") })).GetBoolean(), "dequeued");
-            var done = await env.WaitIdle(sid, mark, agent.L("runs"));
-            var run = await env.Result(sid, mark, done);
-            Check.Equal("user,assistant", string.Join(",", run.Messages.Select(m => m.S("role"))));
         });
 
         r.Add("control.abort-stream", "abort: partial answer persisted as aborted, agent idle, model request cancelled", async () =>

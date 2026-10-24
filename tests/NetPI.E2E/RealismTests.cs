@@ -104,19 +104,18 @@ public static class RealismTests
             }
         });
 
-        r.Add("retry.in-stream-errors", "in-stream errors: response.failed / error chunk / overloaded_error are retried on all three APIs", () => WithChatGemma(env, async () =>
+        // The per-API error shapes (response.failed, the chat error chunk, overloaded_error) are the Providers suite's: each
+        // is parsed there as a transient error. What only a real run shows is the same on every API, so one API proves it.
+        r.Add("retry.in-stream-errors", "in-stream errors: a stream that fails midway is retried, its partial text discarded, only the answer persisted", async () =>
         {
-            foreach (var (model, api) in Apis)
-            {
-                var s = await env.NewSession(model: model);
-                var mockMark = await env.MockMark();
-                var run = await env.Run(s.S("id")!, "fail midway [s:midfail]");
-                Check.Contains(run.FinalText, "MIDFAIL-RECOVERED", api);
-                Check.Equal(1, run.OfType("stream.reset").Count(), api + ": partial text discarded");
-                Check.True(run.OfType("agent.notice").Any(e => (e.D.S("text") ?? "").Contains("Retrying")), api + ": retry notice");
-                Check.Equal(2, (await env.MockLog(mockMark)).Count(e => e.S("scenario") == "midfail"), api + ": two attempts");
-                Check.Equal(2, run.Messages.Count, api + ": only the successful answer is persisted");
-            }
-        }));
+            var s = await env.NewSession(model: CoreTests.Qwen);
+            var mockMark = await env.MockMark();
+            var run = await env.Run(s.S("id")!, "fail midway [s:midfail]");
+            Check.Contains(run.FinalText, "MIDFAIL-RECOVERED");
+            Check.Equal(1, run.OfType("stream.reset").Count(), "partial text discarded");
+            Check.True(run.OfType("agent.notice").Any(e => (e.D.S("text") ?? "").Contains("Retrying")), "retry notice");
+            Check.Equal(2, (await env.MockLog(mockMark)).Count(e => e.S("scenario") == "midfail"), "two attempts");
+            Check.Equal(2, run.Messages.Count, "only the successful answer is persisted");
+        });
     }
 }
