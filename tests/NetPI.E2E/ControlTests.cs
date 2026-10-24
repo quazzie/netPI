@@ -209,10 +209,15 @@ public static class ControlTests
             await env.Rpc("sessions.update", new { id = other, archived = true });
             var mark = env.Client.Mark();
             await env.Rpc("workspaces.delete", new { id = wsId });
-            await env.Client.WaitFor(mark, e => e.Type == "session.workspace" && e.D.S("sessionId") == other, "session.workspace after the delete");
-            var after = await env.Rpc("sessions.get", new { id = other });
-            var afterMeta = after.TryGetProperty("meta", out var am) && am.ValueKind == System.Text.Json.JsonValueKind.Object ? am : default;
-            Check.True(afterMeta.ValueKind == default || (!afterMeta.TryGetProperty("workspaceId", out _) && !afterMeta.TryGetProperty("cwd", out _)), "the deleted workspace's archived session is unbound");
+            // the state first, then the announcement: a failure says which of the two went missing (the one-shot wait for the
+            // event alone timed out 3 times in 58 runs with no event seen at all, which cannot tell them apart)
+            await Wait.UntilAsync(async () =>
+            {
+                var after = await env.Rpc("sessions.get", new { id = other });
+                var am = after.TryGetProperty("meta", out var m) && m.ValueKind == System.Text.Json.JsonValueKind.Object ? m : default;
+                return am.ValueKind == default || (!am.TryGetProperty("workspaceId", out _) && !am.TryGetProperty("cwd", out _)) ? "ok" : null;
+            }, "the deleted workspace's archived session is unbound", 30_000);
+            await env.Client.WaitFor(mark, e => e.Type == "session.workspace" && e.D.S("sessionId") == other, "session.workspace after the delete (the session is unbound already)", 5_000);
         });
     }
 }
