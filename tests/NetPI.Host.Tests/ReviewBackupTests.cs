@@ -43,19 +43,9 @@ public static class ReviewBackupTests
             Check.Contains(failure?.Message ?? "", "is missing", "and it says which one: " + failure?.Message);
         });
 
-        r.Add("backup verification: a valid snapshot verifies, and one that is not complete does not", () =>
+        r.Add("backup verification: a manifest that does not name the snapshot's files completely is refused", () =>
         {
-            var (home, id) = Snapshot(new JsonObject { ["netpi.db"] = Hash("db"), ["settings.json"] = Hash("{}") });
-            Directory.CreateDirectory(Path.Combine(home, "backups", id));
-            File.WriteAllText(Path.Combine(home, "backups", id, "netpi.db"), "db");
-            File.WriteAllText(Path.Combine(home, "backups", id, "settings.json"), "{}");
-            BackupPlugin.Verify(home, id);
-
-            // A checksum that does not match the bytes is not a snapshot.
-            File.WriteAllText(Path.Combine(home, "backups", id, "netpi.db"), "tampered");
-            Check.Throws<InvalidDataException>(() => BackupPlugin.Verify(home, id), "the checksum is checked");
-
-            // The required entries are required.
+            // The required entries are required (a valid snapshot verifying, and a tampered one failing, is BackupTests').
             var (h2, i2) = Snapshot(new JsonObject { ["settings.json"] = Hash("{}") });
             File.WriteAllText(Path.Combine(h2, "backups", i2, "settings.json"), "{}");
             Check.Throws<InvalidDataException>(() => BackupPlugin.Verify(h2, i2), "a snapshot without a database is not a snapshot");

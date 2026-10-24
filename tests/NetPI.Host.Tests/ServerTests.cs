@@ -746,7 +746,7 @@ public static class ServerTests
             Check.True(info["r"] is not null, "the socket survived the too_large answer");
         });
 
-        r.Add("sessions.messages: a page over its byte budget comes back shorter with hasMore, and the walk covers it all", async () =>
+        r.Add("sessions.messages: a page over its byte budget comes back shorter with hasMore", async () =>
         {
             await using var server = await PluginTests.StartAsync(T.TempDir("pagebytes"), CreateWebRoot());
             var s = server.Sessions.CreateSession(new SessionInfo());
@@ -758,24 +758,7 @@ public static class ServerTests
             var res = await ws.RpcAsync("sessions.messages", new { id = s.Id, limit = 2000 });
             var messages = (JsonArray)res["r"]!["messages"]!;
             Check.True(messages.Count is > 0 and < 10, $"the byte budget splits the page ({messages.Count} messages)");
-            var hasMore = (bool)res["r"]!["hasMore"]!;
-            Check.True(hasMore, "hasMore while the page is split");
-
-            var seen = new List<long>();
-            var guard = 0;
-            while (true)
-            {
-                Check.True(++guard < 20, "the walk must end");
-                foreach (var m in messages) seen.Add((long)m!["seq"]!.GetValue<long>());
-                if (!hasMore) break;
-                // The page keeps the newest; the next call pages back from its oldest seq, like the UI's load-earlier.
-                var beforeSeq = (long)messages[0]!["seq"]!.GetValue<long>();
-                res = await ws.RpcAsync("sessions.messages", new { id = s.Id, limit = 2000, beforeSeq });
-                messages = (JsonArray)res["r"]!["messages"]!;
-                hasMore = (bool)res["r"]!["hasMore"]!;
-            }
-            Check.Equal(10, seen.Count, "the walk covers every message exactly once");
-            Check.True(seen.OrderBy(x => x).SequenceEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), "the walk covers every message exactly once: " + string.Join(",", seen.OrderBy(x => x)));
+            Check.True((bool)res["r"]!["hasMore"]!, "hasMore while the page is split: the walk itself is MessagePageTests'");
         });
 
         r.Add("settings.replace: a stale base is a conflict, not a lost update", async () =>

@@ -210,7 +210,7 @@ public static class MessagePageTests
         Check.True(firstSeqs.SequenceEqual(firstSeqs.Order()), "the page is ascending by seq");
         Check.True(first["hasMore"]!.GetValue<bool>(), "the rest is paged back for with beforeSeq");
 
-        // paging back continues where the budget stopped, with no gap and no repeat (the walk itself is ServerTests')
+        // paging back continues where the budget stopped, with no gap and no repeat (the full walk is ForwardThroughTheRpc's)
         var next = Seqs(await Page(server, chat.Id, 60, beforeSeq: firstSeqs[0]));
         Check.Equal(firstSeqs[0] - 1, next[^1], "the page before continues at the message in front of the first");
         Check.True(next.All(s => s < firstSeqs[0]), "and holds nothing the first page already had");

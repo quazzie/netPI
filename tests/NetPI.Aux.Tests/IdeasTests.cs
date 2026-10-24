@@ -700,6 +700,12 @@ public static class IdeasTests
             Check.Equal("multi\nline", again["sections"]![1]!["content"].Str());
             Check.Equal(2, ((JsonArray)again["sections"]!).Count);
             Check.True(again["revision"]!.GetValue<long>() >= 1, "and it carries the revision an editor submits back");
+
+            // a session record is a write too: it stamps the session and keeps the unknown fields
+            env.Repo.AddSession(added["id"]!.Str(), env.Session.Id);
+            var doc = env.Repo.Idea(added["id"]!.Str())!;
+            Check.Equal("{\"days\":3}", doc["estimate"]!.ToJsonString(), "and the session record keeps them");
+            Check.Equal(env.Session.Id, doc["sessionIds"]![0]!.Str());
             env.Ctx.Unload();
         });
 
