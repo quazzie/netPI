@@ -31,13 +31,16 @@ public static class TestToolTests
         t.Add("test tool: runs a suite and reports the counts, and each failure with its message and evidence", RunsSuites);
         t.Add("test tool: only reaches the command (environment and {only}); unsafe characters are refused; a missing suite is named", OnlyAndSuites);
         t.Add("test tool: a command that writes no results (or junk, or a stale file) is an error with its exit code and last output; a hang is stopped at the timeout", Failures);
+        t.Add("test tool: the real scripts/test.ps1 writes the results file the tool reads: a pass, a failure with its assertion, a filter that matches nothing", RealScript);
     }
 
-    private static bool NodeAvailable()
+    private static bool NodeAvailable() => Available("node");
+
+    private static bool Available(string exe)
     {
         try
         {
-            using var node = Process.Start(new ProcessStartInfo("node", "--version") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true });
+            using var node = Process.Start(new ProcessStartInfo(exe, "--version") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true });
             if (node is null) return false;
             node.StandardOutput.ReadToEnd();
             return node.WaitForExit(15_000) && node.ExitCode == 0;
@@ -171,5 +174,39 @@ public static class TestToolTests
 
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(800));
         await Check.ThrowsAsync<OperationCanceledException>(() => new TestTool().ExecuteAsync(T.Ctx(dir, (ModelInfo?)null), T.Args(new { suite = "hang" }), cts.Token));
+    }
+
+    // The other tests pin the tool against a fake command; this one pins the writer side, the PowerShell layer the C# runners
+    // cannot see (TAP counting, the matched-nothing rule, the file's shape): the repository's own script, run in a copy that
+    // holds one web/test file, so it neither runs the real suites nor overwrites the checkout's results file.
+    private static async Task RealScript()
+    {
+        if (!NodeAvailable() || !Available("pwsh")) Check.Skip("node or pwsh is not on PATH");
+        var dir = Project("""{ "suites": { "ui": "pwsh -NoProfile -File scripts/test.ps1 -Suite UI" }, "results": "artifacts/testlogs/last-results.json" }""");
+        Directory.CreateDirectory(Path.Combine(dir, "scripts"));
+        foreach (var script in new[] { "test.ps1", "checkout.ps1" })
+            File.Copy(Path.Combine(NetPI.TestShared.T.RepoRoot, "scripts", script), Path.Combine(dir, "scripts", script));
+        Directory.CreateDirectory(Path.Combine(dir, "web", "test"));
+        File.WriteAllText(Path.Combine(dir, "web", "test", "a.test.js"), """
+            import { test } from 'node:test';
+            import assert from 'node:assert/strict';
+            test('alpha passes', () => {});
+            test('beta fails', () => assert.equal(1, 2));
+            """);
+
+        var ok = await Run(dir, new { only = "alpha" });
+        Check.False(ok.IsError, ok.Content);
+        Check.Contains(ok.Content, "ui: 1 passed, 0 failed, 0 skipped");
+
+        var bad = await Run(dir, new { only = "beta" });
+        Check.False(bad.IsError, bad.Content);
+        Check.Contains(bad.Content, "ui: 0 passed, 1 failed");
+        Check.Contains(bad.Content, "- [UI] beta fails: Expected values to be strictly equal: 1 !== 2", "the failure with its assertion");
+        Check.Contains(bad.Content, "evidence: artifacts");
+
+        // a selection that runs nothing is a failure, not a green run with no tests
+        var none = await Run(dir, new { only = "zzz-no-such-test" });
+        Check.Contains(none.Content, "1 failed");
+        Check.Contains(none.Content, "no test matched the filter");
     }
 }

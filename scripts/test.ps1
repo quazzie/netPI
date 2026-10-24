@@ -104,6 +104,18 @@ try {
                     $message = ((@($lines[$at..$to]) | ForEach-Object { $_.Trim() }) -join ' ')
                     if ($message.Length -gt 1500) { $message = $message.Substring(0, 1500) + '…' }
                 }
+                else {
+                    # node --test's TAP: "not ok N - <name>", then an indented YAML block whose error: holds the assertion
+                    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*not ok \d+ - (.*)$' -and $Matches[1].Trim() -eq $_.Name) { $at = $i; break } }
+                    $err = @()
+                    for ($i = $at + 1; $at -ge 0 -and $i -lt $lines.Count -and $lines[$i] -notmatch '^\s*(not )?ok \d+ - ' -and $lines[$i] -notmatch '^\s*\.\.\.\s*$'; $i++) {
+                        if ($lines[$i] -match '^\s*error:\s*(.*)$') { $err = @($Matches[1] -replace '^[|>]-?$', ''); continue }
+                        if ($err.Count -gt 0 -and $lines[$i] -match '^\s*(code|name|expected|actual|operator|stack):') { break }
+                        if ($err.Count -gt 0) { $err += $lines[$i].Trim() }
+                    }
+                    $message = ((@($err) | Where-Object { $_ }) -join ' ').Trim("'", ' ')
+                    if ($message.Length -gt 1500) { $message = $message.Substring(0, 1500) + '…' }
+                }
                 [ordered]@{ name = "[$($_.Suite)] $($_.Name)"; message = $message; evidence = $log }
             })
         if ($Note) { $items = @([ordered]@{ name = '(run)'; message = $Note; evidence = $log }) + $items }
