@@ -16,9 +16,12 @@ internal sealed class UiRegistry : IUiRegistry, IDisposable
     private readonly Debouncer _changed;
     private long _seq;
 
+    /// <summary>How long a change waits before <c>ui.changed</c> is published (a burst of changes is one event).</summary>
+    internal static TimeSpan UiChangedDelay { get; set; } = TimeSpan.FromMilliseconds(100);
+
     public UiRegistry(IEventBus bus)
     {
-        _changed = new Debouncer(TimeSpan.FromMilliseconds(100),
+        _changed = new Debouncer(UiChangedDelay,
             () => bus.Publish(new BusEvent { Type = EventTypes.UiChanged, Data = new { }, Source = "host" }));
     }
 

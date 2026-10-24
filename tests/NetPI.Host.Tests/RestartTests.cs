@@ -44,12 +44,12 @@ public static class RestartTests
             var announced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using var sub = server.Events.Subscribe("app.restarting", _ => announced.TrySetResult());
             var w = new RestartWhenIdle(server.Kernel, () => { Interlocked.Increment(ref restarts); return Task.CompletedTask; },
-                tick: Timeout.InfiniteTimeSpan, announce: TimeSpan.FromSeconds(1), quiet: TimeSpan.Zero, appDir: app);
+                tick: Timeout.InfiniteTimeSpan, announce: TimeSpan.FromMilliseconds(300), quiet: TimeSpan.Zero, appDir: app);
             File.WriteAllText(Path.Combine(app, RestartWhenIdle.MarkerName), "not json");
             w.Check();
             await announced.Task.WaitAsync(TimeSpan.FromSeconds(10));
             w.Dispose();
-            await Task.Delay(1500);
+            await Task.Delay(600); // past the 300 ms announce, with room
             Check.Equal(0, restarts, "the restart did not run after Dispose");
             server.Kernel.Plugins.Gate.EndApply();
         });

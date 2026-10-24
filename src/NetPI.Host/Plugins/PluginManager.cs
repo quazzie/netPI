@@ -26,6 +26,11 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ReloadDelay = TimeSpan.FromMilliseconds(800);
+    /// <summary>
+    /// How long a <c>wwwroot</c> change waits before the plugin's UI version is bumped (a burst of writes is one bump).
+    /// Tests shrink it and wait ~2x, instead of outwaiting the 300 ms default.
+    /// </summary>
+    internal static TimeSpan UiBumpDelay { get; set; } = TimeSpan.FromMilliseconds(300);
     private static readonly MethodInfo? ClearStjCaches = typeof(JsonSerializer).Assembly
         .GetType("System.Text.Json.JsonSerializerOptionsUpdateHandler")
         ?.GetMethod("ClearCache", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
@@ -962,7 +967,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             // ??= is not atomic: two events for one plugin racing would each create a timer, and the loser would
             // keep firing forever (nothing puts the field back to null). The entry guards its own timers.
             Debouncer timer;
-            lock (e) timer = e.UiTimer ??= new Debouncer(TimeSpan.FromMilliseconds(300), () => BumpUiVersion(e));
+            lock (e) timer = e.UiTimer ??= new Debouncer(UiBumpDelay, () => BumpUiVersion(e));
             timer.Trigger();
             return;
         }
