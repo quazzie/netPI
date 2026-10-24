@@ -988,11 +988,16 @@ public static class SshTests
             Check.Equal("next\n", (await Run("echo next"))!.Stdout, "a fresh connection: the late output is nowhere");
             Check.Equal(2, starts);
 
-            // a job the command does not show (an & made at run time) is caught by its output instead
-            var hidden = (await Run("eval \"(sleep 0.3; echo late) $(printf '\\046') true\"; echo now"))!;
+            // a job the command does not show (an & made at run time) is caught by its output instead. The connection is
+            // kept, so the job survives and marks itself the moment it has printed: a fixed sleep would pass trivially on
+            // a loaded machine where it has not printed yet
+            var dir = T.TempDir("ssh-broker-late");
+            string Marker(string name) => Path.Combine(dir, name).Replace('\\', '/');
+            var hiddenMarker = Marker("hidden");
+            var hidden = (await Run($"eval \"(sleep 0.3; echo late; touch '{hiddenMarker}') $(printf '\\046') true\"; echo now"))!;
             Check.Equal("now\n", hidden.Stdout);
             Check.Equal(1, broker.Open(), "nothing showed a job: the connection is kept");
-            await Task.Delay(800);
+            await Wait.Until(() => File.Exists(hiddenMarker), "the job printed (its marker)");
             Check.Equal("after\n", (await Run("echo after"))!.Stdout, "what it printed between the calls is not this call's");
             Check.Equal(0, broker.Open(), "and the connection is given up, so no more of it lands in a later call");
 

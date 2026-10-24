@@ -438,8 +438,8 @@ public static class ShellTests
             ToolResult res;
             try
             {
-                for (var i = 0; i < 100 && (mp = registry.ByCall("ses_k", "call_k")) is null; i++) await Task.Delay(50);
-                Check.True(mp is not null, "the running command is found by session and call id");
+                await Wait.Until(() => registry.ByCall("ses_k", "call_k") is not null, "the running command is found by session and call id");
+                mp = registry.ByCall("ses_k", "call_k")!;
                 Check.True(registry.ByCall("ses_other", "call_k") is null, "another session's call id does not match");
                 Check.True(mp!.Kill());
                 res = await run.WaitAsync(TimeSpan.FromSeconds(15));
