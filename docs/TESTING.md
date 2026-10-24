@@ -224,7 +224,6 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:bash]` | a `bash` command with multi-line output streamed over ~1 s |
 | `[s:fgwait file=.release]` | a foreground `bash` that runs until `file` appears in the session's folder (the test writes it to end the command) |
 | `[s:web base= plangate=]` | the web tools as a person watches them: `todo_write` (3 items; the first answer, thinking as it streams, waits at `gate=`), `web_search` (waits at `plangate=`), `web_fetch`, `browser` screenshot of a page that logs an error + `show_image`, the plan done, an answer with two file links, a web link, a remote image, raw HTML and a forged copy button. `base=` is the mock's address: it serves `/web/sx/search` (SearXNG JSON, for `web.search.searxngUrl` = `<base>/web/sx/`), `/web/state` and `/web/demo`; the screenshot needs a model that reads images |
-| `[s:ssh]` | the `ssh` tool on host `nuc`: `run` in `demo` (prints `nginx: active`), `read` and `edit` of `demo/nginx.conf` (`listen 80;` → `listen 8080;`), `copy` of `demo/error.log` down to `logs/nuc-error.log`; the E2E runner is the client (`FakeSsh`: `ssh.path`/`ssh.scpPath` at its exe, an `ssh.config` naming `nuc`, `ssh.reuseConnections` off, the host's files in `home` beside the config) |
 | `[s:bgproc lines=900 ms=250]` | a background `bash` that prints `dev server: request <i>` every `ms`, and the run ends at once |
 | `[s:where file=]` | `bash pwd` + `write file`, answers `PWD=<output>` |
 | `[s:slow ms=6000]` | thinking + text streamed slowly over `ms` (steering, queue, abort) |
@@ -242,8 +241,6 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:fail]` | HTTP 400 (non-retryable) |
 | `[s:ask n=2]` | `ask_user` with two questions (the second multiple choice), then the answer back |
 | `[s:guard]` | `bash git status --short`, then `bash git push origin main`, then whether it ran |
-| `[s:watchrun file=notes.txt old=alpha new=…]` | a run as a person watches it: `read`, `edit`, a stream that drops halfway on its first attempt (retry, `stream.reset`), a `bash` that prints a line every 250 ms, the answer |
-| `[s:multiedit]` | one `edit` of `web/src/lib/rpc.svelte.js` and `docs/PROTOCOL.md` (`files`), then a `sed` that changes a clean `web/src/lib/config.js` (`RECONNECT_MS = 1000` → `250`); the folder needs all three, committed |
 | `[s:planui enter=0]` | plan mode as a person meets it: a plan (3 steps, 2 files), a revision with a 4th step naming the changes asked, and a sentence for approved, cancelled or moved to a new chat; `enter=1` first offers plan mode with `plan_enter` |
 | `[s:goal]` | in a goal's objective (a goal's notice picks the scenario when its objective carries a tag): a pass that only looks, a pass with a tool call, then `goal_update complete` |
 | `[s:say text="…"]` | answers with just the text (default `OK.`): no thinking, one short stream — the cheap run a test seeds a long chat with |

@@ -146,7 +146,6 @@ public sealed partial class ScenarioEngine
                 "bash" => Bash(step, after),
                 "fgwait" => FgWait(tag, step),
                 "web" => Web(tag, step),
-                "ssh" => SshWork(step),
                 "bgproc" => BgProc(tag, step),
                 "where" => Where(tag, step, after),
                 "textcall" => TextCall(step, after),
@@ -171,8 +170,6 @@ public sealed partial class ScenarioEngine
                 "ideas" => Ideas(tag, step, after),
                 "ask" => Ask(tag, step, after),
                 "guard" => Guard(step, after),
-                "watchrun" => WatchRun(req, tag, step),
-                "multiedit" => MultiEdit(step, after),
                 "planui" => PlanUi(tag, step, after),
                 "schedule" => ScheduleUi(tag, step, after),
                 "goal" => GoalFlow(msgs),
@@ -352,22 +349,6 @@ public sealed partial class ScenarioEngine
                     "<button class=\"code-copy\" data-copy=\"1\">Copy</button>\n\nWEB-DONE");
         }
     }
-
-    /// <summary>
-    /// The ssh tool on host <c>nuc</c>: a <c>run</c> in <c>demo</c>, a <c>read</c> and an <c>edit</c> of <c>demo/nginx.conf</c>
-    /// (<c>listen 80;</c> → <c>listen 8080;</c>), a <c>copy</c> of <c>demo/error.log</c> down to <c>logs/nuc-error.log</c>. The
-    /// host's home needs both files; the run prints <c>nginx: active</c>.
-    /// </summary>
-    private static Plan SshWork(int step) => step switch
-    {
-        0 => new Plan { Text = "Checking the site on nuc." }
-            .Call("ssh", Obj(("action", "run"), ("host", "nuc"), ("cwd", "demo"), ("script", "grep -c listen nginx.conf >/dev/null && echo \"nginx: active\""))),
-        1 => new Plan { Text = "Reading its config." }.Call("ssh", Obj(("action", "read"), ("host", "nuc"), ("path", "demo/nginx.conf"))),
-        2 => new Plan { Text = "Moving it to 8080." }.Call("ssh", Obj(("action", "edit"), ("host", "nuc"), ("path", "demo/nginx.conf"),
-            ("edits", new JsonArray(Obj(("oldText", "listen 80;"), ("newText", "listen 8080;")))))),
-        3 => new Plan { Text = "Keeping its error log." }.Call("ssh", Obj(("action", "copy"), ("host", "nuc"), ("direction", "download"), ("from", "demo/error.log"), ("to", "logs/nuc-error.log"))),
-        _ => Final("The demo site on nuc listens on 8080 now. SSH-DONE"),
-    };
 
     /// <summary>A foreground command that runs until a file appears in the session's folder: the test ends it by writing the file.</summary>
     private static Plan FgWait(ScenarioTag tag, int step)
@@ -666,50 +647,6 @@ public sealed partial class ScenarioEngine
             : FirstLine(ToolResults(after).LastOrDefault()?.Text);
         return Final("Answer received: " + answered + "\n\nASK-DONE");
     }
-
-    /// <summary>
-    /// A run as a person watches it: a read (its first answer waits at gate= when the tag has one), a find and a grep (more
-    /// than three steps: the finished group folds), an edit, a stream that drops halfway on its first attempt (the retry,
-    /// stream.reset), a shell command whose output comes a line every 250 ms, and the answer.
-    /// </summary>
-    private Plan WatchRun(NRequest req, ScenarioTag tag, int step)
-    {
-        var file = tag.P("file", "notes.txt");
-        switch (step)
-        {
-            case 0:
-                return new Plan { Thinking = "The scheduler throws on a missing pool; let me read the code first.", Text = "Let me look at the code." }
-                    .Call("read", Obj(("path", file)));
-            case 1:
-                return new Plan { Thinking = "Where else is the pool looked up?" }
-                    .Call("find", Obj(("pattern", "*.txt")))
-                    .Call("grep", Obj(("pattern", tag.P("old", "alpha"))));
-            case 2:
-                return new Plan { Thinking = "Make the failure say what is missing.", Text = "Making the error clear." }
-                    .Call("edit", Obj(("path", file), ("oldText", tag.P("old", "alpha")), ("newText", tag.P("new", "ALPHA-CLEAR"))));
-            case 3:
-                if (_attempts.AddOrUpdate(req.Fingerprint(), 1, (_, n) => n + 1) == 1)
-                    return new Plan { Text = "Now I will build the solution to make sure it compiles before I answer, so that the change is checked and nothing else broke.", Drop = true, ChunkDelayMs = 20 };
-                return new Plan { Text = "Building it." }
-                    .Call("bash", Obj(("command", $"for i in $(seq 1 {tag.PInt("lines", 16)}); do echo \"build line $i\"; sleep 0.25; done")));
-            default:
-                return Final("The scheduler now fails with a clear message when a pool is missing. WATCHRUN-DONE");
-        }
-    }
-
-    /// <summary>
-    /// An edit of two files in one call, then a shell command that changes a third, clean one (a command's diff covers the
-    /// files that were clean before it): the session's folder needs web/src/lib/rpc.svelte.js, docs/PROTOCOL.md and
-    /// web/src/lib/config.js, committed.
-    /// </summary>
-    private static Plan MultiEdit(int step, List<NMsg> after) => step switch
-    {
-        0 => new Plan { Text = "Changing the client and the protocol together." }.Call("edit", Obj(("files", new JsonArray(
-            Obj(("path", "web/src/lib/rpc.svelte.js"), ("edits", new JsonArray(Obj(("oldText", "const RECONNECT_MS = 1000;"), ("newText", "const RECONNECT_MS = 1000; // re-subscribes after a reconnect"))))),
-            Obj(("path", "docs/PROTOCOL.md"), ("edits", new JsonArray(Obj(("oldText", "## Reconnect"), ("newText", "## Reconnect (with re-subscription)"))))))))),
-        1 => new Plan { Text = "And a shorter first retry." }.Call("bash", Obj(("command", "sed -i 's/RECONNECT_MS = 1000/RECONNECT_MS = 250/' web/src/lib/config.js"))),
-        _ => Final("Both files changed, and the first retry is quicker. MULTIEDIT-DONE"),
-    };
 
     /// <summary>A command a guardrail rule may ask about: git status, then git push origin main (in the session's folder).</summary>
     private static Plan Guard(int step, List<NMsg> after) => step switch
