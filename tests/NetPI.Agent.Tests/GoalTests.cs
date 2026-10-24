@@ -28,6 +28,7 @@ public static class GoalTests
         t.Add("goal: a completion is reviewed against the evidence: gaps refuse it, a second refusal blocks it for the user", ReviewRefusesThenBlocks);
         t.Add("goal: a completion the review passes closes the goal; a review that cannot run never holds it back", ReviewPasses);
         t.Add("goal: a run that ends while its subagents work is continued at once, naming them; completing is refused until they report", ContinueWhileSubagentsWork);
+        t.Add("goal: goal.whileSubagentsRun=wait: a run that ends while its subagents work is not continued; their report starts the next run", WaitsWhileSubagentsRun);
         t.Add("goal: a run that ends waiting for the user neither pauses the goal nor goes on; the run after the answer decides", WaitsForUser);
     }
 
@@ -133,7 +134,6 @@ public static class GoalTests
         await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Do it once confirmed" });
         await Wait.Until(() => h.Runtime.Waits(s.Id).Count == 1 && h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the run waits for the user");
         await h.Bus.DrainAsync();
-        await Task.Delay(150);   // a continuation would have started by now
         Check.Equal("active", StatusOf(h, s.Id), "waiting for the user does not pause the goal");
         Check.Equal(1, h.Runtime.GetBySession(s.Id)!.Runs, "nor start another run");
         Check.Equal(0, IntOf(h, s.Id, "continuations"));
@@ -681,7 +681,6 @@ public static class GoalTests
         await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Do the slow and the fast part" });
 
         await Wait.Until(() => Volatile.Read(ref parentCalls) >= 6 && Idle(h, s.Id), "the continuation that only talked ended");
-        await Task.Delay(200);
         Check.Equal(6, Volatile.Read(ref parentCalls), "after a continuation that only talked, the goal waits for the report");
         Check.Equal("active", StatusOf(h, s.Id));
         Check.Contains(continuation, "1 of your subagents is still working: slowpoke");
@@ -695,5 +694,43 @@ public static class GoalTests
         await SettledAsync(h, s.Id, "complete");
         Check.Equal(1, reviewed);
         Check.True(h.Messages(s.Id).Any(m => m.Text.Contains("CHILD REPORT")), "the report started the next run");
+    }
+
+    /// <summary>
+    /// goal.whileSubagentsRun "wait" (the other value): a goal run that ends while the chat's subagents work is not
+    /// continued, and their reports start the next run.
+    /// </summary>
+    private static async Task WaitsWhileSubagentsRun()
+    {
+        var (h, _) = await Start();
+        await using var _h = h;
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 3;
+        var childGate = new TaskCompletionSource();
+        static bool IsChild(ModelRequest r) => r.SystemPrompt?.Contains("a subagent working for") == true;
+        var parentCalls = 0;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r)) return Reply.Text("CHILD REPORT", c => childGate.Task.WaitAsync(c));
+            var n = Interlocked.Increment(ref parentCalls);
+            return n switch
+            {
+                1 => Reply.Tool("agent_spawn", new { task = "the slow part", name = "slowpoke" }),
+                2 => Reply.Text("Spawned it."),   // ends the run while the child works: with "wait" no continuation
+                3 => Reply.Tool("goal_update", new { status = "complete", summary = "Done, with the child's report." }),
+                _ => Reply.Text("All done."),
+            };
+        };
+        var s = h.NewSession();
+        h.Settings.Set("goal.whileSubagentsRun", JsonValue.Create("wait"));
+        await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Do the slow part" });
+
+        await Wait.Until(() => Volatile.Read(ref parentCalls) >= 2 && Idle(h, s.Id), "the run that ended while the child works");
+        Check.Equal(2, Volatile.Read(ref parentCalls), "with goal.whileSubagentsRun=wait the goal does not continue while the subagent works");
+        Check.Equal("active", StatusOf(h, s.Id), "and does not pause it");
+
+        childGate.TrySetResult();
+        await SettledAsync(h, s.Id, "complete");
+        Check.Equal("Done, with the child's report.", (string?)GoalOf(h, s.Id)!["reason"], "the run that the report started completed the goal");
+        Check.True(h.Messages(s.Id).Any(m => m.Text.Contains("CHILD REPORT")), "the report is in the context");
     }
 }
