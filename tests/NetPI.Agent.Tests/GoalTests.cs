@@ -681,6 +681,7 @@ public static class GoalTests
         await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Do the slow and the fast part" });
 
         await Wait.Until(() => Volatile.Read(ref parentCalls) >= 6 && Idle(h, s.Id), "the continuation that only talked ended");
+        await Task.Delay(200);   // an absence: a continuation polls for idle every 20 ms (Goals.ContinueAsync), so one would have started by now
         Check.Equal(6, Volatile.Read(ref parentCalls), "after a continuation that only talked, the goal waits for the report");
         Check.Equal("active", StatusOf(h, s.Id));
         Check.Contains(continuation, "1 of your subagents is still working: slowpoke");
@@ -725,6 +726,7 @@ public static class GoalTests
         await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Do the slow part" });
 
         await Wait.Until(() => Volatile.Read(ref parentCalls) >= 2 && Idle(h, s.Id), "the run that ended while the child works");
+        await Task.Delay(200);   // an absence: a continuation polls for idle every 20 ms (Goals.ContinueAsync), so one would have started by now
         Check.Equal(2, Volatile.Read(ref parentCalls), "with goal.whileSubagentsRun=wait the goal does not continue while the subagent works");
         Check.Equal("active", StatusOf(h, s.Id), "and does not pause it");
 
