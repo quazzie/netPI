@@ -90,7 +90,8 @@ public static class CoordinatorTests
         Check.Equal((string?)r["workspace"]!["id"], (string?)s.Meta?["workspaceId"]);
         Check.Equal("space-bunny-alpha", (string?)s.Meta?["agent"]);
         Check.Equal("minimal-coding", (string?)s.Meta?["profile"]);
-        var first = h.Messages(sid).First(m => m.Role == MessageRole.User).Text;
+        Check.True(s.Meta?["quiet"] is null, "an in-process dispatch is not quiet (the HTTP API's default is: RpcRequest.External)");
+        var first =h.Messages(sid).First(m => m.Role == MessageRole.User).Text;
         Check.Contains(first, $"Work in {wsPath} on");
         Check.Contains(first, $"you are {sid}.");
         Check.Equal("on it", h.Messages(sid)[^1].Text);
@@ -109,6 +110,12 @@ public static class CoordinatorTests
         var quiet = (await h.Rpc.CallAsync("sessions.dispatch", new { project = "MarioV3", workspace = "qwen1", send = false }))!;
         Check.False(quiet["sent"]!.GetValue<bool>());
         Check.Equal(0, h.Runtime.GetBySession((string)quiet["sessionId"]!)?.Runs ?? 0);
+
+        // quiet: true (what a dispatch over the HTTP API defaults to) survives the binding, agent and profile steps
+        var silent = (await h.Rpc.CallAsync("sessions.dispatch", new { project = "MarioV3", agent = "bunny", profile = "Minimal coding", text = "go", quiet = true }))!;
+        var silentId = (string)silent["sessionId"]!;
+        await h.IdleAsync(silentId);
+        Check.True(h.Sessions.GetSession(silentId)!.Meta?["quiet"]?.GetValue<bool>() == true, "meta.quiet: the app windows announce nothing when its run ends");
     }
 
     private static async Task Result()

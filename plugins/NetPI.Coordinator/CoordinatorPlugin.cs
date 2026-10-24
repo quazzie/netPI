@@ -22,8 +22,8 @@ public sealed class CoordinatorPlugin : INetPiPlugin
         // the parameters are declared (idea-yvcy8b): rpc.list shows them, and a mistyped one is a bad_request that names it
         context.Rpc.Register(new RpcMethod("sessions.dispatch",
             "Start a worker in one call, validated first: { project, title?, workspace?: name | id | { name|id, create?, base? }, agent?, profile? (default: the automatic profile, settings profiles.autoProfile), " +
-            "text? | textFile?, send? } → { sessionId, title, project, workspace, agent, profile, sent, status }. Nothing is left behind when a step fails. " +
-            "{{workspacePath}}, {{branch}}, {{workspaceName}}, {{sessionId}}, {{projectPath}} in the text are filled in",
+            "text? | textFile?, send?, quiet? } → { sessionId, title, project, workspace, agent, profile, sent, status }. Nothing is left behind when a step fails. " +
+            "{{workspacePath}}, {{branch}}, {{workspaceName}}, {{sessionId}}, {{projectPath}} in the text are filled in. Over the HTTP API the chat is quiet (meta.quiet) unless quiet: false",
             Params:
             [
                 RpcParam.Opt("project", RpcParamType.String, "the project's name or id"), RpcParam.Opt("projectId"),
@@ -33,6 +33,7 @@ public sealed class CoordinatorPlugin : INetPiPlugin
                 RpcParam.Opt("profile", RpcParamType.String, "a profile id or name, or none"),
                 RpcParam.Opt("text"), RpcParam.Opt("textFile", RpcParamType.String, "an absolute path, up to 1 MB"),
                 RpcParam.Opt("send", RpcParamType.Boolean, "default: when there is text"),
+                RpcParam.Opt("quiet", RpcParamType.Boolean, "meta.quiet: the app windows announce nothing when its run ends; default: over the HTTP API"),
             ]), (req, token) => c.DispatchAsync(req, token));
         context.Rpc.Register(new RpcMethod("runs.result",
             "A chat's last run in one answer: { sessionId | runId } → { sessionId, title, status, startedAt, finishedAt, durationMs, turns, toolCalls, " +
@@ -110,7 +111,9 @@ internal sealed partial class Coordinator(IPluginContext ctx)
         string? createdWorkspace = null;
         try
         {
-            sessionId = ctx.Sessions.CreateSession(new SessionInfo { Title = req.Str("title") ?? "", ProjectId = Str(project, "id") }).Id;
+            // a worker a script or another program starts is not the owner's chat, like sessions.create over the HTTP API
+            var quiet = req.Bool("quiet") ?? req.External;
+            sessionId = ctx.Sessions.CreateSession(new SessionInfo { Title = req.Str("title") ?? "", ProjectId = Str(project, "id"), Meta = quiet ? new JsonObject { ["quiet"] = true } : null }).Id;
             if (wsKey is not null && workspace is null)
             {
                 workspace = await Call("workspaces.create", new { projectId = Str(project, "id"), name = wsKey, ownerSessionId = sessionId, isolated = true, @base = wsBase }, ct).ConfigureAwait(false) as JsonObject;
