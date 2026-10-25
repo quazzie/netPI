@@ -42,6 +42,7 @@
             : null,
       { text: `${n} instance${n === 1 ? '' : 's'}` },
       m?.isLocal && info?.resourceCapacity ? { text: `${info.resourceCapacity} shared model slots` } : null,
+      agent.budget?.limitUsd != null ? { text: `${usd(agent.budget.limitUsd)}/day` } : null,
       info?.free
         ? { text: 'free', tone: 'ok' }
         : info?.priceInput != null

@@ -504,7 +504,9 @@ list, model with the searchable list, folder and file with Browse (the native di
 `pickFile` in `lib/folderPicker.js`, else a browser over `fs.dirs`), folders and files (lists of paths, Browse per row in
 the list editor), pick / pickText (`SettingPick`: the kit's `PickList` over what the setting's options offer, loaded when
 it shows), agents with the agent picker, and a string with options as quick choices beside its field); a change saves that key alone (`settings.set`, on change or blur),
-**Reset** removes it so the default applies again, a bad value is refused in place, a badge says when a change applies
+**Reset** removes it so the default applies again, a bad value is refused in place (number fields accept `,` or `.` as the
+decimal separator, with a space or an in-threes comma as thousands separator, and refuse anything else, saying why —
+`parseNumber` in `lib/settingsModel.js`, the same in the agent and provider-models dialogs), a badge says when a change applies
 (`restart`, `new sessions`), and a dot marks a set key. The help shows its first sentence, **More** the rest. The ⋯ menu copies
 the key, shows it in settings.json (the editor opens with the key selected) and resets it, with the default beside. Defaults
 are shown as they are, never as "built in": a text setting with a built-in text (the opening of the system prompt, the
