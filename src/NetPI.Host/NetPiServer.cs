@@ -9,6 +9,12 @@ public sealed class NetPiServerOptions
 {
     /// <summary>Port on 127.0.0.1. Null = setting <c>server.port</c> (default 7431); 0 = a random free port. A busy port falls back to a random one.</summary>
     public int? Port { get; set; }
+    /// <summary>
+    /// What the server listens on: <c>loopback</c> (the default, 127.0.0.1), <c>all</c> (every interface, for a LAN client) or a
+    /// specific IP address. Null = the setting <c>server.bind</c> (default <c>loopback</c>). Beyond loopback the token is on the
+    /// wire in the clear: keep it to a trusted LAN.
+    /// </summary>
+    public string? Bind { get; set; }
     /// <summary>User data directory. Null = env <c>NETPI_HOME</c> or <c>~/.netpi</c>.</summary>
     public string? Home { get; set; }
     /// <summary>Running inside the desktop shell (reported by <c>app.info</c>).</summary>
@@ -85,7 +91,7 @@ public sealed class NetPiServer : IAsyncDisposable
         }
     }
 
-    /// <summary><c>http://127.0.0.1:PORT</c></summary>
+    /// <summary>The URL of this server: <c>http://127.0.0.1:PORT</c> by default, the bind's address when it listens beyond loopback.</summary>
     public string BaseUrl => _web.BaseUrl;
     public int Port => _web.Port;
     public string Token => _kernel.Token;

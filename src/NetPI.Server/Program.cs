@@ -12,6 +12,9 @@ internal static class Program
 
         Usage: netpi-server [options]
           --port N        Port on 127.0.0.1 (0 = random; default: settings server.port or 7431)
+          --listen WHAT   What to listen on: loopback (default), all (every interface, for a LAN client) or an IP
+                          address (default: settings server.bind). Beyond loopback the token rides the wire in the
+                          clear: keep the server to a trusted LAN
           --home DIR      Data directory (default: NETPI_HOME or ~/.netpi)
           --plugins DIR   Extra plugin directory (repeatable)
           --webroot DIR   Web UI directory (default: <app>/wwwroot)
@@ -38,6 +41,7 @@ internal static class Program
                 switch (args[i])
                 {
                     case "--port": options.Port = int.Parse(Next(), CultureInfo.InvariantCulture); break;
+                    case "--listen": options.Bind = Next(); break;
                     case "--home": options.Home = Next(); break;
                     case "--plugins": plugins.Add(Next()); break;
                     case "--webroot": options.WebRoot = Next(); break;

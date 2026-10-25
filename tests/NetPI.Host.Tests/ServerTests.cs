@@ -251,6 +251,70 @@ public static class ServerTests
             Check.Equal(HttpStatusCode.OK, own.Status);
         });
 
+        r.Add("server: bind all — listens on every interface, the machine's own address is its origin, foreign origins rejected, public origins accepted", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot(), bind: "all");
+            var lan = LocalLanIp();
+            if (lan is null) { Check.Skip("no non-loopback IPv4 address on this machine: the LAN parts of bind all"); }
+            Check.Equal(lan, new Uri(server.BaseUrl).Host, "the base url names the machine's own address");
+            using var http = NewHttp();
+            // reachable on the address the URL names (not just loopback)
+            var health = await SendAsync(http, HttpMethod.Get, server.BaseUrl + "/api/health");
+            Check.Equal(HttpStatusCode.OK, health.Status);
+            void Auth(HttpRequestMessage q) => q.Headers.Add(WebServer.TokenHeader, server.Token);
+            var own = await SendAsync(http, HttpMethod.Post, server.BaseUrl + "/api/rpc/app.info", "{}", q => { Auth(q); q.Headers.Add("Origin", server.BaseUrl); });
+            Check.Equal(HttpStatusCode.OK, own.Status, "the origin a LAN client uses (the machine's own address) is accepted");
+            var foreign = await SendAsync(http, HttpMethod.Post, server.BaseUrl + "/api/rpc/app.info", "{}", q => { Auth(q); q.Headers.Add("Origin", "http://evil.example"); });
+            Check.Equal(HttpStatusCode.Forbidden, foreign.Status, "a foreign origin is rejected");
+            // a configured public origin is accepted (a reverse proxy's hostname, a second LAN address)
+            server.Settings.Set("server.publicOrigins", JsonNode.Parse("[\"http://proxy.lan:8443\"]"));
+            var pub = await SendAsync(http, HttpMethod.Post, server.BaseUrl + "/api/rpc/app.info", "{}", q => { Auth(q); q.Headers.Add("Origin", "http://proxy.lan:8443"); });
+            Check.Equal(HttpStatusCode.OK, pub.Status, "a configured public origin is accepted");
+            server.Settings.Set("server.publicOrigins", null);
+            var gone = await SendAsync(http, HttpMethod.Post, server.BaseUrl + "/api/rpc/app.info", "{}", q => { Auth(q); q.Headers.Add("Origin", "http://proxy.lan:8443"); });
+            Check.Equal(HttpStatusCode.Forbidden, gone.Status, "once unset, the public origin is rejected again");
+        });
+
+        r.Add("server: bind a specific address — the base url names it, and it is the boundary for origins", async () =>
+        {
+            var lan = LocalLanIp();
+            if (lan is null) { Check.Skip("no non-loopback IPv4 address on this machine: binding a specific address"); }
+            await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot(), bind: lan);
+            Check.Equal($"http://{lan}:{server.Port}", server.BaseUrl);
+            using var http = NewHttp();
+            void Auth(HttpRequestMessage q) => q.Headers.Add(WebServer.TokenHeader, server.Token);
+            var own = await SendAsync(http, HttpMethod.Post, server.BaseUrl + "/api/rpc/app.info", "{}", q => { Auth(q); q.Headers.Add("Origin", server.BaseUrl); });
+            Check.Equal(HttpStatusCode.OK, own.Status, "the bound address's origin is accepted");
+            var foreign = await SendAsync(http, HttpMethod.Post, server.BaseUrl + "/api/rpc/app.info", "{}", q => { Auth(q); q.Headers.Add("Origin", "http://evil.example"); });
+            Check.Equal(HttpStatusCode.Forbidden, foreign.Status, "a foreign origin is rejected");
+        });
+
+        r.Add("server: a loopback-bound server keeps the old boundary (a LAN-address origin is rejected)", async () =>
+        {
+            var lan = LocalLanIp();
+            if (lan is null) { Check.Skip("no non-loopback IPv4 address on this machine"); }
+            await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot());
+            using var http = NewHttp();
+            void Auth(HttpRequestMessage q) => q.Headers.Add(WebServer.TokenHeader, server.Token);
+            var cross = await SendAsync(http, HttpMethod.Post, server.BaseUrl + "/api/rpc/app.info", "{}", q => { Auth(q); q.Headers.Add("Origin", $"http://{lan}:{server.Port}"); });
+            Check.Equal(HttpStatusCode.Forbidden, cross.Status, "a loopback-bound server does not accept the machine's LAN address");
+        });
+
+        /// <summary>The machine's first non-loopback IPv4 address, or null (a headless box): the LAN parts of these tests need one.</summary>
+        static string? LocalLanIp()
+        {
+            try
+            {
+                foreach (var n in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                    if (n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up)
+                        foreach (var a in n.GetIPProperties().UnicastAddresses)
+                            if (a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !a.Address.Equals(System.Net.IPAddress.Loopback))
+                                return a.Address.ToString();
+            }
+            catch { }
+            return null;
+        }
+
         r.Add("server: a plugin route mapped open skips the token and origin checks (its handler checks), a plain one keeps them", async () =>
         {
             await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot());

@@ -68,6 +68,11 @@ internal static class CoreSettings
                     Key = "server.devOrigins", Type = "list", Label = "Extra allowed origins", Applies = "restart",
                     Help = "e.g. http://localhost:5173 for npm run dev.", Subgroup = "Server", Keywords = ["cors", "vite", "dev server"],
                 },
+                SettingInfo.Str("server.bind", "Listen on", null,
+                    "What the server listens on: loopback (the default, 127.0.0.1), all (every interface — a client on the LAN), or an IP address. Beyond loopback the token rides the wire in the clear: keep the server to a trusted LAN, and let its clients through with server.publicOrigins when the origin is not the server's own address.",
+                    "loopback, all or an IP address (e.g. 192.168.1.5)") with { Applies = "restart", Subgroup = "Server", Keywords = ["bind", "listen", "lan", "remote", "network"] },
+                SettingInfo.List("server.publicOrigins", "Allowed origins (beyond loopback)", null,
+                    "Origins a server bound beyond loopback accepts on top of this machine's own addresses, in the same shape as server.devOrigins (full origins, * for any): the hostname of a reverse proxy, a second LAN address of the machine. A loopback-bound server ignores it.") with { Applies = "restart", Subgroup = "Server", Keywords = ["origin", "cors", "lan", "remote", "proxy"] },
                 new SettingInfo
                 {
                     Key = "database.sqlitePath", Type = "file", Label = "SQLite library", Applies = "restart",

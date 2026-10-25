@@ -17,8 +17,8 @@ using NetPI.Host.Logging;
 namespace NetPI.Host.Web;
 
 /// <summary>
-/// Kestrel on 127.0.0.1 with a single hand-written router (no MVC/routing overhead):
-/// <c>/api/health</c> (open), <c>/api/rpc/{method}</c>, <c>/api/p/{pluginId}/…</c>, <c>/ws</c>,
+/// Kestrel (loopback by default, <c>server.bind</c> for a LAN client) with a single hand-written router (no
+/// MVC/routing overhead): <c>/api/health</c> (open), <c>/api/rpc/{method}</c>, <c>/api/p/{pluginId}/…</c>, <c>/ws</c>,
 /// <c>/plugins/{pluginId}/…</c> (plugin wwwroot) and the SPA from WebRoot with index.html fallback.
 /// </summary>
 internal sealed class WebServer : IAsyncDisposable
@@ -46,38 +46,44 @@ internal sealed class WebServer : IAsyncDisposable
     private readonly IDisposable _wsRegistration;
     private readonly CancellationTokenSource _stopping = new();
     private readonly byte[] _token;
+    private readonly string _host;
+    private readonly bool _beyondLoopback;
     private WebApplication? _app;
     private int _disposed;
 
-    private WebServer(HostKernel kernel, WsHub hub, IDisposable wsRegistration)
+    private WebServer(HostKernel kernel, WsHub hub, IDisposable wsRegistration, string host, bool beyondLoopback)
     {
         _k = kernel;
         _hub = hub;
         _wsRegistration = wsRegistration;
         _log = kernel.LoggerFactory.CreateLogger("NetPI.Web");
         _token = Encoding.UTF8.GetBytes(kernel.Token);
+        _host = host;
+        _beyondLoopback = beyondLoopback;
     }
 
     public int Port { get; private set; }
-    public string BaseUrl => $"http://127.0.0.1:{Port}";
+    /// <summary>The URL of this server: <c>http://127.0.0.1:PORT</c> by default, the bind's address beyond loopback.</summary>
+    public string BaseUrl => $"http://{_host}:{Port}";
 
     public static async Task<WebServer> StartAsync(HostKernel kernel, CancellationToken ct)
     {
         var desired = kernel.Options.Port ?? kernel.Settings.Get<int?>("server.port") ?? 7431;
         if (desired is < 0 or > 65535) desired = 7431;
+        var (listen, host) = WebBind.Resolve(kernel.Options.Bind ?? kernel.Settings.Get<string>("server.bind"));
         var hub = new WsHub(kernel);
         var wsRegistration = kernel.Services.Register<IWsClients>(hub);
-        var server = new WebServer(kernel, hub, wsRegistration);
+        var server = new WebServer(kernel, hub, wsRegistration, host, listen is null || !WebBind.IsLoopback(listen));
         try
         {
             try
             {
-                await server.ListenAsync(desired, ct).ConfigureAwait(false);
+                await server.ListenAsync(desired, listen, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (desired != 0 && ex is IOException or SocketException)
             {
                 kernel.Log.LogWarning("Port {Port} is not available ({Error}); using a random free port", desired, ex.Message);
-                await server.ListenAsync(0, ct).ConfigureAwait(false);
+                await server.ListenAsync(0, listen, ct).ConfigureAwait(false);
             }
             return server;
         }
@@ -88,7 +94,7 @@ internal sealed class WebServer : IAsyncDisposable
         }
     }
 
-    private async Task ListenAsync(int port, CancellationToken ct)
+    private async Task ListenAsync(int port, IPAddress? listen, CancellationToken ct)
     {
         var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions
         {
@@ -99,7 +105,8 @@ internal sealed class WebServer : IAsyncDisposable
         builder.Services.AddLogging(b => LoggingSetup.Configure(b, _k.LogSink));
         builder.WebHost.UseKestrelCore().ConfigureKestrel(o =>
         {
-            o.Listen(IPAddress.Loopback, port);
+            if (listen is null) o.Listen(new IPEndPoint(IPAddress.Any, port)); // every interface (server.bind: all)
+            else o.Listen(listen, port);
             o.AddServerHeader = false;
             o.Limits.MaxRequestBodySize = 64L * 1024 * 1024;
         });
@@ -451,7 +458,10 @@ internal sealed class WebServer : IAsyncDisposable
         return CryptographicOperations.FixedTimeEquals(bytes, _token);
     }
 
-    /// <summary>No Origin, our own origin (127.0.0.1/localhost on this port) or one of <c>server.devOrigins</c>.</summary>
+    /// <summary>
+    /// No Origin, our own origin (127.0.0.1/localhost on this port; while bound beyond loopback, this machine's own
+    /// addresses on this port too) or one of <c>server.devOrigins</c> / <c>server.publicOrigins</c>.
+    /// </summary>
     private bool IsOriginAllowed(HttpContext ctx)
     {
         var origin = ctx.Request.Headers.Origin.ToString();
@@ -460,7 +470,13 @@ internal sealed class WebServer : IAsyncDisposable
         if (uri.Scheme == Uri.UriSchemeHttp && uri.Port == ctx.Connection.LocalPort &&
             (uri.Host == "127.0.0.1" || uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || uri.Host == "[::1]"))
             return true;
-        return IsDevOrigin(uri);
+        // Bound beyond loopback: a client that reached the server by one of this machine's own addresses (the LAN
+        // address a desktop shell connects by) is allowed. A loopback-bound server keeps the old boundary, so a
+        // machine-local page on another port cannot talk to it.
+        if (_beyondLoopback && uri.Scheme == Uri.UriSchemeHttp && uri.Port == ctx.Connection.LocalPort &&
+            WebBind.IsLocalHost(uri.Host))
+            return true;
+        return IsDevOrigin(uri) || IsPublicOrigin(uri);
     }
 
     /// <summary>
@@ -485,13 +501,28 @@ internal sealed class WebServer : IAsyncDisposable
 
     private bool IsDevOrigin(Uri uri)
     {
-        foreach (var allowed in _k.Settings.Get<List<string>>("server.devOrigins") ?? [])
+        return MatchesAllowedOrigin(uri, _k.Settings.Get<List<string>>("server.devOrigins") ?? []);
+    }
+
+    /// <summary>
+    /// <c>server.publicOrigins</c>: the origins a server bound beyond loopback accepts (a LAN client's page, a reverse
+    /// proxy's hostname). The same shape as <c>server.devOrigins</c> (full origins, <c>*</c> for any); unlike it, it is
+    /// an origin acceptance, not a CORS answer.
+    /// </summary>
+    private bool IsPublicOrigin(Uri uri)
+    {
+        return MatchesAllowedOrigin(uri, _k.Settings.Get<List<string>>("server.publicOrigins") ?? []);
+    }
+
+    private static bool MatchesAllowedOrigin(Uri uri, IReadOnlyList<string> allowed)
+    {
+        foreach (var a in allowed)
         {
-            if (string.IsNullOrWhiteSpace(allowed)) continue;
-            if (allowed.Trim() == "*") return true;
-            if (Uri.TryCreate(allowed.Trim(), UriKind.Absolute, out var a) &&
-                a.Scheme.Equals(uri.Scheme, StringComparison.OrdinalIgnoreCase) &&
-                a.Host.Equals(uri.Host, StringComparison.OrdinalIgnoreCase) && a.Port == uri.Port)
+            if (string.IsNullOrWhiteSpace(a)) continue;
+            if (a.Trim() == "*") return true;
+            if (Uri.TryCreate(a.Trim(), UriKind.Absolute, out var o) &&
+                o.Scheme.Equals(uri.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                o.Host.Equals(uri.Host, StringComparison.OrdinalIgnoreCase) && o.Port == uri.Port)
                 return true;
         }
         return false;

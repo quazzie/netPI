@@ -683,7 +683,7 @@ public static class PluginTests
         return (root, dir);
     }
 
-    public static Task<NetPiServer> StartAsync(string pluginsRoot, string? webRoot = null) =>
+    public static Task<NetPiServer> StartAsync(string pluginsRoot, string? webRoot = null, string? bind = null) =>
         NetPiServer.StartAsync(new NetPiServerOptions
         {
             Port = 0,
@@ -691,6 +691,7 @@ public static class PluginTests
             ExtraPluginDirs = [pluginsRoot],
             WebRoot = webRoot ?? T.TempDir("web"),
             ConsoleLogging = Environment.GetEnvironmentVariable("NETPI_TEST_LOGS") == "1",
+            Bind = bind,
         });
 
     [MethodImpl(MethodImplOptions.NoInlining)]
