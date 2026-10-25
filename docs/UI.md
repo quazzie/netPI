@@ -120,6 +120,15 @@ plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/www
   closes and the successor opens it again where it was (`window.json`). `app.restartFailed` is an error toast.
 - On every (re)connect the client re-sends the `sub` set (the open tabs), reloads every list, and reloads the
   active chat's messages. Cached background chats are marked stale and reload when shown.
+- **Window presence (`lib/presence.js`):** the tabs a window has open are the sessions it shows, and the window
+  marks them on the host (`session.presence`, PROTOCOL.md) — at once on a tab's open and close, and for all of
+  them every 15 s, so the host's 90 s expiry never drops a session a window is showing. A mark rides only an
+  open connection: a downed window shows nothing, and the reconnect's `resend()` says the whole set at once,
+  because the host's marks for the new connection are fresh. The idle compaction (`netpi.idlecompaction`) is
+  what reads the marks: it compacts the open sessions that go idle before their provider's prompt-cache TTL.
+  The tracker stays free of Svelte reactivity (a plain vm tests it, like the rpc's deadline tests); the app
+  wires it to the tab state and `conn.status` in `app.svelte.js` (`activate`, the webhook's open-in-tab, a
+  replace, a close, and a first load's restored tabs).
 - A chat shown that was not following its events (new to the page, evicted from the cache, or stale after a reconnect)
   has missed what its answer has streamed so far: while its run is busy, `showChat` (`lib/state/app.svelte.js`) asks for it
   after subscribing (`agent.stream`: the stream so far and the running calls' output, complete up to a seq), and
