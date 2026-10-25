@@ -38,7 +38,7 @@ public sealed class CompactionPlugin : INetPiPlugin
             if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) hook.Forget(id);
         });
 
-        context.Rpc.Register(new RpcMethod("compaction.run", "Summarize older messages of a session: { sessionId, args? } → status string", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("args", RpcParamType.String, "/compact's text: instructions for the summary"), RpcParam.Opt("instructions")]),
+        context.Rpc.Register(new RpcMethod("compaction.run", "Summarize older messages of a session: { sessionId, args?, instructions?, mode? (\"manual\" (the default) | \"idle\" — the idle compaction's) } → status string", ReadOnly: false, Params: [RpcParam.Req("sessionId"), RpcParam.Opt("args", RpcParamType.String, "/compact's text: instructions for the summary"), RpcParam.Opt("instructions"), RpcParam.Opt("mode", RpcParamType.String, "\"manual\" (the default) or \"idle\"")]),
             (req, rpcCt) => RunAsync(context, service, req, rpcCt));
 
         var stats = new CompactionStats(context);
@@ -58,6 +58,12 @@ public sealed class CompactionPlugin : INetPiPlugin
     internal static async Task<object?> RunAsync(IPluginContext context, CompactionService service, RpcRequest req, CancellationToken ct)
     {
         var sessionId = req.Required("sessionId");
+        var mode = req.Str("mode") switch
+        {
+            null or "" or "manual" => CompactionMode.Manual,
+            "idle" => CompactionMode.Idle,
+            var m => throw new RpcException("bad_request", $"compaction.run: unknown mode '{m}' (\"manual\" or \"idle\")"),
+        };
         var session = context.Sessions.Require(sessionId);
         var agent = context.Services.Get<IAgentRuntime>()?.GetBySession(sessionId);
         if (agent is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })
@@ -73,7 +79,7 @@ public sealed class CompactionPlugin : INetPiPlugin
             {
                 SessionId = sessionId,
                 Model = model,
-                Mode = CompactionMode.Manual,
+                Mode = mode,
                 Instructions = req.Str("args") ?? req.Str("instructions"),
                 AgentId = agent?.Id,
                 HoldsSlot = false,
@@ -86,8 +92,8 @@ public sealed class CompactionPlugin : INetPiPlugin
         }
         catch (Exception ex) when (ex is not (OperationCanceledException or RpcException))
         {
-            context.Logger.LogWarning(ex, "Manual compaction of {Session} failed", sessionId);
-            service.Notice(sessionId, "error", "Compaction failed: " + ex.Message, "failed", CompactionMode.Manual);
+            context.Logger.LogWarning(ex, "{Mode} compaction of {Session} failed", mode, sessionId);
+            service.Notice(sessionId, "error", "Compaction failed: " + ex.Message, "failed", mode);
             throw new RpcException("compaction_failed", "Compaction failed: " + ex.Message);
         }
     }

@@ -119,6 +119,54 @@ public static class CompactionTests
             await env.Service.CompactAsync(new CompactionRequest { SessionId = subagent.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
             Check.Equal(1, Locks(env.Service), "still just the live chat");
         });
+
+        r.Add("compaction: idle mode keeps the recent part like manual, and demands a real gain like auto", async () =>
+        {
+            var env = new Env();
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "## Task\nsummary" }] };
+            env.Conversation(13); // ≈ 36k tokens on a 40k window
+            var res = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Idle }, CancellationToken.None);
+            Check.True(res.Compacted, "a long context compacts in idle mode");
+            var summary = env.Ctx.SessionsFake.GetContextMessages(env.Session.Id).First(m => m.Role == MessageRole.Summary);
+            Check.Equal("idle", summary.Meta?["mode"]?.GetValue<string>(), "the summary carries the idle mode");
+            Check.True(res.TokensAfter < res.TokensBefore / 2, $"the recent part is kept, the rest summarized: {res.TokensBefore} → {res.TokensAfter}");
+
+            // A short context: the idle mode's minGain (like auto's) refuses a compaction that would save little
+            var small = new Env();
+            small.Ctx.ModelsFake.Responder = env.Ctx.ModelsFake.Responder;
+            small.Add(T.User("hi"));
+            small.Add(T.Assistant("hello"));
+            var noop = await small.Service.CompactAsync(new CompactionRequest { SessionId = small.Session.Id, Model = small.Model, Mode = CompactionMode.Idle }, CancellationToken.None);
+            Check.False(noop.Compacted, "nothing to compact under the minGain");
+            Check.Contains(noop.Message, "Nothing to compact");
+
+            // The same short context, manual mode: its minGain is 1, so it compacts (the idle mode is the stricter one)
+            var manual = await small.Service.CompactAsync(new CompactionRequest { SessionId = small.Session.Id, Model = small.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.True(manual.Compacted, "manual has no minGain");
+        });
+
+        r.Add("compaction: compaction.run takes the idle mode, and rejects one it does not know", async () =>
+        {
+            var env = new Env();
+            await new CompactionPlugin().StartAsync(env.Ctx, CancellationToken.None);
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "## Task\nsummary" }] };
+            env.Conversation(13);
+
+            var res = await env.Ctx.RpcFake.Call("compaction.run", new { sessionId = env.Session.Id, mode = "idle" });
+            Check.Contains(res?.ToString() ?? "", "compacted", "the idle mode runs");
+            var summary = env.Ctx.SessionsFake.GetContextMessages(env.Session.Id).First(m => m.Role == MessageRole.Summary);
+            Check.Equal("idle", summary.Meta?["mode"]?.GetValue<string>(), "its summary carries the idle mode");
+
+            var ex = await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.InvokeAsync("compaction.run", new { sessionId = env.Session.Id, mode = "auto" }));
+            Check.Contains(ex.Message, "unknown mode");
+
+            // no mode: the manual default, as before
+            env.Conversation(13);
+            var again = await env.Ctx.RpcFake.Call("compaction.run", new { sessionId = env.Session.Id });
+            Check.Contains(again?.ToString() ?? "", "compacted");
+            var last = env.Ctx.SessionsFake.GetContextMessages(env.Session.Id).Last(m => m.Role == MessageRole.Summary);
+            Check.Equal("manual", last.Meta?["mode"]?.GetValue<string>(), "no mode is manual");
+        });
         r.Add("compaction: compaction.stats counts every compaction over more than one page, read-only, and follows a new one", async () =>
         {
             var env = new Env();

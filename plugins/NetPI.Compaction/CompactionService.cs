@@ -5,7 +5,9 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.Compaction;
 
-public enum CompactionMode { Auto, Overflow, Manual }
+/// <summary>Idle: the idle compaction's mode — like manual, the recent part is kept verbatim, but a real gain is
+/// demanded (like auto), since nothing is about to overflow: the point is a short, cheap context for the next turn.</summary>
+public enum CompactionMode { Auto, Overflow, Manual, Idle }
 
 public sealed class CompactionOptions
 {
@@ -127,10 +129,10 @@ public sealed class CompactionService(IPluginContext ctx)
         // Overflow: the backend rejected what was actually sent, so its real window may be smaller than the catalog says
         // (e.g. a model loaded with a smaller n_ctx than its static capability entry). Size the cut from the messages that
         // were sent, not from the advertised window, or the retry fails again.
-        if (req.Mode == CompactionMode.Overflow) keep = Math.Min(keep / 2, Math.Max(1, msgTokens * 2 / 5));
-        if (req.Mode == CompactionMode.Manual) keep = Math.Min(keep, Math.Max(1, msgTokens * 2 / 5));
+        if (req.Mode is CompactionMode.Overflow) keep = Math.Min(keep / 2, Math.Max(1, msgTokens * 2 / 5));
+        if (req.Mode is CompactionMode.Manual or CompactionMode.Idle) keep = Math.Min(keep, Math.Max(1, msgTokens * 2 / 5));
         var maxKeep = Math.Max(keep, Math.Min(keep * 3 / 2, (long)(window * 0.35)));
-        var minGain = req.Mode == CompactionMode.Auto ? Math.Max(1000, window / 50) : 1;
+        var minGain = req.Mode is CompactionMode.Auto or CompactionMode.Idle ? Math.Max(1000, window / 50) : 1;
 
         var plan = CompactionPlanner.Plan(context, keep, maxKeep);
         var tokensBefore = req.TokensBefore ?? req.OverheadTokens + msgTokens;
