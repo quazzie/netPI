@@ -57,6 +57,13 @@ public sealed class FilesPlugin : INetPiPlugin
             return Task.FromResult<object?>(new { path, action });
         });
 
+        context.Rpc.Register(new RpcMethod("files.read", "The bytes of a file, for a client that opens or shows it on its own machine (the remote desktop shell downloads a server file and opens the local copy): { path, sessionId?, cwd?, maxBytes? (20 MiB, hard 100 MiB) } → { path, size, data /* base64 */ }. The same path rules as the file tools: relative against the session's workspace, network paths refused; too_large past the cap", ReadOnly: true, Params: [RpcParam.Req("path"), RpcParam.Opt("sessionId"), RpcParam.Opt("cwd"), RpcParam.Opt("maxBytes", RpcParamType.Integer)]),
+            async (req, token) =>
+        {
+            var maxBytes = Math.Clamp(req.Int("maxBytes") ?? FileRead.DefaultMaxBytes, 1, FileRead.HardMaxBytes);
+            return await FileRead.ReadAsync(context, ResolveRoot(context, req), req.Required("path"), maxBytes, token).ConfigureAwait(false);
+        });
+
         context.Rpc.Register(new RpcMethod("files.applyEdits", "Apply text edits by position (a language server's rename): { sessionId?, cwd?, edits: [{ path, edits: [{ startLine, startCol, endLine, endCol, newText }] }] } → { files: { path, edits }[], edits } (0-based line and UTF-16 column, as LSP counts them; relative paths resolve against the session's workspace; each file keeps its encoding, BOM and line endings; all files or none: every file is read, checked against the workspace rule and edited in memory before any is written; overlapping edits are refused)", ReadOnly: false, Params: [RpcParam.Req("edits", RpcParamType.Array), RpcParam.Opt("sessionId"), RpcParam.Opt("cwd")]),
             async (req, token) =>
         {

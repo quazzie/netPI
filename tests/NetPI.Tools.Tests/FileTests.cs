@@ -21,9 +21,36 @@ public static class FileTests
             using var ctx = new FakePluginContext(T.TempDir("files-rpc"));
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
             var flags = ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
-            foreach (var m in new[] { "files.list", "files.search", "files.git", "files.commits" })
+            foreach (var m in new[] { "files.list", "files.search", "files.git", "files.commits", "files.read" })
                 Check.True(flags.TryGetValue(m, out var ro) && ro, $"{m} only reads, so it is marked read-only");
             Check.True(flags.TryGetValue("files.open", out var open) && !open, "files.open opens the file or folder, so it stays unmarked");
+        });
+
+        r.Add("files.read: the file's bytes as base64; directories, network paths, missing files and the size cap are refused", async () =>
+        {
+            var dir = T.TempDir("files-read");
+            T.WriteText(dir, "a.txt", "hello\n");
+            T.WriteBytes(dir, "bin.dat", [1, 0, 2, 0, 255]);
+            Directory.CreateDirectory(Path.Combine(dir, "sub"));
+            using var ctx = new FakePluginContext(dir);
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+
+            var ok = NetPiJson.ToElement(await ctx.RpcFake.InvokeAsync("files.read", new { path = "a.txt" }));
+            Check.Equal("hello\n", System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(ok.GetProperty("data").GetString()!)));
+            Check.Equal(6, ok.GetProperty("size").GetInt32());
+            Check.Contains(ok.GetProperty("path").GetString()!, "a.txt");
+
+            var bin = NetPiJson.ToElement(await ctx.RpcFake.InvokeAsync("files.read", new { path = "bin.dat" }));
+            Check.Equal(Convert.ToBase64String([1, 0, 2, 0, 255]), bin.GetProperty("data").GetString(), "binary bytes round-trip");
+
+            var dirEx = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.InvokeAsync("files.read", new { path = "sub" }));
+            Check.Equal("bad_request", dirEx.Code, "a directory is not a file");
+            var missing = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.InvokeAsync("files.read", new { path = "nope.txt" }));
+            Check.Equal("not_found", missing.Code);
+            var network = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.InvokeAsync("files.read", new { path = @"\\server\share\f.txt" }));
+            Check.Equal("bad_request", network.Code, "a network path is refused, not probed");
+            var big = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.InvokeAsync("files.read", new { path = "a.txt", maxBytes = 2 }));
+            Check.Equal("too_large", big.Code);
         });
 
         // ------------------------------------------------ files.applyEdits
