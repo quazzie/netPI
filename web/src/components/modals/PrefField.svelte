@@ -21,10 +21,12 @@
     savePrefs();
   }
 
-  // desktop app: the WebView zoom (the desktop shell remembers it in window.json)
+  // desktop app: the WebView zoom (the desktop shell remembers it in window.json). Connect mode has no desktop.zoom —
+  // the client shell registered none, so the per-site WebView zoom applies and the browser hint below is the true one.
+  const desktopZoom = $derived(!!app.info?.desktop && !app.remote);
   let zoom = $state(null);
   $effect(() => {
-    if (p.type !== 'zoom' || !app.info?.desktop) return;
+    if (p.type !== 'zoom' || !desktopZoom) return;
     rpc('desktop.zoom', {})
       .then((r) => (zoom = r?.factor ?? 1))
       .catch(() => {});
@@ -44,7 +46,7 @@
     <div class="name">{p.label}{#if changed}<span class="dot" title="Changed from the default"></span>{/if}</div>
     {#if p.type === 'zoom'}
       <div class="help">
-        {#if app.info?.desktop}Also Ctrl + mouse wheel, Ctrl + / − / 0; NetPI remembers it.{:else}Use the browser's zoom (Ctrl + / −); it is remembered per site.{/if}
+        {#if desktopZoom}Also Ctrl + mouse wheel, Ctrl + / − / 0; NetPI remembers it.{:else}Use the browser's zoom (Ctrl + / −); it is remembered per site.{/if}
       </div>
     {:else if p.help}
       <div class="help">
@@ -62,7 +64,7 @@
       </div>
     {:else if p.type === 'bool'}
       <input type="checkbox" class="check" checked={!!prefs[p.key]} onchange={(e) => set(e.currentTarget.checked)} aria-label={p.label} />
-    {:else if p.type === 'zoom' && app.info?.desktop}
+    {:else if p.type === 'zoom' && desktopZoom}
       <div class="np-seg zoom">
         <button title="Smaller" onclick={() => setZoom(zoom - 0.1)} disabled={zoom == null}>−</button>
         <button title="Reset to 100%" onclick={() => setZoom(1)} disabled={zoom == null}>{zoom == null ? '…' : `${Math.round(zoom * 100)}%`}</button>

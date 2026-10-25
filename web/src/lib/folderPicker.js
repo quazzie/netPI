@@ -1,7 +1,10 @@
 // Folder and file pickers. In the desktop shell (WebView2) the native dialog is used through
 // chrome.webview.postMessage({ type: 'pickFolder' | 'pickFile', id, initial }) → { type: 'pickFolderResult' | 'pickFileResult', id, path };
-// in a plain browser a modal browses the host filesystem with fs.dirs (with files: true for a file).
+// in a plain browser a modal browses the host filesystem with fs.dirs (with files: true for a file). In connect mode
+// (a remote client) the modal is used too — the native dialog would pick a folder on this machine, and this machine's
+// paths are never handed to the server.
 import { modals } from './state/ui.svelte.js';
+import { app } from './state/app.svelte.js';
 
 let seq = 0;
 let nativePick = null; // the native pick in flight: { settle } removes its listener and resolves it with null
@@ -18,7 +21,7 @@ export function pickFile({ initial = null, title = 'Choose a file' } = {}) {
 
 function pick(kind, initial, title) {
   const wv = window.chrome?.webview;
-  if (wv) {
+  if (wv && !app.remote) {
     return new Promise((resolve) => {
       nativePick?.settle(); // a second picker replaces the first: its listener goes and its caller hears 'nothing chosen'
       const id = `pf${Date.now().toString(36)}${++seq}`;

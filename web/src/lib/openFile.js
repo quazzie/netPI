@@ -12,6 +12,30 @@ import { confirmDialog, toast } from './state/ui.svelte.js';
  */
 export async function openFile(path, sessionId = app.activeId, { ask = false } = {}) {
   if (!path) return;
+  if (app.remote) {
+    // Connect mode: the file is on the server. Download it (files.read) and hand the bytes to the shell, which saves a
+    // local copy and opens it there — a local path is never sent to the server.
+    if (ask) {
+      const go = await confirmDialog({
+        title: 'Open this file?',
+        message: `${path}\n\nIt is downloaded from the server and opened with its default program — an executable or a script runs.`,
+        confirmLabel: 'Open',
+        danger: true,
+      });
+      if (!go) return;
+    }
+    try {
+      const res = await rpc('files.read', { path, ...(sessionId ? { sessionId } : {}) });
+      if (res?.data && window.chrome?.webview) {
+        window.chrome.webview.postMessage({ type: 'openFile', name: res.path ?? path, data: res.data });
+      } else {
+        toast('The server did not send the file', 'error');
+      }
+    } catch (e) {
+      toast(e.message, e.code === 'not_found' ? 'warn' : 'error');
+    }
+    return;
+  }
   const call = (confirm) => rpc('files.open', { path, ...(sessionId ? { sessionId } : {}), user: true, ...(confirm ? { confirm: true } : {}) });
   try {
     if (ask) {

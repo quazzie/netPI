@@ -290,6 +290,17 @@
    * and a file nothing is associated with gets the "choose a program" dialog.
    */
   async function openPath(e) {
+    if (ctx.app.remote) {
+      // Connect mode: the file is on the server. Download it and hand the bytes to the shell, which saves a local copy
+      // and opens it there (a folder has no bytes to open: the server says so and the toast shows it).
+      try {
+        const r = await ctx.rpc('files.read', { ...loc(), path: e.path ?? e.rel });
+        if (r?.data) desktop.openFile(r.path ?? e.path ?? e.rel, r.data);
+      } catch (err) {
+        ctx.app.toast(err.message, err.code === 'not_found' ? 'warn' : 'error');
+      }
+      return;
+    }
     const call = (confirmed) => ctx.rpc('files.open', { ...loc(), path: e.path ?? e.rel, user: true, ...(confirmed ? { confirm: true } : {}) });
     try {
       const r = await call(false);

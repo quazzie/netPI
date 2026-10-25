@@ -46,9 +46,14 @@ export const desktop = {
   get available() {
     return !!globalThis.chrome?.webview;
   },
-  /** Show a file or folder in the OS file manager. */
+  /** Show a file or folder in the OS file manager. In connect mode the shell downloads the server file and reveals the
+   * local copy (a local path is never sent to the server). */
   revealPath(path) {
     globalThis.chrome?.webview?.postMessage({ type: 'revealPath', path });
+  },
+  /** Open a downloaded server file on this machine (connect mode): the shell saves the bytes and opens the local copy. */
+  openFile(name, data) {
+    globalThis.chrome?.webview?.postMessage({ type: 'openFile', name, data });
   },
   /** Open a URL in the default browser (links with target=_blank already do this). */
   openExternal(url) {

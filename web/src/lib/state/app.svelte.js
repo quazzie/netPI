@@ -50,6 +50,7 @@ class AppState {
   uiTabs = $state.raw([]); // plugin UiTabInfo[]
   commands = $state.raw([]); // server SlashCommandInfo[]
   settingsVersion = $state(0);
+  remote = $state(false); // connect mode: this window is a client of a server on the other machine (the shell posts clientMode)
 
   sessionsById = $derived(new Map(this.sessions.map((s) => [s.id, s])));
   projectsById = $derived(new Map(this.projects.map((p) => [p.id, p])));

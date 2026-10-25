@@ -76,6 +76,10 @@ export function createPluginCtx(tab, sessionId = null) {
       get activeProject() {
         return plain(app.activeProject);
       },
+      // Connect mode: this window is a client of a server on the other machine (its file features are the server's).
+      get remote() {
+        return app.remote;
+      },
       // the active session's workspace as the host knows it (see workspaceSnapshot): what a tab keys a reload on
       // without a files.scope round trip of its own
       get activeWorkspace() {
