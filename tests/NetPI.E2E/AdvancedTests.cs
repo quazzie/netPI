@@ -1,4 +1,7 @@
+using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace NetPI.E2E;
 
@@ -552,6 +555,88 @@ public static class AdvancedTests
             var run = await env.Run(s2.S("id")!, "where now [s:where file=after-delete.txt]");
             Check.Contains(run.FinalText, "PWD=" + Env.BashPath((await env.Rpc("app.info")).S("defaultWorkspace")!));
         });
+
+        r.Add("server.remote", "remote mode: a server bound beyond loopback — files.read over HTTP with the token; a foreign origin is refused until it is a public origin", async () =>
+        {
+            // A second server on its own home, bound to every interface — the shape of "the server is on a server".
+            var home = Path.Combine(env.Root, "remote-home");
+            var data = Path.Combine(home, "data");
+            Directory.CreateDirectory(data);
+            await File.WriteAllTextAsync(Path.Combine(data, "hello.txt"), "remote hello\n");
+            await File.WriteAllTextAsync(Path.Combine(home, "settings.json"), "{}");
+            var port = Ports.Pick(1)[0];
+            const string token = "e2e-remote-token";
+            var psi = new ProcessStartInfo("dotnet")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = env.Root,
+            };
+            foreach (var a in new[] { Path.Combine(env.AppDir, "netpi-server.dll"), "--port", port.ToString(), "--home", home, "--token", token, "--listen", "all" })
+                psi.ArgumentList.Add(a);
+            var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            var ready = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            proc.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data is null) return;
+                var i = e.Data.IndexOf("NetPI is running at ", StringComparison.Ordinal);
+                if (i >= 0) ready.TrySetResult(e.Data[(i + "NetPI is running at ".Length)..].Trim());
+            };
+            proc.ErrorDataReceived += (_, e) => { if (e.Data is not null) ready.TrySetException(new InvalidOperationException("remote server: " + e.Data)); };
+            proc.Exited += (_, _) => ready.TrySetException(new InvalidOperationException($"remote server exited with code {proc.ExitCode}"));
+            proc.Start();
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+            var baseUrl = await ready.Task.WaitAsync(TimeSpan.FromSeconds(60));
+            async Task<HttpResponseMessage> rpc(string method, object body, string? tok = token, string? origin = null)
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/api/rpc/" + method)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(body), new UTF8Encoding(false), "application/json"),
+                };
+                if (tok is not null) req.Headers.Add("X-NetPI-Token", tok);
+                if (origin is not null) req.Headers.Add("Origin", origin);
+                return await env.Http.SendAsync(req);
+            }
+            try
+            {
+                // the server's file over the wire, with the token
+                using (var res = await rpc("files.read", new { cwd = data, path = "hello.txt" }))
+                {
+                    Check.Equal(200, (int)res.StatusCode, "files.read over HTTP");
+                    var d = JsonNode.Parse(await res.Content.ReadAsStringAsync())!.AsObject();
+                    Check.Equal("remote hello\n", Encoding.UTF8.GetString(Convert.FromBase64String(d["data"]!.GetValue<string>())));
+                }
+                // no token: refused
+                using (var res = await rpc("files.read", new { cwd = data, path = "hello.txt" }, tok: null))
+                    Check.Equal(401, (int)res.StatusCode, "no token");
+                // a foreign origin on a server bound beyond loopback: refused...
+                using (var res = await rpc("files.read", new { cwd = data, path = "hello.txt" }, origin: $"http://evil.example:{port}"))
+                    Check.Equal(403, (int)res.StatusCode, "a foreign origin is refused");
+                // ...until it is a public origin
+                using (var res = await rpc("settings.set", new { path = "server.publicOrigins", value = new[] { $"http://evil.example:{port}" } }))
+                    Check.Equal(200, (int)res.StatusCode, "settings.set server.publicOrigins");
+                using (var res = await rpc("files.read", new { cwd = data, path = "hello.txt" }, origin: $"http://evil.example:{port}"))
+                    Check.Equal(200, (int)res.StatusCode, "a publicOrigins entry is accepted");
+                // a directory is not a file
+                using (var res = await rpc("files.read", new { cwd = home, path = "data" }))
+                    Check.Equal(400, (int)res.StatusCode, "a directory is refused");
+                // a missing file is not_found
+                using (var res = await rpc("files.read", new { cwd = data, path = "nope.txt" }))
+                    Check.Equal(404, (int)res.StatusCode, "a missing file is not_found");
+            }
+            finally
+            {
+                if (!proc.HasExited)
+                {
+                    proc.Kill(entireProcessTree: true);
+                    await proc.WaitForExitAsync();
+                }
+                proc.Dispose();
+            }
+        }, 60);
     }
 
     private static async Task Assert404(Env env, string method, object p)
