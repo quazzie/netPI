@@ -6,6 +6,7 @@ var runner = new TestRunner { Name = "Tools", TimeoutSeconds = Environment.GetEn
 ToolArgsTests.Register(runner);
 WorkspaceToolTests.Register(runner);
 FileTests.Register(runner);
+DocReadTests.Register(runner);
 ShellTests.Register(runner);
 OpenTests.Register(runner);
 LoadTests.Register(runner);

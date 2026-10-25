@@ -592,6 +592,7 @@ data. Its settings are in Settings → Safety, beside the guardrails.
 | `web.search.braveUrl` | `https://api.search.brave.com/res/v1/web/search` | |
 | `web.search.count` | `8` | results per search (max 20) |
 | `media.maxBytes` | `10000000` | largest image `show_image` shows |
+| `documents.cacheMaxBytes` | `33554432` | LRU byte cap of `doc.read`'s extracted-text cache (per plugin instance; older entries are evicted when it is exceeded) |
 | `decide.baseUrl` | – | server for `decide` (`POST /v1/systemone`); empty = the `baseUrl` of the first `aiproxy` provider (else `http://127.0.0.1:8090`) |
 | `decide.model` | `qwen3.8-27b` | decision model `decide` asks: `qwen3.8-27b` on NInfer (through AiGateway's System One bridge; the best without training, no extra memory, shares the 5090 with the agents), or `kev-9b`/`kev-4b` on the nuc (load it from AiHub first; it takes the whole 4070). See decisions-lab's docs/DECISION-MODELS.md. Several, comma-separated (`"qwen3.8-27b, qwen3.6-35b"`, for loadouts that change the model ids): the first one the model list has loaded (or reachable) is used, else the first named (the Decide plugin resolves it, so `decide.bulkModel` and a `decide` call's `model` take a list too) |
 | `decide.maxItems` | `500` | most items per `decide` call (1–5000) |
@@ -612,6 +613,21 @@ data. Its settings are in Settings → Safety, beside the guardrails.
 | `browser.maxControls` | `200` | Controls listed per page, the ones nearest the visible part (50–5000); `find`, and `snapshot` with `all`, reach the rest |
 | `windows.maxControls` | `300` | Controls listed per window by the `windows` tool, the ones nearest the visible part (50–5000); `find`, and `snapshot` with `all`, reach the rest |
 | `windows.journal` | `true` | Every `windows` step (the action, its arguments, the result) as a JSON line in `<home>/windows/journal-yyyyMMdd.jsonl`: data to train a smaller control picker on |
+
+## Consult
+
+`plugins/NetPI.Consult` (see `docs/TOOLS.md`, "Consult"): one text-only design consultation through the Claude CLI
+model (the owner's subscription). The `consult` tool is registered only while a `claude-cli` provider is configured
+and enabled, and says so on the bus (`consult.toolsChanged`) when that changes. Only the chats the owner starts may
+consult (the Anthropic-terms guard: a webhook's, a schedule's, the phone's, a script's or a subagent's chat is
+refused with the reason).
+
+| key | default | |
+|---|---|---|
+| `consult.model` | `claude-cli/claude-opus-5-5` | the Claude CLI model a consult asks. Several, comma-separated: the first one the model list has is used. The tool's `model` argument picks another for one call (a cheaper one) |
+| `consult.timeoutSeconds` | `120` | how long one consult may wait for the CLI before it gives up with a note (the run goes on; 5–3600) |
+| `consult.maxAnswerChars` | `16000` | the answer is cut at this many characters, with a note to ask for less |
+| `consult.effort` | `medium` | the CLI's `--effort` for the call: `low`, `medium`, `high`, `xhigh`, `max` (the Claude CLI's efforts) |
 
 ## Goals
 

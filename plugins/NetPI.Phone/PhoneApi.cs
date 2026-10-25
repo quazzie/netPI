@@ -183,6 +183,14 @@ internal sealed class PhoneApi : IDisposable
             }
         }
         else if (body is not null) { await Json(http, 400, Err("bad_request", "the body must be a JSON object")); return; }
+        // A chat the phone starts is not the owner's own surface: the consult tool (the Claude CLI on the owner's
+        // subscription, Anthropic's terms) reads meta.origin and refuses it, as it refuses webhooks, schedules and scripts.
+        if (method == "sessions.create")
+        {
+            var meta = args["meta"] as JsonObject ?? new JsonObject();
+            meta["origin"] ??= "phone";
+            args["meta"] = meta;
+        }
         try
         {
             var result = await _ctx.Rpc.InvokeAsync(method, args, http.RequestAborted).ConfigureAwait(false);

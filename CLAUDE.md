@@ -10,7 +10,7 @@ Read `docs/HANDOFF.md` first: where things are, what has been verified, and the 
 - Side panels are narrow (about 230–320px): design every tab for that width.
 - Screenshots the user shares are weak references, not specs.
 - Ask before stopping the user's running NetPI, AiSwitcher or nInfer, and before touching `%USERPROFILE%\.netpi`.
-- Keep dependencies minimal. Ask before adding a NuGet or npm package.
+- Keep dependencies minimal. Ask before adding a NuGet or npm package (approved: WebView2, Jint in the CodeMode plugin and PdfPig in the Documents plugin — pinned, named in the plugin's `plugin.json`; docs/HANDOFF.md "Minimal dependencies").
 - When a discussion ends in a plan or feature that isn't built yet, offer to save it as an idea
   (`node scripts/netpi.mjs ideas.add '<json>' --write`, or add to a matching open idea with `ideas.update`).
   Offer, don't add: the user keeps the backlog small and drops weak ideas. Short, specific titles.

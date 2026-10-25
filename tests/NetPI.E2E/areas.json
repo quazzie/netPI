@@ -105,6 +105,12 @@
    ]
   },
   {
+   "path": "plugins/NetPI.Consult/",
+   "tags": [
+    "smoke"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Coordinator/",
    "tags": [
     "smoke"
@@ -417,6 +423,12 @@
    "tags": [
     "subagents",
     "ask"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Tools.Documents/",
+   "tags": [
+    "tools"
    ]
   },
   {

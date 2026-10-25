@@ -23,11 +23,11 @@ public static class LoadTests
 
     public static void Register(TestRunner r)
     {
-        foreach (var (project, expectedTools) in new[] { ("NetPI.Tools.Files", 7), ("NetPI.Tools.Shell", shell::NetPI.Tools.Shell.ShellLocator.FindPwsh(null, out _) is null ? 2 : 3) })
+        foreach (var (project, expectedTools, minRpc) in new[] { ("NetPI.Tools.Files", 7, 2), ("NetPI.Tools.Documents", 1, 0), ("NetPI.Tools.Shell", shell::NetPI.Tools.Shell.ShellLocator.FindPwsh(null, out _) is null ? 2 : 3, 2) })
         {
             r.Add($"load: {project} starts and stops in a collectible AssemblyLoadContext", async () =>
             {
-                var alc = await LoadRunUnloadAsync(project, expectedTools);
+                var alc = await LoadRunUnloadAsync(project, expectedTools, minRpc);
                 // a plugin that pins its context (a static field, a leaked timer) would keep it alive
                 Check.True(await WaitCollectedAsync(alc), $"{project}'s load context is collected after unload");
             });
@@ -36,7 +36,7 @@ public static class LoadTests
 
     // no inlining and no locals in the caller: nothing of this frame may keep the context reachable
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static async Task<WeakReference> LoadRunUnloadAsync(string project, int expectedTools)
+    private static async Task<WeakReference> LoadRunUnloadAsync(string project, int expectedTools, int minRpc)
     {
         var dir = FindPluginDir(project);
         foreach (var contracts in Shared)
@@ -52,7 +52,7 @@ public static class LoadTests
         {
             await plugin.StartAsync(ctx, CancellationToken.None);
             Check.Equal(expectedTools, ctx.ToolsFake.Tools.Count);
-            Check.True(ctx.RpcFake.Handlers.Count >= 2);
+            Check.True(ctx.RpcFake.Handlers.Count >= minRpc, $"{project} registers its RPC methods");
             if (project == "NetPI.Tools.Files")
                 Check.True(ctx.UiFake.Tabs.Any(t => t.Id == "files" && t.Panel == UiPanel.Left), "files tab registered");
             await plugin.StopAsync(CancellationToken.None);

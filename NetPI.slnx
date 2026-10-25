@@ -8,6 +8,7 @@
     <Project Path="plugins/NetPI.CodeMode/NetPI.CodeMode.csproj" />
     <Project Path="plugins/NetPI.CodeSearch/NetPI.CodeSearch.csproj" />
     <Project Path="plugins/NetPI.Compaction/NetPI.Compaction.csproj" />
+    <Project Path="plugins/NetPI.Consult/NetPI.Consult.csproj" />
     <Project Path="plugins/NetPI.Context/NetPI.Context.csproj" />
     <Project Path="plugins/NetPI.Coordinator/NetPI.Coordinator.csproj" />
     <Project Path="plugins/NetPI.Diagnostics/NetPI.Diagnostics.csproj" />
@@ -34,6 +35,7 @@
     <Project Path="plugins/NetPI.Guardrails/NetPI.Guardrails.csproj" />
     <Project Path="plugins/NetPI.ToolRepair/NetPI.ToolRepair.csproj" />
     <Project Path="plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />
+    <Project Path="plugins/NetPI.Tools.Documents/NetPI.Tools.Documents.csproj" />
     <Project Path="plugins/NetPI.Tools.Files/NetPI.Tools.Files.csproj" />
     <Project Path="plugins/NetPI.Decide/NetPI.Decide.csproj" />
     <Project Path="plugins/NetPI.Embeddings/NetPI.Embeddings.csproj" />
