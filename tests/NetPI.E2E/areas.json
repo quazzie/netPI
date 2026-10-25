@@ -414,6 +414,12 @@
    ]
   },
   {
+   "path": "plugins/NetPI.Tools.Documents/",
+   "tags": [
+    "tools"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Tools.Files/",
    "tags": [
     "tools"

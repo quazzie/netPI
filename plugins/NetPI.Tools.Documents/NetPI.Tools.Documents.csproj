@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- doc.read: text extraction from Office documents (.docx, .xlsx, .pptx via the BCL) and PDF (PdfPig). -->
+  <ItemGroup>
+    <!-- PDF text extraction: PdfPig, pure-managed (Apache-2.0, UglyToad). The one NuGet package this plugin ships
+         (owner's decision 2026-10-03, docs/HANDOFF.md "Minimal dependencies"): referenced by this plugin only,
+         copied next to it by CopyLocalLockFileAssemblies, named in plugin.json. Pinned exactly: the plugin's
+         bytes must not change under an unchanged source. -->
+    <PackageReference Include="PdfPig" Version="[0.1.16]" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Tools.Tests" />
+  </ItemGroup>
+</Project>

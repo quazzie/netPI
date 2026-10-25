@@ -1,0 +1,11 @@
+{
+  "id": "netpi.tools.documents",
+  "name": "Document tools",
+  "description": "doc.read: extract text from PDF and Office files (.docx, .xlsx, .pptx) with page/section structure, bounded per call.",
+  "dependencies": [
+    {
+      "what": "PdfPig 0.1.16 (Apache-2.0), pure-managed PDF text extraction - the one NuGet package this plugin ships (copied next to it, plugin-only; owner's decision 2026-10-03, docs/HANDOFF.md 'Minimal dependencies')",
+      "how": "NuGet package reference in NetPI.Tools.Documents.csproj, pinned exactly"
+    }
+  ]
+}
