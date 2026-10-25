@@ -999,6 +999,37 @@ names or an inline `<svg …>` string.
   yielded or wait on subagents. The shell (`TaskbarBadge.cs`, ITaskbarList3 overlay icon) shows an orange badge with the
   waiting count, else a blue one with the working count, else none; always, whatever the `notifications` preference.
 
+## Connect mode (a server on the other machine)
+
+`NetPI.exe --connect [url] [--token <t>]` starts the shell **without a local server**: the window is a client of a
+NetPI server on another machine (or this one, headless). The server is started with `netpi-server --listen all
+--token <t>` (`server.bind` / `--listen`, docs/SETTINGS.md); its launch URL carries the token (`?token=…`), which
+the shell can also take from `--token`, the `NETPI_TOKEN` environment variable, or the URL itself. The resolved
+connection is stored in `<home>/remote.json` (owner-only, it holds the token), so a later bare `--connect` reuses
+it. The page it loads is the server's own, and the shell tells it so with a web message
+`{ type: 'clientMode', remote: true }` after each successful navigation (`main.js` sets `app.remote`; plugin tabs
+see it as `ctx.app.remote`).
+
+What changes in the page, and why:
+
+- **Every file feature is the server's.** A local path is never handed to the remote server: the folder picker
+  (`lib/folderPicker.js`) skips the native dialog and browses the server's filesystem with `fs.dirs`; "Open" on a
+  file (the Files tab, a chat link) downloads it with `files.read` and posts `{ type: 'openFile', name, data }`
+  (kit `desktop.openFile`), which the shell saves to `<home>/downloads/` and opens with its default program;
+  "Reveal" posts `{ type: 'revealPath', path }` as usual and the shell downloads the file and reveals the local
+  copy. Downloads land in `<home>/downloads/<name>` (a name collision gets ` (2)`, …).
+- **What stays local:** toasts (`notify`), external links (`openExternal`) and the taskbar badge — the shell's
+  own window, on this machine.
+- **Unavailable:** `desktop.capture` and `desktop.zoom` are not registered by a connecting shell, so the screenshot
+  tool degrades ("no NetPI window") and the zoom control falls back to the WebView's per-site zoom (the Settings
+  dialog's zoom preference shows the browser hint, `PrefField.svelte`).
+- **The settings dialog edits the remote server's settings** (it is driven by the server's `settings.schema`);
+  there is no local server section in connect mode. The connection itself is the flags and `remote.json`.
+
+The shell's own requests (a `files.read` download) carry the token as `X-NetPI-Token`; the page's socket and RPC
+calls use the cookie the login route set. The server's origin rules for a beyond-loopback bind (its own addresses
+plus `server.publicOrigins`, docs/PROTOCOL.md "Auth") apply to the page's requests.
+
 ## What the UI expects from the host (beyond PROTOCOL.md)
 
 - `sessions.list` accepts `includeArchived: true` (a mixed newest-first result) and `archivedOnly: true` (archives only, which the

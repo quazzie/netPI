@@ -17,6 +17,14 @@ The server generates a random token per run. The desktop shell opens `http://127
 the server sets an HttpOnly cookie `netpi_token` and redirects to `/`. All `/ws` and `/api/*` requests need the
 cookie (or header `X-NetPI-Token`, or `?token=`). WebSocket connections with a foreign `Origin` are rejected.
 
+**Beyond loopback** (`server.bind` = `all` or an IP, or `--listen`): the server listens on a LAN address and
+accepts, besides the token, this machine's own addresses on its port as origins (a loopback name, an IP the
+machine has, a hostname that resolves to one) plus `server.publicOrigins` (full origins, `*` for any) — what a
+reverse proxy's hostname or a second LAN address looks like. A loopback-bound server is unchanged (loopback
+origins only, `server.devOrigins` for CORS). The token still rides the wire in the clear: a server bound beyond
+loopback is for a trusted LAN, not the internet. The desktop shell's connect mode (docs/UI.md, "Connect mode")
+sends the token itself as `X-NetPI-Token` on every request it makes.
+
 ## WebSocket envelope
 
 Client → server
@@ -253,6 +261,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `autonomy.undo` | netpi.autonomy | `{ id, force? }` → `{ restored: [path] }`: the files of a journal row put back as they were before (a file the change created is deleted); `conflict` when a file changed again since (its hash is not `afterHash`) unless `force`, or when the row was undone already; `bad_request` when it kept no copy |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
 | `files.open` | netpi.tools.files | `{ path, sessionId?, cwd?, confirm?, user? }` → `{ path, action: 'open'\|'edit'\|'reveal'\|'folder'\|'confirm' }` (opens a path with the operating system; `confirm` means the path is outside the session's workspace and nothing was opened — ask the user and call again with `confirm: true`; `user: true` means the user picked the file deliberately (a double click in the file tree, a confirmed chat link) and then every file opens with its default program, executables and scripts included, like a double click in the file manager — without it text and code open in an editor and binaries are only revealed; see `docs/TOOLS.md`) |
+| `files.read` | netpi.tools.files | `{ path, sessionId?, cwd?, maxBytes? (20 MiB, hard 100 MiB) }` → `{ path, size, data /* base64 */ }`: the bytes of a server-side file, for a client that opens it on its own machine (the desktop shell's connect mode downloads it and opens the local copy). The same path rules as the file tools: relative against the session's workspace, `~` and the Git Bash spellings, `file://` accepted; a network path is refused before it is probed (`bad_request`), a directory is a `bad_request`, a missing file a `not_found`, past the cap a `too_large` |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
 | `files.git` | netpi.tools.files | `{ sessionId?, cwd? }` → `{ repo, root, workspaceId?, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted }\|null`: the uncommitted changes since the last commit, in the session's **workspace root** (its project folder when it is not bound to one; a bound workspace that cannot be used is an error, `workspace_unavailable`, never the project folder) |
 | `files.scope` | netpi.tools.files | `{ sessionId?, cwd? }` → `{ sessionId, root, workspaceId?, branch?, isolated, identity?, version }`: what the Files tab is showing. `identity` is the session's workspace id and version (or its project when unbound) and is what a UI keys its refreshes on, so an answer computed for the previous root is recognizably stale |

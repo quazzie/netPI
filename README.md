@@ -108,6 +108,14 @@ All keys: [docs/SETTINGS.md](docs/SETTINGS.md).
 Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized URL). Linux/macOS: `./build.sh`, then
 `artifacts/dev/app/netpi-server --open` (a build lands in the dev tree; `--publish` installs it).
 
+**Remote** (the server on a server, the interface on your PC): start the server on the machine that has the work,
+bound to the LAN, `netpi-server --listen all --token <token>` (it prints a launch URL with the token), and on your
+PC run `NetPI.exe --connect <that URL>` (or `--connect` with `--token <token>`). The window shows the server's UI
+and works on its files — "Open" and "Reveal" download the file and work on the local copy, so a local path never
+leaves your machine; toasts and external links stay local. The connection is remembered in `~/.netpi/remote.json`
+after the first connect. Plain HTTP on a trusted LAN only (the token rides the wire in the clear); the server's
+origin rules and `files.read`: [docs/PROTOCOL.md](docs/PROTOCOL.md), connect mode: [docs/UI.md](docs/UI.md).
+
 ## Using it
 
 | | |

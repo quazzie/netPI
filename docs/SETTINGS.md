@@ -40,6 +40,8 @@ listed now, or the embedding server's own list; an id of a loadout that is not u
 | `workspace.default` | `~/.netpi/workspace` | working directory of sessions without a project |
 | `server.port` | `7431` | a random free port is used when it is taken |
 | `server.devOrigins` | `[]` | extra allowed origins (e.g. `http://localhost:5173` for `npm run dev`) |
+| `server.bind` | `loopback` | what the server listens on: `loopback` (127.0.0.1), `all` (every interface — a client on the LAN) or an IP address. Beyond loopback the token rides the wire in the clear, so keep the server to a trusted LAN; the server then accepts this machine's own addresses on its port, plus `server.publicOrigins`. `netpi-server`/`NetPI.exe` take it for one run as `--listen`. Settings → Advanced → Server |
+| `server.publicOrigins` | `[]` | origins a server bound beyond loopback accepts on top of the machine's own addresses (the hostname of a reverse proxy, a second LAN address): full origins, `*` for any. Unlike `server.devOrigins` it is an origin acceptance, not a CORS answer; a loopback-bound server ignores it. Settings → Advanced → Server |
 | `plugins.disabled` | `[]` | plugin ids not to load |
 | `plugins.enabled` | `[]` | turn on plugins whose `plugin.json` says `enabled: false` |
 | `plugins.dirs` | `[]` | extra plugin folders (besides `<app>/plugins` and `~/.netpi/plugins`) |
