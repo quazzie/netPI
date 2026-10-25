@@ -15,6 +15,7 @@ import {
   unknownKeys,
   cidrProblem,
   deferredList,
+  parseNumber,
 } from '../src/lib/settingsModel.js';
 import { buildIndex, search, groupResults } from '../src/lib/settingsSearch.js';
 import { UI_PREFS, PREF_SECTIONS, PREF_DEFAULTS, prefsFor, prefChanged } from '../src/lib/uiPrefs.js';
@@ -129,6 +130,38 @@ test('cidrProblem: addresses and ranges of both families', () => {
 test('deferredList: "*" with the declared tools as exceptions, so tools that register later are deferred too', () => {
   assert.deepEqual(deferredList(['read', 'web_fetch', 'bash', 'tool_search'], new Set(['web_fetch'])), ['*', '!bash', '!read', '!tool_search']);
   assert.deepEqual(deferredList(['a'], new Set(['a'])), ['*']);
+});
+
+test('parseNumber: a comma is a decimal separator, a dot stays one, thousands group in threes', () => {
+  const v = (text, opts) => parseNumber(text, opts).value;
+  assert.equal(v('0,5'), 0.5, 'a comma with no dot is a decimal separator');
+  assert.equal(v('1,234'), 1234, 'a comma in threes is a thousand separator');
+  assert.equal(v('1,234,567'), 1234567);
+  assert.equal(v('1 234'), 1234, 'a space groups thousands');
+  assert.equal(v('1\u00A0234'), 1234, 'an nbsp groups too');
+  assert.equal(v('1 234.5'), 1234.5);
+  assert.equal(v('1,234.50'), 1234.5, 'with a dot the comma groups in threes');
+  assert.equal(v(' 12 '), 12, 'surrounding spaces are trimmed');
+  assert.equal(v('5.'), 5, 'a trailing dot is a whole number');
+  assert.equal(v('.5'), 0.5);
+  assert.deepEqual(parseNumber(''), { value: null }, 'empty clears the setting');
+  assert.deepEqual(parseNumber('   '), { value: null });
+  // refused rather than guessed
+  for (const bad of ['1,5.5', '12,34.5', 'abc', '1.5.5', 'Infinity', '-Infinity', '0x10', '1,2,3', ',5', '5,', '1e5', '+5'])
+    assert.ok(parseNumber(bad).problem, bad);
+  assert.equal(parseNumber('1,5.5').problem, 'a number', 'a comma that does not group in threes, with a dot');
+});
+
+test('parseNumber: int wants a whole number; min and max say so', () => {
+  assert.equal(parseNumber('5', { int: true }).value, 5);
+  assert.equal(parseNumber('1,234', { int: true }).value, 1234, 'a thousand separator stays a whole number');
+  assert.equal(parseNumber('1,5', { int: true }).problem, 'a whole number');
+  assert.equal(parseNumber('1.0', { int: true }).value, 1, 'a whole number in decimal dress');
+  assert.equal(parseNumber('0', { int: true, min: 1 }).problem, 'at least 1');
+  assert.equal(parseNumber('0', { min: 1 }).problem, 'at least 1');
+  assert.equal(parseNumber('101', { max: 100 }).problem, 'at most 100');
+  assert.equal(parseNumber('-5', { min: 0 }).problem, 'at least 0');
+  assert.equal(parseNumber('50', { min: 1, max: 100 }).value, 50);
 });
 
 test('search: label words first, keywords and keys find it too, every word must match', () => {

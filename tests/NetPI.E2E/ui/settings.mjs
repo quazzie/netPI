@@ -168,4 +168,35 @@ await run('settings', async ({ page, socket }) => {
   } finally {
     if (id) await rpc('settings.set', { path: `agents.${id}`, value: null });
   }
+
+  // ---- a number field on a paid model: a comma decimal saves, a refusal is marked and reverts
+  // (the QWEN agent is on a local model, whose price/cap fields are hidden; the mock catalog's paid model shows them)
+  const PAID = 'anthropic/claude-haiku-4-5';
+  await dialog.getByTestId('add-agent').click();
+  await page.locator(`[role="option"][data-model="${PAID}"]`).click();
+  const paid = await expectEventually('choosing a paid model adds an agent on it', async () =>
+    Object.entries((await settings()).agents ?? {}).find(([k, v]) => !before.includes(k) && v?.model === PAID)?.[0], { stop: true });
+  try {
+    const paidDialog = page.getByRole('dialog', { name: `Agent ${paid}` });
+    await expectEventually('its dialog opens on the paid agent', () => paidDialog.isVisible());
+    const cap = paidDialog.getByRole('textbox', { name: 'Daily cap' });
+    await cap.fill('0,5');
+    await cap.press('Tab'); // the field saves on change
+    await expectEventually('a comma decimal is saved as a number', async () => (await settings()).agents?.[paid]?.budget?.limitUsd, { pass: (v) => v === 0.5 });
+    await expectEventually('…and the field shows it', () => cap.inputValue(), { pass: (v) => v === '0.5' });
+    await cap.fill('abc');
+    await cap.press('Tab');
+    await expectEventually('a refused value is marked in the field', () => cap.getAttribute('aria-invalid', PROBE), { pass: (v) => v === 'true' });
+    check('…it says why, and the cap keeps its value', (await paidDialog.getByText('Must be a number.').count()) === 1 && (await settings()).agents?.[paid]?.budget?.limitUsd === 0.5);
+    await shot(page, 'ui-settings-02b-cap');
+    await paidDialog.getByRole('button', { name: 'Done' }).click();
+    await expectEventually('…and is gone with the dialog', () => paidDialog.count(), { pass: (n) => n === 0 });
+    await dialog.locator(`[data-agent="${paid}"]`).click(); // the row opens its dialog
+    await expectEventually('reopened, the cap reads its saved value', () => paidDialog.getByRole('textbox', { name: 'Daily cap' }).inputValue(), { pass: (v) => v === '0.5' });
+    await paidDialog.getByTestId('remove-agent').click();
+    await page.getByTestId('confirm').click();
+    await expectEventually('removed after the confirm, it is gone from the settings', async () => Object.keys((await settings()).agents ?? {}), { pass: (keys) => !keys.includes(paid) });
+  } finally {
+    if (paid) await rpc('settings.set', { path: `agents.${paid}`, value: null });
+  }
 }, { keepsSettings: true, tap: true });

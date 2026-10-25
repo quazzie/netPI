@@ -8,7 +8,7 @@
   import Modal from '../../lib/kit/Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import ModelSelect from '../ModelSelect.svelte';
-  import { setSetting } from '../../lib/settings.js';
+  import { setSetting, parseNumber } from '../../lib/settings.js';
   import { rpc } from '../../lib/rpc.svelte.js';
   import { bus } from '../../lib/bus.js';
   import { app } from '../../lib/state/app.svelte.js';
@@ -17,6 +17,9 @@
   import { tokens, usd } from '../../lib/format.js';
 
   let { id, agent, info = null, localSlots = 2, taken = [], onrename, onclose } = $props();
+
+  // the dialog's number fields: `key` → the setting path (and the numInvalid marker)
+  const K = { instances: `agents.${id}.instances`, in: `agents.${id}.cost.input`, out: `agents.${id}.cost.output`, cap: `agents.${id}.budget.limitUsd` };
 
   const m = $derived(agent?.model ? app.modelsByRef.get(agent.model) : null);
   const override = $derived(agent?.cost && typeof agent.cost === 'object' ? agent.cost : null);
@@ -48,16 +51,17 @@
   const period = $derived(figures((usage?.agents ?? []).find((r) => r.agent === id)));
   const total = $derived(figures((usage?.allTimeAgents ?? []).find((r) => r.agent === id)));
 
-  const num = (text) => {
-    const t = String(text ?? '').trim();
-    if (!t) return null;
-    const n = Number(t);
-    return Number.isFinite(n) && n >= 0 ? n : undefined;
-  };
-  async function setNum(key, text, { int = false, min = 0 } = {}) {
-    const n = num(text);
-    if (n === undefined || (n != null && (n < min || (int && !Number.isInteger(n))))) return;
-    await setSetting(key, n);
+  // a refused number is never dropped: the field is marked (aria-invalid), says why, and reverts to the saved value
+  let numInvalid = $state({}); // `agents.<id>…` key → the problem ("Must be {problem}.")
+  async function setNum(key, text, input, { int = false, min = 0, saved = '' } = {}) {
+    const { value, problem } = parseNumber(text, { int, min });
+    if (problem != null) {
+      numInvalid[key] = problem;
+      input.value = saved; // a refused value reverts to the saved one
+      return;
+    }
+    delete numInvalid[key];
+    await setSetting(key, value);
   }
 
   async function rename(text, input) {
@@ -141,8 +145,10 @@
           placeholder={String(defaultInstances)}
           inputmode="numeric"
           aria-label="Instances"
-          onchange={(e) => setNum(`agents.${id}.instances`, e.currentTarget.value, { int: true, min: 1 })}
+          aria-invalid={!!numInvalid[K.instances]}
+          onchange={(e) => setNum(K.instances, e.currentTarget.value, e.currentTarget, { int: true, min: 1, saved: agent.instances ?? '' })}
         />
+        {#if numInvalid[K.instances]}<span class="num-err">Must be {numInvalid[K.instances]}.</span>{/if}
         <span class="np-dim">runs at once{m?.isLocal ? ` (shared model capacity: ${modelCapacity})` : ''}</span>
       </div>
       {#if sharing}
@@ -200,9 +206,11 @@
               placeholder={info?.priceSource === 'settings' || info?.priceInput == null ? '?' : String(info.priceInput)}
               inputmode="decimal"
               aria-label="Input price"
-              onchange={(e) => setNum(`agents.${id}.cost.input`, e.currentTarget.value)}
+              aria-invalid={!!numInvalid[K.in]}
+              onchange={(e) => setNum(K.in, e.currentTarget.value, e.currentTarget, { min: 0, saved: override?.input ?? '' })}
             /></label
           >
+          {#if numInvalid[K.in]}<span class="num-err">Must be {numInvalid[K.in]}.</span>{/if}
           <label
             >out <input
               class="np-input money"
@@ -210,9 +218,11 @@
               placeholder={info?.priceSource === 'settings' || info?.priceOutput == null ? '?' : String(info.priceOutput)}
               inputmode="decimal"
               aria-label="Output price"
-              onchange={(e) => setNum(`agents.${id}.cost.output`, e.currentTarget.value)}
+              aria-invalid={!!numInvalid[K.out]}
+              onchange={(e) => setNum(K.out, e.currentTarget.value, e.currentTarget, { min: 0, saved: override?.output ?? '' })}
             /></label
           >
+          {#if numInvalid[K.out]}<span class="num-err">Must be {numInvalid[K.out]}.</span>{/if}
           <span class="np-dim">$ per Mtok (empty: the catalog's)</span>
         </div>
 
@@ -224,8 +234,10 @@
             placeholder="none"
             inputmode="decimal"
             aria-label="Daily cap"
-            onchange={(e) => setNum(`agents.${id}.budget.limitUsd`, e.currentTarget.value)}
+            aria-invalid={!!numInvalid[K.cap]}
+            onchange={(e) => setNum(K.cap, e.currentTarget.value, e.currentTarget, { min: 0, saved: agent.budget?.limitUsd ?? '' })}
           />
+          {#if numInvalid[K.cap]}<span class="num-err">Must be {numInvalid[K.cap]}.</span>{/if}
           <span class="np-dim">$ a day for this agent, besides the budget</span>
         </div>
       {/if}
@@ -279,6 +291,10 @@
   .money {
     width: 76px;
     text-align: right;
+  }
+  .num-err {
+    color: var(--err);
+    font-size: var(--fs-xs);
   }
   .use {
     width: 100%;

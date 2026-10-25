@@ -209,6 +209,44 @@ export function parseList(text) {
     .filter(Boolean);
 }
 
+/**
+ * A number field's text as a value: `{ value: null }` (empty: the setting is cleared), `{ value: n }` (a plain JSON
+ * number — a comma never reaches settings.json, so the host's typed reads keep working), or `{ problem }` (the field
+ * shows "Must be {problem}."). A dot is the decimal separator; a comma with no dot is one too (`0,5` → 0.5), unless it
+ * groups thousands in threes (`1,234` → 1234, `1,234.50` → 1234.5 — with a dot the comma must group in threes, anything
+ * else is refused rather than guessed). A space (or nbsp) groups thousands (`1 234` → 1234). `int` wants a whole number;
+ * `min`/`max` bound the value ("at least 1", "at most 100").
+ */
+export function parseNumber(text, { int = false, min, max } = {}) {
+  let t = String(text ?? '').replace(/[\s\u00A0\u202F\u2009]/g, '');
+  if (!t) return { value: null };
+  const neg = t.startsWith('-'); // a sign, no `+`: a negative a min then refuses ("at least 0")
+  if (neg) t = t.slice(1);
+  let whole, frac = '';
+  const dot = t.indexOf('.');
+  const comma = t.indexOf(',');
+  if (dot >= 0) {
+    if (dot !== t.lastIndexOf('.')) return { problem: 'a number' }; // 1.5.5
+    whole = t.slice(0, dot);
+    frac = t.slice(dot + 1);
+    if (comma >= 0 && !/^\d{1,3}(,\d{3})*$/.test(whole)) return { problem: 'a number' }; // 12,34.5: the comma does not group in threes
+    whole = whole.replace(/,/g, '');
+  } else if (comma >= 0) {
+    if (/^\d{1,3}(,\d{3})+$/.test(t)) whole = t.replace(/,/g, ''); // 1,234: a thousand separator
+    else if (/^\d+,\d+$/.test(t)) {
+      whole = t.slice(0, comma); // 0,5: a decimal separator
+      frac = t.slice(comma + 1);
+    } else return { problem: 'a number' }; // 1,2,3, ,5, 5,
+  } else whole = t;
+  if (!/^\d*$/.test(whole) || !/^\d*$/.test(frac) || !whole && !frac) return { problem: 'a number' };
+  const n = (neg ? -1 : 1) * Number(whole + (frac ? `.${frac}` : ''));
+  if (!Number.isFinite(n)) return { problem: 'a number' }; // Infinity
+  if (int && !Number.isInteger(n)) return { problem: 'a whole number' };
+  if (min != null && n < min) return { problem: `at least ${min}` };
+  if (max != null && n > max) return { problem: `at most ${max}` };
+  return { value: n };
+}
+
 /** An IPv6 address as text: hex groups of 1-4 digits, eight of them, or fewer with one `::` for the rest (an IPv4 tail is not taken). */
 function isIPv6(addr) {
   if (!/^[0-9a-f:]+$/i.test(addr) || !addr.includes(':')) return false;

@@ -9,7 +9,7 @@
   import SearchInput from '../../lib/kit/SearchInput.svelte';
   import { app } from '../../lib/state/app.svelte.js';
   import { mayClose } from '../../lib/state/ui.svelte.js';
-  import { getAt, setSetting } from '../../lib/settings.js';
+  import { getAt, setSetting, parseNumber } from '../../lib/settings.js';
 
   let { id, type, title = id, doc, onclose } = $props();
 
@@ -45,9 +45,10 @@
     const entry = { ...(draft[mid] ?? {}) };
     let v = raw;
     if (NUM.includes(key)) {
+      // a comma is a decimal separator (0,5) or a thousand separator (1,234); a refused text is marked and Save waits
       const t = String(raw ?? '').trim();
-      v = t === '' ? undefined : Number(t);
-      const bad = v !== undefined && !(Number.isInteger(v) && v > 0);
+      v = t === '' ? undefined : parseNumber(t, { int: true, min: 1 }).value;
+      const bad = t !== '' && v === undefined;
       if (bad) invalid[`${mid}|${key}`] = true;
       else delete invalid[`${mid}|${key}`];
       if (bad) return;

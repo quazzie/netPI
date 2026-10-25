@@ -4,7 +4,7 @@
 import { rpc } from './rpc.svelte.js';
 import { toast } from './state/ui.svelte.js';
 
-export { getAt, pagesOf, settingDefault, sectionState, parseList } from './settingsModel.js';
+export { getAt, pagesOf, settingDefault, sectionState, parseList, parseNumber } from './settingsModel.js';
 
 /** Write one setting; resolves true when saved. */
 export async function setSetting(key, value) {
