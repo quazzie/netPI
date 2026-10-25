@@ -23,6 +23,7 @@ internal sealed class MainForm : Form
     private readonly Label _status;
     private NetPiServer? _server;
     private Task<NetPiServer>? _starting; // while the host starts: a close then waits for it and stops it
+    private RemoteConnection? _remote; // connect mode: the server on the other machine (no local server at all)
     private string _origin = "";
     private IDisposable? _captureRpc;
     private IDisposable? _zoomRpc;
@@ -167,6 +168,37 @@ internal sealed class MainForm : Form
         base.OnLoad(e);
         _shown = true;
         ListenForActivation();
+        // Connect mode: no local server at all — the window is a client of a NetPI server on another machine.
+        var connect = Arg("--connect");
+        if (connect is not null)
+        {
+            _remote = RemoteConnection.Resolve(connect, Arg("--token"), _home);
+            if (_remote is null)
+            {
+                ShowStatus($"No server to connect to.\n\nStart one with\n  netpi-server --listen all --token <token>\nand connect with\n  NetPI.exe --connect http://<server>:<port> --token <token>\n(a connection saved in {Path.Combine(_home, RemoteConnection.FileName)} is used for a bare --connect)");
+                return;
+            }
+            ShowStatus($"Connecting to {_remote.Host}…");
+            try
+            {
+                await InitWebViewRemoteAsync();
+            }
+            catch (WebView2RuntimeNotFoundException)
+            {
+                ShowStatus($"netPI is connecting to http://{_remote.Host}\n\nThe WebView2 runtime is missing, so it was opened in your browser.");
+                OpenExternal(_remote.LaunchUrl);
+                MessageBox.Show(this,
+                    "The Microsoft Edge WebView2 Runtime is not installed, so netPI opened in your default browser instead.\n\n" +
+                    "Install it from https://go.microsoft.com/fwlink/p/?LinkId=2124703 to use the desktop window.",
+                    "netPI", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                ShowStatus($"Connecting to http://{_remote.Host}\n\nThe embedded browser failed: {ex.Message}");
+                OpenExternal(_remote.LaunchUrl);
+            }
+            return;
+        }
         try
         {
             var options = new NetPiServerOptions { Desktop = true, ConsoleLogging = false, Home = _home, Restart = RestartAsync };
@@ -218,18 +250,7 @@ internal sealed class MainForm : Form
 
     private async Task InitWebViewAsync(NetPiServer server)
     {
-        var userData = Path.Combine(_home, "webview");
-        Directory.CreateDirectory(userData);
-        var env = await CoreWebView2Environment.CreateAsync(null, userData, new CoreWebView2EnvironmentOptions());
-        await _web.EnsureCoreWebView2Async(env);
-        var core = _web.CoreWebView2;
-
-        core.Settings.AreDevToolsEnabled = true;
-        core.Settings.IsStatusBarEnabled = false;
-        core.Settings.IsZoomControlEnabled = true;
-        core.Settings.AreDefaultContextMenusEnabled = true;
-        core.Settings.IsGeneralAutofillEnabled = false;
-        core.Settings.IsPasswordAutosaveEnabled = false;
+        var core = await CreateWebViewAsync();
 
         var origin = new Uri(server.BaseUrl).GetLeftPart(UriPartial.Authority);
         _origin = origin;
@@ -299,6 +320,83 @@ internal sealed class MainForm : Form
             "Screenshot of the NetPI window as the user sees it (desktop app only): { maxWidth? } → { mediaType, data, width, height }");
 
         core.Navigate(server.LaunchUrl);
+    }
+
+    /// <summary>
+    /// Connect mode: the same window against a server on the other machine. No local server, so no
+    /// <c>desktop.capture</c>/<c>desktop.zoom</c> (the screenshot tool degrades, zoom is the WebView's per-site one);
+    /// the bridge keeps only what is local (toasts, external links, the taskbar badge) — every file feature is the
+    /// server's, and a local path is never handed to it.
+    /// </summary>
+    private async Task InitWebViewRemoteAsync()
+    {
+        var remote = _remote!;
+        var core = await CreateWebViewAsync();
+
+        var origin = new Uri(remote.Url).GetLeftPart(UriPartial.Authority);
+        _origin = origin;
+        core.NavigationStarting += (_, e) =>
+        {
+            if (IsOwnOrigin(e.Uri, origin) || e.Uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return;
+            e.Cancel = true;
+            OpenExternal(e.Uri);
+        };
+        core.NewWindowRequested += (_, e) =>
+        {
+            e.Handled = true;
+            if (IsOwnOrigin(e.Uri, origin)) core.Navigate(e.Uri);
+            else OpenExternal(e.Uri);
+        };
+        core.DocumentTitleChanged += (_, _) =>
+        {
+            var t = core.DocumentTitle;
+            Text = string.IsNullOrWhiteSpace(t) || t.StartsWith("127.0.0.1", StringComparison.Ordinal) ? "netPI" : t;
+        };
+        var renderFailures = 0; // consecutive render-process failures; a page that loads resets it
+        core.NavigationCompleted += (_, e) =>
+        {
+            if (e.IsSuccess) renderFailures = 0;
+            if (!_web.Visible)
+            {
+                _web.Visible = true;
+                _status.Visible = false;
+                _web.Focus();
+            }
+            // the page is loaded now: tell it it is a remote client (its file features are the server's; the shell keeps
+            // toasts and external links local). A reload re-posts it.
+            if (e.IsSuccess) Post(new JsonObject { ["type"] = "clientMode", ["remote"] = true });
+        };
+        core.ProcessFailed += (_, e) =>
+        {
+            if (e.ProcessFailedKind is not (CoreWebView2ProcessFailedKind.RenderProcessExited or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)) return;
+            if (++renderFailures > 3)
+            {
+                BeginInvoke(new Action(() => ShowStatus($"The page keeps crashing, so netPI stopped reloading it.\n\nnetPI is connecting to {remote.Url}\nClose this window and start it again, or open it in a browser.")));
+                return;
+            }
+            _ = Task.Delay(1000).ContinueWith(_ => { try { BeginInvoke(new Action(core.Reload)); } catch (InvalidOperationException) { } }, TaskScheduler.Default);
+        };
+        core.WebMessageReceived += OnWebMessage;
+
+        core.Navigate(remote.LaunchUrl);
+    }
+
+    /// <summary>The WebView2 environment and control, ready for a page (local server or remote).</summary>
+    private async Task<CoreWebView2> CreateWebViewAsync()
+    {
+        var userData = Path.Combine(_home, "webview");
+        Directory.CreateDirectory(userData);
+        var env = await CoreWebView2Environment.CreateAsync(null, userData, new CoreWebView2EnvironmentOptions());
+        await _web.EnsureCoreWebView2Async(env);
+        var core = _web.CoreWebView2;
+
+        core.Settings.AreDevToolsEnabled = true;
+        core.Settings.IsStatusBarEnabled = false;
+        core.Settings.IsZoomControlEnabled = true; // connect mode: the per-site zoom (no desktop.zoom there)
+        core.Settings.AreDefaultContextMenusEnabled = true;
+        core.Settings.IsGeneralAutofillEnabled = false;
+        core.Settings.IsPasswordAutosaveEnabled = false;
+        return core;
     }
 
     // ---------------------------------------------------------------- zoom (desktop.zoom)
@@ -395,6 +493,41 @@ internal sealed class MainForm : Form
         }
         var type = Str(msg, "type");
         var id = Str(msg, "id");
+        if (_remote is { } remote)
+        {
+            // Connect mode: everything file-related is the server's — no native dialogs, no local path ever leaves this
+            // machine (an "open" or "reveal" downloads the server file and works on the local copy). What stays local:
+            // toasts, external links and the taskbar badge.
+            switch (type)
+            {
+                case "pickFolder":
+                case "pickFile":
+                    // the UI uses the server's fs.dirs tree in connect mode; answer "nothing chosen" so a stray caller
+                    // never hangs
+                    Post(new JsonObject { ["type"] = type == "pickFolder" ? "pickFolderResult" : "pickFileResult", ["id"] = id, ["path"] = null });
+                    break;
+                case "openExternal":
+                    if (Str(msg, "url") is { } url) OpenExternal(url);
+                    break;
+                case "revealPath":
+                    if (Str(msg, "path") is { } p) _ = RevealRemoteAsync(remote, p);
+                    break;
+                case "openFile":
+                    if (Str(msg, "name") is { } name && Str(msg, "data") is { } data) OpenLocalFile(name, data);
+                    break;
+                case "revealFile":
+                    if (Str(msg, "name") is { } n && Str(msg, "data") is { } d) RevealLocalFile(n, d);
+                    break;
+                case "notify":
+                    ShowNotification(Str(msg, "title"), Str(msg, "body"), Str(msg, "sessionId"));
+                    break;
+                case "taskbar":
+                    _badge ??= new TaskbarBadge(Handle);
+                    _badge.Set(Int(msg, "working"), Int(msg, "waiting"));
+                    break;
+            }
+            return;
+        }
         switch (type)
         {
             case "pickFolder":
@@ -405,10 +538,10 @@ internal sealed class MainForm : Form
                 Post(new JsonObject { ["type"] = "pickFileResult", ["id"] = id, ["path"] = PickFile(Str(msg, "initial"), Str(msg, "title")) });
                 break;
             case "openExternal":
-                if (Str(msg, "url") is { } url) OpenExternal(url);
+                if (Str(msg, "url") is { } url2) OpenExternal(url2);
                 break;
             case "revealPath":
-                if (Str(msg, "path") is { } p) RevealInExplorer(p);
+                if (Str(msg, "path") is { } p2) RevealInExplorer(p2);
                 break;
             case "notify":
                 ShowNotification(Str(msg, "title"), Str(msg, "body"), Str(msg, "sessionId"));
@@ -418,6 +551,63 @@ internal sealed class MainForm : Form
                 _badge.Set(Int(msg, "working"), Int(msg, "waiting"));
                 break;
         }
+    }
+
+    // ---------------------------------------------------------------- connect mode: the server's files, on this machine
+
+    /// <summary>Where a downloaded server file lands: "open" and "reveal" work on the local copy, never on the server's path.</summary>
+    private string DownloadsDir => Path.Combine(_home, "downloads");
+
+    private string SaveDownload(string name, byte[] bytes)
+    {
+        var dir = DownloadsDir;
+        Directory.CreateDirectory(dir);
+        name = SanitizeFileName(name);
+        var path = Path.Combine(dir, name);
+        var i = 1;
+        while (File.Exists(path))
+        {
+            var dot = Path.GetExtension(name);
+            path = Path.Combine(dir, $"{Path.GetFileNameWithoutExtension(name)} ({i++}){dot}");
+        }
+        File.WriteAllBytes(path, bytes);
+        return path;
+    }
+
+    private static string SanitizeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var s = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
+        return string.IsNullOrWhiteSpace(s) ? "file" : s;
+    }
+
+    /// <summary><c>revealPath</c> in connect mode: download the server file and reveal the local copy in Explorer. A folder
+    /// (or anything the server refuses) has no local copy: nothing is shown, not an error.</summary>
+    private async Task RevealRemoteAsync(RemoteConnection remote, string path)
+    {
+        var file = await remote.ReadFileAsync(path, CancellationToken.None).ConfigureAwait(false);
+        if (file is not { } f) return;
+        try { RevealInExplorer(SaveDownload(f.Name, f.Bytes)); }
+        catch { }
+    }
+
+    /// <summary><c>openFile</c> in connect mode: the UI downloaded the server file (files.read) and hands over the bytes —
+    /// save them and open the local copy with its default program.</summary>
+    private void OpenLocalFile(string name, string base64)
+    {
+        try
+        {
+            var path = SaveDownload(name, Convert.FromBase64String(base64));
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true })?.Dispose();
+        }
+        catch { }
+    }
+
+    /// <summary><c>revealFile</c> in connect mode: save the downloaded bytes and reveal the local copy in Explorer.</summary>
+    private void RevealLocalFile(string name, string base64)
+    {
+        try { RevealInExplorer(SaveDownload(name, Convert.FromBase64String(base64))); }
+        catch { }
     }
 
     private TaskbarBadge? _badge;
