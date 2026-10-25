@@ -586,6 +586,7 @@ data. Its settings are in Settings → Safety, beside the guardrails.
 | `web.search.braveUrl` | `https://api.search.brave.com/res/v1/web/search` | |
 | `web.search.count` | `8` | results per search (max 20) |
 | `media.maxBytes` | `10000000` | largest image `show_image` shows |
+| `documents.cacheMaxBytes` | `33554432` | LRU byte cap of `doc.read`'s extracted-text cache (per plugin instance; older entries are evicted when it is exceeded) |
 | `decide.baseUrl` | – | server for `decide` (`POST /v1/systemone`); empty = the `baseUrl` of the first `aiproxy` provider (else `http://127.0.0.1:8090`) |
 | `decide.model` | `qwen3.8-27b` | decision model `decide` asks: `qwen3.8-27b` on NInfer (through AiGateway's System One bridge; the best without training, no extra memory, shares the 5090 with the agents), or `kev-9b`/`kev-4b` on the nuc (load it from AiHub first; it takes the whole 4070). See decisions-lab's docs/DECISION-MODELS.md. Several, comma-separated (`"qwen3.8-27b, qwen3.6-35b"`, for loadouts that change the model ids): the first one the model list has loaded (or reachable) is used, else the first named (the Decide plugin resolves it, so `decide.bulkModel` and a `decide` call's `model` take a list too) |
 | `decide.maxItems` | `500` | most items per `decide` call (1–5000) |

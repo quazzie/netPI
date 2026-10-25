@@ -8,6 +8,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | plugin | id | tools | RPC |
 |---|---|---|---|
 | `plugins/NetPI.Tools.Files` | `netpi.tools.files` | `read` `write` `edit` `grep` `find` `ls` `git` | `files.search`, `files.list`, `files.open`, `files.git` |
+| `plugins/NetPI.Tools.Documents` | `netpi.tools.documents` | `doc.read` | – |
 | `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process` | `processes.list`, `processes.output`, `processes.kill`, `processes.killCall` |
 | `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `browser` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
@@ -152,6 +153,38 @@ when you change it.
 details: { path: string /* absolute */, startLine: number, endLine: number, totalLines: number|null /* null: a page of a file over 1MB that did not reach the end */,
            truncated: boolean, eol: 'lf'|'crlf', bom: boolean, encoding?: 'latin1' }
 // image:  { path, image: true, mediaType, bytes }
+```
+
+### `doc.read` (read-only, summary arg `path`)
+
+`{ path, password?, offset?, limit? }`
+
+The text of a **document** (not a text file: for those, `read`), with its structure:
+
+| format | extension | structure in the output |
+|---|---|---|
+| PDF | `.pdf` | `== Page N ==` per page, the page's text beneath it (PdfPig, pure-managed) |
+| Word | `.docx` | headings as `#`/`##`… (Heading1-9, Title), paragraphs, table rows as `\| cell \| cell \|` |
+| Excel | `.xlsx` | `== Sheet: name ==` per sheet, then `row: c1 \| c2 \| …` (row numbers, empty rows skipped) |
+| PowerPoint | `.pptx` | `== Slide N ==` per slide, its text paragraph by paragraph |
+
+- Office files are read as the ZIP of XML parts they are (BCL `ZipArchive` + `System.Xml` — no dependencies); the PDF
+  path is PdfPig (the one NuGet package the plugin ships, pinned exactly, `plugins/NetPI.Tools.Documents/plugin.json`).
+- Bounded like `read`: at most **2000 lines / 50KB** per call (kept under `agent.maxToolResultChars`), paged with
+  `offset` (1-based, negative from the end) and `limit`; a cut page ends with `[Showing lines 1-180 of 340. Use
+  offset=181 to continue.]`.
+- Files over 100MB are refused up front (extraction loads the document's parts).
+- **Clear failures**: an encrypted PDF without (a correct) `password` says so and names the argument; a PDF with no
+  text layer (a scan) says it is a scan, not a guess; a corrupt file says which part is unreadable; a lying extension
+  (a `.pdf` that is a ZIP) is answered by the content ("it is a .docx, not a .pdf"); a missing file, a directory and an
+  unsupported format each get their own answer.
+- The extracted text is cached per file (path + mtime + size + password), LRU and byte-capped
+  (`documents.cacheMaxBytes`, 32MB by default), so repeated reads of a long document are cheap. `Details.cacheHit`
+  says which path a call took.
+
+```ts
+details: { path: string, format: 'pdf'|'docx'|'xlsx'|'pptx', startLine: number, endLine: number, totalLines: number,
+           truncated: boolean, cacheHit: boolean, bytes: number /* the file's size */ }
 ```
 
 ### `write` (summary arg `path`)
