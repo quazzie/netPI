@@ -18,6 +18,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Lsp` | `netpi.lsp` | `lsp` | – |
 | `plugins/NetPI.Tools.Test` | `netpi.tools.test` | `test` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
+| `plugins/NetPI.Consult` | `netpi.consult` | `consult` | – |
 | `plugins/NetPI.Memory` | `netpi.memory` | `memory_search` | `memory.search`, `memory.reindex` |
 | `plugins/NetPI.CodeSearch` | `netpi.codesearch` | `code_search` | `codesearch.search`, `codesearch.status`, `codesearch.reindex` |
 | `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
@@ -1196,6 +1197,38 @@ details: { model, file?, questions /* as sent */, count, unsure, ms,
 The `usage` block is what makes the cost of a decision measurable rather than assumed: `cachedTokens` against
 `promptTokens` is the only place the cache-reuse claim can be checked, and on an endpoint that does not cache it reads
 0, which is the answer the feature's default-off setting exists to protect against.
+
+---
+
+## Consult (`category: "general"`)
+
+`plugins/NetPI.Consult`. One text-only design consultation through the Claude CLI model (Opus/Sonnet on the owner's
+subscription), during a run: the model reads the brief (and the optional context) with no tools — the CLI runs the
+call as a side call (`--tools ""`, no CLI session, in its scratch folder) — and answers in plain prose/markdown. It is
+deliberately not `agent_spawn` on a CLI model (a full CLI session with tools) and not `decide` (bound to AiProxy's
+HTTP endpoints).
+
+`{ brief, model?, context? }`. `brief` is what to consult on (a few sentences, with the alternatives if there are
+any); `context` is what the consultant should know (constraints, prior decisions, the relevant state); `model` picks
+a claude-cli model for the one call (a cheaper one), else `consult.model` (default `claude-cli/claude-opus-5-5`, a
+comma list: the first the model list has wins). One call, one answer: there is no retry loop and no automatic second
+consult. The answer is cut at `consult.maxAnswerChars` (16000) with a "…cut at N chars, ask for less" line; the call
+gives up after `consult.timeoutSeconds` (120) with a note, and the run goes on either way. If the CLI had to wait for
+a free `maxConcurrent` slot, the result says so.
+
+```ts
+details: { model, ms, chars, truncated }
+```
+
+The tool is registered only while a `claude-cli` provider is configured (`providers.instances`) and enabled; the
+change is announced on the bus as `consult.toolsChanged { available, reason }` (the registry's `tools.changed` says
+what, this says why). A model on any other provider is refused with the reason; a model that is not in the list
+answers with the CLI models that do exist (and says to enable the provider), not an error.
+
+**The Anthropic-terms guard:** only the chats the owner starts may trigger a consult. A chat started by a webhook
+(`meta.webhook`), a schedule (`meta.schedule`), the phone (`meta.origin`, what the phone's `sessions.create` writes),
+a script (the host's `meta.quiet` for an external `sessions.create`) or as a subagent is refused with the reason that
+says so, before any model call.
 
 ---
 
