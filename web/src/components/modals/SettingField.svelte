@@ -12,7 +12,7 @@
   import { getContext } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import Menu from '../../lib/kit/Menu.svelte';
-  import { getAt, setSetting, parseList } from '../../lib/settings.js';
+  import { getAt, setSetting, parseList, parseNumber } from '../../lib/settings.js';
   import { helpParts } from '../../lib/settingsModel.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import ModelSelect from '../ModelSelect.svelte';
@@ -85,10 +85,13 @@
     if (textDefault != null) next = t.trim() === textDefault.trim() ? null : t.trim();
     else if (t.trim() === '') next = null;
     else if (s.type === 'int' || s.type === 'number') {
-      const n = Number(t);
-      if (!Number.isFinite(n) || (s.type === 'int' && !Number.isInteger(n))) return (invalid = s.type === 'int' ? 'a whole number' : 'a number');
-      if (s.min != null && n < s.min) return (invalid = `at least ${s.min}`);
-      if (s.max != null && n > s.max) return (invalid = `at most ${s.max}`);
+      // a comma is a decimal separator (0,5) or a thousand separator (1,234); a refused value is marked and reverts
+      const { value: n, problem } = parseNumber(t, { int: s.type === 'int', min: s.min, max: s.max });
+      if (problem != null) {
+        invalid = problem;
+        draft = shown(); // the field reverts to the saved value
+        return;
+      }
       next = n;
     } else if (isList) next = parseList(t);
     else next = t;
