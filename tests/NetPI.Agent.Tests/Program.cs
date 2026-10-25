@@ -21,6 +21,7 @@ UnloadTests.Register(runner);
 ReloadGateTests.Register(runner);
 WaitTests.Register(runner);
 GoalTests.Register(runner);
+ConsultTests.Register(runner);
 BudgetTests.Register(runner);
 ReservationTests.Register(runner);
 SessionToolsTests.Register(runner);

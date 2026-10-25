@@ -608,6 +608,21 @@ data. Its settings are in Settings → Safety, beside the guardrails.
 | `windows.maxControls` | `300` | Controls listed per window by the `windows` tool, the ones nearest the visible part (50–5000); `find`, and `snapshot` with `all`, reach the rest |
 | `windows.journal` | `true` | Every `windows` step (the action, its arguments, the result) as a JSON line in `<home>/windows/journal-yyyyMMdd.jsonl`: data to train a smaller control picker on |
 
+## Consult
+
+`plugins/NetPI.Consult` (see `docs/TOOLS.md`, "Consult"): one text-only design consultation through the Claude CLI
+model (the owner's subscription). The `consult` tool is registered only while a `claude-cli` provider is configured
+and enabled, and says so on the bus (`consult.toolsChanged`) when that changes. Only the chats the owner starts may
+consult (the Anthropic-terms guard: a webhook's, a schedule's, the phone's, a script's or a subagent's chat is
+refused with the reason).
+
+| key | default | |
+|---|---|---|
+| `consult.model` | `claude-cli/claude-opus-5-5` | the Claude CLI model a consult asks. Several, comma-separated: the first one the model list has is used. The tool's `model` argument picks another for one call (a cheaper one) |
+| `consult.timeoutSeconds` | `120` | how long one consult may wait for the CLI before it gives up with a note (the run goes on; 5–3600) |
+| `consult.maxAnswerChars` | `16000` | the answer is cut at this many characters, with a note to ask for less |
+| `consult.effort` | `medium` | the CLI's `--effort` for the call: `low`, `medium`, `high`, `xhigh`, `max` (the Claude CLI's efforts) |
+
 ## Goals
 
 | key | default | |

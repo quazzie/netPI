@@ -105,6 +105,12 @@
    ]
   },
   {
+   "path": "plugins/NetPI.Consult/",
+   "tags": [
+    "smoke"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Coordinator/",
    "tags": [
     "smoke"

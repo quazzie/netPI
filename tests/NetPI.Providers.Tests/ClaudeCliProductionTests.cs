@@ -189,7 +189,7 @@ internal static class ClaudeCliProductionTests
             finally { try { Directory.Delete(home, true); } catch { /* temp */ } }
         });
 
-        await t.Run("claude-cli: a title or compaction call through the model is text only, in no project", async () =>
+        await t.Run("claude-cli: a title, a compaction or a consult call through the model is text only, in no project", async () =>
         {
             var seen = new List<(List<string> Args, string WorkDir, string Prompt)>();
             var p = new CL.ClaudeCliProvider(() => Cfg(), null, (call, ct) =>
@@ -201,6 +201,7 @@ internal static class ClaudeCliProductionTests
             await Collect(p, Req("agent"));
             await Collect(p, Req("title"));
             await Collect(p, Req("compaction"));
+            await Collect(p, Req("consult"));
 
             var agent = seen[0];
             t.Eq("default", agent.Args[agent.Args.IndexOf("--tools") + 1], "an agent turn has the CLI's tools");
@@ -212,6 +213,30 @@ internal static class ClaudeCliProductionTests
                 t.Check(!string.Equals(side.WorkDir, Path.GetTempPath(), StringComparison.OrdinalIgnoreCase), "and does not run in the session's folder");
                 t.Check(side.Prompt.EndsWith(CL.ClaudeCliProvider.NoToolsNote), "and is told it has none");
             }
+        });
+
+        await t.Run("claude-cli: a consult that has to wait for a free slot says so", async () =>
+        {
+            var release = new TaskCompletionSource();
+            async IAsyncEnumerable<string> Slow([EnumeratorCancellation] CancellationToken ct)
+            {
+                await release.Task.WaitAsync(ct);
+                yield return Init;
+                yield return Result;
+            }
+            var p = new CL.ClaudeCliProvider(() => Cfg(o => o["maxConcurrent"] = 2), null, (_, ct) => Slow(ct));
+            // separate sessions: the chat lock (one CLI per chat) must not serialize the two holders
+            var first = Collect(p, Req("agent", "ses_a"));
+            var second = Collect(p, Req("agent", "ses_b"));
+            await Task.Delay(100);
+            var consult = Collect(p, Req("consult", "ses_c"));
+            await Task.Delay(100);
+            t.Check(!consult.IsCompleted, "the consult is waiting for a free slot (both are taken)");
+            release.SetResult();
+            var events = await consult;
+            t.Check(events.OfType<StreamNotice>().Any(n => n.Text.Contains("wait")), "the consult says it had to wait");
+            await first;
+            await second;
         });
 
         await t.Run("claude-cli: only maxConcurrent CLI processes run at once; the next call waits for a free slot", async () =>
