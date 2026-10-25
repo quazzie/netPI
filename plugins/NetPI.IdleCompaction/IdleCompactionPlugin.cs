@@ -8,16 +8,14 @@ namespace NetPI.IdleCompaction;
 /// compacts the ones idle for the lead share of their provider's prompt-cache TTL, in the idle mode, so the next
 /// turn re-reads a short, cheap context before the cache dies. Settings: <c>idleCompaction.enabled</c>,
 /// <c>idleCompaction.ttlSeconds</c> (provider → seconds, e.g. <c>{"anthropic": 3600}</c>),
-/// <c>idleCompaction.leadFraction</c> (0.8), <c>idleCompaction.minWindowShare</c> (0.5), <c>idleCompaction.minTokens</c> (30000).
+/// <c>idleCompaction.leadFraction</c> (0.8), <c>idleCompaction.minWindowShare</c> (0.5), <c>idleCompaction.minTokens</c> (30000),
+/// <c>idleCompaction.tickSeconds</c> (15, the sweep's interval).
 /// The sweep talks to the compaction plugin over its <c>compaction.run</c> RPC (mode "idle") and to the host's
 /// <c>ISessionPresence</>; it never touches their state.
 /// </summary>
 [NetPiPlugin("netpi.idlecompaction", Name = "Idle Compaction", Description = "Compacts open idle chats before their prompt cache expires", Order = 75)]
 public sealed class IdleCompactionPlugin : INetPiPlugin
 {
-    /// <summary>How often the sweep runs.</summary>
-    public static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(15);
-
     /// <summary>The sweep's clock: the wall clock in the host, a test's hand for the tests.</summary>
     public Func<DateTimeOffset> Clock { get; set; } = () => DateTimeOffset.UtcNow;
 
@@ -43,6 +41,8 @@ public sealed class IdleCompactionPlugin : INetPiPlugin
                     "Share of the context window; smaller chats are not worth a summarizer call.", 0, 1) with { Advanced = true },
                 SettingInfo.Int("idleCompaction.minTokens", "Only chats of at least", 30_000,
                     "Tokens of context; smaller chats are not worth a summarizer call.", 0, null, "tokens") with { Advanced = true },
+                SettingInfo.Int("idleCompaction.tickSeconds", "Sweep interval", 15,
+                    "Seconds between sweeps; the host's presence marks expire after 90 s, so a window's open sessions are re-marked fast enough to stay open.", 2, null, "seconds") with { Advanced = true },
             ],
         });
 
@@ -70,7 +70,9 @@ public sealed class IdleCompactionPlugin : INetPiPlugin
     {
         while (!ct.IsCancellationRequested)
         {
-            try { await Task.Delay(TickInterval, ct).ConfigureAwait(false); }
+            // the interval is a setting (a test shortens it), re-read per sweep
+            var tick = TimeSpan.FromSeconds(Math.Max(2, ctx.Settings.GetInt("idleCompaction.tickSeconds", 15)));
+            try { await Task.Delay(tick, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
             try { await engine.TickAsync(CancellationToken.None).ConfigureAwait(false); }
             catch (Exception ex) { ctx.Logger.LogDebug(ex, "The idle compaction sweep failed"); }

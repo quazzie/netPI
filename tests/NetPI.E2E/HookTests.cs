@@ -201,5 +201,72 @@ public static class HookTests
             var after = await env.Run(sid, "still there?");
             Check.Contains(after.FinalText, "ECHO-DONE");
         }, 120);
+
+        r.Add("compaction.idle", "idle compaction: an open session idle for the lead share of its cache TTL is compacted, and the next turn re-reads a short context", async () =>
+        {
+            // a short TTL and a fast sweep, so the test waits seconds, not an hour: the session is due at 80 % of the
+            // 30 s TTL (24 s idle) and the sweep runs every 5 s, so it lands in the window [24 s, 30 s) for sure
+            await env.Rpc("settings.set", new { path = "idleCompaction.ttlSeconds", value = "{\"aiproxy\": 30}" });
+            await env.Rpc("settings.set", new { path = "idleCompaction.tickSeconds", value = 5 });
+            await env.Rpc("settings.set", new { path = "idleCompaction.minTokens", value = 500 });
+            await env.Rpc("settings.set", new { path = "idleCompaction.minWindowShare", value = 0.01 });
+            try
+            {
+                // the tiny window's minimum gain (max(1000, window/50) = 1000) a short conversation clears; the default
+                // model's 262k window would demand a 5k gain a test conversation does not have
+                var s = await env.NewSession(model: Tiny);
+                var sid = s.S("id")!;
+                var mockMark = await env.MockMark();
+                // a conversation that builds a context, with a follow-up round so the provider's cache usage is on the
+                // last answer (a chat the provider does not cache has no TTL to beat, and is left alone)
+                await env.Run(sid, "message one " + new string('a', 600));
+                var lastPre = 0L;
+                for (var i = 0; i < 4; i++)
+                {
+                    var round = await env.Run(sid, $"message {i + 2} " + new string((char)('a' + i), 600));
+                    Check.Contains(round.FinalText, "ECHO-DONE");
+                }
+                var pre = (await env.MockLog(mockMark)).Where(e => !e.B("summarizer")).ToList();
+                Check.True(pre.Count >= 3, "the conversation reached the model");
+                lastPre = pre[^1].L("inputTokens");
+
+                // the window shows the session: the host keeps it open, and the sweep is allowed to compact it
+                var open = await env.Rpc("session.presence", new { sessionId = sid, open = true });
+                Check.True(open.B("open"), "the host keeps the session open");
+
+                // the sweep lands in the window [24 s, 30 s) after the last activity: poll for its summary
+                List<JsonElement>? summary = null;
+                for (var i = 0; i < 25 && summary is null; i++)
+                {
+                    await Task.Delay(2_000);
+                    var hits = (await env.Rpc("sessions.messages", new { id = sid, limit = 100 })).Arr("messages")
+                        .Where(m => m.S("role") == "summary" && m.P("meta").S("mode") == "idle")
+                        .ToList();
+                    if (hits.Count > 0) summary = hits;
+                }
+                Check.True(summary is not null, "the sweep compacted the idle session in the TTL window");
+                Check.Equal("idle", summary![0].P("meta").S("mode"), "the idle mode");
+
+                // the next turn re-reads the short context: its first model call sees less than the compacted peak
+                var followUp = await env.Run(sid, "still there?");
+                Check.Contains(followUp.FinalText, "ECHO-DONE");
+                var log = await env.MockLog(mockMark);
+                Check.True(log.Any(e => e.B("summarizer")), "the idle compaction called the summarizer");
+                var all = log.Where(e => !e.B("summarizer")).ToList();
+                Check.True(all.Count > pre.Count, "the follow-up reached the model");
+                Check.True(all[^1].L("inputTokens") < lastPre, "the next turn re-read a short context: " + all[^1].L("inputTokens") + " < " + lastPre);
+
+                // and the mark closes cleanly
+                var closed = await env.Rpc("session.presence", new { sessionId = sid, open = false });
+                Check.False(closed.B("open"), "the host drops the mark");
+            }
+            finally
+            {
+                await env.Rpc("settings.set", new { path = "idleCompaction.ttlSeconds", value = (object?)null });
+                await env.Rpc("settings.set", new { path = "idleCompaction.tickSeconds", value = (object?)null });
+                await env.Rpc("settings.set", new { path = "idleCompaction.minTokens", value = (object?)null });
+                await env.Rpc("settings.set", new { path = "idleCompaction.minWindowShare", value = (object?)null });
+            }
+        }, 180);
     }
 }

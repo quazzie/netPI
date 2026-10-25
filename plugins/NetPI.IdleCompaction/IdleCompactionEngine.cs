@@ -60,51 +60,117 @@ public sealed class IdleCompactionEngine
 
     private async Task ConsiderAsync(string sessionId, DateTimeOffset now, Dictionary<string, double> ttls, double lead, double minShare, int minTokens, CancellationToken ct)
     {
+        // The sweep is quiet by design: a skip is a debug line (the operator's "why was not compacted?"),
+        // and a compacted session logs its result.
+        Task Skip(string why) { _ctx.Logger.LogDebug("Idle compaction: {Session} skipped: {Why}", sessionId, why); return Task.CompletedTask; }
+
         var sessions = _ctx.Sessions;
         if (sessions.GetSession(sessionId) is not { } session) return;
-        if (session.Kind != "chat") return;   // a subagent's chat is short-lived; its parent reads the report, not its context
+        if (session.Kind != "chat")   // a subagent's chat is short-lived; its parent reads the report, not its context
+        {
+            await Skip("not a chat");
+            return;
+        }
 
         // A run in this session: its context is in use, and the cancel handler covers the in-flight case.
         var runtime = _ctx.Services.Get<IAgentRuntime>();
-        if (runtime?.GetBySession(sessionId) is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded }) return;
+        if (runtime?.GetBySession(sessionId) is { Status: var s and (AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded) })
+        {
+            await Skip($"a run is {s}");
+            return;
+        }
 
         // An open goal: the agent is about to run again in this session; its context is about to be used, not stale.
-        if (session.Meta?["goal"] is JsonObject goal && goal["status"]?.GetValue<string>() is "active" or "paused" or "blocked" or "execution-unavailable") return;
+        if (session.Meta?["goal"] is JsonObject goal && goal["status"]?.GetValue<string>() is { } g and ("active" or "paused" or "blocked" or "execution-unavailable"))
+        {
+            await Skip($"a goal is {g}");
+            return;
+        }
 
         // The last activity: the newest message of any role. Its age is the idle period.
         var page = sessions.GetMessages(sessionId, null, 30);
-        if (page.Count == 0) return;
+        if (page.Count == 0)
+        {
+            await Skip("no messages");
+            return;
+        }
         var last = page[^1];
         var idleFor = now - last.CreatedAt;
 
         // The model: its provider's TTL and window are the rest of the check.
         var modelRef = await SessionModel.ResolveRefAsync(session, _ctx.Models, _ctx.Settings, _ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
-        if (modelRef is null || await _ctx.Models.FindAsync(modelRef, ct).ConfigureAwait(false) is not { } model) return;
-        if (model.ManagesOwnContext) return;   // the backend compacts its own session
-        if (TtlFor(ttls, model.Provider) is not { } ttl) return;   // a provider with no TTL has no cache to beat
+        if (modelRef is null || await _ctx.Models.FindAsync(modelRef, ct).ConfigureAwait(false) is not { } model)
+        {
+            await Skip($"no model ({(modelRef ?? "unresolved")})");
+            return;
+        }
+        if (model.ManagesOwnContext)   // the backend compacts its own session
+        {
+            await Skip("the model manages its own context");
+            return;
+        }
+        if (TtlFor(ttls, model.Provider) is not { } ttl)   // a provider with no TTL has no cache to beat
+        {
+            await Skip($"no TTL for the provider {model.Provider}");
+            return;
+        }
 
         // The context must be worth a summarizer call: at least minTokens, and a real share of the window.
         var window = model.ContextWindow is > 0 and var w ? w : _ctx.Settings.GetInt("compaction.defaultContextWindow", 131_072);
-        if (session.ContextTokens <= 0 || session.ContextTokens < minTokens || session.ContextTokens < (long)(window * minShare)) return;
+        if (session.ContextTokens <= 0 || session.ContextTokens < minTokens || session.ContextTokens < (long)(window * minShare))
+        {
+            await Skip($"the context is {session.ContextTokens} tokens (minimum {Math.Max(minTokens, (long)(window * minShare))})");
+            return;
+        }
 
         // The window: at the lead share the cache is due to die, before the TTL there is still something to beat;
         // after the TTL the cache is gone and a compaction would only cost a summarizer call for nothing.
-        if (idleFor < TimeSpan.FromSeconds(ttl * lead) || idleFor >= TimeSpan.FromSeconds(ttl)) return;
+        if (idleFor < TimeSpan.FromSeconds(ttl * lead))
+        {
+            await Skip($"idle for {idleFor.TotalSeconds:0} s, due at {ttl * lead:0} s");
+            return;
+        }
+        if (idleFor >= TimeSpan.FromSeconds(ttl))
+        {
+            await Skip($"idle for {idleFor.TotalSeconds:0} s, the cache died at {ttl:0} s");
+            return;
+        }
 
         // A provider that reports no cache at all for this chat (neither reads nor writes) is not caching it:
         // there is no TTL to beat, and a short context is what a manual compaction is for.
         var lastUsage = page.LastOrDefault(m => m.Role == MessageRole.Assistant && m.Usage is not null)?.Usage;
-        if (lastUsage is { CacheReadTokens: 0, CacheWriteTokens: 0 }) return;
+        if (lastUsage is { CacheReadTokens: 0, CacheWriteTokens: 0 })
+        {
+            await Skip("the provider is not caching this chat");
+            return;
+        }
 
         // One attempt per idle period (a new message starts a new one), and the backoff of a failed last attempt.
         var tracker = _state.GetOrAdd(sessionId, _ => new Tracker())!;
-        if (tracker.AttemptedSeq == last.Seq || now < tracker.BackoffUntil) return;
+        if (tracker.AttemptedSeq == last.Seq)
+        {
+            await Skip("already attempted this idle period");
+            return;
+        }
+        if (now < tracker.BackoffUntil)
+        {
+            await Skip($"in backoff until {tracker.BackoffUntil:HH:mm:ss}");
+            return;
+        }
 
         // The budget: a spent budget stops paid calls, and a summarizer call is one.
-        if (await BudgetExhaustedAsync(ct).ConfigureAwait(false)) return;
+        if (await BudgetExhaustedAsync(ct).ConfigureAwait(false))
+        {
+            await Skip("the budget is exhausted");
+            return;
+        }
 
         // In flight: a sweep from the previous tick is still compacting this session.
-        if (_active.Contains(sessionId)) return;
+        if (_active.Contains(sessionId))
+        {
+            await Skip("a compaction is in flight");
+            return;
+        }
 
         var cts = new CancellationTokenSource();
         _active[sessionId] = cts;
@@ -114,7 +180,11 @@ public sealed class IdleCompactionEngine
             var text = result?.ToString() ?? "";
             tracker.AttemptedSeq = last.Seq;
             if (!text.Contains("compacted", StringComparison.OrdinalIgnoreCase))
+            {
                 tracker.BackoffUntil = now + Backoff(idleFor, ttl);   // a no-op: the next attempt is not earlier than the half-remaining
+                _ctx.Logger.LogDebug("Idle compaction: {Session} was not compacted: {Result}", sessionId, text);
+            }
+            else _ctx.Logger.LogInformation("Idle compaction: {Session} — {Result}", sessionId, text);
         }
         catch (OperationCanceledException)
         {
