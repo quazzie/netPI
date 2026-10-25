@@ -14,6 +14,7 @@ RetryTests.Register(runner);
 NudgeTests.Register(runner);
 ToolRepairTests.Register(runner);
 CompactionTests.Register(runner);
+IdleCompactionTests.Register(runner);
 WorkspaceTests.Register(runner);
 WorkspaceStoreTests.Register(runner);
 IdeasTests.Register(runner);

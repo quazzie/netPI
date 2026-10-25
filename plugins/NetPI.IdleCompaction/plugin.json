@@ -1,0 +1,5 @@
+{
+  "id": "netpi.idlecompaction",
+  "name": "Idle Compaction",
+  "description": "Compacts open chats while they are idle, before the provider's prompt cache expires, so the next turn re-reads a short, cheap context."
+}

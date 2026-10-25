@@ -12,6 +12,7 @@
     <Project Path="plugins/NetPI.Coordinator/NetPI.Coordinator.csproj" />
     <Project Path="plugins/NetPI.Diagnostics/NetPI.Diagnostics.csproj" />
     <Project Path="plugins/NetPI.Ideas/NetPI.Ideas.csproj" />
+    <Project Path="plugins/NetPI.IdleCompaction/NetPI.IdleCompaction.csproj" />
     <Project Path="plugins/NetPI.Agents/NetPI.Agents.csproj" />
     <Project Path="plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
     <Project Path="plugins/NetPI.Loops/NetPI.Loops.csproj" />

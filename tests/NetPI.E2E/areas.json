@@ -196,6 +196,12 @@
    ]
   },
   {
+   "path": "plugins/NetPI.IdleCompaction/",
+   "tags": [
+    "compaction"
+   ]
+  },
+  {
    "path": "plugins/NetPI.Loops/",
    "tags": [
     "smoke"
