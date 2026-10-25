@@ -1,7 +1,8 @@
 // Global app state: sessions, projects, models, agents, open tabs, plugin tabs and commands.
 // Server events are routed here (broadcast events) and to the per-session ChatStores (scoped events).
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-import { rpc, subscribe, onOpen, connect } from '../rpc.svelte.js';
+import { rpc, subscribe, onOpen, connect, conn } from '../rpc.svelte.js';
+import { presenceTracker } from '../presence.js';
 import { bus } from '../bus.js';
 import { load, save, persist, fetchRemote } from '../persist.js';
 import { getChat, peekChat, pinChat, dropChat, allChats, LRU_MAX } from './chat.svelte.js';
@@ -20,6 +21,14 @@ import { welcomeIdeas } from './welcomeIdeas.svelte.js';
 import { payloadBytes, sendBudget } from '../images.js';
 
 const TABS_KEY = 'netpi.openTabs';
+
+// This window's side of the host's session presence (docs/PROTOCOL.md's session.presence): the tabs that are
+// open are the sessions the window shows, and the tracker heartbeats them so the idle compaction can beat the
+// provider's prompt-cache TTL for them. The marks ride only an open connection (a downed window shows nothing).
+const presence = presenceTracker({
+  rpc,
+  connectionOpen: () => conn.status === 'open',
+});
 
 class AppState {
   rpcMethods = $state.raw(null);
@@ -390,6 +399,9 @@ async function loadAll({ reconnect }) {
     }
     if (app.activeId) showChat(getChat(app.activeId));
   }
+  // a first load's restored tabs were never opened one by one, and a reconnect's marks are fresh on the host:
+  // the window shows what it shows, say it at once
+  presence.resend();
   app.ready = true;
 }
 
@@ -418,6 +430,7 @@ export function activate(id) {
   }
   if (!app.openTabs.includes(id)) app.openTabs.push(id);
   app.activeId = id;
+  presence.open(id);   // the window shows the session: the host keeps it open for the idle compaction's sake
   const act = app.sessionsById.get(id);
   if (act) noteProject(act.projectId ?? null);
   loadWorkspace(id);   // the composer and the Files tab read this; it is per session and may change at any time
@@ -438,6 +451,7 @@ function openInTab(session) {
   const id = session?.id;
   if (!id || session.meta?.openInTab !== true || app.openTabs.includes(id) || goneSessions.has(id)) return;
   app.openTabs.push(id);
+  presence.open(id);   // a background tab shows the session too (its events, and its idle compaction)
   resubscribe();   // the store follows its events before it is shown: the copy and the live events meet (see showChat)
   showChat(getChat(id));
   persistTabs();
@@ -465,6 +479,8 @@ export async function replaceTab(oldId, newId) {
   peekChat(oldId)?.saveDraft();
   if (!app.openTabs.includes(newId)) app.openTabs.splice(i, 1, newId);
   else app.openTabs.splice(i, 1);
+  presence.close(oldId);   // the old chat no longer shows
+  presence.open(newId);    // the new one takes its place
   if (wasActive) activate(newId);
   else {
     resubscribe();
@@ -485,6 +501,7 @@ export function closeTab(id) {
     chat.reconcile(false);
   }
   app.openTabs.splice(i, 1);
+  presence.close(id);   // the window no longer shows the session: the host may drop the mark
   if (app.activeId === id) {
     const next = app.openTabs[i] ?? app.openTabs[i - 1] ?? null;
     app.activeId = next;
@@ -1015,6 +1032,7 @@ export function startApp() {
   started = true;
   bus.on('*', onEvent);
   onOpen(loadAll);
+  presence.start();   // the 15 s heartbeat: the host's 90 s expiry never drops a session a window is showing
   onNotificationClick((id) => openSession(id));
   connect();
 }
