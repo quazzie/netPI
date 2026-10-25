@@ -152,6 +152,7 @@ internal sealed class HostKernel : IAsyncDisposable
         _subscriptions.Add(Services.Register<IPluginManager>(Plugins));
         _subscriptions.Add(Services.Register<IReloadGate>(Plugins.Gate));
         _subscriptions.Add(Services.Register<ISessionStore>(Sessions));
+        _subscriptions.Add(Services.Register<ISessionPresence>(new SessionPresence(Services)));
         _subscriptions.Add(Services.Register<IModelCatalog>(Models));
         _subscriptions.Add(Services.Register<ISettings>(Settings));
         _subscriptions.Add(Services.Register<IStorageAccess>(new StorageAccess(Storage)));

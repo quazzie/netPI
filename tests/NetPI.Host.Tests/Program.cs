@@ -24,6 +24,7 @@ RunnerTests.Register(runner);
 SessionStateTests.Register(runner);
 ReviewBackupTests.Register(runner);
 MessagePageTests.Register(runner);
+SessionPresenceTests.Register(runner);
 var code = await runner.RunAsync(args);
 T.Cleanup();
 return code;

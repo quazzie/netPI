@@ -88,6 +88,7 @@ internal static class CoreRpc
         ],
         ["sessions.delete"] = [Req("id")],
         ["sessions.setProject"] = [Req("id"), Opt("projectId")],
+        ["session.presence"] = [Req("sessionId"), Req("open", RpcParamType.Boolean)],
         ["models.list"] = [Opt("refresh", RpcParamType.Boolean)],
         ["ui.state.get"] = [Req("key")],
         ["ui.state.set"] = [Req("key"), Opt("value", RpcParamType.Any)],
@@ -227,6 +228,15 @@ internal static class CoreRpc
 
         a.Add("sessions.setProject", "Attach/detach a project: { id, projectId: string|null } → SessionInfo (publishes session.project)",
             req => a.K.Sessions.SetSessionProject(req.Required("id"), req.Str("projectId")));
+
+        a.Add("session.presence", "Window presence: { sessionId, open: true|false } → { open, openSessions } (true: a window is showing the session; the host keeps it open for 90 s, and a session that waits on the user is open no matter what)", req =>
+        {
+            var id = req.Required("sessionId");
+            var presence = a.K.Services.Get<ISessionPresence>()!;   // the kernel registers it in Wire()
+            if (req.Bool("open") == true) presence.MarkOpen(id);
+            else presence.MarkClosed(id);
+            return new { open = presence.IsOpen(id), openSessions = presence.OpenSessions() };
+        });
     }
 
     private static void RegisterSessionMessages(Adder a)
