@@ -114,8 +114,9 @@ public static class ToolPathArgs
 
     /// <summary>
     /// The local paths a file-writing call changes, in the order the tool takes them: for an <c>edit</c> of several files
-    /// every <c>files[].path</c>, otherwise the one path argument. An edit of several files is all or nothing, so a
-    /// guard judges every one of them.
+    /// every <c>files[].path</c>, otherwise the one path argument. A top-level <c>path</c> beside bare-edit <c>files</c>
+    /// entries (no <c>path</c> of their own) is the file the tool applies them to, so it is the target then. An edit of
+    /// several files is all or nothing, so a guard judges every one of them.
     /// </summary>
     public static List<string> WriteTargets(string tool, ToolArgs args)
     {
@@ -124,6 +125,9 @@ public static class ToolPathArgs
             var paths = new List<string>();
             foreach (var f in files)
                 if (f.ValueKind == System.Text.Json.JsonValueKind.Object && PathOf(new ToolArgs(f)) is { } p) paths.Add(p);
+            if (paths.Count == 0 && PathOf(args) is { } top &&
+                files.All(f => f.ValueKind != System.Text.Json.JsonValueKind.Object || PathOf(new ToolArgs(f)) is null))
+                paths.Add(top);
             return paths;
         }
         return PathOf(args) is { } one ? [one] : [];

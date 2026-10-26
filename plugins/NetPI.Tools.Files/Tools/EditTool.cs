@@ -54,31 +54,35 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
     /// <summary>Parse the edits array or the single-edit shorthand. Returns an error message on invalid input.</summary>
     public static (List<EditSpec> Edits, string? Error) ParseEdits(ToolArgs args)
     {
-        var list = new List<EditSpec>();
         var items = args.List("edits", "changes", "replacements", "edit");
         if (items is not null && items.Count > 0 && items.Any(i => i.ValueKind == JsonValueKind.Object))
-        {
-            var n = 0;
-            foreach (var item in items)
-            {
-                n++;
-                if (item.ValueKind != JsonValueKind.Object) return ([], $"edits[{n - 1}] must be an object with oldText and newText.");
-                var ea = new ToolArgs(item);
-                var o = ea.Str(OldNames);
-                var nw = ea.Str(NewNames);
-                if (o is null) return ([], $"Edit {n}: missing oldText.");
-                if (nw is null) return ([], $"Edit {n}: missing newText (use an empty string to delete).");
-                list.Add(new EditSpec(o, nw, ea.Bool(AllNames) ?? false));
-            }
-            return (list, null);
-        }
+            return ParseEditsItems(items);
         var old = args.Str(OldNames);
         var @new = args.Str(NewNames);
         if (old is null && @new is null)
             return ([], "Missing edits. Pass {\"path\": …, \"edits\": [{\"oldText\": …, \"newText\": …}]} or the shorthand {\"path\": …, \"oldText\": …, \"newText\": …}.");
         if (old is null) return ([], "Missing oldText.");
         if (@new is null) return ([], "Missing newText (use an empty string to delete).");
-        list.Add(new EditSpec(old, @new, args.Bool(AllNames) ?? false));
+        return ([new EditSpec(old, @new, args.Bool(AllNames) ?? false)], null);
+    }
+
+    /// <summary>The shared parse of an edits list: the objects with oldText and newText, in order (a JSON string holding
+    /// the array is read by the caller's <see cref="ToolArgs.List"/>).</summary>
+    public static (List<EditSpec> Edits, string? Error) ParseEditsItems(List<JsonElement> items)
+    {
+        var list = new List<EditSpec>();
+        var n = 0;
+        foreach (var item in items)
+        {
+            n++;
+            if (item.ValueKind != JsonValueKind.Object) return ([], $"edits[{n - 1}] must be an object with oldText and newText.");
+            var ea = new ToolArgs(item);
+            var o = ea.Str(OldNames);
+            var nw = ea.Str(NewNames);
+            if (o is null) return ([], $"Edit {n}: missing oldText.");
+            if (nw is null) return ([], $"Edit {n}: missing newText (use an empty string to delete).");
+            list.Add(new EditSpec(o, nw, ea.Bool(AllNames) ?? false));
+        }
         return (list, null);
     }
 
@@ -101,18 +105,59 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
 
     protected override async Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
-        if (args.List(FilesNames) is { Count: > 0 } files)
+        var files = args.List(FilesNames);
+        var path = args.Str(ToolPathArgs.PathNames);
+        if (files is { Count: > 0 })
         {
-            if (args.Has(ToolPathArgs.PathNames))
+            // The top-level edits are the fallback for a files: [{ path }] entry of its own (the common mixed shape).
+            var (topEdits, _) = ParseEdits(args);
+            if (path is { Length: > 0 })
+            {
+                // A mixed call, path and files. When files names that same file (the paths normalized the way the tool
+                // takes them), the files form wins and path is ignored; when every entry is a bare edit, they are the
+                // edits of path. Anything else is the refusal.
+                if (FilesNamePath(ctx, files, path))
+                    return await RunManyAsync(ctx, files, topEdits, ct).ConfigureAwait(false);
+                if (BareEditsOnly(files))
+                {
+                    var (bare, bareError) = ParseEditsItems(files);
+                    if (bareError is not null) return ToolResult.Error(bareError);
+                    return await RunOneAsync(ctx, path, bare, ct).ConfigureAwait(false);
+                }
                 return ToolResult.Error("Pass either path (one file) or files (several), not both: put this file into files as well.");
-            return await RunManyAsync(ctx, files, ct).ConfigureAwait(false);
+            }
+            return await RunManyAsync(ctx, files, topEdits, ct).ConfigureAwait(false);
         }
 
-        var path = args.Str(ToolPathArgs.PathNames);
         if (string.IsNullOrWhiteSpace(path)) return MissingArg("path", "{\"path\": \"src/app.ts\", \"oldText\": \"…\", \"newText\": \"…\"}");
         var (edits, parseError) = ParseEdits(args);
         if (parseError is not null) return ToolResult.Error(parseError);
+        return await RunOneAsync(ctx, path, edits, ct);
+    }
 
+    /// <summary>Whether the several-files list names the one-file path: the entry paths, normalized the way the tool
+    /// takes them (<see cref="ToolContext.ResolvePath"/>, the platform comparison), equal to it.</summary>
+    private static bool FilesNamePath(ToolContext ctx, List<JsonElement> files, string path)
+    {
+        var target = ctx.ResolvePath(path);
+        foreach (var f in files)
+        {
+            if (f.ValueKind != JsonValueKind.Object) continue;
+            var p = new ToolArgs(f).Str(ToolPathArgs.PathNames);
+            if (string.IsNullOrWhiteSpace(p)) continue;
+            if (WorkspacePaths.Comparer.Equals(ctx.ResolvePath(p), target)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Every entry a bare edit ({ oldText, newText, replaceAll? } without a path): beside a top-level path they
+    /// are that file's edits, not a several-files list.</summary>
+    private static bool BareEditsOnly(List<JsonElement> files) =>
+        files.All(f => f.ValueKind == JsonValueKind.Object && new ToolArgs(f).Str(ToolPathArgs.PathNames) is not { Length: > 0 });
+
+    /// <summary>The one-file form: prepare, write and report.</summary>
+    private async Task<ToolResult> RunOneAsync(ToolContext ctx, string path, List<EditSpec> edits, CancellationToken ct)
+    {
         var (p, refusal) = await PrepareAsync(ctx, path, edits, 0, 0, ct).ConfigureAwait(false);
         if (refusal is not null) return ToolResult.Error(refusal.Message, refusal.Details);
         if (!p!.Changed)
@@ -131,7 +176,7 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
     /// Several files in one call, all or nothing: every file is read and every edit matched in memory first; only when
     /// all of them match is anything written, and a write that fails midway puts the files already written back.
     /// </summary>
-    private async Task<ToolResult> RunManyAsync(ToolContext ctx, List<JsonElement> files, CancellationToken ct)
+    private async Task<ToolResult> RunManyAsync(ToolContext ctx, List<JsonElement> files, List<EditSpec>? topEdits, CancellationToken ct)
     {
         if (files.Count > MaxFiles)
             return ToolResult.Error($"{files.Count} files is more than one edit call takes ({MaxFiles}). Split it into several calls.");
@@ -145,6 +190,12 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
             var path = fa.Str(ToolPathArgs.PathNames);
             if (string.IsNullOrWhiteSpace(path)) return ToolResult.Error($"File {i + 1} of {files.Count}: missing path.");
             var (edits, parseError) = ParseEdits(fa);
+            if (parseError is not null && files.Count == 1 && topEdits is { Count: > 0 })
+            {
+                // files: [{ path }] with no edits of its own: the top-level edits are that file's.
+                edits = topEdits;
+                parseError = null;
+            }
             if (parseError is not null) return ToolResult.Error($"File {i + 1} of {files.Count} ({path}): {parseError}");
             entries.Add((path, edits));
         }
