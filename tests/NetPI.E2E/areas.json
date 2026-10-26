@@ -363,6 +363,9 @@
    "path": "plugins/NetPI.Phone/",
    "tags": [
     "smoke"
+   ],
+   "ids": [
+    "ui.phone"
    ]
   },
   {
@@ -377,6 +380,18 @@
    "ids": [
     "ui.chat",
     "ui.rpc-contract"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Phone/wwwroot/phone/",
+   "ids": [
+    "ui.phone"
+   ]
+  },
+  {
+   "path": "plugins/NetPI.Tidy/",
+   "tags": [
+    "smoke"
    ]
   },
   {
@@ -716,10 +731,6 @@
   },
   {
    "path": "docs/",
-   "ignore": true
-  },
-  {
-   "path": ".github/",
    "ignore": true
   },
   {

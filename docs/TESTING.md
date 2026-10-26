@@ -468,7 +468,7 @@ Chrome and print `browser: msedge`. Use `--no-ui` without Playwright.
 
 ### UI journeys
 
-Eight scripts in `tests/NetPI.E2E/ui`, each a thing a person does and would notice broken, against a real server and MockLlm
+Nine scripts in `tests/NetPI.E2E/ui`, each a thing a person does and would notice broken, against a real server and MockLlm
 (Playwright; screenshots in the run's `screenshots/`):
 
 | id | script | the journey |
@@ -481,6 +481,7 @@ Eight scripts in `tests/NetPI.E2E/ui`, each a thing a person does and would noti
 | `ui.settings` | `settings.mjs` | a number in a section opened in place: saved, reset, refused out of range, Back; the same setting found by the search, changed in the results, listed under Changed and reset; the palette opening the dialog on a setting in its section; an agent added from the model search, edited and removed after a confirm; a chat's profile picker that stays open through a failed reload |
 | `ui.asks` | `asks.mjs` | an `ask_user` card that survives a reload, answered by an option, in the person's own words and with its Send button |
 | `ui.new-chat` | `new-chat.mjs` | a new chat from the start screen in a project: the chevron picks it, the first answer lists the chat, the main button starts the next one there |
+| `ui.phone` | `phone.mjs` | the phone page at a phone's size (the listener switched on for it on a free port): paired from the link, a chat from its form, the streamed text back after a reload mid-answer, notices shown, the listener switched off and on (the banner, a reconnect by itself), a failed run in the chat, the strip and the list |
 
 Everything else a UI test used to check is either the server's (a C# test), pure logic (`web/test`), or was given up on purpose:
 [archive/2026-10-15-e2e-restructure.md](archive/2026-10-15-e2e-restructure.md) lists each removed script and where its

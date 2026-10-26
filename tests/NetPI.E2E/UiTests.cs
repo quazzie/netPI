@@ -49,6 +49,10 @@ public static class UiTests
         // The script makes its own project; it starts with no chat tabs open (freshTabs).
         r.Add("ui.new-chat", "ui journey: a new chat from the start screen in a project — the chevron picks the project and starts the chat in it, the first answer lists it in the sessions panel, and the main button then starts the next chat in that project", () =>
             RunUiScript(env, "new-chat.mjs", 300), 330);
+        // The script switches the phone listener on (a free port) and off again, and unpairs the phone it paired; the
+        // answer waits at a MockLlm gate.
+        r.Add("ui.phone", "ui journey: the phone page at a phone's size — paired from the link, a chat started from its form, the streamed text back after a reload mid-answer, harness notices shown, the lost listener said and reconnected by itself, a failed run in the chat, the strip and the list", () =>
+            RunUiScript(env, "phone.mjs", 300), 330);
     }
 
     /// <summary>All of the script's output; calls <paramref name="onMachine"/> with the factor of its "  machine: x2.4 …" line.</summary>
