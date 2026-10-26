@@ -152,7 +152,17 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
         var background = args.Bool("background", "run_in_background", "runInBackground", "detach", "async") ?? false;
         var timeout = ResolveTimeout(args, background);
 
-        var (spec, specError) = BuildSpec(shell, command);
+        // A trailing tail/head after a test/build run reports the cutter's exit code (0) and throws away the
+        // lines that explain a failure: run the command without that last segment (the cut's view is built in
+        // FormatForeground). A pipeline's exit code is its last segment's, so a failing earlier segment is
+        // invisible: a probed bash command prints the last pipeline's statuses on a marker line (bash only —
+        // pwsh has no PIPESTATUS; background jobs are left alone entirely).
+        var cut = !background ? PipeCuts.Detect(command, shell) : null;
+        var runCommand = cut is null ? command : cut.Command;
+        var probed = !background && shell == "bash" ? PipeCuts.WithProbe(runCommand) : null;
+        var launchCommand = probed is null ? runCommand : probed;
+
+        var (spec, specError) = BuildSpec(shell, launchCommand);
         if (spec is null) return ToolResult.Error(specError!, new { command, shell, cwd, background });
         // The server's secrets are not the child's: removed from what it inherits (a null entry removes the variable).
         foreach (var name in HiddenEnvironment(Settings)) spec.Environment[name] = null;
@@ -217,7 +227,7 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
         }
         var editLike = changes is not null && ChangeTracker.LooksLikeEdit(command);
         var outside = changes is not null && workspace is not null && !WorkspacePaths.IsInside(workspace.Root, changes.Root);
-        return FormatForeground(mp, timeout ?? DefaultTimeoutSeconds, timedOut, aborted, workspace, elsewhere, changes, editLike, outside);
+        return FormatForeground(mp, timeout ?? DefaultTimeoutSeconds, timedOut, aborted, workspace, elsewhere, changes, editLike, outside, cut, PipeCuts.LastPipelineText(command));
     }
 
     /// <summary>One line naming where the shell actually started, for a call that ran outside this session's workspace.</summary>
@@ -269,22 +279,39 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
     }
 
     private ToolResult FormatForeground(ManagedProcess mp, int timeoutSeconds, bool timedOut, bool aborted,
-        WorkspaceBinding? workspace = null, bool elsewhere = false, ChangeTracker.Report? changes = null, bool editLike = false, bool outside = false)
+        WorkspaceBinding? workspace = null, bool elsewhere = false, ChangeTracker.Report? changes = null, bool editLike = false, bool outside = false,
+        PipeCuts.Cut? cut = null, string? pipelineText = null)
     {
         var killed = !timedOut && !aborted && mp.Status == "killed"; // stopped from the chat (processes.killCall)
-        var full = ToolOutput.ResolveCarriageReturns(mp.Output.Snapshot());
-        var (tail, truncated, totalLines, shownLines) = ToolOutput.TailLines(full, ToolOutput.ModelMaxLines, ToolResultLimit.Fit(Settings, ToolOutput.ModelMaxBytes));
-        var complete = mp.Output.Complete;
-        truncated |= !complete;
+        // The probe's marker line is the output's last line; strip it before anything counts or shows it.
+        var (full, probeStatuses) = PipeCuts.ExtractProbe(ToolOutput.ResolveCarriageReturns(mp.Output.Snapshot()));
+        string tail;
+        bool truncated;
+        int totalLines, shownLines;
         string? fullPath = null;
-        if (truncated) fullPath = mp.Output.SaveFull(Path.Combine(TempDir, $"{mp.Shell}-{mp.Id}.log"));
+        if (cut is not null)
+        {
+            // The cut's view is exactly what the cut asked for (its last/first N lines), and the full output is
+            // saved even when it is short: the lines the cut would have thrown away are readable there.
+            tail = cut.Head ? HeadTailView(full, cut.Lines) : ToolOutput.TailLines(full, cut.Lines, int.MaxValue).Text;
+            truncated = false;
+            totalLines = shownLines = 0;
+            fullPath = mp.Output.SaveFull(Path.Combine(TempDir, $"{mp.Shell}-{mp.Id}.log"));
+        }
+        else
+        {
+            var complete = mp.Output.Complete;
+            (tail, truncated, totalLines, shownLines) = ToolOutput.TailLines(full, ToolOutput.ModelMaxLines, ToolResultLimit.Fit(Settings, ToolOutput.ModelMaxBytes));
+            truncated |= !complete;
+            if (truncated) fullPath = mp.Output.SaveFull(Path.Combine(TempDir, $"{mp.Shell}-{mp.Id}.log"));
+        }
         mp.Output.Dispose(); // closes the spill file; the in-memory tail stays readable
         mp.Output.TrimTo(ProcessRegistry.FinishedTailChars);
 
         var sb = new StringBuilder();
         if (truncated)
         {
-            var total = complete ? $"{totalLines} lines" : PathDisplayBytes(mp.Output.TotalBytes);
+            var total = mp.Output.Complete ? $"{totalLines} lines" : PathDisplayBytes(mp.Output.TotalBytes);
             sb.Append(ToolOutput.Note(shownLines, " of " + total, fullPath));
             sb.Append('\n');
         }
@@ -293,6 +320,8 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
         else if (aborted) sb.Append("\n[aborted; the process tree was killed]");
         else if (killed) sb.Append("\n[killed from the chat; the process tree was killed]");
         else if (mp.ExitCode is { } code && code != 0) sb.Append($"\n[exit code {code}]");
+        if (cut is not null) sb.Append(CutNote(cut, fullPath));
+        if (PipeCuts.HiddenFailureNote(probeStatuses, pipelineText) is { } hidden) sb.Append('\n').Append(hidden);
         sb.Append(WhereNote(workspace, elsewhere, mp.Cwd));
         if (!mp.OutputReachedEof)
             sb.Append("\n[note: something the command started is still running and holding its output open, so this may be incomplete]");
@@ -304,6 +333,19 @@ public sealed partial class ShellService(ProcessRegistry registry, ISettings? se
             IsError = timedOut || aborted || killed,
             Details = Details(mp, truncated, fullPath, timedOut, aborted, changes),
         };
+    }
+
+    /// <summary>The note of a run without its cut: the exit code is the run's own, and the full output is saved.</summary>
+    private static string CutNote(PipeCuts.Cut cut, string? fullPath) =>
+        $"\n[NetPI ran this without \"| {cut.Segment}\": the exit code is the test run's own, and the full output is in {(fullPath is null ? "no file (saving it failed)" : fullPath)}]";
+
+    /// <summary>The view of a head cut: the first N lines and the last 20; the whole output when they cover it.</summary>
+    private static string HeadTailView(string full, int headLines)
+    {
+        var lines = full.TrimEnd('\n').Split('\n');
+        if (lines.Length <= headLines + 20) return full.TrimEnd('\n');
+        var between = lines.Length - headLines - 20;
+        return string.Join("\n", lines.Take(headLines)) + $"\n[… {between} lines …]\n" + string.Join("\n", lines.TakeLast(20));
     }
 
     private static string PathDisplayBytes(long bytes) => bytes < 1024 * 1024
