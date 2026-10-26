@@ -511,6 +511,82 @@ public static class FileTests
             Check.Equal(10, T.D(res).Int("firstChangedLine"));
         });
 
+        // ------------------------------------------------ edit: the miss shows the current text
+        r.Add("edit: a miss shows the file's current lines around the most similar line", async () =>
+        {
+            var dir = T.TempDir("edit-miss");
+            var original = string.Join("\n", Enumerable.Range(1, 20).Select(i => $"line {i}")) + "\n";
+            var f = T.WriteText(dir, "m.txt", original);
+            // the first line of oldText is line 10 exactly, the second does not exist: the region is 3 before to the span + 3 after
+            var res = await T.Run(Edit, dir, new { path = "m.txt", oldText = "line 10\nline 11x", newText = "x" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "Its first line exists at line 10, but the following lines differ.");
+            Check.Contains(res.Content, "The file's current lines 7-15:");
+            Check.Contains(res.Content, "\n   7: line 7\n");
+            Check.Contains(res.Content, "\n  10: line 10\n");
+            Check.Contains(res.Content, "\n  15: line 15\n");
+            Check.Contains(res.Content, "Copy oldText from these lines (re-read the file only if the region is not shown).");
+            Check.Contains(res.Content, "The file was not changed.");
+            Check.Equal(original, T.ReadRaw(f), "nothing was written");
+
+            // a near-but-not-equal first line points the same way, with the similar-line sentence
+            res = await T.Run(Edit, dir, new { path = "m.txt", oldText = "line 10x", newText = "x" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "The most similar line is 10: `line 10`.");
+            Check.Contains(res.Content, "The file's current lines 7-14:");
+        });
+
+        r.Add("edit: the miss region is at most 30 lines, and long lines are clipped", async () =>
+        {
+            var dir = T.TempDir("edit-miss");
+            var lines = Enumerable.Range(1, 40).Select(i => $"line {i}").ToList();
+            T.WriteText(dir, "long.txt", string.Join("\n", lines));
+            // oldText spans 40 lines: the window would be 40, the cap keeps the first 30 of it
+            var res = await T.Run(Edit, dir, new { path = "long.txt", oldText = string.Join("\n", lines.Select(l => l + "x")), newText = "x" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "The file's current lines 1-30:");
+            Check.Contains(res.Content, "\n  30: line 30\n");
+            Check.True(!res.Content.Contains("line 31"), "the cap stops at 30 lines");
+
+            // a long line is clipped to its beginning
+            T.WriteText(dir, "wide.txt", "head\n" + new string('x', 500) + "\ntail\n");
+            res = await T.Run(Edit, dir, new { path = "wide.txt", oldText = "head x", newText = "y" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "…");
+            Check.True(res.Content.Split('\n').All(l => l.Length < 300), "a clipped line stays short");
+        });
+
+        r.Add("edit: a miss with nothing similar keeps the old message", async () =>
+        {
+            var dir = T.TempDir("edit-miss");
+            T.WriteText(dir, "q.txt", "alpha\nbeta\ngamma\n");
+            var res = await T.Run(Edit, dir, new { path = "q.txt", oldText = "zzzqqqwwweee", newText = "x" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "Re-read the file and copy oldText exactly.");
+            Check.True(!res.Content.Contains("The file's current lines"), "no anchor, no region");
+        });
+
+        r.Add("edit: a miss in a batch shows the failing file's region, and nothing is written", async () =>
+        {
+            var dir = T.TempDir("edit-miss-batch");
+            var a = T.WriteText(dir, "a.txt", "alpha\nbeta\n");
+            var b = T.WriteText(dir, "b.txt", "gamma\ndelta\n");
+            var res = await T.Run(Edit, dir, new
+            {
+                files = new object[]
+                {
+                    new { path = "a.txt", oldText = "alpha", newText = "ALPHA" },
+                    new { path = "b.txt", edits = new[] { new { oldText = "gamma x", newText = "GAMMA" } } },
+                },
+            });
+            ToolCheck.Error(res, "File 2 of 2: edit failed in b.txt");
+            Check.Contains(res.Content, "The file's current lines");
+            Check.Contains(res.Content, "gamma", "the region is the failing file's, not the first file's");
+            Check.Contains(res.Content, "No files were changed (all-or-nothing).");
+            Check.Equal("alpha\nbeta\n", T.ReadRaw(a));
+            Check.Equal("gamma\ndelta\n", T.ReadRaw(b));
+        });
+
         // ------------------------------------------------ write
         r.Add("write: new file uses files.newFileEol (lf default, crlf, auto) and creates parents", async () =>
         {

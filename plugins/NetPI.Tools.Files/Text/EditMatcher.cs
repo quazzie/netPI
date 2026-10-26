@@ -270,14 +270,27 @@ public static class EditMatcher
     private static string NotFoundMessage(string text, string oldText)
     {
         var sb = new StringBuilder("oldText was not found in the file (also tried ignoring trailing whitespace, unicode quote/dash differences and indentation).");
-        var hint = ClosestLine(text, oldText);
-        if (hint is not null) sb.Append(' ').Append(hint);
+        var region = ClosestRegion(text, oldText);
+        if (region is not null)
+        {
+            var (hint, lines, start, end) = region.Value;
+            sb.Append(' ').Append(hint)
+              .Append(" The file's current lines ").Append(start + 1).Append('-').Append(end + 1).Append(':');
+            for (var i = start; i <= end; i++)
+                sb.Append('\n').Append((i + 1).ToString().PadLeft(4)).Append(": ").Append(ClipLine(lines[i]));
+            sb.Append("\nCopy oldText from these lines (re-read the file only if the region is not shown).");
+            return sb.ToString();
+        }
         sb.Append(" Re-read the file and copy oldText exactly.");
         return sb.ToString();
     }
 
-    /// <summary>Point the model at the most similar line to the first non-blank line of oldText.</summary>
-    private static string? ClosestLine(string text, string oldText)
+    /// <summary>
+    /// The line of the file most similar to the first non-blank line of oldText, the sentence that points at it, and the
+    /// numbered region of the file's current lines around it: 3 lines before the anchor to the anchor plus oldText's line
+    /// count plus 3, at most 30 lines, long lines clipped. Null when nothing is similar enough to point at.
+    /// </summary>
+    private static (string Hint, string[] Lines, int Start, int End)? ClosestRegion(string text, string oldText)
     {
         var first = oldText.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0);
         if (first is null || first.Length < 3) return null;
@@ -299,10 +312,18 @@ public static class EditMatcher
         if (best < 0 || bestScore < 0.5) return null;
         var shown = lines[best].Trim();
         if (shown.Length > 160) shown = shown[..160] + "…";
-        return bestScore >= 1
+        var hint = bestScore >= 1
             ? $"Its first line exists at line {best + 1}, but the following lines differ."
             : $"The most similar line is {best + 1}: `{shown}`.";
+        var span = TrimTrailingEmpty(oldText.Split('\n'), oldText.EndsWith('\n')).Length;
+        var start = Math.Max(0, best - 3);
+        var end = Math.Min(lines.Length - 1, best + span + 3);
+        if (end - start + 1 > 30) end = start + 29;
+        return (hint, lines, start, end);
     }
+
+    /// <summary>A region line clipped the way read clips a page: the beginning, cut to a bound.</summary>
+    private static string ClipLine(string line) => line.Length <= 200 ? line : line[..200] + "…";
 
     private static double TokenOverlap(string a, string b)
     {

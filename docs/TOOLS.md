@@ -240,7 +240,10 @@ details: { path, created: boolean, bytes: number, lines: number, eol: 'lf'|'crlf
 - An empty oldText is an error, except on an empty file, where the edit acts like `write`.
 - oldText equal to newText is an error. A binary file, a missing file (the error suggests `write`) or a file over 64MB is
   an error.
-- When nothing is found, the error points at the most similar line.
+- When nothing is found and a line is similar enough to point at, the error shows the file's current lines around it —
+  numbered, 3 lines before the most similar line to oldText's first line, to that line plus oldText's line count plus 3
+  (at most 30 lines, long lines clipped) — and says to copy oldText from these lines, re-reading the file only if the
+  region is not shown. When nothing is similar, the error says to re-read the file and copy oldText exactly.
 - Model-facing content: `Applied 2 edits to src/x.cs (+5 −3)`, followed by notes about fuzzy matches or mixed line endings,
   then a compact unified diff (hunks only, 3 lines of context, at most 80 lines). Several files: `Applied 3 edits to 2
   files (+6 −3)`, then each file's line and diff, the 80 lines and 6000 characters shared out between the files (at
