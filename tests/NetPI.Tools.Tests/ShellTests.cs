@@ -629,6 +629,177 @@ public static class ShellTests
             Check.True(Encoding.UTF8.GetByteCount(res.Content) < 32 * 1024);
         });
 
+        // ------------------------------------------------ a trailing tail/head must not cut a test/build run
+
+        r.Add("pipe cuts: the pure detection — what is rewritten, what is left alone", () =>
+        {
+            void Cut(string command, string expectCommand, int lines, bool head, string shell = "bash")
+            {
+                var c = PipeCuts.Detect(command, shell);
+                Check.True(c is not null, $"rewritten: {command}");
+                Check.Equal(expectCommand, c!.Command, command);
+                Check.Equal(lines, c.Lines, command);
+                Check.Equal(head, c.Head, command);
+            }
+            void NoCut(string command, string shell = "bash") =>
+                Check.True(PipeCuts.Detect(command, shell) is null, $"left alone: {command}");
+
+            // a test/build run cut by a trailing tail/head: run without the cut
+            Cut("dotnet test | tail -5", "dotnet test", 5, false);
+            Cut("dotnet test -c Release 2>&1 | tail -20", "dotnet test -c Release 2>&1", 20, false);
+            Cut("dotnet build | head -10", "dotnet build", 10, true);
+            Cut("dotnet run | tail -n 30", "dotnet run", 30, false);
+            Cut("npm test | head -10", "npm test", 10, true);
+            Cut("npm run build | tail -50", "npm run build", 50, false);
+            Cut("pytest -x | tail -30", "pytest -x", 30, false);
+            Cut("ctest | tail -5", "ctest", 5, false);
+            Cut("cargo test | tail -10", "cargo test", 10, false);
+            Cut("go test ./... | tail -10", "go test ./...", 10, false);
+            Cut("mvn test | tail -5", "mvn test", 5, false);
+            Cut("gradle test | tail -5", "gradle test", 5, false);
+            Cut("make test | tail -5", "make test", 5, false);
+            Cut("scripts/test.ps1 -Suite Tools | tail -5", "scripts/test.ps1 -Suite Tools", 5, false);
+            Cut("build.ps1 -Publish | head -5", "build.ps1 -Publish", 5, true);
+            Cut("e2e.ps1 -Changed | tail -5", "e2e.ps1 -Changed", 5, false);
+            // the count's shapes
+            Cut("dotnet test | tail -n 5", "dotnet test", 5, false);
+            Cut("dotnet test | tail --lines=5", "dotnet test", 5, false);
+            Cut("dotnet test | tail 5", "dotnet test", 5, false);
+            Cut("dotnet test | head -n 20", "dotnet test", 20, true);
+            Cut("dotnet test | tail -5 2>&1", "dotnet test", 5, false);
+            Cut("FOO=1 dotnet test | tail -5", "FOO=1 dotnet test", 5, false); // a leading assignment is not the run
+            // the cut is only the last segment: a filter before it stays, a cut before a later command does not count
+            Cut("dotnet test | grep fail | tail -5", "dotnet test | grep fail", 5, false);
+            Cut("echo done; dotnet test | tail -5", "echo done; dotnet test", 5, false);
+
+            // not that shape: left alone
+            NoCut("seq 1 100 | tail -5");
+            NoCut("dotnet test | tail -5 file.txt");      // a tail that reads a file is not a cut of the pipe
+            NoCut("dotnet test | tail");                 // no count: its default is not what was asked for
+            NoCut("dotnet test | tail -n");              // a count with no number
+            NoCut("dotnet test | tail -n 5x");           // not a number
+            NoCut("dotnet test | tail -5 extra");        // a second argument: a file
+            NoCut("dotnet test | tail \"5\"");           // a quoted count: leave it, do not guess
+            NoCut("dotnet test | tail -5 | cat");        // the cut is not the last segment
+            NoCut("dotnet test | (tail -5)");            // a subshell, not a plain segment
+            NoCut("echo \"dotnet test\" | tail -5");     // the name is inside a string
+            NoCut("echo dotnet test | tail -5");         // an argument of echo is not a run
+            NoCut("dotnet test | tail -5; echo done");   // the last pipeline is not the cut
+            NoCut("dotnet test | tail -5\necho done");   // a heredoc/multi-line: leave it alone
+            NoCut("tail -5 file.txt");                   // no pipe at all
+
+            // the same for pwsh's Select-Object
+            Cut("dotnet test | Select-Object -Last 5", "dotnet test", 5, false, "pwsh");
+            Cut(".\\scripts\\test.ps1 | Select-Object -First 10", ".\\scripts\\test.ps1", 10, true, "pwsh");
+            Cut("dotnet test | select -l 5", "dotnet test", 5, false, "pwsh");
+            Cut("dotnet test | SELECT-OBJECT -f 3", "dotnet test", 3, true, "pwsh");
+            NoCut("Get-ChildItem | Select-Object -Last 5", "pwsh");
+            NoCut("dotnet test | Select-Object -Last", "pwsh");
+            NoCut("dotnet test | Select-Object -Last 5,3", "pwsh");
+            NoCut("dotnet test | Select-Object -Property Name", "pwsh");
+            return Task.CompletedTask;
+        });
+
+        r.Add("bash: a test run cut by a trailing tail is run without the cut: the real exit code, the note, the full log", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var dir = T.TempDir("cut");
+            var runner = new StringBuilder("#!/bin/sh\nfor i in $(seq 1 30); do echo \"line $i\"; done\necho FAIL: 2 of 30 tests failed\nexit 3\n");
+            await File.WriteAllTextAsync(Path.Combine(dir, "test.ps1"), runner.ToString());
+
+            var res = await T.Run(Bash(svc), dir, new { command = "./test.ps1 | tail -3" });
+            ToolCheck.Ok(res);
+            Check.Contains(res.Content, "FAIL: 2 of 30 tests failed");
+            Check.Contains(res.Content, "[exit code 3]", "the test run's own exit code, not the tail's 0");
+            Check.Contains(res.Content, "[NetPI ran this without \"| tail -3\"");
+            Check.NotContains(res.Content, "line 1", "the view is the last 3 lines, not the whole output");
+            var d = T.D(res);
+            Check.False(d.Bool("truncated"));
+            var path = d.Str("fullOutputPath")!;
+            Check.Contains(res.Content, path, "the note names the saved log");
+            var lines = File.ReadAllLines(path);
+            Check.True(lines.Length >= 31, $"the full output was saved ({lines.Length} lines)");
+            Check.Equal("line 1", lines[0]);
+
+            // a head cut shows the first N lines and the last 20
+            var head = await T.Run(Bash(svc), dir, new { command = "./test.ps1 | head -2" });
+            ToolCheck.Ok(head);
+            Check.Contains(head.Content, "line 1\nline 2");
+            Check.Contains(head.Content, "[… 9 lines …]", "the gap between the head and the last 20");
+            Check.Contains(head.Content, "FAIL: 2 of 30 tests failed");
+            Check.Contains(head.Content, "[exit code 3]");
+
+            // the same cut without a test run is left as the model wrote it: the tail's own output and exit code
+            var plain = await T.Run(Bash(svc), dir, new { command = "seq 1 100 | tail -5" });
+            ToolCheck.Ok(plain);
+            Check.Equal("96\n97\n98\n99\n100", plain.Content);
+            Check.NotContains(plain.Content, "NetPI ran this without");
+            Check.True(!T.D(plain).TryGetProperty("fullOutputPath", out var none) || none.ValueKind == System.Text.Json.JsonValueKind.Null,
+                "no cut: nothing is saved");
+        });
+
+        r.Add("bash: a failure a pipe hid is reported after the output, and the exit codes are kept", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var dir = T.TempDir("pipefail");
+
+            var res = await T.Run(Bash(svc), dir, new { command = "(exit 3) | cat" });
+            ToolCheck.Ok(res); // the last segment succeeded: a non-zero exit is not an error
+            Check.Contains(res.Content, "[a pipe hid a failure: a command before the last in \"(exit 3) | cat\" exited 3]");
+            Check.Equal(0, T.D(res).Int("exitCode"), "the pipeline's own code");
+            Check.NotContains(res.Content, "NETPI_PIPES", "the probe's marker line is stripped from the output");
+
+            var sigpipe = await T.Run(Bash(svc), dir, new { command = "yes | head -1" });
+            ToolCheck.Ok(sigpipe);
+            Check.NotContains(sigpipe.Content, "a pipe hid a failure", "141 (SIGPIPE, a reader that closed early) is not a failure");
+            Check.Equal(0, T.D(sigpipe).Int("exitCode"));
+
+            var ok = await T.Run(Bash(svc), dir, new { command = "true | true" });
+            ToolCheck.Ok(ok);
+            Check.NotContains(ok.Content, "a pipe hid a failure");
+            Check.Equal(0, T.D(ok).Int("exitCode"));
+
+            // a failure in the last segment is not hidden: the usual [exit code] says it, no pipe note
+            var fail = await T.Run(Bash(svc), dir, new { command = "echo ok | false" });
+            Check.Contains(fail.Content, "[exit code 1]");
+            Check.NotContains(fail.Content, "a pipe hid a failure");
+            Check.Equal(1, T.D(fail).Int("exitCode"));
+
+            // a command that ends in exit N is left alone: no probe line, the exit code is its own
+            var own = await T.Run(Bash(svc), dir, new { command = "echo bye; exit 5" });
+            Check.Equal("bye\n[exit code 5]", own.Content);
+            Check.Equal(5, T.D(own).Int("exitCode"));
+        });
+
+        r.Add("pwsh: a test run cut by Select-Object -Last is run without the cut", async () =>
+        {
+            var (svc, _, _) = NewService();
+            if (ShellLocator.FindPwsh(null, out _) is null) Check.Skip("pwsh is not installed");
+            var dir = T.TempDir("pwshcut");
+            var ps = new StringBuilder();
+            for (var i = 1; i <= 30; i++) ps.AppendLine($"Write-Output \"line {i}\"");
+            ps.AppendLine("exit 3");
+            await File.WriteAllTextAsync(Path.Combine(dir, "test.ps1"), ps.ToString());
+
+            var tool = new ShellTool("pwsh", svc);
+            var res = await T.Run(tool, dir, new { command = "& .\\test.ps1 | Select-Object -Last 3" });
+            ToolCheck.Ok(res);
+            Check.Contains(res.Content, "line 30");
+            Check.NotContains(res.Content, "line 1", "the view is the last 3 lines");
+            Check.Contains(res.Content, "[exit code 3]", "the script's own exit code, not the pipeline's 0");
+            Check.Contains(res.Content, "[NetPI ran this without \"| Select-Object -Last 3\"");
+            var d = T.D(res);
+            var path = d.Str("fullOutputPath")!;
+            Check.Contains(res.Content, path);
+            Check.True(File.ReadAllText(path).Contains("line 1"), "the full output was saved");
+
+            // the same cut without a test run is left as written
+            var plain = await T.Run(tool, dir, new { command = "1..100 | Select-Object -Last 5" });
+            ToolCheck.Ok(plain);
+            Check.Contains(plain.Content, "96\n97\n98\n99\n100");
+            Check.NotContains(plain.Content, "NetPI ran this without");
+        });
+
         // Windows regression: the test also ran `bash -c <command>` on Windows, where Git Bash's MSYS runtime re-parses the
         // command line and collapses the backslashes; production never launches that way on Windows.
         r.Add("bash: Windows-style invocation (env + eval) preserves quoting and backslashes", async () =>

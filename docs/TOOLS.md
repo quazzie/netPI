@@ -406,6 +406,20 @@ The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.
   - `[exit code N]` for a non-zero exit. This is **not** `isError`.
   - `[timed out after Ns; the process tree was killed…]` or `[aborted…]`. Both set `isError: true`.
   - A spawn failure is also `isError: true`.
+- A trailing `tail -N` / `head -N` (bash) or `Select-Object -Last N` / `-First N` (pwsh) that cuts a test/build run
+  in the same pipeline (`dotnet test|build|run`, `npm test|run <x>`, `pytest`, `ctest`, `cargo test|build`,
+  `go test|build`, `mvn`, `gradle`, `make`, `test.ps1`, `e2e.ps1`, `build.ps1`) is run **without** that last
+  segment: the result shows the last N lines (a `tail`/`-Last`), or the first N lines and the last 20 (a
+  `head`/`-First`), the run's own `[exit code N]`, and the full output saved to the usual log file even when it is
+  short, with a note `[NetPI ran this without "| tail -5": the exit code is the test run's own, and the full output
+  is in <path>]`. Only a trailing cut is recognized: a cut that is not the last segment, a `tail -5 file.txt` that
+  reads a file, a `| grep …` filter, and anything the parser cannot follow (quoting, a heredoc) are left as written.
+- A pipeline's exit code is its last segment's, so a failing earlier segment is invisible. A single-line foreground
+  bash command that carries a top-level pipe is probed: it prints the last pipeline's segment statuses on a marker
+  line the tool strips from the output, and when an earlier segment exited non-zero while the last exited 0 the
+  result gets `[a pipe hid a failure: a command before the last in "<pipeline, clipped to 80 chars>" exited N]`
+  (exit 141, a SIGPIPE from a reader that closed early, is not a failure). A command that ends in `exit N`, a
+  trailing `&`, a heredoc, and background jobs are not probed, so their exit codes are unchanged.
 - `cmd /c <file>.ps1` (also `/k`, `cmd.exe`) is refused before anything runs, with the `pwsh -NoProfile -File` line to
   use instead: cmd does not run a PowerShell script, it opens it in the file's default program (an editor) and waits for
   that program, so the call would hang until its timeout. A running command silent for `shell.idleMinutes` raises
