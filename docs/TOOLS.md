@@ -1503,18 +1503,26 @@ manual). `call_tool` is deferred-tool infrastructure like `tool_search`, declare
 never deferred by a list such as `["*"]`. The batch runner unwraps the call before any hook sees it: the policy hooks, the
 workspace guard, parallelism, the events and the after-call hooks all work on the inner tool, and the result is stored under
 the outer call's id. The transcript keeps the call the model made: the stored `ToolCallPart` is `call_tool` (its
-arguments hold the inner name and arguments) and so is the stored `ToolResultPart.Name`. Readers that care which tool ran
+arguments hold the inner name and arguments) and so is the stored `ToolResultPart.Name`; a call whose arguments do not
+carry the inner name (a missing one, inferred from the arguments) is stored with it, so the readers see the tool that ran.
+Readers that care which tool ran
 never compare that name: C# uses `ToolCalls` (`src/NetPI.Contracts/ToolCalls.cs`: `Effective(call)` → inner name and
 arguments, `Index`/`EffectiveName(result, calls)` to name a result by its call), `CallTool.TryUnwrap` uses the same
 parsing; the web UI applies `effectiveCall` (`web/src/lib/tools.js`) once where chat items are built, so cards, views,
-artifact chips and step counts all see the inner tool (`via: 'call_tool'` marks it). A call to an unknown tool, to `call_tool` or to `tool_search` is an error result that says what to do.
+artifact chips and step counts all see the inner tool (`via: 'call_tool'` marks it). A call to an unknown tool is an error
+result that says what to do. A `call_tool` naming `tool_search` runs the search with those arguments (naming `call_tool`
+without an envelope inside keeps its error). A missing name is inferred from the arguments: every required property of a
+tool's schema is among them, every key is one of its properties (names compared the lenient way, a `help` key ignored),
+and exactly one such tool is the call; several such tools are named in the error, and with none it says to find the tool
+with `tool_search`.
 
 **The local models write the envelope twice** (2026-10-21: a webhook chat's six lost web searches; the same shape in chats
 since 2026-10-18): `{"name": X, "arguments": {"name": X, "arguments": {…}}}`, once as `{"arguments": {…}}` with no name of
 its own. `CallTool.TryUnwrap` follows the envelope while it names the tool it already is inside (at most `MaxNesting`
 levels) and reads the nameless variant; a pair naming another tool is left alone, and so is a tool that declares a `name`
 and an `arguments` parameter of its own (an rpc proxy), where the pair is the call. A call_tool naming `call_tool` or
-`tool_search` runs the call inside it: those two are never a call's arguments. What is left and arrives at a tool is
+`tool_search` with an envelope inside runs the call inside it (those two are never a call's arguments); with no envelope
+inside, `tool_search` is the call's tool and `call_tool` keeps its error. What is left and arrives at a tool is
 answered by `ToolEnvelope` with the call's own shape, because a tool's "needs a query." cannot be reconciled with a query
 that is one bracket deeper, and the model repeats the call unchanged.
 A deferred tool called directly by name still runs where the backend produces such a call (a local backend may refuse a name
