@@ -50,7 +50,7 @@ public static class DeferredToolsTests
                 0 => Reply.Tools(Reply.Call("tool_search", new { query = "weather forecast" })),
                 1 => Reply.Tools(Reply.Call("call_tool", new { name = "weather_lookup", arguments = new { city = "Oslo" } })),
                 2 => Reply.Tools(Reply.Call("call_tool", new { name = "nope", arguments = new { } })),
-                3 => Reply.Tools(Reply.Call("call_tool", new { name = "tool_search", arguments = new { query = "x" } })),
+                3 => Reply.Tools(Reply.Call("call_tool", new { name = "tool_search", arguments = new { query = "zzz" } })),
                 _ => Reply.Text("done"),
             };
             await h.SendAsync(session.Id, "weather in Oslo?"); await h.IdleAsync(session.Id);
@@ -66,7 +66,8 @@ public static class DeferredToolsTests
             Check.Equal("call_tool", results[1].Name, "the result belongs to the call the model made");
             Check.True(hook.Before.Contains("weather_lookup") && hook.After.Contains("weather_lookup"), "the hooks see the inner tool");
             Check.True(results[2].IsError); Check.Contains(results[2].Content, "Unknown tool 'nope'");
-            Check.True(results[3].IsError); Check.Contains(results[3].Content, "call it directly");
+            Check.False(results[3].IsError, "naming tool_search runs the search with those arguments: " + results[3].Content);
+            Check.Contains(results[3].Content, "No tool matches");
             Check.Equal(0, h.Messages(session.Id).Count(m => m.MetaString("kind") == "tools"), "no tools notice: the tools did not change");
             Check.Equal(null, h.Sessions.GetSession(session.Id)!.Meta?["toolsLoaded"], "a search changes nothing about the chat");
             // a policy block applies to the inner tool
@@ -289,6 +290,55 @@ public static class DeferredToolsTests
             Check.Equal(3, weather.Calls.Count, "the answered call did not run");
             Check.False(results[4].IsError, results[4].Content);
             Check.Equal("""{"name":"remote_tool","arguments":{"city":"Oslo"}}""", proxy.Calls.Single(), "its own name/arguments pair");
+            ctx.Unload();
+        });
+        t.Add("deferred: a call_tool without a name is inferred from its arguments, tool_search runs through it, call_tool keeps its error", async () => {
+            await using var h = await TestHost.StartAsync();
+            var ctx = new TestPluginContext(h, "netpi.test");
+            var todos = new Deferred("todo_write", "Write the todo list.", schema: """{"type":"object","properties":{"items":{"type":"array","description":"The items"}},"required":["items"]}""");
+            var spawn = new Deferred("agent_spawn", "Spawn a subagent for a task.", schema: """{"type":"object","properties":{"agent":{"type":"string"},"task":{"type":"string"}},"required":["agent","task"]}""");
+            var notes = new Deferred("read_notes", "Read the notes.", schema: """{"type":"object","properties":{"note_path":{"type":"string"}}}""");
+            var more = new Deferred("read_more", "Read more notes.", schema: """{"type":"object","properties":{"note_path":{"type":"string"}}}""");
+            var weather = new Deferred("weather_lookup", "Current weather and forecast for a city.");
+            ctx.Tools.Register(todos); ctx.Tools.Register(spawn); ctx.Tools.Register(notes); ctx.Tools.Register(more); ctx.Tools.Register(weather);
+            var session = h.NewSession(); var stage = 0;
+            h.Catalog.Handler = (r, ct) => stage++ switch
+            {
+                // one tool takes exactly these arguments: the name is inferred
+                0 => Reply.Tools(Reply.Call("call_tool", new { arguments = new { items = new[] { new { text = "ship it", status = "open" } } } })),
+                // both required properties present: inferred too
+                1 => Reply.Tools(Reply.Call("call_tool", new { arguments = new { agent = "qwen38-27b", task = "check the code" } })),
+                // two tools take them (neither declares required): the answer names both
+                2 => Reply.Tools(Reply.Call("call_tool", new { arguments = new { note_path = "notes.md" } })),
+                // no tool takes them: the hint is tool_search
+                3 => Reply.Tools(Reply.Call("call_tool", new { arguments = new { zzz = 1 } })),
+                // an extra key no schema declares: no match
+                4 => Reply.Tools(Reply.Call("call_tool", new { arguments = new { city = "Oslo", extra = 1 } })),
+                // naming tool_search runs the search with those arguments
+                5 => Reply.Tools(Reply.Call("call_tool", new { name = "tool_search", arguments = new { query = "weather" } })),
+                // naming call_tool without an envelope inside: the error stays
+                6 => Reply.Tools(Reply.Call("call_tool", new { name = "call_tool", arguments = new { query = "x" } })),
+                _ => Reply.Text("done"),
+            };
+            await h.SendAsync(session.Id, "todos?"); await h.IdleAsync(session.Id);
+            var results = h.Messages(session.Id).SelectMany(m => m.ToolResults).ToList();
+            Check.False(results[0].IsError, results[0].Content);
+            Check.Equal("call_tool", results[0].Name, "the result belongs to the call the model made");
+            Check.Equal("""{"items":[{"text":"ship it","status":"open"}]}""", todos.Calls.Single(), "the inferred tool ran");
+            Check.False(results[1].IsError, results[1].Content);
+            Check.Equal("""{"agent":"qwen38-27b","task":"check the code"}""", spawn.Calls.Single());
+            Check.True(results[2].IsError, results[2].Content);
+            Check.Contains(results[2].Content, """call_tool needs "name". Tools that take these arguments: read_more, read_notes.""");
+            Check.True(results[3].IsError); Check.Contains(results[3].Content, "No tool takes these arguments; find it with tool_search.");
+            Check.True(results[4].IsError); Check.Contains(results[4].Content, "No tool takes these arguments; find it with tool_search.");
+            Check.False(results[5].IsError, results[5].Content);
+            Check.Contains(results[5].Content, "weather_lookup"); Check.Contains(results[5].Content, "schema:");
+            Check.True(results[6].IsError); Check.Contains(results[6].Content, "call it directly");
+            // the inferred call is stored with its name: the readers see the tool that ran
+            var stored = h.Messages(session.Id).SelectMany(m => m.ToolCalls).ToList();
+            Check.Equal("call_tool", stored[0].Name);
+            Check.Equal("todo_write", NetPI.ToolCalls.EffectiveName(stored[0]), "the reader names the inner tool");
+            Check.Contains(stored[0].Arguments, "{\"name\":\"todo_write\",\"arguments\":{\"items\":");
             ctx.Unload();
         });
     }

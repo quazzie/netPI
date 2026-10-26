@@ -152,6 +152,8 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
         // arguments that lack only their final bracket are closed before anything reads them (a response cut off at its
         // output limit may lack more, so its calls are left as they are): the stored call's own (the provider gets valid
         // JSON back), then the inner arguments of a call_tool, which only the runner sees
+        // a call whose arguments do not carry the inner name (a missing one, inferred from the arguments) is stored with it,
+        // so the readers of the transcript see the tool that ran
         _outputLimit = assistant.StopReason == "length";
         var argsChanged = calls.Aggregate(false, (changed, c) => CloseArguments(c) | changed);
         calls = [.. calls.Select(c =>
@@ -159,6 +161,7 @@ internal sealed partial class ToolBatch(AgentRuntime rt, AgentState state, Agent
             if (CallTool.TryUnwrap(c, tools) is not { } inner) return c;
             _outer[c.Id] = c;
             CloseArguments(inner);
+            if (CallTool.StoreName(c, inner)) argsChanged = true;
             return inner;
         })];
         var done = new HashSet<string>(StringComparer.Ordinal);
