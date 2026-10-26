@@ -392,8 +392,8 @@ try {
     $realFailures = @($failures | Where-Object { -not $_.Name.StartsWith('(') })
 
     # Each failure with its evidence, from the suite's own output: the runner's FAIL line and the message under it, after
-    # the last lines the test printed before it failed. A CI job log shows only what is printed here (artifacts\testlogs
-    # is an upload, not the log), and "[Aux] workspaces: …" alone says nothing about why.
+    # the last lines the test printed before it failed. A console log shows only what is printed here (artifacts\testlogs
+    # is a file, not the log), and "[Aux] workspaces: …" alone says nothing about why.
     foreach ($f in $realFailures) {
         $lines = @($suiteOutput[$f.Suite])
         if ($f.Suite -eq 'UI') {

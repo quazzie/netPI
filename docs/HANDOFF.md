@@ -94,14 +94,13 @@ timeouts with the machine and find elements by role and `data-*` hooks; the UI's
 `web/test` (the `UI` unit suite, `npm test`); and `-Changed` runs the journeys for UI files only. The other 29 scripts are gone,
 each listed with where its behaviour is still covered: [archive/2026-10-15-e2e-restructure.md](archive/2026-10-15-e2e-restructure.md).
 On the way: the profile picker no longer empties itself (and closes) when one reload of its list fails, and `e2e.ps1`
-rebuilds the bundles when only a plugin tab changed. CI (last run 6 October, failed) is the owner's call: revive or delete.
+rebuilds the bundles when only a plugin tab changed. CI was removed on 2026-10-26 (the owner's call).
 
 ### The UI tests run against the real server (2026-10-11)
 
 `web/mock` is gone: the hand-written JavaScript copy of the server and its Playwright walkthrough (49 sections, about 430
 checks). Every UI test is a script in `tests/NetPI.E2E/ui` against a real server and MockLlm (`.\scripts\e2e.ps1 -Tag ui`;
-how to write one: TESTING.md; cut to eight journeys on 2026-10-15, above), and CI runs them: the e2e job lost `-NoUi` and took over the UI's node checks and the
-bundle check (its first green run on GitHub is still to come). The move found six product bugs, fixed on the way, and
+how to write one: TESTING.md; cut to eight journeys on 2026-10-15, above). The move found six product bugs, fixed on the way, and
 four behaviours left for the owner to decide: [archive/2026-10-11-retire-mock-ui-suite.md](archive/2026-10-11-retire-mock-ui-suite.md).
 
 ### Slimming pass (2026-10-11)

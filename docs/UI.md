@@ -15,7 +15,7 @@ npm install
 npm run build            # build:web (→ web/dist; into artifacts/app/wwwroot with NETPI_COPY) + build:plugins (plugins/*/ui → wwwroot/ui.js)
 npm run dev              # Vite dev server on :5173, proxies /ws /api /plugins → NETPI_URL, else http://127.0.0.1:7431
 node web/scripts/build-plugins.mjs --watch            # rebuild plugin UIs on change
-node web/scripts/check-tab-lifecycle.mjs              # one of the UI's node checks (web/scripts/check-*.mjs; CI runs them all).
+node web/scripts/check-tab-lifecycle.mjs              # one of the UI's node checks (web/scripts/check-*.mjs).
                          # playwright-core is a devDependency (web/scripts/pw.mjs also finds a global `playwright`);
                          # NETPI_BROWSER=<path of a Chromium-based executable> runs them in that browser instead of
                          # Playwright's own build or the Edge/Chrome fallback — a preinstalled Chromium of another revision, say

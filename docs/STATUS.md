@@ -25,23 +25,9 @@
 Windows validation on 2026-10-03: the six unit suites (`scripts/test.ps1`) from fresh Release builds in this repository
 were green (Providers 68 passed, 495 checks; Tools 79; Agent 195; Aux 335; Host 170; Storage 104).
 
-The repository is on GitHub (`quazzie/netPI`) and `.github/workflows/ci.yml` runs on every push, on `windows-latest`:
-the six unit suites and the real-server e2e suite with its browser tests (the mock UI suite was removed on 2026-10-11; the Linux build and the suites on Linux are not
-run there yet). **The runs on `master` of 2026-10-05 were not green.** Both causes were in the environment and are
-fixed in the code (idea-gkx7io), but a green run on the pushed `master` is still to be confirmed:
-
-- the runner has no git identity, and `workspaces.integrate` merges: the Aux fixture gives its repository one, and both
-  .NET jobs set a global one, as a developer's machine has;
-- the e2e "where" check guessed Git Bash's `/tmp` mount, which is TEMP only while both are spelled alike (the runner's
-  TEMP is `C:\Users\RUNNER~1\…`): the scenario prints `pwd -W` and the test compares it with Windows' long name.
-
-The failures of those runs:
-
-| Job | Result on 2026-10-05 |
-|---|---|
-| Unit suites | Aux 391/395 (four `workspaces:` tests); Host 205/206 (`server: /api/health…` pinned the version `0.1.0`; the test now reads the host's own version) |
-| E2E (real server, mock model) | 63/66: `context.project-switch`, `context.workspace-binding`, `sessions.title-usage-projects` |
-| Mock UI suite | 416/417 once (a harness race, being fixed) |
+The repository is on GitHub (`quazzie/netPI`). There is no CI: the owner removed the GitHub workflow on 2026-10-26
+(its runs had been red since 2026-10-05 and nobody watched them). The suites run locally (`scripts/test.ps1`,
+`scripts/e2e.ps1`); Linux is not validated.
 
 Coverage and verification scope are in [TESTING.md](TESTING.md). Small changes use focused checks; full gates
 are for shared contracts or cross-cutting behavior.
@@ -66,8 +52,7 @@ are for shared contracts or cross-cutting behavior.
   them together) starts a new registry while the old runs' calls may still be returning, so it can temporarily exceed
   the configured slots; persistent budget reservations are shared across the old and new plugin instances either way.
 - Linux/macOS and paid/live-provider billing behavior were not validated in this change. The Anthropic provider
-  still needs verification against the real API. CI (`.github/workflows/ci.yml`) runs on every push, on Windows
-  only; its 2026-10-05 runs were not green, and the fix is not yet confirmed by a pushed run (see Validation).
+  still needs verification against the real API. There is no CI (see Validation).
 - `src/NetPI.Desktop` references the WebView2 SDK as a floating `1.0.*`: every restore may resolve a newer package,
   so two desktop builds days apart are not the same bytes and a package regression would arrive unannounced. Pin it
   to the version a Windows restore resolves (`obj/project.assets.json` names it); the exact version is not known
