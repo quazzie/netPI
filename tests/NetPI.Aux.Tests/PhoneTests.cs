@@ -242,6 +242,16 @@ public static class PhoneTests
             return Task.CompletedTask;
         });
 
+        r.Add("phone: agent.stream's copy of a chat's answer comes without the running calls' output", () =>
+        {
+            var snap = JsonNode.Parse("""{"seq":5,"events":[{"type":"stream.delta","d":{"text":"a"},"seq":1},{"type":"tool.start","d":{"callId":"c"},"seq":2},{"type":"tool.output","d":{"callId":"c","chunk":"xxx"},"seq":3}]}""");
+            PhoneApi.WithoutToolOutput(snap);
+            Check.Equal("stream.delta,tool.start", string.Join(",", snap!["events"]!.AsArray().Select(e => S(e!["type"]))));
+            Check.Equal(5, snap["seq"]!.GetValue<int>(), "the rest is as it was");
+            PhoneApi.WithoutToolOutput(null);   // a chat with nothing streaming answers null-free, but a null must not throw
+            return Task.CompletedTask;
+        });
+
         r.Add("phone: the page's build changes when a file changes and is stable when it does not", () =>
         {
             var dir = T.TempDir("phone-build");

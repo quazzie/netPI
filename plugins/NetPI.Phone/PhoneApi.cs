@@ -204,13 +204,25 @@ internal sealed class PhoneApi : IDisposable
         }
         try
         {
-            var result = await _ctx.Rpc.InvokeAsync(method, args, http.RequestAborted).ConfigureAwait(false);
-            await Json(http, 200, new JsonObject { ["result"] = NetPiJson.ToNode(result) });
+            var result = NetPiJson.ToNode(await _ctx.Rpc.InvokeAsync(method, args, http.RequestAborted).ConfigureAwait(false));
+            if (method == "agent.stream") WithoutToolOutput(result);
+            await Json(http, 200, new JsonObject { ["result"] = result });
         }
         catch (RpcException ex)
         {
             await Json(http, ex.Code switch { "not_found" => 404, "forbidden" => 403, "conflict" => 409, "too_large" => 413, "unavailable" => 503, "bad_request" => 400, _ => 500 }, Err(ex.Code, ex.Message));
         }
+    }
+
+    /// <summary>
+    /// The phone catches up a chat's answer with agent.stream but never shows a call's output (it is not relayed either): the
+    /// running calls' tool.output, up to 200 KB each, is dropped before it costs the phone's radio.
+    /// </summary>
+    internal static void WithoutToolOutput(JsonNode? snapshot)
+    {
+        if (snapshot?["events"] is not JsonArray events) return;
+        for (var i = events.Count - 1; i >= 0; i--)
+            if (events[i]?["type"]?.GetValue<string>() == "tool.output") events.RemoveAt(i);
     }
 
     private async Task ServeFile(HttpContext http, string path)
