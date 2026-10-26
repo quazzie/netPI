@@ -16,6 +16,7 @@
     <Project Path="plugins/NetPI.IdleCompaction/NetPI.IdleCompaction.csproj" />
     <Project Path="plugins/NetPI.Agents/NetPI.Agents.csproj" />
     <Project Path="plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
+    <Project Path="plugins/NetPI.Tidy/NetPI.Tidy.csproj" />
     <Project Path="plugins/NetPI.Loops/NetPI.Loops.csproj" />
     <Project Path="plugins/NetPI.Lsp/NetPI.Lsp.csproj" />
     <Project Path="plugins/NetPI.Profiles/NetPI.Profiles.csproj" />

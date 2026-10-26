@@ -22,6 +22,7 @@ IdeasAutoRefineTests.Register(runner);
 IdeasStorageTests.Register(runner);
 IdeasSnapshotTests.Register(runner);
 IdeasNoticeTests.Register(runner);
+TidyTests.Register(runner);
 TodoTests.Register(runner);
 CallToolReadersTests.Register(runner);
 WebTests.Register(runner);

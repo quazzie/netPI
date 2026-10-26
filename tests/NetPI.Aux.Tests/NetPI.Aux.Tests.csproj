@@ -22,6 +22,7 @@
     <ProjectReference Include="../../plugins/NetPI.Mcp/NetPI.Mcp.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Retry/NetPI.Retry.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Tidy/NetPI.Tidy.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Loops/NetPI.Loops.csproj" />
     <ProjectReference Include="../../plugins/NetPI.ToolRepair/NetPI.ToolRepair.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Compaction/NetPI.Compaction.csproj" />

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <!-- Shared SOURCE, not shared assemblies (docs/PLUGINS.md): the one way NetPI starts git. -->
+    <Compile Include="$(RepoRoot)shared/GitKit/*.cs" LinkBase="GitKit" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="NetPI.GitKit" />
+  </ItemGroup>
+</Project>

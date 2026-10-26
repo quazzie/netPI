@@ -1,0 +1,5 @@
+{
+  "id": "netpi.tidy",
+  "name": "Tidy",
+  "description": "When an agent ends its turn with work left behind (uncommitted changes, an unmerged or merged-but-kept worktree, scratch it created), reminds it once to clean up — unless it says it is waiting for something."
+}
