@@ -81,7 +81,7 @@ public static class RpcReadOnlyTests
             var expected = new Dictionary<string, (string[] ReadOnly, string[] Writable)>
             {
                 ["processes."] = (["processes.list", "processes.output"], ["processes.kill", "processes.killCall"]),
-                ["files."] = (["files.commits", "files.git", "files.list", "files.scope", "files.search"], ["files.applyEdits", "files.open"]),
+                ["files."] = (["files.commits", "files.git", "files.list", "files.read", "files.scope", "files.search"], ["files.applyEdits", "files.open"]),
             };
             foreach (var (prefix, (readOnly, writable)) in expected)
             {
