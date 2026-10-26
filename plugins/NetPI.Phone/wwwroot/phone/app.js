@@ -561,7 +561,7 @@ function header(title, sub, back, right) {
     el('div', { class: 'title' }, el('h1', { id: 'hdr-title' }, title), el('div', { class: 'sub', id: 'hdr-sub' }, sub || '')),
     right, el('button', { id: 'conn', class: 'conn', 'aria-label': 'Connection', onclick: () => conn.now('Reconnecting') }));
 }
-function mount(...nodes) { $app.replaceChildren(...nodes.filter(Boolean)); paintConn(); }
+function mount(...nodes) { $app.dataset.view = S.view; $app.replaceChildren(...nodes.filter(Boolean)); paintConn(); }
 
 function paintConn() {
   const dot = document.getElementById('conn');
@@ -583,7 +583,8 @@ function paintConn() {
   if (chat) paintStrip();
   box.className = 'banner' + (tone ? ' tone-' + tone : '');
   box.hidden = !text;
-  box.replaceChildren(...(text ? [el('span', {}, text), action ? el('button', { class: 'small', onclick: action[1] }, action[0]) : null] : []));
+  // replaceChildren writes a null as the text "null": only nodes go in
+  box.replaceChildren(...(text ? [el('span', {}, text), action ? el('button', { class: 'small', onclick: action[1] }, action[0]) : null].filter(Boolean) : []));
 }
 
 function paintNeeds() {
@@ -596,6 +597,7 @@ function paintNeeds() {
 // ---------------------------------------------------------------- pairing
 function renderPair(msg) {
   S.view = 'pair';
+  $app.dataset.view = 'pair';
   const code = el('input', { placeholder: 'Pairing code', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false' });
   const name = el('input', { placeholder: 'Name this phone', value: store.get('name', '') });
   const err = el('div', { class: 'err-text' }, msg || '');
@@ -630,7 +632,7 @@ function showList() {
   const reload = debounce(() => { S.search = search.value.trim(); S.limit = 60; loadList().then(paintList); }, 300);
   search.addEventListener('input', reload);
   mount(header('NetPI', S.device?.name ? 'on ' + S.device.name : '', null, el('button', { class: 'icon', 'aria-label': 'Refresh', onclick: () => resyncAll(false) }, icon('refresh'))),
-    el('div', { id: 'banner', class: 'banner', hidden: true }), tabsBar('chats'),
+    el('div', { id: 'banner', class: 'banner', hidden: true, 'data-testid': 'banner' }), tabsBar('chats'),
     el('main', { id: 'list', class: 'list' }, el('div', { class: 'search' }, search), el('div', { id: 'rows' })),
     el('button', { class: 'fab', onclick: () => navigate('new'), 'aria-label': 'New chat' }, icon('plus', 28)));
   paintList();
@@ -651,7 +653,7 @@ function paintList() {
     const r = S.runs.get(s.id);
     const failed = st === 'idle' && r && (r.status === 'failed' || r.error);
     const what = st === 'wait' ? 'waits for your answer' : st === 'run' ? activityText(r) : failed ? 'failed: ' + (r.error || r.status) : null;
-    nodes.push(el('button', { class: 'row', onclick: () => openChat(s.id) },
+    nodes.push(el('button', { class: 'row', 'data-session': s.id, 'data-state': failed ? 'failed' : st, onclick: () => openChat(s.id) },
       el('span', { class: 'dot ' + (failed ? 'err' : st) }),
       el('span', { class: 't' }, el('b', {}, (s.pinned ? '📌 ' : '') + (s.title || 'Untitled')),
         el('span', { class: failed ? 'sub err' : 'sub' }, [what, projectName(s.projectId)].filter(Boolean).join(' · '))),
@@ -672,7 +674,7 @@ async function loadWork() {
 const refreshWork = debounce(loadWork, 400);
 function renderWork() {
   mount(header('NetPI', S.device?.name ? 'on ' + S.device.name : '', null, el('button', { class: 'icon', 'aria-label': 'Refresh', onclick: () => loadWork() }, icon('refresh'))),
-    el('div', { id: 'banner', class: 'banner', hidden: true }), tabsBar('agents'), el('main', { id: 'work', class: 'list' }));
+    el('div', { id: 'banner', class: 'banner', hidden: true, 'data-testid': 'banner' }), tabsBar('agents'), el('main', { id: 'work', class: 'list' }));
   paintWork();
 }
 function paintWork() {
@@ -731,7 +733,7 @@ function renderNew(refresh) {
   if (prev) newDraft.text = prev.value;
   const project = el('select', { 'aria-label': 'Project' }, el('option', { value: '' }, 'No project'), S.projects.map((p) => el('option', { value: p.id, selected: p.id === store.get('lastProject', '') }, p.name)));
   const model = el('select', { 'aria-label': 'Model' }, el('option', { value: '' }, 'Default model'), S.models.map((m) => { const ref = m.ref || m.id || m; return el('option', { value: ref }, m.displayName || ref); }));
-  const text = el('textarea', { id: 'new-text', rows: 7, placeholder: 'What should it do?', value: newDraft.text, oninput: () => { newDraft.text = text.value; } });
+  const text = el('textarea', { id: 'new-text', rows: 7, 'aria-label': 'Task', placeholder: 'What should it do?', value: newDraft.text, oninput: () => { newDraft.text = text.value; } });
   const thumbs = el('div', { class: 'thumbs' });
   const paintThumbs = () => thumbs.replaceChildren(...newDraft.images.map((i, n) => thumbNode(i, () => { newDraft.images.splice(n, 1); paintThumbs(); })));
   const file = picker((img) => { newDraft.images.push(img); paintThumbs(); });
@@ -751,7 +753,7 @@ function renderNew(refresh) {
       chat?.send(body, images);   // the chat shows the send: sending, then the message, or what went wrong
     } catch (e) { err.textContent = e.message; go.disabled = false; }
   } }, 'Start');
-  mount(header('New chat', null, goBack), el('div', { id: 'banner', class: 'banner', hidden: true }),
+  mount(header('New chat', null, goBack), el('div', { id: 'banner', class: 'banner', hidden: true, 'data-testid': 'banner' }),
     el('main', { class: 'form' }, project, model, text, thumbs, el('div', { class: 'row-btns' }, el('button', { onclick: () => file.click() }, icon('clip', 18), ' Picture'), file, go), err));
   paintThumbs();
 }
@@ -767,7 +769,7 @@ function showChat(id) {
 let observer = null;
 function renderChat() {
   observer?.disconnect();
-  mount(el('div', { id: 'hdrbox' }), el('div', { id: 'banner', class: 'banner', hidden: true }), el('div', { id: 'strip', class: 'strip', hidden: true }),
+  mount(el('div', { id: 'hdrbox' }), el('div', { id: 'banner', class: 'banner', hidden: true, 'data-testid': 'banner' }), el('div', { id: 'strip', class: 'strip', hidden: true }),
     el('main', { id: 'scroll', class: 'chat' }, el('div', { id: 'older' }), el('div', { class: 'msgs', id: 'msgs' }), el('div', { id: 'pending', class: 'msgs' })),
     el('button', { id: 'jump', class: 'jump', hidden: true, 'aria-label': 'Jump to the latest', onclick: () => { chat.stick = true; pin(); } }, icon('down', 20)),
     el('div', { id: 'dock', class: 'dock' }, el('div', { id: 'cnotice' }), el('div', { id: 'cards' }), el('div', { id: 'queue' }), el('div', { id: 'composer', class: 'composer' })));
@@ -804,16 +806,23 @@ function paintStrip() {
   const r = chat.run;
   const w = waitsOf(chat.id);
   let node = null;
-  if (chat.deleted) node = el('div', { class: 'tone-err' }, el('span', {}, 'This chat was deleted.'));
-  else if (w.asks.length || w.guards.length || w.other.length) node = el('div', { class: 'tone-warn' }, el('span', { class: 'dot wait' }), el('span', {}, 'Waits for your answer below'));
+  let state = '';   // data-state: what the strip says (the E2E journey reads it)
+  if (chat.deleted) { state = 'deleted'; node = el('div', { class: 'tone-err' }, el('span', {}, 'This chat was deleted.')); }
+  else if (w.asks.length || w.guards.length || w.other.length) { state = 'waits'; node = el('div', { class: 'tone-warn' }, el('span', { class: 'dot wait' }), el('span', {}, 'Waits for your answer below')); }
   else if (r && (r.status === 'running' || r.status === 'queued' || (r.status === 'yielded'))) {
+    state = r.status === 'queued' ? 'queued' : 'running';
     node = el('div', { class: r.status === 'queued' ? 'tone-warn' : 'tone-run' }, el('span', { class: 'dot ' + (r.status === 'queued' ? 'wait' : 'run') }),
       el('span', { class: 'grow' }, r.status === 'queued' ? `Waiting for a free ${r.agent || 'agent'} slot` : activityText(r),
         r.startedAt ? el('span', { class: 'dur', 'data-since': new Date(r.startedAt).getTime() }, ' · ' + duration(Date.now() - new Date(r.startedAt).getTime())) : null),
       twoTap('Stop', 'Stop?', () => rpc('agent.abort', { sessionId: chat.id }).catch((e) => toast(e.message))));
-  } else if (r && (r.status === 'failed' || r.error)) node = el('div', { class: 'tone-err' }, el('span', {}, 'The last run failed: ' + (r.error || r.status)));   // a chat's run that failed goes back to idle with its error
-  // offline, the banner says it already
-  else if (chat.error && conn.state === 'live') node = el('div', { class: 'tone-err' }, el('span', { class: 'grow' }, 'Could not load the messages: ' + chat.error), el('button', { class: 'small', onclick: () => chat.resync() }, 'Retry'));
+  } else if (r && (r.status === 'failed' || r.error)) {   // a chat's run that failed goes back to idle with its error
+    state = 'failed';
+    node = el('div', { class: 'tone-err' }, el('span', {}, 'The last run failed: ' + (r.error || r.status)));
+  } else if (chat.error && conn.state === 'live') {   // offline, the banner says it already
+    state = 'error';
+    node = el('div', { class: 'tone-err' }, el('span', { class: 'grow' }, 'Could not load the messages: ' + chat.error), el('button', { class: 'small', onclick: () => chat.resync() }, 'Retry'));
+  }
+  box.dataset.state = state;
   box.hidden = !node;
   box.replaceChildren(...(node ? [node] : []));
 }
@@ -838,7 +847,12 @@ function drawMsgs(keepPos) {
   for (const it of items) {
     const sig = itemSig(it, c);
     let hit = c.cache.get(it.key);
-    if (!hit || hit.sig !== sig) hit = { sig, node: drawItem(it, c) };
+    if (!hit || hit.sig !== sig) {
+      hit = { sig, node: drawItem(it, c) };
+      hit.node.dataset.kind = it.kind;   // what the item is, for the E2E journey: user, text (data-live while it streams), steps, notice, status
+      if (it.live) hit.node.dataset.live = '';
+      if (it.view?.tone) hit.node.dataset.tone = it.view.tone;
+    }
     next.set(it.key, hit);
     nodes.push(hit.node);
   }
@@ -952,7 +966,7 @@ function drawPending(c) {
         el('button', { class: 'small', onclick: () => { if (comp && !comp.ta.value) { comp.ta.value = p.text; saveDraft(); grow(); } c.discard(p); } }, 'Edit'),
         el('button', { class: 'small ghost', onclick: () => c.discard(p) }, 'Discard')]
       : [];
-    return el('div', { class: 'msg user pending st-' + p.state }, p.text ? el('div', { class: 'body' }, p.text) : null,
+    return el('div', { class: 'msg user pending st-' + p.state, 'data-kind': 'pending', 'data-state': p.state }, p.text ? el('div', { class: 'body' }, p.text) : null,
       p.images.length ? el('div', { class: 'imgs' }, p.images.map((i) => thumbNode(i))) : null,
       el('div', { class: 'foot' }, st), actions.length ? el('div', { class: 'acts' }, actions) : null);
   }));
@@ -1065,7 +1079,7 @@ const draftKey = () => 'draft:' + chat?.id;
 function saveDraft() { if (comp && chat) store.set(draftKey(), comp.ta.value); }
 function grow() { if (!comp) return; const ta = comp.ta; ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + 'px'; }
 function buildComposer(box) {
-  const ta = el('textarea', { rows: 1, placeholder: 'Message', enterkeyhint: 'send', value: store.get(draftKey(), '') });
+  const ta = el('textarea', { rows: 1, 'aria-label': 'Message', placeholder: 'Message', enterkeyhint: 'send', value: store.get(draftKey(), '') });
   ta.addEventListener('input', () => { grow(); saveDraft(); paintSend(); });
   // the keyboard's key says "send", so it sends; Shift+Enter (a physical keyboard) is the new line
   let shift = false;
