@@ -883,7 +883,8 @@ the same leftovers.
 that died never reaches its turn end). Repositories: every project's folder plus `tidy.sweepRoots` (a folder that is not a
 repository stands for the repositories directly inside it, e.g. `C:\AI\Projects`), minus `tidy.sweepExclude` (a folder name or path). Per main checkout: its worktrees, branches without one, stashes, uncommitted
 changes in the main checkout and `scratch/` entries, each only after `staleDays` (`tidy.staleDays`, 3) without a commit or
-a file change. `[merged]` items (fully merged into the base branch and clean) are garbage under the repository rules —
+a file change. `[merged]` items (fully merged into the base branch and clean; never `main`/`master`/`develop`/`trunk` or a
+branch that tracks a remote: a fork keeps its upstream base beside the branch it runs) are garbage under the repository rules —
 remove the worktree and `git branch -d` from the main checkout; `[unmerged]`, `[dirty]`, `[stash]`, `[scratch]` and
 `[prunable]` are reported, not deleted. Read-only (`IReadOnlyCalls`). The weekly run is a NetPI schedule
 (`{ kind: every, minutes: 10080 }`) whose prompt calls `tidy`, removes the `[merged]` items, and reports the rest to the owner.

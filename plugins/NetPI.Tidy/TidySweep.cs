@@ -59,6 +59,9 @@ public static class TidySweep
             foreach (var b in branches)
             {
                 if (b == baseBranch || b == repo.Branch || withWorktree.Contains(b) || baseBranch is null) continue;
+                // a base or a mirror of upstream, never finished work: a fork's main kept beside the branch it runs
+                // (unbiasedstrata's main, merged into nuc-q4k-down-gpu-vision, was swept as garbage on the first run)
+                if (IsBaseName(b) || await TracksRemoteAsync(root, b, ct).ConfigureAwait(false)) continue;
                 var last = await LastCommitAsync(root, b, ct).ConfigureAwait(false);
                 if (last is { } l && l > cutoff) continue;
                 var ahead = await AheadAsync(root, baseBranch, b, ct).ConfigureAwait(false);
@@ -138,6 +141,12 @@ public static class TidySweep
             else if (l.StartsWith("prunable", StringComparison.Ordinal)) prunable = true;
         }
     }
+
+    /// <summary>Names a repository's base goes by: never an agent's branch, whatever it is merged into.</summary>
+    public static bool IsBaseName(string branch) => branch is "main" or "master" or "develop" or "trunk";
+
+    private static async Task<bool> TracksRemoteAsync(string root, string branch, CancellationToken ct) =>
+        !string.IsNullOrWhiteSpace(await Git(root, ct, "config", "--get", $"branch.{branch}.remote").ConfigureAwait(false));
 
     private static bool Excluded(string path, IReadOnlyCollection<string> exclude) =>
         exclude.Any(e => !string.IsNullOrWhiteSpace(e) &&
