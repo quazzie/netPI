@@ -22,7 +22,7 @@ public static class TidySweep
     {
         var items = new List<Item>();
         var cutoff = now.AddDays(-staleDays);
-        foreach (var root in roots.Select(TidyFacts.Norm).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var root in Expand(roots).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             ct.ThrowIfCancellationRequested();
             if (Excluded(root, exclude)) continue;
@@ -59,6 +59,9 @@ public static class TidySweep
             foreach (var b in branches)
             {
                 if (b == baseBranch || b == repo.Branch || withWorktree.Contains(b) || baseBranch is null) continue;
+                // a base or a mirror of upstream, never finished work: a fork's main kept beside the branch it runs
+                // (unbiasedstrata's main, merged into nuc-q4k-down-gpu-vision, was swept as garbage on the first run)
+                if (IsBaseName(b) || await TracksRemoteAsync(root, b, ct).ConfigureAwait(false)) continue;
                 var last = await LastCommitAsync(root, b, ct).ConfigureAwait(false);
                 if (last is { } l && l > cutoff) continue;
                 var ahead = await AheadAsync(root, baseBranch, b, ct).ConfigureAwait(false);
@@ -102,6 +105,26 @@ public static class TidySweep
         return string.Join("\n", lines);
     }
 
+    /// <summary>
+    /// The roots as repositories: a folder that is a repository's top stays as it is; any other folder stands for the
+    /// repositories directly inside it (<c>C:\AI\Projects</c> → every project there, NetPI project or not). Missing folders
+    /// drop out, so a project that was moved or archived costs nothing.
+    /// </summary>
+    public static IEnumerable<string> Expand(IEnumerable<string> roots)
+    {
+        foreach (var raw in roots)
+        {
+            var root = TidyFacts.Norm(raw);
+            if (!Directory.Exists(root)) continue;
+            if (Path.Exists(System.IO.Path.Combine(root, ".git"))) { yield return root; continue; }
+            IEnumerable<string> children;
+            try { children = Directory.EnumerateDirectories(root).ToList(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+            foreach (var child in children)
+                if (Path.Exists(System.IO.Path.Combine(child, ".git"))) yield return TidyFacts.Norm(child);
+        }
+    }
+
     public static IEnumerable<(string Path, string? Branch, bool Prunable)> Worktrees(string porcelain)
     {
         string? path = null, branch = null; var prunable = false;
@@ -118,6 +141,12 @@ public static class TidySweep
             else if (l.StartsWith("prunable", StringComparison.Ordinal)) prunable = true;
         }
     }
+
+    /// <summary>Names a repository's base goes by: never an agent's branch, whatever it is merged into.</summary>
+    public static bool IsBaseName(string branch) => branch is "main" or "master" or "develop" or "trunk";
+
+    private static async Task<bool> TracksRemoteAsync(string root, string branch, CancellationToken ct) =>
+        !string.IsNullOrWhiteSpace(await Git(root, ct, "config", "--get", $"branch.{branch}.remote").ConfigureAwait(false));
 
     private static bool Excluded(string path, IReadOnlyCollection<string> exclude) =>
         exclude.Any(e => !string.IsNullOrWhiteSpace(e) &&

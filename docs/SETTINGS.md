@@ -472,7 +472,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `tidy.decide` | `true` | ask the decision lane (task, final message, leftovers) whether the agent waits, asks the user, or was told to keep things; off or without a decision model: a final question counts as waiting |
 | `tidy.decideModel` | `""` | the model for that question; empty = `decide.model` |
 | `tidy.staleDays` | `3` | the `tidy` sweep reports only what had no commit or file change for this many days (0–365) |
-| `tidy.sweepRoots` | `[]` | repositories swept besides the projects' folders |
+| `tidy.sweepRoots` | `[]` | repositories swept besides the projects' folders; a folder that is not a repository stands for the repositories directly inside it (`C:\AI\Projects`) |
 | `tidy.sweepExclude` | `[]` | folder names or paths the sweep skips (a project someone works in, one whose owner keeps branches on purpose) |
 | `loops.maxHintsPerRun` | `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results (the whole result text, durations and times aside, and its images: two screenshots or page snapshots that differ anywhere are progress), the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
 | `loops.repeats` | `3` | the call about to run counts (2–10) |

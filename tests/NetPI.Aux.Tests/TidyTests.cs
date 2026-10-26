@@ -218,6 +218,31 @@ public static class TidyTests
             Check.False(fresh.Any(i => i.Kind is "merged" or "unmerged" or "dirty" or "scratch"), "work from today is not stale");
         });
 
+        r.Add("tidy sweep: a root that is not a repository stands for the repositories directly inside it; missing roots drop out", () =>
+        {
+            var env = new Env(); NeedGit(env);
+            var parent = Path.GetDirectoryName(env.Repo)!;
+            Directory.CreateDirectory(Path.Combine(parent, "not-a-repo"));
+            var expanded = TidySweep.Expand([parent, env.Repo, Path.Combine(parent, "missing")]).ToList();
+            Check.Equal(2, expanded.Count);
+            Check.True(expanded.All(e => TidyFacts.Same(e, env.Repo)), string.Join(", ", expanded));
+        });
+
+        r.Add("tidy sweep: a base branch (main, master) or one that tracks a remote is never [merged], even when it is behind the checked-out branch", async () =>
+        {
+            var env = new Env(); NeedGit(env);
+            TestGit.Run(env.Repo, "checkout", "-q", "-b", "fork-work");             // the main checkout runs a fork branch; main is merged into it
+            File.WriteAllText(Path.Combine(env.Repo, "f.txt"), "1\n"); Env.Commit(env.Repo, "fork work");
+            TestGit.Run(env.Repo, "branch", "mirror", "main");
+            TestGit.Run(env.Repo, "config", "branch.mirror.remote", "origin");
+            TestGit.Run(env.Repo, "config", "branch.mirror.merge", "refs/heads/mirror");
+            TestGit.Run(env.Repo, "branch", "agent-done", "main");                  // an ordinary merged branch still is
+            var items = await TidySweep.SweepAsync([env.Repo], [], 0, DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None);
+            var text = TidySweep.Render(items, 0);
+            Check.False(items.Any(i => i.Branch is "main" or "mirror"), text);
+            Check.True(items.Any(i => i.Kind == "merged" && i.Branch == "agent-done"), text);
+        });
+
         r.Add("tidy: written paths from write/edit arguments, the several-files form included", () =>
         {
             var cwd = Path.Combine(Path.GetTempPath(), "proj");
