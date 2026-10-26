@@ -187,6 +187,7 @@ public sealed class FakeCatalog(IServiceRegistry services) : IModelCatalog
             SessionId = request.SessionId,
             AgentId = request.AgentId,
             Purpose = request.Purpose,
+            ReadOnlyTools = request.ReadOnlyTools,
         };
         var provider = GetProvider(request.Model.Provider) ?? throw new ModelException($"No provider {request.Model.Provider}", false);
         ModelCallDelegate pipeline = provider.StreamAsync;

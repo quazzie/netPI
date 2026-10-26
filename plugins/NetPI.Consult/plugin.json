@@ -1,1 +1,1 @@
-{ "id": "netpi.consult", "name": "Consult", "description": "consult: a text-only design consultation through the Claude CLI model (the owner's subscription), one call, one plain-text answer" }
+{ "id": "netpi.consult", "name": "Consult", "description": "consult: a read-only design consultation through the Claude CLI model (the owner's subscription), it reads the workspace, one plain-text answer" }

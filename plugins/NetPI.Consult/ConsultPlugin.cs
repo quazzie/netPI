@@ -7,16 +7,17 @@ namespace NetPI.Consult;
 
 /// <summary>
 /// <c>consult</c>: a plan or design as plain text, asked of the Claude CLI model (Opus/Sonnet on the owner's
-/// subscription) during a run: one text-only model call (Purpose <c>consult</c> — the CLI runs it without tools,
-/// without a CLI session, in its scratch folder), one answer. It is deliberately not <c>agent_spawn</c> on a CLI
-/// model (a full CLI session with tools) and not <c>decide</c> (bound to AiProxy's HTTP endpoints).
+/// subscription) during a run, so a model that is weak at design can ask for a good one: one model call (Purpose
+/// <c>consult</c>, <see cref="ModelRequest.ReadOnlyTools"/> — the CLI runs it with its reading tools alone in the chat's
+/// workspace, without a CLI session), one answer. It is deliberately not <c>agent_spawn</c> on a CLI model (a full CLI
+/// session that may edit and run) and not <c>decide</c> (bound to AiProxy's HTTP endpoints).
 /// <para>
 /// The Anthropic-terms guard: only the chats the owner starts may trigger a consult. A chat started by a webhook,
 /// a schedule, the phone, a script or as a subagent is refused with the reason that says so.
 /// </para>
 /// </summary>
 [NetPiPlugin("netpi.consult", Name = "Consult",
-    Description = "consult: a text-only design consultation through the Claude CLI model (the owner's subscription)",
+    Description = "consult: a read-only design consultation through the Claude CLI model (the owner's subscription)",
     Order = 64)]
 public sealed class ConsultPlugin : INetPiPlugin
 {
@@ -49,8 +50,8 @@ public sealed class ConsultPlugin : INetPiPlugin
                 SettingInfo.Str("consult.model", "Consult model", "claude-cli/claude-opus-5-5",
                     "The Claude CLI model a consult asks (the owner's subscription; Opus by default). Several, comma-separated: the first one the model list has is used. The tool's model argument picks another for one call (a cheaper one).")
                     with { Type = "pickText", Options = ["@models"] },
-                SettingInfo.Int("consult.timeoutSeconds", "Timeout", 120, "How long one consult may wait for the CLI before it gives up with a note (the run goes on).", 5, 3600, "s"),
-                SettingInfo.Int("consult.maxAnswerChars", "Answer length", 16_000, "The answer is cut at this many characters, with a note to ask for less.", 1_000, 100_000, "chars"),
+                SettingInfo.Int("consult.timeoutSeconds", "Timeout", 600, "How long one consult may take (reading the project and answering) before it gives up with a note (the run goes on).", 5, 3600, "s"),
+                SettingInfo.Int("consult.maxAnswerTokens", "Answer length", 16_000, "The consultant is asked to stay within this many tokens, and the answer is cut there (about 4 characters a token), with a note to ask for less.", 1_000, 64_000, "tokens"),
                 SettingInfo.Choice("consult.effort", "Reasoning effort", "medium", ["low", "medium", "high", "xhigh", "max"],
                     "The CLI's --effort for the call (the Claude CLI's efforts, the same list its provider offers)."),
             ],
@@ -98,20 +99,24 @@ public sealed class ConsultPlugin : INetPiPlugin
 }
 
 /// <summary>
-/// The <c>consult</c> tool: one text-only call of a Claude CLI model with the brief (and optional context), one answer.
+/// The <c>consult</c> tool: one read-only call of a Claude CLI model with the brief (and optional context), one answer.
 /// A failure (no model, a model on another provider, the CLI's error, a timeout) degrades to a note that names the
 /// reason: the run goes on, and there is no retry — one CLI process per call.
 /// </summary>
 internal sealed class ConsultTool(IPluginContext ctx) : IAgentTool
 {
     public const string DefaultModel = "claude-cli/claude-opus-5-5";
-    public const int DefaultTimeoutSeconds = 120;
-    public const int DefaultMaxAnswerChars = 16_000;
+    public const int DefaultTimeoutSeconds = 600;
+    public const int DefaultMaxAnswerTokens = 16_000;
 
-    public const string SystemPrompt =
-        "You are a senior engineer acting as a design consultant. Answer the consultation in plain prose or markdown. " +
-        "In this call you have no tools and cannot read files or run code: work only from the brief and its context, " +
-        "and say exactly what is missing when you need it. Never write tool calls, <invoke> blocks or function-call markup.";
+    /// <summary>The consultant's instructions, with the answer budget it is asked to keep.</summary>
+    public static string SystemPrompt(int maxTokens) =>
+        "You are a senior engineer acting as a design consultant for an agent that will build what you plan, and is weaker at design than you. " +
+        "You may read the project in the working folder and the web (read, search), but not edit files or run commands. " +
+        "Read what the decision depends on before you answer, then give a detailed, concrete plan in plain prose or markdown: the design and why, " +
+        "the files, types and functions to change, the steps in order, the risks and how to test it. " +
+        $"Stay within about {maxTokens} tokens. When something you need is neither in the project nor in the brief, say exactly what is missing. " +
+        "Never write tool calls, <invoke> blocks or function-call markup in the answer.";
 
     public ToolDefinition Definition { get; } = new()
     {
@@ -120,11 +125,13 @@ internal sealed class ConsultTool(IPluginContext ctx) : IAgentTool
         Category = "general",
         ReadOnly = true,
         SummaryArg = "brief",
-        Description = "Ask the Claude CLI model (Opus/Sonnet on the owner's subscription) for a plan or a design as plain text: one text-only call, no tools, no follow-up. Owner-started chats only.",
+        Description = "Ask the Claude CLI model (Opus/Sonnet on the owner's subscription) for a detailed design or plan: it reads the workspace itself (read-only), then answers once in plain text. No follow-up. Owner-started chats only.",
         Help =
             "One model call, one answer: the Claude CLI model (consult.model, default claude-cli/claude-opus-5-5) reads the brief " +
-            "(and the optional context) with no tools and answers in plain prose/markdown. The answer is cut at consult.maxAnswerChars " +
-            "(16000) with a note to ask for less; the call gives up after consult.timeoutSeconds (120) with a note, and the run goes on " +
+            "(and the optional context), may read the chat's workspace and the web with its own reading tools (no edits, no commands), " +
+            "and answers in plain prose/markdown. Say in the brief what to decide and where to look; it does not see this chat. " +
+            "The answer is cut at consult.maxAnswerTokens (16000, about 4 chars a token) with a note to ask for less; " +
+            "the call gives up after consult.timeoutSeconds (600) with a note, and the run goes on " +
             "either way — there is no retry. model picks a claude-cli model for one call (a cheaper one); a model on any other provider " +
             "is refused with the reason. A consult is refused in a chat the owner did not start (a webhook's, a schedule's, the phone's, " +
             "a script's or a subagent's): the Claude CLI runs on the owner's subscription (Anthropic's terms), and only owner-started chats may use it.",
@@ -132,7 +139,7 @@ internal sealed class ConsultTool(IPluginContext ctx) : IAgentTool
             {
               "type": "object",
               "properties": {
-                "brief": { "type": "string", "description": "What to consult on: the decision or design, with the alternatives if there are any" },
+                "brief": { "type": "string", "description": "What to consult on: the decision or design, with the alternatives if there are any, and the files or folders to look at" },
                 "model": { "type": "string", "description": "A claude-cli model to ask instead of consult.model (a cheaper one)" },
                 "context": { "type": "string", "description": "What the consultant should know: constraints, prior decisions, the relevant state" }
               },
@@ -172,15 +179,18 @@ internal sealed class ConsultTool(IPluginContext ctx) : IAgentTool
             return ToolResult.Error($"The consult cannot use {picked.Ref}: it works only through the claude-cli provider (the owner's Claude subscription), " +
                 $"and {picked.Ref} is on the {picked.Provider} provider. Pick a claude-cli model with the model argument, or set consult.model to one.");
 
+        var maxTokens = Math.Max(1, ctx.Settings.Get("consult.maxAnswerTokens", DefaultMaxAnswerTokens));
         var request = new ModelRequest
         {
             Model = picked,
-            SystemPrompt = SystemPrompt,
+            SystemPrompt = SystemPrompt(maxTokens),
             Messages = [ChatMessage.UserText(Message(a.Str("context"), brief))],
             ReasoningEffort = ctx.Settings.Get("consult.effort", "medium"),
             SessionId = tc.SessionId,
             AgentId = tc.AgentId,
             Purpose = "consult",
+            // the consultant reads the workspace for itself, and changes nothing
+            ReadOnlyTools = true,
         };
 
         var timeoutSeconds = Math.Max(1, ctx.Settings.Get("consult.timeoutSeconds", DefaultTimeoutSeconds));
@@ -217,10 +227,10 @@ internal sealed class ConsultTool(IPluginContext ctx) : IAgentTool
         if (answer is null)
             return ToolResult.Error("The consult ended without an answer (the CLI stopped early). The run goes on; ask again.");
 
-        var maxChars = Math.Max(1, ctx.Settings.Get("consult.maxAnswerChars", DefaultMaxAnswerChars));
+        var maxChars = maxTokens * 4; // ModelMessages.EstimateTokens' measure
         var text = answer.Text.Trim();
         var truncated = text.Length > maxChars;
-        if (truncated) text = text[..maxChars] + $"\n…cut at {maxChars} chars, ask for less";
+        if (truncated) text = text[..maxChars] + $"\n…cut at about {maxTokens} tokens, ask for less";
         if (notices.Count > 0)
             text += "\n\n" + string.Join("\n", notices.Distinct());
 

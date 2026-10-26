@@ -189,7 +189,7 @@ internal static class ClaudeCliProductionTests
             finally { try { Directory.Delete(home, true); } catch { /* temp */ } }
         });
 
-        await t.Run("claude-cli: a title, a compaction or a consult call through the model is text only, in no project", async () =>
+        await t.Run("claude-cli: a title or a compaction call through the model is text only, in no project; a consult reads in the chat's folder", async () =>
         {
             var seen = new List<(List<string> Args, string WorkDir, string Prompt)>();
             var p = new CL.ClaudeCliProvider(() => Cfg(), null, (call, ct) =>
@@ -201,12 +201,22 @@ internal static class ClaudeCliProductionTests
             await Collect(p, Req("agent"));
             await Collect(p, Req("title"));
             await Collect(p, Req("compaction"));
-            await Collect(p, Req("consult"));
+            var consult = Req("consult");
+            consult.ReadOnlyTools = true;
+            await Collect(p, consult);
 
             var agent = seen[0];
             t.Eq("default", agent.Args[agent.Args.IndexOf("--tools") + 1], "an agent turn has the CLI's tools");
             t.Eq(Path.GetTempPath(), agent.WorkDir, "in the session's folder");
-            foreach (var side in seen.Skip(1))
+            var reading = seen[3];
+            t.Eq("Read,Grep,Glob,WebFetch,WebSearch,TodoWrite", reading.Args[reading.Args.IndexOf("--tools") + 1], "a consult has the reading tools alone");
+            t.Eq(Path.GetTempPath(), reading.WorkDir, "in the session's folder");
+            t.Check(reading.Args.Contains("--no-session-persistence") && !reading.Args.Contains("--session-id"), "and leaves no CLI session behind");
+            t.Check(reading.Prompt.EndsWith(CL.ClaudeCliProvider.ReadingToolsNote), "and is told it may only read");
+            t.Check(!reading.Prompt.Contains("NetPI from your shell"), "with no shell, no RPC note");
+            t.Eq("", CL.ClaudeCliProvider.SideReadingTools(CL.ClaudeCliOptions.Parse(new JsonObject { ["enabled"] = true, ["tools"] = "none" })).Tools, "tools none: a consult is text only too");
+            t.Eq("Read", CL.ClaudeCliProvider.SideReadingTools(CL.ClaudeCliOptions.Parse(new JsonObject { ["enabled"] = true, ["tools"] = "Read,Bash" })).Tools, "a configured list keeps its reading tools");
+            foreach (var side in seen.Skip(1).Take(2))
             {
                 t.Eq("", side.Args[side.Args.IndexOf("--tools") + 1], "a side call has no tools");
                 t.Check(!side.Args.Contains("--permission-mode"), "and no permission mode to bypass");

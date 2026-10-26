@@ -5,21 +5,21 @@ using NetPI.Consult;
 namespace NetPI.Agent.Tests;
 
 /// <summary>
-/// The consult tool with the real runner and a scripted model: one text-only call of the Claude CLI model
+/// The consult tool with the real runner and a scripted model: one read-only call of the Claude CLI model
 /// (Purpose "consult"), the answer as the tool's result, refusals with their reasons, and the bounded outcomes.
 /// </summary>
 public static class ConsultTests
 {
     public static void Register(TestRunner t)
     {
-        t.Add("consult: a chat asks the Claude CLI model, one text-only call, the answer is the tool's result", HappyPath);
+        t.Add("consult: a chat asks the Claude CLI model, one read-only call, the answer is the tool's result", HappyPath);
         t.Add("consult: a failed call degrades to a note, and there is no second request (no retry loop)", NoRetry);
         t.Add("consult: no claude-cli provider, the tool is not registered; adding one announces it, disabling it takes it back", ProviderGatesTheTool);
         t.Add("consult: a non-owner-started chat (a webhook's) is refused with the terms reason, no model call", UnattendedRefused);
         t.Add("consult: the unattended reasons name what started the chat", UnattendedReasons);
         t.Add("consult: a model that is not on the claude-cli provider is refused with the reason", WrongProviderRefused);
         t.Add("consult: no model found, the tool answers with the CLI models that exist (and says to enable the provider)", ModelNotFoundNote);
-        t.Add("consult: a long answer is cut at consult.maxAnswerChars, saying so", CutAtMaxAnswerChars);
+        t.Add("consult: a long answer is cut at consult.maxAnswerTokens (4 chars a token), saying so", CutAtMaxAnswerTokens);
         t.Add("consult: a CLI that never answers times out with a note, and the run goes on", ConsultTimeout);
     }
 
@@ -62,8 +62,9 @@ public static class ConsultTests
         Check.Equal(1, consults.Count, "exactly one consult request");
         var req = consults[0];
         Check.Equal("consult", req.Purpose);
-        Check.Equal(0, req.Tools.Count, "the consultant runs nothing");
-        Check.False(string.IsNullOrEmpty(req.SystemPrompt), "the consultant's system prompt is set");
+        Check.Equal(0, req.Tools.Count, "none of NetPI's tools");
+        Check.True(req.ReadOnlyTools, "the consultant may read the workspace with the CLI's own tools, and only read");
+        Check.Contains(req.SystemPrompt!, "about 16000 tokens", "the consultant is told its answer budget");
         Check.Equal("medium", req.ReasoningEffort, "the effort from the setting");
         Check.Equal(1, req.Messages.Count, "the brief is the single user message");
         Check.Contains(req.Messages[0].Text, "How should we index the orders table?");
@@ -218,11 +219,11 @@ public static class ConsultTests
         Check.Contains(result.Content, "provider", "and it says to enable the provider");
     }
 
-    private static async Task CutAtMaxAnswerChars()
+    private static async Task CutAtMaxAnswerTokens()
     {
         var h = await Start();
         await using var _h = h;
-        h.Settings.Set("consult.maxAnswerChars", 200);
+        h.Settings.Set("consult.maxAnswerTokens", 50);
         var s = h.NewSession();
         var agentCalls = 0;
         h.Catalog.Handler = (r, ct) =>
@@ -239,10 +240,11 @@ public static class ConsultTests
 
         var result = ConsultResult(h, s.Id);
         Check.False(result.IsError);
-        Check.Equal(200, result.Content.Trim().Length - "\n…cut at 200 chars, ask for less".Length, "the answer is cut at the limit");
-        Check.Contains(result.Content, "…cut at 200 chars, ask for less");
+        const string cut = "\n…cut at about 50 tokens, ask for less";
+        Check.Equal(200, result.Content.Trim().Length - cut.Length, "the answer is cut at the limit: 50 tokens, 200 chars");
+        Check.Contains(result.Content, cut.Trim());
         Check.Equal(true, (bool)result.Details!["truncated"]!);
-        Check.Equal(200 + "\n…cut at 200 chars, ask for less".Length, (int)result.Details!["chars"]!);
+        Check.Equal(200 + cut.Length, (int)result.Details!["chars"]!);
     }
 
     private static async Task ConsultTimeout()

@@ -1235,18 +1235,22 @@ The `usage` block is what makes the cost of a decision measurable rather than as
 
 ## Consult (`category: "general"`)
 
-`plugins/NetPI.Consult`. One text-only design consultation through the Claude CLI model (Opus/Sonnet on the owner's
-subscription), during a run: the model reads the brief (and the optional context) with no tools — the CLI runs the
-call as a side call (`--tools ""`, no CLI session, in its scratch folder) — and answers in plain prose/markdown. It is
-deliberately not `agent_spawn` on a CLI model (a full CLI session with tools) and not `decide` (bound to AiProxy's
-HTTP endpoints).
+`plugins/NetPI.Consult`. One read-only design consultation through the Claude CLI model (Opus/Sonnet on the owner's
+subscription), during a run, so a model that is weak at design can ask for a good one: the model reads the brief (and
+the optional context), reads what it needs in the chat's workspace and on the web, and answers with a detailed plan in
+plain prose/markdown. The request carries `ReadOnlyTools`, and the CLI runs it as a side call with its reading tools
+alone (`--tools Read,Grep,Glob,WebFetch,WebSearch,TodoWrite`, or the reading ones of the provider's configured
+`tools`; none with `tools: "none"`), in the chat's workspace, with no CLI session left behind. It is deliberately not
+`agent_spawn` on a CLI model (a full CLI session that may edit and run) and not `decide` (bound to AiProxy's HTTP
+endpoints).
 
 `{ brief, model?, context? }`. `brief` is what to consult on (a few sentences, with the alternatives if there are
-any); `context` is what the consultant should know (constraints, prior decisions, the relevant state); `model` picks
+any, and the files or folders to look at: the consultant does not see the chat); `context` is what the consultant should know (constraints, prior decisions, the relevant state); `model` picks
 a claude-cli model for the one call (a cheaper one), else `consult.model` (default `claude-cli/claude-opus-5-5`, a
 comma list: the first the model list has wins). One call, one answer: there is no retry loop and no automatic second
-consult. The answer is cut at `consult.maxAnswerChars` (16000) with a "…cut at N chars, ask for less" line; the call
-gives up after `consult.timeoutSeconds` (120) with a note, and the run goes on either way. If the CLI had to wait for
+consult. The consultant is asked to stay within `consult.maxAnswerTokens` (16000), and the answer is cut there
+(4 characters a token) with a "…cut at about N tokens, ask for less" line; the call gives up after
+`consult.timeoutSeconds` (600) with a note, and the run goes on either way. If the CLI had to wait for
 a free `maxConcurrent` slot, the result says so.
 
 ```ts

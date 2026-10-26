@@ -201,10 +201,12 @@ public sealed class ClaudeCliProvider : IModelProvider
     private async IAsyncEnumerable<ModelStreamEvent> RunAsync(ModelRequest request, ClaudeCliOptions o, bool agentTurn, CliAttempt attempt, [EnumeratorCancellation] CancellationToken ct)
     {
         var started = Stopwatch.GetTimestamp();
-        // an agent's own turn gets the CLI's tools and its working folder; a title, a compaction summary or any other side call
-        // through this model is text in, text out (a full CLI session for a title would work in the project with no permission prompts)
-        var (tools, disallowed, policy) = agentTurn ? ToolPolicy(request, o, _knownTools?.Invoke()) : NoTools;
-        var cwd = agentTurn ? _cwdOf(request.SessionId) : null;
+        // an agent's own turn gets the CLI's tools and its working folder; a side call that may read (a consult) gets the reading
+        // tools in the chat's folder; a title, a compaction summary or any other side call through this model is text in, text out
+        // (a full CLI session for a title would work in the project with no permission prompts)
+        var readingSide = !agentTurn && request.ReadOnlyTools;
+        var (tools, disallowed, policy) = agentTurn ? ToolPolicy(request, o, _knownTools?.Invoke()) : readingSide ? SideReadingTools(o) : NoTools;
+        var cwd = agentTurn || readingSide ? _cwdOf(request.SessionId) : null;
         var workDir = cwd is { Length: > 0 } && Directory.Exists(cwd) ? cwd : _workDir;
         if (agentTurn && request.Tools.Count > 0 && !attempt.Resume)
             yield return new StreamNotice(
@@ -222,7 +224,7 @@ public sealed class ClaudeCliProvider : IModelProvider
         Directory.CreateDirectory(_workDir);
         var promptFile = Path.Combine(_workDir, $"system-{Guid.NewGuid():N}.md");
         await File.WriteAllTextAsync(promptFile,
-            SystemPromptWithNote(request.SystemPrompt, tools.Length > 0, HasShell(tools, disallowed) ? RpcCommand : null), ct).ConfigureAwait(false);
+            SystemPromptWithNote(request.SystemPrompt, tools.Length > 0, HasShell(tools, disallowed) ? RpcCommand : null, OnlyReading(tools)), ct).ConfigureAwait(false);
         var asm = new MessageAssembler();
         var stream = new ClaudeCliStream(asm) { ModelId = request.Model.Id };
         if (_usage is not null && o.Usage) stream.OnRateLimit = _usage.Observe;
@@ -318,14 +320,21 @@ public sealed class ClaudeCliProvider : IModelProvider
         "The tools described above (NetPI's) are not available here and are never executed: do not write their calls or <invoke> markup. " +
         "Use your own tools (read, search, edit, shell) in the working folder to do the work, then answer in plain text.";
 
+    internal const string ReadingToolsNote =
+        "# Tools in this call\n" +
+        "The tools described above (NetPI's) are not available here and are never executed: do not write their calls or <invoke> markup. " +
+        "This call may only read: use your own reading tools (read, search, web) in the working folder, then answer in plain text. " +
+        "You cannot edit files or run commands here.";
+
     /// <summary>
     /// NetPI's system prompt describes its tools; the model is told which tools it really has, or it writes the others' calls as
     /// text. With a shell it is also told how it reaches NetPI itself (<paramref name="rpc"/>: the netpi.mjs command line), for
     /// what only NetPI holds, so a session in another project does not rebuild an MCP client or read a server's URL to call it.
+    /// <paramref name="reading"/>: the tools are the reading ones alone (plan mode, a consult).
     /// </summary>
-    internal static string SystemPromptWithNote(string? system, bool cliTools, string? rpc = null)
+    internal static string SystemPromptWithNote(string? system, bool cliTools, string? rpc = null, bool reading = false)
     {
-        var note = cliTools ? CliToolsNote : NoToolsNote;
+        var note = !cliTools ? NoToolsNote : reading ? ReadingToolsNote : CliToolsNote;
         if (cliTools && rpc is not null) note += "\n\n" + RpcNote(rpc);
         return string.IsNullOrWhiteSpace(system) ? note : system.TrimEnd() + "\n\n" + note;
     }
@@ -352,6 +361,21 @@ public sealed class ClaudeCliProvider : IModelProvider
 
     /// <summary>A side call's tools: none.</summary>
     private static readonly (string Tools, IReadOnlyList<string> Disallowed, string? Note) NoTools = ("", [], null);
+
+    /// <summary>A side call that may read (a consult): the reading tools of the configured set, no others.</summary>
+    internal static (string Tools, IReadOnlyList<string> Disallowed, string? Note) SideReadingTools(ClaudeCliOptions o)
+    {
+        if (o.Tools.Equals("none", StringComparison.OrdinalIgnoreCase)) return NoTools;
+        var configured = o.Tools.Equals("default", StringComparison.OrdinalIgnoreCase)
+            ? ReadingTools
+            : o.Tools.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return (string.Join(",", configured.Where(t => ReadingTools.Contains(t, StringComparer.OrdinalIgnoreCase))), [], null);
+    }
+
+    /// <summary>Whether a <c>--tools</c> list holds reading tools alone (the model is told it may not edit or run anything).</summary>
+    internal static bool OnlyReading(string tools) =>
+        tools.Length > 0 && !tools.Equals("default", StringComparison.OrdinalIgnoreCase)
+            && tools.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).All(t => ReadingTools.Contains(t, StringComparer.OrdinalIgnoreCase));
 
     /// <summary>
     /// The CLI's own tools and the NetPI tools each one stands in for: a run keeps a CLI tool only while NetPI offers it a

@@ -618,8 +618,8 @@ data. Its settings are in Settings → Safety, beside the guardrails.
 
 ## Consult
 
-`plugins/NetPI.Consult` (see `docs/TOOLS.md`, "Consult"): one text-only design consultation through the Claude CLI
-model (the owner's subscription). The `consult` tool is registered only while a `claude-cli` provider is configured
+`plugins/NetPI.Consult` (see `docs/TOOLS.md`, "Consult"): one read-only design consultation through the Claude CLI
+model (the owner's subscription), which reads the chat's workspace itself. The `consult` tool is registered only while a `claude-cli` provider is configured
 and enabled, and says so on the bus (`consult.toolsChanged`) when that changes. Only the chats the owner starts may
 consult (the Anthropic-terms guard: a webhook's, a schedule's, the phone's, a script's or a subagent's chat is
 refused with the reason).
@@ -627,8 +627,8 @@ refused with the reason).
 | key | default | |
 |---|---|---|
 | `consult.model` | `claude-cli/claude-opus-5-5` | the Claude CLI model a consult asks. Several, comma-separated: the first one the model list has is used. The tool's `model` argument picks another for one call (a cheaper one) |
-| `consult.timeoutSeconds` | `120` | how long one consult may wait for the CLI before it gives up with a note (the run goes on; 5–3600) |
-| `consult.maxAnswerChars` | `16000` | the answer is cut at this many characters, with a note to ask for less |
+| `consult.timeoutSeconds` | `600` | how long one consult may take (reading the workspace and answering) before it gives up with a note (the run goes on; 5–3600) |
+| `consult.maxAnswerTokens` | `16000` | the consultant is asked to stay within this many tokens, and the answer is cut there (about 4 characters a token), with a note to ask for less (1000–64000) |
 | `consult.effort` | `medium` | the CLI's `--effort` for the call: `low`, `medium`, `high`, `xhigh`, `max` (the Claude CLI's efforts) |
 
 ## Goals
