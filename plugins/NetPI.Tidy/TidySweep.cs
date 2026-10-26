@@ -22,7 +22,7 @@ public static class TidySweep
     {
         var items = new List<Item>();
         var cutoff = now.AddDays(-staleDays);
-        foreach (var root in roots.Select(TidyFacts.Norm).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var root in Expand(roots).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             ct.ThrowIfCancellationRequested();
             if (Excluded(root, exclude)) continue;
@@ -100,6 +100,26 @@ public static class TidySweep
             lines.AddRange(repo.OrderBy(i => i.Kind == "merged" ? 0 : 1).Select(i => $"- [{i.Kind}] {i.Text}"));
         }
         return string.Join("\n", lines);
+    }
+
+    /// <summary>
+    /// The roots as repositories: a folder that is a repository's top stays as it is; any other folder stands for the
+    /// repositories directly inside it (<c>C:\AI\Projects</c> → every project there, NetPI project or not). Missing folders
+    /// drop out, so a project that was moved or archived costs nothing.
+    /// </summary>
+    public static IEnumerable<string> Expand(IEnumerable<string> roots)
+    {
+        foreach (var raw in roots)
+        {
+            var root = TidyFacts.Norm(raw);
+            if (!Directory.Exists(root)) continue;
+            if (Path.Exists(System.IO.Path.Combine(root, ".git"))) { yield return root; continue; }
+            IEnumerable<string> children;
+            try { children = Directory.EnumerateDirectories(root).ToList(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+            foreach (var child in children)
+                if (Path.Exists(System.IO.Path.Combine(child, ".git"))) yield return TidyFacts.Norm(child);
+        }
     }
 
     public static IEnumerable<(string Path, string? Branch, bool Prunable)> Worktrees(string porcelain)

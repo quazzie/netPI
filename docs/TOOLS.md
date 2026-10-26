@@ -880,8 +880,8 @@ the same leftovers.
 ### `tidy` (summary arg `action`)
 
 `{ action?: 'sweep', staleDays? }` — the weekly sweep across repositories, for what the notice cannot catch (an agent
-that died never reaches its turn end). Repositories: every project's folder plus `tidy.sweepRoots`, minus
-`tidy.sweepExclude` (a folder name or path). Per main checkout: its worktrees, branches without one, stashes, uncommitted
+that died never reaches its turn end). Repositories: every project's folder plus `tidy.sweepRoots` (a folder that is not a
+repository stands for the repositories directly inside it, e.g. `C:\AI\Projects`), minus `tidy.sweepExclude` (a folder name or path). Per main checkout: its worktrees, branches without one, stashes, uncommitted
 changes in the main checkout and `scratch/` entries, each only after `staleDays` (`tidy.staleDays`, 3) without a commit or
 a file change. `[merged]` items (fully merged into the base branch and clean) are garbage under the repository rules —
 remove the worktree and `git branch -d` from the main checkout; `[unmerged]`, `[dirty]`, `[stash]`, `[scratch]` and

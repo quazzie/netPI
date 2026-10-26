@@ -218,6 +218,16 @@ public static class TidyTests
             Check.False(fresh.Any(i => i.Kind is "merged" or "unmerged" or "dirty" or "scratch"), "work from today is not stale");
         });
 
+        r.Add("tidy sweep: a root that is not a repository stands for the repositories directly inside it; missing roots drop out", () =>
+        {
+            var env = new Env(); NeedGit(env);
+            var parent = Path.GetDirectoryName(env.Repo)!;
+            Directory.CreateDirectory(Path.Combine(parent, "not-a-repo"));
+            var expanded = TidySweep.Expand([parent, env.Repo, Path.Combine(parent, "missing")]).ToList();
+            Check.Equal(2, expanded.Count);
+            Check.True(expanded.All(e => TidyFacts.Same(e, env.Repo)), string.Join(", ", expanded));
+        });
+
         r.Add("tidy: written paths from write/edit arguments, the several-files form included", () =>
         {
             var cwd = Path.Combine(Path.GetTempPath(), "proj");
