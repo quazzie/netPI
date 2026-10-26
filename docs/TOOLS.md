@@ -216,10 +216,15 @@ details: { path, created: boolean, bytes: number, lines: number, eol: 'lf'|'crlf
 
 - **Several files** are all or nothing: every file is read and every edit matched in memory first, and nothing is written
   unless all of them match. A refusal names the file by its place in the list (`File 2 of 3, edit 1 of 2 failed in
-  src/b.cs: …  No files were changed (all-or-nothing).`). A file listed twice, `path` together with `files`, or more than
-  50 files are refused before anything is read. If a write fails midway (a locked file), the files already written are
+  src/b.cs: …  No files were changed (all-or-nothing).`). A file listed twice, or more than
+  50 files, are refused before anything is read. If a write fails midway (a locked file), the files already written are
   put back from their originals (unless one changed again after this edit wrote it: that one is named, not overwritten).
-  Guardrails and the workspace guard judge every path: one protected path or one file in another checkout refuses the
+  `path` together with `files` is accepted in the two shapes the models
+  produce: `files` naming that same file (the paths are normalized the way the tool takes them, so the call runs as the
+  files form and `path` is ignored), and every `files` entry a bare edit (no `path` of its own), which are applied to
+  `path`. A `path` that names no file in `files` is refused. One `files: [{ path }]` entry of its own, with the edits at
+  the top level, applies them to that file. Guardrails and the workspace guard judge every path: one protected path or one
+  file in another checkout refuses the
   whole call. Each file keeps its own line endings, BOM and encoding.
 - **A file that changed after the edit read it** (another agent in the same checkout, a formatter, an editor's autosave) is
   not written: right before its write every file is compared with the bytes the edit read, and a difference is an error
@@ -240,7 +245,10 @@ details: { path, created: boolean, bytes: number, lines: number, eol: 'lf'|'crlf
 - An empty oldText is an error, except on an empty file, where the edit acts like `write`.
 - oldText equal to newText is an error. A binary file, a missing file (the error suggests `write`) or a file over 64MB is
   an error.
-- When nothing is found, the error points at the most similar line.
+- When nothing is found and a line is similar enough to point at, the error shows the file's current lines around it —
+  numbered, 3 lines before the most similar line to oldText's first line, to that line plus oldText's line count plus 3
+  (at most 30 lines, long lines clipped) — and says to copy oldText from these lines, re-reading the file only if the
+  region is not shown. When nothing is similar, the error says to re-read the file and copy oldText exactly.
 - Model-facing content: `Applied 2 edits to src/x.cs (+5 −3)`, followed by notes about fuzzy matches or mixed line endings,
   then a compact unified diff (hunks only, 3 lines of context, at most 80 lines). Several files: `Applied 3 edits to 2
   files (+6 −3)`, then each file's line and diff, the 80 lines and 6000 characters shared out between the files (at

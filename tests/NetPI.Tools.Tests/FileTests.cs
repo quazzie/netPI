@@ -351,8 +351,8 @@ public static class FileTests
             Check.Contains(res.Content, "write tool");
             res = await T.Run(Edit, dir, new { files = new object[] { new { path = "a.txt", oldText = "one", newText = "ONE" }, new { path = "./A.txt", oldText = "x", newText = "y" } } });
             if (OperatingSystem.IsWindows()) ToolCheck.Error(res, "listed twice (files 1 and 2)");
-            res = await T.Run(Edit, dir, new { path = "a.txt", files = new object[] { new { path = "a.txt", oldText = "one", newText = "ONE" } } });
-            ToolCheck.Error(res, "either path (one file) or files (several)");
+            res = await T.Run(Edit, dir, new { path = "b.txt", files = new object[] { new { path = "a.txt", oldText = "one", newText = "ONE" } } });
+            ToolCheck.Error(res, "either path (one file) or files (several)"); // a path that is not in files is still a refusal
             res = await T.Run(Edit, dir, new { files = Enumerable.Range(0, EditTool.MaxFiles + 1).Select(i => new { path = $"f{i}.txt", oldText = "a", newText = "b" }).ToArray() });
             ToolCheck.Error(res, $"more than one edit call takes ({EditTool.MaxFiles})");
             res = await T.Run(Edit, dir, new { files = new object[] { new { oldText = "one", newText = "ONE" } } });
@@ -405,6 +405,8 @@ public static class FileTests
             Check.Equal("a.cs", string.Join("|", EditTool.TargetPaths(ToolArgs.Parse("""{"file_path":"a.cs","oldText":"x"}"""))));
             Check.Equal("a.cs|b.cs", string.Join("|", EditTool.TargetPaths(ToolArgs.Parse("""{"files":[{"path":"a.cs"},{"filePath":"b.cs"}]}"""))));
             Check.Equal("a.cs", string.Join("|", EditTool.TargetPaths(ToolArgs.Parse("""{"files":"[{\"path\":\"a.cs\"}]"}"""))), "files as a JSON string");
+            Check.Equal("a.cs", string.Join("|", EditTool.TargetPaths(ToolArgs.Parse("""{"path":"a.cs","files":[{"path":"a.cs"}]}"""))), "path beside files naming it");
+            Check.Equal("a.cs", string.Join("|", EditTool.TargetPaths(ToolArgs.Parse("""{"path":"a.cs","files":[{"oldText":"x","newText":"y"}]}"""))), "bare-edit files are the path's edits");
             Check.Equal(0, EditTool.TargetPaths(ToolArgs.Parse("{}")).Count);
             return Task.CompletedTask;
         });
@@ -509,6 +511,143 @@ public static class FileTests
             var diff = T.D(res).Str("diff");
             Check.Contains(diff, "--- a/n.txt\n+++ b/n.txt\n@@ -7,7 +7,7 @@\n line 7\n line 8\n line 9\n-line 10\n+line ten\n line 11\n line 12\n line 13\n");
             Check.Equal(10, T.D(res).Int("firstChangedLine"));
+        });
+
+        // ------------------------------------------------ edit: the miss shows the current text
+        r.Add("edit: a miss shows the file's current lines around the most similar line", async () =>
+        {
+            var dir = T.TempDir("edit-miss");
+            var original = string.Join("\n", Enumerable.Range(1, 20).Select(i => $"line {i}")) + "\n";
+            var f = T.WriteText(dir, "m.txt", original);
+            // the first line of oldText is line 10 exactly, the second does not exist: the region is 3 before to the span + 3 after
+            var res = await T.Run(Edit, dir, new { path = "m.txt", oldText = "line 10\nline 11x", newText = "x" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "Its first line exists at line 10, but the following lines differ.");
+            Check.Contains(res.Content, "The file's current lines 7-15:");
+            Check.Contains(res.Content, "\n   7: line 7\n");
+            Check.Contains(res.Content, "\n  10: line 10\n");
+            Check.Contains(res.Content, "\n  15: line 15\n");
+            Check.Contains(res.Content, "Copy oldText from these lines (re-read the file only if the region is not shown).");
+            Check.Contains(res.Content, "The file was not changed.");
+            Check.Equal(original, T.ReadRaw(f), "nothing was written");
+
+            // a near-but-not-equal first line points the same way, with the similar-line sentence
+            res = await T.Run(Edit, dir, new { path = "m.txt", oldText = "line 10x", newText = "x" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "The most similar line is 10: `line 10`.");
+            Check.Contains(res.Content, "The file's current lines 7-14:");
+        });
+
+        r.Add("edit: the miss region is at most 30 lines, and long lines are clipped", async () =>
+        {
+            var dir = T.TempDir("edit-miss");
+            var lines = Enumerable.Range(1, 40).Select(i => $"line {i}").ToList();
+            T.WriteText(dir, "long.txt", string.Join("\n", lines));
+            // oldText spans 40 lines: the window would be 40, the cap keeps the first 30 of it
+            var res = await T.Run(Edit, dir, new { path = "long.txt", oldText = string.Join("\n", lines.Select(l => l + "x")), newText = "x" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "The file's current lines 1-30:");
+            Check.Contains(res.Content, "\n  30: line 30\n");
+            Check.True(!res.Content.Contains("line 31"), "the cap stops at 30 lines");
+
+            // a long line is clipped to its beginning
+            T.WriteText(dir, "wide.txt", "head\n" + new string('x', 500) + "\ntail\n");
+            res = await T.Run(Edit, dir, new { path = "wide.txt", oldText = "head x", newText = "y" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "…");
+            Check.True(res.Content.Split('\n').All(l => l.Length < 300), "a clipped line stays short");
+        });
+
+        r.Add("edit: a miss with nothing similar keeps the old message", async () =>
+        {
+            var dir = T.TempDir("edit-miss");
+            T.WriteText(dir, "q.txt", "alpha\nbeta\ngamma\n");
+            var res = await T.Run(Edit, dir, new { path = "q.txt", oldText = "zzzqqqwwweee", newText = "x" });
+            ToolCheck.Error(res, "not found");
+            Check.Contains(res.Content, "Re-read the file and copy oldText exactly.");
+            Check.True(!res.Content.Contains("The file's current lines"), "no anchor, no region");
+        });
+
+        r.Add("edit: a miss in a batch shows the failing file's region, and nothing is written", async () =>
+        {
+            var dir = T.TempDir("edit-miss-batch");
+            var a = T.WriteText(dir, "a.txt", "alpha\nbeta\n");
+            var b = T.WriteText(dir, "b.txt", "gamma\ndelta\n");
+            var res = await T.Run(Edit, dir, new
+            {
+                files = new object[]
+                {
+                    new { path = "a.txt", oldText = "alpha", newText = "ALPHA" },
+                    new { path = "b.txt", edits = new[] { new { oldText = "gamma x", newText = "GAMMA" } } },
+                },
+            });
+            ToolCheck.Error(res, "File 2 of 2: edit failed in b.txt");
+            Check.Contains(res.Content, "The file's current lines");
+            Check.Contains(res.Content, "gamma", "the region is the failing file's, not the first file's");
+            Check.Contains(res.Content, "No files were changed (all-or-nothing).");
+            Check.Equal("alpha\nbeta\n", T.ReadRaw(a));
+            Check.Equal("gamma\ndelta\n", T.ReadRaw(b));
+        });
+
+        // ------------------------------------------------ edit: the common wrong shapes
+        r.Add("edit: files as a JSON string is the same call", async () =>
+        {
+            var dir = T.TempDir("edit-json");
+            var a = T.WriteText(dir, "a.txt", "one\ntwo\n");
+            var b = T.WriteText(dir, "b.txt", "x\n");
+            var res = await T.Run(Edit, dir, """{"files":"[{\"path\":\"a.txt\",\"edits\":[{\"oldText\":\"one\",\"newText\":\"ONE\"}]},{\"path\":\"b.txt\",\"oldText\":\"x\",\"newText\":\"y\"}]"}""");
+            ToolCheck.Ok(res);
+            Check.Equal("ONE\ntwo\n", T.ReadRaw(a));
+            Check.Equal("y\n", T.ReadRaw(b));
+        });
+
+        r.Add("edit: path and files naming the same file run as the files form (path ignored)", async () =>
+        {
+            var dir = T.TempDir("edit-mixed");
+            var a = T.WriteText(dir, "a.txt", "one\ntwo\n");
+            var res = await T.Run(Edit, dir, new { path = "a.txt", files = new object[] { new { path = "a.txt", edits = new[] { new { oldText = "one", newText = "ONE" } } } } });
+            ToolCheck.Ok(res);
+            Check.Equal("ONE\ntwo\n", T.ReadRaw(a));
+            Check.Contains(res.Content, "Applied 1 edit to 1 file");
+            // the paths are normalized the way the tool takes them: a relative spelling of the same file
+            res = await T.Run(Edit, dir, new { path = "./a.txt", files = new object[] { new { path = "a.txt", oldText = "ONE", newText = "TWO" } } });
+            ToolCheck.Ok(res);
+            Check.Equal("TWO\ntwo\n", T.ReadRaw(a));
+        });
+
+        r.Add("edit: files: [{ path }] with the edits at the top level applies them to that file", async () =>
+        {
+            var dir = T.TempDir("edit-top");
+            var a = T.WriteText(dir, "a.txt", "one\ntwo\n");
+            var res = await T.Run(Edit, dir, new { files = new object[] { new { path = "a.txt" } }, edits = new[] { new { oldText = "one", newText = "ONE" }, new { oldText = "two", newText = "TWO" } } });
+            ToolCheck.Ok(res);
+            Check.Equal("ONE\nTWO\n", T.ReadRaw(a));
+            // the single-edit shorthand at the top level works the same way
+            T.WriteText(dir, "a.txt", "one\n");
+            res = await T.Run(Edit, dir, new { files = new object[] { new { path = "a.txt" } }, oldText = "one", newText = "ONE" });
+            ToolCheck.Ok(res);
+            Check.Equal("ONE\n", T.ReadRaw(a));
+            // with no top-level edits the entry's own refusal stands
+            ToolCheck.Error(await T.Run(Edit, dir, new { files = new object[] { new { path = "a.txt" } } }), "Missing edits");
+        });
+
+        r.Add("edit: path with files of bare edits applies them to that file", async () =>
+        {
+            var dir = T.TempDir("edit-bare");
+            var a = T.WriteText(dir, "a.txt", "one\ntwo\n");
+            var res = await T.Run(Edit, dir, new { path = "a.txt", files = new object[] { new { oldText = "one", newText = "ONE" }, new { oldText = "two", newText = "TWO", replaceAll = true } } });
+            ToolCheck.Ok(res);
+            Check.Equal("ONE\nTWO\n", T.ReadRaw(a));
+        });
+
+        r.Add("edit: a path not in files, and broken JSON, are refused as before", async () =>
+        {
+            var dir = T.TempDir("edit-refused");
+            var a = T.WriteText(dir, "a.txt", "one\n");
+            ToolCheck.Error(await T.Run(Edit, dir, new { path = "b.txt", files = new object[] { new { path = "a.txt", oldText = "one", newText = "ONE" } } }), "either path (one file) or files (several)");
+            // broken JSON is not repaired: the string does not parse, so it is not an edits list
+            ToolCheck.Error(await T.Run(Edit, dir, new { path = "a.txt", edits = "[{\"oldText\">" }), "Missing edits");
+            Check.Equal("one\n", T.ReadRaw(a), "nothing was written");
         });
 
         // ------------------------------------------------ write
