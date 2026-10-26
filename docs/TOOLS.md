@@ -620,8 +620,11 @@ so no chat parses a console log. The project describes it in `.netpi/tests.json`
 
 - `suite` picks a command (the only one when there is just one suite); `changed: true` runs the `changed` command (the tests the
   changed files can affect). Without a config the tool's error says how to add one.
-- `cwd` is the checkout to test (relative to the chat's folder; default that folder): an agent working in its own worktree
-  (`.worktrees/<agent>`) tests that tree, with the tree's own `.netpi/tests.json` and results file.
+- `cwd` is the checkout to test (default the chat's folder): an agent working in its own worktree (`.worktrees/<agent>`) tests
+  that tree, with the tree's own `.netpi/tests.json` and results file. A relative `cwd` resolves against the chat's folder;
+  when that does not exist, a name that is the chat's own folder resolves to it (a chat in its own worktree naming the
+  worktree again), and a worktree name resolves against the project folder — the nearest ancestor of the chat's folder that
+  holds a `.worktrees` directory.
 - The command runs through the platform shell (`cmd /c` on Windows, `sh -c` elsewhere) in the workspace root under a deadline
   (`timeoutSeconds`, default 1800: the process tree is killed at it, and the Windows job object ends it with NetPI). Its output
   streams to the call; the last lines come back only when the run produced no results.

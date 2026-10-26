@@ -35,9 +35,10 @@
 - Server/plugin behavior: owning regression tests and the C# E2E cases `-Changed` picks; no browser.
 - Shared contracts: both. Full gates only for shared contracts, cross-cutting behavior or explicit requests—never merely for merging.
 - Fix flaky tests; a passing retry is not a fix. Read saved evidence and rerun only affected tests. Do not merge unresolved failures.
-- Run tests with the `test` tool (deferred: `call_tool test { suite, only?, cwd: ".worktrees/<agent>" }`, or `changed: true`
-  for the E2E cases your changes pick): it runs `.netpi/tests.json`'s commands and answers with counts and failures, not a
-  console log. The same scripts by hand: `scripts/test.ps1 -Suite X -Only 'prefix'`, `scripts/e2e.ps1 -Changed`.
+- Run tests with the `test` tool (deferred: `call_tool test { suite, only?, cwd? }` — `cwd: ".worktrees/<agent>"` only when
+  the chat is not already in that worktree; `changed: true` for the E2E cases your changes pick): it runs
+  `.netpi/tests.json`'s commands and answers with counts and failures, not a console log. The same scripts by hand:
+  `scripts/test.ps1 -Suite X -Only 'prefix'`, `scripts/e2e.ps1 -Changed`.
 - Commands, selection, mocks and failure evidence: [TESTING](docs/TESTING.md).
 - "What broke in that chat": `diag { action: "errors", sessionId }` (its error notices, the saved failed requests, failed tools).
 - Deterministic builds are load-bearing (hot-reload + the contracts check in build.ps1): unchanged sources must rebuild
