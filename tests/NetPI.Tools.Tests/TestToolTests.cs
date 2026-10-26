@@ -31,6 +31,7 @@ public static class TestToolTests
         t.Add("test tool: runs a suite and reports the counts, and each failure with its message and evidence", RunsSuites);
         t.Add("test tool: only reaches the command (environment and {only}); unsafe characters are refused; a missing suite is named", OnlyAndSuites);
         t.Add("test tool: a command that writes no results (or junk, or a stale file) is an error with its exit code and last output; a hang is stopped at the timeout", Failures);
+        t.Add("test tool: a relative cwd that names the chat's own worktree (or a sibling's) resolves; a missing folder lists the paths it tried", CwdResolution);
         t.Add("test tool: the real scripts/test.ps1 writes the results file the tool reads: a pass, a failure with its assertion, a filter that matches nothing", RealScript);
     }
 
@@ -174,6 +175,52 @@ public static class TestToolTests
 
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(800));
         await Check.ThrowsAsync<OperationCanceledException>(() => new TestTool().ExecuteAsync(T.Ctx(dir, (ModelInfo?)null), T.Args(new { suite = "hang" }), cts.Token));
+    }
+
+    // A project with .worktrees/w and .worktrees/v, each a checkout of its own (its own config and results file): a relative
+    // cwd that names a worktree must not double the .worktrees segment when the chat is already in it.
+    private static (string Project, string W, string V) Worktrees()
+    {
+        var project = T.TempDir("test-tool-wt");
+        var w = Path.Combine(project, ".worktrees", "w");
+        var v = Path.Combine(project, ".worktrees", "v");
+        foreach (var dir in new[] { project, w, v })
+        {
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "fake.mjs"), FakeCommand);
+            Directory.CreateDirectory(Path.Combine(dir, ".netpi"));
+            File.WriteAllText(Path.Combine(dir, ".netpi", "tests.json"), Config());
+        }
+        return (project, w, v);
+    }
+
+    private static async Task CwdResolution()
+    {
+        if (!NodeAvailable()) Check.Skip("node is not on PATH");
+        var (project, w, v) = Worktrees();
+
+        // a chat in w naming w: the doubled path does not exist — the chat's own folder is the checkout
+        var self = await Run(w, new { suite = "unit", cwd = ".worktrees/w" });
+        Check.False(self.IsError, self.Content);
+        Check.Contains(self.Content, "unit: 12 passed");
+        Check.True(File.Exists(Path.Combine(w, "out", "results.json")), "ran in w, not w\\.worktrees\\w");
+
+        // a chat in the project naming w: the worktree's own config and results
+        var intoW = await Run(project, new { suite = "unit", cwd = ".worktrees/w" });
+        Check.False(intoW.IsError, intoW.Content);
+        Check.True(File.Exists(Path.Combine(w, "out", "results.json")), "the worktree's results file");
+
+        // a chat in w naming the sibling v: w\\.worktrees\\v does not exist, so the name resolves via the project root
+        var sibling = await Run(w, new { suite = "unit", cwd = ".worktrees/v" });
+        Check.False(sibling.IsError, sibling.Content);
+        Check.True(File.Exists(Path.Combine(v, "out", "results.json")), "ran in the sibling v");
+
+        // nothing exists: the error names the folders that were tried
+        var missing = await Run(w, new { cwd = ".worktrees/x" });
+        Check.True(missing.IsError, missing.Content);
+        Check.Contains(missing.Content, "does not exist");
+        Check.Contains(missing.Content, Path.Combine(w, ".worktrees", "x"), "the chat's folder");
+        Check.Contains(missing.Content, Path.Combine(project, ".worktrees", "x"), "the project root");
     }
 
     // The other tests pin the tool against a fake command; this one pins the writer side, the PowerShell layer the C# runners
