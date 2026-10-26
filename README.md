@@ -149,7 +149,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
                                                 │   NetPI.Ask          ask_user: questions for you, inline in the chat
                                                 │   NetPI.Plan         /plan: a read-only chat that submits a plan for you to approve
                                                 │   NetPI.Guardrails   blocks dangerous commands and protected paths, or asks you first
-NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Loops · NetPI.Retry · NetPI.ToolRepair
+NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Tidy · NetPI.Loops · NetPI.Retry · NetPI.ToolRepair
 NetPI.Contracts: the higher abstractions'       │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics · NetPI.Schedules
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Workspaces   checkouts, bindings, worktrees (the plugin that owns them)
                                                 │   NetPI.Coordinator  one-call dispatch and run results for an outside coordinator

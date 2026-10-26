@@ -23,10 +23,17 @@ public sealed class TidyPlugin : INetPiPlugin
                     "Off, or without a decision model, a final message that ends with a question counts as waiting and everything else gets the notice."),
                 SettingInfo.ModelRef("tidy.decideModel", "Decision model",
                     "The model for that question; empty = the Decide plugin's default."),
+                SettingInfo.Int("tidy.staleDays", "Sweep: days without activity", 3,
+                    "The tidy tool's sweep reports a worktree, branch, stash, uncommitted change or scratch entry only after this many days without a commit or a file change.", 0, 365, "days"),
+                SettingInfo.List("tidy.sweepRoots", "Sweep: extra repositories",
+                    help: "Folders swept besides the projects' own (for example a repository that is not a NetPI project)."),
+                SettingInfo.List("tidy.sweepExclude", "Sweep: leave alone",
+                    help: "Folder names or paths the sweep skips: a project someone works in right now, or one whose owner keeps its branches on purpose."),
             ],
         });
         var settings = context.Settings;
         context.Services.Register<IAgentHook>(new TidyHook(() => settings, context.Services));
+        context.Tools.Register(new TidyTool(context));
         return Task.CompletedTask;
     }
 }

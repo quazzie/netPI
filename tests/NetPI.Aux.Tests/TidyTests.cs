@@ -188,6 +188,36 @@ public static class TidyTests
             Check.True(await End(hook, await env.StartAsync(hook, wt)) is not null, "not waiting -> the notice");
         });
 
+        r.Add("tidy sweep: merged worktree and branch are [merged], unmerged work, stash, old dirty file and scratch are reported, excluded folders skipped", async () =>
+        {
+            var env = new Env(); NeedGit(env);
+            var done = env.Worktree("done-wt");
+            File.WriteAllText(Path.Combine(done, "d.txt"), "1\n"); Env.Commit(done, "done work");
+            TestGit.Run(env.Repo, "merge", "-q", "--ff-only", "done-wt");
+            var open = env.Worktree("open-wt");
+            File.WriteAllText(Path.Combine(open, "o.txt"), "1\n"); Env.Commit(open, "open work");
+            TestGit.Run(env.Repo, "branch", "merged-branch");                       // at main: merged, no worktree
+            File.WriteAllText(Path.Combine(env.Repo, "README.md"), "stashed\n");
+            TestGit.Run(env.Repo, "-c", "user.name=t", "-c", "user.email=t@t", "stash", "-q");
+            File.WriteAllText(Path.Combine(env.Repo, "left.txt"), "x\n");
+            Directory.CreateDirectory(Path.Combine(env.Repo, "scratch", "2026-10-01-probe"));
+
+            var items = await TidySweep.SweepAsync([env.Repo], [], 0, DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None);
+            var text = TidySweep.Render(items, 0);
+            Check.True(items.Any(i => i.Kind == "merged" && i.Branch == "done-wt" && i.Path is not null), text);
+            Check.True(items.Any(i => i.Kind == "merged" && i.Branch == "merged-branch" && i.Path is null), text);
+            Check.True(items.Any(i => i.Kind == "unmerged" && i.Branch == "open-wt"), text);
+            Check.True(items.Any(i => i.Kind == "stash"), text);
+            Check.True(items.Any(i => i.Kind == "dirty" && i.Text.Contains("left.txt")), text);
+            Check.True(items.Any(i => i.Kind == "scratch" && i.Text.Contains("2026-10-01-probe")), text);
+            Check.Contains(text, "safe to remove");
+
+            var skipped = await TidySweep.SweepAsync([env.Repo], ["repo"], 0, DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None);
+            Check.Equal(0, skipped.Count);
+            var fresh = await TidySweep.SweepAsync([env.Repo], [], 3, DateTimeOffset.UtcNow, CancellationToken.None);
+            Check.False(fresh.Any(i => i.Kind is "merged" or "unmerged" or "dirty" or "scratch"), "work from today is not stale");
+        });
+
         r.Add("tidy: written paths from write/edit arguments, the several-files form included", () =>
         {
             var cwd = Path.Combine(Path.GetTempPath(), "proj");

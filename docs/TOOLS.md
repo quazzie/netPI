@@ -24,6 +24,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.CodeSearch` | `netpi.codesearch` | `code_search` | `codesearch.search`, `codesearch.status`, `codesearch.reindex` |
 | `plugins/NetPI.Embeddings` | `netpi.embeddings` | – (the `IEmbeddingService` for other plugins) | `embed.texts`, `embed.status` |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy` `job` `grep` `find`) | – |
+| `plugins/NetPI.Tidy` | `netpi.tidy` | `tidy` (action `sweep`) and the end-of-turn cleanup notice (kind `tidy`) | – |
 | `plugins/NetPI.Workspaces` | `netpi.workspaces` | `workspace` (actions `info` `list` `switch` `retire`) | `workspaces.*` (see `docs/PROTOCOL.md`) |
 | `plugins/NetPI.Coordinator` | `netpi.coordinator` | – (for outside coordinators: the RPC/CLI only) | `sessions.dispatch`, `runs.result` |
 
@@ -850,6 +851,45 @@ details: { action, window, title, controls, shown, result }       // after an ac
        | { action: 'find', window, title, text, hits } | { action: 'read', window, n, chars }
        | { action: 'screenshot', window, title }                   // plus the PNG in images
        | { action, window, gone: true }                            // the window closed
+```
+
+---
+
+## Tidy (`plugins/NetPI.Tidy`)
+
+What agents leave behind when they finish — or die — is the cleanup nobody does: uncommitted changes, a branch with
+finished work never merged, merged branches whose worktrees stay, old scratch (the 2026-10-26 cleanup of `C:\AI` found
+all four). Two parts, both read-only themselves:
+
+**The end-of-turn notice** (an `IAgentHook`, order 600: after the nudge, the commit notice and the goal, so it only sees
+a real end — a model call that answered without calling a tool, not cut off, not empty). It gathers facts with git and
+the file system, no model: in the agent's **own worktree** (a linked git worktree) its uncommitted changes, commits its
+branch has that the base branch (the branch of the main worktree) lacks, or a merged branch whose worktree is still there
+and whose `workspace retire` was not asked for; in a **shared checkout** only the files this run wrote with `write`/`edit`
+(never someone else's uncommitted work); and the `scratch/` entries that appeared during the run. Nothing left → nothing
+happens (a few git calls). A process still running in the checkout (its build or server, `IWorkspaceProcesses`) → nothing.
+Otherwise one decision-lane question (`tidy.decide`) on the **slice of the agent's context that answers it** — the task
+(the turn's last user message), the final message and the leftover list — on the agent's own admission slot, like the
+guardrails' second opinion: is it waiting for something (a job, CI, a review, a report), does it ask the user, did the task
+say to leave things as they are? Any yes → it is left alone. Not the whole transcript: re-prefilled on the decision lane,
+which runs ahead of the agents, that costs tens of thousands of tokens unless it hits the agent's cached prefix exactly.
+Without a decision model a final message whose last line is a question counts as waiting. Then one notice (kind `tidy`)
+lists the leftovers: clean up, or say in one line why they stay. Once per run, and not again in a later run of the chat for
+the same leftovers.
+
+### `tidy` (summary arg `action`)
+
+`{ action?: 'sweep', staleDays? }` — the weekly sweep across repositories, for what the notice cannot catch (an agent
+that died never reaches its turn end). Repositories: every project's folder plus `tidy.sweepRoots`, minus
+`tidy.sweepExclude` (a folder name or path). Per main checkout: its worktrees, branches without one, stashes, uncommitted
+changes in the main checkout and `scratch/` entries, each only after `staleDays` (`tidy.staleDays`, 3) without a commit or
+a file change. `[merged]` items (fully merged into the base branch and clean) are garbage under the repository rules —
+remove the worktree and `git branch -d` from the main checkout; `[unmerged]`, `[dirty]`, `[stash]`, `[scratch]` and
+`[prunable]` are reported, not deleted. Read-only (`IReadOnlyCalls`). The weekly run is a NetPI schedule
+(`{ kind: every, minutes: 10080 }`) whose prompt calls `tidy`, removes the `[merged]` items, and reports the rest to the owner.
+
+```ts
+details: { staleDays, items: { repo, kind: 'merged'|'unmerged'|'dirty'|'stash'|'scratch'|'prunable', text, path?, branch? }[] }
 ```
 
 ---
