@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using NetPI.Phone;
 
 namespace NetPI.Aux.Tests;
@@ -33,7 +34,7 @@ public static class PhoneTests
             if (allowFrom is not null) Ctx.SettingsFake.SetQuiet("phone.allowFrom", new JsonArray(allowFrom));
             if (trustProxy) Ctx.SettingsFake.SetQuiet("phone.trustProxy", true);
             Plugin = new PhonePlugin(Time, listen: true);
-            foreach (var m in new[] { "sessions.list", "agent.send", "sessions.create", "guard.answer", "agent.abort" })
+            foreach (var m in new[] { "sessions.list", "agent.send", "sessions.create", "guard.answer", "agent.abort", "agent.stream", "plan.answer" })
                 Ctx.Rpc.Register(m, (req, _) => { Calls.Add((req.Method, JsonNode.Parse(req.Params.GetRawText())!.AsObject())); return Task.FromResult<object?>(new JsonObject { ["called"] = req.Method }); });
         }
 
@@ -143,8 +144,15 @@ public static class PhoneTests
             var stop = await env.Post("/api/rpc/agent.abort", new { sessionId = "s", subagents = false }, token);
             Check.Equal(HttpStatusCode.OK, stop.StatusCode, "the Agents view's Stop (this run alone) reaches the host");
             Check.False(env.Calls.Last().Args["subagents"]!.GetValue<bool>(), "with subagents:false as sent");
+
+            var stream = await env.Post("/api/rpc/agent.stream", new { sessionId = "s1" }, token);
+            Check.Equal(HttpStatusCode.OK, stream.StatusCode, "agent.stream passes its one parameter");
+            Check.Equal("agent.stream", S(JsonNode.Parse(await stream.Content.ReadAsStringAsync())!["result"]!["called"]));
+            Check.Equal(HttpStatusCode.BadRequest, (await env.Post("/api/rpc/plan.answer", new { planId = "p", decision = "approve", newChat = true }, token)).StatusCode, "newChat is not a parameter from here");
+            Check.Equal(HttpStatusCode.BadRequest, (await env.Post("/api/rpc/agent.dequeue", new { sessionId = "s1", id = "q", extra = 1 }, token)).StatusCode, "an extra key is refused");
+
             Check.Equal(HttpStatusCode.Unauthorized, (await env.Post("/api/rpc/sessions.list", new { })).StatusCode, "no cookie");
-            Check.False(env.Calls.Any(c => c.Method is "settings.get" or "sessions.delete" or "phone.pair"), "none of the refused calls reached the host");
+            Check.False(env.Calls.Any(c => c.Method is "settings.get" or "sessions.delete" or "phone.pair" or "plan.answer" or "agent.dequeue"), "none of the refused calls reached the host");
         });
 
         r.Add("phone: only allowed addresses connect, and a cross-origin POST is refused", async () =>
@@ -182,20 +190,26 @@ public static class PhoneTests
             env.Ctx.Events.Publish("settings.changed", new { path = "x" });   // not relayed
             env.Ctx.Events.Publish("stream.delta", new { sessionId = "s1", kind = "text", text = "hej" }, sessionId: "s1");
             env.Ctx.Events.Publish("message.added", new { sessionId = "s1", message = new { seq = 7, role = "user", parts = new object[] { new { type = "image", data = "AAAA" } } } }, sessionId: "s1");
+            env.Ctx.Events.Publish("agent.waiting", new { sessionId = "s1", kind = "plan" }, sessionId: "s1");
             var lines = new List<string>();
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            while (lines.Count < 2)
+            while (lines.Count < 4)
             {
                 var l = await reader.ReadLineAsync(cts.Token);
                 if (l is not null && l.StartsWith("data: ")) lines.Add(l[6..]);
             }
-            var first = JsonNode.Parse(lines[0])!;
+            var hello = JsonNode.Parse(lines[0])!;
+            Check.Equal("hello", S(hello["type"]), "the stream opens with a hello frame");
+            Check.True(S(hello["build"]).Length > 0, "with the page's build");
+            var first = JsonNode.Parse(lines[1])!;
             Check.Equal("stream.delta", S(first["type"]), "the unrelated settings event was not relayed");
             Check.Equal("hej", S(first["data"]!["text"]));
-            var second = JsonNode.Parse(lines[1])!;
+            var second = JsonNode.Parse(lines[2])!;
             Check.Equal("message.added", S(second["type"]));
             Check.Equal(7, second["data"]!["seq"]!.GetValue<int>());
-            Check.False(lines[1].Contains("AAAA"), "the image does not ride the stream");
+            Check.False(lines[2].Contains("AAAA"), "the image does not ride the stream");
+            var third = JsonNode.Parse(lines[3])!;
+            Check.Equal("agent.waiting", S(third["type"]), "the new relayed events arrive too");
         });
 
         r.Add("phone: a full event queue never blocks the publisher and is marked for a resync frame", () =>
@@ -216,6 +230,29 @@ public static class PhoneTests
             var frame = PhoneApi.Frame(new BusEvent { Type = "agents.changed", Data = new { agents = new[] { new { key = "x" } } } });
             Check.Equal("agents.changed", S(frame["type"]));
             Check.True(frame["data"] is null, "no agent list rides the stream");
+            return Task.CompletedTask;
+        });
+
+        r.Add("phone: every frame carries the bus's sequence number", () =>
+        {
+            var frame = PhoneApi.Frame(new BusEvent { Type = "stream.delta", Seq = 42, SessionId = "s1", Data = new { sessionId = "s1", text = "x" } });
+            Check.Equal(42L, frame["seq"]!.GetValue<long>(), "the normal frame");
+            var bodyless = PhoneApi.Frame(new BusEvent { Type = "agents.changed", Seq = 7, Data = new { agents = new[] { new { key = "x" } } } });
+            Check.Equal(7L, bodyless["seq"]!.GetValue<long>(), "the body-less frame too");
+            return Task.CompletedTask;
+        });
+
+        r.Add("phone: the page's build changes when a file changes and is stable when it does not", () =>
+        {
+            var dir = T.TempDir("phone-build");
+            Check.Equal("none", PhoneApi.Build(dir), "an empty folder has no build");
+            File.WriteAllText(Path.Combine(dir, "index.html"), "<!doctype html>");
+            File.WriteAllText(Path.Combine(dir, "app.js"), "console.log(1)");
+            var b1 = PhoneApi.Build(dir);
+            Check.True(Regex.IsMatch(b1, "^[0-9a-f]{16}$"), "the first 16 lowercase hex characters");
+            Check.Equal(b1, PhoneApi.Build(dir), "stable while the files are unchanged");
+            File.WriteAllText(Path.Combine(dir, "app.js"), "console.log(2)");
+            Check.True(PhoneApi.Build(dir) != b1, "a changed file changes the build");
             return Task.CompletedTask;
         });
 

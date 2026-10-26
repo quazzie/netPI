@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -29,8 +30,17 @@ internal sealed class PhoneApi : IDisposable
         ["sessions.list"] = ["projectId", "search", "limit", "offset", "includeArchived", "archivedOnly"],
         ["sessions.create"] = ["title", "projectId", "model", "reasoning"],
         ["sessions.messages"] = ["id", "beforeSeq", "afterSeq", "limit"],
+        ["sessions.get"] = ["id"],
         ["agent.send"] = ["sessionId", "text", "images", "mode"],
         ["agent.abort"] = ["sessionId", "subagents"],
+        ["agent.get"] = ["sessionId"],
+        ["agent.stream"] = ["sessionId"],
+        ["agent.queue"] = ["sessionId"],
+        ["agent.dequeue"] = ["sessionId", "id"],
+        ["agent.waits"] = ["sessionId", "kind"],
+        ["plan.get"] = ["planId", "sessionId"],
+        ["plan.answer"] = ["planId", "decision", "feedback"],
+        ["plan.enterAnswer"] = ["id", "enter"],
         ["runs.list"] = ["includeFinished"],
         ["work.snapshot"] = [],
         ["ask.pending"] = ["sessionId"],
@@ -41,9 +51,9 @@ internal sealed class PhoneApi : IDisposable
 
     private static readonly HashSet<string> Relayed = new(StringComparer.Ordinal)
     {
-        "agent.status", "agent.queue", "agent.notice", "message.added", "message.updated", "messages.compacted",
+        "agent.status", "agent.queue", "agent.notice", "agent.waiting", "agent.waitEnded", "message.added", "message.updated", "messages.compacted",
         "stream.start", "stream.delta", "stream.end", "stream.reset", "stream.tool", "tool.start", "tool.end",
-        "ask.asked", "ask.closed", "guard.asked", "guard.closed", "agents.changed", "process.started", "process.exited", "usage.changed", "session.created", "session.updated", "session.deleted", "session.context",
+        "ask.asked", "ask.closed", "guard.asked", "guard.closed", "plan.changed", "plan.enter.asked", "plan.enter.closed", "agents.changed", "process.started", "process.exited", "usage.changed", "session.created", "session.updated", "session.deleted", "session.context",
     };
 
     private static readonly Dictionary<string, (string File, string Type)> Files = new(StringComparer.Ordinal)
@@ -51,6 +61,7 @@ internal sealed class PhoneApi : IDisposable
         ["/"] = ("index.html", "text/html; charset=utf-8"),
         ["/index.html"] = ("index.html", "text/html; charset=utf-8"),
         ["/app.js"] = ("app.js", "text/javascript; charset=utf-8"),
+        ["/lib.js"] = ("lib.js", "text/javascript; charset=utf-8"),
         ["/app.css"] = ("app.css", "text/css; charset=utf-8"),
         ["/manifest.webmanifest"] = ("manifest.webmanifest", "application/manifest+json"),
         ["/icon.svg"] = ("icon.svg", "image/svg+xml"),
@@ -231,7 +242,8 @@ internal sealed class PhoneApi : IDisposable
         var ct = linked.Token;
         try
         {
-            await res.WriteAsync(": ok\n\n", ct).ConfigureAwait(false);
+            var hello = new JsonObject { ["type"] = "hello", ["build"] = Build(_root) }.ToJsonString();
+            await res.WriteAsync("data: " + hello + "\n\n", ct).ConfigureAwait(false);
             await res.Body.FlushAsync(ct).ConfigureAwait(false);
             while (!ct.IsCancellationRequested)
             {
@@ -242,7 +254,7 @@ internal sealed class PhoneApi : IDisposable
                     await res.Body.FlushAsync(ct).ConfigureAwait(false);
                 }
                 using var tick = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                tick.CancelAfter(TimeSpan.FromSeconds(15));
+                tick.CancelAfter(TimeSpan.FromSeconds(10));
                 string? line;
                 try { line = await channel.Reader.ReadAsync(tick.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { line = null; }   // quiet: a heartbeat keeps proxies and the phone's radio from dropping it
@@ -281,14 +293,31 @@ internal sealed class PhoneApi : IDisposable
     internal static JsonObject Frame(BusEvent e)
     {
         // the Agents view re-reads work.snapshot on these: the bodies (every agent, every process) would only cost the phone's radio
-        if (e.Type is "agents.changed" or "process.started" or "process.exited" or "usage.changed") return new JsonObject { ["type"] = e.Type, ["sessionId"] = e.SessionId };
+        if (e.Type is "agents.changed" or "process.started" or "process.exited" or "usage.changed") return new JsonObject { ["type"] = e.Type, ["sessionId"] = e.SessionId, ["seq"] = e.Seq };
         var node = NetPiJson.ToNode(e.Data);
         if (e.Type is "message.added" or "message.updated" && node is JsonObject d)
         {
             var m = d["message"] as JsonObject;
             node = new JsonObject { ["sessionId"] = d["sessionId"]?.DeepClone(), ["seq"] = m?["seq"]?.DeepClone(), ["role"] = m?["role"]?.DeepClone() };
         }
-        return new JsonObject { ["type"] = e.Type, ["sessionId"] = e.SessionId, ["data"] = node };
+        return new JsonObject { ["type"] = e.Type, ["sessionId"] = e.SessionId, ["seq"] = e.Seq, ["data"] = node };
+    }
+
+    /// <summary>
+    /// The build of the page in <paramref name="root"/>: the first 16 lowercase hex characters of the SHA-256 over the bytes of the
+    /// page files that exist there (every distinct file name in <see cref="Files"/>, in ordinal order), or "none" when none exists.
+    /// The stream's hello frame carries it, so a phone sees a publish that replaced the page under it. Computed per stream open:
+    /// a publish can replace the files under a running plugin.
+    /// </summary>
+    internal static string Build(string root)
+    {
+        var names = Files.Values.Select(f => f.File).Distinct()
+            .Where(n => File.Exists(Path.Combine(root, n)))
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+        if (names.Length == 0) return "none";
+        var hash = SHA256.HashData(names.SelectMany(n => File.ReadAllBytes(Path.Combine(root, n))).ToArray());
+        return Convert.ToHexString(hash)[..16].ToLowerInvariant();
     }
 
     // ---------------------------------------------------------------- helpers
